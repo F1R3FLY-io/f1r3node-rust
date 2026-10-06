@@ -80,8 +80,10 @@ pub enum SpaceTxnError {
     InstalledChannel,
     /// The hot store was replaced between `begin` and `commit`.
     StoreSwapped,
-    /// The computed COMM is not among the recorded bindings of its trigger
-    /// event.
+    /// An unpaired replay fire: the recorded bindings of its trigger event
+    /// hold no free occurrence of its COMM. Commit raises it after the
+    /// observer accepts every call of the fire, and the operations before
+    /// the fire stay applied (decision 36).
     ReplayDivergence(Box<COMM>),
     /// The observer returned a native replay directive.
     NativeReplayDirectiveUnsupported,
@@ -1333,6 +1335,8 @@ pub(crate) struct StagedFire<C, P: Clone, A: Clone, K: Clone> {
     pub(crate) candidates: Vec<ConsumeCandidate<C, A>>,
     pub(crate) comm: COMM,
     pub(crate) retain: bool,
+    /// The paired COMM of the log. `None` in play, and for an unpaired fire
+    /// in replay or reporting.
     pub(crate) recorded: Option<COMM>,
     pub(crate) removed: Vec<(usize, usize)>,
     pub(crate) continuation_position: Option<usize>,
@@ -1348,15 +1352,18 @@ pub(crate) struct StagedProduce<C, P: Clone, A: Clone, K: Clone> {
 }
 
 /// A staged fire of a consume: the key of its group, the candidates, the
-/// staged COMM and retention. `removed` holds the `(candidate, position)`
-/// pairs of the records that the fire removes, in the staged lists before
-/// the fire.
+/// staged COMM, retention, and the recorded COMM in replay. `removed` holds
+/// the `(candidate, position)` pairs of the records that the fire removes,
+/// in the staged lists before the fire.
 pub(crate) struct StagedConsumeFire<C, A: Clone> {
     pub(crate) group: Vec<Blake2b256Hash>,
     pub(crate) candidates: Vec<ConsumeCandidate<C, A>>,
     pub(crate) comm: COMM,
     pub(crate) retain: bool,
     pub(crate) removed: Vec<(usize, usize)>,
+    /// The paired COMM of the log. `None` in play, and for an unpaired fire
+    /// in replay or reporting.
+    pub(crate) recorded: Option<COMM>,
 }
 
 pub(crate) struct StagedConsume<C, P: Clone, A: Clone, K: Clone> {
@@ -1568,28 +1575,26 @@ where
     // consume-side fire. The key holds one binding per occurrence of the key
     // in the COMM (`binding_multiplicity`), so a recorded occurrence is
     // available while the paired copies use fewer bindings than it holds.
+    // Returns the recorded copy, or `None` in play and for an unpaired fire.
+    // An unpaired fire stages as in play, never pairs, and fails at commit
+    // after the observer calls of play (decision 36), so replay staging
+    // equals play staging for every log.
     fn verify<B: TxnBackend<C, P, A, K>>(
         &self,
         backend: &B,
         comm: &COMM,
         trigger: &IOEvent,
-    ) -> Result<Option<COMM>, SpaceTxnError> {
+    ) -> Option<COMM> {
         match self.mode {
-            SpaceMode::Play => Ok(None),
+            SpaceMode::Play => None,
             SpaceMode::Replay | SpaceMode::Reporting => {
-                let divergence = || SpaceTxnError::ReplayDivergence(Box::new(comm.clone()));
-                let (recorded, count) = backend
-                    .recorded_binding(trigger, comm)
-                    .ok_or_else(divergence)?;
+                let (recorded, count) = backend.recorded_binding(trigger, comm)?;
                 let available = match binding_multiplicity(trigger, comm) {
                     0 => 0,
                     multiplicity => count / multiplicity,
                 };
                 let paired = self.paired.iter().filter(|paired| *paired == comm).count();
-                match paired < available {
-                    true => Ok(Some(recorded)),
-                    false => Err(divergence()),
-                }
+                (paired < available).then_some(recorded)
             }
         }
     }
@@ -1754,7 +1759,7 @@ where
                     continuation.peeks.clone(),
                     |produces| lookup_counters(&counters, produces),
                 );
-                let recorded = self.verify(backend, &comm, &IOEvent::Produce(source.clone()))?;
+                let recorded = self.verify(backend, &comm, &IOEvent::Produce(source.clone()));
                 let delta = self.next_delta(backend, &source, persist)?;
                 let removed = removed_records(&candidates, &positions, retain);
                 let applied = self.apply_fire_to_view(&group, &continuation, &candidates, &removed);
@@ -1943,7 +1948,7 @@ where
                 let comm = COMM::new(&candidates, source.clone(), peeks.clone(), |produces| {
                     lookup_counters(&counters, produces)
                 });
-                let recorded = self.verify(backend, &comm, &IOEvent::Consume(source.clone()))?;
+                let recorded = self.verify(backend, &comm, &IOEvent::Consume(source.clone()));
                 let removed = removed_records(&candidates, &positions, retain);
                 let effects = match self.view.remove_records(&group, &candidates, &removed) {
                     Ok(effects) => effects,
@@ -1966,6 +1971,7 @@ where
                             comm: comm.clone(),
                             retain,
                             removed,
+                            recorded,
                         }),
                     }),
                     before_observe,
@@ -2485,7 +2491,9 @@ where
 // then operation `i` runs under `sub_order(parent, i)`. Without an operation
 // context the commit is not tracked and emits no sub-orders. A failure of
 // operation `i` leaves operations `0..i` applied, as the equivalent host
-// program would.
+// program would. An unpaired replay fire fails here too: with the error of
+// a call that the observer rejects, or else with `ReplayDivergence` after
+// its calls, and with the same prefix (decision 36).
 async fn commit_staged<B, C, P, A, K>(
     backend: &B,
     store: SharedStore<C, P, A, K>,

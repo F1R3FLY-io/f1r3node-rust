@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocq negative controls for the Reified RSpaces P1 models.
+"""Rocq negative controls for the Reified RSpaces P1, P2 and P4 models.
 
 Each control mutates one rule in a scratch copy of a module
 (formal/rocq/reified_rspaces/theories). The mutation changes one definition,
@@ -21,6 +21,33 @@ The controls cover the round-2 rules and the round-3 rule
          agent re-offers that datum as the next operation (H11)
 and two FR-1 controls that the round-2 rules keep (the sweep validates the
 stored join groups, and a rejected read does not touch the cache).
+
+Decision 36 (replay reproduces play) has three controls. Each reverts one
+part of the rule:
+  ec-replay-fire-fails-at-staging  an unpaired replay fire fails at staging
+                                   (the rule of decision 19): H23 breaks
+  ec-unpaired-skips-observe-comm   an unpaired replay fire fails before its
+                                   observe_comm call: H23 breaks
+  ec-unpaired-fire-commits         an unpaired replay fire commits: H4 (and
+                                   H5) break
+
+The P4 controls (batch 4E-F) revert one rule of the hashmap:queue slice:
+  Namespace           the ephemeral KIND bit, distinct op ids, the sid
+                      length check of the decoder, the name tail lengths
+  RecordEnvelope      the strict tag (kind and flag), the strict list flags,
+                      the kind check of the datum envelope, natural orders
+  CounterConflict     the counter COMM has no peeks (M-1), the first
+                      operation consumes S(sid) (A25), reified channels are
+                      never mergeable, pre-state produces are made by Base
+  HeadOnlyDisciplines the least (ord, rank) head, the tail join of a
+                      datum, the divergent re-issue (A10), the counter bump
+  SpaceRefs           the write flag of a handle, R3 and R5 routing, the
+                      USE wrapper, the reply name check (A23)
+  SpaceFactory        the qualifier matrix, the family indices, the call
+                      ops of A21, SpaceAlreadyExists, the canonical order,
+                      the bit check of a qualifier element
+  Encoding (I-20)     the refresh, the derived tuple flag, the strict flag
+                      check
 
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
@@ -236,6 +263,219 @@ CONTROLS = (
      "      negb persist && negb (nullb (w_peeks wk)) && negb (w_persist wk)",
      "      negb persist && negb (nullb (w_peeks wk))",
      ("offer_ops_reoffers",)),
+    # ── Decision 36: replay reproduces play (H4, H5, H23) ─────────────────
+    ("ec-replay-fire-fails-at-staging", "EventCorrelation",
+     "an unpaired replay fire fails at staging (the rule of decision 19), so replay stages "
+     "fewer operations than play",
+     "  let ps := pair_step T k cm in\n"
+     "  Some (txn_push T V (fst ps) (mk (snd ps))).",
+     "  let ps := pair_step T k cm in\n"
+     "  match backend (t_mode T), snd ps with\n"
+     "  | Play, _ | _, true => Some (txn_push T V (fst ps) (mk (snd ps)))\n"
+     "  | _, false => None\n"
+     "  end.",
+     ("replay_stage_sim", "replay_stage_all_sim", "replay_sim_gen", "replay_reproduces_play_run")),
+    ("ec-unpaired-skips-observe-comm", "EventCorrelation",
+     "an unpaired replay fire fails before the observe_comm call, so replay makes fewer calls "
+     "than play",
+     ("                let oc := ObComm cm (w_kont wk) (w_persist wk) (comm_data cands) in\n"
+      "                if negb (ob_accept (H ++ obs) oc)\n"
+      "                then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n"
+      "                else if negb paired\n"
+      "                then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StDiverged\n",
+      "                let oc := ObComm cm k persist (comm_data cands) in\n"
+      "                if negb (ob_accept (H ++ obs) oc)\n"
+      "                then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n"
+      "                else if negb paired\n"
+      "                then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StDiverged\n"),
+     ("                let oc := ObComm cm (w_kont wk) (w_persist wk) (comm_data cands) in\n"
+      "                if negb paired\n"
+      "                then mkRes (unbump S1 src persist) rd (obs ++ [ObFinish s Rejected]) [] [] StDiverged\n"
+      "                else if negb (ob_accept (H ++ obs) oc)\n"
+      "                then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n",
+      "                let oc := ObComm cm k persist (comm_data cands) in\n"
+      "                if negb paired\n"
+      "                then mkRes S rd (obs ++ [ObFinish s Rejected]) [] [] StDiverged\n"
+      "                else if negb (ob_accept (H ++ obs) oc)\n"
+      "                then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n"),
+     ("replay_produce_sim", "replay_consume_sim", "replay_commit_op_sim", "replay_sim_gen",
+      "replay_reproduces_play_run")),
+    ("ec-unpaired-fire-commits", "EventCorrelation",
+     "an unpaired replay fire commits: it logs, applies its effects and unbinds a COMM that "
+     "staging did not pair",
+     ("                then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n"
+      "                else if negb paired\n"
+      "                then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StDiverged\n"
+      "                else\n",
+      "                then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n"
+      "                else if negb paired\n"
+      "                then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StDiverged\n"
+      "                else\n"),
+     ("                then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n"
+      "                else\n",
+      "                then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n"
+      "                else\n"),
+     ("unpaired_fire_inert", "verify_sound_complete", "commit_run_rd", "replay_pairs_each_comm_once")),
+    # ── P4: Namespace.v ──────────────────────────────────────────────────
+    ("ns-ephemeral-bit-dropped", "Namespace",
+     "an ephemeral id has the durable KIND byte (no bit 0x20)",
+     "  | Ephemeral => Nat.lor (kind_letter k) ephemeral_bit",
+     "  | Ephemeral => kind_letter k",
+     ("scoped_kind_byte_spec", "kind_of_byte_scoped")),
+    ("ns-op-ids-collide", "Namespace",
+     "getSpaceAgent takes the op of the engine factory",
+     "Definition get_space_agent : nat := 33.",
+     "Definition get_space_agent : nat := 32.",
+     ("op_ids_pairwise_distinct",)),
+    ("ns-short-sid-accepted", "Namespace",
+     "the decoder accepts a payload shorter than a sid",
+     "                  if length payload <? sid_len then None else decode_payload k d payload",
+     "                  if length payload <? 1 then None else decode_payload k d payload",
+     ("decode_tag_cons",)),
+    # ── P4: RecordEnvelope.v ─────────────────────────────────────────────
+    ("re-tag-flag-ignored", "RecordEnvelope",
+     "is_tag accepts a tag with the flag true",
+     "  | PBytes b false => bytes_eqb b (tag_bytes k)",
+     "  | PBytes b _ => bytes_eqb b (tag_bytes k)",
+     ("is_tag_iff",)),
+    ("re-list-flags-unchecked", "RecordEnvelope",
+     "list_elements does not check the derived flag of the holder Par",
+     "      if Bool.eqb lf (existsb flag ps) && Bool.eqb pf (existsb flag ps) then Some ps else None",
+     "      if Bool.eqb lf (existsb flag ps) then Some ps else None",
+     ("list_elements_sound",)),
+    ("re-datum-kind-unchecked", "RecordEnvelope",
+     "datum_ord does not check the kind of the tag",
+     "          if is_tag t RDatum && is_nil priority && is_nil embedding then natural_of o else None",
+     "          if is_nil priority && is_nil embedding then natural_of o else None",
+     ("datum_unwrap_sound", "envelope_kinds_disjoint")),
+    ("re-negative-order", "RecordEnvelope",
+     "natural_of accepts a negative order",
+     "  | PInt z false => if (0 <=? z)%Z then Some z else None",
+     "  | PInt z false => if (0 <=? z)%Z || true then Some z else None",
+     ("natural_of_sound",)),
+    # ── P4: CounterConflict.v (M-1, A2, A25) ─────────────────────────────
+    ("cc-counter-comm-peeks", "CounterConflict",
+     "the counter COMM of an operation has peeks, so check #1 does not see it",
+     "          ([EvConsume kont; EvComm kont [counter_produce (ChS k) v cr] false;",
+     "          ([EvConsume kont; EvComm kont [counter_produce (ChS k) v cr] true;",
+     ("counter_consumed",)),
+    ("cc-first-op-skips-space-counter", "CounterConflict",
+     "the first operation opens S(sid,k) without the COMM on S(sid) (A25)",
+     "          ([EvConsume kont; EvComm kont [counter_produce (ChSP s) m crs] false;",
+     "          ([EvConsume kont;",
+     ("space_counter_consumed",)),
+    ("cc-reified-mergeable", "CounterConflict",
+     "reified channels are mergeable, so check #1 drops their races",
+     "  Definition reified_mergeable (c : chan) : bool := false.",
+     "  Definition reified_mergeable (c : chan) : bool := true.",
+     ("no_mergeable_produces",)),
+    ("cc-pre-state-any-creator", "CounterConflict",
+     "every counter produce counts as a pre-state produce, so depends drops the chain",
+     "    | PidCounter _ _ Base | PidData _ Base => true",
+     "    | PidCounter _ _ _ | PidData _ Base => true",
+     ("same_block_ops_chain",)),
+    # ── P4: HeadOnlyDisciplines.v (decision 11, A10, decision 31) ────────
+    ("ho-head-greatest-ord", "HeadOnlyDisciplines",
+     "the head is the entry with the greatest ord",
+     "    (o1 <? o2) || ((o1 =? o2) && (r1 <? r2)).",
+     "    (o2 <? o1) || ((o1 =? o2) && (r1 <? r2)).",
+     ("precedes_false_le", "queue_head_is_min_ord")),
+    ("ho-datum-skips-tail", "HeadOnlyDisciplines",
+     "a datum skips the queued records and meets the head waiter",
+     "  Definition offer (st : qstate) (r : record) : outcome :=\n"
+     "    match q_records st with\n"
+     "    | _ :: _ => mkOutcome [SStore r] (store_record st r) None",
+     "  Definition offer (st : qstate) (r : record) : outcome :=\n"
+     "    match q_records st with\n"
+     "    | _ :: _ => offer_loop fire_round_cap 0 st r",
+     ("offer_props", "queue_produce_preserves_inv", "queue_fifo")),
+    ("ho-no-divergent-reissue", "HeadOnlyDisciplines",
+     "a fire whose partner stays continues instead of the divergent re-issue (A10)",
+     "  else if stays then FDivergent",
+     "  else if stays then FContinue",
+     ("after_fire_continue", "queue_loop_bounded_or_reissues")),
+    ("ho-counter-not-bumped", "HeadOnlyDisciplines",
+     "an operation does not bump the counter, so two operations share an ord",
+     "  Definition bump_next (c : option nat) : option nat := Some (S (bump_ord c)).",
+     "  Definition bump_next (c : option nat) : option nat := Some (bump_ord c).",
+     ("bump_ord_next", "queue_ord_fresh")),
+    # ── P4: SpaceRefs.v (C.1, C.2, A23) ──────────────────────────────────
+    ("sr-handle-ignores-write-flag", "SpaceRefs",
+     "a handle under a bundle without the write flag is a native space",
+     "  | Some (RHandle _), false => SRErr HandleNotWritable",
+     "  | Some (RHandle n), false => SROk (SNative n)",
+     ("classify_space_ref_total_deterministic", "handle_requires_write_flag")),
+    ("sr-forged-ignores-context", "SpaceRefs",
+     "a forged channel routes to the default space inside a use block (R5)",
+     "    | CForged, Some t => space_route (t_native t) c",
+     "    | CForged, Some t => RouteOk RDefault",
+     ("route_total_deterministic", "route_rules")),
+    ("sr-space-name-takes-context", "SpaceRefs",
+     "a space name routes to the space of the use-context (R3)",
+     "    | CSpaceName n, _ => space_route n c",
+     "    | CSpaceName n, Some t => space_route (t_native t) c\n"
+     "    | CSpaceName n, None => space_route n c",
+     ("route_total_deterministic", "route_rules", "space_name_route_ignores_ctx")),
+    ("sr-wrapper-drops-context", "SpaceRefs",
+     "a stored body is not wrapped, so it runs without its context",
+     "  match cx with Some t => use_tuple (t_space t) body | None => body end.",
+     "  body.",
+     ("use_wrapper_restores_ctx",)),
+    ("sr-any-reply-name", "SpaceRefs",
+     "the handle replies on a ret that is not a name (A23)",
+     "            if is_reply_name ret then",
+     "            if true then",
+     ("parse_message_ret",)),
+    # ── P4: SpaceFactory.v (A13, A21) ────────────────────────────────────
+    ("sf-hashset-takes-default", "SpaceFactory",
+     "the HashSet store takes every qualifier",
+     "  | HashSet, _ => false",
+     "  | HashSet, _ => true",
+     ("qualifier_matrix",)),
+    ("sf-family-index-collision", "SpaceFactory",
+     "the pathmap families start at index 6, so two families share an index",
+     "  match o with HashMap => 0 | PathMap => 7 | Array => 13 | Vector => 19 | HashSet => 26 end.",
+     "  match o with HashMap => 0 | PathMap => 6 | Array => 13 | Vector => 19 | HashSet => 26 end.",
+     ("supported_in_all", "from_family_index_of", "family_index_bijective")),
+    ("sf-vector-not-a-call-op", "SpaceFactory",
+     "vector takes no calls, so `!!` on it does not abort",
+     "Definition vector_op : nat := 35.",
+     "Definition vector_op : nat := 34.",
+     ("persistent_op_call_aborts",)),
+    ("sf-recreate-allowed", "SpaceFactory",
+     "a creation over an existing config record stages a second space",
+     "    | _ :: _ => CreateErr SpaceAlreadyExists",
+     "    | _ :: _ => Staged [ParkHandle]",
+     ("space_already_exists_is_deterministic_abort",)),
+    ("sf-theory-before-qualifier", "SpaceFactory",
+     "to_elements puts the FREE tuple before the qualifier",
+     "    match c_qualifier c with Some q => [qual_elem q] | None => [] end ++\n"
+     "    match c_theory c with Some t => [free_elem t] | None => [] end ++",
+     "    match c_theory c with Some t => [free_elem t] | None => [] end ++\n"
+     "    match c_qualifier c with Some q => [qual_elem q] | None => [] end ++",
+     ("constructor_parse_canonical",)),
+    ("sf-qualifier-bits-unchecked", "SpaceFactory",
+     "qualifier_of does not check the locally_free bits, so a qualifier element with bits "
+     "parses and to_elements does not give it back",
+     "  Definition qual_of (e : elem) : qual_result := if clean e then qual_name_of e else QNonCanonical.",
+     "  Definition qual_of (e : elem) : qual_result := qual_name_of e.",
+     ("constructor_parse_sound",)),
+    # ── I-20: Encoding.v ─────────────────────────────────────────────────
+    ("enc-refresh-keeps-stale-flags", "Encoding",
+     "the hooks decode without the refresh (the P2 behavior before I-20)",
+     "Definition refresh (x : ftuple) : ftuple := mkFTuple (ft_construct x) (derived_flags (ft_construct x)).",
+     "Definition refresh (x : ftuple) : ftuple := x.",
+     ("refresh_strict_decode_erase",)),
+    ("enc-use-flag-ignores-body", "Encoding",
+     "the derived flag of a USE tuple ignores the flag of the body",
+     "      let t := vflag s || vflag b in",
+     "      let t := vflag s in",
+     ("connective_marker_tuple_recognized",)),
+    ("enc-strict-check-dropped", "Encoding",
+     "the strict decoder ignores the flags (a weaker decoder contract than decision 21)",
+     "  if tuple_flags_eqb (ft_flags x) (derived_flags (ft_construct x)) then decode (ferase x) else None.",
+     "  decode (ferase x).",
+     ("refresh_strict_decode_erase",)),
 )
 
 DECLARATION = re.compile(

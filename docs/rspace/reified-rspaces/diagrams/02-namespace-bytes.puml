@@ -2,7 +2,10 @@
 '
 ' Source of the figure "Namespace bytes" in the campaign glossary and README.
 ' The figure restates decisions 7 and 18 and the namespace table of the
-' realignment plan (see ../decision-register.md). It adds no new value.
+' realignment plan (see ../decision-register.md). The status column of the
+' two-byte ids follows the P4 registrations of
+' rholang/src/rust/interpreter/reified/system_channels.rs and
+' spaces/factory/urn.rs. It adds no new value.
 '
 ' Reading order:
 '   1. An id whose first byte is 0xE0 belongs to the Reified namespace.
@@ -64,12 +67,12 @@ rectangle TWO [
 Byte 1 is an index. Ranges that the table omits are unassigned.
 
 |= idx |= assignment |= status |
-|<$rrs_factory> 0x00 to 0x1F |<$rrs_factory> 32 outer-first structural factory families (two FIPS aliases share one id) |<$rrs_factory> installed, URN-bound |
+|<$rrs_factory> 0x00 to 0x1F |<$rrs_factory> 32 outer-first structural factory families (two FIPS aliases share one id) |<$rrs_factory> 0x01 hashmap:queue installed and URN-bound in P4, the other families in P5 and P6 |
 |<$rrs_reserved> 0x20 |<$rrs_reserved> native-engine factories (rho:space:metta first) |<$rrs_reserved> reserved, held |
-|<$rrs_system> 0x21 |<$rrs_system> getSpaceAgent |<$rrs_system> installed, URN-bound |
-|<$rrs_system> 0x22 |<$rrs_system> rho:assert:assertEqual |<$rrs_system> installed, URN-bound |
-|<$rrs_system> 0x23 |<$rrs_system> rho:lang:vector |<$rrs_system> installed, URN-bound |
-|<$rrs_object> 0x30 |<$rrs_object> HANDLE_OP |<$rrs_object> installed, URN-bound: rho:reified:internal:handleOp (decision 32) |
+|<$rrs_system> 0x21 |<$rrs_system> getSpaceAgent |<$rrs_system> installed, URN-bound (P4) |
+|<$rrs_system> 0x22 |<$rrs_system> rho:assert:assertEqual |<$rrs_system> installed, URN-bound (P4) |
+|<$rrs_system> 0x23 |<$rrs_system> rho:lang:vector |<$rrs_system> planned in P6: URN-bound, as every installed definition |
+|<$rrs_object> 0x30 |<$rrs_object> HANDLE_OP |<$rrs_object> installed, URN-bound (P4): rho:reified:internal:handleOp (decision 32) |
 |<$rrs_object> 0x31 |<$rrs_object> MATCHER_OP |<$rrs_object> planned in P8: URN-bound, as every installed definition (decision 32) |
 |<$rrs_object> 0x32 |<$rrs_object> SINK_OP |<$rrs_object> planned in P8: URN-bound, as every installed definition (decision 32) |
 |<$rrs_syntax> 0xD0 |<$rrs_syntax> USE marker |<$rrs_syntax> never installed |

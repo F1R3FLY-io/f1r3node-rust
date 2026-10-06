@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Check formal/reified-rspaces-model-map.json (Reified RSpaces, P1).
+"""Check a Reified RSpaces model map (formal/reified-rspaces-model-map*.json).
 
-The model map connects each new Rust item of the P1 storage substrate to the
-Rocq headlines (H#) and the TLA+ invariants (T#) that model it, and each P1
-fix rule (FR-1 to FR-9, the round-2 rules FR-1', FR-5', FR-7' and FR-9', and
-the round-3 rule FR-10) to its Rust items and headlines. The checker fails
-when:
+A model map connects each Rust item of a phase to the Rocq headlines and the
+TLA+ invariants that model it. The P1 map (formal/reified-rspaces-model-map.json)
+maps the storage substrate to H# and T#, and each P1 fix rule (FR-1 to FR-9,
+the round-2 rules FR-1', FR-5', FR-7' and FR-9', and the round-3 rule FR-10)
+to its Rust items and headlines. The map of another phase (its "phase" key,
+for example P4 in formal/reified-rspaces-model-map-p4.json) defines its own
+ids: one letter and a number, such as Q# for Rocq headlines and U# for TLA+
+invariants. Its required items are the items that it marks "required", and
+its "rules" key is optional. The checker fails when:
 
-  * a required P1 item is missing from the map, or an item covers nothing
+  * a required item is missing from the map, or an item covers nothing
     and does not declare why it is unmodeled (an unmapped item).
   * an item cites an H# or T# that the map does not define.
   * a headline names a theorem that the .v file does not define or does not
@@ -28,11 +32,13 @@ when:
     starts or ends on a blank line. rust_citations.py defines the rules,
     the "rs/" prefix and the aliases of short paths.
 
-Item kinds: fn (a free fn, or a fn in the impl block of "scope"), struct (a
-struct or an enum), const, and variant (a variant of the enum "scope").
+Item kinds: fn (a free fn, or a fn in the impl block of "scope", with any
+visibility, const, async or unsafe), struct (a struct or an enum), const (a
+free const or static, or an associated const of the impl block of "scope"),
+type (a type alias), and variant (a variant of the enum "scope").
 
 A line number in the map that differs from the code is a note, not a failure.
-The P1 files are new and change often.
+The files of a phase are new and change often.
 
 Exit codes: 0 all checks pass, 1 a check failed, 2 usage or input error,
 4 the checks pass but pending items are still absent from the code.
@@ -96,10 +102,22 @@ REQUIRED_ITEMS = (
     "SpaceTxnError::NestedTransaction",
 )
 REQUIRED_MODES = ("play", "replay", "reporting")
-HEADLINE_IDS = tuple(f"H{i}" for i in range(1, 23)) + tuple(f"T{i}" for i in range(1, 6))
+# The P1 headlines: H1-H22 and T1-T5, and H23 and T6 of decision 36 (replay
+# reproduces play).
+HEADLINE_IDS = tuple(f"H{i}" for i in range(1, 24)) + tuple(f"T{i}" for i in range(1, 7))
 RULE_IDS = tuple(f"FR-{i}" for i in range(1, 11)) + ("FR-1'", "FR-5'", "FR-7'", "FR-9'")
-ITEM_KINDS = ("fn", "struct", "const", "variant")
+ITEM_KINDS = ("fn", "struct", "const", "type", "variant")
+HEADLINE_KINDS = ("rocq", "tla")
+# The id of a headline in the map of a phase other than P1: one letter and a
+# number.
+PHASE_ID = re.compile(r"^[A-Z][0-9]+$")
 EXIT_PENDING = 4
+
+
+def id_key(hid: str) -> tuple[str, int]:
+    """Sort ids by their letters, then by their number (Q2 before Q10)."""
+    match = re.match(r"^([A-Za-z]+)([0-9]+)$", hid)
+    return (match.group(1), int(match.group(2))) if match else (hid, 0)
 
 
 class Report:
@@ -180,7 +198,9 @@ def tla_operators(path: Path) -> set[str]:
 # ── Rust item lookup ────────────────────────────────────────────────────────
 
 IMPL_HEADER = re.compile(r"^impl\b")
-TRAIT_HEADER = re.compile(r"^(?:pub(?:\([a-z]+\))?\s+)?(?:unsafe\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)")
+# A visibility: pub, pub(crate), pub(super), pub(self) or pub(in path).
+VISIBILITY = r"(?:pub(?:\([^)]*\))?\s+)?"
+TRAIT_HEADER = re.compile(r"^" + VISIBILITY + r"(?:unsafe\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)")
 TOP_ITEM = re.compile(r"^(?:#|//|pub|fn|async|const|static|struct|enum|type|mod|use|macro_rules)")
 
 
@@ -213,15 +233,16 @@ def find_rust_item(lines: list[str], kind: str, name: str, scope: str | None) ->
     """Return the 1-based line of the item, or None.
 
     A scope is the self type of a top-level impl block. A free item (scope
-    None) is a top-level fn, struct or const.
+    None) is a top-level fn, struct, const or type.
     """
     fn_pattern = re.compile(
-        r"^(\s*)(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+\"[^\"]*\"\s+)?fn\s+"
+        r"^(\s*)" + VISIBILITY + r"(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+\"[^\"]*\"\s+)?fn\s+"
         + re.escape(name) + r"\b")
     struct_pattern = re.compile(
-        r"^(?:pub(?:\([a-z]+\))?\s+)?(?:struct|enum)\s+" + re.escape(name) + r"\b")
+        r"^" + VISIBILITY + r"(?:struct|enum)\s+" + re.escape(name) + r"\b")
     const_pattern = re.compile(
-        r"^(?:pub(?:\([a-z]+\))?\s+)?(?:const|static)\s+" + re.escape(name) + r"\b")
+        r"^(\s*)" + VISIBILITY + r"(?:const|static)\s+" + re.escape(name) + r"\b")
+    type_pattern = re.compile(r"^" + VISIBILITY + r"type\s+" + re.escape(name) + r"\b")
     current_scope: str | None = None
     in_trait = False
     for index, line in enumerate(lines, start=1):
@@ -249,8 +270,17 @@ def find_rust_item(lines: list[str], kind: str, name: str, scope: str | None) ->
         elif kind == "struct":
             if scope is None and struct_pattern.match(line):
                 return index
+        elif kind == "type":
+            if scope is None and type_pattern.match(line):
+                return index
         elif kind == "const":
-            if const_pattern.match(line) and (scope is None) == (not line[:1].isspace()):
+            match = const_pattern.match(line)
+            if match is None:
+                continue
+            top_level = match.group(1) == ""
+            if scope is None and top_level:
+                return index
+            if scope is not None and not top_level and not in_trait and current_scope == scope:
                 return index
     return None
 
@@ -300,7 +330,10 @@ def load_map(path: Path) -> dict:
     except json.JSONDecodeError as error:
         print(f"ERROR: {path} is not valid JSON: {error}", file=sys.stderr)
         sys.exit(2)
-    for key in ("schema", "formal_files", "headlines", "items", "rules"):
+    required_keys = ("schema", "formal_files", "headlines", "items")
+    if data.get("phase", "P1") == "P1":
+        required_keys += ("rules",)
+    for key in required_keys:
         if key not in data:
             print(f"ERROR: {path} has no '{key}' key", file=sys.stderr)
             sys.exit(2)
@@ -311,6 +344,19 @@ def load_map(path: Path) -> dict:
 
 
 def check(data: dict, formal_only: bool, report: Report) -> None:
+    phase = data.get("phase", "P1")
+    p1 = phase == "P1"
+    if p1:
+        headline_ids, required_items = HEADLINE_IDS, REQUIRED_ITEMS
+        required_modes, rule_ids = REQUIRED_MODES, RULE_IDS
+    else:
+        headline_ids = tuple(sorted(data["headlines"], key=id_key))
+        required_items = tuple(e.get("item") for e in data["items"] if e.get("required", False))
+        required_modes = ()
+        rule_ids = tuple(sorted(data.get("rules") or {}))
+        for hid in headline_ids:
+            if not PHASE_ID.match(hid):
+                report.fail(f"{phase}: headline id {hid} is not one letter and a number")
     rocq_files = [REPO_ROOT / p for p in data["formal_files"].get("rocq", [])]
     tla_files = [REPO_ROOT / p for p in data["formal_files"].get("tla", [])]
 
@@ -334,10 +380,10 @@ def check(data: dict, formal_only: bool, report: Report) -> None:
 
     # Headlines.
     headlines: dict = data["headlines"]
-    for hid in HEADLINE_IDS:
+    for hid in headline_ids:
         if hid not in headlines:
             report.fail(f"{hid} is not defined in the map")
-    for hid, entry in sorted(headlines.items(), key=lambda kv: (kv[0][0], int(kv[0][1:]))):
+    for hid, entry in sorted(headlines.items(), key=lambda kv: id_key(kv[0])):
         kind, name = entry.get("kind"), entry.get("name")
         path = REPO_ROOT / entry.get("file", "")
         if kind == "rocq":
@@ -371,16 +417,16 @@ def check(data: dict, formal_only: bool, report: Report) -> None:
             report.fail(f"item {item} occurs twice")
         seen[item] = entry
 
-    for item in REQUIRED_ITEMS:
+    for item in required_items:
         if item not in seen:
-            report.fail(f"unmapped item: required P1 item {item} is not in the map")
+            report.fail(f"unmapped item: required {phase} item {item} is not in the map")
         elif not seen[item].get("required", False):
-            report.fail(f"item {item} is required for P1 but the map marks it optional")
+            report.fail(f"item {item} is required for {phase} but the map marks it optional")
     for item, entry in seen.items():
-        if entry.get("required", False) and item not in REQUIRED_ITEMS:
-            report.fail(f"item {item} is marked required but P1 does not require it")
+        if entry.get("required", False) and item not in required_items:
+            report.fail(f"item {item} is marked required but {phase} does not require it")
     apply_modes = {e.get("mode") for e in items if e.get("name") in ("apply_op", "begin") and e.get("mode")}
-    for mode in REQUIRED_MODES:
+    for mode in required_modes:
         if mode not in apply_modes:
             report.fail(f"unmapped item: no apply_op entry for the {mode} mode")
 
@@ -416,20 +462,20 @@ def check(data: dict, formal_only: bool, report: Report) -> None:
         else:
             report.ok(f"item {item} is unmodeled: {entry['unmodeled']}")
 
-    for hid in HEADLINE_IDS:
+    for hid in headline_ids:
         if hid in headlines and hid not in covered:
             report.fail(f"{hid} ({headlines[hid].get('name')}) covers no Rust item")
 
-    # Fix rules.
+    # Fix rules. The P1 map has them. The map of another phase can omit them.
     rules: dict = data.get("rules") or {}
-    for rid in RULE_IDS:
+    for rid in rule_ids:
         if rid not in rules:
             report.fail(f"fix rule {rid} is not in the map")
     in_rule: set[str] = set()
     for rid, rule in sorted(rules.items()):
         problems = []
-        if rid not in RULE_IDS:
-            problems.append("is not a P1 fix rule")
+        if rid not in rule_ids:
+            problems.append(f"is not a {phase} fix rule")
         names = rule.get("items") or []
         if not names:
             problems.append("names no Rust item")
@@ -448,7 +494,7 @@ def check(data: dict, formal_only: bool, report: Report) -> None:
             in_rule |= set(names)
             target = ", ".join(rule_covers) if rule_covers else f"unmodeled ({rule['unmodeled']})"
             report.ok(f"fix rule {rid} -> {len(names)} items, {target}")
-    for item in REQUIRED_ITEMS:
+    for item in required_items if p1 else ():
         entry = seen.get(item)
         if entry is not None and entry.get("kind") == "variant" and item not in in_rule:
             report.fail(f"required variant {item} is in no fix rule")

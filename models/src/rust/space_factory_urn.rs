@@ -423,11 +423,16 @@ fn string_par(value: &str) -> Par {
     }])
 }
 
-/// The qualifier of a constructor element: exactly one string that names a qualifier.
+/// The qualifier of a constructor element: exactly one string that names a qualifier. A string
+/// has no free variables, so an element with `locally_free` bits is not canonical.
 fn qualifier_of(value: &Par) -> Result<SpaceQualifier, SpaceFactoryConstructorError> {
     match sole_expr(value) {
-        Some(ExprInstance::GString(name)) if !value.connective_used => SpaceQualifier::parse(name)
-            .ok_or_else(|| SpaceFactoryConstructorError::UnknownQualifier(name.clone())),
+        Some(ExprInstance::GString(name))
+            if !value.connective_used && value.locally_free.is_empty() =>
+        {
+            SpaceQualifier::parse(name)
+                .ok_or_else(|| SpaceFactoryConstructorError::UnknownQualifier(name.clone()))
+        }
         _ => Err(SpaceFactoryConstructorError::NonCanonical),
     }
 }
@@ -684,6 +689,57 @@ mod tests {
                 Err(SpaceFactoryConstructorError::NotAList)
             );
         }
+    }
+
+    #[test]
+    fn space_urn_factory_rejects_qualifier_bits() {
+        let nat = theory("Nat", vec![int(3)]);
+        let named = params(vec![SendParam::Named("size".to_string(), int(4))]);
+        let both = vec![nat.clone(), named.clone()];
+        let tails = [Vec::new(), vec![nat], vec![named], both];
+        for qualifier in SpaceQualifier::ALL {
+            let clean = string(qualifier.as_str());
+            let stray = Par {
+                locally_free: vec![0b0000_0001],
+                ..clean.clone()
+            };
+            for tail in &tails {
+                let mut with_bits = Vec::with_capacity(tail.len() + 1);
+                with_bits.push(stray.clone());
+                with_bits.extend_from_slice(tail);
+                assert_eq!(
+                    SpaceFactoryConstructor::parse_elements(&with_bits),
+                    Err(SpaceFactoryConstructorError::NonCanonical),
+                    "{qualifier} {}",
+                    tail.len()
+                );
+                assert_eq!(
+                    SpaceFactoryConstructor::parse(&list(with_bits)),
+                    Err(SpaceFactoryConstructorError::NonCanonical),
+                    "{qualifier} {}",
+                    tail.len()
+                );
+                let mut twin = Vec::with_capacity(tail.len() + 1);
+                twin.push(clean.clone());
+                twin.extend_from_slice(tail);
+                let parsed =
+                    SpaceFactoryConstructor::parse_elements(&twin).expect("the clean twin parses");
+                assert_eq!(parsed.qualifier, Some(qualifier));
+                let canonical = parsed.to_elements().expect("a parsed constructor encodes");
+                assert_eq!(canonical, twin);
+                assert!(canonical
+                    .first()
+                    .is_some_and(|element| element.locally_free.is_empty()));
+            }
+        }
+        let unknown = Par {
+            locally_free: vec![0b0000_0001],
+            ..string("unknown")
+        };
+        assert_eq!(
+            SpaceFactoryConstructor::parse_elements(&[unknown]),
+            Err(SpaceFactoryConstructorError::NonCanonical)
+        );
     }
 
     #[test]

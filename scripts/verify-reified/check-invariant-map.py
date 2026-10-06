@@ -3,8 +3,9 @@
 
 The invariant map connects each formal headline (a Rocq theorem, a TLA+
 invariant or a consensus-checklist item) with its property-based tests. The
-map has one section for each phase: P1 (the storage substrate: H1-H22 and
-T1-T5), P2 (the wire encoding: E1-E12, the 12 headlines of Encoding.v) and
+map has one section for each phase: P1 (the storage substrate: H1-H23 and
+T1-T6, with H23 and T6 of decision 36), P2 (the wire encoding: E1-E12, the
+12 headlines of Encoding.v) and
 ORD (ordinary execution: O1, item 10 of the consensus checklist). The checker
 fails when:
 
@@ -58,9 +59,9 @@ DEFAULT_MAP = REPO_ROOT / "formal" / "reified-rspaces-invariant-map.json"
 SCHEMA = "reified-rspaces-invariant-map/3"
 CHECKLIST_SCHEMA = "reified-rspaces-consensus-checklist/1"
 # The ids that each known phase must map. Another phase takes its ids from
-# the map.
+# the map. Decision 36 adds H23 and T6 to P1 (replay reproduces play).
 REQUIRED_IDS = {
-    "P1": tuple(f"H{i}" for i in range(1, 23)) + tuple(f"T{i}" for i in range(1, 6)),
+    "P1": tuple(f"H{i}" for i in range(1, 24)) + tuple(f"T{i}" for i in range(1, 7)),
     "P2": tuple(f"E{i}" for i in range(1, 13)),
     "ORD": ("O1",),
 }

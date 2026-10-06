@@ -13,6 +13,24 @@
 (* verifies and pairs every COMM against the recorded bindings, under the  *)
 (* replay counter rule. Then the validator sweeps and checkpoints too.     *)
 (*                                                                         *)
+(* Decision 36 (replay reproduces play). The deploy of a block has the     *)
+(* phlo limit Budget. A committed operation charges its introduction, and *)
+(* a fire also charges its COMM. A charge that exceeds the limit is        *)
+(* rejected, the attempt counts, so the spending equals the limit, and    *)
+(* the deploy fails. The commit stops at that operation and keeps the      *)
+(* operations before it (D6). Replay makes the same charges. A replay     *)
+(* fire with no unpaired recorded occurrence stages unpaired: when its     *)
+(* charges pass, the commit stops there with ReplayDivergence, after the   *)
+(* operations before it. Staging computes where the commit stops (the     *)
+(* first rejected charge or the first unpaired fire), and the staged view *)
+(* stops changing there. So the view at the stop is the prefix snapshot   *)
+(* that the commit applies. The operations after the stop have no host    *)
+(* effect, and their staging has none either.                              *)
+(*                                                                         *)
+(* A proposer can publish a log that omits the COMM of its last fire      *)
+(* (Forge, risk R1 of the design). The validator then meets an unpaired   *)
+(* fire whose charges pass, and replay fails closed.                       *)
+(*                                                                         *)
 (* Invariants:                                                             *)
 (*   T1 ReplayPrefixEqual     the replay log is a prefix of the play log,  *)
 (*                            and equals it when the replay completes.     *)
@@ -21,19 +39,27 @@
 (*   T3 PairedOnce            replay pairs a COMM at most as often as the  *)
 (*                            play log records it.                         *)
 (*   T4 NoVolatileResidue     no history trie holds a volatile channel.    *)
+(*   T6 ReplayOutcomeEqual    an honest block (no forged log) is never     *)
+(*                            rejected, and its replayed deploy has the    *)
+(*                            failure and the spending of play.            *)
 (*                                                                         *)
 (* Unsafe controls (each refutes exactly one invariant):                  *)
 (*   UseUuid              identities carry a per-run nonce        -> T1   *)
 (*   RootIgnoresVolatile  no sweep, the root skips Vol            -> T2   *)
 (*   DoublePair           verify pairs under every bound key      -> T3   *)
 (*   JoinResidue          the sweep keeps the join entries        -> T4   *)
+(*   StagingDivergence    an unpaired replay fire fails staging   -> T6   *)
+(*                        (the rule of decision 19)                       *)
+(*   AcceptUnpaired       an unpaired replay fire commits         -> T1   *)
 (*                                                                         *)
 (* Inductive check (Apalache): IndInv implies T3 and T4. BASE checks       *)
 (* Init => IndInv. STEP checks IndInv /\ Next => IndInv', from every state *)
 (* that satisfies IndInv (IndInit). Thus T3 and T4 hold at every depth for *)
 (* the configured constants. With DoublePair or JoinResidue, STEP must     *)
 (* refute IndInv (negative controls). TLC also checks IndInv on every      *)
-(* reachable state of the safe configurations.                             *)
+(* reachable state of the safe configurations. T1, T2 and T6 are checked   *)
+(* by TLC on the full state space. The model claims no inductive form of  *)
+(* them.                                                                   *)
 (*                                                                         *)
 (* Code at HEAD 6f7a80da3 (rs = rspace++/src/rspace):                      *)
 (*   play produce/consume   rs/rspace/ops_produce.rs:31-248,               *)
@@ -45,12 +71,19 @@
 (*   remove_bindings_for    rs/replay_rspace.rs:1408-1436                  *)
 (*   checkpoint, reset      rs/rspace/ispace_impl.rs:53-107                *)
 (*   hot store primitives   rs/hot_store.rs:660-723, 819-885, 957-1053     *)
+(*   failed deploy (play)   casper/src/rust/rholang/runtime.rs:560-584     *)
+(*   status, cost (replay)  casper/src/rust/rholang/replay_runtime.rs:437-450 *)
 (*   sweep, verify          p1-design-report §3.1, §2.4                    *)
 (*   sweep guard (FR-9')    SpaceStoreHandle::sweep_volatile, HandleState  *)
+(*   unpaired fire (D36)    TxnCore::verify, StagedFire.recorded,          *)
+(*                          StagedConsumeFire.recorded, ReplayBackend::    *)
+(*                          produce_fire and consume_observed              *)
 (*                                                                         *)
 (* The operations use single-channel joins, so every COMM has one produce. *)
 (* Every operation is non-persistent. The agent decides each outcome with  *)
-(* a deterministic rule, and play and replay use the same rule.            *)
+(* a deterministic rule, and play and replay use the same rule. Casper    *)
+(* reverts the store of a failed deploy in play and in replay alike, so    *)
+(* the model keeps the committed prefix on both sides.                     *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
 
@@ -81,8 +114,12 @@ CONSTANTS
     MaxTxns,
     \* @type: Int;
     Blocks,
+    \* @type: Int;
+    Budget,
     \* @type: Bool;
     SpacesInBlockHash,
+    \* @type: Bool;
+    Forge,
     \* @type: Bool;
     UseUuid,
     \* @type: Bool;
@@ -90,12 +127,17 @@ CONSTANTS
     \* @type: Bool;
     DoublePair,
     \* @type: Bool;
-    JoinResidue
+    JoinResidue,
+    \* @type: Bool;
+    StagingDivergence,
+    \* @type: Bool;
+    AcceptUnpaired
 
 ASSUME Vol \subseteq Chans
 ASSUME MaxTxnOps \in 1..3
 ASSUME MaxTxns \in 1..3
 ASSUME Blocks \in 1..2
+ASSUME Budget \in 1..(2 * MaxTxns * MaxTxnOps)
 
 VARIABLES
     \* @type: Int;
@@ -114,6 +156,12 @@ VARIABLES
     prog,
     \* @type: Int;
     pNtx,
+    \* @type: Int;
+    pSpent,
+    \* @type: Bool;
+    pFailed,
+    \* @type: Bool;
+    forged,
     \* @type: $store;
     trie,
     \* @type: $store;
@@ -132,6 +180,10 @@ VARIABLES
     rLen,
     \* @type: Int;
     rTx,
+    \* @type: Int;
+    rSpent,
+    \* @type: Bool;
+    rFailed,
     \* @type: $iokey -> ($comm -> Int);
     rd,
     \* @type: Set($iokey);
@@ -157,14 +209,22 @@ VARIABLES
     \* @type: $comm -> Int;
     vStaged,
     \* @type: Bool;
-    vOk
+    vOk,
+    \* @type: Int;
+    vSpent,
+    \* @type: Str;
+    vStop
 
-vars == <<block, phase, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie,
-          cks, rStore, rCount, rLog, rLen, rTx, rd, rigIO, rigCount, paired, rOk,
-          txn, pos, vSt, vCnt, vLog, vLen, vStaged, vOk>>
+vars == <<block, phase, pStore, pCount, pLog, pLen, prog, pNtx, pSpent, pFailed, forged,
+          trie, preTrie, rTrie, cks, rStore, rCount, rLog, rLen, rTx, rSpent, rFailed, rd,
+          rigIO, rigCount, paired, rOk, txn, pos, vSt, vCnt, vLog, vLen, vStaged, vOk, vSpent,
+          vStop>>
 
 \* The variables of the staged view of a transaction.
-viewVars == <<txn, pos, vSt, vCnt, vLog, vLen, vStaged, vOk>>
+viewVars == <<txn, pos, vSt, vCnt, vLog, vLen, vStaged, vOk, vSpent, vStop>>
+
+\* The outcome variables of the deploy of the current block.
+deployVars == <<pSpent, pFailed, forged, rSpent, rFailed>>
 
 -----------------------------------------------------------------------------
 (* Identities: Produce::create and Consume::create (trace/event.rs:238-337). *)
@@ -260,6 +320,16 @@ StoreSet == [data : [Chans -> [PIds -> 0..MaxStored]],
 
 Phases == {"play", "playSwept", "rig", "replay", "replaySwept", "done"}
 
+\* Where the commit of a staged transaction stops: nowhere ("none"), at a
+\* rejected charge ("phlo"), or at an unpaired replay fire whose charges
+\* pass ("div", ReplayDivergence).
+Stops == {"none", "phlo", "div"}
+
+\* The charges of a committed operation: its introduction, and the COMM of
+\* a fire.
+\* @type: Bool => Int;
+OpCost(fires) == IF fires THEN 2 ELSE 1
+
 -----------------------------------------------------------------------------
 (* The deterministic agent and the host steps.                             *)
 
@@ -303,6 +373,9 @@ Grants(m, staged) ==
 (* Transactions. Begin copies the store into the staged view. Each stage   *)
 (* step applies one HostStep to the view, so TxnCommit commits the fold of *)
 (* the HostSteps of the transaction. No other action runs while pos > 0.   *)
+(* A stage step first adds the charges of the operation to vSpent. When   *)
+(* they exceed Budget, the commit stops at this operation (vStop =        *)
+(* "phlo"). From a stop on, a stage step leaves the view as it is.         *)
 
 \* Every operation of the transaction is staged. IF keeps TLC from reading
 \* txn outside its domain.
@@ -316,94 +389,132 @@ PlayStage ==
     /\ phase = "play"
     /\ pos >= 1
     /\ ~StageDone
-    /\ LET op == txn[pos]
-           c == op.ch
-       IN IF op.kind = "produce"
-          THEN LET p == <<c, op.val, PlayNonce>>
-                   W == Waiting(vSt, c, PlayNonce)
-               IN IF W /= {}
-                  THEN LET q == CHOOSE x \in W : TRUE
-                           m == <<q, p, vCnt[p] + 1>>
-                       IN /\ vSt' = FireCont(vSt, c, q)
-                          /\ vLog' = [vLog EXCEPT ![vLen + 1] = PEv(p), ![vLen + 2] = MEv(m)]
-                          /\ vLen' = vLen + 2
-                          /\ vCnt' = [vCnt EXCEPT ![p] = @ + 1]
-                  ELSE /\ vSt' = AddDatum(vSt, c, p, 1)
-                       /\ vLog' = [vLog EXCEPT ![vLen + 1] = PEv(p)]
-                       /\ vLen' = vLen + 1
-                       /\ vCnt' = [vCnt EXCEPT ![p] = @ + 1]
-          ELSE LET q == <<c, op.k, PlayNonce>>
-                   A == Available(vSt, c, PlayNonce)
-               IN IF A /= {}
-                  THEN LET p == CHOOSE x \in A : TRUE
-                           m == <<q, p, vCnt[p]>>
-                       IN /\ vSt' = AddDatum(vSt, c, p, -1)
-                          /\ vLog' = [vLog EXCEPT ![vLen + 1] = CEv(q), ![vLen + 2] = MEv(m)]
-                          /\ vLen' = vLen + 2
-                          /\ UNCHANGED vCnt
-                  ELSE /\ vSt' = Park(vSt, c, q)
-                       /\ vLog' = [vLog EXCEPT ![vLen + 1] = CEv(q)]
-                       /\ vLen' = vLen + 1
-                       /\ UNCHANGED vCnt
+    /\ IF vStop /= "none"
+       THEN UNCHANGED <<vSt, vCnt, vLog, vLen, vSpent, vStop>>
+       ELSE LET op == txn[pos]
+                c == op.ch
+            IN IF op.kind = "produce"
+               THEN LET p == <<c, op.val, PlayNonce>>
+                        W == Waiting(vSt, c, PlayNonce)
+                    IN IF vSpent + OpCost(W /= {}) > Budget
+                       THEN /\ vStop' = "phlo"
+                            /\ UNCHANGED <<vSt, vCnt, vLog, vLen, vSpent>>
+                       ELSE /\ vSpent' = vSpent + OpCost(W /= {})
+                            /\ UNCHANGED vStop
+                            /\ IF W /= {}
+                               THEN LET q == CHOOSE x \in W : TRUE
+                                        m == <<q, p, vCnt[p] + 1>>
+                                    IN /\ vSt' = FireCont(vSt, c, q)
+                                       /\ vLog' = [vLog EXCEPT ![vLen + 1] = PEv(p), ![vLen + 2] = MEv(m)]
+                                       /\ vLen' = vLen + 2
+                                       /\ vCnt' = [vCnt EXCEPT ![p] = @ + 1]
+                               ELSE /\ vSt' = AddDatum(vSt, c, p, 1)
+                                    /\ vLog' = [vLog EXCEPT ![vLen + 1] = PEv(p)]
+                                    /\ vLen' = vLen + 1
+                                    /\ vCnt' = [vCnt EXCEPT ![p] = @ + 1]
+               ELSE LET q == <<c, op.k, PlayNonce>>
+                        A == Available(vSt, c, PlayNonce)
+                    IN IF vSpent + OpCost(A /= {}) > Budget
+                       THEN /\ vStop' = "phlo"
+                            /\ UNCHANGED <<vSt, vCnt, vLog, vLen, vSpent>>
+                       ELSE /\ vSpent' = vSpent + OpCost(A /= {})
+                            /\ UNCHANGED vStop
+                            /\ IF A /= {}
+                               THEN LET p == CHOOSE x \in A : TRUE
+                                        m == <<q, p, vCnt[p]>>
+                                    IN /\ vSt' = AddDatum(vSt, c, p, -1)
+                                       /\ vLog' = [vLog EXCEPT ![vLen + 1] = CEv(q), ![vLen + 2] = MEv(m)]
+                                       /\ vLen' = vLen + 2
+                                       /\ UNCHANGED vCnt
+                               ELSE /\ vSt' = Park(vSt, c, q)
+                                    /\ vLog' = [vLog EXCEPT ![vLen + 1] = CEv(q)]
+                                    /\ vLen' = vLen + 1
+                                    /\ UNCHANGED vCnt
     /\ pos' = pos + 1
     /\ UNCHANGED <<block, phase, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie,
                    cks, rStore, rCount, rLog, rLen, rTx, rd, rigIO, rigCount, paired, rOk,
                    txn, vStaged, vOk>>
+    /\ UNCHANGED deployVars
+
+\* The replay step of a fire (design §2.2, §2.4, decision 36). A fire whose
+\* charges exceed Budget stops the commit there ("phlo"). Otherwise verify
+\* grants g pairings. A fire with g = 0 stages unpaired: the commit stops
+\* there with ReplayDivergence ("div"), after its charges pass. The unsafe
+\* rules: StagingDivergence fails the staging of the transaction (vOk =
+\* FALSE, the rule of decision 19), and AcceptUnpaired stages the fire as
+\* if it paired, so the commit applies and logs it.
+\* @type: ($store, $id -> Int, Int -> $ev, Int, $comm, Int) => Bool;
+ReplayFire(st1, cnt1, log1, len1, m, cost) ==
+    LET g == Grants(m, vStaged)
+    IN IF g = 0 /\ StagingDivergence
+       THEN /\ vOk' = FALSE
+            /\ UNCHANGED <<vSt, vLog, vLen, vCnt, vStaged, vSpent, vStop>>
+       ELSE IF vSpent + cost > Budget
+       THEN /\ vStop' = "phlo"
+            /\ UNCHANGED <<vSt, vLog, vLen, vCnt, vStaged, vSpent, vOk>>
+       ELSE IF g = 0 /\ ~AcceptUnpaired
+       THEN /\ vStop' = "div"
+            /\ vSpent' = vSpent + cost
+            /\ UNCHANGED <<vSt, vLog, vLen, vCnt, vStaged, vOk>>
+       ELSE /\ vSt' = st1
+            /\ vLog' = log1
+            /\ vLen' = len1
+            /\ vCnt' = cnt1
+            /\ vStaged' = [vStaged EXCEPT ![m] = @ + g]
+            /\ vSpent' = vSpent + cost
+            /\ UNCHANGED <<vOk, vStop>>
 
 \* One replay HostStep, re-stated over the staged view (design §2.2, §2.4)
 \* under the replay counter rule: increment first (replay_rspace.rs:1104),
-\* then count (1297). Every COMM must pass verify; a failure marks the
-\* transaction as diverged.
+\* then count (1297).
 ReplayStage ==
     /\ phase = "replay"
     /\ pos >= 1
     /\ ~StageDone
     /\ vOk
-    /\ LET op == txn[pos]
-           c == op.ch
-       IN IF op.kind = "produce"
-          THEN LET p == <<c, op.val, ReplayNonce>>
-                   cnt1 == [vCnt EXCEPT ![p] = @ + 1]
-                   W == Waiting(vSt, c, ReplayNonce)
-               IN IF W /= {}
-                  THEN LET q == CHOOSE x \in W : TRUE
-                           m == <<q, p, cnt1[p]>>
-                           g == Grants(m, vStaged)
-                       IN IF g = 0
-                          THEN /\ vOk' = FALSE
-                               /\ UNCHANGED <<vSt, vLog, vLen, vCnt, vStaged>>
-                          ELSE /\ vSt' = FireCont(vSt, c, q)
-                               /\ vLog' = [vLog EXCEPT ![vLen + 1] = PEv(p), ![vLen + 2] = MEv(m)]
-                               /\ vLen' = vLen + 2
-                               /\ vCnt' = cnt1
-                               /\ vStaged' = [vStaged EXCEPT ![m] = @ + g]
-                               /\ UNCHANGED vOk
-                  ELSE /\ vSt' = AddDatum(vSt, c, p, 1)
-                       /\ vLog' = [vLog EXCEPT ![vLen + 1] = PEv(p)]
-                       /\ vLen' = vLen + 1
-                       /\ vCnt' = cnt1
-                       /\ UNCHANGED <<vStaged, vOk>>
-          ELSE LET q == <<c, op.k, ReplayNonce>>
-                   A == Available(vSt, c, ReplayNonce)
-               IN IF A /= {}
-                  THEN LET p == CHOOSE x \in A : TRUE
-                           m == <<q, p, vCnt[p]>>
-                           g == Grants(m, vStaged)
-                       IN IF g = 0
-                          THEN /\ vOk' = FALSE
-                               /\ UNCHANGED <<vSt, vLog, vLen, vCnt, vStaged>>
-                          ELSE /\ vSt' = AddDatum(vSt, c, p, -1)
-                               /\ vLog' = [vLog EXCEPT ![vLen + 1] = CEv(q), ![vLen + 2] = MEv(m)]
-                               /\ vLen' = vLen + 2
-                               /\ vStaged' = [vStaged EXCEPT ![m] = @ + g]
-                               /\ UNCHANGED <<vCnt, vOk>>
-                  ELSE /\ vSt' = Park(vSt, c, q)
-                       /\ vLog' = [vLog EXCEPT ![vLen + 1] = CEv(q)]
-                       /\ vLen' = vLen + 1
-                       /\ UNCHANGED <<vCnt, vStaged, vOk>>
+    /\ IF vStop /= "none"
+       THEN UNCHANGED <<vSt, vLog, vLen, vCnt, vStaged, vOk, vSpent, vStop>>
+       ELSE LET op == txn[pos]
+                c == op.ch
+            IN IF op.kind = "produce"
+               THEN LET p == <<c, op.val, ReplayNonce>>
+                        cnt1 == [vCnt EXCEPT ![p] = @ + 1]
+                        W == Waiting(vSt, c, ReplayNonce)
+                    IN IF W /= {}
+                       THEN LET q == CHOOSE x \in W : TRUE
+                                m == <<q, p, cnt1[p]>>
+                            IN ReplayFire(FireCont(vSt, c, q), cnt1,
+                                          [vLog EXCEPT ![vLen + 1] = PEv(p), ![vLen + 2] = MEv(m)],
+                                          vLen + 2, m, OpCost(TRUE))
+                       ELSE IF vSpent + OpCost(FALSE) > Budget
+                       THEN /\ vStop' = "phlo"
+                            /\ UNCHANGED <<vSt, vLog, vLen, vCnt, vStaged, vOk, vSpent>>
+                       ELSE /\ vSt' = AddDatum(vSt, c, p, 1)
+                            /\ vLog' = [vLog EXCEPT ![vLen + 1] = PEv(p)]
+                            /\ vLen' = vLen + 1
+                            /\ vCnt' = cnt1
+                            /\ vSpent' = vSpent + OpCost(FALSE)
+                            /\ UNCHANGED <<vStaged, vOk, vStop>>
+               ELSE LET q == <<c, op.k, ReplayNonce>>
+                        A == Available(vSt, c, ReplayNonce)
+                    IN IF A /= {}
+                       THEN LET p == CHOOSE x \in A : TRUE
+                                m == <<q, p, vCnt[p]>>
+                            IN ReplayFire(AddDatum(vSt, c, p, -1), vCnt,
+                                          [vLog EXCEPT ![vLen + 1] = CEv(q), ![vLen + 2] = MEv(m)],
+                                          vLen + 2, m, OpCost(TRUE))
+                       ELSE IF vSpent + OpCost(FALSE) > Budget
+                       THEN /\ vStop' = "phlo"
+                            /\ UNCHANGED <<vSt, vLog, vLen, vCnt, vStaged, vOk, vSpent>>
+                       ELSE /\ vSt' = Park(vSt, c, q)
+                            /\ vLog' = [vLog EXCEPT ![vLen + 1] = CEv(q)]
+                            /\ vLen' = vLen + 1
+                            /\ vSpent' = vSpent + OpCost(FALSE)
+                            /\ UNCHANGED <<vCnt, vStaged, vOk, vStop>>
     /\ pos' = pos + 1
     /\ UNCHANGED <<block, phase, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie,
                    cks, rStore, rCount, rLog, rLen, rTx, rd, rigIO, rigCount, paired, rOk, txn>>
+    /\ UNCHANGED deployVars
 
 \* @type: $store => $store;
 Sweep(st) ==
@@ -452,6 +563,9 @@ Init ==
     /\ pLen = 0
     /\ prog = EmptyProg
     /\ pNtx = 0
+    /\ pSpent = 0
+    /\ pFailed = FALSE
+    /\ forged = FALSE
     /\ trie = EmptyStore
     /\ preTrie = EmptyStore
     /\ rTrie = EmptyStore
@@ -461,6 +575,8 @@ Init ==
     /\ rLog = EmptyLog
     /\ rLen = 0
     /\ rTx = 1
+    /\ rSpent = 0
+    /\ rFailed = FALSE
     /\ rd = [k \in IOKeys |-> [m \in Comms |-> 0]]
     /\ rigIO = {}
     /\ rigCount = ZeroStaged
@@ -474,13 +590,17 @@ Init ==
     /\ vLen = 0
     /\ vStaged = ZeroStaged
     /\ vOk = TRUE
+    /\ vSpent = 0
+    /\ vStop = "none"
 
 \* begin: the agent picks the operations of a transaction and the staged
-\* view starts as the hot store (design §1.3).
+\* view starts as the hot store (design §1.3). A failed deploy begins no
+\* further transaction.
 PlayBegin ==
     /\ phase = "play"
     /\ pos = 0
     /\ pNtx < MaxTxns
+    /\ ~pFailed
     /\ \E t \in OpSeqs : IsTxn(t) /\ txn' = t
     /\ pos' = 1
     /\ vSt' = pStore
@@ -489,10 +609,16 @@ PlayBegin ==
     /\ vLen' = pLen
     /\ vStaged' = ZeroStaged
     /\ vOk' = TRUE
+    /\ vSpent' = pSpent
+    /\ vStop' = "none"
     /\ UNCHANGED <<block, phase, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie,
                    cks, rStore, rCount, rLog, rLen, rTx, rd, rigIO, rigCount, paired, rOk>>
+    /\ UNCHANGED deployVars
 
-\* play TxnCommit: the commit applies the fold of the staged HostSteps.
+\* play TxnCommit: the commit applies the fold of the staged HostSteps up to
+\* the stop. At a rejected charge the deploy fails, and the attempt counts,
+\* so the spending equals the limit (casper/src/rust/rholang/runtime.rs:560-584
+\* keeps the log of the failed deploy).
 PlayCommit ==
     /\ phase = "play"
     /\ pos >= 1
@@ -501,11 +627,14 @@ PlayCommit ==
     /\ pCount' = vCnt
     /\ pLog' = vLog
     /\ pLen' = vLen
+    /\ pSpent' = IF vStop = "phlo" THEN Budget ELSE vSpent
+    /\ pFailed' = (vStop = "phlo")
     /\ prog' = [prog EXCEPT ![pNtx + 1] = txn]
     /\ pNtx' = pNtx + 1
     /\ pos' = 0
     /\ UNCHANGED <<block, phase, trie, preTrie, rTrie, cks, rStore, rCount, rLog, rLen, rTx, rd,
-                   rigIO, rigCount, paired, rOk, txn, vSt, vCnt, vLog, vLen, vStaged, vOk>>
+                   rigIO, rigCount, paired, rOk, txn, vSt, vCnt, vLog, vLen, vStaged, vOk,
+                   vSpent, vStop, forged, rSpent, rFailed>>
 
 \* DeployEnd of the proposer: sweep Vol (design §3.1, decision D1). The
 \* guard pos = 0 is the FR-9' guard of SpaceStoreHandle::sweep_volatile: the
@@ -521,18 +650,29 @@ PlayDeployEnd ==
     /\ UNCHANGED <<block, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie, cks, rStore,
                    rCount, rLog, rLen, rTx, rd, rigIO, rigCount, paired, rOk>>
     /\ UNCHANGED viewVars
+    /\ UNCHANGED deployVars
 
 \* Checkpoint of the proposer: persist, reset the counters, reload the
-\* hot store from the history reader (ispace_impl.rs:53-88).
+\* hot store from the history reader (ispace_impl.rs:53-88). The proposer
+\* publishes its log. With Forge, it can omit the COMM of its last fire
+\* (risk R1 of decision 36).
 PlayCheckpoint ==
     /\ phase = "playSwept"
+    /\ \/ /\ forged' = FALSE
+          /\ UNCHANGED <<pLog, pLen>>
+       \/ /\ Forge
+          /\ pLen >= 1
+          /\ pLog[pLen].kind = "M"
+          /\ pLog' = [pLog EXCEPT ![pLen] = NoEv]
+          /\ pLen' = pLen - 1
+          /\ forged' = TRUE
     /\ trie' = Persist(pStore)
     /\ cks' = cks \cup {[root |-> RootOf(trie'), state |-> pStore]}
     /\ pStore' = trie'
     /\ pCount' = EmptyCount
     /\ phase' = "rig"
-    /\ UNCHANGED <<block, pLog, pLen, prog, pNtx, preTrie, rTrie, rStore, rCount, rLog, rLen,
-                   rTx, rd, rigIO, rigCount, paired, rOk>>
+    /\ UNCHANGED <<block, prog, pNtx, preTrie, rTrie, rStore, rCount, rLog, rLen,
+                   rTx, rd, rigIO, rigCount, paired, rOk, pSpent, pFailed, rSpent, rFailed>>
     /\ UNCHANGED viewVars
 
 \* Rig: the validator resets to the root before the block (reset,
@@ -552,8 +692,11 @@ Rig ==
     /\ rLen' = 0
     /\ rTx' = 1
     /\ rOk' = TRUE
+    /\ rSpent' = 0
+    /\ rFailed' = FALSE
     /\ phase' = "replay"
-    /\ UNCHANGED <<block, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie, cks>>
+    /\ UNCHANGED <<block, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie, cks,
+                   pSpent, pFailed, forged>>
     /\ UNCHANGED viewVars
 
 \* begin of a replayed transaction: the same operations as in play.
@@ -562,6 +705,7 @@ ReplayBegin ==
     /\ rOk
     /\ pos = 0
     /\ rTx <= pNtx
+    /\ ~rFailed
     /\ txn' = prog[rTx]
     /\ pos' = 1
     /\ vSt' = rStore
@@ -570,13 +714,19 @@ ReplayBegin ==
     /\ vLen' = rLen
     /\ vStaged' = ZeroStaged
     /\ vOk' = TRUE
+    /\ vSpent' = rSpent
+    /\ vStop' = "none"
     /\ UNCHANGED <<block, phase, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie,
                    cks, rStore, rCount, rLog, rLen, rTx, rd, rigIO, rigCount, paired, rOk>>
+    /\ UNCHANGED deployVars
 
-\* replay TxnCommit: a diverged transaction is dropped and fails the
-\* replay. Otherwise the commit applies the fold of the staged HostSteps
-\* and removes the bindings of every pairing (remove_bindings_for,
-\* replay_rspace.rs:1408-1436, saturating).
+\* replay TxnCommit. A transaction whose staging failed (vOk = FALSE, only
+\* under StagingDivergence) is dropped and fails the replay. Otherwise the
+\* commit applies the fold of the staged HostSteps up to the stop and
+\* removes the bindings of every pairing (remove_bindings_for,
+\* replay_rspace.rs:1408-1436, saturating). A rejected charge fails the
+\* deploy as in play. An unpaired fire fails the replay with
+\* ReplayDivergence after the operations before it.
 ReplayCommit ==
     /\ phase = "replay"
     /\ pos >= 1
@@ -592,12 +742,15 @@ ReplayCommit ==
                         ELSE rd[k][m]]]
             /\ paired' = [m \in Comms |-> paired[m] + vStaged[m]]
             /\ rTx' = rTx + 1
-            /\ UNCHANGED rOk
+            /\ rSpent' = IF vStop = "phlo" THEN Budget ELSE vSpent
+            /\ rFailed' = (vStop = "phlo")
+            /\ rOk' = (vStop /= "div")
        ELSE /\ rOk' = FALSE
-            /\ UNCHANGED <<rStore, rCount, rLog, rLen, rd, paired, rTx>>
+            /\ UNCHANGED <<rStore, rCount, rLog, rLen, rd, paired, rTx, rSpent, rFailed>>
     /\ pos' = 0
     /\ UNCHANGED <<block, phase, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie,
-                   cks, rigIO, rigCount, txn, vSt, vCnt, vLog, vLen, vStaged, vOk>>
+                   cks, rigIO, rigCount, txn, vSt, vCnt, vLog, vLen, vStaged, vOk, vSpent, vStop,
+                   pSpent, pFailed, forged>>
 
 \* A diverged replay rejects the block.
 ReplayAbort ==
@@ -607,19 +760,22 @@ ReplayAbort ==
     /\ UNCHANGED <<block, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie, cks,
                    rStore, rCount, rLog, rLen, rTx, rd, rigIO, rigCount, paired, rOk>>
     /\ UNCHANGED viewVars
+    /\ UNCHANGED deployVars
 
 \* DeployEnd of the validator: sweep Vol, with the FR-9' guard pos = 0 (see
-\* PlayDeployEnd).
+\* PlayDeployEnd). The deploy ends after the last transaction or at a
+\* rejected charge.
 ReplayDeployEnd ==
     /\ phase = "replay"
     /\ rOk
     /\ pos = 0
-    /\ rTx > pNtx
+    /\ (rTx > pNtx \/ rFailed)
     /\ rStore' = Sweep(rStore)
     /\ phase' = "replaySwept"
     /\ UNCHANGED <<block, pStore, pCount, pLog, pLen, prog, pNtx, trie, preTrie, rTrie, cks,
                    rCount, rLog, rLen, rTx, rd, rigIO, rigCount, paired, rOk>>
     /\ UNCHANGED viewVars
+    /\ UNCHANGED deployVars
 
 \* Checkpoint of the validator, then the next block on the canonical chain.
 ReplayCheckpoint ==
@@ -637,9 +793,15 @@ ReplayCheckpoint ==
             /\ pNtx' = 0
             /\ rLog' = EmptyLog
             /\ rLen' = 0
+            /\ pSpent' = 0
+            /\ pFailed' = FALSE
+            /\ forged' = FALSE
+            /\ rSpent' = 0
+            /\ rFailed' = FALSE
             /\ phase' = "play"
        ELSE /\ phase' = "done"
             /\ UNCHANGED <<block, preTrie, pLog, pLen, prog, pNtx, rLog, rLen>>
+            /\ UNCHANGED deployVars
     /\ UNCHANGED <<pStore, pCount, trie, rTx, rd, rigIO, rigCount, paired, rOk>>
     /\ UNCHANGED viewVars
 
@@ -671,6 +833,9 @@ TypeOK ==
     /\ pLen \in 0..MaxLog
     /\ prog \in [1..MaxTxns -> OpSeqs]
     /\ pNtx \in 0..MaxTxns
+    /\ pSpent \in 0..Budget
+    /\ pFailed \in BOOLEAN
+    /\ forged \in BOOLEAN
     /\ trie \in StoreSet
     /\ preTrie \in StoreSet
     /\ rTrie \in StoreSet
@@ -679,6 +844,8 @@ TypeOK ==
     /\ rLog \in [1..MaxLog -> Events]
     /\ rLen \in 0..MaxLog
     /\ rTx \in 1..(MaxTxns + 1)
+    /\ rSpent \in 0..Budget
+    /\ rFailed \in BOOLEAN
     /\ rd \in [IOKeys -> [Comms -> 0..MaxLog]]
     /\ rigIO \subseteq IOKeys
     /\ rigCount \in [Comms -> 0..MaxLog]
@@ -692,6 +859,8 @@ TypeOK ==
     /\ vLen \in 0..MaxLog
     /\ vStaged \in [Comms -> 0..(2 * MaxLog)]
     /\ vOk \in BOOLEAN
+    /\ vSpent \in 0..Budget
+    /\ vStop \in Stops
 
 \* T1: the validator reproduces the play log event by event.
 ReplayPrefixEqual ==
@@ -711,6 +880,15 @@ PairedOnce == \A m \in Comms : paired[m] <= rigCount[m]
 NoResidue(st) ==
     \A c \in Vol : st.data[c] = EmptyPBag /\ st.conts[c] = EmptyCBag /\ ~st.joins[c]
 NoVolatileResidue == NoResidue(trie) /\ NoResidue(rTrie)
+
+\* T6 (decision 36): an honest block (its log is the commit log of play) is
+\* never rejected, and the replayed deploy ends with the failure and the
+\* spending of play. Casper compares the status, then the cost
+\* (casper/src/rust/rholang/replay_runtime.rs:437-450).
+ReplayOutcomeEqual ==
+    ~forged =>
+        /\ rOk
+        /\ (phase = "replaySwept" => (rFailed = pFailed /\ rSpent = pSpent))
 
 -----------------------------------------------------------------------------
 (* Inductive invariant for the Apalache BASE and STEP checks of T3 and T4.  *)
@@ -796,6 +974,9 @@ IndInit ==
     /\ pLen \in 0..MaxLog
     /\ prog \in [1..MaxTxns -> OpSeqs]
     /\ pNtx \in 0..MaxTxns
+    /\ pSpent \in 0..Budget
+    /\ pFailed \in BOOLEAN
+    /\ forged \in BOOLEAN
     /\ trie \in StoreSet
     /\ preTrie \in StoreSet
     /\ rTrie \in StoreSet
@@ -805,6 +986,8 @@ IndInit ==
     /\ rLog \in [1..MaxLog -> Events]
     /\ rLen \in 0..MaxLog
     /\ rTx \in 1..(MaxTxns + 1)
+    /\ rSpent \in 0..Budget
+    /\ rFailed \in BOOLEAN
     /\ rd \in [IOKeys -> [Comms -> 0..MaxLog]]
     /\ rigIO \in SUBSET IOKeys
     /\ rigCount \in [Comms -> 0..MaxLog]
@@ -818,5 +1001,7 @@ IndInit ==
     /\ vLen \in 0..MaxLog
     /\ vStaged \in [Comms -> 0..(2 * MaxLog)]
     /\ vOk \in BOOLEAN
+    /\ vSpent \in 0..Budget
+    /\ vStop \in Stops
     /\ IndInv
 =============================================================================

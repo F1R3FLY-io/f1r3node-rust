@@ -1,5 +1,5 @@
-# Reified RSpaces — Formal Verification (P1: the storage substrate; P2: the
-# wire encoding)
+# Reified RSpaces — Formal Verification (P1: the storage substrate, P2: the
+# wire encoding, P4: the hashmap:queue slice)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -26,7 +26,26 @@
 #                     (FR-1'), and the sweep through the handle fails closed
 #                     under an open transaction of the same task (FR-9').
 #   Encoding          P2: the 12 headlines of the marker-tuple encoding of
-#                     the Reified RSpaces syntax (p2-design-report §5).
+#                     the Reified RSpaces syntax (p2-design-report §5), and
+#                     3 headlines of plan revision I-20: the hooks recompute
+#                     the derived connective_used flags before the strict
+#                     decode.
+#   Namespace         P4 (11 headlines): the 0xE0 ids of the native spaces,
+#                     their decoder, and the canonical key of a channel.
+#   RecordEnvelope    P4 (8 headlines): the record envelopes D, K, S and C
+#                     (plan revision M-2) and the config record (I-17).
+#   CounterConflict   P4 (9 headlines): every queue operation bumps a
+#                     counter, so HEAD's merge check #1 sees cross-branch
+#                     races (plan revision M-1). A merge without a race is
+#                     a serial run.
+#   HeadOnlyDisciplines
+#                     P4 (9 headlines): the head-only queue discipline and
+#                     the produce and consume plans of GenericSpace.
+#   SpaceRefs         P4 (10 headlines): space references, channel routing
+#                     R1-R7, the USE wrapper and the handle dispatch.
+#   SpaceFactory      P4 (8 headlines): the space families, the factory
+#                     constructor, the space id, persistent sends to system
+#                     ops and SpaceAlreadyExists.
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -42,3 +61,9 @@
 theories/EventCorrelation.v
 theories/VolatileSweep.v
 theories/Encoding.v
+theories/Namespace.v
+theories/RecordEnvelope.v
+theories/CounterConflict.v
+theories/HeadOnlyDisciplines.v
+theories/SpaceRefs.v
+theories/SpaceFactory.v

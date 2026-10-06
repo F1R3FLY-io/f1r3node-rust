@@ -1,0 +1,92 @@
+' 16 Space replay when a deploy runs out of phlo: play, the replay before
+' the fix, and the replay with the fix of decision 36.
+'
+' Source of Figure F1 in ../findings/space-replay-out-of-phlo.md. The figure
+' restates the P1 substrate (rspace++/src/rspace/space_store_handle.rs and
+' the two backends space_play.rs and space_replay.rs) and the replay check
+' of Casper (casper/src/rust/rholang/replay_runtime.rs). It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. Play: the agent stages three operations, and the commit charges and
+'      logs them in order. The charge of operation 2 rejects, so operations
+'      0 and 1 stay applied and logged (prefix atomicity, D6).
+'   2. Replay before the fix (commit a0bcaf90e): verify finds no COMM for
+'      operation 2 at staging, so the whole transaction drops before the
+'      commit, and replay makes none of its charges.
+'   3. Replay with the fix of decision 36: operation 2 stages as unpaired,
+'      and the commit makes the charges of play, so the same charge rejects.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 16-space-replay-out-of-phlo.puml   Check: ./render.sh --check
+
+@startuml 16-space-replay-out-of-phlo
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam CollectionsBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Space replay when a deploy runs out of phlo
+autonumber
+
+participant "Casper\nruntime" as CASPER $rrs_host
+participant "Space agent\n(P4)" as AGENT $rrs_agent
+participant "SpaceTxn\n(P1 substrate)" as TXN $rrs_substrate
+participant "Accounting\nobserver" as OBS $rrs_host
+collections "Event log, or\nreplay table" as LOG $rrs_host
+
+== Play on the proposer, phlo limit L ==
+AGENT -[$rrs_flow]> TXN : stage op 0 (counter take fire),\nop 1 (counter put), op 2 (data fire)
+note right of TXN : staging makes no host call
+AGENT -[$rrs_flow]> TXN : commit()
+TXN -[$rrs_flow]> OBS : charges of op 0 and op 1
+OBS -[$rrs_relation]-> TXN : accepted
+TXN -[$rrs_effect]> LOG : events of op 0 and op 1
+TXN -[$rrs_flow]> OBS : a charge of op 2
+OBS -[$rrs_fail]-> TXN : rejected: out of phlo
+TXN -[$rrs_fail]-> AGENT : OutOfPhlogistonsError,\nop 0 and op 1 stay applied (D6)
+CASPER -[$rrs_relation]> CASPER : keep the log, revert, record\nfailed with <latex>c_p = L</latex>
+
+== Replay on a validator, before the fix ==
+CASPER -[$rrs_flow]> LOG : rig(log with op 0 and op 1)
+AGENT -[$rrs_flow]> TXN : stage op 0, op 1 and op 2
+TXN -[$rrs_relation]> LOG : verify op 0: its COMM is recorded
+TXN -[$rrs_relation]> LOG : verify op 2: no COMM is recorded
+TXN -[$rrs_fail]-> AGENT : ReplayDivergence at staging,\nthe whole transaction drops
+note right of OBS : no charge of op 0,\nop 1 or op 2
+CASPER -[$rrs_fail]> CASPER : failed with <latex>c_r < L</latex>:\nReplayCostMismatch, honest block rejected
+
+== Replay on a validator, with the fix of decision 36 ==
+CASPER -[$rrs_flow]> LOG : rig(log with op 0 and op 1)
+AGENT -[$rrs_flow]> TXN : stage op 0 and op 1 paired,\nop 2 as an unpaired fire, no error
+AGENT -[$rrs_flow]> TXN : commit()
+TXN -[$rrs_flow]> OBS : charges of op 0 and op 1, as in play
+OBS -[$rrs_relation]-> TXN : accepted
+TXN -[$rrs_effect]> LOG : events of op 0 and op 1,\ntheir bindings removed
+TXN -[$rrs_flow]> OBS : the same charge of op 2
+OBS -[$rrs_fail]-> TXN : rejected: out of phlo
+TXN -[$rrs_fail]-> AGENT : OutOfPhlogistonsError,\nop 0 and op 1 stay applied (D6)
+CASPER -[$rrs_relation]> CASPER : failed with <latex>c_r = L = c_p</latex>:\nthe block is accepted
+
+legend bottom
+**Concept colors**
+|<$rrs_substrate>  | substrate of P1 |
+|<$rrs_host>       | host at the baseline: runtime, observer, log |
+|<$rrs_agent>      | space agent (P4) |
+**Arrows**
+|<$rrs_flow>       | call |
+|<$rrs_effect>     | effect on the host state |
+|<$rrs_relation>   | read, return, or internal step |
+|<$rrs_fail>       | failure |
+endlegend
+@enduml

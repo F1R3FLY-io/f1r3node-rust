@@ -1,7 +1,8 @@
 // Reified RSpaces storage substrate (`SpaceStoreHandle` / `SpaceTxn`):
 //   A — host parity of every operation shape (22 tests)
 //   B — checkpoints, history read-through, and an LMDB round trip (5 tests)
-//   C — replay lookup parity (10 tests)
+//   C — replay lookup parity (11 tests), with decision 36: replay
+//       reproduces a play that an observer call rejects
 //   D — volatile sweep (7 tests)
 //   E — reporting delegation (3 tests)
 //   F — review regressions and rule coverage: canonical channel order,
@@ -1444,8 +1445,16 @@ async fn space_store_handle_txn_replay_accepts_host_play_log() {
     assert_eq!(checkpoint(&replay).await.root, played.root);
 }
 
+// H4 (decision 36): a replay fire whose COMM the log does not hold stages
+// as in play and stays unpaired. Staging makes no observer call and changes
+// no binding and no store entry, and the staged view shows the effects of
+// play. The commit applies the park before the fire, makes the observer
+// calls of the fire, and fails with the typed `ReplayDivergence`. The fire
+// and the store after it log, apply and unbind nothing, and the counter of
+// the fire rolls back. A new transaction with the recorded fire then
+// reaches the play root.
 #[tokio::test]
-async fn space_store_handle_replay_divergence_is_typed_and_inert() {
+async fn space_store_handle_replay_divergence_is_typed_at_commit() {
     let groups =
         each(vec![Op::consume(&["a"], vec![Pat::Any], "k", false), Op::produce("a", "x", false)]);
     let plans = plan_groups(&groups).await;
@@ -1490,24 +1499,63 @@ async fn space_store_handle_replay_divergence_is_typed_and_inert() {
         },
         other => panic!("expected a planned fire, got {:?}", other),
     };
-    match txn.produce(divergent) {
-        Err(SpaceTxnError::ReplayDivergence(comm)) => {
-            assert_eq!(comm.produces, vec![produce_source("a", "y", false)]);
-        }
-        other => panic!("expected a replay divergence, got {:?}", other),
-    }
+    let y = produce_source("a", "y", false);
+    let comm = txn
+        .produce(divergent)
+        .expect("an unpaired fire stages as in play")
+        .comm
+        .expect("the fire has a COMM");
+    assert_eq!(comm.produces, vec![y.clone()]);
+    txn.produce(store_op("b", "w", false))
+        .expect("stage a store after the fire");
     assert_eq!(replay_bindings(&replay), bindings);
     assert_eq!(replay_state(&replay), state);
     assert!(recorder.calls().is_empty());
     assert!(txn.data(&s("a")).expect("read a").is_empty());
-    assert_eq!(txn.continuations(&names(&["a"])).expect("read a").len(), 1);
-    let y = produce_source("a", "y", false);
-    assert_eq!(txn.produce_counters(std::slice::from_ref(&y)), Ok(BTreeMap::from([(y, 0)])));
+    assert!(
+        txn.continuations(&names(&["a"]))
+            .expect("read a")
+            .is_empty()
+    );
+    assert_eq!(
+        txn.produce_counters(std::slice::from_ref(&y)),
+        Ok(BTreeMap::from([(y.clone(), 1)]))
+    );
 
+    assert_eq!(txn.commit().await, Err(SpaceTxnError::ReplayDivergence(Box::new(comm.clone()))));
+    let calls = recorder.calls();
+    assert_eq!(calls.iter().map(call_kind).collect::<Vec<_>>(), vec![
+        "start",
+        "directive",
+        "consume",
+        "finish",
+        "start",
+        "directive",
+        "produce",
+        "comm",
+        "finish"
+    ]);
+    match &calls[7..] {
+        [Call::Comm { comm: observed, .. }, Call::Finish { completion, .. }] => {
+            assert_eq!(*observed, bincode::serialize(&comm).expect("serialize a COMM"));
+            assert_eq!(*completion, RSpaceOperationCompletion::Rejected);
+        }
+        other => panic!("expected the COMM call and the rejected finish, got {:?}", other),
+    }
+    assert_eq!(replay_bindings(&replay), bindings);
+    assert_eq!(replay.get_waiting_continuations(names(&["a"])).await.len(), 1);
+    assert!(replay.get_data(&s("a")).await.is_empty());
+    assert!(replay.get_data(&s("b")).await.is_empty());
+    let mut probe = handle.begin(&universe()).await.expect("begin");
+    assert_eq!(probe.produce_counters(std::slice::from_ref(&y)), Ok(BTreeMap::from([(y, 0)])));
+    drop(probe);
+
+    let mut txn = handle.begin(&universe()).await.expect("begin");
     plans[1][0]
         .stage(&mut txn, None)
         .expect("stage the recorded fire");
     txn.commit().await.expect("commit");
+    assert!(replay_bindings(&replay).is_empty());
     assert_eq!(checkpoint(&replay).await.root, played.root);
 }
 
@@ -1759,6 +1807,11 @@ async fn space_store_handle_replay_cross_channel_comm_pairs_once() {
             .any(|produce| produce.channel_hash == hash(&s("b")))
     );
 
+    // Each COMM pairs once (decision 36): a second copy of the consume fire
+    // stages unpaired, and the commit fails at it with `ReplayDivergence`.
+    // The first fire stays applied and unbound; the copy and the produce
+    // fire after it apply and unbind nothing. A new transaction with the
+    // produce fire then reaches the block root.
     rig(&replay, &pre.root, &block.log).await;
     let bindings = replay_bindings(&replay);
     assert_eq!(bindings.len(), 2, "one key per COMM: the logged consume and the logged produce");
@@ -1766,10 +1819,31 @@ async fn space_store_handle_replay_cross_channel_comm_pairs_once() {
     let mut txn = handle.begin(&universe()).await.expect("begin");
     txn.consume(consume_fire())
         .expect("pairs under the consume key");
-    match txn.consume(consume_fire()) {
-        Err(SpaceTxnError::ReplayDivergence(comm)) => assert_eq!(*comm, consumed),
-        other => panic!("the COMM must pair once, got {:?}", other),
-    }
+    let k = consume_source(&["c"], &[Pat::Any], "k", false);
+    assert_eq!(txn.recorded_comms(RSpaceOperationSource::Consume(&k)), Some(Vec::new()));
+    let copy = txn
+        .consume(consume_fire())
+        .expect("the copy stages unpaired");
+    assert_eq!(copy.comm, Some(consumed.clone()));
+    txn.produce(produce_fire())
+        .expect("pairs under the produce key");
+    assert_eq!(
+        txn.commit().await,
+        Err(SpaceTxnError::ReplayDivergence(Box::new(consumed.clone())))
+    );
+    let produce_key = bincode::serialize(&IOEvent::Produce(produce_source("d", "q", false)))
+        .expect("serialize the produce key");
+    assert_eq!(
+        replay_bindings(&replay)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>(),
+        vec![produce_key],
+        "the first fire unbinds its COMM, and the produce fire keeps its own"
+    );
+    assert_eq!(replay.get_data(&s("a")).await, vec![linear_foreign.clone()]);
+    assert_eq!(replay.get_waiting_continuations(names(&["d", "a"])).await, vec![joined.clone()]);
+    let mut txn = handle.begin(&universe()).await.expect("begin");
     txn.produce(produce_fire())
         .expect("pairs under the produce key");
     txn.commit().await.expect("commit");
@@ -1815,10 +1889,6 @@ async fn space_store_handle_replay_cross_channel_comm_pairs_once() {
         .consume(twice())
         .expect("the space pairs the repeated COMM");
     assert_eq!(paired.comm, Some(doubled.clone()));
-    match txn.consume(twice()) {
-        Err(SpaceTxnError::ReplayDivergence(comm)) => assert_eq!(*comm, doubled),
-        other => panic!("the repeated COMM must pair once, got {:?}", other),
-    }
     let receipt = txn.commit().await.expect("commit");
     match &receipt.ops[1] {
         SpaceOpReceipt::Fired { results, .. } => {
@@ -1827,6 +1897,26 @@ async fn space_store_handle_replay_cross_channel_comm_pairs_once() {
         }
         other => panic!("expected the repeated fire, got {:?}", other),
     }
+    assert!(replay_bindings(&replay).is_empty());
+    assert_eq!(replay.get_data(&s("b")).await, vec![repeated.clone()]);
+    assert_eq!(checkpoint(&replay).await.root, second.root);
+
+    // The repeated COMM pairs once: a second copy of the repeated fire
+    // stages unpaired, and the commit fails at it after the store and the
+    // first fire, which stay applied.
+    rig(&replay, &block.root, &second.log).await;
+    let mut txn = handle.begin(&universe()).await.expect("begin");
+    txn.produce(store_op("b", "z", true))
+        .expect("stage a store");
+    txn.consume(twice())
+        .expect("the space pairs the repeated COMM");
+    assert_eq!(
+        txn.recorded_comms(RSpaceOperationSource::Produce(&repeated.source)),
+        Some(Vec::new())
+    );
+    let copy = txn.consume(twice()).expect("the copy stages unpaired");
+    assert_eq!(copy.comm, Some(doubled.clone()));
+    assert_eq!(txn.commit().await, Err(SpaceTxnError::ReplayDivergence(Box::new(doubled.clone()))));
     assert!(replay_bindings(&replay).is_empty());
     assert_eq!(replay.get_data(&s("b")).await, vec![repeated.clone()]);
     assert_eq!(checkpoint(&replay).await.root, second.root);
@@ -1841,6 +1931,66 @@ async fn space_store_handle_replay_cross_channel_comm_pairs_once() {
         .expect("the host replay pairs the repeated COMM");
     assert!(replay_bindings(&host_replay).is_empty());
     assert_eq!(checkpoint(&host_replay).await.root, second.root);
+}
+
+// Decision 36 (H23, T6): a deploy that runs out of phlo at any observer
+// call replays to the outcome of play. For each position n of a fallible
+// call, play rejects its n-th call and keeps its log, as Casper keeps the
+// log of a failed deploy. Replay, rigged with that log, rejects its own n-th
+// call. It stages what play stages, pairs the fires that play committed,
+// and stages a fire that play did not commit as unpaired, so the same call
+// rejects. Replay then fails with the error of play at the same operation,
+// makes the calls of play plus its directive queries, reaches the state of
+// play, and uses every recorded event. The last position is past every
+// call, so both runs commit everything.
+#[tokio::test]
+async fn space_store_handle_replay_reproduces_play_rejection() {
+    let mut groups = replay_groups();
+    groups.push(vec![
+        Op::peek(&["v1"], vec![Pat::Any], "kp"),
+        Op::produce("v1", "z", false),
+        Op::consume(&["v1"], vec![Pat::Any], "kv", false),
+    ]);
+    let plans = plan_groups(&groups).await;
+    let counted = play_space().await;
+    let counter = Recorder::new();
+    observed(&counted, &counter);
+    receipts_ok(run_plans(&SpaceStoreHandle::new(counted.clone()), &plans).await);
+    let calls = counter.fallible_calls();
+    let mut rejected_comms = 0usize;
+    for n in 0..=calls {
+        let (play, replay) = play_and_replay().await;
+        let start = checkpoint(&play).await;
+        let play_recorder = Recorder::rejecting_call(n);
+        observed(&play, &play_recorder);
+        let played = run_until_failure(&SpaceStoreHandle::new(play.clone()), &plans).await;
+        let log = play.take_event_log().await;
+        match n == calls {
+            true => assert!(played.iter().all(Result::is_ok), "n = {n}: play commits everything"),
+            false => assert_eq!(
+                played.last(),
+                Some(&Err(SpaceTxnError::Host(RSpaceError::OutOfPhlogistons))),
+                "n = {n}: play fails at its n-th call"
+            ),
+        }
+        if matches!(fallible_call(&play_recorder.calls(), n), Some(Call::Comm { .. })) {
+            rejected_comms += 1;
+        }
+
+        let replay_recorder = Recorder::rejecting_call(n);
+        observed(&replay, &replay_recorder);
+        rig(&replay, &start.root, &log).await;
+        let replayed = run_until_failure(&SpaceStoreHandle::new(replay.clone()), &plans).await;
+        assert_eq!(replayed, played, "n = {n}: the outcome");
+        assert_eq!(
+            without_directives(replay_recorder.calls()),
+            play_recorder.calls(),
+            "n = {n}: the observer calls"
+        );
+        assert_eq!(replay_state(&replay), logical_state(&play), "n = {n}: the state");
+        assert!(replay_bindings(&replay).is_empty(), "n = {n}: replay uses every recorded event");
+    }
+    assert!(rejected_comms > 0, "the sweep rejects a COMM charge");
 }
 
 // ---------------------------------------------------------------- Group D
@@ -2331,10 +2481,12 @@ async fn space_store_handle_host_permuted_keys_break_checkpoint_control() {
     assert!(refused.contains("duplicate actions on one key"), "{}", refused);
 }
 
-// Review F-PAIR-1: replay pairs a COMM only under its trigger key, as host
-// replay does. A log without the Produce event of a produce-side fire fails
-// that fire with `ReplayDivergence` and no effect; host replay rejects the
-// same log.
+// Review F-PAIR-1 and decision 36: replay pairs a COMM only under its
+// trigger key, as host replay does. A log without the Produce event of a
+// produce-side fire leaves that fire unpaired: it stages, and the commit
+// fails at it with `ReplayDivergence` after the observer calls of the fire.
+// The store staged before the fire stays applied; the fire and the store
+// after it apply, log and unbind nothing. Host replay rejects the same log.
 #[tokio::test]
 async fn space_store_handle_replay_requires_produce_trigger_event() {
     let groups =
@@ -2361,24 +2513,64 @@ async fn space_store_handle_replay_requires_produce_trigger_event() {
     rig(&replay, &start.root, &forged).await;
     let handle = SpaceStoreHandle::new(replay.clone());
     receipts_ok(run_plans(&handle, &plans[..1]).await);
-    let calls = recorder.calls();
+    let calls = recorder.calls().len();
     let bindings = replay_bindings(&replay);
     let state = replay_state(&replay);
     let mut txn = handle.begin(&universe()).await.expect("begin");
     assert_eq!(txn.recorded_comms(RSpaceOperationSource::Produce(&x)), Some(Vec::new()));
-    match plans[1][0].stage(&mut txn, None) {
-        Err(SpaceTxnError::ReplayDivergence(comm)) => assert_eq!(comm.produces, vec![x.clone()]),
-        other => panic!("expected a replay divergence, got {:?}", other),
-    }
-    assert_eq!(txn.commit().await.expect("commit nothing").ops.len(), 0);
-    assert_eq!(recorder.calls(), calls);
+    txn.produce(store_op("b", "w", false))
+        .expect("stage a store before the fire");
+    let comm = plans[1][0]
+        .stage(&mut txn, None)
+        .expect("the fire stages unpaired")
+        .comm
+        .expect("the fire has a COMM");
+    assert_eq!(comm.produces, vec![x.clone()]);
+    txn.produce(store_op("c", "u", false))
+        .expect("stage a store after the fire");
+    assert_eq!(recorder.calls().len(), calls);
+    assert_eq!(txn.commit().await, Err(SpaceTxnError::ReplayDivergence(Box::new(comm))));
+    assert_unpaired_fire_calls(&recorder.calls()[calls..], "produce");
     assert_eq!(replay_bindings(&replay), bindings);
-    assert_eq!(replay_state(&replay), state);
+    assert_eq!(replay_state(&replay), with_record(state, "b", "w"));
     assert!(matches!(replay.check_replay_data().await, Err(RSpaceError::UnusedCommEvent { .. })));
 }
 
-// The consume-side form of F-PAIR-1: a log without the Consume event of a
-// consume-side fire fails that fire with `ReplayDivergence` and no effect.
+// The calls of a commit that applies a store and then fails at an unpaired
+// fire whose introduction is `introduction` ("produce" or "consume"): the
+// store's calls, then the fire's calls through its COMM call and a rejected
+// finish. The operation after the fire makes no call.
+fn assert_unpaired_fire_calls(calls: &[Call], introduction: &'static str) {
+    assert_eq!(calls.iter().map(call_kind).collect::<Vec<_>>(), vec![
+        "start",
+        "directive",
+        "produce",
+        "finish",
+        "start",
+        "directive",
+        introduction,
+        "comm",
+        "finish"
+    ]);
+    assert!(matches!(
+        calls.last(),
+        Some(Call::Finish {
+            completion: RSpaceOperationCompletion::Rejected,
+            ..
+        })
+    ));
+}
+
+// `state` with the non-persistent record `data` stored on `channel`.
+fn with_record(mut state: LogicalState, channel: &str, data: &str) -> LogicalState {
+    let record = bincode::serialize(&datum(channel, data, false)).expect("serialize a datum");
+    state.data.entry(s(channel)).or_default().insert(0, record);
+    state
+}
+
+// The consume-side form of F-PAIR-1 and decision 36: a log without the
+// Consume event of a consume-side fire leaves that fire unpaired, and the
+// commit fails at it with `ReplayDivergence`, with the same prefix effect.
 // Control (HEAD behavior): host replay still pairs this COMM, because `rig`
 // puts every COMM into `consume_replay_index` whether or not the log holds
 // its Consume event, and the narrowed consume path reads that index. The
@@ -2404,20 +2596,31 @@ async fn space_store_handle_replay_requires_consume_trigger_event() {
         .await
         .expect("control: host replay pairs through consume_replay_index");
 
+    let recorder = Recorder::new();
+    observed(&replay, &recorder);
     rig(&replay, &start.root, &forged).await;
     let handle = SpaceStoreHandle::new(replay.clone());
     receipts_ok(run_plans(&handle, &plans[..1]).await);
+    let calls = recorder.calls().len();
     let bindings = replay_bindings(&replay);
     let state = replay_state(&replay);
     let mut txn = handle.begin(&universe()).await.expect("begin");
     assert_eq!(txn.recorded_comms(RSpaceOperationSource::Consume(&k)), Some(Vec::new()));
-    match plans[1][0].stage(&mut txn, None) {
-        Err(SpaceTxnError::ReplayDivergence(comm)) => assert_eq!(comm.consume, k),
-        other => panic!("expected a replay divergence, got {:?}", other),
-    }
-    assert_eq!(txn.commit().await.expect("commit nothing").ops.len(), 0);
+    txn.produce(store_op("b", "w", false))
+        .expect("stage a store before the fire");
+    let comm = plans[1][0]
+        .stage(&mut txn, None)
+        .expect("the fire stages unpaired")
+        .comm
+        .expect("the fire has a COMM");
+    assert_eq!(comm.consume, k);
+    txn.produce(store_op("c", "u", false))
+        .expect("stage a store after the fire");
+    assert_eq!(recorder.calls().len(), calls);
+    assert_eq!(txn.commit().await, Err(SpaceTxnError::ReplayDivergence(Box::new(comm))));
+    assert_unpaired_fire_calls(&recorder.calls()[calls..], "consume");
     assert_eq!(replay_bindings(&replay), bindings);
-    assert_eq!(replay_state(&replay), state);
+    assert_eq!(replay_state(&replay), with_record(state, "b", "w"));
     assert!(matches!(replay.check_replay_data().await, Err(RSpaceError::UnusedCommEvent { .. })));
 }
 

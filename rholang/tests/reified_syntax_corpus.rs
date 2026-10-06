@@ -23,20 +23,22 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{ETuple, Expr, New, Par};
+use models::rhoapi::{ETuple, Expr, New, Par, Receive, ReceiveBind};
 use models::rust::reified::builders::{push_process_expr, use_block};
 use models::rust::reified::encoding::{
     decode_free_value, decode_process_tuple, decode_query_source, marker_of, split_trailing_params,
     FreeTheory, Marker, NewSpace, QuerySpec, ReifiedConstruct, SendParams, UseBlock,
 };
 use models::rust::rholang::implicits::concatenate_pars;
+use models::rust::utils::new_freevar_par;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::sample::select;
 use proptest::test_runner::RngSeed;
 use prost::Message;
 use reified_strategies::{
-    bound_var, contains_marker, expr_par, gint, gstring, list, new_term, send, sorted, tuple,
+    bound_var, contains_marker, expr_par, gbool, gint, gstring, list, new_term, send, sorted,
+    tuple,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::util::prepend_new;
@@ -53,7 +55,7 @@ const PROVENANCE: [(&str, &str); 3] = [
     ("parser_revision", "RRS_CAPTURE_PARSER_REVISION"),
     ("capture_command", "RRS_CAPTURE_COMMAND"),
 ];
-const ENTRY_COUNT: usize = 36;
+const ENTRY_COUNT: usize = 40;
 const PROPERTY_SEED: u64 = 0x0E0D_2026_1005_0302;
 
 fn property_config() -> ProptestConfig {
@@ -86,6 +88,31 @@ fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
 fn new_par(new: New) -> Par { prepend_new(Par::default(), new) }
 
 fn two_sends(first: Par, second: Par) -> Par { sorted(concatenate_pars(first, second)) }
+
+/// The receive `for (@x <- source) { Nil }`: one bind with one free variable.
+fn receive_once(source: Par) -> Par {
+    let locally_free = source.locally_free.clone();
+    Par {
+        receives: vec![Receive {
+            binds: vec![ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(source),
+                remainder: None,
+                free_count: 1,
+                cost_signature: None,
+            }],
+            body: Some(Par::default()),
+            persistent: false,
+            peek: false,
+            bind_count: 1,
+            locally_free: locally_free.clone(),
+            connective_used: false,
+            condition: None,
+        }],
+        locally_free,
+        ..Par::default()
+    }
+}
 
 fn named_map(named: Vec<(&str, Par)>) -> BTreeMap<String, Par> {
     named
@@ -283,6 +310,42 @@ fn corpus_table() -> Vec<(&'static str, Vec<ReifiedConstruct>)> {
                 query_x_one(),
                 query_model(gstring("y"), Vec::new(), vec![("k", gint(2))]),
             ],
+        ),
+        // The P4 documentation rows: a hashmap:queue space at run time.
+        (
+            r#"new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { use space { @"jobs"!(1) | for (@x <- @"jobs") { Nil } } } }"#,
+            vec![use_model(
+                bound_var(0),
+                sorted(concatenate_pars(
+                    send(gstring("jobs"), vec![gint(1)]),
+                    receive_once(gstring("jobs")),
+                )),
+            )],
+        ),
+        (
+            r#"new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { new box : space in { box!(1) | for (@x <- box) { Nil } } } }"#,
+            vec![new_space_model(
+                vec![Some(bound_var(0))],
+                new_term(
+                    1,
+                    Vec::new(),
+                    sorted(concatenate_pars(
+                        send(bound_var(0), vec![gint(1)]),
+                        receive_once(bound_var(0)),
+                    )),
+                ),
+            )],
+        ),
+        (
+            r#"new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { for (_ <- space!?("produce", "jobs", [1]; persistent=true)) { Nil } } }"#,
+            vec![params_model(Vec::new(), vec![(
+                "persistent",
+                gbool(true),
+            )])],
+        ),
+        (
+            r#"new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?(free Nat())) { Nil } }"#,
+            vec![free_model("Nat", Vec::new())],
         ),
     ]
 }

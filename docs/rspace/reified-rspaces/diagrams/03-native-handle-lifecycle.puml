@@ -1,0 +1,113 @@
+' 03 Native handle lifecycle: a factory call creates a space and replies its
+' handle, and a call on the handle reaches HANDLE_OP and runs a method.
+'
+' Source of Figure N7 in ../design.md (section N7) and of Figure 1 in
+' ../agent-api.md. The figure restates the send hook of
+' rholang/src/rust/interpreter/reified/reducer_hooks.rs, FactoryProcess::call
+' of reified/factory.rs, GenericSpace::prepare_create and the plans of
+' spaces/generic.rs, HandleProcess::call of reified/handle.rs, and the space
+' intents of reified/schedule.rs (plan decisions 8 and 32, I-2, I-16, I-19,
+' P4 design C.7 and C.8). It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. Creation: the factory call, the creation transaction, and the reply
+'      of the handle capability on ret.
+'   2. A handle call: the send on the handle, the COMM with the persistent
+'      handle continuation, the forward to HANDLE_OP, and its checks.
+'   3. The method: a read-only config read, then the collection operation
+'      of produce, the dispatch of its fires, and the reply.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 03-native-handle-lifecycle.puml   Check: ./render.sh --check
+
+@startuml 03-native-handle-lifecycle
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam DatabaseBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Lifecycle of a native handle: creation, a call, and its reply
+autonumber
+
+participant "Deploy\n(Rholang program)" as DEPLOY $rrs_host
+participant "Reducer\nwith the P4 hooks" as RED $rrs_host
+participant "Host RSpace\nand event log" as HOST $rrs_host
+participant "Factory\n[0xE0, 0x01]" as FACTORY $rrs_factory
+participant "HANDLE_OP\n[0xE0, 0x30]" as HOP $rrs_object
+participant "Scheduler\nIntent::Space" as SCHED $rrs_host
+participant "Space agent\nGenericSpace" as AGENT $rrs_agent
+database "Storage channels\nC(sid), S(sid), H(sid)\nS(sid,k), D(sid,k)" as STORE $rrs_storage
+
+== Creation ==
+DEPLOY -[$rrs_flow]> RED : hmq!(*ret, "default")
+RED -[$rrs_relation]> RED : route [0xE0, 0x01]: Default (R1)\nno !!: check_persistent_send passes\npack the arguments into [ret, ["default"]]
+RED -[$rrs_flow]> HOST : produce on [0xE0, 0x01]
+HOST -[$rrs_flow]> FACTORY : COMM with the installed factory (body reference 201)
+FACTORY -[$rrs_relation]> FACTORY : validate the constructor (gates 1 to 7)\n<latex>\mathit{sid} = \mathrm{next}(\mathrm{split}_{\mathtt{0x01}}(\mathrm{split}_{\mathtt{0xE0}}(r_{\mathit{call}})))</latex>
+FACTORY -[$rrs_flow]> SCHED : create_space: footprint <latex>[2] \Vert \mathit{sid}</latex> and H(sid)
+SCHED -[$rrs_flow]> AGENT : run the job in its own task
+AGENT -[$rrs_flow]> STORE : begin([C(sid), S(sid), H(sid)])
+alt C(sid) holds a config record
+  AGENT -[$rrs_fail]-> DEPLOY : abort with SpaceAlreadyExists
+else the space is new
+  AGENT -[$rrs_effect]> STORE : stage the config record on C(sid), persistent\nstage the space counter S(sid) = 0\npark the handle continuation on H(sid), persistent
+  AGENT -[$rrs_effect]> HOST : commit once: Produce, Produce, and Consume events
+  SCHED --[$rrs_flow]> FACTORY : the job ends
+  FACTORY -[$rrs_flow]> HOST : produce bundle+{H(sid)} on ret
+  HOST --[$rrs_flow]> DEPLOY : for (h <- ret) binds the handle capability
+end
+
+== A call on the handle ==
+DEPLOY -[$rrs_flow]> RED : h!(*ack, "produce", "jobs", [1])
+RED -[$rrs_relation]> RED : remove the write bundle: H(sid)\nroute: DefaultObject, Default (R1)\na handle call keeps its PARAMS tuple
+RED -[$rrs_flow]> HOST : produce on H(sid)
+HOST -[$rrs_flow]> RED : COMM with the persistent handle continuation:\nrun its body [0xE0, 0x30]!(this, args)
+RED -[$rrs_flow]> HOST : produce (this, args) on HANDLE_OP
+HOST -[$rrs_flow]> HOP : COMM with the installed process (body reference 248)
+alt this is not a bare handle id of 34 bytes (A6)
+  HOP -[$rrs_relation]> HOP : drop the call: no reply, no further event
+else this is a bare handle id
+  HOP -[$rrs_flow]> SCHED : read_config(sid): a read-only space intent
+  SCHED -[$rrs_flow]> AGENT : run the job in its own task
+  AGENT -[$rrs_relation]> STORE : begin([C(sid)]), read the config record,\nstage nothing, drop the transaction
+  alt no config record
+    AGENT -[$rrs_fail]-> DEPLOY : abort with DanglingHandle
+  else the config record exists
+    HOP -[$rrs_relation]> HOP : parse [ret, method, args, PARAMS]\ncheck the method, the arity, and the params
+    alt a protocol error
+      HOP -[$rrs_flow]> HOST : produce ("rho:space:error", code, detail) on ret
+    else the method produce
+      HOP -[$rrs_flow]> SCHED : space_op(Produce on the key of "jobs")
+      SCHED -[$rrs_flow]> AGENT : run the job in its own task
+      AGENT -[$rrs_effect]> STORE : begin([C(sid), S(sid), S(sid,k), D(sid,k)])\nbump S(sid,k): take v, put v + 1\nOFFER: fire the head waiter, or store the record\ncommit once
+      AGENT --[$rrs_flow]> HOP : the fires and the re-issue
+      HOP -[$rrs_flow]> RED : dispatch the fired continuations
+      HOP -[$rrs_flow]> HOST : produce Nil on ack
+    end
+  end
+end
+
+legend bottom
+**Concept colors**
+|<$rrs_host>       | baseline machinery: deploy, reducer, host space, scheduler |
+|<$rrs_factory>    | factory of the family hashmap:queue |
+|<$rrs_object>     | HANDLE_OP and the space agent behind it |
+|<$rrs_storage>    | storage channels of the space |
+**Arrows**
+|<$rrs_flow>       | call or return |
+|<$rrs_effect>     | effect on the space state |
+|<$rrs_relation>   | internal step |
+|<$rrs_fail>       | abort of the deploy |
+endlegend
+@enduml

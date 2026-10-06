@@ -27,48 +27,59 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Canonical group](#canonical-group) | 2 | [Phlo](#phlo) | 1 |
 | [Channel](#channel) | 1 | [Play](#play) | 1 |
 | [Checkpoint](#checkpoint) | 1 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [COMM event](#comm-event) | 1 | [Process](#process) | 1 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Produce counter](#produce-counter) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Property-based test](#property-based-test) | 1 |
-| [Continuation](#continuation) | 1 | [Qualifier](#qualifier) | 2 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Random state](#random-state) | 1 |
-| [Datum](#datum) | 1 | [Re-offer](#re-offer) | 2 |
-| [Deploy](#deploy) | 1 | [Re-rooting](#re-rooting) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Receive](#receive) | 1 |
-| [Event log](#event-log) | 1 | [Recognized position](#recognized-position) | 2 |
-| [F1r3lang](#f1r3lang) | 1 | [Record envelope](#record-envelope) | 2 |
-| [Factory](#factory) | 2 | [Regression corpus](#regression-corpus) | 2 |
-| [FIPS](#fips) | 1 | [Reified RSpace](#reified-rspace) | 2 |
-| [Footprint policy](#footprint-policy) | 2 | [Replay](#replay) | 1 |
-| [Frontend](#frontend) | 1 | [Reporting](#reporting) | 1 |
-| [Gate](#gate) | 2 | [Retention](#retention) | 2 |
-| [getSpaceAgent](#getspaceagent) | 2 | [Rholang](#rholang) | 1 |
-| [Handle](#handle) | 2 | [Rocq](#rocq) | 1 |
-| [Head-only matching](#head-only-matching) | 2 | [RSpace](#rspace) | 1 |
-| [Headline](#headline) | 2 | [Send](#send) | 1 |
-| [History trie](#history-trie) | 1 | [Space](#space) | 2 |
-| [Host operation](#host-operation) | 2 | [Space agent](#space-agent) | 2 |
-| [Host work](#host-work) | 1 | [Space id](#space-id) | 2 |
-| [Hot store](#hot-store) | 1 | [Space transaction](#space-transaction) | 2 |
-| [Inductive invariant](#inductive-invariant) | 1 | [Staged view](#staged-view) | 2 |
-| [Inert](#inert) | 2 | [Storage channel](#storage-channel) | 2 |
-| [Inner collection](#inner-collection) | 2 | [Store identity](#store-identity) | 2 |
-| [Internal operation](#internal-operation) | 2 | [Sub-order](#sub-order) | 2 |
-| [Invariant map](#invariant-map) | 2 | [Sweep](#sweep) | 2 |
-| [Join](#join) | 1 | [System process](#system-process) | 1 |
-| [KIND](#kind) | 2 | [Theory](#theory) | 2 |
-| [LFS](#lfs) | 2 | [Theory identity](#theory-identity) | 2 |
-| [Lock coverage](#lock-coverage) | 2 | [Times-repeated](#times-repeated) | 2 |
-| [Lock stripe](#lock-stripe) | 1 | [TLA+](#tla) | 1 |
-| [Marker](#marker) | 2 | [Trigger event](#trigger-event) | 2 |
-| [Marker tuple](#marker-tuple) | 2 | [Tuple space](#tuple-space) | 1 |
-| [Matcher](#matcher) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [Collection](#collection) | 2 | [Process](#process) | 1 |
+| [Collection counter](#collection-counter) | 2 | [Produce counter](#produce-counter) | 2 |
+| [Collection key](#collection-key) | 2 | [Property-based test](#property-based-test) | 1 |
+| [COMM event](#comm-event) | 1 | [Qualifier](#qualifier) | 2 |
+| [Config record](#config-record) | 2 | [Random state](#random-state) | 1 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-issue](#re-issue) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Re-offer](#re-offer) | 2 |
+| [Continuation](#continuation) | 1 | [Re-rooting](#re-rooting) | 2 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Receive](#receive) | 1 |
+| [Datum](#datum) | 1 | [Recognized position](#recognized-position) | 2 |
+| [Deploy](#deploy) | 1 | [Record envelope](#record-envelope) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Regression corpus](#regression-corpus) | 2 |
+| [Event log](#event-log) | 1 | [Reified RSpace](#reified-rspace) | 2 |
+| [F1r3lang](#f1r3lang) | 1 | [Replay](#replay) | 1 |
+| [Factory](#factory) | 2 | [Reporting](#reporting) | 1 |
+| [Factory capability](#factory-capability) | 2 | [Retention](#retention) | 2 |
+| [FIPS](#fips) | 1 | [Rholang](#rholang) | 1 |
+| [Fire round](#fire-round) | 2 | [Rocq](#rocq) | 1 |
+| [Footprint policy](#footprint-policy) | 2 | [Routing class](#routing-class) | 2 |
+| [Frontend](#frontend) | 1 | [RSpace](#rspace) | 1 |
+| [Gate](#gate) | 2 | [Send](#send) | 1 |
+| [getSpaceAgent](#getspaceagent) | 2 | [Space](#space) | 2 |
+| [Handle](#handle) | 2 | [Space agent](#space-agent) | 2 |
+| [Handle capability](#handle-capability) | 2 | [Space counter](#space-counter) | 2 |
+| [Head record](#head-record) | 2 | [Space family](#space-family) | 2 |
+| [Head waiter](#head-waiter) | 2 | [Space id](#space-id) | 2 |
+| [Head-only matching](#head-only-matching) | 2 | [Space intent](#space-intent) | 2 |
+| [Headline](#headline) | 2 | [Space name](#space-name) | 2 |
+| [History trie](#history-trie) | 1 | [Space reference](#space-reference) | 2 |
+| [Host operation](#host-operation) | 2 | [Space transaction](#space-transaction) | 2 |
+| [Host work](#host-work) | 1 | [Staged view](#staged-view) | 2 |
+| [Hot store](#hot-store) | 1 | [Storage channel](#storage-channel) | 2 |
+| [Inductive invariant](#inductive-invariant) | 1 | [Store identity](#store-identity) | 2 |
+| [Inert](#inert) | 2 | [Sub-order](#sub-order) | 2 |
+| [Inner collection](#inner-collection) | 2 | [Sweep](#sweep) | 2 |
+| [Internal operation](#internal-operation) | 2 | [System process](#system-process) | 1 |
+| [Invariant map](#invariant-map) | 2 | [Theory](#theory) | 2 |
+| [Join](#join) | 1 | [Theory identity](#theory-identity) | 2 |
+| [KIND](#kind) | 2 | [Times-repeated](#times-repeated) | 2 |
+| [LFS](#lfs) | 2 | [TLA+](#tla) | 1 |
+| [Lock coverage](#lock-coverage) | 2 | [Trigger event](#trigger-event) | 2 |
+| [Lock stripe](#lock-stripe) | 1 | [Tuple space](#tuple-space) | 1 |
+| [Marker](#marker) | 2 | [Typed reply](#typed-reply) | 2 |
+| [Marker tuple](#marker-tuple) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [Matcher](#matcher) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
 | [Merge](#merge) | 1 | [URN](#urn) | 1 |
-| [Model map](#model-map) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
-| [Name](#name) | 1 | [Verification recipe](#verification-recipe) | 2 |
-| [Namespace tag](#namespace-tag) | 2 | [Volatile channel](#volatile-channel) | 2 |
+| [Model map](#model-map) | 2 | [Use context](#use-context) | 2 |
+| [Name](#name) | 1 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Namespace tag](#namespace-tag) | 2 | [Verification recipe](#verification-recipe) | 2 |
+| [Native space](#native-space) | 2 | [Volatile channel](#volatile-channel) | 2 |
 | [Negative control](#negative-control) | 2 | [Waiter](#waiter) | 2 |
-| [Operation order](#operation-order) | 2 | [Witness test](#witness-test) | 2 |
+| [Op channel](#op-channel) | 2 | [Witness test](#witness-test) | 2 |
+| [Operation order](#operation-order) | 2 | [Write skew](#write-skew) | 2 |
 | [Outcome](#outcome) | 2 |  |  |
 
 ## Part 1: background terms
@@ -418,6 +429,13 @@ The code calls an inner collection a discipline.
 - A priority queue keeps one queue for each priority level.
 - A bag with VectorDB delivers data by vector similarity.
 
+### Collection
+
+A collection is the part of a space at one channel of the space.
+It holds the data and the continuations that the space stores at that channel.
+The inner collection of the space decides how the items of one collection interact.
+Items of two different collections never interact, except through a join.
+
 ### Theory
 
 A theory describes the data that a space admits ([decision 9](decision-register.md#decision-9)).
@@ -532,6 +550,30 @@ They are the config record (KIND C), a counter (KIND S), and a forwarding receiv
 It then replies with the write-only bundle `bundle+{*this}`.
 A space that a factory creates is a native space.
 
+### Op channel
+
+An op channel is a channel whose unforgeable id has the two bytes $`[\mathtt{0xE0}, \mathit{op}]`$.
+The byte $`\mathit{op}`$ selects a factory (`0x00` to `0x1F`), a system process (`0x21` to `0x23`), or an internal operation (`0x30` to `0x32`).
+The byte `0x20` is reserved for the factories of native engines, which are held.
+
+The node finds the native code of the process of an op channel by the number $`200 + \mathit{op}`$, its body reference. The baseline uses the body references 0 to 36 and 101 to 108.
+A persistent send `!!` to an op channel that takes calls aborts the deploy ([decision 32](decision-register.md#decision-32), item A21).
+The syntax markers and `AGENT_TAG` have the same id layout, but they take no calls.
+
+### Space family
+
+A space family is a pair of an outer store and an inner collection, such as `hashmap:queue`.
+The 32 supported pairs are the families, and family $`i`$ has its factory on the op channel $`[\mathtt{0xE0}, i]`$.
+The factory URN names the family outer first, as `rho:space:<outer>:<inner>`.
+The FIPS aliases `rho:space:HashMapBagSpace` and `rho:space:PathMapSpace` name the families `hashmap:bag` and `pathmap:bag`.
+Phase P4 registers only the family `hashmap:queue`. Phases P5 and P6 register the other families.
+
+### Factory capability
+
+The factory capability of a space family is the write bundle `bundle+{[0xE0, i]}` of the op channel of its factory.
+The URN of the family binds this value in the URN map of the node.
+A program can call the factory with the capability, but it cannot receive on the op channel.
+
 ### Handle
 
 A handle is the write-only bundle `bundle+{*this}` that a factory returns for a native space ([decision I-2](decision-register.md#i-2)).
@@ -543,10 +585,34 @@ A dangling handle is a handle whose config record does not exist, and a call on 
 **Preferred usage.** Use "handle" for the bundle that a program holds.
 *Distinguish from* the channel `this`, which only the forwarding receive of the space reads.
 
+### Native space
+
+A native space is a space that a factory creates ([decision 8](decision-register.md#decision-8)).
+Its space agent is Rust code of the node, and it keeps its state in storage channels under its space id.
+A program reaches it through its handle, through the names of the space, and through a `use` block or a `new` annotation with its handle.
+The family of the space, its qualifier, and its parameters never change after the creation.
+
+### Handle capability
+
+The handle capability of a native space is the `Par` value `bundle+{H(sid)}` that its factory replies, where $`H(\mathit{sid})`$ is the channel `this` of the space.
+The bundle has the write flag and no read flag. So its holder can send calls to the space, but it cannot receive from the channel `this`.
+The reducer removes the write bundle of a send, so a call on the handle capability reaches the channel `this`.
+
+The internal operation `HANDLE_OP` accepts a call only with the bare id of `this` ([decision 32](decision-register.md#decision-32), item A6). Only the forwarding receive of the space passes that id.
+So a program that names the URN of `HANDLE_OP` gains no capability.
+
+### Space name
+
+A space name is a name with KIND N: $`\mathtt{0xE0} \mathbin{\Vert} \mathtt{N} \mathbin{\Vert} \mathit{sid} \mathbin{\Vert} \mathit{tail}`$ ([decision I-3](decision-register.md#i-3)).
+The tail has 32 random bytes, or the 8-byte index of an Array or Vector space.
+A native space mints space names: the handle method `gensym`, the annotation `new x : s`, and a `new` inside a `use` block make them.
+A space name routes to its own space in every context, so it keeps its meaning across blocks and after a restart.
+No record exists for a space name itself, because the name describes itself.
+
 ### getSpaceAgent
 
 `getSpaceAgent` is the system process with the id $`[\mathtt{0xE0}, \mathtt{0x21}]`$ and the URN `rho:space:getSpaceAgent`.
-The call `getSpaceAgent!?(s)` replies with the factory capability of the native space `s` ([decision 9.4](decision-register.md#decision-9-4)).
+The call `getSpaceAgent!?(s)` replies with the [factory capability](#factory-capability) of the native space `s` ([decision 9.4](decision-register.md#decision-9-4)).
 The FIPS aliases of a factory bind the same capability, so `getSpaceAgent(space_1) == HMB` holds for a space that `HMB` created.
 The system ids $`[\mathtt{0xE0}, \mathtt{0x22}]`$ and $`[\mathtt{0xE0}, \mathtt{0x23}]`$ belong to `rho:assert:assertEqual` and `rho:lang:vector`.
 
@@ -567,6 +633,30 @@ The agent author must keep three soundness obligations, ASO-1 to ASO-3. For exam
 A violation breaks the FIPS semantics but never consensus, because the node guarantees determinism for every agent.
 
 **Preferred usage.** Use "native space" for a space that a factory creates, and "user agent-backed space" for a space that an ordinary agent implements.
+
+### Space reference
+
+A space reference is the value that selects a space: the `s` of `use s { P }`, of `new x : s`, and of `getSpaceAgent!?(s)`.
+The function `classify_space_ref` gives each value exactly one meaning, by five rules in order:
+
+1. The empty `Par` is the error `EmptySpaceRef`.
+2. The function removes at most one bundle, by the rule of a send.
+3. A handle id, bare or under a bundle with the write flag, is its native space. Under a bundle without the write flag, it is the error `HandleNotWritable`.
+4. Any other Reified id is the error `NotASpaceRef`, so a capability or a storage id is never a space.
+5. Every other value is a user agent.
+
+**Preferred usage.** *Distinguish from* a [space name](#space-name), which is a channel of one space.
+
+### Typed reply
+
+A typed reply is the reply of a Reified system process to a call with a protocol error ([decision 34](decision-register.md#decision-34), item A23).
+It is one datum: the tuple `("rho:space:error", code, detail)`, where `code` is a string and `detail` is a map.
+The call does not abort, and the deploy continues.
+
+`HANDLE_OP` replies only when the message has a reply name and a method name.
+A reply name is one unforgeable name, or one bundle with the write flag.
+`HANDLE_OP` drops every other message without a reply.
+The [agent API](agent-api.md#7-typed-replies) lists every code and its detail map.
 
 ### Matcher
 
@@ -622,6 +712,34 @@ A marker tuple outside its recognized position is inert data.
 There is one exception.
 A send whose last data element is a `PARAMS` tuple aborts with `ParamsUnsupported` when its channel takes no parameters.
 
+### Routing class
+
+The routing class of a channel decides where the sends and the receives on that channel go ([decision 8](decision-register.md#decision-8)).
+The reducer computes the class after it removes the write or read bundle of the channel.
+The function `classify_channel` gives each channel exactly one class:
+
+| Class | Channel |
+|---|---|
+| `System` | a `GPrivate` with an id of 1 or 2 bytes: a byte name, an op channel, or a marker |
+| `DefaultObject` | an id of KIND C, H, X, or B, or of a lowercase form |
+| `Storage` | an id of KIND D, I, A, or S, or of a lowercase form |
+| `SpaceName` | a space name: KIND N or n |
+| `AgentTagged` | the tuple `(AGENT_TAG, A, raw)` of a name that a user agent minted |
+| `Unforgeable` | every other unforgeable name, an ordinary `new` name included |
+| `Forged` | every other channel, such as `@"x"`, and a bundle that the R7 backend sees |
+
+The routing rules R1 to R7 of the [design](design.md#n5-routing-and-scope) send each class to the default space, to a native space, or to a user agent.
+A program that uses no Reified syntax and holds no space name routes every channel to the default space, so ordinary execution does not change.
+
+### Use context
+
+The use context of the reducer is the native space that the innermost `use` block of the evaluated process selects.
+Outside every `use` block, the reducer has no use context.
+A channel of the class `Forged` routes to a collection of the space of the use context. Without a use context, it routes to the default space.
+
+A body that the reducer stores for later evaluation under a use context gets a USE tuple of that context around it. So the context returns when the body runs, as in a lexical closure.
+The reducer holds the use context in its field `space_ctx`, and it copies the field into parallel branches.
+
 ### Canonical form
 
 The canonical form of a value is the one byte form that the encoder produces for it.
@@ -637,6 +755,14 @@ A parked continuation holds the envelope `(ord, query policy)` around its body.
 Counters, allocators, and the PathMap index records carry envelopes too, so no Reified datum is a single number.
 The host data structures do not change, and only space agents read envelopes.
 
+### Config record
+
+The config record of a native space is the one datum on its config channel $`C(\mathit{sid}) = \mathtt{0xE0} \mathbin{\Vert} \mathtt{C} \mathbin{\Vert} \mathit{sid}`$ ([decision I-17](decision-register.md#i-17)).
+After its envelope, it holds the canonical map with the keys `spaceId`, `outer`, `inner`, `qualifier`, `params`, and `theory`.
+The factory stores it once, as a persistent datum without a cost authority, and nothing changes it later.
+Each operation of the space reads it first.
+Without the config record, a collection operation fails with `DanglingName` on a space name and with `DanglingHandle` otherwise.
+
 ### Counter meta-channel
 
 A counter meta-channel is a storage channel of KIND S that holds one envelope-wrapped counter ([decision M-1](decision-register.md#m-1)).
@@ -647,6 +773,29 @@ Each space also has one space counter, and the first operation on a collection c
 Every operation on such a collection consumes the counter and produces it again with the next value.
 This rule also covers a peek and a fire that changes no state ([decision 31](decision-register.md#decision-31)).
 So two branches that use the same collection consume the same counter datum, and merge check #1 reports the race.
+
+### Space counter
+
+The space counter of a native space is the counter record on $`S(\mathit{sid}) = \mathtt{0xE0} \mathbin{\Vert} \mathtt{S} \mathbin{\Vert} \mathit{sid}`$ ([decision M-1](decision-register.md#m-1)).
+The factory creates it with the value 0.
+The first operation on a collection consumes it, produces it again with the next value, and opens the collection counter.
+So two branches whose first operations open collections of one space race on the space counter ([decision 34](decision-register.md#decision-34), item A25).
+
+### Collection counter
+
+The collection counter of a collection is the counter record on $`S(\mathit{sid}, k) = \mathtt{0xE0} \mathbin{\Vert} \mathtt{S} \mathbin{\Vert} \mathit{sid} \mathbin{\Vert} k`$, where $`k`$ holds the canonical bytes of the channel of the collection.
+The first operation on the collection opens it with the value 1 and takes the order 0.
+Every later operation consumes the counter record with a value $`v`$, takes $`v`$ as its order, and produces the value $`v + 1`$ ([decision 31](decision-register.md#decision-31)).
+A record or a continuation that the operation stores carries this order as its `ord`.
+So the entries of a collection have distinct orders, and these orders give the arrival order.
+
+### Write skew
+
+A write skew is an anomaly of concurrent transactions [[BBG95](#ref-bbg95)].
+Two transactions read overlapping data, each one changes data that the other one read, and their changes do not overlap.
+A check that compares only the changed data then finds no conflict, but no serial order of the two transactions gives their result.
+Two branches can make a write skew on two queues: each branch peeks one queue and dequeues the other queue.
+Every operation on a queue therefore bumps its counter, and merge check #1 sees the race ([decision 31](decision-register.md#decision-31)).
 
 ### Head-only matching
 
@@ -664,6 +813,14 @@ The hot store keys them by channel equality, which agrees with the hash.
 A Rust ordering of the channel type can still tell two such channels apart, as the field `locally_free` of `Par` does.
 So the substrate keys every map and set by the store identity, never by that ordering.
 The store identity of a list of channels is the list of their store identities, in list order.
+
+### Collection key
+
+The collection key of a channel $`c`$ is the byte string $`\mathrm{canon}(c) = \mathrm{bincode}(\mathrm{sort}(c))`$, which `canonical_inner_channel_bytes` computes ([decision 32](decision-register.md#decision-32), item A5).
+It is the preimage of the store identity of the sorted channel.
+Serde writes the field `locally_free` as empty bytes, so channels that are equal as `Par` values have one key.
+The sort fixes the order of the parallel parts of a channel, and the order of the elements of a list stays significant.
+The HashMap outer store keeps one collection for each key.
 
 ### Canonical group
 
@@ -719,6 +876,13 @@ Operation $`i`$ of a transaction that commits under the [operation order](#opera
 The value 2 is `SUB_OPERATION_TAG`, which the scheduler never uses, so no scheduler order equals a sub-order.
 Native phlo recording rejects two operations under one order, so each operation needs its own sub-order.
 
+### Space intent
+
+A space intent is the unit of work that the deterministic scheduler runs for one space operation: `Intent::Space` ([decision I-11](decision-register.md#i-11)).
+Its footprint holds the key $`[2] \mathbin{\Vert} \mathit{sid}`$ of its space. So the scheduler orders the intents of one space, and it runs the intents of other spaces in parallel.
+The scheduler gives the intent the next operation order of its participant, and the transaction of the intent commits under that order.
+The job of a space intent runs in its own task, because the substrate admits one open transaction in each task.
+
 ### Evaluation scope
 
 An evaluation scope is one root evaluation of a deploy by the reducer, from its entry to its end.
@@ -733,7 +897,9 @@ So a deploy that runs again, for example after a revert, commits under the same 
 Prefix atomicity is the failure rule of a commit ([decision 19](decision-register.md#decision-19), D6).
 When operation $`i`$ of a transaction fails at commit, operations $`0`$ to $`i - 1`$ stay applied, as in the equivalent host program.
 The deploy then fails, and the soft checkpoint of the deploy removes the applied operations.
-Replay reproduces the same prefix.
+Replay reproduces the same prefix ([decision 36](decision-register.md#decision-36)).
+Replay stages the operations of play, and its commit makes the observer calls of play in the same order.
+So a call that the observer rejects stops replay at the operation where it stopped play, with the error and the cost of play.
 
 ### Trigger event
 
@@ -754,10 +920,24 @@ When replay reproduces the COMM event, it removes all of its bindings at once.
 ### Pairing
 
 Pairing is the replay step that matches a fire with one recorded occurrence of its COMM event ([decision 19](decision-register.md#decision-19)).
-The substrate looks the COMM event up only under the trigger key of the fire.
+The substrate pairs a fire when it stages the fire, and it looks the COMM event up only under the trigger key of the fire.
 An occurrence is free while the paired copies are fewer than the bindings under the key, divided by the binding multiplicity.
-A fire without a free occurrence is a replay divergence, which the substrate reports as `ReplayDivergence` before any effect.
+A fire without a free occurrence does not pair, but its staging does not fail ([decision 36](decision-register.md#decision-36)).
+The next entry defines such a fire.
 Space operations create ordinary events, so the replay table of the host holds their COMM events.
+
+### Unpaired fire
+
+An unpaired fire is a fire that replay or reporting stages without a pairing ([decision 36](decision-register.md#decision-36)).
+The log holds no free occurrence of its COMM event under its trigger key.
+Staging accepts the fire as play stages it: the fire changes the staged view, and it adds no paired copy.
+So replay stages exactly the operations of play, for every log.
+
+At commit, the unpaired fire makes the observer calls of play, in the same order, up to and including its COMM call.
+A call that the observer rejects fails the operation with the error of play, for example when the phlo of the deploy runs out.
+When every call accepts, the commit fails with `ReplayDivergence`.
+In both cases the fire logs no event, changes no store entry, and keeps its bindings.
+The operations before it stay applied by [prefix atomicity](#prefix-atomicity).
 
 ### Retention
 
@@ -800,6 +980,27 @@ A waiter is a continuation that a space parks while it waits for matching data.
 In a PathMap space, a waiter on the prefix `q` waits at the path-index channel of `q`.
 A send on path `p` checks the waiters of each prefix of `p`, most specific prefix first.
 
+### Head record
+
+The head record of a collection is the stored datum that a receive meets next.
+For a queue, it is the record with the least `ord`, and the bincode bytes of two records with one `ord` decide between them.
+The list order of the hot store does not count. The hot store inserts at the front, and a restart can load a list in another order.
+A head record that does not match a receive blocks every record behind it.
+
+### Head waiter
+
+The head waiter of a collection is the waiter that a send meets next.
+For a queue, it is the waiter with the least `ord`, and the bincode bytes decide a tie.
+A head waiter that does not match a sent datum blocks every waiter behind it, and the datum joins the records.
+So only the head record and the head waiter can interact, which is [head-only matching](#head-only-matching).
+
+### Fire round
+
+A fire round is one step of the fire loop of a collection operation.
+In a round, the incoming datum or continuation meets the head of the other side, and one COMM fires.
+After the round, the operation ends, or the incoming side meets the next head, or the operation re-issues.
+One space transaction runs at most `FIRE_ROUND_CAP` rounds, which is 64 ([decision I-21](decision-register.md#i-21)).
+
 ### Re-offer
 
 A re-offer is the second produce of a datum that a peek fire did not store ([decision 30](decision-register.md#decision-30)).
@@ -807,6 +1008,17 @@ A non-persistent send can fire a waiter that peeks and is not persistent.
 Then the space agent stages the same produce again, as the next operation of the transaction.
 The re-offer has the identity, the observer calls, the counter step, and the authority of the re-produce of the host reducer.
 It fires the next matching waiter, or it stores the datum when no waiter matches.
+
+### Re-issue
+
+A re-issue runs the rest of a space operation as a new space intent ([decision 34](decision-register.md#decision-34), item A10, and [I-21](decision-register.md#i-21)).
+The fire loop of an operation re-issues in two cases, after it commits the staged prefix of its transaction.
+In the first case, a divergent pair fired: the incoming side survives, and its partner stays in the store. An example is a persistent send `!!` that fires a persistent receive `<=`.
+In the second case, the loop reached `FIRE_ROUND_CAP`, which is 64 fires.
+
+A re-issue repeats the operation as the program issued it.
+So a divergent pair fires once in each new space intent, until the phlo of the deploy runs out.
+*Distinguish from* a [re-offer](#re-offer), which offers a surviving datum again inside the same transaction.
 
 ### Path marker
 
@@ -896,6 +1108,8 @@ A category that does not apply to a leaf has no criterion, and the leaf states t
 ## References
 
 <a id="ref-anww13"></a>[ANWW13] J.-P. Aumasson, S. Neves, Z. Wilcox-O'Hearn, and C. Winnerlein, "BLAKE2: simpler, smaller, fast as MD5," in *Applied Cryptography and Network Security (ACNS 2013)*, Lecture Notes in Computer Science, Springer, 2013, pp. 119–135. [doi:10.1007/978-3-642-38980-1_8](https://doi.org/10.1007/978-3-642-38980-1_8)
+
+<a id="ref-bbg95"></a>[BBG95] H. Berenson, P. Bernstein, J. Gray, J. Melton, E. O'Neil, and P. O'Neil, "A critique of ANSI SQL isolation levels," in *Proceedings of the 1995 ACM SIGMOD International Conference on Management of Data*, ACM, 1995, pp. 1–10. [doi:10.1145/223784.223785](https://doi.org/10.1145/223784.223785)
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
 

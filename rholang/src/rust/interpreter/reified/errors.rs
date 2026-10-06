@@ -3,7 +3,9 @@
 //! P2 added the first four variants. P4 adds the reducer-level codes of the P4 design C.10
 //! and of readiness review §4. The space-level codes are in `spaces::errors::SpaceError`.
 
-use models::rust::reified::encoding::{Marker, ReifiedDecodeError};
+// Disabled: only the replaced variant used `Marker` (A19, `SpaceError::RuntimeUnavailable`).
+// use models::rust::reified::encoding::{Marker, ReifiedDecodeError};
+use models::rust::reified::encoding::ReifiedDecodeError;
 
 use crate::rust::interpreter::errors::InterpreterError;
 
@@ -13,8 +15,9 @@ use crate::rust::interpreter::errors::InterpreterError;
 pub enum ReifiedReduceError {
     #[error("{0}")]
     Malformed(ReifiedDecodeError),
-    #[error("the {marker} construct needs the Reified RSpaces runtime, which is not available")]
-    RuntimeUnavailable { marker: Marker },
+    // Disabled: P4 raises `SpaceError::RuntimeUnavailable` instead (A19), so no code builds it.
+    // #[error("the {marker} construct needs the Reified RSpaces runtime, which is not available")]
+    // RuntimeUnavailable { marker: Marker },
     #[error("a send to this channel takes no params")]
     ParamsUnsupported,
     #[error("a receive from this channel takes no query")]
@@ -54,7 +57,8 @@ impl ReifiedReduceError {
     pub fn code(&self) -> &'static str {
         match self {
             ReifiedReduceError::Malformed(_) => "Malformed",
-            ReifiedReduceError::RuntimeUnavailable { .. } => "RuntimeUnavailable",
+            // Disabled with its variant: P4 raises `SpaceError::RuntimeUnavailable` instead (A19).
+            // ReifiedReduceError::RuntimeUnavailable { .. } => "RuntimeUnavailable",
             ReifiedReduceError::ParamsUnsupported => "ParamsUnsupported",
             ReifiedReduceError::QuerySpecUnsupported => "QuerySpecUnsupported",
             ReifiedReduceError::PersistentFactoryCall => "PersistentFactoryCall",
@@ -87,9 +91,10 @@ mod tests {
     fn reducer_codes_are_distinct_and_disjoint_from_the_space_codes() {
         let errors = [
             ReifiedReduceError::Malformed(ReifiedDecodeError::NotSoleNew),
-            ReifiedReduceError::RuntimeUnavailable {
-                marker: Marker::Use,
-            },
+            // Disabled with its variant: P4 raises `SpaceError::RuntimeUnavailable` instead (A19).
+            // ReifiedReduceError::RuntimeUnavailable {
+            //     marker: Marker::Use,
+            // },
             ReifiedReduceError::ParamsUnsupported,
             ReifiedReduceError::QuerySpecUnsupported,
             ReifiedReduceError::PersistentFactoryCall,

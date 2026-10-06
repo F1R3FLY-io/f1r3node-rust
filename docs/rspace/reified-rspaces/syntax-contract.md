@@ -10,7 +10,7 @@ Where this contract and the register differ, the register applies.
 
 ## Scope of this version
 
-This version holds the surface sections of phase P3:
+This version holds the surface sections of phase P3 and the run-time section of phase P4:
 
 - the [terms](#terms) of the syntax
 - the [grammar forms](#grammar-forms), with examples
@@ -18,8 +18,8 @@ This version holds the surface sections of phase P3:
 - the [errors](#errors) of the parser and of the normalizer
 - the [keyword rule](#keyword-rule) of [decision 24](decision-register.md#decision-24) and the identifier rule of [decision 27](decision-register.md#decision-27)
 - the [dual-frontend corpus](#dual-frontend-corpus) and [how the contract is checked](#how-the-contract-is-checked)
+- the [meaning at run time](#meaning-at-run-time) of each construct in phase P4, and the constructs that still fail closed
 
-Phase P4 adds the meaning of each construct at run time.
 Phase P12 adds the Rholang 1.4 productions.
 
 ## Terms
@@ -32,8 +32,8 @@ The [glossary](glossary.md) defines the terms that the table links.
 | Baseline grammar | The grammar of `rholang-rs` at commit `02cef80`. The node accepted exactly the programs of this grammar before the campaign. |
 | v3 parser | The parser of the branch `feature/reified-rspaces-v3` at commit `6548aec`. It adds the Reified syntax to the baseline grammar. |
 | Space | A [space](glossary.md#space): a tuple space that a program creates and uses as a value. |
-| Space name | A [name](glossary.md#name) that refers to a space, such as a handle that a [factory](glossary.md#factory) returns. |
-| `use` block | The process `use s { P }`. The space name `s` becomes the default space of the untagged channels of the process `P`. |
+| Space reference | A [space reference](glossary.md#space-reference): the value that selects a space, such as a handle that a [factory](glossary.md#factory) returns. A [space name](glossary.md#space-name) is another term: a channel of one space. |
+| `use` block | The process `use s { P }`. The space reference `s` becomes the default space of the untagged channels of the process `P`. |
 | Space annotation | The part `: s` of a binder `x : s` of `new`. It puts the new name `x` in the space `s`. |
 | Plain binder | A binder of `new` without a URI, such as `x` or `x : s`. |
 | URI binder | A binder of `new` with a system [URN](glossary.md#urn), such as ``out(`rho:io:stdout`)``. |
@@ -81,7 +81,7 @@ use_block := "use" name block
 ```
 
 The keyword `use` comes from the external scanner, by the [keyword rule](#keyword-rule).
-The space name is any name: a variable, the wildcard, or a quoted process.
+The space reference is any name: a variable, the wildcard, or a quoted process.
 The block holds one process.
 The parser builds `Proc::UseBlock { space, proc }`.
 
@@ -93,7 +93,7 @@ use @"space" { @"x"!(1) }
 new s, t in { use s { use t { @"x"!(1) } } }
 ```
 
-A quoted space name with a compound process needs a block or parentheses, for example `use @{ x /\ y } { P }`.
+A quoted space reference with a compound process needs a block or parentheses, for example `use @{ x /\ y } { P }`.
 
 ### Space annotations on `new`
 
@@ -256,7 +256,7 @@ The arms keep this order:
 1. A send normalizes its channel, then its data, then its params.
 2. A receive normalizes its patterns, then each bind source with its payload and its params, then its guard and its body.
 3. A `new` normalizes its annotations, then its body.
-4. A `use` block normalizes its space name, then its body.
+4. A `use` block normalizes its space reference, then its body.
 
 ### Erased sections and canonical keys
 
@@ -335,7 +335,95 @@ Every other key has no range in the syntax layer.
 
 The reducer recognizes each marker tuple only in its recognized position ([decision 22](decision-register.md#decision-22)).
 For example, a send whose last data element is a PARAMS tuple fails with `ParamsUnsupported` when its channel takes no params.
-The design and the agent API documents describe these errors.
+The section [Meaning at run time](#meaning-at-run-time) lists the errors of phase P4.
+The [agent API](agent-api.md#10-aborts) gives the errors of each call, and the [design](design.md#n8-errors) lists every code.
+
+## Meaning at run time
+
+The reducer gives a meaning to a marker tuple only in its recognized position ([decision 22](decision-register.md#decision-22)).
+In phase P4, three constructs have a meaning at run time: `use` blocks, space annotations, and params.
+Every other construct fails closed with a deterministic code, until the phase that adds it ([decision 34](decision-register.md#decision-34), item A9).
+A failure at run time aborts the deploy with `InterpreterError::ReduceError` and the text `reified:<Code>: <message>`.
+The [design](design.md#n5-routing-and-scope) gives the algorithms, and the [specification](specification.md) gives the behavior of a space.
+
+### `use` blocks at run time
+
+The reducer evaluates the space reference `s` of `use s { P }` and classifies it by the five rules of a [space reference](glossary.md#space-reference).
+When `s` names a native space, the reducer evaluates `P` with `s` as its [use context](glossary.md#use-context).
+The use context changes the routes in `P` in three ways:
+
+- A channel of the class `Forged`, such as `@"jobs"`, routes to its collection in the space `s` (rule R5).
+- A plain binder of a `new` in `P` becomes a [space name](glossary.md#space-name) of `s`.
+- A body that the reducer stores for later evaluation, such as the body of a receive, keeps the use context, as a lexical closure does.
+
+A space name and an ordinary unforgeable name keep their own routes in every use context.
+The USE tuple takes the random state of the block, so it changes no random state of `P`.
+A `use` block checks only the reference, so an operation in `P` on a space without a config record aborts with `DanglingHandle`.
+
+```rholang
+new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { use space { @"jobs"!(1) | for (@x <- @"jobs") { Nil } } } }
+```
+
+In this program, the send and the receive on `@"jobs"` meet in one collection of the new space, so the receive binds `x` to 1.
+
+### Space annotations at run time
+
+The reducer evaluates `new x_1 : s_1, …` in four steps:
+
+1. It charges the binders, as the baseline `new` does.
+2. It evaluates and classifies each annotation in the scope outside the `new`.
+3. It draws the names as the baseline does, and it moves each binder with a space into its space.
+4. It evaluates the body with the rest of the random state.
+
+A binder with an annotation becomes a space name: the baseline id $`r`$ of the binder becomes $`\mathtt{0xE0} \mathbin{\Vert} \mathtt{N} \mathbin{\Vert} \mathit{sid} \mathbin{\Vert} r`$.
+A binder without an annotation takes the space of the use context, and outside every `use` block it keeps its baseline name.
+A URI binder keeps the value of its URN.
+
+```rholang
+new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { new box : space in { box!(1) | for (@x <- box) { Nil } } } }
+```
+
+In this program, `box` is a space name.
+So the send and the receive on `box` meet in the new space in every context (rule R3).
+
+### Params at run time
+
+The send hook refreshes the derived flags of a trailing PARAMS tuple and decodes it strictly ([decision I-20](decision-register.md#i-20)).
+A tuple that is not canonical aborts with `Malformed`.
+The table gives the meaning of the params on each kind of channel.
+
+| Channel of the send | Named params | Positional params |
+|---|---|---|
+| A factory | The constructor of the call holds them. The schema of `hashmap:queue` is empty, so each key aborts with `UnknownParam`. | `PositionalParamsUnsupported` |
+| A handle | `HANDLE_OP` checks them against the method. The method `produce` takes `persistent`, and another key gives the typed reply `UnknownParam`. | `PositionalParamsUnsupported` |
+| A collection of a queue space | `UnknownParam`, because the queue discipline takes no param | `PositionalParamsUnsupported` |
+| Every other channel | `ParamsUnsupported` | `ParamsUnsupported` |
+
+```rholang
+new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { for (_ <- space!?("produce", "jobs", [1]; persistent=true)) { Nil } } }
+```
+
+In this program, the handle call stores a persistent record with the payload `1` on the collection of `"jobs"`, and it replies `Nil`.
+The [agent API](agent-api.md#5-handle-methods) gives every method and its params.
+
+### Constructs that fail closed
+
+The table lists each construct that P4 rejects, with its code and the phase that adds its meaning.
+
+| Construct | Example | Code | Phase |
+|---|---|---|---|
+| A query `~` on a receive | `for (y <- @"x" ~ 5) { Nil }` | `QuerySpecUnsupported` | P5 for the priority queue, P6 for VectorDB |
+| A theory reference in a factory constructor | `hmq!?(free Nat())` | `TheoryUnavailable` | P7 |
+| The qualifier `"temp"` or `"seq"` | `hmq!?("temp")` | `QualifierUnavailable` | P7 |
+| A space reference that names a user agent | `use @"space" { @"x"!(1) }` | `AgentSpacesUnavailable` | P8 |
+| A send or a receive on a name of a user agent | None in P4, because only a user agent makes such a name | `AgentSpacesUnavailable` | P8 |
+| The handle method `consume` | `h!(ret, "consume", pairs, "<-", body)` | `AgentSpacesUnavailable`, or a typed reply | P8 |
+| A join with a channel of a queue space | `for (@a <- x & @b <- y) { Nil }`, with `x` and `y` in one queue space | `OrderedJoinUnsupported` | P5 |
+| A join over two spaces, or over a space and the default space | `for (@a <- x & @b <- @"y") { Nil }`, with `x` in a space | `CrossSpaceJoin` | None: the plan keeps this abort |
+| A factory of another family, or a FIPS alias | ``new f(`rho:space:hashmap:bag`) in { Nil }`` | The baseline error `No value set for <urn>` | P5 and P6 |
+
+The query fails closed on every receive, also on an ordinary channel, because hook H4 checks the source of each bind before its route.
+A reference that names no space aborts with `EmptySpaceRef`, `HandleNotWritable`, or `NotASpaceRef` in every phase.
 
 ## Keyword rule
 
@@ -352,7 +440,7 @@ The scanner emits the keyword `use` when all of these conditions hold:
 1. The parser can start a `use` block at this point, and it is not in error recovery.
 2. The text is `use`, and the next character cannot continue an identifier.
 3. At least one whitespace character or comment follows.
-4. A space name follows: an identifier outside the USE table, the wildcard `_`, or `@` with a simple quoted process.
+4. A space reference follows: an identifier outside the USE table, the wildcard `_`, or `@` with a simple quoted process.
 5. After optional whitespace and comments, the next character is `{`.
 
 A simple quoted process is an identifier outside the QUOTE table, the wildcard, or a string, URI, or number literal.
@@ -383,8 +471,8 @@ The text `free | Nil` keeps `free` as a name, and `free Int()` is a theory refer
 ### Limits
 
 - The baseline grammar reads the top-level text `use s { P }` as the three processes `use`, `s`, and `{ P }`. The node rejects every source with more than one top-level process, so no program that the node accepted changes.
-- A compound quoted space name needs a block or parentheses: `use @{ x /\ y } { P }`.
-- A space name or a theory name cannot be an excluded word of its form.
+- A compound quoted space reference needs a block or parentheses: `use @{ x /\ y } { P }`.
+- A space reference or a theory name cannot be an excluded word of its form.
 
 ### Identifier rule
 
@@ -399,7 +487,7 @@ A word is a valid theory name when it has the shape of the token `var` and is no
 
 ## Dual-frontend corpus
 
-The file `test-vectors/reified-syntax-corpus-v1.json` holds 36 rows.
+The file `test-vectors/reified-syntax-corpus-v1.json` holds 40 rows.
 Each row has two fields: `source`, the source text, and `expected_prost_hex`, the hexadecimal prost bytes of its normalized Par.
 The file also records its name, the capture revisions of the node and of the parser, the capture command, and its rule.
 
@@ -412,6 +500,7 @@ The rows cover every construct of this contract:
 - the erased section `@"x"!(1;)` and the ordinary send `@"x"!(1)`, which have the same bytes
 - bare queries, groups with and without params, params-only groups, and payload lists
 - queries in a join, with a guard, and in sequential receipts
+- four programs of phase P4 that create a `hashmap:queue` space. They hold a `use` block, an annotation, a handle call with a named param, and a factory call with a theory
 
 The corpus holds only rows that use `use` and `free` as keywords.
 A row that uses them as identifiers is a regression test of the Tree-Sitter frontend, not a contract of every frontend.

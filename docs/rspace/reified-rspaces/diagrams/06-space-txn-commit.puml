@@ -13,6 +13,8 @@
 '      begin, and the parent order must be fresh in the evaluation scope.
 '   3. Each staged operation i runs under sub_order(parent, i): read-only
 '      checks, the host call sequence of its mode, and the event correlation.
+'      In replay, an unpaired fire makes the observer calls of play and then
+'      fails with ReplayDivergence, before any event (decision 36).
 '   4. Every error after the take step releases the locks and then the
 '      registration. An error of operation i leaves operations 0 to i - 1
 '      applied (prefix atomicity).
@@ -99,6 +101,15 @@ while (next staged operation i, in staging order?) is (yes)
       put_continuation, then put_join for each channel; <<$rrs_storage>>
     case (Fire)
       :observe_comm with the staged COMM; <<$rrs_host>>
+      if (replay or reporting, and the fire is unpaired (recorded = none)?) then (yes)
+        :fail with **ReplayDivergence** (decision 36)
+        after the observer calls of play: no event,
+        no store change, no binding change,
+        and a produce rolls its counter step back
+        observer finish: Rejected, operations 0 to i - 1 stay applied; <<$rrs_reject>>
+        stop
+      else (no: paired, or play)
+      endif
       :log the produce or consume event, then the COMM event
       (play: the event log, replay: the logger); <<$rrs_host>>
       :remove a non-persistent continuation (produce side)
@@ -129,6 +140,8 @@ before_observe, at the observer start, or at an observe
 call. Operation i then logs no event and changes no
 store entry, and operations 0 to i - 1 stay applied.
 A failed replay fire rolls its counter back.
+An unpaired replay fire makes the calls of play, so
+a rejected call gives the error and the cost of play.
 After every error, the commit releases the locks
 and then the registration.
 end note

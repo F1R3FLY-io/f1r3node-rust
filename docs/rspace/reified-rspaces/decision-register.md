@@ -15,7 +15,7 @@ Where this register and the ledger differ, this register applies.
 - Read the statement for the decision itself, and the reason for its rationale.
 
 The plan quotes the words of the user for some decisions, and the entries keep these words in double quotes.
-Decisions 19 to 34 override the earlier plan sections where they conflict.
+Decisions 19 to 39 override the earlier plan sections where they conflict.
 The minimal-footprint revision (M-1 to M-5) overrides the target architecture of the plan where they conflict.
 
 ## Terms used in this register
@@ -31,6 +31,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 - **Arbitration:** an independent design review that the plan cites by item, for example H10.
 - **Design pass labels:** in decision 19, D1 to D7 are items of the P1 design pass. C1 to C10 are items of the P2 pass, and UD-1 to UD-9 are items of the P3 pass.
 - **P4 items:** A1 to A25 are the items of the P4 design pass and its arbitration. Section F of the P4 design report lists them. The report is outside the repository.
+- **P5 labels:** P5a to P5e are the sub-phases of P5. F1 to F21 are the design choices that the P5 design report asks the user to approve. S1 to S7 and E1 to E5 are the corrections of the P5 readiness review. Both reports are outside the repository.
+- **`K_retire`:** a single-channel continuation that the P5 agents synthesize to retire one stored record with a consume.
 - **Fix rules:** FR-1 to FR-10 are the rules of the P1 fix passes, and FR-1', FR-5', FR-7', and FR-9' are their round-2 forms. The [substrate section of the design](design.md#substrate) lists them.
 - **Ledger labels:** DELTA A is the ledger rule that spaces persist in the one RSpace, which owns checkpoint, replay, and reset. D1 to D13 name defects of the legacy branch.
 - **Audit labels:** K1 to K17 name the change clusters of codex. For example, K5 is the removal of the COMM produce sort.
@@ -63,7 +65,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 16](#decision-16) | Tracker dispositions | 2026-10-04 | In force |
 | [Decision 17](#decision-17) | Runtime space registration postponed | 2026-10-04 | In force |
 | [Decision 18](#decision-18) | Marker-tagged tuples | 2026-10-04 | In force |
-| [Decision 19](#decision-19) | P1 substrate | 2026-10-04 | In force, amended by decision 30 |
+| [Decision 19](#decision-19) | P1 substrate | 2026-10-04 | In force, amended by decisions 30 and 36 |
 | [Decision 20](#decision-20) | Tracker leftovers of TRI-1 | 2026-10-04 | In force |
 | [Decision 21](#decision-21) | Corrected encoding table | 2026-10-04 | In force |
 | [Decision 22](#decision-22) | P2 hooks | 2026-10-04 | In force |
@@ -80,6 +82,10 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 33](#decision-33) | assertEqual has arity 3 | 2026-10-04 | In force |
 | [Decision 34](#decision-34) | P4 detail items | 2026-10-04 | In force |
 | [Decision 35](#decision-35) | P1 close-out scope: lean, verify at P4 | 2026-10-04 | In force |
+| [Decision 36](#decision-36) | Space replay reproduces play when a deploy runs out of phlo | 2026-10-05 | In force |
+| [Decision 37](#decision-37) | Receive selection follows the F1r3lang rule from the F1r3lang merge on | 2026-10-05 | In force. Implemented in P12 |
+| [Decision 38](#decision-38) | Priority-queue waiters wait in one queue per level | 2026-10-05 | In force |
+| [Decision 39](#decision-39) | P5 design choices F1 to F17 and F20, without F21 | 2026-10-05 | In force, vetoable value of F9 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -104,6 +110,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [I-17](#i-17) | Config as a canonical Par record | 2026-10-04 | In force |
 | [I-18](#i-18) | Fixed-arity system processes | 2026-10-04 | In force, revised 2026-10-04 |
 | [I-19](#i-19) | Space id derivation | 2026-10-04 | In force, reason corrected by decision 32 |
+| [I-20](#i-20) | Derived flags refreshed before the strict decode | 2026-10-05 | In force |
+| [I-21](#i-21) | Fire-round cap of a space transaction | 2026-10-05 | In force, vetoable value |
 
 ## User decisions 1 to 18
 
@@ -533,7 +541,7 @@ These decisions override the earlier plan sections where they conflict.
 | Date | 2026-10-04 |
 | Status | In force |
 | Supersedes | The substrate description of the plan where it conflicts, for example raw `put`, `remove`, and `log` methods and a `replay()` method |
-| Amended by | [Decision 30](#decision-30), which supersedes the storing of the incoming datum of a produce-side peek fire in the P1 design |
+| Amended by | [Decision 30](#decision-30), which supersedes the storing of the incoming datum of a produce-side peek fire in the P1 design. [Decision 36](#decision-36), which moves the failure of an unpaired replay fire from staging to commit, so that D6 also covers `ReplayDivergence` |
 | Related | [M-4](#m-4), [space transaction](glossary.md#space-transaction), [sub-order](glossary.md#sub-order), [sweep](glossary.md#sweep), [substrate design](design.md#substrate) |
 
 **Statement.**
@@ -761,10 +769,11 @@ The plan also records two items under this decision:
 
 **Reason.** The user classifies the rollout as an operations problem that is not part of this campaign.
 
-## User decisions 28 to 35
+## User decisions 28 to 39
 
 The P4 design pass and its arbitration found more places where the plan did not fit the code.
-The user approved each recommended option on 2026-10-04.
+The user approved each recommended option on 2026-10-04, as decisions 28 to 35.
+On 2026-10-05, a P4 test, the P5 design pass, and its readiness review led to decisions 36 to 39.
 These decisions override the earlier plan sections where they conflict, as decisions 19 to 27 do.
 
 ### <a id="decision-28"></a>Decision 28: Repeated channels in a group
@@ -979,6 +988,122 @@ They follow the recorded decisions, or they fill details that the plan left open
 
 **Reason.** The remaining P1 work was bookkeeping, not spaces. One shared freeze also saves a second freeze of the worktree.
 
+### <a id="decision-36"></a>Decision 36: Space replay reproduces play when a deploy runs out of phlo
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force |
+| Amends | [Decision 19](#decision-19): an unpaired replay fire fails at commit, after the observer calls of play, and no longer at staging. Rule D6 then also covers `ReplayDivergence`. |
+| Related | [Unpaired fire](glossary.md#unpaired-fire), [pairing](glossary.md#pairing), [prefix atomicity](glossary.md#prefix-atomicity), [substrate design](design.md#s53-verify-fr-3), [the finding](findings/space-replay-out-of-phlo.md) |
+
+**Statement.**
+
+- The P4 test `space_queue_replay_equal` exposed the defect. Replay checked the COMM of each fire at staging, and it dropped the whole transaction at a missing COMM. So replay skipped charges that play made, and Casper rejected the honest block.
+- In replay, a fire whose COMM the log does not hold is staged as unpaired, with no error at staging.
+- At commit, the unpaired fire makes the observer calls of play in the same order. A rejected call returns the error and the cost of play.
+- If every call accepts, the commit fails with `ReplayDivergence`, and the prefix stays applied (D6).
+- The code changes only `rspace++/src/rspace/space_store_handle.rs` and `rspace++/src/rspace/replay_rspace/space_replay.rs`. Casper, the host, and the P4 agents do not change.
+- Proofs and models: `EventCorrelation.v` restates conjunct 3 of H4 and adds the headline H23 `replay_reproduces_play_run`. `CheckpointReplay.tla` adds a phlo budget, the invariant T6 `ReplayOutcomeEqual`, and two Unsafe controls.
+- The fix design of 2026-10-05 is outside the repository. The [finding](findings/space-replay-out-of-phlo.md) records the defect, its mechanism, and the fix.
+- The related defect of host replay (pgmcp finding 9921) and the observation on a forged omission stay recorded for their owners. This campaign does not pursue them.
+
+**User's words.** "Approve the fix (Recommended)". This decision amends decision 19. For the context, the user also said: "keep this campaign focused on Reified RSpaces!"
+
+**Reason.** Casper compares the failed flag and then the cost of each replayed deploy.
+Before the fix, a deploy that ran out of phlo inside a space transaction replayed to `ReplayDivergence` at a lower cost than play.
+So any user could make validators reject an honest block with a phlo limit that runs out inside a space transaction.
+
+With the fix, replay stages exactly the operations of play, and its commit makes the same calls on the same budget.
+So the same call rejects, after the same prefix, and the cost is the same.
+An unpaired fire never logs, removes, or unbinds anything, so each recorded COMM still pairs at most once, and a divergence still fails closed.
+
+### <a id="decision-37"></a>Decision 37: Receive selection follows the F1r3lang rule from the F1r3lang merge on
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force. The rule takes effect in P12, after F1r3lang becomes the frontend of the node. |
+| Supersedes | Correction S3 of the P5 readiness review |
+| Related | [Decision 3](#decision-3), [decision 11](#decision-11), [decision 26](#decision-26), [F1r3lang](glossary.md#f1r3lang), [head-only matching](glossary.md#head-only-matching) |
+
+**Statement.**
+
+- **Timing.** The rule below is the target semantics of spaces. The register records it now, and the pgmcp leaf `rrs-f1r3lang-space-where-semantics` holds the notes. The campaign implements it only after F1r3lang is finalized and becomes the frontend of F1r3node, in P12, which waits for SIG-F.
+- **Until then**, space receives use the current guard rule of this tree, as the host does. A consume takes the first spatial match of each bind and checks the guard once, and a refusal parks the waiter (`ops_consume.rs:111-153`). On the produce side, a guard refusal moves to the next waiter (`space_matcher.rs:178-185`). Head-only disciplines test only the head, so both rules agree for the queue, the stack, and the priority queue.
+- **The set discipline under the current rule** (readiness review S3, option (a)). A guarded waiter can park while a stored member passes its guard. A later send of an equal member then fires the waiter with the incoming member. The agent then retires the stored members of that class with single-channel `K_retire` COMMs, so the class leaves the set. Only a `where` guard reaches this case. Under the rule of F1r3lang it cannot arise, because the consume selects the passing member.
+- **The target rule (notes for P12).** F1r3lang records the guard rule of the host as its defect D1, and it fixes the rule. In the fixed rule, a `where` guard takes part in candidate selection, and a guard failure counts as a pattern non-match. A receive fires with the lexicographically least selection whose data match spatially and pass the guard, over the canonical candidate order. The repository `f1r3node-rust-f1r3lang` implements this search in lines 380 to 470 of `rspace++/src/rspace/space_matcher.rs`.
+- At P12, spaces adopt the rule in their own agents, with no host change. Single-bind receives take the first candidate, in discipline order, that matches and passes the guard. Head-only disciplines test only the head, so a head that fails the guard blocks ([decision 11](#decision-11)). Joins use the complete search of F1r3lang, with its second repair. In that repair, a spatial dead end at a later bind backtracks to the next datum of an earlier bind. The `K_retire` step of the set then becomes unreachable for single-bind receives.
+- Until P12, the join search of P5c is the algorithm of the baseline. It takes the first spatial match for each bind, and it checks the guard once. The plan section on PathMap delivery states the same rule.
+- **Scope.** This campaign does not implement the where-clauses of F1r3lang: not the syntax, not the guard decider, and not the D1 fix of the host matcher. Those belong to F1r3lang ([decision 3](#decision-3)). Space agents only order their own candidate search, and they call the existing guard check of the injected matcher (`SpaceMatcher::admits`, `check_commit_metered`). No host, matcher, or normalizer code changes.
+
+**User's words.** "F1r3lang rule, full (Recommended)", after "Review the where semantics in `[WORKSPACE_ROOT]/f1r3node-rust-f1r3lang/` and refine your question accordingly". Then "Take notes how the where-clause semantics should apply to the new Reified RSpaces but the semantics won't be implemented until F1r3lang is finalized and becomes the frontend of F1r3node." For the scope: "You are not responsible for implementing F1r3lang's where-clauses -- just so we're clear!" The register writes the workspace root of the path as `[WORKSPACE_ROOT]`.
+
+**Reason.** F1r3lang treats the guard rule of the host as a defect.
+Under that rule, a guard does not take part in candidate selection, so a guarded receive can park while a stored datum passes its guard.
+Spaces adopt the corrected rule so that they agree with F1r3lang when F1r3lang becomes the frontend.
+F1r3lang is not final yet, and another agent owns it, so the implementation waits for P12.
+
+### <a id="decision-38"></a>Decision 38: Priority-queue waiters wait in one queue per level
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force |
+| Supersedes | Correction S4 of the P5 readiness review |
+| Related | [Decision 11](#decision-11), [decision 29](#decision-29), [I-10](#i-10), [head-only matching](glossary.md#head-only-matching), [waiter](glossary.md#waiter) |
+
+**Statement.**
+
+- The legacy branch keeps one data queue for each level, and it keeps its waiters in one bag. Level 0 is the highest level, and the default level is the lowest. Each level is first in, first out, and head-only.
+- The legacy code is `PriorityQueueDataCollection` with `BagContinuationCollection`, in lines 1719 to 1725 of `system_processes.rs` on the legacy branch. This decision refines the waiter side.
+- A receive with `priority=p` waits in the waiter queue of level `p`. A receive with no priority waits in an unrestricted waiter queue. It takes the first matching level head in ascending level order, as the legacy receive does.
+- When one datum could fire waiters of both kinds, the older waiter fires, which is the waiter with the lower `ord`.
+- The P5b design specifies the details, and it argues confluence again (readiness review S4).
+
+**User's words.** "One per level, that's how they were implemented in the legacy feature branch which you may review for inspiration. This branch should be a revival and refinement of the legacy branch.", then "As proposed (Recommended)".
+
+**Reason.** This branch revives and refines the legacy branch, which keeps one queue for each level.
+The P5 readiness review found that the confluence argument of the cascade needs one head waiter for each head-only collection.
+A waiter queue for each level gives each queue one head, and the order rule decides between the two kinds of waiters.
+
+### <a id="decision-39"></a>Decision 39: P5 design choices F1 to F17 and F20, without F21
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force. The value of F9 is vetoable, as the cap of [I-21](#i-21) is. |
+| Supersedes | None |
+| Related | [Decision 28](#decision-28), [decision 29](#decision-29), [decision 37](#decision-37), [decision 38](#decision-38), [I-16](#i-16), [I-21](#i-21) |
+
+**Statement.** The user approved the P5 design choices F1 to F17 and F20, and the user dropped F21. The P5 design report lists the choices, and the corrections S1 to S7 and E1 to E5 of its readiness review apply.
+
+- F1: HashSet moves to P7.
+- F2: the stack and the priority queue settle with lift-and-re-offer, the cascade of [decision 29](#decision-29).
+- F3: set retirement is one consume over `[D;n]`, a group that names the data channel `D` of the collection `n` times ([decision 28](#decision-28)).
+- F4: PathMap delivers through the prefix marker and single-channel retire COMMs.
+- F5: the set key is the bincode of the sorted `Par`.
+- F6: an unprioritized send goes to its own lowest level.
+- F7: the `size` of an array is required, and `cyclic` is `false` by default.
+- F8: a forged channel in an Array or Vector space aborts with `NotAnIndexName`.
+- F9: the PathMap depth cap is 64, with the abort `PathTooDeep`. The value is vetoable.
+- F10: at the round cap, the original operation is re-issued, as in P4.
+- F11: a `new` inside `use` of an Array or Vector space runs one allocation job. The hot line `reduce.rs:1664` gains `.await`.
+- F12: the tracker leaf `rrs-spaces-determinism-collision-ties` completes in P6.
+- F13: the legacy Rocq modules get the dispositions that the P5 design report lists, with the changes of its readiness review. The port drops the axiom `FunctionalExtensionality`.
+- F14: two set waiters are equal only when they are byte-identical.
+- F15: a cell holds one record and one waiter.
+- F16: PathMap bag and set peeks do not bump the token, which is the space counter that orders a PathMap space.
+- F17: the `temp` and `seq` rows of the pattern-enforcement matrix complete in P7.
+- F20: the `[D;n]` consume never parks, so [I-16](#i-16) holds.
+- F21 is dropped: no `MixedArrowJoin` error code, because a program cannot reach it.
+
+**User's words.** "Approve all (Recommended)", after the items were elaborated.
+
+**Reason.** The P5 design pass found these choices where the plan and the FIPS leave details open, or where the plan does not fit the code.
+The readiness review corrected the design, and it recommended each approved choice, some of them with changes.
+A receive has one peek flag for all its binds, so no program can make mixed peeks, and F21 is not needed (readiness review S5).
+
 ## Minimal-footprint revision: M-1 to M-5
 
 On 2026-10-04 the user asked to "only modify what is required for reified rspaces and certainly not touch casper unless it is absolutely required … that was the purpose of the realignment".
@@ -1125,10 +1250,11 @@ The independent arbitration pass of 2026-10-04 confirmed M-1 for writes. It refu
 
 **Reason.** The runtime level is enough for these harnesses, so casper gains fewer test files.
 
-## Internal design decisions: I-1 to I-19
+## Internal design decisions: I-1 to I-21
 
 The plan marks these decisions as vetoable.
-Plan approval on 2026-10-04 adopted them, and the decision record dates each one.
+Plan approval on 2026-10-04 adopted I-1 to I-19, and the decision record dates each one.
+The plan adds I-20 and I-21 on 2026-10-05, after the P2 and P4 work found the need for them.
 The column "Amends" of the plan names the contract text that each decision changes.
 
 ### <a id="i-1"></a>I-1: Spaces are not ISpace implementors
@@ -1416,6 +1542,55 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 **Reason.** The `sid` is unique for each creating message, so storage channels never cross branches. The abort stops the `Factory!!(…)` re-produce loop deterministically.
 
 *Corrected by [decision 32](#decision-32), item A21: the abort alone does not stop the loop. The baseline never cancels the re-produce sibling of a persistent send. A persistent send to a factory or to a handle aborts the deploy instead.*
+
+### <a id="i-20"></a>I-20: Derived flags refreshed before the strict decode
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force |
+| Amends | [Decision 21](#decision-21), the rule "decoders reject every non-canonical form" |
+| Related | [Decision 18](#decision-18), [decision 22](#decision-22), [canonical form](glossary.md#canonical-form), [marker tuple](glossary.md#marker-tuple) |
+
+**Statement.**
+
+- Before the strict decode, the reducer hooks compute again every `connective_used` flag that the encoder derives.
+- The derived flags belong to the marker tuple, to its `EList` and `EMap` containers, and to the holder `Par` values.
+- The containers are the lists and maps of PARAMS and QUERY, the annotation list of NEWSPACE, and its entries `[]` and `[s]`.
+- The holders are the `Par` values of PARAMS and QUERY, and the `Par{news: [New]}` of NEWSPACE.
+- Each derived flag is the disjunction of the flags of its children. The refresh never changes a value.
+- Hook H4 applies the same refresh before it fails closed with `QuerySpecUnsupported`.
+- The decoder still accepts only the exact canonical image of its encoder ([decision 21](#decision-21)).
+- P4 batch 4C implements the rule. Batch 4E-F refines `Encoding.v`: its note on the abstraction function and the premises of substitution.
+
+**Reason.**
+
+- A P2 finding: the evaluation and the substitution of the baseline keep the flag `connective_used` of a tuple, a list, or a map. They keep it also when the children of the container change.
+- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:3065-3087`, `3089-3110`, and `3135-3155`.
+- The substitution keeps them at `rholang/src/rust/interpreter/substitute.rs:1340-1361`, `1363-1382`, and `1405-1428`.
+- Ordinary data can use connectives, as in `x!(Int)`. Without the refresh, a legal `use` body could fail closed as `NonCanonical`.
+- Only the top level of a marker tuple can hold a stale flag, so the refresh costs time linear in the width of the tuple.
+- To ignore the flags instead would weaken the contract of the decoder.
+
+### <a id="i-21"></a>I-21: Fire-round cap of a space transaction
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force. The value is vetoable: the user may choose another cap. |
+| Amends | Item A10 of the P4 design ("a bounded chain of fires"), arbitration item H8, and [I-12](#i-12) (work bounds for each operation) |
+| Related | [Decision 34](#decision-34), [I-12](#i-12), [re-issue](glossary.md#re-issue), [space intent](glossary.md#space-intent) |
+
+**Statement.**
+
+- One space transaction runs at most `FIRE_ROUND_CAP = 64` fire rounds (`rholang/src/rust/interpreter/reified/costs.rs:28`).
+- At the cap, the agent commits the staged prefix and re-issues the rest of the operation as a new `Intent::Space`. This is the re-issue path of A10.
+
+**Reason.**
+
+- A10 and H8 require a bound on the fires of one operation, but they give no value.
+- The bound is deterministic, so play and replay agree.
+- The bound changes the output only for a chain of more than 64 fires. There it sets the transaction boundaries and the counter bumps.
 
 ## References
 

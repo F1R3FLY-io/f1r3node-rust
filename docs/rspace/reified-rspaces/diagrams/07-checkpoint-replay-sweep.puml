@@ -14,8 +14,12 @@
 '   2. Checkpoint: the hot store changes become history actions. The deletes
 '      of swept keys find no leaf, so the root covers the durable state only.
 '   3. Replay: rig binds the recorded COMM events, the agent stages the same
-'      operations, verify pairs each fire under its trigger key, the commit
-'      removes the bindings, and the sweep runs at the same point.
+'      operations, and verify pairs each fire under its trigger key. A fire
+'      with no free recorded occurrence stages unpaired, with no error
+'      (decision 36). The commit makes the observer calls of play. It removes
+'      the bindings of each paired fire, and it fails at an unpaired fire
+'      with ReplayDivergence, or with the error of a rejected call. The sweep
+'      runs at the same point as in play.
 '   4. The replay checkpoint reaches the root of play.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
@@ -97,16 +101,23 @@ HOSTSPACE -[$rrs_effect]> LOG : bind each COMM under each\nof its logged IO even
 CASPER -[$rrs_flow]> RED : evaluate the deploy again
 RED -[$rrs_flow]> HANDLE : begin_evaluation_scope()
 AGENT -[$rrs_flow]> HANDLE : begin(lock keys)
-AGENT -[$rrs_flow]> TXN : stage the same operations
-TXN -[$rrs_relation]> LOG : verify under the trigger key:\n<latex>\lfloor b / m \rfloor > \mathrm{paired}</latex>
+AGENT -[$rrs_flow]> TXN : stage the same operations as play
+TXN -[$rrs_relation]> LOG : verify each fire under its trigger key:\n<latex>\lfloor b / m \rfloor > \mathrm{paired}</latex>
 alt a free recorded occurrence exists
-  TXN -[$rrs_relation]> TXN : pair the COMM
-  AGENT -[$rrs_flow]> TXN : commit()
-  TXN -[$rrs_flow]> HOSTSPACE : read-only checks, then the replay calls
-  HOSTSPACE -[$rrs_effect]> HOT : put and remove entries
-  HOSTSPACE -[$rrs_effect]> LOG : remove_bindings_for(COMM)
-else no free occurrence
-  TXN -[$rrs_fail]-> AGENT : ReplayDivergence at staging, no effect
+  TXN -[$rrs_relation]> TXN : pair the COMM\n(recorded = the logged COMM)
+else no free occurrence (decision 36)
+  TXN -[$rrs_relation]> TXN : stage the fire unpaired, with no error\n(recorded = none), as play stages it
+end
+AGENT -[$rrs_flow]> TXN : commit()
+loop operation i under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>
+  TXN -[$rrs_flow]> HOSTSPACE : read-only checks, then the replay calls:\nthe observer calls of play, in the same order
+  alt operation i stores, parks, or fires paired
+    HOSTSPACE -[$rrs_effect]> HOT : put and remove entries
+    HOSTSPACE -[$rrs_effect]> LOG : remove_bindings_for(COMM) of a paired fire
+  else operation i is an unpaired fire
+    HOSTSPACE -[$rrs_fail]-> TXN : after its COMM call: ReplayDivergence,\nor the error of a rejected call, as in play
+    TXN -[$rrs_fail]-> AGENT : the commit fails at i,\noperations 0 to i - 1\nstay applied
+  end
 end
 RED -[$rrs_flow]> HANDLE : sweep_volatile at the same point as play
 HANDLE -[$rrs_flow]> HOSTSPACE : the same sweep, and the estimate\nof waiting continuations goes down

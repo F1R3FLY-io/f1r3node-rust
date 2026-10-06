@@ -3,7 +3,8 @@
 This document describes how the campaign builds Reified RSpaces in the node.
 Each phase of the campaign adds a section, and the [README](README.md#campaign-phases) lists the phases.
 Phase P1 writes the [substrate](#substrate) section, which describes the storage layer of spaces in `rspace++`.
-Later phases add the space agents, the routing, the theory seam, and the other parts.
+Phase P4 writes the section [Native spaces](#native-spaces), which describes the first working space, of the family `hashmap:queue`.
+Later phases add the other disciplines and outer stores, the theory seam, and the other parts.
 
 Read the [glossary](glossary.md) first, because this document uses its terms and links to its entries.
 The [decision register](decision-register.md) is normative, and this document follows it.
@@ -122,6 +123,7 @@ Table S2.2 gives the related terms that this section also uses.
 | Term | Meaning in the substrate |
 |---|---|
 | [Trigger event](glossary.md#trigger-event) | The IO event of the operation that fires. Its key in the replay table is the trigger key. |
+| [Unpaired fire](glossary.md#unpaired-fire) | A replay fire without a free recorded occurrence of its COMM. It stages with no error, and its commit fails after the observer calls of play. |
 | [Prefix atomicity](glossary.md#prefix-atomicity) | A failure of operation $`i`$ at commit leaves the operations $`0`$ to $`i - 1`$ applied. |
 | [Lock stripe](glossary.md#lock-stripe) | One of the 4096 mutexes of phase A or of phase B. |
 | [Accounting observer](glossary.md#accounting-observer) | The charging interface: start, produce or consume, COMM, and finish. |
@@ -193,6 +195,7 @@ Its HEAD columns cite `replay_rspace.rs`.
 | 5 | `increment_produce_counter`, before any match. | `1103`, `1488-1494` | None. | |
 | 6, Store or Park | `log_produce` to the logger, then `store_data`. | `1126-1127`, `1170-1171`, `1579-1593` | `log_consume` to the logger, then `store_waiting_continuation`, which also raises the estimate of waiting continuations. | `852-853`, `896-904`, `914-922`, `1561-1577` |
 | 7, Fire | `observe_comm`. | `1312` | `observe_comm`. | `944-950` |
+| 7a, unpaired Fire | Stop with `ReplayDivergence` after `observe_comm` accepts ([decision 36](decision-register.md#decision-36)). The fire logs no event, changes no store entry or binding, and step 13 rolls its counter step back. | None | The same, with no counter step. | None |
 | 8, Fire | `log_produce`, then `log_comm` with the label `comm.produce`. | `1314-1321` | `log_consume`, then `log_comm` with the label `comm.consume`. | `952-966` |
 | 9, Fire | Remove a non-persistent continuation. In both cases, call `mark_replay_waiting_continuation_match`. | `1323-1329` | None. | |
 | 10, Fire | `remove_matched_datum_and_join`, or only the fired joins when the fire retains. | `1331`, `1707-1727` | `store_persistent_data`, unless the fire retains. | `968`, `1595-1605` |
@@ -201,8 +204,14 @@ Its HEAD columns cite `replay_rspace.rs`.
 | 13 | After a failed fire, `rollback_produce_counter`. | `1163-1165`, `1496-1509` | None. | |
 | 14 | `observe_operation_finish`. | `1068-1071` | The same. | `771-774` |
 
-Host replay asserts that the COMM it computes is in the recorded list, and it panics otherwise (`replay_rspace.rs:936-943`, `1306-1311`).
-The substrate checks the COMM at staging instead, and a missing COMM fails with the typed error `ReplayDivergence` ([S5.3](#s53-verify-fr-3)).
+Host replay decides the outcome of an operation from the log.
+It fires only when the log holds a matching COMM, and otherwise it stores the datum or parks the continuation (`replay_rspace.rs:1125-1129`, `895-906`).
+It also asserts that the COMM it computes is in the recorded list, and it panics otherwise (`replay_rspace.rs:936-943`, `1306-1311`).
+
+A space agent decides the outcome from the staged view, as in play, so it can stage a fire that the log does not hold.
+Staging then pairs nothing for the fire, and it reports no error ([S5.3](#s53-verify-fr-3)).
+At commit, a rejected observer call fails the fire with the error of play.
+Otherwise step 7a fails the fire with the typed error `ReplayDivergence`.
 
 Table S3.3 gives the reporting steps.
 
@@ -216,7 +225,7 @@ Table S3.3 gives the reporting steps.
 
 1. Retention. A peek fire keeps its stored records in place, and the host removes them and the reducer produces them again. The stores then differ only by these kept records (decision 19, headline H11). Ordinary channels never meet this rule, because only agents reach storage channels.
 2. Directives. A native replay directive fails the operation closed ([I-13](decision-register.md#i-13), decision 19 D4).
-3. Divergence. A missing COMM is a typed error at staging, not a panic at commit.
+3. Divergence. Replay pairs each fire at staging, and it resolves an [unpaired fire](glossary.md#unpaired-fire) at commit ([decision 36](decision-register.md#decision-36)). The commit makes the calls of play first, so a rejected call gives the error and the cost of play. Otherwise the fire fails with the typed error `ReplayDivergence`, not with a panic, and it stores and parks nothing.
 4. Candidate choice. The agent chooses the continuation and the candidates, and the substrate validates any choice. The host takes the first match of its deterministic shuffle.
 5. Consume-side pairing. A consume-side fire pairs only under its trigger key, which is stricter than host replay ([S10](#s10-limits)).
 
@@ -281,6 +290,10 @@ Staging validates one operation and applies its effects to the staged view at on
 Later reads and operations of the same transaction then see these effects.
 Nothing touches the host before commit.
 Every check of a group runs before the first hot-store access under the key of that group.
+
+Staging never fails for pairing ([decision 36](decision-register.md#decision-36)).
+In replay, a fire without a free recorded occurrence of its COMM stages as play stages it, and it stays an [unpaired fire](glossary.md#unpaired-fire).
+So replay stages exactly the operations of play, for every log, and the commit decides the outcome of an unpaired fire ([S5.2](#s52-commit)).
 
 The outline of a produce has five named steps.
 
@@ -351,7 +364,11 @@ A non-persistent produce also steps its staged counter ([S4](#s4-counter-timing)
 A fire loads the data and the joins of every channel of the group, and the continuations of the group.
 The waiting continuation must be in the view, and each stored candidate must bind the record at its index.
 The substrate then computes the COMM by the play rule of [S4](#s4-counter-timing), and it verifies the COMM in replay ([S5.3](#s53-verify-fr-3)).
-Last, it applies the effects to the view in the host order.
+
+Verification returns the recorded COMM of a paired fire, and none in play or for an unpaired fire.
+It never fails, and only a paired fire adds its COMM to `paired`.
+The staged fire keeps the result as its field `recorded`, which the commit reads.
+Last, staging applies the effects to the view in the host order.
 The fire never stores the incoming datum ([S5.8](#s58-peek-re-offer-fr-10)).
 
 ```text
@@ -361,13 +378,13 @@ The fire never stores the incoming datum ([S5.8](#s58-peek-re-offer-fr-10)).
         positions ← CLAIM-POSITIONS(group, candidates)
         comm ← COMM::new(candidates, wk.source, wk.peeks, t)
             with t(p) = κ_v(p) + [¬persist ∧ p = src]            ▷ CounterOverflow
-        recorded ← VERIFY(comm, Produce(src))                    ▷ ReplayDivergence
+        recorded ← VERIFY(comm, Produce(src))    ▷ none in play, and for an unpaired fire
         δ′ ← NEXT-DELTA(src, persist)                            ▷ CounterOverflow
         removed ← REMOVED-RECORDS(candidates, positions, retain)
         effects ← APPLY-FIRE-TO-VIEW(group, wk, candidates, removed)
         if δ′ ≠ none: δ(src) ← δ′
         if recorded ≠ none: paired ← paired ++ [comm]
-        append (the operation with its fire, before_observe, effects)
+        append (the operation with its fire and recorded, before_observe, effects)
         return (index, Produce(src), comm)
 ```
 
@@ -410,6 +427,7 @@ These are the list rules of `put_continuation` and `put_join` (`hot_store.rs:660
 ⟨Stage a consume-side fire⟩.
 A consume-side fire binds stored records only.
 The COMM uses the plain view counters, because a consume steps no counter.
+Verification follows the rule of a produce-side fire, under the trigger key of the consume.
 A retaining fire removes nothing.
 
 ```text
@@ -419,11 +437,11 @@ A retaining fire removes nothing.
         CHECK-STORED-CANDIDATES(group, candidates)               ▷ NotInView
         positions ← CLAIM-POSITIONS(group, candidates)
         comm ← COMM::new(candidates, src, peeks, κ_v)            ▷ CounterOverflow
-        recorded ← VERIFY(comm, Consume(src))                    ▷ ReplayDivergence
+        recorded ← VERIFY(comm, Consume(src))    ▷ none in play, and for an unpaired fire
         removed ← REMOVED-RECORDS(candidates, positions, retain)
         effects ← REMOVE-RECORDS(group, candidates, removed)
         if recorded ≠ none: paired ← paired ++ [comm]
-        append (the operation with its fire, before_observe, effects)
+        append (the operation with its fire and recorded, before_observe, effects)
         return (index, Consume(src), comm)
 ```
 
@@ -490,6 +508,8 @@ pub(crate) fn peek_retention(binds: usize, peeks: &BTreeSet<i32>) -> Result<bool
 Commit is the single mutation point of a transaction.
 It applies the staged operations in staging order, each under its own sub-order, with the host calls of [S3](#s3-host-equivalence).
 It returns one receipt for each operation, and it releases the locks before it returns.
+In every mode, an operation makes its observer calls before its events and its store effects.
+So the commit of replay makes the calls of play first, also for an [unpaired fire](glossary.md#unpaired-fire) ([decision 36](decision-register.md#decision-36)).
 
 ```text
 COMMIT():
@@ -523,13 +543,15 @@ APPLY-OP(op, events):
     ⟨Run the read-only commit checks⟩        ▷ Inconsistent, CounterOverflow
     run op.before_observe with the source of op                  ▷ Host error
     start the accounting operation                               ▷ Host error
-    run the observed body of the host operation, and record its events
-    finish the accounting operation with Stored, Matched, or Rejected
+    result ← ⟨Run the observed body⟩         ▷ Host error, ReplayDivergence
+    finish the accounting operation with Stored, Matched, or Rejected, after result
+    return result
 ```
 
 A commit without an operation context is not tracked, and it emits no sub-orders.
 A failure of operation $`i`$ leaves the operations $`0`$ to $`i - 1`$ applied, as the equivalent host program would ([prefix atomicity](glossary.md#prefix-atomicity)).
 The deploy then fails, and the soft checkpoint of the deploy removes the applied operations.
+An unpaired fire fails under the same rule, so a replay divergence leaves the prefix that play leaves.
 A transaction that is dropped before commit has no effect: it makes no event, no observer call, and no write.
 
 ⟨Run the read-only commit checks⟩.
@@ -547,6 +569,37 @@ Then the commit finds the fired continuation and the bound records in the live s
         require live_comm(the live counters) = the staged COMM         ▷ Inconsistent
         find the continuation and the records with CLAIM-POSITIONS     ▷ Inconsistent
         require each removed entry at its staged position             ▷ Inconsistent
+```
+
+The read-only checks of FR-7' run for an unpaired fire too, before any call, and its staged effects equal those of play.
+The checks read no binding, so the pairing of a fire never changes them.
+The event correlation never runs for an unpaired fire, because `APPLY-OP` fails first.
+
+⟨Run the observed body⟩.
+The observed body makes the remaining calls of the host operation, in the order of Table S3.1 or Table S3.2.
+Each observer call precedes the events and the store effects of the operation, so a rejected call leaves no event of the operation.
+A fire then observes its COMM, and in replay an unpaired fire stops right after that call ([decision 36](decision-register.md#decision-36)).
+
+So replay makes every observer call that play makes, in the same order, and its only extra call is the stateless directive query.
+The same call then rejects in both modes, after the same prefix.
+A replay produce steps its host counter before it matches (Table S3.2, step 5).
+It rolls the step back when its fire fails (step 13).
+
+```text
+    if mode ≠ Play:
+        require the observer returns no replay directive          ▷ NativeReplayDirectiveUnsupported
+    observe the produce or the consume of op                      ▷ Host error
+    if mode ≠ Play and op is a produce: step the host counter of op.src
+    if op stores or parks:
+        log the IO event, then store the datum or park the continuation
+        return Stored or Parked
+    observe the COMM of the fire                                  ▷ Host error
+    if mode ≠ Play and op.fire.recorded = none:
+        fail ReplayDivergence(op.fire.comm)   ▷ no event, no store change, no binding change
+    log the IO event, then the COMM event
+    remove the fired continuation, and the bound records unless the fire retains them
+    if mode ≠ Play: remove the bindings of the COMM
+    return Fired
 ```
 
 ⟨Correlate the effects with the events⟩.
@@ -569,7 +622,7 @@ The cost is $`O(e \cdot v)`$ for $`e`$ staged effects and $`v`$ events of one op
 
 Figure S5.2 shows the commit as an activity diagram, with the steps of the backends and the place of each error.
 
-![Commit of a space transaction as an activity. The commit refuses a finished transaction with Finished, takes the locks and the registration, and clears the paired COMM events and the counter delta. It refuses a swapped hot store with StoreSwapped and a reused parent order with ParentOrderReused, both with no effect. Then a loop runs each staged operation i in staging order under sub_order(parent, i): the read-only checks (joins unchanged, counter room, live COMM equal to the staged COMM, removed entries at their staged positions), the before_observe callback, the observer start, in replay the directive check, the observe call, in replay the counter step, and then the outcome: Store, Park, or Fire with observe_comm, the produce or consume event and the COMM event, the continuation removal, the record removal unless the fire retains, and in replay the removal of the bindings. The observer finish follows, and then the event correlation. An error in operation i leaves the operations before it applied. At the end the commit releases the locks and then the registration and returns the receipts.](diagrams/06-space-txn-commit.svg)
+![Commit of a space transaction as an activity. The commit refuses a finished transaction with Finished, takes the locks and the registration, and clears the paired COMM events and the counter delta. It refuses a swapped hot store with StoreSwapped and a reused parent order with ParentOrderReused, both with no effect. Then a loop runs each staged operation i in staging order under sub_order(parent, i): the read-only checks (joins unchanged, counter room, live COMM equal to the staged COMM, removed entries at their staged positions), the before_observe callback, the observer start, in replay the directive check, the observe call, in replay the counter step, and then the outcome: Store, Park, or Fire. A fire makes the observe_comm call. In replay, an unpaired fire then fails with ReplayDivergence, after the observer calls of play and with no event, no store change, and no binding change (decision 36). Any other fire logs the produce or consume event and the COMM event, removes the continuation, removes the records unless the fire retains, and in replay removes the bindings. The observer finish follows, and then the event correlation. An error in operation i leaves the operations before it applied. At the end the commit releases the locks and then the registration and returns the receipts.](diagrams/06-space-txn-commit.svg)
 
 *Figure S5.2. Source: [diagrams/06-space-txn-commit.puml](diagrams/06-space-txn-commit.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -584,6 +637,7 @@ It is the figure 06a of the diagram plan.
 
 In replay and in reporting, staging verifies each fire against the recorded bindings before it applies the fire to the view.
 Play has no recorded log, so it skips this step.
+Verification never fails: it returns the recorded COMM that the fire pairs, or none for an [unpaired fire](glossary.md#unpaired-fire) ([decision 36](decision-register.md#decision-36)).
 The lookup uses only the trigger key of the fire.
 The trigger key is `Produce(src)` for a produce-side fire and `Consume(src)` for a consume-side fire.
 Host replay reads the same key for a produce (`replay_rspace.rs:1112-1123`), and for a consume it also reads an index of all COMM events ([S10](#s10-limits)).
@@ -600,11 +654,11 @@ An occurrence is free while the transaction has not paired it:
 ```text
 VERIFY(comm, trigger):
     if mode = Play: return none
-    (recorded, b) ← the binding of comm under trigger in the replay table   ▷ ReplayDivergence when absent
+    (recorded, b) ← the binding of comm under trigger in the replay table, or return none when absent
     m ← BINDING-MULTIPLICITY(trigger, comm)
     available ← b div m, or 0 when m = 0
     if the copies of comm in paired < available: return recorded
-    fail ReplayDivergence(comm)
+    return none                              ▷ an unpaired fire
 ```
 
 The multiplicity counts the occurrences of the key in the COMM:
@@ -633,28 +687,26 @@ The staging core applies the rule as follows:
     // consume-side fire. The key holds one binding per occurrence of the key
     // in the COMM (`binding_multiplicity`), so a recorded occurrence is
     // available while the paired copies use fewer bindings than it holds.
+    // Returns the recorded copy, or `None` in play and for an unpaired fire.
+    // An unpaired fire stages as in play, never pairs, and fails at commit
+    // after the observer calls of play (decision 36), so replay staging
+    // equals play staging for every log.
     fn verify<B: TxnBackend<C, P, A, K>>(
         &self,
         backend: &B,
         comm: &COMM,
         trigger: &IOEvent,
-    ) -> Result<Option<COMM>, SpaceTxnError> {
+    ) -> Option<COMM> {
         match self.mode {
-            SpaceMode::Play => Ok(None),
+            SpaceMode::Play => None,
             SpaceMode::Replay | SpaceMode::Reporting => {
-                let divergence = || SpaceTxnError::ReplayDivergence(Box::new(comm.clone()));
-                let (recorded, count) = backend
-                    .recorded_binding(trigger, comm)
-                    .ok_or_else(divergence)?;
+                let (recorded, count) = backend.recorded_binding(trigger, comm)?;
                 let available = match binding_multiplicity(trigger, comm) {
                     0 => 0,
                     multiplicity => count / multiplicity,
                 };
                 let paired = self.paired.iter().filter(|paired| *paired == comm).count();
-                match paired < available {
-                    true => Ok(Some(recorded)),
-                    false => Err(divergence()),
-                }
+                (paired < available).then_some(recorded)
             }
         }
     }
@@ -662,11 +714,28 @@ The staging core applies the rule as follows:
 
 The literal rule of the design pass compared $`b`$ with the paired copies, without the division.
 For a COMM that lists one produce twice, that rule pairs one recorded occurrence two times.
-The Rocq lemma `design_verify_overpairs` (`EventCorrelation.v:4287`) proves this over-pairing, and the test `space_store_handle_replay_cross_channel_comm_pairs_once` pins the corrected rule.
+The Rocq lemma `design_verify_overpairs` (`EventCorrelation.v:4433`) proves this over-pairing, and the test `space_store_handle_replay_cross_channel_comm_pairs_once` pins the corrected rule.
 
 The commit removes all bindings of a paired COMM with `remove_bindings_for` (Table S3.2, step 11).
 A binding that no operation pairs fails the deploy at `check_replay_data` with `UnusedCommEvent`, as in host replay (`replay_rspace.rs:452-468`).
 So a park where the log recorded a fire is not an error at once, because the binding may belong to a later produce.
+
+**Unpaired fires.** A fire that does not pair stages as play stages it ([decision 36](decision-register.md#decision-36)).
+It changes the staged view, it adds no copy to `paired`, and its staged fire keeps `recorded = none`.
+The commit reads this field right after the COMM call of the fire ([S5.2](#s52-commit)).
+A call that the observer rejects fails the operation with the error of play, for example `OutOfPhlogistons`, and otherwise the commit fails with `ReplayDivergence`.
+The fire then logs no event, removes no entry, keeps its bindings, and rolls its counter step back.
+
+For an honest log, replay therefore ends as play ends.
+Play logs the events of an operation only after the observer accepts its calls.
+So a deploy that runs out of phlo at operation $`k`$ leaves no COMM of operation $`k`$ in the log.
+When operation $`k`$ is a fire, replay stages it as an unpaired fire.
+Replay makes the calls of play, and the same call rejects with the cost of play (headline H23, invariant T6).
+
+For a log that omits a COMM, the fire fails closed after the charges of its introduction and its COMM.
+These charges never exceed the charges of an honest run.
+An agent cannot continue a transaction after an unpaired fire, because the commit always fails at it.
+The two lookups below let an agent follow the log before it stages, and no P4 agent calls them.
 
 Two lookups help an agent to choose the same outcome as play:
 
@@ -791,7 +860,7 @@ pub(crate) fn require_canonical(keys: &[Blake2b256Hash]) -> Result<(), SpaceTxnE
 
 The comparison of byte strings is a total order, and it is antisymmetric.
 So each multiset of keys has exactly one non-decreasing arrangement: its sorted list.
-The Rocq lemma `sorted_unique_canonical` (`EventCorrelation.v:5937`) proves this, also when the list repeats a key.
+The Rocq lemma `sorted_unique_canonical` (`EventCorrelation.v:6139`) proves this, also when the list repeats a key.
 Headline H22 uses it to show that canonical cache keys have distinct history keys.
 
 The check runs before the hot-store access of its group.
@@ -991,8 +1060,8 @@ Without $`W_2`$, operation 1 has the outcome Store, and the space holds one copy
 
 Under the P1 rule before decision 30, operation 0 stored $`d`$, and $`W_2`$ then matched the stored $`d`$.
 That pending match breaks the no-pending-match invariant of the queue.
-The lemma `offer_p1_breaks_no_pending_match` (`EventCorrelation.v:3202`) shows the break.
-The lemma `offer_keeps_no_pending_match` (`EventCorrelation.v:3164`) shows that the plan with the re-offer keeps the invariant.
+The lemma `offer_p1_breaks_no_pending_match` (`EventCorrelation.v:3335`) shows the break.
+The lemma `offer_keeps_no_pending_match` (`EventCorrelation.v:3297`) shows that the plan with the re-offer keeps the invariant.
 
 The re-offer registers its introduction authority under the identity of the peek fire.
 The registry accepts an equal authority for an identity that it holds (`rholang/src/rust/interpreter/accounting/mod.rs:959-964`).
@@ -1016,7 +1085,7 @@ The column "Effect" of Table S6 uses three values.
 
 | Variant | Raised in | Trigger | Effect |
 |---|---|---|---|
-| `Host(e)` | commit | The `before_observe` callback or an observer call rejects operation $`i`$, for example with `OutOfPhlogistons`, `HostWorkRejected`, or an identity conflict of the introduction authority. | Prefix. Operation $`i`$ makes its observer calls up to the rejection, but it logs no event and changes no store entry. A failed replay fire rolls its counter back. |
+| `Host(e)` | commit | The `before_observe` callback or an observer call rejects operation $`i`$, for example with `OutOfPhlogistons`, `HostWorkRejected`, or an identity conflict of the introduction authority. In replay, this also holds for an unpaired fire, which then fails with the error of play ([decision 36](decision-register.md#decision-36)). | Prefix. Operation $`i`$ makes its observer calls up to the rejection, but it logs no event and changes no store entry. A failed replay fire rolls its counter back. |
 | `Host(e)` | count, sweep validation | The history reader fails. | None. |
 | `InvalidOperation` | begin, stage | The lock keys are empty. A group is empty, or its length differs from the patterns. The candidates do not line up with the channels. The produce channel is not in the fired group. A produce fire has not exactly one incoming candidate, or it does not carry the produced record. A consume fire has an incoming candidate. | None. |
 | `InvalidOperation` | any step | A channel or a record cannot be serialized with bincode. | None, or prefix when a commit check of operation $`i`$ raises it. |
@@ -1024,7 +1093,7 @@ The column "Effect" of Table S6 uses three values.
 | `NotInView` | stage | The waiting continuation of a produce fire is not in the view. A stored candidate does not name its record byte for byte. A fire binds a non-persistent record twice. | None. |
 | `InstalledChannel` | read, stage, sweep | A touched channel belongs to an installed system process. | None. |
 | `StoreSwapped` | commit | A reset or a revert replaced the hot store between `begin` and `commit`. | None. |
-| `ReplayDivergence` | stage | In replay or reporting, the COMM has no free recorded occurrence under its trigger key. | None. |
+| `ReplayDivergence` | commit | In replay or reporting, operation $`i`$ is an [unpaired fire](glossary.md#unpaired-fire): at staging, its COMM had no free recorded occurrence under its trigger key. The observer accepted every call of the fire, up to and including its COMM call ([decision 36](decision-register.md#decision-36)). | Prefix. Operation $`i`$ makes the observer calls of play, but it logs no event and changes no store entry or binding. A produce rolls its counter step back. |
 | `NativeReplayDirectiveUnsupported` | commit | In replay or reporting, the observer returns a directive for operation $`i`$. | Prefix. Operation $`i`$ makes only its start and finish calls. |
 | `Inconsistent` | stage | A view change fails after validation. This is a defect, and the transaction closes. | None. |
 | `Inconsistent` | commit | A read-only check of operation $`i`$ fails: the joins changed, the COMM differs, or a removed entry is not at its staged position. | Prefix. |
@@ -1041,6 +1110,7 @@ The column "Effect" of Table S6 uses three values.
 | `NestedTransaction` | begin, sweep | The current task already holds an open transaction or a running sweep of the handle. | None, and no lock. |
 
 A staging error other than a failed view change leaves the transaction open, so the agent can continue, commit, or drop it.
+No staging error comes from pairing: an unpaired fire stages with no error, and its commit fails at it ([S5.3](#s53-verify-fr-3)).
 
 ### S7. Locking and ordering
 
@@ -1107,7 +1177,7 @@ The TLA+ model `TxnLockCoverage.tla` checks this result as the invariant T5 over
 
 Figure S7 shows a full cycle of play, checkpoint, replay, and sweep.
 
-![Checkpoint, replay and sweep as a sequence. Play on the proposer: the reducer starts the evaluation scope, the space agent opens a transaction through the handle, reads the staged view, stages operations and commits; the commit makes the observer calls and logs the events under sub_order(parent, i) and writes the hot store. At the end of the deploy the reducer sweeps the volatile channels, which removes their data, continuations and joins with no event. The checkpoint turns the hot store changes into history actions; the deletes of the swept keys are absent from the trie and change nothing, so the root covers the durable state only. Replay on the validator: rig binds each recorded COMM under its logged IO events, the scope starts, the agent stages the same operations, verify pairs each fire under its trigger key with the binding multiplicity, the commit removes the bindings, the sweep runs at the same point, check_replay_data finds no unused binding, and the checkpoint gives the same root. A divergent fire fails at staging with ReplayDivergence and no effect.](diagrams/07-checkpoint-replay-sweep.svg)
+![Checkpoint, replay and sweep as a sequence. Play on the proposer: the reducer starts the evaluation scope, the space agent opens a transaction through the handle, reads the staged view, stages operations and commits; the commit makes the observer calls and logs the events under sub_order(parent, i) and writes the hot store. At the end of the deploy the reducer sweeps the volatile channels, which removes their data, continuations and joins with no event. The checkpoint turns the hot store changes into history actions; the deletes of the swept keys are absent from the trie and change nothing, so the root covers the durable state only. Replay on the validator: rig binds each recorded COMM under its logged IO events, the scope starts, the agent stages the same operations as play, and verify pairs each fire under its trigger key with the binding multiplicity. A fire with no free recorded occurrence stages unpaired, with no error (decision 36). The commit then makes the observer calls of play in the same order under sub_order(parent, i). An operation that stores, parks, or fires paired writes the hot store, and a paired fire removes its bindings. At an unpaired fire the commit fails after the COMM call with ReplayDivergence, or with the error of a rejected call as in play, and the operations before it stay applied. The sweep runs at the same point as in play, check_replay_data finds no unused binding, and the checkpoint gives the same root.](diagrams/07-checkpoint-replay-sweep.svg)
 
 *Figure S7. Source: [diagrams/07-checkpoint-replay-sweep.puml](diagrams/07-checkpoint-replay-sweep.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -1164,35 +1234,40 @@ The substrate has formal models in Rocq and TLA+, property-based tests for each 
 The [model map](../../../formal/reified-rspaces-model-map.json) links each Rust item to the models.
 The [invariant map](../../../formal/reified-rspaces-invariant-map.json) links each headline and invariant to its property tests.
 
-**Rocq headlines.** Table S9.1 lists the 22 headlines of P1.
+**Rocq headlines.** Table S9.1 lists the 23 headlines of P1.
 Each one closes under the global context, with no axiom, no parameter, and no admitted proof.
 
 | Id | Headline | Citation | Statement | Property tests |
 |---|---|---|---|---|
-| H1 | `commit_trace_eq_host` | `EventCorrelation.v:4612` | A commit makes the observer calls, events, and status of the host run of the same operations. | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H2 | `commit_state_eq_host` | `EventCorrelation.v:4633` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H3 | `counter_timing_play_replay` | `EventCorrelation.v:5091` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
-| H4 | `verify_sound_complete` | `EventCorrelation.v:5154` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. | `prop_space_txn_replay_divergence_typed_and_inert`, `prop_space_txn_replay_requires_trigger_event` |
-| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:5358` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_retention` |
-| H6 | `view_commit_coherent` | `EventCorrelation.v:4664` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
-| H7 | `joins_lockstep_preserved` | `EventCorrelation.v:4687` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
-| H8 | `sub_order_between` | `EventCorrelation.v:6301` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
-| H9 | `abort_inert` | `EventCorrelation.v:6023` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H10 | `coverage_total` | `EventCorrelation.v:4974` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
-| H11 | `peek_retention_trace_eq_host` | `EventCorrelation.v:4732` | With the re-offer as the next operation, a commit makes the calls, events, status, and bindings of the host run. The stores differ only by the kept stored records. | `prop_space_txn_peek_retention` |
-| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:6097` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_retention` |
+| H1 | `commit_trace_eq_host` | `EventCorrelation.v:4782` | A commit makes the observer calls, events, and status of the host run of the same operations. | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H2 | `commit_state_eq_host` | `EventCorrelation.v:4804` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H3 | `counter_timing_play_replay` | `EventCorrelation.v:5266` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
+| H4 | `verify_sound_complete` | `EventCorrelation.v:5356` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, and an unpaired fire never commits: it emits no event or effect, and it keeps the bindings and the store (decision 36). | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
+| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:5560` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_retention` |
+| H6 | `view_commit_coherent` | `EventCorrelation.v:4836` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
+| H7 | `joins_lockstep_preserved` | `EventCorrelation.v:4859` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
+| H8 | `sub_order_between` | `EventCorrelation.v:7093` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
+| H9 | `abort_inert` | `EventCorrelation.v:6225` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
+| H10 | `coverage_total` | `EventCorrelation.v:5147` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
+| H11 | `peek_retention_trace_eq_host` | `EventCorrelation.v:4904` | With the re-offer as the next operation, a commit makes the calls, events, status, and bindings of the host run. The stores differ only by the kept stored records. | `prop_space_txn_peek_retention` |
+| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:6310` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_retention` |
 | H13 | `sweep_exact` | `VolatileSweep.v:876` | The sweep removes exactly the volatile data, continuations, and joins. Through the handle, a sweep in a task with an open transaction fails closed. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H14 | `delete_absent_identity` | `VolatileSweep.v:953` | A history delete of an absent key changes nothing. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H15 | `sweep_root_neutral` | `VolatileSweep.v:1248` | The checkpoint after a sweep gives the trie of the durable changes alone. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H16 | `leaf_count_is_length` | `VolatileSweep.v:1311` | The root leaf record count is the length of the data list. | `prop_root_leaf_record_count_matches_history` |
-| H17 | `non_canonical_fails_closed` | `EventCorrelation.v:5965` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H17 | `non_canonical_fails_closed` | `EventCorrelation.v:6167` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
 | H18 | `canonical_reads_root_neutral` | `VolatileSweep.v:1426` | Reads of canonical keys leave the checkpoint root unchanged. | `prop_space_txn_reads_root_neutral` |
-| H19 | `directive_fails_closed` | `EventCorrelation.v:6137` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
-| H20 | `parent_order_single_txn` | `EventCorrelation.v:6574` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
-| H21 | `view_identity_is_store_identity` | `EventCorrelation.v:6695` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
+| H19 | `directive_fails_closed` | `EventCorrelation.v:6350` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
+| H20 | `parent_order_single_txn` | `EventCorrelation.v:7366` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
+| H21 | `view_identity_is_store_identity` | `EventCorrelation.v:7487` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
 | H22 | `checkpoint_rejects_duplicate_key_actions` | `VolatileSweep.v:1610` | The checkpoint refuses two actions on one history key, and canonical cache keys have distinct history keys. | `prop_space_txn_non_canonical_inputs_fail_closed` |
+| H23 | `replay_reproduces_play_run` | `EventCorrelation.v:6900` | With the commit log of play, replay stages the operations of play, and its commit makes the observer calls, events, status, and store of play. So an operation that play rejects fails replay at the same call, after the same prefix (decision 36). | `prop_space_txn_replay_reproduces_play_rejection` |
 
-The models are [EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v), with H1 to H12, H17, and H19 to H21, and [VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v), with H13 to H16, H18, and H22.
+The models are [EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v), with H1 to H12, H17, H19 to H21, and H23, and [VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v), with H13 to H16, H18, and H22.
+Since [decision 36](decision-register.md#decision-36), H1, H2, and H11 assume in replay that every staged fire paired, which a successful staging implied before.
+H4 and H23 cover the unpaired fire.
+H23 assumes that the observer ignores the stateless directive queries and gives no directive.
+The lemma `replay_premises_satisfiable` (`EventCorrelation.v:7564`) shows that the observer of a phlo limit meets both premises.
 
 **TLA+ invariants.** Table S9.2 lists the invariants of the two TLA+ modules [[Lam94](#ref-lam94)].
 TLC explores the complete state space of each safe configuration.
@@ -1200,18 +1275,21 @@ Apalache checks the inductive forms `IndInv` and `LockIndInv` with a base step a
 
 | Id | Invariant | Module | Safe configurations | Negative controls |
 |---|---|---|---|---|
-| T1 | `ReplayPrefixEqual` | `CheckpointReplay.tla` | `MC_CheckpointReplay.cfg`, `MC_CheckpointReplay_TwoBlock.cfg` | `UuidUnsafe.cfg` |
+| T1 | `ReplayPrefixEqual` | `CheckpointReplay.tla` | `MC_CheckpointReplay.cfg`, `MC_CheckpointReplay_TwoBlock.cfg` | `UuidUnsafe.cfg`, `AcceptUnpairedUnsafe.cfg` |
 | T2 | `SameRootIffSameState` | `CheckpointReplay.tla` | The same | `RootIgnoresVolatileUnsafe.cfg` |
 | T3 | `PairedOnce` | `CheckpointReplay.tla` | The same, and Apalache through `IndInv` | `DoublePairUnsafe.cfg`, `DoublePairUnsafe_IndStep_Apalache.cfg` |
 | T4 | `NoVolatileResidue` | `CheckpointReplay.tla` | The same, and Apalache through `IndInv` | `JoinResidueUnsafe.cfg`, `JoinResidueUnsafe_IndStep_Apalache.cfg` |
 | T5 | `Serializable` | `TxnLockCoverage.tla` | `MC_TxnLockCoverage.cfg`, and Apalache through `LockIndInv` | `UncoveredChannelUnsafe.cfg`, `UnjoinedChannelUnsafe.cfg`, and their Apalache step forms |
+| T6 | `ReplayOutcomeEqual` | `CheckpointReplay.tla` | `MC_CheckpointReplay.cfg`, `MC_CheckpointReplay_TwoBlock.cfg` | `StagingDivergenceUnsafe.cfg` |
 
 The modules are [CheckpointReplay.tla](../../../formal/tlaplus/reified_rspaces/CheckpointReplay.tla) and [TxnLockCoverage.tla](../../../formal/tlaplus/reified_rspaces/TxnLockCoverage.tla).
 Each configuration file starts with a line that states its bounds.
 For example, `MC_TxnLockCoverage.cfg` covers two channels on two stripes, the groups that repeat a channel, two transactions, and two host operations.
+Since decision 36, the deploy of each block in `CheckpointReplay.tla` has a phlo limit, and the proposer may omit the COMM of its last fire.
+T6 states that an honest block is never rejected, and that its replayed deploy ends with the failure and the spending of play.
 
-**Property tests.** The invariant map names 24 properties.
-Twenty-three are in [reified_space_store_handle_props.rs](../../../rspace++/tests/reified_space_store_handle_props.rs), and `prop_space_txn_par_identity_ignores_locally_free` is in [reified_space_store_handle_par.rs](../../../rholang/tests/reified_space_store_handle_par.rs), over real `Par` channels.
+**Property tests.** The invariant map names 25 properties.
+Twenty-four are in [reified_space_store_handle_props.rs](../../../rspace++/tests/reified_space_store_handle_props.rs), and `prop_space_txn_par_identity_ignores_locally_free` is in [reified_space_store_handle_par.rs](../../../rholang/tests/reified_space_store_handle_par.rs), over real `Par` channels.
 Each property runs 64 cases with a fixed seed and without failure persistence, so a run is repeatable and writes nothing to the source tree.
 Where a property allows it, the generators also make groups that are not canonical, which the substrate must reject with no effect.
 They also make sorted groups that repeat a channel, which the substrate must accept.
@@ -1222,7 +1300,7 @@ They also make sorted groups that repeat a channel, which the substrate must acc
 |---|---|---|
 | [reified_space_store_handle.rs](../../../rspace++/tests/reified_space_store_handle.rs), group A | 22 | Host parity of every operation shape, checked against a twin host. |
 | Group B | 5 | Checkpoints, history read-through, and a round trip through an LMDB directory that is closed and opened again. |
-| Group C | 10 | Replay lookup parity with host replay. |
+| Group C | 11 | Replay lookup parity with host replay, the typed divergence at commit, and the replay of a rejection of play (decision 36). |
 | Group D | 7 | The volatile sweep. |
 | Group E | 3 | Reporting delegation. |
 | Group F | 15 | The review regressions: canonical order, store identity, trigger-key pairing, lock coverage, one commit per parent order, nested begin, sweep bookkeeping, and peeks in replay. |
@@ -1234,8 +1312,9 @@ They also make sorted groups that repeat a channel, which the substrate must acc
 
 **Negative controls.** Each control shows that a check or a proof depends on the rule that it covers:
 
-- The script [rocq-negative-controls.py](../../../scripts/verify-reified/rocq-negative-controls.py) runs 24 mutants of the Rocq models. Eleven cover FR-1 and FR-1', six cover FR-5', one covers FR-9', and six cover FR-10. Each mutant must fail to compile inside its expected lemma.
-- Six unsafe TLC configurations each refute exactly their invariant, and four Apalache step controls each break their inductive invariant.
+- The script [rocq-negative-controls.py](../../../scripts/verify-reified/rocq-negative-controls.py) runs 27 mutants of the P1 models. Eleven cover FR-1 and FR-1', six cover FR-5', one covers FR-9', six cover FR-10, and three cover decision 36. Each mutant must fail to compile inside its expected lemma.
+- Eight unsafe TLC configurations each refute exactly their invariant, and four Apalache step controls each break their inductive invariant.
+- The P4 test `space_queue_out_of_phlo_sweep_replays_equal` is the control of decision 36. On the code before the fix, 143 of its 232 deploys replayed to another outcome than play.
 - The unit tests `correlation_rejects_datum_without_produce_event` and `correlation_rejects_comm_before_trigger` show that the event correlation rejects a defect.
 - Three control tests pin HEAD behavior that the substrate avoids: `space_store_handle_remove_all_continuations_keeps_joins_control`, `space_store_handle_host_permuted_keys_break_checkpoint_control`, and `space_store_handle_host_replay_repeated_channel_control`.
 
@@ -1277,9 +1356,18 @@ A mutant check that serializes the whole list fails this test.
 `rig` fills that index from every COMM of the log, also from a COMM whose Consume event the log lacks (`replay_rspace.rs:410-420`).
 
 The substrate pairs a consume-side fire only under `Consume(src)`.
-So for a log without the Consume event, host replay pairs the fire, and the substrate fails it with `ReplayDivergence` and no effect.
+So for a log without the Consume event, host replay pairs the fire, but the substrate stages it as an [unpaired fire](glossary.md#unpaired-fire).
+The commit then fails at the fire with `ReplayDivergence`, after the observer calls of play, and the operations before it stay applied.
 An honest log always holds this event, because a consume-side fire logs its consume in the same operation (Table S3.1, step 6).
 The test `space_store_handle_replay_requires_consume_trigger_event` pins both behaviors.
+
+**A log that omits a COMM.** Casper compares only the failed flag and the cost of a replayed deploy (`casper/src/rust/rholang/replay_runtime.rs:437-450`).
+A proposer can omit the COMM of a space fire from its log, and replay then fails the deploy with `ReplayDivergence`.
+Validators accept such a block when the failed flag and the cost match, both before and after [decision 36](decision-register.md#decision-36).
+Host replay gives a proposer the same room for a host COMM, because it stores the datum or parks the continuation instead (`replay_rspace.rs:1124-1129`).
+
+This observation is risk R1 of decision 36, and the campaign does not pursue it.
+Section 7.2 of the [finding](findings/space-replay-out-of-phlo.md#72-a-log-that-omits-a-comm) records it, with the related defect of host replay for a rejected COMM charge (pgmcp finding 9921).
 
 **HEAD findings.** The reviews of P1 found three defects of the baseline host.
 They are recorded in the pgmcp tracker for the RSpace and Casper owners, and the campaign does not fix them ([decision 12](decision-register.md#decision-12)).
@@ -1296,9 +1384,927 @@ Table S10 lists them with their pgmcp ids.
 - One handle for each host. The nested guard and the parent tracker live in the handle. Two separate handles over one host would not share them, so the runtime must keep one handle for each host (P4).
 - Path depth. Each sub-order adds one path segment, so a transaction at the native limit of path segments fails native recording (`rholang/src/rust/interpreter/accounting/native_runtime/operations.rs:181`).
 - Record count. `root_leaf_record_count` counts the records in the outer frame of the leaf, through `get_data_proj_binary`, with no change of the history modules (decision 19, D5).
-- Late divergence. A park where the log recorded a fire surfaces only at `check_replay_data`, as in host replay ([S5.3](#s53-verify-fr-3)).
+- Late divergence. A park where the log recorded a fire surfaces only at `check_replay_data`, as in host replay ([S5.3](#s53-verify-fr-3)). A fire where the log holds no free COMM surfaces at commit, after the observer calls of play.
+
+## Native spaces
+
+Phase P4 builds the first working Reified RSpace: the [space family](glossary.md#space-family) `hashmap:queue`.
+A Rholang program creates such a space with its [factory](glossary.md#factory), and it then sends and receives on the [collections](glossary.md#collection) of the space.
+Each space operation runs as one [space transaction](glossary.md#space-transaction) of the [substrate](#substrate).
+So the events, the charges, the replay, and the merge of a space operation are those of host operations ([decision 19](decision-register.md#decision-19)).
+
+The [specification](specification.md) states the required behavior of the queue, of the HashMap outer store, and of the default qualifier.
+The [agent API](agent-api.md) states the calls, the replies, and the errors that a program sees.
+This section explains how the code meets them, in nine parts that follow the life of one space operation:
+
+1. [N1](#n1-module-map-and-hook-lines): the new modules and the hook lines in the three hot files of the reducer.
+2. [N2](#n2-namespace-and-records): the ids under the namespace tag, and the envelopes of the records ([decision M-2](decision-register.md#m-2)).
+3. [N3](#n3-counters): the counters, which make cross-branch races visible to the merger ([decision M-1](decision-register.md#m-1), [decision 31](decision-register.md#decision-31)).
+4. [N4](#n4-genericspace-and-the-queue-discipline): the generic space and its head-only queue ([decision 11](decision-register.md#decision-11)).
+5. [N5](#n5-routing-and-scope): the routing of each channel, and the use context of the reducer.
+6. [N6](#n6-scheduling): the space intents of the deterministic scheduler.
+7. [N7](#n7-factories-and-handles): the factory, the handle, `HANDLE_OP`, `getSpaceAgent`, and `assertEqual`.
+8. [N8](#n8-errors): the errors and their codes.
+9. [N9](#n9-limits-of-p4): the limits of this phase.
+
+The pseudocode of this section uses the notation of [Table S5.0](#s5-algorithms), in the literate form of Knuth [[Knu84](#ref-knu84)].
+
+### N1. Module map and hook lines
+
+P4 adds new files only, plus a few hook lines in the three hot files of the interpreter.
+Table N1.1 lists the new modules.
+The paths of the rows are relative to `rholang/src/rust/interpreter/`, except the last row.
+
+*Table N1.1. The new modules of P4.*
+
+| Module | Files | Role |
+|---|---|---|
+| `spaces` | `namespace.rs` | The ids under the tag `0xE0`, their decoder, the collection key, and the random purposes. |
+| `spaces` | `record.rs` | The record envelopes, their strict decoders, and the authorities of the staged operations. |
+| `spaces` | `counter.rs` | The bump of a collection counter, and the opening of a collection on the space counter. |
+| `spaces` | `matching.rs` | The metered calls of the injected matcher. |
+| `spaces` | `generic.rs` | `GenericSpace<S, D>`, the traits `OuterStore` and `Discipline`, and the plans of a produce and of a consume. |
+| `spaces` | `outer/hashmap.rs`, `disciplines/queue.rs` | The HashMap outer store and the queue discipline. |
+| `spaces` | `agent.rs`, `errors.rs` | The interface between the agents and their callers, and the space errors with their codes. |
+| `spaces` | `types/`, `factory/` | The config map, the space id, the qualifier, the constructor, the schemas, and the registered families. |
+| `reified` | `reducer_hooks.rs` | The hooks of the reducer: USE, NEWSPACE, sends, receives, `new`, and the dispatch of fires. |
+| `reified` | `route.rs`, `scope.rs` | The routing classes and rules, the space references, and the use context. |
+| `reified` | `schedule.rs`, `runtime.rs`, `costs.rs` | `Intent::Space`, the runtime of a reducer, the host-work meter, and the fire-round cap. |
+| `reified` | `execution.rs` | The R7 backend of the system processes. |
+| `reified` | `factory.rs`, `handle.rs`, `system_processes.rs`, `system_channels.rs` | The factory, `HANDLE_OP`, `getSpaceAgent`, `assertEqual`, and their op channels. |
+| `reified` | `errors.rs` | The codes of the errors of the reducer hooks. |
+| `models` | `models/src/rust/space_factory_urn.rs` | The 32 families, their URNs and aliases, and the parser of a constructor. |
+
+*Table N1.2. The P4 hook lines in the hot files.*
+
+| Hook | Lines | Effect |
+|---|---|---|
+| Fields of `ReducerCore` | `reduce.rs:190-191` | The use context `space_ctx` and the runtime `reified`. |
+| Evaluation scope | `reduce.rs:458`, `472` | `begin_evaluation_scope` at the entry of `inj` and of `inj_with_observation`. |
+| H2 | `reduce.rs:1255` | A marker tuple in process position goes to `eval_marker`. |
+| H3 | `reduce.rs:1323` | `eval_send` calls `reified_produce`. |
+| Receive | `reduce.rs:1440` | `eval_receive` calls `reified_consume`. |
+| `new` | `reduce.rs:1664` | `eval_new` calls `reified_allocate`. |
+| H4 | `reduce.rs:1681` | `unbundle_receive` calls `reject_query_source` before its bundle check. |
+| Detached runtime | `reduce.rs:7826-7827` | `ReducerCore::new` starts without a use context and with a detached runtime. |
+| Hook module | `reduce.rs:8142-8143` | `reified/reducer_hooks.rs` is the child module `reified_hooks`. |
+| Scheduler module | `deterministic_reduction.rs:38-39` | `reified/schedule.rs` is the child module `reified_schedule`. |
+| Space intents | `deterministic_reduction.rs:348`, `378`, `394`, `403`, `419` | `Intent::Space`, `Completion::Space`, and the rejection, the order, and the delivery of a space completion. |
+| Footprint and execution | `deterministic_reduction.rs:700`, `749` | The footprint and the execution of a space intent. |
+| Imports | `rho_runtime.rs:30`, `52` | `SpaceTxnHost` and the module `reified`. |
+| Reducer setup | `rho_runtime.rs:1491`, `1507`, `1539` | The runtime parameter, the R7 wrap of the dispatch space, and the runtime field. |
+| Native replay | `rho_runtime.rs:1913-1914`, `1944` | A runtime that fails closed, with the Reified definitions. |
+| Host runtime | `rho_runtime.rs:1982-1983`, `2022` | The runtime of the host space, captured before the scheduler wrap, with the Reified definitions. |
+| Host bounds | `rho_runtime.rs:1976`, `2059`, `2129`, `2172`, `2198`, `2204` | The bound `SpaceTxnHost` on the six runtime constructors. |
+
+Each hook calls code of the new modules with the arguments of the baseline call.
+For a channel without Reified meaning, each hook makes the baseline call with identical arguments.
+So ordinary execution does not change, and the footprint policy `p4` pins every other line of the hot files ([verification](verification.md#11-phase-p4-the-hashmapqueue-slice)).
+
+One space operation takes this path:
+
+1. The reducer evaluates a send or a receive and removes the bundle of its channel.
+2. A hook routes the channel ([N5](#n5-routing-and-scope)). A default route makes the baseline call.
+3. A space route builds a `SpaceOp` and submits it as a [space intent](glossary.md#space-intent) ([N6](#n6-scheduling)).
+4. The job of the intent opens one transaction, bumps the counter, plans head-only, and commits once ([N3](#n3-counters), [N4](#n4-genericspace-and-the-queue-discipline)).
+5. The reducer dispatches the fired continuations, and it runs a [re-issue](glossary.md#re-issue) as a new space intent.
+
+### N2. Namespace and records
+
+Every Reified name is a `GPrivate` whose id starts with the [namespace tag](glossary.md#namespace-tag) `0xE0` ([decision 7](decision-register.md#decision-7)).
+A program cannot write a `GPrivate` id, so only the Reified machinery makes these names.
+Table N2.1 lists the ids that P4 constructs in `spaces/namespace.rs:223-260`.
+Here ‖ is byte concatenation, `sid` is the 32-byte [space id](glossary.md#space-id), and `k` is the [collection key](glossary.md#collection-key).
+[Figure 02](diagrams/02-namespace-bytes.svg) shows every id layout of the namespace.
+
+*Table N2.1. The ids that the P4 code constructs.*
+
+| Id | Bytes | Constructor | Meaning |
+|---|---|---|---|
+| `E0‖op` | 2 | `op_channel` | an [op channel](glossary.md#op-channel) |
+| `E0‖C‖sid` | 34 | `config_channel` | the config channel $`C(\mathit{sid})`$ |
+| `E0‖S‖sid` | 34 | `space_counter` | the [space counter](glossary.md#space-counter) $`S(\mathit{sid})`$ |
+| `E0‖S‖sid‖k` | more than 34 | `collection_counter` | the [collection counter](glossary.md#collection-counter) $`S(\mathit{sid}, k)`$ |
+| `E0‖D‖sid‖k` | more than 34 | `data_channel` | the data channel $`D(\mathit{sid}, k)`$, with the records and the waiters of the collection |
+| `E0‖H‖sid` | 34 | `handle_channel` | the channel `this`, $`H(\mathit{sid})`$ |
+| `E0‖N‖sid‖tail` | 66 or 42 | `name_id` | a [space name](glossary.md#space-name) |
+
+The decoder `decode_reified_id` (`spaces/namespace.rs:294-324`) is total, and it accepts only the image of a constructor:
+
+- An id without the tag, or with fewer than 2 bytes, is not a Reified id.
+- An id of exactly 2 bytes is an op.
+- In a longer id, byte 1 must be a KIND letter or its lowercase form, and 32 bytes of space id must follow. The KINDs M and T have no lowercase form.
+- The length must fit the KIND. It is 34 bytes for C, H, A, and B, and 66 or 42 bytes for N. It is more than 34 bytes for D, and at least 34 bytes for S, I, X, M, and T.
+
+The Rocq headline `decode_encode_reified_id` (`Namespace.v:633`) proves that the decoder inverts each constructor and accepts only their images.
+
+**Collection keys.** A HashMap space keeps one collection for each collection key.
+The key is the bincode of the sorted channel, which is the preimage of the store identity ([decision 32](decision-register.md#decision-32), item A5):
+
+```rust
+/// `bincode(ParSortMatcher::sort_match(channel).term)`, the preimage of the store identity of
+/// the channel (A5). Serde writes `locally_free` as empty bytes, so channels that are equal as
+/// `Par` values have one key.
+pub fn canonical_inner_channel_bytes(channel: &Par) -> Result<Vec<u8>, SpaceError> {
+    bincode::serialize(&ParSortMatcher::sort_match(channel).term).map_err(|_| {
+        SpaceError::Substrate(SpaceTxnError::InvalidOperation(
+            "a channel is not serializable",
+        ))
+    })
+}
+```
+
+The Protocol Buffers bytes of a `Par` hold its field `locally_free`, so two channels that are equal as `Par` values could have two prost keys.
+The bincode bytes have one key for both, and the headline `canon_respects_par_eq` (`Namespace.v:1035`) states this property.
+
+**Random purposes.** The machinery derives each random state that it needs from the random state $`r`$ of a call or of an operation, by two splits:
+
+```math
+r_{\mathit{purpose}} = \mathrm{split}_{\mathit{purpose}}\bigl(\mathrm{split}_{\mathtt{0xE0}}(r)\bigr)
+```
+
+*Table N2.2. The random purposes of `RandomPurpose` (`spaces/namespace.rs:379-397`).*
+
+| Purpose | Byte | Use |
+|---|---|---|
+| `SpaceId` | `0x01` | the space id of a factory call ([decision I-19](decision-register.md#i-19)) |
+| `Gensym` | `0x02` | the tail of a name that `gensym` makes |
+| `Xlate` | `0x03` | the translation of a user agent-backed space (P8) |
+| `PathMarker` | `0x04` | a path marker (P5) |
+| `Config` | `0x05` | the config datum |
+| `Handle` | `0x06` | the handle continuation |
+| `SpaceCounter` | `0x07` | the space counter: split 0 for its continuation, split 1 for its datum |
+| `Counter` | `0x08` | a collection counter: split 0 for its continuation, split 1 for its datum |
+
+The machinery never splits the random state of a user datum for its record. So a record keeps the random state that the program gave it.
+
+**Record envelopes.** A native space stores ordinary host records on its storage channels ([decision M-2](decision-register.md#m-2)).
+Each record carries a [record envelope](glossary.md#record-envelope) inside its payload, so the host structs, the serializers, and the identities do not change.
+Table N2.3 gives the four kinds of record of `spaces/record.rs`.
+Each envelope starts with a tag `GByteArray([0xE0, 0x52, kind, 1])`, version 1 of the envelope of its kind (item A20).
+
+*Table N2.3. The records of a native space.*
+
+| Record | Content | Encoder | Decoder |
+|---|---|---|---|
+| datum | `pars = [EList[tag_D, GInt(ord), Nil, Nil], payload…]` | `wrap_datum` | `unwrap_datum` |
+| parked continuation | `body = Par{exprs: [EList[tag_K, GInt(ord), Nil, body]]}` | `wrap_continuation` | `unwrap_continuation` |
+| counter | `pars = [EList[tag_S], GInt(n)]` | `counter_record` | `counter_value` |
+| config | `pars = [EList[tag_C], config map]` | `config_record` | `config_map` |
+
+The `Nil` slots are the slots of later phases: the priority and the embedding of a datum, and the query policy of a continuation.
+The first par of every record is a list, so the merger never reads a Reified datum as a number cell (item A11).
+A datum record keeps the random state, the cost authority, and the cost stack of the user datum.
+A parked continuation keeps its random state, its guard, and its cost authority outside the envelope.
+
+Every decoder is strict: it accepts exactly the image of its encoder, with the version 1 and a non-negative order.
+Any other record is a `MalformedRecord`, and the operation fails with `Inconsistent`.
+The headlines of `RecordEnvelope.v` prove the round trips, the injectivity, the soundness of the decoders, and the disjointness of the kinds.
+
+**The config record.** The [config record](glossary.md#config-record) holds the canonical map of [decision I-17](decision-register.md#i-17), which `SpaceConfig::to_par` builds (`spaces/types/config.rs:83-104`).
+For a queue space with the default qualifier, the map is `{"spaceId": GByteArray(sid), "outer": "hashmap", "inner": "queue", "qualifier": "default", "params": {}, "theory": Nil}`.
+The decoder `SpaceConfig::from_par` accepts only the exact image of `to_par`, and in P4 the theory must be `Nil`.
+Each read of a config record also requires that its `spaceId` is the space id of the space, otherwise the operation fails with `Inconsistent`.
+
+**Authorities.** Each staged operation registers an introduction authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:465-483`).
+Table N2.4 gives the authorities of each record (P4 design B.7).
+
+*Table N2.4. The authorities of the records.*
+
+| Record | Cost authority of the record | Registered introduction authority |
+|---|---|---|
+| user datum (a send) | the cost authority of the datum | the introduction authority of the send |
+| parked continuation (a receive) | the receive authority, when it has a region | the introduction authority of the receive |
+| counter continuation `K(v)` | the cost authority of the datum or of the continuation of the operation | the introduction authority of the operation |
+| new counter datum | the introduction authority of the operation, when it has a region | the introduction authority of the operation |
+| config datum | none | the cost authority of the factory call |
+| space counter `S(sid) = 0` | the cost authority of the factory call, when it has a region | the cost authority of the factory call |
+| handle continuation | none | the cost authority of the factory call |
+
+So each call is paid by its caller, and never by the creator of the space.
+A re-offer and a re-fire repeat an identity with its first authority, which the registry accepts (readiness review S6).
+Another authority for a repeated identity fails the commit at that operation, and the operations before it stay applied ([prefix atomicity](glossary.md#prefix-atomicity)).
+
+### N3. Counters
+
+A merge must reject two branches that use one ordered collection, because their merged state could have an order that no serial run gives.
+P4 uses the existing merge check #1 for this purpose and changes no merge code ([decision M-1](decision-register.md#m-1)).
+Each operation on a queue consumes the counter record of its collection and produces it again with the next value, in its own transaction.
+So two branches that use one collection consume one counter produce, and check #1 sees a race.
+
+**The bump.** `bump` (`spaces/counter.rs:118-182`) stages the counter steps before the plan of the operation.
+It returns the order of the operation, which is the value of the collection counter before the bump.
+
+```text
+BUMP(txn, S_space, S_coll, ctx):               ▷ spaces/counter.rs, bump
+    records ← txn.data(S_coll)
+    if records = []:
+        ⟨Open the collection⟩
+        return (ord = 0, staged = [Take, Put, Put])
+    if records = [c]:
+        ⟨Step the collection counter⟩
+        return (ord = v, staged = [Take, Put])
+    fail Inconsistent                              ▷ two counter records
+```
+
+⟨Open the collection⟩.
+The collection has no counter yet, so this operation is its first.
+The operation consumes the space counter and produces it again, and it opens the collection counter with the value 1.
+
+```text
+        require txn.data(S_space) = [s]                        ▷ Inconsistent
+        m ← COUNTER-VALUE(s)                                   ▷ Inconsistent
+        require m < i64::MAX                                   ▷ CounterOverflow
+        TAKE(S_space, s, m, SpaceCounter)                      ▷ events Consume, COMM
+        PUT(S_space, m + 1, SpaceCounter)                      ▷ event Produce
+        PUT(S_coll, 1, Counter)                                ▷ event Produce
+```
+
+⟨Step the collection counter⟩.
+The operation consumes the counter record with the value $`v`$ and produces the value $`v + 1`$.
+
+```text
+        v ← COUNTER-VALUE(c)                                   ▷ Inconsistent
+        require v < i64::MAX                                   ▷ CounterOverflow
+        TAKE(S_coll, c, v, Counter)                            ▷ events Consume, COMM
+        PUT(S_coll, v + 1, Counter)                            ▷ event Produce
+```
+
+The two steps stage ordinary operations of the substrate.
+`TAKE` fires a single-channel consume against the stored counter record, and `PUT` stores the next counter record.
+
+```text
+TAKE(S, record, v, purpose):                   ▷ spaces/counter.rs, take
+    require record is not persistent                           ▷ Inconsistent
+    m ← BIND(COUNTER-PATTERN, record)                          ▷ Inconsistent when no match
+    K ← ParBody(GInt(v)) with the random state split_0(r_purpose)
+    stage consume([S], [COUNTER-PATTERN], K, persist = false, peeks = ∅, Fire([record bound at index 0]))
+
+PUT(S, v, purpose):                            ▷ spaces/counter.rs, put
+    stage produce(S, counter_record(v) with the random state split_1(r_purpose), persist = false, Store)
+```
+
+The body `GInt(v)` makes the consume identity new for each value, also when a re-issued operation has the same random state.
+A persistent counter record would make check #1 ignore the race, so the bump refuses it.
+The pattern `COUNTER-PATTERN` has two free variables, one for each par of a counter record.
+A counter at `i64::MAX` fails with `CounterOverflow`, so every order is a natural number.
+
+**Why check #1 sees the race.** A COMM without peeks files its produces as consumed, and a COMM with peeks files them as peeked (`rspace++/src/rspace/merger/event_log_index.rs:261-265`).
+The counter COMM of a bump has no peeks, also when the operation is a peek.
+Check #1 (`rspace++/src/rspace/merger/merging_logic.rs:279-386`) reports a race between two branches $`A`$ and $`B`$ under this condition:
+
+```math
+\mathrm{race}(A, B) \iff \exists\, p \in \mathit{consumed}(A) \cap \mathit{consumed}(B) : \neg\, \mathit{persist}(p) \,\land\, \neg\bigl(\mathit{mergeable}_A(p) \land \mathit{mergeable}_B(p)\bigr)
+```
+
+Here $`\mathit{consumed}(L)`$ is the set of produces that the COMMs without peeks of the log $`L`$ consume.
+A Reified channel is never mergeable, because the detection of mergeable channels matches only tuples with a registered tag (consensus checklist item 19).
+Let two branches start from a pre-state in which the collection counter holds the produce $`p_v`$.
+The first operation on the collection in each branch consumes $`p_v`$, so $`p_v`$ is in both consumed sets, and check #1 reports a race.
+Table N3.1 lists the cases.
+
+*Table N3.1. The shared consumed produce of two branches.*
+
+| Branch A | Branch B | Shared consumed produce |
+|---|---|---|
+| any operation on queue `q` | any operation on queue `q` | the counter produce of `q` in the pre-state |
+| the first operation on queue `q1` | the first operation on queue `q2` of the same space | the space counter produce in the pre-state (item A25) |
+| operations on `q1` and on `q2` | operations on `q2` and on `q1` | both counter produces |
+| operations on `q1` only | operations on `q2` only, both queues open | none: the branches merge |
+
+**Two deploys of one block form one chain.** The second deploy consumes the counter produce that the first deploy created.
+So `depends` (`rspace++/src/rspace/merger/merging_logic.rs:67-138`) relates them, and the block index puts them in one chain.
+A rejection then removes both deploys together, so no deploy keeps a record that refers to an order of the other one.
+
+**Why reads also bump** ([decision 31](decision-register.md#decision-31)).
+Without a bump on a peek, two branches can make a [write skew](glossary.md#write-skew) [[BBG95](#ref-bbg95)].
+Let the head records be `h1` on queue `q1` and `h2` on queue `q2`.
+Branch A peeks `q1` and then dequeues `q2`. Branch B peeks `q2` and then dequeues `q1`.
+The two consumed sets do not overlap, but no serial order of the branches gives both peeks.
+
+A second example uses persistent receives: each branch fires the persistent head waiter of one queue and stores a datum on the other queue.
+With a bump on every operation, both examples race on the counters.
+
+The headline `merge_without_race_is_serializable` (`CounterConflict.v:1322`) proves that a merge without a race gives the state of some serial run of whole deploys [[Pap79](#ref-pap79)].
+The headline `counter_free_peek_admits_write_skew` (`CounterConflict.v:1596`) computes the write skew of the counter-free peek.
+
+**Cost.** Each operation on a queue pays three extra events: the Consume and the COMM of the take, and the Produce of the put.
+The first operation on a collection pays four extra events, because it also produces the space counter.
+
+Figure N3 shows the merge flow of the counter conflict.
+
+![Merge flow of the counter conflict, as an activity diagram. The pre-state holds the counter record S(sid,k) = v of a queue. In branch A a deploy enqueues: its bump consumes the counter produce p_v in a COMM without peeks and produces p_{v+1}. In branch B a deploy dequeues or peeks: its bump also consumes p_v. The merger builds an event log index for each branch, in which a COMM without peeks files its produces under produces_consumed. Check #1 intersects the consumed produces of both branches, finds p_v, which is not persistent and not mergeable, and reports a race, so the merge rejects one branch. A second lane shows two deploys d1 and d2 of one block: d2 consumes the counter produce p_{v+1} that d1 created, so depends(d2, d1) holds and the block index puts both deploys into one chain, which is one unit of rejection. A third lane shows branches that use two different queues of one opened space: they consume different counter produces, check #1 finds nothing, and the merge applies both changes, which equals a serial run.](diagrams/08-counter-conflict-merge.svg)
+
+*Figure N3. Source: [diagrams/08-counter-conflict-merge.puml](diagrams/08-counter-conflict-merge.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+### N4. GenericSpace and the queue discipline
+
+`GenericSpace<S, D>` (`spaces/generic.rs:150-153`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
+P4 instantiates it once, as `GenericSpace<HashMapOuter, QueueDiscipline>`, and `native_agent` returns it (`reified/system_processes.rs:56-58`).
+Two traits separate the parts of a family:
+
+- `OuterStore` (`spaces/generic.rs:85-101`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
+- `Discipline` (`spaces/generic.rs:122-146`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
+
+`HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:22-52`).
+`QueueDiscipline` uses a counter, allows no joins, and takes no send params (`spaces/disciplines/queue.rs:25-52`).
+In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:262-274`).
+
+**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:537-595`) stage one operation in one transaction.
+The job then commits the transaction exactly once (`spaces/agent.rs:260-270`).
+
+```text
+COLLECTION-OP(op):                             ▷ GenericSpace::prepare_produce, prepare_consume, run_op
+    ch ← CollectionChannels(op.space, op.key)          ▷ C(sid), S(sid), S(sid, k), D(sid, k)
+    txn ← begin([C(sid), S(sid), S(sid, k), D(sid, k)])  ▷ every channel that the operation can touch
+    ⟨Check the collection⟩
+    bump ← BUMP(txn, S(sid), S(sid, k), ctx)            ▷ N3
+    reissue ← OFFER(op, bump.ord) for a produce, RECEIVE(op, bump.ord) for a consume
+    receipt ← txn.commit()                              ▷ exactly once, prefix-atomic
+    return OUTCOME(receipt, reissue)
+```
+
+⟨Check the collection⟩.
+The operation needs the config record of its space, and the collection must not be part of a join.
+A missing config record fails with `DanglingName` when the channel is a space name, and with `DanglingHandle` otherwise.
+
+```text
+    config ← the only config record on C(sid)          ▷ DanglingName or DanglingHandle, Inconsistent
+    require config names this space                    ▷ Inconsistent
+    require config names the family S:D                 ▷ FamilyUnavailable
+    require txn.joins(D(sid, k)) ∈ {[], [[D(sid, k)]]}  ▷ Inconsistent
+```
+
+The lock keys hold the space counter too, because the first operation on a collection consumes it. The agent knows that only after a read (readiness review S2).
+Every operation stages its bump, so no commit is empty.
+
+**The head of a side.** The head of a side of a queue is the entry with the least order. The bincode bytes decide between two entries with one order:
+
+```math
+\mathrm{head}(E) = \mathop{\mathrm{arg\,min}}_{e \in E} \bigl(\mathit{ord}(e),\ \mathrm{bincode}(e)\bigr)
+```
+
+The minimum is lexicographic, and it depends only on the set $`E`$, not on the list order of the hot store.
+The hot store inserts at the front, and a restart can load a list in another order, so the list order cannot decide.
+`QueueDiscipline` implements the rule:
+
+```rust
+    /// The entry with the least `(ord, bincode bytes)`, on both sides.
+    fn head<T: Serialize>(
+        &self,
+        _side: Side,
+        entries: &[Ordered<'_, T>],
+    ) -> Result<Option<usize>, SpaceError> {
+        let mut head: Option<(usize, &Ordered<'_, T>)> = None;
+        for (index, entry) in entries.iter().enumerate() {
+            head = match head {
+                None => Some((index, entry)),
+                Some((current, best)) => match precedes(entry, best)? {
+                    true => Some((index, entry)),
+                    false => Some((current, best)),
+                },
+            };
+        }
+        Ok(head.map(|(index, _)| index))
+    }
+
+    /// An incoming element joins the tail, so it is the head only of an empty side.
+    fn reaches_head(&self, _side: Side, queued: usize) -> bool { queued == 0 }
+```
+
+**The produce plan.** `offer` (`spaces/generic.rs:337-401`) is the plan of a send.
+It is the OFFER of the substrate design ([S5.8](#s58-peek-re-offer-fr-10)), with the fire-round rule of A10 and of [I-21](decision-register.md#i-21).
+
+```text
+OFFER(op, ord):                                ▷ GenericSpace::offer
+    rec ← WRAP-DATUM(ord, op.data)
+    if txn.data(D) ≠ []: STORE(rec) and return no re-issue     ▷ the datum joins the tail
+    src ← Produce::create(D, rec, op.persistent)
+    rounds ← 0
+    loop:
+        W ← the head waiter, or STORE(rec) and return no re-issue
+        require W has exactly one bind                          ▷ Inconsistent
+        m ← MATCH(W.pattern, op.data, W.continuation), or STORE(rec) and return no re-issue
+        stage produce(D, rec, op.persistent, Fire([D], W, [INCOMING(D, src, rec, op.persistent, m)]))
+        spent ← ¬op.persistent ∧ W.peeks = ∅
+        stays ← W.persist
+        case AFTER-FIRE(rounds, spent, stays) of
+            Done:            return no re-issue
+            Continue:        ▷ W left and the datum survives: the next round re-offers it
+            Reissue(cause):  return Reissue(op, cause)
+```
+
+`MATCH` makes the metered spatial match of the pattern against the payload without its envelope, and then it checks the guard of the waiter (`spaces/matching.rs:68-81`).
+A head waiter that does not match blocks every waiter behind it, and the datum is stored.
+A peek waiter leaves the datum alive, so the next round re-offers the datum with the same produce identity ([decision 30](decision-register.md#decision-30)).
+A persistent send `!!` fires the waiters one after another and stores the datum when no waiter matches.
+
+**The consume plan.** `receive` (`spaces/generic.rs:405-472`) is the plan of a receive, and it mirrors OFFER.
+
+```text
+RECEIVE(op, ord):                              ▷ GenericSpace::receive
+    K ← WRAP-CONTINUATION(ord, op.body, op.guard, the cost authority of op)
+    peeks ← {0} for a peek, ∅ otherwise
+    if txn.continuations([D]) ≠ []: PARK(K, peeks) and return no re-issue   ▷ the waiter joins the tail
+    rounds ← 0
+    loop:
+        (i, h) ← the head record and its view index, or PARK(K, peeks) and return no re-issue
+        m ← MATCH(op.pattern, UNWRAP-DATUM(h).payload, K), or PARK(K, peeks) and return no re-issue
+        stage consume([D], [op.pattern], K, op.persistent, peeks, Fire([BIND(D, h, m, i)]))
+        spent ← ¬op.persistent
+        stays ← h.persist ∨ op.peek
+        case AFTER-FIRE(rounds, spent, stays) of
+            Done:            return no re-issue
+            Continue:        ▷ the head record left: a persistent receive meets the next head
+            Reissue(cause):  return Reissue(op, cause)
+```
+
+A peek `<<-` keeps the head record in place, and the substrate reports the record as persistent ([retention](glossary.md#retention)).
+A persistent receive `<=` drains the head records one after another and parks when no head record matches.
+This drain is the persistent drain of the queue.
+
+**The fire rounds.** `FireRounds::after_fire` (`reified/costs.rs:116-127`) decides the next step after each fire:
+
+```rust
+    /// Records one fire and returns the next step (A10, readiness review S5).
+    ///
+    /// * `incoming_spent`: the fire used up the datum or the continuation of the operation. For
+    ///   a produce, the datum is not persistent and the fired waiter does not peek. For a
+    ///   consume, the continuation is not persistent.
+    /// * `partner_stays`: the fired partner stays in the store. For a produce, the fired waiter
+    ///   is persistent. For a consume, the fired record is persistent or the consume peeks.
+    pub fn after_fire(&mut self, incoming_spent: bool, partner_stays: bool) -> FireStep {
+        let Some(fired) = self.fired.checked_add(1) else {
+            return FireStep::Reissue(ReissueCause::RoundCap);
+        };
+        self.fired = fired;
+        match (incoming_spent, partner_stays) {
+            (true, _) => FireStep::Done,
+            (false, true) => FireStep::Reissue(ReissueCause::DivergentPair),
+            (false, false) if fired >= FIRE_ROUND_CAP => FireStep::Reissue(ReissueCause::RoundCap),
+            (false, false) => FireStep::Continue,
+        }
+    }
+```
+
+*Table N4.1. The step after a fire.*
+
+| Incoming spent | Partner stays | Step | Example of a produce | Example of a consume |
+|---|---|---|---|---|
+| yes | any | `Done` | a send `!` fires a receive `<-` or `<=` | a receive `<-` or `<<-` fires with a record |
+| no | yes | `Reissue(DivergentPair)` | a send `!!` fires a receive `<=` | a receive `<=` fires with a record of `!!` |
+| no | no, fewer than 64 fires | `Continue` | a send `!` fires a peek `<<-`, or a send `!!` fires a receive `<-` | a receive `<=` fires with a record of `!` |
+| no | no, 64 fires | `Reissue(RoundCap)` | the 64th round of a chain | the 64th round of a chain |
+
+A divergent pair is a persistent send and a persistent receive that meet: neither side ever leaves.
+The host reducer repeats such a pair forever with its re-produce. So the agent re-issues after one round, and each round is a new space intent (item A10).
+The pair then stops only when the phlo of the deploy runs out, as on the baseline host.
+
+A chain without a divergent pair makes at most one more fire than the collection holds entries. The cap of [I-21](decision-register.md#i-21) also bounds one transaction at 64 fires.
+So one operation makes at most $`2(\mathtt{FIRE\_ROUND\_CAP} + 1) = 130`$ metered matcher calls: two in each round, and one for the counter.
+
+**The invariant.** Let $`R`$ be the records and $`W`$ the waiters of a collection after a committed transaction.
+
+```math
+\mathrm{INV}(R, W) \iff R = \emptyset \;\lor\; W = \emptyset \;\lor\; \neg\, \mathrm{match}\bigl(\mathrm{head}(W),\ \mathrm{head}(R)\bigr)
+```
+
+OFFER meets a waiter only when $`R = \emptyset`$, and it stores the datum only when no head waiter matches.
+RECEIVE meets a record only when $`W = \emptyset`$, and it parks only when no head record matches.
+A re-issue stages neither the datum nor the continuation of the operation, so it leaves its side unchanged.
+So every committed transaction keeps INV, which the headlines `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:779`) and `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:799`) prove.
+The headlines `queue_fifo` (`HeadOnlyDisciplines.v:979`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1062`) prove the order of delivery and the blocking of a head.
+
+**Outcome and dispatch.** `outcome` (`spaces/generic.rs:498-533`) turns the receipts into a `SpaceOutcome`.
+It checks that each receipt has the kind of its staged operation, and it drops the counter fires.
+Each other fire gives its continuation without the envelope and the results of the substrate, in staging order.
+
+A replay of the same operation reads the same staged view, so it stages the same operations.
+There, `verify` pairs each fire that play committed ([S5.3](#s53-verify-fr-3)).
+A fire that play did not commit stays unpaired, and the replay commit stops at it with the error of play ([decision 36](decision-register.md#decision-36)).
+
+*Table N4.2. The staged operations and their events. The bump is the operations 0 and 1.*
+
+| Case | Staged operations after the bump | Events after the bump |
+|---|---|---|
+| a send stores | 2: Store the record | Produce |
+| a send fires the head waiter | 2: Fire | Produce, COMM |
+| a send fires a peek waiter, and the datum survives | 2: Fire, 3: Fire or Store (the re-offer) | Produce, COMM with peeks, then Produce with a COMM or alone |
+| a send `!!` fires two waiters `<-` | 2: Fire, 3: Fire, 4: Store | Produce, COMM, Produce, COMM, Produce |
+| a send `!!` fires a waiter `<=` | 2: Fire, then a re-issue | Produce, COMM, then a new space intent |
+| a receive fires with the head record | 2: Fire | Consume, COMM |
+| a peek fires with the head record | 2: Fire, the record stays | Consume, COMM with peeks |
+| a receive parks | 2: Park | Consume |
+| a receive `<=` drains two records | 2: Fire, 3: Fire, 4: Park | Consume, COMM, Consume, COMM, Consume |
+
+The first operation on a collection stages three counter operations instead of two. They are the take and the put of the space counter, and the put of the collection counter.
+Figure N4 shows the states of one queue collection.
+
+![State machine of one queue collection. The collection starts unopened; its first operation consumes the space counter S(sid), produces it again, opens S(sid,k) = 1 and takes the order 0. Every later operation bumps S(sid,k) from v to v + 1 and takes the order v. The open collection has four states: Empty, Records queued, Waiters queued, and Blocked, in which both sides hold entries but the head waiter does not match the head record. A send in a state with records joins the tail. A send without records meets the head waiter: on no match it is stored; on a match it fires; a peek waiter or a persistent send leaves the datum alive and the next round re-offers it to the next head waiter; a persistent send that fires a persistent receive re-issues as a new space intent. A receive in a state with waiters joins the tail. A receive without waiters meets the head record: on no match it parks; on a match it fires; a peek keeps the head record; a persistent receive drains the next head; a persistent receive that meets a persistent record re-issues. After 64 fires in one transaction the rest re-issues. The invariant INV holds in every state: no pending match between the two heads.](diagrams/05-head-only-queue.svg)
+
+*Figure N4. Source: [diagrams/05-head-only-queue.puml](diagrams/05-head-only-queue.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+### N5. Routing and scope
+
+The reducer evaluates a channel, removes its bundle, and then routes it.
+`classify_channel` (`reified/route.rs:102-136`) gives the channel one [routing class](glossary.md#routing-class), and `route` maps the class to a space:
+
+```rust
+/// Routes a channel (P4 design C.1).
+///
+/// | Rule | Class                                   | Route                                  |
+/// |------|-----------------------------------------|----------------------------------------|
+/// | R1   | `System`, `DefaultObject`, `Unforgeable` | `Default`                             |
+/// | R2   | `Storage`                               | `Default`                              |
+/// | R3   | `SpaceName`                             | its space and `key(c)`, for every context |
+/// | R4   | `AgentTagged`                           | `Agent`                                |
+/// | R5   | `Forged`                                | the context space and `key(c)`, or `Default` without a context |
+///
+/// The key is computed only for a space route, so a default route allocates nothing.
+pub fn route(ctx: &SpaceCtx, channel: &Par) -> Result<Route, SpaceError> {
+    match (classify_channel(channel), ctx) {
+        (
+            ChannelClass::System
+            | ChannelClass::DefaultObject
+            | ChannelClass::Unforgeable
+            | ChannelClass::Storage,
+            _,
+        ) => Ok(Route::Default),
+        (ChannelClass::SpaceName(space), _) => Ok(Route::Space {
+            space,
+            key: CollectionKey::of_channel(channel)?,
+        }),
+        (ChannelClass::AgentTagged, _) => Ok(Route::Agent),
+        (ChannelClass::Forged, Some(target)) => Ok(Route::Space {
+            space: target.native,
+            key: CollectionKey::of_channel(channel)?,
+        }),
+        (ChannelClass::Forged, None) => Ok(Route::Default),
+    }
+}
+```
+
+Two more rules complete the routing:
+
+- **R6.** A space operation builds its produce and consume identities on the data channel $`D(\mathit{sid}, k)`$. So the identities equal what reaches storage.
+- **R7.** `RoutingExecution` (`reified/execution.rs:110-127`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
+
+A channel of an ordinary program routes to the default space, and the hooks then make the baseline call with identical arguments.
+The headline `ordinary_channels_route_default` (`SpaceRefs.v:700`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
+Mergeable-channel detection runs on the final routed channel, and it never classifies a Reified channel as mergeable (consensus checklist item 19).
+
+Figure N5 shows the decision.
+
+![Routing decision as an activity. The reducer removes the bundle of the channel and classifies it. A sole GPrivate with an id of 1 or 2 bytes is System. A decoded id of KIND C, H, X or B is DefaultObject. A decoded id of KIND D, I, A or S is Storage. A decoded id of KIND N is SpaceName with its native space. Any other sole unforgeable is Unforgeable. A tuple whose head is AGENT_TAG is AgentTagged. Every other channel is Forged. Rule R1 sends System, DefaultObject and Unforgeable to the default space, R2 sends Storage to the default space, R3 sends a space name to the collection key(c) of its own space in every context, R4 sends an agent-tagged name to the user agent, which fails closed with AgentSpacesUnavailable until P8, and R5 sends a forged channel to the collection key(c) of the use context, or to the default space without one. The default route makes the baseline call with identical arguments, and a space route builds the identity on D(sid, k) (R6) and runs one space intent. The R7 backend routes the replies of system processes with the same rules and no use context.](diagrams/12-routing-decision.svg)
+
+*Figure N5. Source: [diagrams/12-routing-decision.puml](diagrams/12-routing-decision.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+**Space references.** `classify_space_ref` (`reified/scope.rs:106-129`) gives the value of `use s`, of `new x : s`, and of `getSpaceAgent!?(s)` one meaning, by the five rules of the [space reference](glossary.md#space-reference).
+A native space needs a bare handle id or a writable bundle of one ([decision 34](decision-register.md#decision-34), item A22).
+A user agent fails closed with `AgentSpacesUnavailable` until P8.
+
+**The use context.** `use s { P }` evaluates `P` with the [use context](glossary.md#use-context) of the native space `s`.
+
+```text
+EVAL-USE(space, body, env, rand):              ▷ reducer_hooks.rs, eval_use and native_space_ref
+    s ← SUBSTITUTE(EVAL(space, env))
+    case CLASSIFY-SPACE-REF(s) of
+        Native(n): child ← a copy of the reducer with space_ctx = (s, n)
+                   child evaluates body with env and rand     ▷ rand is not split
+        Agent(_):  fail AgentSpacesUnavailable                  ▷ P8
+        error e:   fail e                                       ▷ EmptySpaceRef, HandleNotWritable, NotASpaceRef
+```
+
+The field `space_ctx` is immutable, and `with_metering_child` copies it into parallel branches.
+A body that the reducer stores for later evaluation under a use context gets the USE tuple of the context around it (`reified/scope.rs:134-142`).
+So a parked receive body runs in its context when it fires, as a lexical closure does.
+
+The USE tuple is one term, so the reducer evaluates it with the random state of the body. So the wrapper changes no random state.
+A data value that a program sends inside a `use` block gets no wrapper (item A24). A forged reply channel of a system process loses its use context (R7).
+
+**NEWSPACE and new names in a context.** `new x : s in { P }` puts the name `x` into the space `s`.
+
+```text
+EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_space
+    charge new_bindings_cost(new.bind_count)
+    for each plain binder i:
+        space_i ← NATIVE-SPACE-REF(annotation_i, env) when annotation_i ≠ [], else the use context or none
+    env′ ← allocate_new_bindings(new, env, rand)              ▷ the random draws of the baseline
+    for each plain binder i with space_i ≠ none:
+        the name GPrivate(r_i) at level env.level + i becomes GPrivate(0xE0 ‖ N ‖ sid_i ‖ r_i)
+    evaluate new.p with env′ and the rest of rand
+```
+
+The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:387-397`).
+The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
+
+**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:205-223`) is hook H3, with the same signature as the baseline `produce`.
+
+```text
+REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_produce and route_send
+    params ← TRAILING-PARAMS(data)                 ▷ the refresh of I-20, then the strict decoder: Malformed
+    case ROUTE(space_ctx, chan) of
+        Default:
+            CHECK-PERSISTENT-SEND(chan, persistent)  ▷ item A21
+            if chan is a factory op:   reject positional params, data ← PACK(data)
+            else if chan is a handle:  reject positional params
+            else if params ≠ none:     fail ParamsUnsupported
+            produce(chan, data, persistent, α)         ▷ the baseline call
+        Space(n, k):
+            require params = none                      ▷ PositionalParamsUnsupported, UnknownParam
+            SPACE-OP(Produce(n, k, chan, data, persistent, α))
+        Agent:
+            fail AgentSpacesUnavailable
+```
+
+`PACK` turns the arguments of a factory call into `[ret, [ctor…]]`, so every factory has the fixed arity 2 ([decision I-18](decision-register.md#i-18)).
+A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
+The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
+
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:282-343`) takes the parameters of the baseline `consume`.
+
+```text
+REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
+    if no use context and no bind channel is a space name or agent-tagged:
+        consume(binds, body, …)                        ▷ the fast path: the baseline call
+    body ← WRAP-BODY(space_ctx, body)
+    routes ← [ROUTE(space_ctx, c) for each bind (pattern, c)]
+    if every route is Default: consume(binds, body, …)  ▷ the identity holds the wrapped body
+    if there is exactly one bind:
+        Space(n, k) → SPACE-OP(Consume(n, k, c, pattern, body, persistent, peek, guard, α, α_intro))
+        Agent      → fail AgentSpacesUnavailable
+    fail JOIN-ERROR(routes)    ▷ OrderedJoinUnsupported, AgentSpacesUnavailable, or CrossSpaceJoin
+```
+
+A join whose binds all route to one native space fails with `OrderedJoinUnsupported` until P5 ([decision 29](decision-register.md#decision-29)).
+A join with a user agent fails with `AgentSpacesUnavailable`, and every other mixed join fails with `CrossSpaceJoin`.
+The fast path classifies without an allocation, so an ordinary receive costs no extra work.
+
+**The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:927-947`).
+Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
+
+**Examples.** The first program puts a forged channel into a queue space with `use`.
+The send and the receive on `@"jobs"` meet in the collection with the key of `@"jobs"`, by rule R5.
+
+```rholang
+new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { use space { @"jobs"!(1) | for (@x <- @"jobs") { Nil } } } }
+```
+
+The second program puts a new name into the space with an annotation.
+The name `box` is a space name, so the send and the receive on `box` route to the space by rule R3, in every context.
+
+```rholang
+new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { new box : space in { box!(1) | for (@x <- box) { Nil } } } }
+```
+
+The test `space_queue_source_program` runs a longer program of this kind end to end ([source](../../../rholang/tests/reified_queue_source.rs#L35-L58)). That program has a handle call, a `use` block, and two receives in arrival order.
+
+### N6. Scheduling
+
+Every space operation runs as a [space intent](glossary.md#space-intent) of the deterministic scheduler, inside `operation_context::scope` of its order ([decision 34](decision-register.md#decision-34)).
+Otherwise a proposer and a validator could order two operations on one space in two ways, and the replay of a head-only plan would diverge.
+`submit_space` (`reified/schedule.rs:167-201`) submits one job:
+
+```text
+SUBMIT-SPACE(sid, α, channels, job):           ▷ reified/schedule.rs, submit_space
+    ctx ← the reduction context of the task, or none
+    hw ← the host-work budget of ctx, or none            ▷ captured before the job (readiness review S5)
+    if ctx = none: return job(hw)                         ▷ outside a reduction: no order, as a host operation
+    order ← ctx.next_operation()
+    if the participant can claim direct execution:
+        return job(hw) inside internal_scope and operation_context::scope(order)
+    submit Intent::Space(sid, α, channels, job) at order
+    poll the driver once, and await the reply          ▷ a cancelled reply: BugFoundError
+```
+
+The footprint of a space intent decides which intents the scheduler orders against it (`reified/schedule.rs:83-96`):
+
+```math
+F = \bigl\{[2] \mathbin{\Vert} \mathit{sid}\bigr\} \cup \bigl\{[0] \mathbin{\Vert} \mathrm{prost}(c) : c \in \mathit{channels}\bigr\} \cup \mathit{AuthorityKeys}(\alpha)
+```
+
+Host intents use the tag 0 for their channels and the tag 1 for their authority keys. So the tag 2 of a space key never equals a host key ([decision I-11](decision-register.md#i-11)).
+The scheduler therefore orders the intents of one space, and it runs the intents of other spaces in parallel.
+A creation adds the channel `this` of the new space, because a host send on the handle touches that channel.
+
+**One task for each job.** `SpaceIntent::execute` (`reified/schedule.rs:108-119`) runs the job in its own task (readiness review S9).
+The driver polls all its conflict components as futures of one task, and the substrate admits one open transaction for each task (FR-9).
+
+Assume that two jobs share one task, and that one job waits for a stripe. Then the other job can fail with `NestedTransaction`, and that result depends on timing.
+The unit test `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks` checks the rule.
+A join error of the task is a `BugFoundError`.
+
+**One commit for each job.** A job opens at most one transaction and commits it exactly once.
+A read, such as the config read of `getSpaceAgent`, stages nothing and drops its transaction without a commit (readiness review S3).
+An empty commit would claim the parent order, and a later commit under the same order would fail with `ParentOrderReused`.
+The job never awaits between `begin` and `commit`, except inside `begin`, and matching is synchronous.
+
+**The evaluation scope.** `inj` and `inj_with_observation` call `begin_evaluation_scope` at their entry (`reified/runtime.rs:72-77`).
+In the host mode, the call resets the tracker of committed parent orders, so a deploy that runs again commits under the same orders (FR-5').
+It makes no event, no charge, and no random draw.
+
+**Host work.** The job gets the host-work budget that `submit_space` captured, because `reserve_host_work` charges nothing inside the task of a job.
+`ScanMeter` (`reified/costs.rs:32-71`) charges one `SearchCandidates` unit for each metered matcher call, and one `SearchStateBytes` unit for each scanned byte.
+Without a budget, the meter accepts every charge, as `reserve_host_work` does ([decision I-12](decision-register.md#i-12)).
+
+**The runtime of a reducer.** `ReifiedRuntime` (`reified/runtime.rs:54-56`) has three modes, and only the host mode runs space jobs.
+
+*Table N6.1. The modes of the runtime.*
+
+| Mode | Made by | A space operation |
+|---|---|---|
+| `Host` | `for_host`, at the start of `create_rho_env` | runs one space intent over the handle of the host space |
+| `Detached` | `unavailable`, in `ReducerCore::new` and `DebruijnInterpreter::new` | fails with `RuntimeUnavailable` |
+| `NativeReplay` | `native_replay`, in the native replay environment | fails with `SpacesUnsupportedInNativeReplay` ([decision I-13](decision-register.md#i-13)) |
+
+The runtime holds no cache, so nothing in it survives a reset.
+The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
+
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:437-479`) runs the continuations that a space operation fired.
+
+```text
+DISPATCH-SPACE-OUTCOME(fires, reissue):        ▷ reducer_hooks.rs, dispatch_space_outcome
+    if fires = [] and reissue = none: return Skip
+    replay ← the host space is a replay space
+    if fires = [f] and reissue = none: return DISPATCH(f.continuation, f.data, replay)
+    branches ← [a metering child of index i dispatches fire i, for each fire i]
+    if reissue = r: branches ← branches ++ [a metering child runs SPACE-OP(r.op)]
+    run the branches in parallel inside a reduction, and in index order outside one
+```
+
+The data of a fire is the channel, the matched datum without its envelope, the removed record, and the persist flag of each result.
+The substrate keeps a peeked record in place, so no dispatch produces a datum again.
+
+### N7. Factories and handles
+
+**The factory call.** A call `F!(ret, ctor)` on the factory of a family creates a native space (`reified/factory.rs:73-111`).
+The send hook packs the arguments of the program after `ret` into the constructor list `ctor`.
+
+```text
+CREATE-SPACE(call, ret, ctor):                 ▷ reified/factory.rs, FactoryProcess::call
+    r ← the random state of the call datum, α ← its cost authority
+    c ← VALIDATE(family, ctor)                            ▷ the gates of Table N7.1
+    sid ← next(split_SpaceId(split_0xE0(r)))              ▷ I-19
+    run one space intent with the footprint [2] ‖ sid and H(sid):
+        txn ← begin([C(sid), S(sid), H(sid)])
+        require txn.data(C(sid)) = []                     ▷ SpaceAlreadyExists
+        require the config of c names sid and the family  ▷ Inconsistent, FamilyUnavailable
+        stage produce(C(sid), config record, persist = true, Store)
+        stage produce(S(sid), counter record 0, persist = false, Store)
+        stage consume([H(sid)], [[...@args]], the handle continuation, persist = true, Park)
+        txn.commit()
+    produce bundle+{H(sid)} on ret
+```
+
+The space id is a 32-byte draw of the random state of the call ([decision I-19](decision-register.md#i-19)):
+
+```math
+\mathit{sid} = \mathrm{next}\left(\mathrm{split}_{\mathtt{SPACE\_ID}}\left(\mathrm{split}_{\mathtt{0xE0}}\left(r_{\mathit{call}}\right)\right)\right)
+```
+
+The random state of a call message is unique, so the id is unique to the call, and play and replay derive the same id.
+A second creation of one id fails with `SpaceAlreadyExists` in play and in replay alike.
+`FactoryConstructor::validate` (`spaces/factory/constructor.rs:48-92`) applies the gates of Table N7.1 in order, so the first failing gate gives the code.
+
+*Table N7.1. The gates of a factory constructor in P4.*
+
+| Gate | Condition | Code |
+|---|---|---|
+| 1 | The family has a schema in this phase. | `FamilyUnavailable` |
+| 2 | The constructor is the canonical sequence `[qualifier?][FREE?][PARAMS?]`. | `BadConstructorArgument` |
+| 3 | The family takes the qualifier: HashSet takes only `seq`. | `BadConstructorArgument` |
+| 4 | The qualifier is `default`. `temp` and `seq` wait for P7. | `QualifierUnavailable` |
+| 5 | The constructor names no theory. `free Th()` waits for P7. | `TheoryUnavailable` |
+| 6 | The params are named. | `PositionalParamsUnsupported` |
+| 7 | Each named param is in the schema of the family, in bytewise order of the keys. The schema of `hashmap:queue` is empty. | `UnknownParam`, with a suggestion |
+
+The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:44-53`). A tie goes to the bytewise least candidate.
+
+**The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:116-150`).
+Its pattern `[...@args]` binds the whole call as one list, and its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP`.
+It has no guard and no cost authority, so each call is paid by its caller.
+It is a single-channel receive, so it adds no pre-state join, and handle calls merge like contract calls (consensus checklist item 18, [decision I-16](decision-register.md#i-16)).
+
+**`HANDLE_OP`.** The internal operation `HANDLE_OP` on the op channel $`[\mathtt{0xE0}, \mathtt{0x30}]`$ runs each call (`reified/handle.rs:200-296`).
+
+```text
+HANDLE-OP(this, message):                      ▷ reified/handle.rs, HandleProcess::call and run
+    if this is not a bare handle id of 34 bytes: drop the call   ▷ item A6, no reply, no further event
+    config ← READ-CONFIG(sid) in a read-only space intent        ▷ DanglingHandle aborts
+    case PARSE(message) of
+        Dropped:             drop the call                        ▷ no reply name or no method name
+        Malformed(ret, m):   reply MalformedMessage on ret
+        Message(ret, m, args, params):
+            require params are named                             ▷ PositionalParamsUnsupported aborts
+            require m names a method, else reply UnknownMethod with a suggestion
+            require |args| = arity(m), else reply BadArgument("arguments")
+            require each named param is in the schema of m, else reply UnknownParam
+            reply on ret with the result of the method m
+```
+
+A program holds only the write bundle of the handle, which it cannot open. So only the forwarding receive of the space passes the bare id (item A6).
+The [agent API](agent-api.md#5-handle-methods) gives the methods, their replies, and every typed reply.
+The method `produce` runs one collection operation with the random state and the cost authority of the call (item A16). Then it dispatches the fires of the operation.
+
+**Persistent sends.** The reducer never cancels the re-produce of a persistent send, so a call with `!!` could repeat forever.
+So a persistent send to an op channel that takes calls, or to a handle, aborts the deploy before the call ([decision 32](decision-register.md#decision-32), item A21):
+
+```rust
+/// A persistent send (`!!`) aborts on every op that takes calls and on every handle (A21).
+/// The runtime never cancels the re-produce of a persistent send, so a call could repeat
+/// forever. `channel` is the channel after the unbundling of `eval_send`.
+pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), ReifiedReduceError> {
+    if !persistent {
+        return Ok(());
+    }
+    match namespace::reified_id_of(channel) {
+        Some(ReifiedId::Op(op)) if is_factory_op(op) => {
+            Err(ReifiedReduceError::PersistentFactoryCall)
+        }
+        Some(ReifiedId::Op(op)) if is_call_op(op) => Err(ReifiedReduceError::PersistentOpCall),
+        Some(ReifiedId::Handle(_)) => Err(ReifiedReduceError::PersistentHandleCall),
+        _ => Ok(()),
+    }
+}
+```
+
+The factory ops are `0x00` to `0x20`, and the other ops that take calls are `0x21` to `0x23` and `0x30` to `0x32` (`reified/system_channels.rs:101`, `105`).
+
+**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:151-187`).
+For a native space, it reads the config record in a read-only space intent. It then replies with the capability of the factory of the family ([decision 9.4](decision-register.md#decision-9-4)).
+That capability equals the value that the URN of the factory binds, so the FIPS check `getSpaceAgent(space_1) == HMB` holds.
+`assertEqual!(ret, a, b)` replies `true` when the sorted values of `a` and `b` are equal, and `false` otherwise ([decision 33](decision-register.md#decision-33)).
+
+Figure N7 shows the lifecycle of a native handle, from the factory call to a reply.
+
+![Lifecycle of a native handle as a sequence. A deploy sends the factory call hmq!(*ret) with its constructor. The reducer routes the op channel [0xE0, 0x01] to the default space, checks the persistent flag, packs the constructor and produces on the op channel. The COMM with the installed factory runs FactoryProcess::call: it validates the constructor and derives sid from the random state of the call. A space intent with the footprint [2] ‖ sid and H(sid) runs one creation transaction: begin on C(sid), S(sid) and H(sid), a check for SpaceAlreadyExists, the config record stored persistently on C(sid), the space counter S(sid) = 0, and the handle continuation parked persistently on H(sid); the commit logs the events. The factory replies bundle+{H(sid)} on ret. Later the deploy calls h!(*ack, "produce", "jobs", [1]): the reducer removes the write bundle, routes H(sid) to the default space and produces on it; the COMM with the persistent handle continuation runs its body, which produces (this, args) on HANDLE_OP. HANDLE_OP checks the bare handle id, reads C(sid) in a read-only space intent that commits nothing, parses the message, and runs the method produce as a collection operation in its own space intent: the counter bump and the head-only offer. It dispatches the fires and replies Nil on ack. A protocol error replies a typed error ("rho:space:error", code, detail) instead, and a missing config record aborts with DanglingHandle.](diagrams/03-native-handle-lifecycle.svg)
+
+*Figure N7. Source: [diagrams/03-native-handle-lifecycle.puml](diagrams/03-native-handle-lifecycle.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+### N8. Errors
+
+A Reified failure is either an abort of the deploy or a [typed reply](glossary.md#typed-reply).
+An abort is the error `InterpreterError::ReduceError` with the text `reified:<Code>: <message>`, which the soft checkpoint of the deploy then reverts.
+A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:121-128`).
+The message text is not consensus state, but the code names the failure for tests and for users.
+
+The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:107-115`):
+
+- `SpaceTxnError::Host` becomes `SpaceError::Host`, which keeps the class of the host error.
+- `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
+- Every other variant becomes `SpaceError::Substrate`, for example `UnlockedChannel`, `NestedTransaction`, `ParentOrderReused`, and the 32-bit `CounterOverflow` of the produce counter.
+
+*Table N8.1. The abort codes of the reducer hooks (`reified/errors.rs:15-53`).*
+
+| Code | Trigger |
+|---|---|
+| `Malformed` | A marker tuple is not the exact canonical image of its encoder, after the refresh of [I-20](decision-register.md#i-20). |
+| `RuntimeUnavailable` | The P2 form of the code, for a USE or NEWSPACE tuple without the runtime. P4 disables the variant: the code keeps it as a comment with its reason (`reified/errors.rs:18-20`), because no code builds it since item A19. A space operation in a detached runtime raises the space code `RuntimeUnavailable` of Table N8.2 instead. |
+| `ParamsUnsupported` | A send with a trailing PARAMS tuple to a channel that takes no params. |
+| `QuerySpecUnsupported` | A receive with a QUERY source, until P5. |
+| `PersistentFactoryCall` | A persistent send to a factory op, `0x00` to `0x20`. |
+| `PersistentHandleCall` | A persistent send to a handle. |
+| `PersistentOpCall` | A persistent send to another op that takes calls. |
+| `AgentSpacesUnavailable` | A space reference that names a user agent, a send or receive on an agent-tagged name, or a `consume` call with user-agent matchers, until P8. |
+| `CrossSpaceJoin` | A join whose binds route to more than one space, or to a space and the default space. |
+| `OrderedJoinUnsupported` | A join whose binds route to one queue space, until P5. |
+| `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. |
+
+*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-70`).*
+
+| Code | Trigger |
+|---|---|
+| `SpaceAlreadyExists` | The creation finds a config record on $`C(\mathit{sid})`$. |
+| `BadConstructorArgument` | The constructor is not canonical, or the family does not take the qualifier. |
+| `UnknownParam` | A named param outside the schema: on a factory, or on a send to a queue. |
+| `PositionalParamsUnsupported` | Positional params on a factory, on a handle call, or on a space channel. |
+| `QualifierUnavailable`, `TheoryUnavailable` | A `temp` or `seq` qualifier, or a theory, until P7. |
+| `FamilyUnavailable` | A family that this phase does not register or run. |
+| `RuntimeUnavailable`, `SpacesUnsupportedInNativeReplay` | A space operation in a detached runtime, or in the native replay environment. |
+| `DanglingHandle`, `DanglingName` | A space without its config record, reached through a handle or through a space name. |
+| `CounterOverflow` | An `ord` counter at `i64::MAX`. |
+| `Inconsistent` | A malformed record, a second counter or config record, a persistent counter record, a collection in a join, or a receipt that differs from its staged operation. |
+| `ReplayDivergence` | A fire without a free recorded occurrence of its COMM in replay. |
+| `Substrate` | Every other failure of the substrate. |
+
+The typed replies are not aborts, and the [agent API](agent-api.md#7-typed-replies) lists their codes and their detail maps.
+
+### N9. Limits of P4
+
+- **Fail-closed constructs.** P4 rejects the constructs that later phases add, with a deterministic code ([decision 34](decision-register.md#decision-34), item A9). The [syntax contract](syntax-contract.md#meaning-at-run-time) lists each construct with its code and its phase.
+- **One family.** Only `hashmap:queue` has a factory. A config record of another family fails with `FamilyUnavailable`, and P5 and P6 add the other families.
+- **Conservative merges.** Two branches that only peek one queue conflict (item A2). Two branches that open collections of one space conflict on the space counter (item A25).
+- **Divergent pairs.** A persistent send and a persistent receive on one queue fire again in each new space intent. They stop only when the phlo of the deploy runs out, as on the baseline host.
+- **Host work.** The meter charges the matcher work of each operation, but the production evaluation passes no host-work budget yet. Each charge then takes effect when cost accounting enables the budget.
+- **Matching under the stripes.** The agent matches while its transaction holds its lock stripes, as the host does under its own locks.
+- **Closures.** A data value that a program sends inside a `use` block gets no wrapper (item A24). A forged reply channel of a system process loses its use context, so a reply channel should be a `new` name (R7).
+- **Key size.** A data channel holds the collection key, so the id of a data channel grows with the size of the channel.
 
 ## References
+
+<a id="ref-bbg95"></a>[BBG95] H. Berenson, P. Bernstein, J. Gray, J. Melton, E. O'Neil, and P. O'Neil, "A critique of ANSI SQL isolation levels," in *Proceedings of the 1995 ACM SIGMOD International Conference on Management of Data*, ACM, 1995, pp. 1–10. [doi:10.1145/223784.223785](https://doi.org/10.1145/223784.223785)
 
 <a id="ref-ces71"></a>[CES71] E. G. Coffman, M. Elphick, and A. Shoshani, "System deadlocks," *ACM Computing Surveys*, vol. 3, no. 2, pp. 67–78, 1971. [doi:10.1145/356586.356588](https://doi.org/10.1145/356586.356588)
 
@@ -1311,3 +2317,5 @@ Table S10 lists them with their pgmcp ids.
 <a id="ref-lam94"></a>[Lam94] L. Lamport, "The temporal logic of actions," *ACM Transactions on Programming Languages and Systems*, vol. 16, no. 3, pp. 872–923, 1994. [doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726)
 
 <a id="ref-mr05"></a>[MR05] L. G. Meredith and M. Radestock, "A reflective higher-order calculus," *Electronic Notes in Theoretical Computer Science*, vol. 141, no. 5, pp. 49–67, 2005. [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016)
+
+<a id="ref-pap79"></a>[Pap79] C. H. Papadimitriou, "The serializability of concurrent database updates," *Journal of the ACM*, vol. 26, no. 4, pp. 631–653, 1979. [doi:10.1145/322154.322158](https://doi.org/10.1145/322154.322158)

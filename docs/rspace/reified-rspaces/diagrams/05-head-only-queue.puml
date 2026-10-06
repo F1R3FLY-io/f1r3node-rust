@@ -1,0 +1,90 @@
+' 05 Head-only queue: the states of one queue collection of a native space.
+'
+' Source of Figure N4 in ../design.md (section N4). The figure restates the
+' bump of rholang/src/rust/interpreter/spaces/counter.rs, the plans offer and
+' receive of spaces/generic.rs, the head rule of spaces/disciplines/queue.rs,
+' and the fire rounds of reified/costs.rs (decisions 11, 30 and 31, P4 design
+' item A10, plan revision I-21). It adds no new fact.
+'
+' Reading order:
+'   1. A collection starts unopened. Its first operation consumes the space
+'      counter, opens the collection counter at 1, and takes the order 0.
+'   2. Every later operation bumps the collection counter from v to v + 1
+'      and takes the order v.
+'   3. The open collection is in one of four states, by the records R and
+'      the waiters W that it holds.
+'   4. A send meets only the head waiter, and a receive meets only the head
+'      record. A head that does not match blocks every entry behind it.
+'   5. Notes give the fire rounds: the re-offer, the persistent drain, the
+'      re-issue of a divergent pair, and the cap of 64 fires.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 05-head-only-queue.puml   Check: ./render.sh --check
+
+@startuml 05-head-only-queue
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam StateBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title States of one queue collection (head-only matching, decision 11)
+
+state "Unopened" as UNOPENED $rrs_reserved : no counter record on <latex>S(\mathit{sid}, k)</latex>
+state "Open collection" as OPEN $ca_pkg_indigo {
+  state "Empty" as EMPTY $rrs_storage : <latex>R = \emptyset,\ W = \emptyset</latex>
+  state "Records queued" as RECORDS $rrs_storage : <latex>R \neq \emptyset,\ W = \emptyset</latex>
+  state "Waiters queued" as WAITERS $rrs_storage : <latex>R = \emptyset,\ W \neq \emptyset</latex>
+  state "Blocked" as BLOCKED $ca_note_amber : <latex>R \neq \emptyset,\ W \neq \emptyset</latex>\nthe head waiter does not match\nthe head record, so nothing fires\nno operation leaves this state
+
+  [*] --> EMPTY
+  EMPTY --> RECORDS : send, no waiter:\nstore the record
+  EMPTY --> WAITERS : receive, no record:\npark the waiter
+
+  RECORDS --> RECORDS : send: store at the tail\nreceive that fires with the head:\nthe head leaves, or stays for a peek\nor a persistent record
+  RECORDS --> EMPTY : receive that fires\nwith the last record
+  RECORDS --> BLOCKED : receive that does not\nmatch the head record:\npark the waiter
+  RECORDS --> WAITERS : persistent receive <=\ndrains every record, then parks
+
+  WAITERS --> WAITERS : receive: park at the tail\nsend that fires the head waiter:\nthe waiter leaves, or stays if persistent
+  WAITERS --> EMPTY : send that fires\nthe last waiter
+  WAITERS --> BLOCKED : send that does not\nmatch the head waiter:\nstore the record
+  WAITERS --> RECORDS : the datum survives every fire\n(a peek waiter, or a send !!),\nthen no waiter matches: store
+
+  BLOCKED --> BLOCKED : send: store at the tail\nreceive: park at the tail
+}
+
+[*] --> UNOPENED
+UNOPENED --> OPEN : first operation: consume <latex>S(\mathit{sid})</latex> and produce it again,\nopen <latex>S(\mathit{sid}, k) = 1</latex>, take the order 0
+
+note right of OPEN
+  **Every operation** bumps <latex>S(\mathit{sid}, k)</latex>
+  from <latex>v</latex> to <latex>v + 1</latex> and takes the order <latex>v</latex>,
+  also a peek and a fire that changes no state
+  (decision 31). Entries have distinct orders.
+
+  **Head of a side:** the least <latex>(\mathit{ord}, \mathrm{bincode})</latex>.
+  A send meets the head waiter only when R is empty.
+  A receive meets the head record only when W is empty.
+
+  **Fire rounds** in one transaction:
+  Re-offer: a peek waiter leaves the datum alive,
+  and the next round offers it to the next head waiter.
+  Drain: a persistent receive meets the next head record.
+  Re-issue: a divergent pair (a send !! with a receive <=,
+  or a receive <= with a record of !!) re-issues after
+  one round, and any chain re-issues after 64 fires (I-21).
+
+  **INV** holds in every state:
+  <latex>R = \emptyset \lor W = \emptyset \lor \neg\, \mathrm{match}(\mathrm{head}(W), \mathrm{head}(R))</latex>
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_reserved>   | not opened: the collection has no counter yet |
+|<$rrs_storage>    | stored state of the collection: records, waiters, counter |
+|<$ca_note_amber>  | blocked: both sides wait behind heads that do not match |
+endlegend
+@enduml

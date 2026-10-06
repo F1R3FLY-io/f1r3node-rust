@@ -1,8 +1,8 @@
 // Property tests of the Reified RSpaces storage substrate. Each property is
 // the executable form of headline theorems of the Rocq models
-// (EventCorrelation.v H1–H12 and H17–H22, VolatileSweep.v H13–H16) and of
-// TLA+ invariants (CheckpointReplay.tla T1–T4, TxnLockCoverage T5); the
-// mapping lives in formal/reified-rspaces-invariant-map.json. Runs are
+// (EventCorrelation.v H1–H12 and H17–H23, VolatileSweep.v H13–H16) and of
+// TLA+ invariants (CheckpointReplay.tla T1–T4 and T6, TxnLockCoverage T5);
+// the mapping lives in formal/reified-rspaces-invariant-map.json. Runs are
 // deterministic (fixed seed) and never write to the source tree (no failure
 // persistence). Where a property allows it, the generators also produce
 // groups that are not canonical (a permutation, or a repeat out of sorted
@@ -556,9 +556,54 @@ fn plan_produces(plan: &Planned) -> Vec<Produce> {
     }
 }
 
-// H4, T3: a COMM without a recorded binding is a typed divergence that
-// leaves the bindings, the store, the observer and the view untouched.
-async fn replay_divergence_typed_and_inert(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
+// The observer calls of an unpaired replay fire at commit, all for the
+// source `source`: the start, the directive query, the introduction, the
+// COMM call with `comm`, and the rejected finish (decision 36).
+fn check_unpaired_calls(calls: &[Call], source: &[u8], comm: &COMM) -> Result<(), TestCaseError> {
+    let comm_bytes = bincode::serialize(comm).expect("serialize a COMM");
+    let (start, directive, introduction, observed, finish) = match calls {
+        [
+            Call::Start { source: start, .. },
+            Call::Directive { source: directive },
+            Call::Produce {
+                source: introduction,
+                ..
+            } |
+            Call::Consume {
+                source: introduction,
+                ..
+            },
+            Call::Comm { comm: observed, .. },
+            Call::Finish {
+                source: finish,
+                completion: RSpaceOperationCompletion::Rejected,
+            },
+        ] => (start, directive, introduction, observed, finish),
+        other => {
+            return Err(TestCaseError::fail(format!(
+                "the calls of the unpaired fire: {:?}",
+                other
+            )));
+        }
+    };
+    for called in [start, directive, introduction, finish] {
+        prop_assert_eq!(called.as_slice(), source);
+    }
+    prop_assert_eq!(observed, &comm_bytes);
+    Ok(())
+}
+
+// H4, T3 (decision 36): a fire whose COMM the log does not hold stages as
+// in play and stays unpaired. Staging it and a store after it leaves the
+// bindings, the store and the observer untouched, and the staged view
+// equals the view of play after the same operations. The commit applies the
+// operations before the fire, makes the calls of the fire through its COMM
+// call, and fails with the typed `ReplayDivergence`. The state, the bindings
+// and the counters then equal those of a replay that commits only the
+// operations before the fire, so nothing of the fire or after it is logged
+// or applied. A new transaction with the recorded fire and the rest then
+// reaches the play root.
+async fn replay_divergence_typed_at_commit(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let plans = plan_groups(&groups).await;
     let flat: Vec<Planned> = plans.iter().flatten().cloned().collect();
     let target = flat.iter().position(Planned::is_fire);
@@ -573,38 +618,81 @@ async fn replay_divergence_typed_and_inert(groups: Vec<Vec<Op>>) -> Result<(), T
     observed(&replay, &recorder);
     rig(&replay, &start.root, &played.log).await;
 
+    let mutant = mutate(&flat[target]);
+    let after = Planned::Produce {
+        channel: s("v2"),
+        data: s("after"),
+        persist: false,
+        outcome: ProduceOutcome::Store,
+    };
+    let produces: Vec<Produce> = plan_produces(&flat[target])
+        .into_iter()
+        .chain(plan_produces(&mutant))
+        .chain(plan_produces(&after))
+        .collect();
     let handle = SpaceStoreHandle::new(replay.clone());
     let mut txn = handle.begin(&universe()).await.expect("begin");
     for plan in &flat[..target] {
         staged(plan, &mut txn)?;
     }
-    let mutant = mutate(&flat[target]);
-    let produces: Vec<Produce> = plan_produces(&flat[target])
-        .into_iter()
-        .chain(plan_produces(&mutant))
-        .collect();
     let bindings = replay_bindings(&replay);
     let state = replay_state(&replay);
-    let view = txn_view(&mut txn, &produces);
-    match mutant.stage(&mut txn, None) {
-        Err(SpaceTxnError::ReplayDivergence(_)) => {}
+    let comm = match mutant.stage(&mut txn, None).map(|staged| staged.comm) {
+        Ok(Some(comm)) => comm,
         other => {
-            return Err(TestCaseError::fail(format!(
-                "expected a replay divergence, got {:?}",
-                other
-            )));
+            return Err(TestCaseError::fail(format!("the unpaired fire stages: {:?}", other)));
         }
-    }
+    };
+    staged(&after, &mut txn)?;
     prop_assert_eq!(replay_bindings(&replay), bindings);
     prop_assert_eq!(replay_state(&replay), state);
     prop_assert!(recorder.calls().is_empty());
-    prop_assert_eq!(txn_view(&mut txn, &produces), view);
+    let twin = play_space().await;
+    let twin_handle = SpaceStoreHandle::new(twin.clone());
+    let mut twin_txn = twin_handle.begin(&universe()).await.expect("begin");
+    for plan in flat[..target].iter().chain([&mutant, &after]) {
+        staged(plan, &mut twin_txn)?;
+    }
+    prop_assert_eq!(txn_view(&mut txn, &produces), txn_view(&mut twin_txn, &produces));
+    drop(twin_txn);
+    prop_assert_eq!(
+        txn.commit().await,
+        Err(SpaceTxnError::ReplayDivergence(Box::new(comm.clone())))
+    );
 
+    let reference = replay_over(&play);
+    let reference_recorder = Recorder::new();
+    observed(&reference, &reference_recorder);
+    rig(&reference, &start.root, &played.log).await;
+    let reference_handle = SpaceStoreHandle::new(reference.clone());
+    let mut reference_txn = reference_handle.begin(&universe()).await.expect("begin");
+    for plan in &flat[..target] {
+        staged(plan, &mut reference_txn)?;
+    }
+    if let Err(error) = reference_txn.commit().await {
+        return Err(TestCaseError::fail(format!("reference prefix commit: {:?}", error)));
+    }
+    prop_assert_eq!(replay_state(&replay), replay_state(&reference));
+    prop_assert_eq!(replay_bindings(&replay), replay_bindings(&reference));
+    let prefix = reference_recorder.calls();
+    let calls = recorder.calls();
+    prop_assert!(calls.starts_with(&prefix));
+    check_unpaired_calls(&calls[prefix.len()..], &source_of(&mutant), &comm)?;
+    let mut probe = handle.begin(&universe()).await.expect("begin");
+    let mut reference_probe = reference_handle.begin(&universe()).await.expect("begin");
+    prop_assert_eq!(
+        counters_of(&mut probe, &produces)?,
+        counters_of(&mut reference_probe, &produces)?
+    );
+    drop(probe);
+    drop(reference_probe);
+
+    let mut txn = handle.begin(&universe()).await.expect("begin");
     for plan in &flat[target..] {
         staged(plan, &mut txn)?;
     }
     if let Err(error) = txn.commit().await {
-        return Err(TestCaseError::fail(format!("commit after divergence: {:?}", error)));
+        return Err(TestCaseError::fail(format!("commit after the divergence: {:?}", error)));
     }
     match replay.create_checkpoint().await {
         Ok(replayed) => prop_assert_eq!(replayed.root, played.root),
@@ -1193,11 +1281,16 @@ fn trigger(plan: &Planned) -> Option<IOEvent> {
     }
 }
 
-// H4 (trigger-key pairing): replay pairs a COMM only under its trigger
-// event. With every copy of one fire's trigger event removed from the log,
-// the first fire with that trigger fails with `ReplayDivergence` and no
-// effect: bindings, store, observer and view are unchanged. Against the
-// complete log the same prefix and fire pair.
+// H4 (trigger-key pairing, decision 36): replay pairs a COMM only under its
+// trigger event. With every copy of one fire's trigger event removed from
+// the log, the first fire with that trigger stages unpaired, and every
+// operation stages. Staging leaves the bindings, the store and the observer
+// untouched. The commit fails with `ReplayDivergence` and the COMM of play
+// after the calls of the fire. The state, the bindings, the counters and
+// the calls before the fire equal those of a replay of the same log that
+// commits only the operations before the fire, so nothing of the fire or
+// after it is logged or applied. Against the complete log the same
+// operations before the fire and the fire pair and commit.
 async fn replay_requires_trigger_event(
     groups: Vec<Vec<Op>>,
     pick: usize,
@@ -1232,10 +1325,31 @@ async fn replay_requires_trigger_event(
     for plan in &flat[..target] {
         staged(plan, &mut complete_txn)?;
     }
-    let paired = flat[target]
+    let comm = match flat[target]
         .stage(&mut complete_txn, None)
-        .map_err(|error| TestCaseError::fail(format!("the complete log pairs: {:?}", error)))?;
-    drop(complete_txn);
+        .map(|staged| staged.comm)
+    {
+        Ok(Some(comm)) => comm,
+        other => {
+            return Err(TestCaseError::fail(format!("the complete log stages: {:?}", other)));
+        }
+    };
+    if let Err(error) = complete_txn.commit().await {
+        return Err(TestCaseError::fail(format!("the complete log pairs: {:?}", error)));
+    }
+
+    let reference = replay_over(&play);
+    let reference_recorder = Recorder::new();
+    observed(&reference, &reference_recorder);
+    rig(&reference, &start.root, &forged).await;
+    let reference_handle = SpaceStoreHandle::new(reference.clone());
+    let mut reference_txn = reference_handle.begin(&universe()).await.expect("begin");
+    for plan in &flat[..target] {
+        staged(plan, &mut reference_txn)?;
+    }
+    if let Err(error) = reference_txn.commit().await {
+        return Err(TestCaseError::fail(format!("reference prefix commit: {:?}", error)));
+    }
 
     let forged_replay = replay_over(&play);
     let recorder = Recorder::new();
@@ -1243,26 +1357,69 @@ async fn replay_requires_trigger_event(
     rig(&forged_replay, &start.root, &forged).await;
     let handle = SpaceStoreHandle::new(forged_replay.clone());
     let mut txn = handle.begin(&universe()).await.expect("begin");
-    for plan in &flat[..target] {
-        staged(plan, &mut txn)?;
-    }
-    let produces = plan_produces(&flat[target]);
     let bindings = replay_bindings(&forged_replay);
     let state = replay_state(&forged_replay);
-    let view = txn_view(&mut txn, &produces);
-    match flat[target].stage(&mut txn, None) {
-        Err(SpaceTxnError::ReplayDivergence(comm)) => prop_assert_eq!(Some(*comm), paired.comm),
-        other => {
-            return Err(TestCaseError::fail(format!(
-                "expected a replay divergence, got {:?}",
-                other
-            )));
-        }
+    for plan in &flat {
+        staged(plan, &mut txn)?;
     }
     prop_assert_eq!(replay_bindings(&forged_replay), bindings);
     prop_assert_eq!(replay_state(&forged_replay), state);
     prop_assert!(recorder.calls().is_empty());
-    prop_assert_eq!(txn_view(&mut txn, &produces), view);
+    prop_assert_eq!(
+        txn.commit().await,
+        Err(SpaceTxnError::ReplayDivergence(Box::new(comm.clone())))
+    );
+    prop_assert_eq!(replay_state(&forged_replay), replay_state(&reference));
+    prop_assert_eq!(replay_bindings(&forged_replay), replay_bindings(&reference));
+    let prefix = reference_recorder.calls();
+    let calls = recorder.calls();
+    prop_assert!(calls.starts_with(&prefix));
+    check_unpaired_calls(&calls[prefix.len()..], &source_of(&flat[target]), &comm)?;
+    let produces = plan_produces(&flat[target]);
+    let mut probe = handle.begin(&universe()).await.expect("begin");
+    let mut reference_probe = reference_handle.begin(&universe()).await.expect("begin");
+    prop_assert_eq!(
+        counters_of(&mut probe, &produces)?,
+        counters_of(&mut reference_probe, &produces)?
+    );
+    Ok(())
+}
+
+// H23, T6 (decision 36): a run that an observer call rejects replays to the
+// outcome of play. Play rejects its n-th fallible call, as a deploy that
+// runs out of phlo there, and keeps its log. Replay, rigged with that log,
+// rejects its own n-th call: it fails with the error of play at the same
+// operation, makes the calls of play plus its directive queries, reaches
+// the state of play, and uses every recorded event. n ranges over every
+// fallible call of the full run and one position past them.
+async fn replay_reproduces_play_rejection(
+    groups: Vec<Vec<Op>>,
+    pick: usize,
+) -> Result<(), TestCaseError> {
+    let plans = plan_groups(&groups).await;
+    let counted = play_space().await;
+    let counter = Recorder::new();
+    observed(&counted, &counter);
+    assert_committed(run_plans(&SpaceStoreHandle::new(counted.clone()), &plans).await)?;
+    let calls = counter.fallible_calls();
+    let n = pick % (calls + 1);
+
+    let (play, replay) = play_and_replay().await;
+    let start = checkpoint(&play).await;
+    let play_recorder = Recorder::rejecting_call(n);
+    observed(&play, &play_recorder);
+    let played = run_until_failure(&SpaceStoreHandle::new(play.clone()), &plans).await;
+    let log = play.take_event_log().await;
+    prop_assert_eq!(played.iter().any(Result::is_err), n < calls);
+
+    let replay_recorder = Recorder::rejecting_call(n);
+    observed(&replay, &replay_recorder);
+    rig(&replay, &start.root, &log).await;
+    let replayed = run_until_failure(&SpaceStoreHandle::new(replay.clone()), &plans).await;
+    prop_assert_eq!(replayed, played);
+    prop_assert_eq!(without_directives(replay_recorder.calls()), play_recorder.calls());
+    prop_assert_eq!(replay_state(&replay), logical_state(&play));
+    prop_assert!(replay_bindings(&replay).is_empty());
     Ok(())
 }
 
@@ -2236,8 +2393,8 @@ proptest! {
     }
 
     #[test]
-    fn prop_space_txn_replay_divergence_typed_and_inert(groups in op_groups(false, ODD)) {
-        runtime().block_on(replay_divergence_typed_and_inert(groups))?;
+    fn prop_space_txn_replay_divergence_typed_at_commit(groups in op_groups(false, ODD)) {
+        runtime().block_on(replay_divergence_typed_at_commit(groups))?;
     }
 
     #[test]
@@ -2304,6 +2461,14 @@ proptest! {
         pick in any::<usize>(),
     ) {
         runtime().block_on(replay_requires_trigger_event(groups, pick))?;
+    }
+
+    #[test]
+    fn prop_space_txn_replay_reproduces_play_rejection(
+        groups in op_groups(false, ODD),
+        pick in any::<usize>(),
+    ) {
+        runtime().block_on(replay_reproduces_play_rejection(groups, pick))?;
     }
 
     #[test]

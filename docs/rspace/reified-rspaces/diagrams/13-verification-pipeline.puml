@@ -78,14 +78,14 @@ package "1. Sources" as SOURCES {
   ]
   rectangle SRC_ROCQ $v_model [
   **Rocq models**
-  EventCorrelation.v: H1 to H12, H17, H19 to H21
+  EventCorrelation.v: H1 to H12, H17, H19 to H21, H23
   VolatileSweep.v: H13 to H16, H18, H22
   ]
   rectangle SRC_TLA $v_model [
   **TLA+ models**
-  CheckpointReplay.tla: T1 to T4
+  CheckpointReplay.tla: T1 to T4, T6
   TxnLockCoverage.tla: T5
-  18 configurations with BOUNDS headers
+  19 configurations with BOUNDS headers
   ]
   rectangle SRC_MAPS $v_map [
   **Maps and policies**
@@ -108,7 +108,7 @@ package "2. Checks" as CHECKS {
   rectangle CK_ROCQ $v_check [
   **Rocq kernel checks**
   hygiene, coqc -q -noglob alone,
-  Print Assumptions closed (22 headlines),
+  Print Assumptions closed (23 headlines),
   rocqchk -o: no axiom, no assumption
   ]
   rectangle CK_TLC $v_check [
@@ -123,7 +123,7 @@ package "2. Checks" as CHECKS {
   ]
   rectangle CK_PBT $v_check [
   **Property-based tests**
-  24 P1 properties and the ORD property,
+  25 P1 properties and the ORD property,
   64 cases with a fixed seed
   ]
   rectangle CK_SUITES $v_check [
@@ -145,7 +145,7 @@ package "2. Checks" as CHECKS {
   ]
   rectangle NEG $v_control [
   **Negative controls: must fail**
-  24 Rocq mutants, 6 Unsafe TLC configurations,
+  27 Rocq mutants, 8 Unsafe TLC configurations,
   4 Apalache Error controls, 2 replay mutants,
   checker self-tests
   ]

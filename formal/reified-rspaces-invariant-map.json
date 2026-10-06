@@ -7,18 +7,22 @@
     "TypeOK": "The type invariant of each module. TLC checks it in every configuration. It is not a property of the substrate.",
     "IndInv": "The inductive strengthening of T3 and T4 (CheckpointReplay) for the Apalache BASE and STEP checks. TLC checks it on every reachable state of the two safe CheckpointReplay configurations.",
     "LockIndInv": "The inductive strengthening of T5 (TxnLockCoverage) for the Apalache BASE and STEP checks. TLC checks it on every reachable state of MC_TxnLockCoverage.",
-    "CommitOrderWitness": "When the ghost serialOk holds, the commit order itself witnesses T5. TLC checks it on every reachable state of MC_TxnLockCoverage."
+    "CommitOrderWitness": "When the ghost serialOk holds, the commit order itself witnesses T5. TLC checks it on every reachable state of MC_TxnLockCoverage.",
+    "HeadIndInv": "The inductive strengthening of U1-U3 (HeadOnlyDiscipline) for the Apalache BASE and STEP checks: the ords are below the counter and unique, and every queued record follows every delivered one. TLC checks it on every reachable state of MC_HeadOnlyDiscipline.",
+    "HandleIndInv": "The inductive strengthening of U5-U8 (NativeHandles) for the Apalache BASE and STEP checks: live spaces are durable, only live spaces have collection counters, and no counter or log grows faster than the steps. TLC checks it on every reachable state of MC_NativeHandles.",
+    "SharedQueueRaces": "CounterConflict: two branches that use one queue race in check #1. It restates the Rocq headlines Q21, Q22 and Q24, which their own property tests cover. TLC checks it in MC_CounterConflict.",
+    "FirstOpsRace": "CounterConflict: two branches that open queues of one space race on S(sid). It restates the Rocq headline Q23, which its own property test covers. TLC checks it in MC_CounterConflict."
   },
   "phases": {
     "P1": {
       "title": "P1: the storage substrate (SpaceTxnHost, SpaceStoreHandle, SpaceTxn)",
-      "design": "p1-design-report §5(a) (headlines and invariants) and §5(c) (property-based tests), the P1 fix rules (prompts/p1-fix-rules.md: H4, H9, H15 changed, H17-H22 and T5 new), the round-2 rules FR-1', FR-5', FR-7' and FR-9' (H13, H17, H20, H22 and T5 changed), and the round-3 rule FR-10 (H11 changed). witness_tests lists the deterministic tests of the round-2 and round-3 rules.",
+      "design": "p1-design-report §5(a) (headlines and invariants) and §5(c) (property-based tests), the P1 fix rules (prompts/p1-fix-rules.md: H4, H9, H15 changed, H17-H22 and T5 new), the round-2 rules FR-1', FR-5', FR-7' and FR-9' (H13, H17, H20, H22 and T5 changed), the round-3 rule FR-10 (H11 changed), and decision 36 (replay reproduces play: H4 changed, H23 and T6 new, property 5 renamed). witness_tests lists the deterministic tests of the round-2 and round-3 rules and of decision 36.",
       "test_status": "required",
       "test_files": [
         "rspace++/tests/reified_space_store_handle_props.rs",
         "rholang/tests/reified_space_store_handle_par.rs"
       ],
-      "expected_properties": 24,
+      "expected_properties": 25,
       "formal": {
         "H1": {
           "kind": "rocq",
@@ -51,7 +55,7 @@
           "name": "verify_sound_complete",
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "tests": [
-            "prop_space_txn_replay_divergence_typed_and_inert",
+            "prop_space_txn_replay_divergence_typed_at_commit",
             "prop_space_txn_replay_requires_trigger_event"
           ]
         },
@@ -205,6 +209,14 @@
             "prop_space_txn_non_canonical_inputs_fail_closed"
           ]
         },
+        "H23": {
+          "kind": "rocq",
+          "name": "replay_reproduces_play_run",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_replay_reproduces_play_rejection"
+          ]
+        },
         "T1": {
           "kind": "tla",
           "name": "ReplayPrefixEqual",
@@ -228,7 +240,7 @@
           "name": "PairedOnce",
           "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
           "tests": [
-            "prop_space_txn_replay_divergence_typed_and_inert"
+            "prop_space_txn_replay_divergence_typed_at_commit"
           ]
         },
         "T4": {
@@ -245,6 +257,14 @@
           "file": "formal/tlaplus/reified_rspaces/TxnLockCoverage.tla",
           "tests": [
             "prop_space_txn_rejects_uncovered_channels"
+          ]
+        },
+        "T6": {
+          "kind": "tla",
+          "name": "ReplayOutcomeEqual",
+          "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+          "tests": [
+            "prop_space_txn_replay_reproduces_play_rejection"
           ]
         }
       },
@@ -285,7 +305,7 @@
         },
         {
           "number": 5,
-          "test": "prop_space_txn_replay_divergence_typed_and_inert",
+          "test": "prop_space_txn_replay_divergence_typed_at_commit",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
             "H4",
@@ -454,6 +474,15 @@
             "H17",
             "T1"
           ]
+        },
+        {
+          "number": 25,
+          "test": "prop_space_txn_replay_reproduces_play_rejection",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H23",
+            "T6"
+          ]
         }
       ],
       "witness_tests": [
@@ -596,6 +625,24 @@
           "rule": "FR-10",
           "covers": [
             "H11"
+          ]
+        },
+        {
+          "test": "space_store_handle_replay_reproduces_play_rejection",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "decision 36",
+          "covers": [
+            "H23",
+            "T6"
+          ]
+        },
+        {
+          "test": "space_queue_out_of_phlo_sweep_replays_equal",
+          "file": "rholang/tests/reified_queue_replay.rs",
+          "rule": "decision 36",
+          "covers": [
+            "H23",
+            "T6"
           ]
         }
       ]
@@ -832,6 +879,1260 @@
           "rule": "negative control",
           "covers": [],
           "unmodeled": "A negative control: the property function rejects a replay with another seed and a replay with an extra send."
+        }
+      ]
+    },
+    "P4": {
+      "title": "P4: the hashmap:queue slice (namespace, record envelopes, counters and merges, the head-only queue, space references and routing, factories and native handles) and the I-20 refresh of Encoding.v",
+      "design": "p4-design-report E.1-E.3 with readiness review §4 and §6: persistent_op_call_aborts and space_already_exists_is_deterministic_abort replace space_already_exists_stops_reissue, and each of the four leaf extras covers a P4 entry (handle_dispatch_total, the family capability, the qualifier parse and the atomic commit). Plan revisions M-1, M-2 and I-20. Q# are Rocq headlines, U# are TLA+ invariants. The three I-20 headlines of Encoding.v map to the P2 tests that run the refresh. witness_tests lists deterministic unit tests of the P4 code.",
+      "test_status": "required",
+      "test_files": [
+        "rholang/tests/reified_p4_props.rs",
+        "rholang/tests/reified_marker_recognition.rs",
+        "models/tests/reified_encoding.rs"
+      ],
+      "expected_properties": 69,
+      "formal": {
+        "Q1": {
+          "kind": "rocq",
+          "name": "kind_byte_injective",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "The KIND byte names its kind and durability: two (kind, durability) pairs with one byte are equal.",
+          "tests": [
+            "prop_kind_byte_injective"
+          ]
+        },
+        "Q2": {
+          "kind": "rocq",
+          "name": "storage_id_injective",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "The storage ids (data, path index, counters, allocator) are injective in their space, kind and key.",
+          "tests": [
+            "prop_storage_id_injective"
+          ]
+        },
+        "Q3": {
+          "kind": "rocq",
+          "name": "handle_id_injective",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "The handle id E0‖H‖sid names exactly one native space.",
+          "tests": [
+            "prop_handle_id_injective"
+          ]
+        },
+        "Q4": {
+          "kind": "rocq",
+          "name": "ephemeral_durable_disjoint",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "No ephemeral id equals a durable id.",
+          "tests": [
+            "prop_ephemeral_durable_disjoint"
+          ]
+        },
+        "Q5": {
+          "kind": "rocq",
+          "name": "reified_ids_disjoint_from_new_ids",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "No Reified id equals the 32-byte id of a name that new makes.",
+          "tests": [
+            "prop_reified_ids_disjoint_from_new_ids"
+          ]
+        },
+        "Q6": {
+          "kind": "rocq",
+          "name": "reified_ids_disjoint_from_byte_names_and_mettail",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "No Reified id equals a 1-byte system name or a MeTTaTron id.",
+          "tests": [
+            "prop_reified_ids_disjoint_from_byte_names_and_mettail"
+          ]
+        },
+        "Q7": {
+          "kind": "rocq",
+          "name": "op_ids_pairwise_distinct",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "The op ids [E0, op] of the factories, the system processes and the markers are pairwise distinct.",
+          "tests": [
+            "prop_op_ids_pairwise_distinct"
+          ]
+        },
+        "Q8": {
+          "kind": "rocq",
+          "name": "decode_encode_reified_id",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "decode_reified_id inverts every constructor, and it accepts only their images.",
+          "tests": [
+            "prop_decode_reified_id_roundtrip_and_sound"
+          ]
+        },
+        "Q9": {
+          "kind": "rocq",
+          "name": "space_and_collection_counters_distinct",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "The space counter S(sid) differs from every collection counter S(sid,k).",
+          "tests": [
+            "prop_space_and_collection_counters_distinct"
+          ]
+        },
+        "Q10": {
+          "kind": "rocq",
+          "name": "name_id_routes_to_sid",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "A name id N(sid‖tail) decodes to its space.",
+          "tests": [
+            "prop_name_id_routes_to_sid"
+          ]
+        },
+        "Q11": {
+          "kind": "rocq",
+          "name": "canon_respects_par_eq",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "Channels that are equal as Par values have one canonical key.",
+          "tests": [
+            "prop_canonical_inner_bytes_respects_par_eq"
+          ]
+        },
+        "Q12": {
+          "kind": "rocq",
+          "name": "datum_unwrap_wrap",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "Unwrapping a wrapped datum gives the order and the payload back.",
+          "tests": [
+            "prop_datum_envelope_roundtrip"
+          ]
+        },
+        "Q13": {
+          "kind": "rocq",
+          "name": "datum_wrap_injective",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "The datum envelope is injective in the order and the payload.",
+          "tests": [
+            "prop_datum_envelope_injective"
+          ]
+        },
+        "Q14": {
+          "kind": "rocq",
+          "name": "datum_unwrap_sound",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "The datum decoder accepts only the image of the encoder.",
+          "tests": [
+            "prop_datum_envelope_decoder_sound"
+          ]
+        },
+        "Q15": {
+          "kind": "rocq",
+          "name": "continuation_unwrap_wrap",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "Unwrapping a wrapped continuation gives the order and the body back.",
+          "tests": [
+            "prop_continuation_envelope_roundtrip"
+          ]
+        },
+        "Q16": {
+          "kind": "rocq",
+          "name": "counter_and_config_roundtrip",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "The counter and config records round-trip, the config as its canonical map (I-17).",
+          "tests": [
+            "prop_counter_and_config_records_roundtrip"
+          ]
+        },
+        "Q17": {
+          "kind": "rocq",
+          "name": "envelope_kinds_disjoint",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "The tags D, K, S and C are pairwise distinct, so no record decodes as another kind.",
+          "tests": [
+            "prop_envelope_kinds_disjoint"
+          ]
+        },
+        "Q18": {
+          "kind": "rocq",
+          "name": "no_reified_datum_is_single_number",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "No Reified datum is a single number, so the merger never treats one as a number channel.",
+          "tests": [
+            "prop_no_reified_datum_is_single_number"
+          ]
+        },
+        "Q19": {
+          "kind": "rocq",
+          "name": "unknown_version_rejected",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "A tag with another version or kind byte is rejected.",
+          "tests": [
+            "prop_envelope_unknown_version_rejected"
+          ]
+        },
+        "Q20": {
+          "kind": "rocq",
+          "name": "check1_race_iff",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "The restatement of HEAD check #1: a race exactly for a shared non-persistent IO event that is not mergeable in both logs.",
+          "tests": [
+            "prop_check1_restatement_matches_merger"
+          ]
+        },
+        "Q21": {
+          "kind": "rocq",
+          "name": "ordered_writes_race_on_counter",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Two branches that write one queue race on its counter S(sid,k).",
+          "tests": [
+            "prop_queue_writes_race_on_counter"
+          ]
+        },
+        "Q22": {
+          "kind": "rocq",
+          "name": "ordered_reads_race_on_counter",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "A peek bumps the counter too, so two branches that read one queue race (A2).",
+          "tests": [
+            "prop_queue_reads_race_on_counter"
+          ]
+        },
+        "Q23": {
+          "kind": "rocq",
+          "name": "first_ops_race_on_space_counter",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Two branches whose first operations open collections of one space race on S(sid) (A25).",
+          "tests": [
+            "prop_first_ops_race_on_space_counter"
+          ]
+        },
+        "Q24": {
+          "kind": "rocq",
+          "name": "crossed_collections_race",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Branches that use two queues in crossed orders race on both counters.",
+          "tests": [
+            "prop_crossed_collections_race"
+          ]
+        },
+        "Q25": {
+          "kind": "rocq",
+          "name": "same_block_ops_chain",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Two deploys of one block that use one queue form one chain (depends).",
+          "tests": [
+            "prop_same_block_queue_ops_chain"
+          ]
+        },
+        "Q26": {
+          "kind": "rocq",
+          "name": "unordered_writes_commute",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Writes to a bag need no counter: they never race, and the merge holds both serial orders.",
+          "tests": [
+            "prop_counter_free_writes_commute"
+          ]
+        },
+        "Q27": {
+          "kind": "rocq",
+          "name": "merge_without_race_is_serializable",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Without a check #1 race, the merged state and the observations are those of a serial run.",
+          "tests": [
+            "prop_nonracing_queue_branches_serializable"
+          ]
+        },
+        "Q28": {
+          "kind": "rocq",
+          "name": "counter_free_peek_admits_write_skew",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "A peek without the counter admits the peek/dequeue write skew (computed counterexample).",
+          "tests": [
+            "prop_counter_free_peek_admits_write_skew"
+          ]
+        },
+        "Q29": {
+          "kind": "rocq",
+          "name": "queue_head_is_min_ord",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "The head of each side has the least (ord, bytes).",
+          "tests": [
+            "prop_queue_candidates_head_only"
+          ]
+        },
+        "Q30": {
+          "kind": "rocq",
+          "name": "queue_produce_preserves_inv",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "A produce keeps INV: no pending match between the heads.",
+          "tests": [
+            "prop_queue_produce_preserves_invariant"
+          ]
+        },
+        "Q31": {
+          "kind": "rocq",
+          "name": "queue_consume_preserves_inv",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "A consume keeps INV.",
+          "tests": [
+            "prop_queue_consume_preserves_invariant"
+          ]
+        },
+        "Q32": {
+          "kind": "rocq",
+          "name": "queue_fifo",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Records leave in arrival order.",
+          "tests": [
+            "prop_queue_fifo"
+          ]
+        },
+        "Q33": {
+          "kind": "rocq",
+          "name": "queue_head_blocks",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "A head that does not match blocks the entries behind it.",
+          "tests": [
+            "prop_queue_head_blocks"
+          ]
+        },
+        "Q34": {
+          "kind": "rocq",
+          "name": "queue_loop_bounded_or_reissues",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "A plan stages at most FIRE_ROUND_CAP fires, at most one more than the queue length, or it re-issues.",
+          "tests": [
+            "prop_queue_loop_bounded"
+          ]
+        },
+        "Q35": {
+          "kind": "rocq",
+          "name": "queue_ord_fresh",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "The ord of an operation is new in its collection.",
+          "tests": [
+            "prop_queue_ord_fresh"
+          ]
+        },
+        "Q36": {
+          "kind": "rocq",
+          "name": "queue_plan_permutation_invariant",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "The plan ignores the list order of the staged view.",
+          "tests": [
+            "prop_queue_plan_permutation_invariant"
+          ]
+        },
+        "Q37": {
+          "kind": "rocq",
+          "name": "legacy_scan_violates_head_blocks",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "The legacy waiter scan breaks head-only matching (computed example).",
+          "tests": [
+            "prop_legacy_scan_breaks_head_blocks"
+          ]
+        },
+        "Q38": {
+          "kind": "rocq",
+          "name": "classify_space_ref_total_deterministic",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "Every space reference meets exactly one of the five rules of classify_space_ref.",
+          "tests": [
+            "prop_classify_space_ref_total"
+          ]
+        },
+        "Q39": {
+          "kind": "rocq",
+          "name": "handle_requires_write_flag",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "A reference names a native space only as a bare handle or a writable bundle of one.",
+          "tests": [
+            "prop_handle_requires_write_flag"
+          ]
+        },
+        "Q40": {
+          "kind": "rocq",
+          "name": "reified_non_handle_not_a_space_ref",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "A Reified id that is not a handle is NotASpaceRef, never an agent.",
+          "tests": [
+            "prop_reified_non_handle_not_a_space_ref"
+          ]
+        },
+        "Q41": {
+          "kind": "rocq",
+          "name": "route_total_deterministic",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "A route fails only on the key, and it depends on the context only through its native space.",
+          "tests": [
+            "prop_route_total"
+          ]
+        },
+        "Q42": {
+          "kind": "rocq",
+          "name": "route_rules",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "The routing rules R1 to R5.",
+          "tests": [
+            "prop_route_rules"
+          ]
+        },
+        "Q43": {
+          "kind": "rocq",
+          "name": "space_name_route_ignores_ctx",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "A space name routes to its own space under every context.",
+          "tests": [
+            "prop_space_name_route_ignores_ctx"
+          ]
+        },
+        "Q44": {
+          "kind": "rocq",
+          "name": "r7_route_ignores_ctx",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "The R7 backend agrees with the reducer on every channel that is not forged.",
+          "tests": [
+            "prop_r7_route_ignores_ctx"
+          ]
+        },
+        "Q45": {
+          "kind": "rocq",
+          "name": "ordinary_channels_route_default",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "The channels of an ordinary program route to the default space, and the fast path is exact.",
+          "tests": [
+            "prop_ordinary_channels_route_default"
+          ]
+        },
+        "Q46": {
+          "kind": "rocq",
+          "name": "use_wrapper_restores_ctx",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "A body that the reducer stores under a context runs in that context when it fires.",
+          "tests": [
+            "prop_use_wrapper_restores_ctx"
+          ]
+        },
+        "Q47": {
+          "kind": "rocq",
+          "name": "handle_dispatch_total",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "The handle process drops a call on a non-handle, aborts on a dangling handle, and replies only on a reply name.",
+          "tests": [
+            "prop_handle_dispatch_total"
+          ]
+        },
+        "Q48": {
+          "kind": "rocq",
+          "name": "family_index_bijective",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "The 32 families have the indices 0 to 31, one each, so no two share a factory channel or a capability.",
+          "tests": [
+            "prop_family_index_bijective",
+            "prop_get_space_agent_returns_family_capability"
+          ]
+        },
+        "Q49": {
+          "kind": "rocq",
+          "name": "aliases_map_to_family",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "The URNs and the FIPS aliases parse to their families, and a config names its family.",
+          "tests": [
+            "prop_aliases_map_to_family",
+            "prop_get_space_agent_returns_family_capability"
+          ]
+        },
+        "Q50": {
+          "kind": "rocq",
+          "name": "qualifier_matrix",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "HashSet takes only seq, and P4 creates only default (durable) spaces.",
+          "tests": [
+            "prop_qualifier_matrix",
+            "prop_qualifier_parse_roundtrip"
+          ]
+        },
+        "Q51": {
+          "kind": "rocq",
+          "name": "constructor_parse_canonical",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "Every canonical constructor parses back from its elements.",
+          "tests": [
+            "prop_constructor_parse_canonical",
+            "prop_qualifier_parse_roundtrip"
+          ]
+        },
+        "Q52": {
+          "kind": "rocq",
+          "name": "constructor_parse_sound",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "The constructor parser accepts only the canonical sequence [q?][FREE?][PARAMS?].",
+          "tests": [
+            "prop_constructor_parse_sound"
+          ]
+        },
+        "Q53": {
+          "kind": "rocq",
+          "name": "sid_derivation_deterministic",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "The sid is the 32-byte SpaceId draw of the random state of the call.",
+          "tests": [
+            "prop_sid_derivation_deterministic"
+          ]
+        },
+        "Q54": {
+          "kind": "rocq",
+          "name": "persistent_op_call_aborts",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "A persistent send to an op that takes calls, or to a handle, aborts before the call (A21).",
+          "tests": [
+            "prop_persistent_op_call_aborts"
+          ]
+        },
+        "Q55": {
+          "kind": "rocq",
+          "name": "space_already_exists_is_deterministic_abort",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "A creation over an existing C(sid) aborts in play and replay alike. A commit applies all three operations or none.",
+          "tests": [
+            "prop_space_already_exists_is_deterministic_abort",
+            "prop_prepare_commit_atomic"
+          ]
+        },
+        "Q56": {
+          "kind": "rocq",
+          "name": "refresh_strict_decode_erase",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "statement": "I-20: after the refresh, the strict decode is the decode of Encoding.v, and it accepts only derived flags.",
+          "tests": [
+            "marker_forging_grants_no_capability"
+          ]
+        },
+        "Q57": {
+          "kind": "rocq",
+          "name": "connective_marker_tuple_recognized",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "statement": "I-20: a canonical marker tuple with connective_used = true is recognized.",
+          "tests": [
+            "reified_encoding_roundtrip"
+          ]
+        },
+        "Q58": {
+          "kind": "rocq",
+          "name": "refreshed_decode_commutes_with_subst",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "statement": "I-20: the refresh makes the strict decode of a substituted tuple commute with substitution.",
+          "tests": [
+            "reified_decode_commutes_with_substitution"
+          ]
+        },
+        "U1": {
+          "kind": "tla",
+          "name": "HeadOnlyNoPendingMatch",
+          "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "statement": "The head record and the head waiter never match, on every schedule.",
+          "tests": [
+            "prop_queue_no_pending_match_any_schedule"
+          ]
+        },
+        "U2": {
+          "kind": "tla",
+          "name": "HeadBlocks",
+          "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "statement": "Every fire involves the head of its side, on every schedule.",
+          "tests": [
+            "prop_queue_head_blocks_any_schedule"
+          ]
+        },
+        "U3": {
+          "kind": "tla",
+          "name": "FifoOrder",
+          "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "statement": "Records leave in ord order, on every schedule.",
+          "tests": [
+            "prop_queue_fifo_any_schedule"
+          ]
+        },
+        "U4": {
+          "kind": "tla",
+          "name": "NoMergedOrderFabrication",
+          "file": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+          "statement": "A merge without a check #1 race is a serial run of the two branches.",
+          "tests": [
+            "prop_merged_queue_state_is_serial"
+          ]
+        },
+        "U5": {
+          "kind": "tla",
+          "name": "HandleUnique",
+          "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "statement": "One config record and one handle continuation for each created sid.",
+          "tests": [
+            "prop_handle_unique"
+          ]
+        },
+        "U6": {
+          "kind": "tla",
+          "name": "DanglingIsDeterministicError",
+          "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "statement": "A handle call aborts with DanglingHandle exactly when its space has no config.",
+          "tests": [
+            "prop_dangling_deterministic_error"
+          ]
+        },
+        "U7": {
+          "kind": "tla",
+          "name": "DurableSurvivesRestart",
+          "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "statement": "Every durable space survives a checkpoint and a restart.",
+          "tests": [
+            "prop_handle_survives_checkpoint_reset"
+          ]
+        },
+        "U8": {
+          "kind": "tla",
+          "name": "HandleCallsMergeLikeContracts",
+          "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "statement": "Handle calls on disjoint collections merge like contract calls, and calls on one collection race.",
+          "tests": [
+            "prop_handle_calls_merge_like_contracts"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "prop_kind_byte_injective",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q1"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "prop_storage_id_injective",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q2"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "prop_handle_id_injective",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q3"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "prop_ephemeral_durable_disjoint",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q4"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "prop_reified_ids_disjoint_from_new_ids",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q5"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "prop_reified_ids_disjoint_from_byte_names_and_mettail",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q6"
+          ]
+        },
+        {
+          "number": 7,
+          "test": "prop_op_ids_pairwise_distinct",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q7"
+          ]
+        },
+        {
+          "number": 8,
+          "test": "prop_decode_reified_id_roundtrip_and_sound",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q8"
+          ]
+        },
+        {
+          "number": 9,
+          "test": "prop_space_and_collection_counters_distinct",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q9"
+          ]
+        },
+        {
+          "number": 10,
+          "test": "prop_name_id_routes_to_sid",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q10"
+          ]
+        },
+        {
+          "number": 11,
+          "test": "prop_canonical_inner_bytes_respects_par_eq",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q11"
+          ]
+        },
+        {
+          "number": 12,
+          "test": "prop_datum_envelope_roundtrip",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q12"
+          ]
+        },
+        {
+          "number": 13,
+          "test": "prop_datum_envelope_injective",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q13"
+          ]
+        },
+        {
+          "number": 14,
+          "test": "prop_datum_envelope_decoder_sound",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q14"
+          ]
+        },
+        {
+          "number": 15,
+          "test": "prop_continuation_envelope_roundtrip",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q15"
+          ]
+        },
+        {
+          "number": 16,
+          "test": "prop_counter_and_config_records_roundtrip",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q16"
+          ]
+        },
+        {
+          "number": 17,
+          "test": "prop_envelope_kinds_disjoint",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q17"
+          ]
+        },
+        {
+          "number": 18,
+          "test": "prop_no_reified_datum_is_single_number",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q18"
+          ]
+        },
+        {
+          "number": 19,
+          "test": "prop_envelope_unknown_version_rejected",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q19"
+          ]
+        },
+        {
+          "number": 20,
+          "test": "prop_check1_restatement_matches_merger",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q20"
+          ]
+        },
+        {
+          "number": 21,
+          "test": "prop_queue_writes_race_on_counter",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q21"
+          ]
+        },
+        {
+          "number": 22,
+          "test": "prop_queue_reads_race_on_counter",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q22"
+          ]
+        },
+        {
+          "number": 23,
+          "test": "prop_first_ops_race_on_space_counter",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q23"
+          ]
+        },
+        {
+          "number": 24,
+          "test": "prop_crossed_collections_race",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q24"
+          ]
+        },
+        {
+          "number": 25,
+          "test": "prop_same_block_queue_ops_chain",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q25"
+          ]
+        },
+        {
+          "number": 26,
+          "test": "prop_counter_free_writes_commute",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q26"
+          ]
+        },
+        {
+          "number": 27,
+          "test": "prop_nonracing_queue_branches_serializable",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q27"
+          ]
+        },
+        {
+          "number": 28,
+          "test": "prop_counter_free_peek_admits_write_skew",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q28"
+          ]
+        },
+        {
+          "number": 29,
+          "test": "prop_queue_candidates_head_only",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q29"
+          ]
+        },
+        {
+          "number": 30,
+          "test": "prop_queue_produce_preserves_invariant",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q30"
+          ]
+        },
+        {
+          "number": 31,
+          "test": "prop_queue_consume_preserves_invariant",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q31"
+          ]
+        },
+        {
+          "number": 32,
+          "test": "prop_queue_fifo",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q32"
+          ]
+        },
+        {
+          "number": 33,
+          "test": "prop_queue_head_blocks",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q33"
+          ]
+        },
+        {
+          "number": 34,
+          "test": "prop_queue_loop_bounded",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q34"
+          ]
+        },
+        {
+          "number": 35,
+          "test": "prop_queue_ord_fresh",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q35"
+          ]
+        },
+        {
+          "number": 36,
+          "test": "prop_queue_plan_permutation_invariant",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q36"
+          ]
+        },
+        {
+          "number": 37,
+          "test": "prop_legacy_scan_breaks_head_blocks",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q37"
+          ]
+        },
+        {
+          "number": 38,
+          "test": "prop_classify_space_ref_total",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q38"
+          ]
+        },
+        {
+          "number": 39,
+          "test": "prop_handle_requires_write_flag",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q39"
+          ]
+        },
+        {
+          "number": 40,
+          "test": "prop_reified_non_handle_not_a_space_ref",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q40"
+          ]
+        },
+        {
+          "number": 41,
+          "test": "prop_route_total",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q41"
+          ]
+        },
+        {
+          "number": 42,
+          "test": "prop_route_rules",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q42"
+          ]
+        },
+        {
+          "number": 43,
+          "test": "prop_space_name_route_ignores_ctx",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q43"
+          ]
+        },
+        {
+          "number": 44,
+          "test": "prop_r7_route_ignores_ctx",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q44"
+          ]
+        },
+        {
+          "number": 45,
+          "test": "prop_ordinary_channels_route_default",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q45"
+          ]
+        },
+        {
+          "number": 46,
+          "test": "prop_use_wrapper_restores_ctx",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q46"
+          ]
+        },
+        {
+          "number": 47,
+          "test": "prop_family_index_bijective",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q48"
+          ]
+        },
+        {
+          "number": 48,
+          "test": "prop_aliases_map_to_family",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q49"
+          ]
+        },
+        {
+          "number": 49,
+          "test": "prop_qualifier_matrix",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q50"
+          ]
+        },
+        {
+          "number": 50,
+          "test": "prop_constructor_parse_canonical",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q51"
+          ]
+        },
+        {
+          "number": 51,
+          "test": "prop_constructor_parse_sound",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q52"
+          ]
+        },
+        {
+          "number": 52,
+          "test": "prop_sid_derivation_deterministic",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q53"
+          ]
+        },
+        {
+          "number": 53,
+          "test": "prop_persistent_op_call_aborts",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q54"
+          ]
+        },
+        {
+          "number": 54,
+          "test": "prop_space_already_exists_is_deterministic_abort",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q55"
+          ]
+        },
+        {
+          "number": 55,
+          "test": "prop_queue_no_pending_match_any_schedule",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "U1"
+          ]
+        },
+        {
+          "number": 56,
+          "test": "prop_queue_head_blocks_any_schedule",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "U2"
+          ]
+        },
+        {
+          "number": 57,
+          "test": "prop_queue_fifo_any_schedule",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "U3"
+          ]
+        },
+        {
+          "number": 58,
+          "test": "prop_merged_queue_state_is_serial",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "U4"
+          ]
+        },
+        {
+          "number": 59,
+          "test": "prop_handle_unique",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "U5"
+          ]
+        },
+        {
+          "number": 60,
+          "test": "prop_dangling_deterministic_error",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "U6"
+          ]
+        },
+        {
+          "number": 61,
+          "test": "prop_handle_survives_checkpoint_reset",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "U7"
+          ]
+        },
+        {
+          "number": 62,
+          "test": "prop_handle_calls_merge_like_contracts",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "U8"
+          ]
+        },
+        {
+          "number": 63,
+          "test": "prop_handle_dispatch_total",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q47"
+          ]
+        },
+        {
+          "number": 64,
+          "test": "prop_get_space_agent_returns_family_capability",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q48",
+            "Q49"
+          ]
+        },
+        {
+          "number": 65,
+          "test": "prop_qualifier_parse_roundtrip",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q50",
+            "Q51"
+          ]
+        },
+        {
+          "number": 66,
+          "test": "prop_prepare_commit_atomic",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q55"
+          ]
+        },
+        {
+          "number": 67,
+          "test": "marker_forging_grants_no_capability",
+          "file": "rholang/tests/reified_marker_recognition.rs",
+          "covers": [
+            "Q56"
+          ]
+        },
+        {
+          "number": 68,
+          "test": "reified_encoding_roundtrip",
+          "file": "models/tests/reified_encoding.rs",
+          "covers": [
+            "Q57"
+          ]
+        },
+        {
+          "number": 69,
+          "test": "reified_decode_commutes_with_substitution",
+          "file": "rholang/tests/reified_marker_recognition.rs",
+          "covers": [
+            "Q58"
+          ]
+        }
+      ],
+      "witness_tests": [
+        {
+          "test": "reified_marker_flags_change_derived_flags_only",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "covers": [
+            "Q56"
+          ]
+        },
+        {
+          "test": "reified_marker_flags_use_body_with_connective_send_is_canonical",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "covers": [
+            "Q57"
+          ]
+        },
+        {
+          "test": "reified_marker_flags_variable_bound_to_connective_is_canonical",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "covers": [
+            "Q58"
+          ]
+        },
+        {
+          "test": "space_already_exists_aborts",
+          "file": "rholang/src/rust/interpreter/reified/factory.rs",
+          "covers": [
+            "Q55"
+          ]
+        },
+        {
+          "test": "persistent_sends_abort_on_every_call_op_and_every_handle",
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "covers": [
+            "Q54"
+          ]
+        },
+        {
+          "test": "forged_channels_route_to_the_context_space",
+          "file": "rholang/src/rust/interpreter/reified/route.rs",
+          "covers": [
+            "Q42"
+          ]
+        },
+        {
+          "test": "agent_tagged_names_route_to_the_agent",
+          "file": "rholang/src/rust/interpreter/reified/route.rs",
+          "covers": [
+            "Q42"
+          ]
+        },
+        {
+          "test": "space_names_route_intrinsically",
+          "file": "rholang/src/rust/interpreter/reified/route.rs",
+          "covers": [
+            "Q43"
+          ]
+        },
+        {
+          "test": "ordinary_unforgeable_names_route_to_the_default_space",
+          "file": "rholang/src/rust/interpreter/reified/route.rs",
+          "covers": [
+            "Q45"
+          ]
+        },
+        {
+          "test": "handle_under_a_bundle_without_write_flag_is_not_writable",
+          "file": "rholang/src/rust/interpreter/reified/scope.rs",
+          "covers": [
+            "Q39"
+          ]
+        },
+        {
+          "test": "other_reified_ids_are_not_space_refs_and_other_values_are_agents",
+          "file": "rholang/src/rust/interpreter/reified/scope.rs",
+          "covers": [
+            "Q40"
+          ]
+        },
+        {
+          "test": "wrap_body_restores_the_context_as_a_use_tuple",
+          "file": "rholang/src/rust/interpreter/reified/scope.rs",
+          "covers": [
+            "Q46"
+          ]
         }
       ]
     }

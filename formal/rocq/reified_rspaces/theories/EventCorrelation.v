@@ -15,11 +15,23 @@
    its incoming datum. The agent re-offers that datum as the next operation
    of the transaction, with the same produce identity (H11).
 
+   Decision 36 (it amends decision 19) changes replay pairing. A replay fire
+   with no free recorded occurrence stages unpaired: its view effects are
+   the effects of play, and it adds no pairing. Its commit makes the calls
+   of play. When a call rejects, the commit returns that rejection, which
+   is the outcome of play. When every call accepts, the commit fails with
+   ReplayDivergence (StDiverged) and keeps the operations before it (D6).
+   So replay reproduces the run of play when the log is the commit log of
+   play (H23), also for a deploy that runs out of phlo inside a transaction
+   (docs/rspace/reified-rspaces/findings/space-replay-out-of-phlo.md).
+
    Code base: HEAD 6f7a80da3. Every host file that this header cites with a
    line range is identical at e748426, the base of the design report. The
    P1 files space_store_handle.rs, rspace/space_play.rs and
    replay_rspace/space_replay.rs are new. This header cites their items by
-   name, because their line numbers change often.
+   name, because their line numbers change often. Decision 36 changes
+   TxnCore::verify, StagedConsumeFire and the replay commit of a fire
+   (ReplayBackend::produce_fire and consume_observed).
    Design: p1-design-report §1.3-§1.4 (staging rules), §2.1-§2.4 (host call
    order and replay pairing), §5(a). Plan decision 19 (D1-D7). Fix rules
    FR-1 to FR-9 (prompts/p1-fix-rules.md), which close the defects D1-D8 of
@@ -87,8 +99,31 @@
                              consume, 1112-1120 for a produce)
    available                 ssh SpaceTxn::recorded_comms (FR-3: the trigger
                              key of the queried source)
-   stage_without_trigger_    ssh SpaceTxnError::ReplayDivergence
-     fails
+   stage_without_trigger_    ssh TxnCore::verify (decision 36: an unpaired
+     unpaired                fire stages, verify gives None)
+   StDiverged                ssh SpaceTxnError::ReplayDivergence, raised at
+                             commit (decision 36)
+   sg_paired, pair_step,     ssh TxnCore::verify (the recorded COMM or None,
+     stage_fire              never an error), StagedFire.recorded and
+                             StagedConsumeFire.recorded. stage_fire_some is
+                             the only fact of stage_fire that the proofs of
+                             H1-H12 use
+   commit_replay_produce,    rs/replay_rspace/space_replay.rs ReplayBackend::
+     commit_replay_consume   produce_fire and consume_observed: an unpaired
+     (paired = false)        fire fails with ReplayDivergence after
+                             observe_comm accepts. produce_observed rolls the
+                             counter step back
+   unpaired_fire_inert       an unpaired fire logs, removes and unbinds
+                             nothing (decision 36)
+   fire_paired               the replay premise of H1, H2 and H11
+   erase_dir,                replay_operation_directive: a stateless query
+     ob_ignores_directive,   of replay that play does not make. The
+     dir_always_none         production RhoCommObserver gives no directive
+                             for a space operation (H19 covers one)
+   replay_reproduces_play_   play keeps the log of a failed deploy and
+     run, replay_sim_gen     reverts it (casper/src/rust/rholang/runtime.rs:560-584).
+                             Replay compares the status, then the cost
+                             (casper/src/rust/rholang/replay_runtime.rs:437-450)
    space_prelude, commit_*   design §2.1 (play) and §2.2 (replay) tables,
                              ssh commit_operation and commit_staged
    space_pf_loop,            design §2.1 row 6 (record removal by equality,
@@ -274,6 +309,19 @@
      gives no native directive, as the production RhoCommObserver does.
    - consume_replay_index is an index over replay_data. It does not change
      which COMMs are bound, so the model does not include it.
+   - Decision 36: staging pairs a replay fire when verify accepts it, and
+     stages it unpaired otherwise (sg_paired = false). Staging no longer
+     depends on pairing, so replay stages exactly the operations of play
+     (replay_stage_sim). The commit of an unpaired fire makes the calls of
+     play and fails with StDiverged after the observer accepts its COMM
+     (unpaired_fire_inert). The model does not count phlo. An out-of-phlo
+     charge is an observer rejection, because ob_accept is a function of
+     the call history and the accounting layer charges in the observer
+     calls. So H23 covers it: replay rejects the same call after the same
+     prefix, and the attempts are the same, so the cost is the same. H23
+     assumes that ob_accept ignores the directive queries of the history
+     (ob_ignores_directive) and that the observer gives no directive
+     (dir_always_none).
    - Design deviation: the literal verify rule of design §2.4 compares a raw
      binding count with the number of staged pairings. A COMM whose produce
      list repeats a produce carries two bindings per occurrence under that
@@ -290,7 +338,10 @@
    H2  commit_state_eq_host            same store (data up to permutation)
    H3  counter_timing_play_replay      play closure = replay increment rule
    H4  verify_sound_complete           trigger-key pairing (FR-3) is sound
-                                       and complete
+                                       and complete. Decision 36: a fire
+                                       without its trigger event stages
+                                       unpaired, and an unpaired fire never
+                                       commits
    H5  replay_pairs_each_comm_once     every recorded COMM pairs once at most
    H6  view_commit_coherent            staged view = committed store
    H7  joins_lockstep_preserved        joins stay in lockstep
@@ -323,10 +374,39 @@
                                        tracker
    H21 view_identity_is_store_identity FR-2: view lookups agree with store
                                        lookups
+   H23 replay_reproduces_play_run      decision 36: with the commit log of
+                                       play, replay stages the operations of
+                                       play and its commit makes the calls
+                                       (directive queries erased), events,
+                                       status and store of play
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables become universally quantified parameters of the closed
    theorems. The file imports only the Rocq standard library.
+
+   ─────────────────────────────────────────────────────────────────────────
+   Failed strategies (do not try them again)
+   ─────────────────────────────────────────────────────────────────────────
+   - A fixed sequence of destructs (call prefix, COMM check, observer
+     decision) in the commit lemmas breaks when a control moves the
+     pairing check before observe_comm. commit_split takes the decisions
+     apart in any order.
+   - `simpl in Hst` unfolds stage_fire. A proof that inverts a staged fire
+     then depends on the body of stage_fire, and the negative control of a
+     staging failure breaks it before H23. Use `cbn [negb] in Hst` and
+     stage_fire_some.
+   - `first [unfold commit_play_produce | unfold commit_replay_produce | ..]`
+     takes the first branch also when that constant does not occur, so the
+     commit of the other mode stays folded. Unfold the four commits in one
+     `unfold`.
+   - After `destruct (backend (t_mode T)) eqn:Hb`, Rocq 9.1.1 also rewrites
+     the hypotheses, so a side goal is `Replay <> Play`, and
+     `rewrite Hb; discriminate` fails. Use
+     `first [discriminate | rewrite Hb; discriminate]`.
+   - `fold src in *` fails ("Cannot create self-referring hypothesis"): it
+     also folds the body of the local definition src.
+   - `f_equal` closes `erase_dir [o0; a; od] = erase_dir [o0; a]` by
+     conversion, so a later tactic finds no goal.
    ═══════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import List PeanoNat Bool Lia Permutation Sorting.Sorted Arith.
@@ -754,7 +834,10 @@ Inductive Dir := DirNone | DirSome | DirErr.
 Variable ob_accept : list Obs -> Obs -> bool.
 Variable ob_directive : list Obs -> Src -> Dir.
 
-Inductive Status := StOk | StRejected | StPanic | StNative.
+(* StDiverged is SpaceTxnError::ReplayDivergence at commit (decision 36): a
+   replay fire that staged unpaired, after the observer accepted every call
+   of the operation. *)
+Inductive Status := StOk | StRejected | StPanic | StNative | StDiverged.
 
 (* Effects that one operation applies to the store, for the event-coverage
    check. *)
@@ -1340,8 +1423,12 @@ Definition vcf_effects (V : View) (peeks : list nat) (cands : list Cand) : View 
 
 (* ── Staging (design §1.4) ────────────────────────────────────────────── *)
 
+(* sg_paired holds when staging paired the fire with a recorded COMM: the
+   field recorded of StagedFire and of StagedConsumeFire is Some. It is
+   false in play, for a store or a park, and for a replay fire that staged
+   unpaired (decision 36). *)
 Record Staged := mkStaged {
-  sg_op : Op; sg_joins0 : list (list Chan); sg_comm : option Comm }.
+  sg_op : Op; sg_joins0 : list (list Chan); sg_comm : option Comm; sg_paired : bool }.
 
 Record Txn := mkTxn {
   t_mode : Mode;
@@ -1388,11 +1475,23 @@ Definition verify_any_key (rd : Bindings) (paired : list Comm) (cm : Comm) : boo
 Definition verify_literal (rd : Bindings) (paired : list Comm) (cm : Comm) : bool :=
   existsb (fun k => count_occ comm_eq_dec paired cm <? rd k cm) (keys cm).
 
-Definition pair_step (T : Txn) (k : IOKey) (cm : Comm) : option (list Comm) :=
+(* Decision 36: pairing is total. TxnCore::verify returns the recorded COMM
+   when the fire pairs and None otherwise. It no longer fails, so staging
+   never fails because of pairing. pair_step gives the paired list after the
+   fire and the flag sg_paired of the staged fire. *)
+Definition pair_step (T : Txn) (k : IOKey) (cm : Comm) : list Comm * bool :=
   match backend (t_mode T) with
-  | Play => Some (t_paired T)
-  | _ => if verify (t_rd T) (t_paired T) k cm then Some (t_paired T ++ [cm]) else None
+  | Play => (t_paired T, false)
+  | _ => if verify (t_rd T) (t_paired T) k cm then (t_paired T ++ [cm], true) else (t_paired T, false)
   end.
+
+(* stage_fire pushes a staged fire with the result of pair_step. A replay
+   fire with no free recorded occurrence stages unpaired (decision 36): its
+   view effects are the effects of play, and it adds no pairing. The rule
+   of decision 19 failed here with ReplayDivergence. *)
+Definition stage_fire (T : Txn) (V : View) (k : IOKey) (cm : Comm) (mk : bool -> Staged) : option Txn :=
+  let ps := pair_step T k cm in
+  Some (txn_push T V (fst ps) (mk (snd ps))).
 
 Definition chan_eqb (a b : Chan) : bool := if chan_eq_dec a b then true else false.
 
@@ -1448,32 +1547,24 @@ Definition stage (T : Txn) (op : Op) : option Txn :=
       match out with
       | PStore =>
           Some (txn_push T (vput_datum (vbump V src persist) ch (mkDatum v persist src))
-                         (t_paired T) (mkStaged op (vjoins V ch) None))
+                         (t_paired T) (mkStaged op (vjoins V ch) None false))
       | PFire chs wk kidx cands =>
           if negb (pfire_ok T ch v persist chs wk cands) then None else
           let cm := mk_comm cands (w_src wk) (w_peeks wk)
                       (play_counters_closure (vcount V) src persist) in
-          match pair_step T (KProduce src) cm with
-          | None => None
-          | Some paired' =>
-              Some (txn_push T (vpf_effects (vbump V src persist) ch v persist chs wk cands)
-                             paired' (mkStaged op (vjoins V ch) (Some cm)))
-          end
+          stage_fire T (vpf_effects (vbump V src persist) ch v persist chs wk cands)
+                     (KProduce src) cm (mkStaged op (vjoins V ch) (Some cm))
       end
   | OConsume chs pats k persist peeks out =>
       let src := consume_id chs pats k persist in
       if negb (consume_args_ok T chs pats peeks) then None else
       let wk := mkWK pats k persist peeks src in
       match out with
-      | CPark => Some (txn_push T (vstore_wk V chs wk) (t_paired T) (mkStaged op [] None))
+      | CPark => Some (txn_push T (vstore_wk V chs wk) (t_paired T) (mkStaged op [] None false))
       | CFire cands =>
           if negb (cfire_ok T chs cands) then None else
           let cm := mk_comm cands src peeks (counters_of (vcount V)) in
-          match pair_step T (KConsume src) cm with
-          | None => None
-          | Some paired' =>
-              Some (txn_push T (vcf_effects V peeks cands) paired' (mkStaged op [] (Some cm)))
-          end
+          stage_fire T (vcf_effects V peeks cands) (KConsume src) cm (mkStaged op [] (Some cm))
       end
   end.
 
@@ -1554,9 +1645,14 @@ Definition commit_play_consume (H : list Obs) (S : Store) (rd : Bindings)
       end
   end.
 
+(* Decision 36: after the observer accepts the COMM, an unpaired fire
+   (paired = false) fails with ReplayDivergence (StDiverged). The counter
+   step rolls back, as for a rejection (produce_observed), and the fire
+   logs, removes and unbinds nothing (space_replay.rs ReplayBackend::
+   produce_fire and consume_observed). *)
 Definition commit_replay_produce (H : list Obs) (S : Store) (rd : Bindings)
     (ch : Chan) (v : Val) (persist : bool) (out : POut)
-    (joins0 : list (list Chan)) (scomm : option Comm) : Res :=
+    (joins0 : list (list Chan)) (scomm : option Comm) (paired : bool) : Res :=
   let src := produce_id ch v persist in
   let s := SrcP src in
   match space_prelude Replay H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with
@@ -1578,6 +1674,8 @@ Definition commit_replay_produce (H : list Obs) (S : Store) (rd : Bindings)
                 let oc := ObComm cm (w_kont wk) (w_persist wk) (comm_data cands) in
                 if negb (ob_accept (H ++ obs) oc)
                 then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected
+                else if negb paired
+                then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StDiverged
                 else
                   let p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk in
                   let retain := negb (nullb (w_peeks wk)) in
@@ -1590,7 +1688,7 @@ Definition commit_replay_produce (H : list Obs) (S : Store) (rd : Bindings)
 
 Definition commit_replay_consume (H : list Obs) (S : Store) (rd : Bindings)
     (chs : list Chan) (pats : list Pat) (k : Kont) (persist : bool) (peeks : list nat)
-    (out : COut) (scomm : option Comm) : Res :=
+    (out : COut) (scomm : option Comm) (paired : bool) : Res :=
   let src := consume_id chs pats k persist in
   let s := SrcC src in
   match space_prelude Replay H s (ObStart s chs []) (ObConsume src chs pats k persist peeks) with
@@ -1611,6 +1709,8 @@ Definition commit_replay_consume (H : list Obs) (S : Store) (rd : Bindings)
                 let oc := ObComm cm k persist (comm_data cands) in
                 if negb (ob_accept (H ++ obs) oc)
                 then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected
+                else if negb paired
+                then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StDiverged
                 else
                   let p := space_cf_loop S (negb (nullb peeks)) (sort_desc vkey cands) in
                   mkRes (fst p) (unbind rd cm) (obs ++ [oc; ObFinish s Matched])
@@ -1624,12 +1724,12 @@ Definition commit_op (m : Mode) (H : list Obs) (S : Store) (rd : Bindings) (sg :
   | OProduce ch v persist out =>
       match backend m with
       | Play => commit_play_produce H S rd ch v persist out (sg_joins0 sg) (sg_comm sg)
-      | _ => commit_replay_produce H S rd ch v persist out (sg_joins0 sg) (sg_comm sg)
+      | _ => commit_replay_produce H S rd ch v persist out (sg_joins0 sg) (sg_comm sg) (sg_paired sg)
       end
   | OConsume chs pats k persist peeks out =>
       match backend m with
       | Play => commit_play_consume H S rd chs pats k persist peeks out (sg_comm sg)
-      | _ => commit_replay_consume H S rd chs pats k persist peeks out (sg_comm sg)
+      | _ => commit_replay_consume H S rd chs pats k persist peeks out (sg_comm sg) (sg_paired sg)
       end
   end.
 
@@ -2664,11 +2764,50 @@ Proof. intros cm. unfold comm_eqb. destruct (comm_eq_dec cm cm); [reflexivity | 
 
 (* ══════════════════════ Staging characterization ══════════════════════════ *)
 
+(* The transaction after a staged fire. The proof does not depend on the
+   form of stage_fire beyond this equation: it also holds for a rule that
+   fails an unpaired replay fire at staging. *)
+Lemma stage_fire_some :
+  forall T V k cm mk T', stage_fire T V k cm mk = Some T' ->
+    T' = txn_push T V (fst (pair_step T k cm)) (mk (snd (pair_step T k cm))).
+Proof.
+  intros T V k cm mk T' H. unfold stage_fire in H. cbv zeta in H.
+  destruct (backend (t_mode T)); destruct (snd (pair_step T k cm)); cbv beta iota in H; congruence.
+Qed.
+
+(* commit_split takes apart the decisions of a commit in any order: the
+   call prefix, the COMM check, the observer decision on the COMM and the
+   pairing flag of the staged fire. *)
+Ltac commit_split :=
+  repeat match goal with
+  | |- context [match space_prelude ?m ?h ?s ?a ?b with _ => _ end] =>
+      let E := fresh "Ep" in destruct (space_prelude m h s a b) eqn:E; cbv iota
+  | |- context [if negb (comm_eqb ?a ?b) then _ else _] =>
+      let E := fresh "Ec" in destruct (negb (comm_eqb a b)) eqn:E; cbv iota
+  | |- context [if negb (ob_accept ?h ?o) then _ else _] =>
+      let E := fresh "Ea" in destruct (negb (ob_accept h o)) eqn:E; cbv iota
+  | |- context [if negb ?p then _ else _] =>
+      is_var p; let E := fresh "Eq" in destruct (negb p) eqn:E; cbv iota
+  end.
+
 Definition trigger_key (op : Op) : IOKey :=
   match op with
   | OProduce ch v persist _ => KProduce (produce_id ch v persist)
   | OConsume chs pats k persist _ _ => KConsume (consume_id chs pats k persist)
   end.
+
+(* A fire operation: a produce Fire or a consume Fire. *)
+Definition is_fire (op : Op) : bool :=
+  match op with
+  | OProduce _ _ _ (PFire _ _ _ _) | OConsume _ _ _ _ _ (CFire _) => true
+  | _ => false
+  end.
+
+(* Decision 36: the premise of the host simulation (H1, H2, H11) in replay
+   and reporting. Every staged fire paired with a recorded COMM. Under the
+   rule of decision 19, a successful staging implied it. *)
+Definition fire_paired (m : Mode) (sg : Staged) : Prop :=
+  backend m <> Play -> is_fire (sg_op sg) = true -> sg_paired sg = true.
 
 Lemma not_installed_true :
   forall T chs, not_installed T chs = true -> forall c, In c chs -> t_installed T c = false.
@@ -2842,7 +2981,8 @@ Lemma peek_fire_keeps_data :
   forall m H S rd sg, retaining (sg_op sg) = true ->
     forall c, s_data (r_st (commit_op m H S rd sg)) c = s_data S c.
 Proof.
-  intros m H S rd [op j0 scomm] Hr c. unfold commit_op. cbn [sg_op sg_joins0 sg_comm] in *.
+  intros m H S rd [op j0 scomm sp] Hr c. unfold commit_op.
+  cbn [sg_op sg_joins0 sg_comm sg_paired] in *.
   destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
     cbn [retaining] in Hr; try discriminate.
   - assert (Hp1 : forall S1, s_data (fst (if w_persist wk then (S1, [])
@@ -2851,18 +2991,12 @@ Proof.
     { intros S1. destruct (w_persist wk); [reflexivity |]. apply space_remove_continuation_data. }
     destruct (backend m);
       [unfold commit_play_produce | unfold commit_replay_produce | unfold commit_replay_produce];
-      (destruct (space_prelude _ _ _ _ _); [reflexivity |]);
-      (destruct scomm as [cm |]; [| reflexivity]);
-      (destruct (negb (comm_eqb _ cm)); [reflexivity |]);
-      (destruct (negb (ob_accept _ _)); [reflexivity |]);
-      cbn zeta; cbn [r_st]; rewrite Hr, space_pf_loop_retain_data, Hp1; reflexivity.
+      destruct scomm as [cm |]; commit_split; cbn zeta; cbn [r_st];
+      first [reflexivity | rewrite Hr, space_pf_loop_retain_data, Hp1; reflexivity].
   - destruct (backend m);
       [unfold commit_play_consume | unfold commit_replay_consume | unfold commit_replay_consume];
-      (destruct (space_prelude _ _ _ _ _); [reflexivity |]);
-      (destruct scomm as [cm |]; [| reflexivity]);
-      (destruct (negb (comm_eqb _ cm)); [reflexivity |]);
-      (destruct (negb (ob_accept _ _)); [reflexivity |]);
-      cbn zeta; cbn [r_st]; rewrite Hr, space_cf_loop_retain; reflexivity.
+      destruct scomm as [cm |]; commit_split; cbn zeta; cbn [r_st];
+      first [reflexivity | rewrite Hr, space_cf_loop_retain; reflexivity].
 Qed.
 
 (* ── The re-offer ─────────────────────────────────────────────────────── *)
@@ -2952,9 +3086,8 @@ Proof.
   intros T ch v chs wk kidx cands T1 Hst src.
   unfold stage in Hst.
   destruct (t_installed T ch) eqn:Hi; [discriminate |].
-  destruct (pfire_ok T ch v false chs wk cands); simpl in Hst; [| discriminate].
-  destruct (pair_step T _ _) as [paired' |]; [| discriminate].
-  injection Hst as <-.
+  destruct (pfire_ok T ch v false chs wk cands); cbn [negb] in Hst; [| discriminate].
+  apply stage_fire_some in Hst. subst T1.
   eexists. split; [unfold stage; simpl; rewrite Hi; reflexivity |].
   simpl. split; [| split].
   - rewrite vpf_effects_counts. apply vbump_count_self.
@@ -3324,17 +3457,32 @@ Proof. intros []; simpl; auto. Qed.
 
 (* Commit-side characterization of each outcome. *)
 
+(* The leaf tactics of the commit characterizations below: a committed
+   leaf, and a leaf that commits nothing (a rejection by the observer, a
+   COMM that does not equal the live COMM, or an unpaired replay fire). *)
+Ltac close_ok :=
+  left; split; [reflexivity | split; [reflexivity | split; [reflexivity | split; reflexivity]]].
+
+Ltac close_inert :=
+  right;
+  match goal with
+  | E : space_prelude _ _ _ _ _ = PreStop _ ?st |- _ => apply space_prelude_status in E; subst st
+  | |- _ => idtac
+  end;
+  split; [discriminate | split; [discriminate | split; [discriminate | split;
+    [first [apply store_eq_refl | apply bump_unbump_eq] | split; [reflexivity | split; reflexivity]]]]].
+
 Lemma coh_produce_store :
-  forall m H Sc rd ch v persist j0,
+  forall m H Sc rd ch v persist j0 sp,
     let src := produce_id ch v persist in
-    let r := commit_op m H Sc rd (mkStaged (OProduce ch v persist PStore) j0 None) in
+    let r := commit_op m H Sc rd (mkStaged (OProduce ch v persist PStore) j0 None sp) in
     (r_status r = StOk /\
      r_st r = fst (put_datum (bump Sc src persist) ch (mkDatum v persist src)) /\
      r_rd r = rd /\ r_ev r = [EvProduce src] /\
      r_fx r = snd (put_datum (bump Sc src persist) ch (mkDatum v persist src)))
     \/ (r_status r = StRejected /\ r_st r = Sc /\ r_rd r = rd /\ r_ev r = [] /\ r_fx r = []).
 Proof.
-  intros m H Sc rd ch v persist j0 src r. subst src r. unfold commit_op. simpl.
+  intros m H Sc rd ch v persist j0 sp src r. subst src r. unfold commit_op. simpl.
   destruct (backend m).
   - unfold commit_play_produce.
     destruct (space_prelude Play _ _ _ _) as [obs st | obs] eqn:Ep.
@@ -3351,16 +3499,16 @@ Proof.
 Qed.
 
 Lemma coh_consume_park :
-  forall m H Sc rd chs pats k persist peeks,
+  forall m H Sc rd chs pats k persist peeks sp,
     let src := consume_id chs pats k persist in
-    let r := commit_op m H Sc rd (mkStaged (OConsume chs pats k persist peeks CPark) [] None) in
+    let r := commit_op m H Sc rd (mkStaged (OConsume chs pats k persist peeks CPark) [] None sp) in
     (r_status r = StOk /\
      r_st r = fst (store_waiting_continuation Sc chs (mkWK pats k persist peeks src)) /\
      r_rd r = rd /\ r_ev r = [EvConsume src] /\
      r_fx r = snd (store_waiting_continuation Sc chs (mkWK pats k persist peeks src)))
     \/ (r_status r = StRejected /\ r_st r = Sc /\ r_rd r = rd /\ r_ev r = [] /\ r_fx r = []).
 Proof.
-  intros m H Sc rd chs pats k persist peeks src r. subst src r. unfold commit_op. simpl.
+  intros m H Sc rd chs pats k persist peeks sp src r. subst src r. unfold commit_op. simpl.
   destruct (backend m).
   - unfold commit_play_consume.
     destruct (space_prelude Play _ _ _ _) as [obs st | obs] eqn:Ep.
@@ -3376,86 +3524,59 @@ Proof.
     + left. simpl. auto.
 Qed.
 
+(* A staged produce-side fire commits with its view effects, or it commits
+   nothing: a rejection, or a replay fire that staged unpaired
+   (StDiverged, decision 36). The statement does not depend on the pairing
+   flag. *)
 Lemma coh_produce_fire :
-  forall m H Sc rd ch v persist chs wk kidx cands j0 cm,
+  forall m H Sc rd ch v persist chs wk kidx cands j0 cm sp,
     let src := produce_id ch v persist in
     cm = mk_comm cands (w_src wk) (w_peeks wk) (play_counters_closure (s_count Sc) src persist) ->
     let r := commit_op m H Sc rd
-               (mkStaged (OProduce ch v persist (PFire chs wk kidx cands)) j0 (Some cm)) in
+               (mkStaged (OProduce ch v persist (PFire chs wk kidx cands)) j0 (Some cm) sp) in
     let S1 := bump Sc src persist in
     let p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk in
     let retain := negb (nullb (w_peeks wk)) in
     let p2 := space_pf_loop (fst p1) chs retain (sort_desc vkey cands) in
     (r_status r = StOk /\ r_st r = fst p2 /\ r_rd r = rd_after m StOk (Some cm) rd /\
      r_ev r = [EvProduce src; EvComm ProduceSide cm] /\ r_fx r = snd p1 ++ snd p2)
-    \/ (r_status r = StRejected /\ store_eq (r_st r) Sc /\ r_rd r = rd /\ r_ev r = [] /\ r_fx r = []).
+    \/ (r_status r <> StOk /\ r_status r <> StPanic /\ r_status r <> StNative /\
+        store_eq (r_st r) Sc /\ r_rd r = rd /\ r_ev r = [] /\ r_fx r = []).
 Proof.
-  intros m H Sc rd ch v persist chs wk kidx cands j0 cm src Hcm r S1 p1 retain p2.
-  subst r. unfold commit_op. simpl. unfold rd_after.
-  destruct (backend m) eqn:Hb.
-  - unfold commit_play_produce. fold src.
-    destruct (space_prelude Play _ _ _ _) as [obs st | obs] eqn:Ep.
-    + right. apply space_prelude_status in Ep. subst st. simpl. split; [reflexivity |].
-      split; [apply store_eq_refl | auto].
-    + rewrite <- Hcm, comm_eqb_refl. simpl.
-      destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
-      * left. auto.
-      * right. split; [reflexivity | split; [apply store_eq_refl | auto]].
-  - unfold commit_replay_produce. fold src.
-    destruct (space_prelude Replay _ _ _ _) as [obs st | obs] eqn:Ep.
-    + right. apply space_prelude_status in Ep. subst st. simpl. split; [reflexivity |].
-      split; [apply store_eq_refl | auto].
-    + assert (Hlive : mk_comm cands (w_src wk) (w_peeks wk) (counters_of (s_count (bump Sc src persist))) = cm).
-      { rewrite Hcm. unfold mk_comm. f_equal. rewrite play_closure_is_replay_closure. reflexivity. }
-      rewrite Hlive, comm_eqb_refl. simpl.
-      destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
-      * left. auto.
-      * right. split; [reflexivity | split; [apply bump_unbump_eq | auto]].
-  - unfold commit_replay_produce. fold src.
-    destruct (space_prelude Replay _ _ _ _) as [obs st | obs] eqn:Ep.
-    + right. apply space_prelude_status in Ep. subst st. simpl. split; [reflexivity |].
-      split; [apply store_eq_refl | auto].
-    + assert (Hlive : mk_comm cands (w_src wk) (w_peeks wk) (counters_of (s_count (bump Sc src persist))) = cm).
-      { rewrite Hcm. unfold mk_comm. f_equal. rewrite play_closure_is_replay_closure. reflexivity. }
-      rewrite Hlive, comm_eqb_refl. simpl.
-      destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
-      * left. auto.
-      * right. split; [reflexivity | split; [apply bump_unbump_eq | auto]].
+  intros m H Sc rd ch v persist chs wk kidx cands j0 cm sp src Hcm r S1 p1 retain p2.
+  subst r. unfold commit_op. cbn [sg_op sg_joins0 sg_comm sg_paired]. unfold rd_after.
+  destruct (backend m) eqn:Hb;
+    [unfold commit_play_produce | unfold commit_replay_produce | unfold commit_replay_produce];
+    cbn zeta; commit_split; cbn [r_status r_st r_rd r_ev r_fx]; first [close_ok | close_inert].
 Qed.
 
 Lemma coh_consume_fire :
-  forall m H Sc rd chs pats k persist peeks cands cm,
+  forall m H Sc rd chs pats k persist peeks cands cm sp,
     let src := consume_id chs pats k persist in
     cm = mk_comm cands src peeks (counters_of (s_count Sc)) ->
-    let r := commit_op m H Sc rd (mkStaged (OConsume chs pats k persist peeks (CFire cands)) [] (Some cm)) in
+    let r := commit_op m H Sc rd (mkStaged (OConsume chs pats k persist peeks (CFire cands)) [] (Some cm) sp) in
     let p := space_cf_loop Sc (negb (nullb peeks)) (sort_desc vkey cands) in
     (r_status r = StOk /\ r_st r = fst p /\ r_rd r = rd_after m StOk (Some cm) rd /\
      r_ev r = [EvConsume src; EvComm ConsumeSide cm] /\ r_fx r = snd p)
-    \/ (r_status r = StRejected /\ r_st r = Sc /\ r_rd r = rd /\ r_ev r = [] /\ r_fx r = []).
+    \/ (r_status r <> StOk /\ r_status r <> StPanic /\ r_status r <> StNative /\
+        store_eq (r_st r) Sc /\ r_rd r = rd /\ r_ev r = [] /\ r_fx r = []).
 Proof.
-  intros m H Sc rd chs pats k persist peeks cands cm src Hcm r p.
-  subst r. unfold commit_op. simpl. unfold rd_after.
-  destruct (backend m) eqn:Hb.
-  - unfold commit_play_consume. fold src.
-    destruct (space_prelude Play _ _ _ _) as [obs st | obs] eqn:Ep.
-    + right. apply space_prelude_status in Ep. subst st. simpl. auto.
-    + rewrite <- Hcm, comm_eqb_refl. simpl.
-      destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl; [left | right]; auto.
-  - unfold commit_replay_consume. fold src.
-    destruct (space_prelude Replay _ _ _ _) as [obs st | obs] eqn:Ep.
-    + right. apply space_prelude_status in Ep. subst st. simpl. auto.
-    + rewrite <- Hcm, comm_eqb_refl. simpl.
-      destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl; [left | right]; auto.
-  - unfold commit_replay_consume. fold src.
-    destruct (space_prelude Replay _ _ _ _) as [obs st | obs] eqn:Ep.
-    + right. apply space_prelude_status in Ep. subst st. simpl. auto.
-    + rewrite <- Hcm, comm_eqb_refl. simpl.
-      destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl; [left | right]; auto.
+  intros m H Sc rd chs pats k persist peeks cands cm sp src Hcm r p.
+  subst r. unfold commit_op. cbn [sg_op sg_joins0 sg_comm sg_paired]. unfold rd_after.
+  destruct (backend m) eqn:Hb;
+    [unfold commit_play_consume | unfold commit_replay_consume | unfold commit_replay_consume];
+    cbn zeta; commit_split; cbn [r_status r_st r_rd r_ev r_fx]; first [close_ok | close_inert].
 Qed.
 
+(* rd_after leaves the bindings as they are when the operation does not
+   commit. *)
+Lemma rd_after_not_ok : forall m st sgc rd, st <> StOk -> rd_after m st sgc rd = rd.
+Proof. intros m st sgc rd Hst. unfold rd_after. destruct (backend m), st, sgc; congruence. Qed.
+
 (* The commit of one staged operation. On success, the store equals the
-   view after staging. On rejection, the store does not change (decision
-   D6). *)
+   view after staging. On rejection, and for an unpaired replay fire
+   (decision 36), the store does not change (decision D6). Staging pairs a
+   replay fire exactly when verify accepts it, and never in play. *)
 Lemma commit_op_coherent :
   forall T op T' H Sc rd,
     stage T op = Some T' ->
@@ -3463,11 +3584,14 @@ Lemma commit_op_coherent :
     exists sg,
       t_staged T' = t_staged T ++ [sg] /\ sg_op sg = op /\
       t_mode T' = t_mode T /\ t_installed T' = t_installed T /\ t_rd T' = t_rd T /\
-      (sg_comm sg = None -> t_paired T' = t_paired T) /\
+      (sg_comm sg = None -> t_paired T' = t_paired T /\ sg_paired sg = false) /\
       (forall cm, sg_comm sg = Some cm ->
-         t_paired T' = (match backend (t_mode T) with Play => t_paired T | _ => t_paired T ++ [cm] end)
-         /\ (backend (t_mode T) <> Play -> verify (t_rd T) (t_paired T) (trigger_key op) cm = true)
-         /\ In (trigger_key op) (keys cm)) /\
+         t_paired T' = t_paired T ++ (if sg_paired sg then [cm] else [])
+         /\ sg_paired sg = match backend (t_mode T) with
+                           | Play => false
+                           | _ => verify (t_rd T) (t_paired T) (trigger_key op) cm
+                           end
+         /\ In (trigger_key op) (keys cm) /\ is_fire op = true) /\
       let rc := commit_op (t_mode T) H Sc rd sg in
       r_status rc <> StPanic /\ r_status rc <> StNative /\
       r_rd rc = rd_after (t_mode T) (r_status rc) (sg_comm sg) rd /\
@@ -3484,12 +3608,12 @@ Proof.
       unfold stage in Hst. fold V in Hst. fold src in Hst.
       destruct (t_installed T ch) eqn:Hi; [discriminate |].
       injection Hst as <-.
-      exists (mkStaged (OProduce ch v persist PStore) (vjoins V ch) None).
+      exists (mkStaged (OProduce ch v persist PStore) (vjoins V ch) None false).
       unfold txn_push. simpl.
       do 5 (split; [reflexivity |]).
-      split; [intros _; reflexivity |].
+      split; [intros _; split; reflexivity |].
       split; [intros cm Hc; discriminate |].
-      destruct (coh_produce_store (t_mode T) H Sc rd ch v persist (vjoins V ch))
+      destruct (coh_produce_store (t_mode T) H Sc rd ch v persist (vjoins V ch) false)
         as [(Hs & Hst' & Hrd & Hev & Hfx) | (Hs & Hst' & Hrd & Hev & Hfx)];
         fold src in Hs, Hst', Hrd, Hev, Hfx;
         rewrite Hs; (split; [discriminate |]); (split; [discriminate |]).
@@ -3507,33 +3631,33 @@ Proof.
     + (* produce, Fire *)
       unfold stage in Hst. fold V in Hst. fold src in Hst.
       destruct (t_installed T ch) eqn:Hi; [discriminate |].
-      destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; simpl in Hst; [| discriminate].
+      destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; cbn [negb] in Hst; [| discriminate].
       set (cm := mk_comm cands (w_src wk) (w_peeks wk) (play_counters_closure (vcount V) src persist)) in Hst.
-      destruct (pair_step T _ cm) as [paired' |] eqn:Hps; [| discriminate].
-      injection Hst as <-.
+      apply stage_fire_some in Hst. subst T'.
       destruct (pfire_ok_spec T ch v persist chs wk cands Hok)
         as (Hne & Hnoinst & Hmap & Hex & Hinc & Hwk & Hpk & Hso).
-      exists (mkStaged (OProduce ch v persist (PFire chs wk kidx cands)) (vjoins V ch) (Some cm)).
-      unfold txn_push. simpl.
+      set (sp := snd (pair_step T (KProduce src) cm)).
+      exists (mkStaged (OProduce ch v persist (PFire chs wk kidx cands)) (vjoins V ch) (Some cm) sp).
+      unfold txn_push. cbn [t_staged t_mode t_installed t_rd t_paired t_view sg_op sg_comm sg_paired].
       do 5 (split; [reflexivity |]).
       split; [intros C; discriminate |].
       split.
       { intros cm' Hcm'. injection Hcm' as <-.
-        unfold pair_step in Hps.
+        subst sp. unfold pair_step. cbn [trigger_key]. fold src.
         split; [| split].
-        - destruct (backend (t_mode T)); [injection Hps as <-; reflexivity | |];
-            destruct (verify (t_rd T) (t_paired T) _ cm); [injection Hps as <-; reflexivity | discriminate
-                                                       | injection Hps as <-; reflexivity | discriminate].
-        - intros Hnp. destruct (backend (t_mode T)); [contradiction | |];
-            destruct (verify (t_rd T) (t_paired T) _ cm); [reflexivity | discriminate | reflexivity | discriminate].
-        - unfold keys. right. apply in_map. subst cm. apply incoming_src_in_produces; assumption. }
+        - destruct (backend (t_mode T)); [simpl; rewrite app_nil_r; reflexivity | |];
+            destruct (verify (t_rd T) (t_paired T) (KProduce src) cm); simpl;
+            first [reflexivity | rewrite app_nil_r; reflexivity].
+        - destruct (backend (t_mode T)); [reflexivity | |];
+            destruct (verify (t_rd T) (t_paired T) (KProduce src) cm); reflexivity.
+        - split; [| reflexivity].
+          unfold keys. right. apply in_map. subst cm. apply incoming_src_in_produces; assumption. }
       assert (Hcm : cm = mk_comm cands (w_src wk) (w_peeks wk) (play_counters_closure (s_count Sc) src persist)).
       { subst cm. apply mk_comm_play_ext. intros p. apply En. }
-      destruct (coh_produce_fire (t_mode T) H Sc rd ch v persist chs wk kidx cands (vjoins V ch) cm Hcm)
-        as [(Hs & Hst' & Hrd & Hev & Hfx) | (Hs & Hst' & Hrd & Hev & Hfx)];
-        fold src in Hs, Hst', Hrd, Hev, Hfx;
-        rewrite Hs; (split; [discriminate |]); (split; [discriminate |]).
-      * split; [exact Hrd |].
+      destruct (coh_produce_fire (t_mode T) H Sc rd ch v persist chs wk kidx cands (vjoins V ch) cm sp Hcm)
+        as [(Hs & Hst' & Hrd & Hev & Hfx) | (Hs1 & Hs2 & Hs3 & Hst' & Hrd & Hev & Hfx)].
+      * rewrite Hs. split; [discriminate |]. split; [discriminate |].
+        split; [exact Hrd |].
         split; [| intros C; contradiction].
         intros _. rewrite Hst'. apply store_eq_sym.
         unfold vpf_effects. fold src.
@@ -3548,8 +3672,9 @@ Proof.
           eapply store_eq_trans; [apply view_remove_continuation |].
           apply space_remove_continuation_cong. exact E0. }
         exact (view_pf_loop (sort_desc vkey cands) V1 _ chs (negb (nullb (w_peeks wk))) E1).
-      * split; [unfold rd_after; destruct (backend (t_mode T)); exact Hrd |].
-        split; [intros C; discriminate |].
+      * split; [exact Hs2 |]. split; [exact Hs3 |].
+        split; [rewrite Hrd; symmetry; apply rd_after_not_ok; exact Hs1 |].
+        split; [intros C; contradiction |].
         intros _. split; [exact Hst' | auto].
   - set (src := consume_id chs pats k persist).
     destruct out as [| cands].
@@ -3557,12 +3682,12 @@ Proof.
       unfold stage in Hst. fold V in Hst. fold src in Hst.
       destruct (consume_args_ok T chs pats peeks) eqn:Hok; simpl in Hst; [| discriminate].
       injection Hst as <-.
-      exists (mkStaged (OConsume chs pats k persist peeks CPark) [] None).
+      exists (mkStaged (OConsume chs pats k persist peeks CPark) [] None false).
       unfold txn_push. simpl.
       do 5 (split; [reflexivity |]).
-      split; [intros _; reflexivity |].
+      split; [intros _; split; reflexivity |].
       split; [intros cm Hc; discriminate |].
-      destruct (coh_consume_park (t_mode T) H Sc rd chs pats k persist peeks)
+      destruct (coh_consume_park (t_mode T) H Sc rd chs pats k persist peeks false)
         as [(Hs & Hst' & Hrd & Hev & Hfx) | (Hs & Hst' & Hrd & Hev & Hfx)];
         fold src in Hs, Hst', Hrd, Hev, Hfx;
         rewrite Hs; (split; [discriminate |]); (split; [discriminate |]).
@@ -3574,38 +3699,39 @@ Proof.
         intros _. rewrite Hst'. split; [apply store_eq_refl | auto].
     + (* consume, Fire *)
       unfold stage in Hst. fold V in Hst. fold src in Hst.
-      destruct (consume_args_ok T chs pats peeks) eqn:Hok; simpl in Hst; [| discriminate].
-      destruct (cfire_ok T chs cands) eqn:Hcf; simpl in Hst; [| discriminate].
+      destruct (consume_args_ok T chs pats peeks) eqn:Hok; cbn [negb] in Hst; [| discriminate].
+      destruct (cfire_ok T chs cands) eqn:Hcf; cbn [negb] in Hst; [| discriminate].
       set (cm := mk_comm cands src peeks (counters_of (vcount V))) in Hst.
-      destruct (pair_step T _ cm) as [paired' |] eqn:Hps; [| discriminate].
-      injection Hst as <-.
-      exists (mkStaged (OConsume chs pats k persist peeks (CFire cands)) [] (Some cm)).
-      unfold txn_push. simpl.
+      apply stage_fire_some in Hst. subst T'.
+      set (sp := snd (pair_step T (KConsume src) cm)).
+      exists (mkStaged (OConsume chs pats k persist peeks (CFire cands)) [] (Some cm) sp).
+      unfold txn_push. cbn [t_staged t_mode t_installed t_rd t_paired t_view sg_op sg_comm sg_paired].
       do 5 (split; [reflexivity |]).
       split; [intros C; discriminate |].
       split.
       { intros cm' Hcm'. injection Hcm' as <-.
-        unfold pair_step in Hps.
+        subst sp. unfold pair_step. cbn [trigger_key]. fold src.
         split; [| split].
-        - destruct (backend (t_mode T)); [injection Hps as <-; reflexivity | |];
-            destruct (verify (t_rd T) (t_paired T) _ cm); [injection Hps as <-; reflexivity | discriminate
-                                                       | injection Hps as <-; reflexivity | discriminate].
-        - intros Hnp. destruct (backend (t_mode T)); [contradiction | |];
-            destruct (verify (t_rd T) (t_paired T) _ cm); [reflexivity | discriminate | reflexivity | discriminate].
-        - unfold keys. left. subst cm. reflexivity. }
+        - destruct (backend (t_mode T)); [simpl; rewrite app_nil_r; reflexivity | |];
+            destruct (verify (t_rd T) (t_paired T) (KConsume src) cm); simpl;
+            first [reflexivity | rewrite app_nil_r; reflexivity].
+        - destruct (backend (t_mode T)); [reflexivity | |];
+            destruct (verify (t_rd T) (t_paired T) (KConsume src) cm); reflexivity.
+        - split; [| reflexivity].
+          unfold keys. left. subst cm. reflexivity. }
       assert (Hcm : cm = mk_comm cands src peeks (counters_of (s_count Sc))).
       { subst cm. apply mk_comm_counters_ext. intros p. apply En. }
-      destruct (coh_consume_fire (t_mode T) H Sc rd chs pats k persist peeks cands cm Hcm)
-        as [(Hs & Hst' & Hrd & Hev & Hfx) | (Hs & Hst' & Hrd & Hev & Hfx)];
-        fold src in Hs, Hst', Hrd, Hev, Hfx;
-        rewrite Hs; (split; [discriminate |]); (split; [discriminate |]).
-      * split; [exact Hrd |].
+      destruct (coh_consume_fire (t_mode T) H Sc rd chs pats k persist peeks cands cm sp Hcm)
+        as [(Hs & Hst' & Hrd & Hev & Hfx) | (Hs1 & Hs2 & Hs3 & Hst' & Hrd & Hev & Hfx)].
+      * rewrite Hs. split; [discriminate |]. split; [discriminate |].
+        split; [exact Hrd |].
         split; [| intros C; contradiction].
         intros _. rewrite Hst'. apply store_eq_sym.
         unfold vcf_effects. apply view_cf_loop. exact Heq.
-      * split; [unfold rd_after; destruct (backend (t_mode T)); exact Hrd |].
-        split; [intros C; discriminate |].
-        intros _. rewrite Hst'. split; [apply store_eq_refl | auto].
+      * split; [exact Hs2 |]. split; [exact Hs3 |].
+        split; [rewrite Hrd; symmetry; apply rd_after_not_ok; exact Hs1 |].
+        split; [intros C; contradiction |].
+        intros _. split; [exact Hst' | auto].
 Qed.
 
 (* ═══════════════ Host simulation: relation-preservation lemmas ═════════════ *)
@@ -3773,6 +3899,7 @@ Lemma op_sim :
     WF Sc ->
     host_valid_op Sh op ->
     bound_ok T op rd ->
+    (forall sg, t_staged T' = t_staged T ++ [sg] -> fire_paired (t_mode T) sg) ->
     exists sg,
       t_staged T' = t_staged T ++ [sg] /\
       let rc := commit_op (t_mode T) H Sc rd sg in
@@ -3782,7 +3909,7 @@ Lemma op_sim :
       (r_status rc = StOk -> store_rel (r_st rc) (r_st rh) (kept_after op kept)) /\
       (r_status rc <> StOk -> store_rel (r_st rc) (r_st rh) kept).
 Proof.
-  intros T op T' H Sc Sh rd kept Hnd Hst Heq Hrel Hwf Hhv Hbo.
+  intros T op T' H Sc Sh rd kept Hnd Hst Heq Hrel Hwf Hhv Hbo Hfp.
   pose proof Heq as (Ed & Ec & Ej & En).
   pose proof Hrel as (Rd & Rc & Rj & Rn).
   assert (Hpre : forall m s a b, space_prelude m H s a b = host_prelude m H s a b)
@@ -3825,14 +3952,22 @@ Proof.
         -- simpl. split6; try reflexivity; [intros _; exact Hok | intros C; contradiction].
     + (* produce, Fire *)
       pose proof (commit_op_coherent T _ T' H Sc rd Hst Heq) as (sg0 & Hsg0 & _ & _ & _ & _ & _ & Hpair0 & _).
+      pose proof (Hfp sg0 Hsg0) as Hfp0. unfold fire_paired in Hfp0.
       unfold stage in Hst. fold src in Hst.
       destruct (t_installed T ch) eqn:Hi; [discriminate |].
-      destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; simpl in Hst; [| discriminate].
+      destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; cbn [negb] in Hst; [| discriminate].
       set (cm := mk_comm cands (w_src wk) (w_peeks wk) (play_counters_closure (vcount (t_view T)) src persist)) in Hst.
-      destruct (pair_step T _ cm) as [paired' |] eqn:Hps; [| discriminate].
-      injection Hst as <-.
-      simpl in Hsg0. apply app_inj_tail in Hsg0 as [_ Hsg0]. subst sg0.
-      destruct (Hpair0 cm eq_refl) as (_ & Hver & Htrig).
+      apply stage_fire_some in Hst. subst T'.
+      cbn [t_staged txn_push] in Hsg0. apply app_inj_tail in Hsg0 as [_ Hsg0]. subst sg0.
+      destruct (Hpair0 cm eq_refl) as (_ & Hsp & Htrig & _).
+      cbn [sg_paired sg_op is_fire] in Hsp, Hfp0.
+      set (sp := snd (pair_step T (KProduce src) cm)) in *. clearbody sp.
+      (* In replay the staged fire paired: verify accepted it (decision 36). *)
+      assert (Hver : backend (t_mode T) <> Play ->
+                     verify (t_rd T) (t_paired T) (trigger_key (OProduce ch v persist (PFire chs wk kidx cands))) cm = true
+                     /\ sp = true).
+      { intros Hnp. specialize (Hfp0 Hnp eq_refl). split; [| exact Hfp0].
+        rewrite Hfp0 in Hsp. destruct (backend (t_mode T)); [contradiction | symmetry; exact Hsp | symmetry; exact Hsp]. }
       destruct (pfire_ok_spec T ch v persist chs wk cands Hok)
         as (Hne & Hnoinst & Hmap & Hex & Hinc & Hwk & Hpk & Hso).
       destruct Hhv as [Hkidx Hhrv].
@@ -3904,24 +4039,26 @@ Proof.
            destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
            ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
            ++ split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-      * assert (Hb' : bound rd (KProduce src) cm = true).
-        { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) Htrig). }
+      * destruct (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) as [Hv Hsp1].
+        assert (Hb' : bound rd (KProduce src) cm = true).
+        { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm Hv Htrig). }
         unfold commit_replay_produce, host_replay_produce. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcP src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
            split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- rewrite Hcm_rc, Hcm_rh, comm_eqb_refl, Hb'. simpl.
+        -- rewrite Hcm_rc, Hcm_rh, comm_eqb_refl, Hb'. rewrite ?Hsp1. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
            ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
            ++ split6; try reflexivity; [intros C; discriminate |].
               intros _. apply rel_unbump, rel_bump, Hrel.
-      * assert (Hb' : bound rd (KProduce src) cm = true).
-        { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) Htrig). }
+      * destruct (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) as [Hv Hsp1].
+        assert (Hb' : bound rd (KProduce src) cm = true).
+        { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm Hv Htrig). }
         unfold commit_replay_produce, host_replay_produce. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcP src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
            split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- rewrite Hcm_rc, Hcm_rh, comm_eqb_refl, Hb'. simpl.
+        -- rewrite Hcm_rc, Hcm_rh, comm_eqb_refl, Hb'. rewrite ?Hsp1. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
            ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
            ++ split6; try reflexivity; [intros C; discriminate |].
@@ -3958,14 +4095,21 @@ Proof.
         -- simpl. split6; try reflexivity; [intros _; exact Hok' | intros C; contradiction].
     + (* consume, Fire *)
       pose proof (commit_op_coherent T _ T' H Sc rd Hst Heq) as (sg0 & Hsg0 & _ & _ & _ & _ & _ & Hpair0 & _).
+      pose proof (Hfp sg0 Hsg0) as Hfp0. unfold fire_paired in Hfp0.
       unfold stage in Hst. fold src in Hst.
-      destruct (consume_args_ok T chs pats peeks) eqn:Hok; simpl in Hst; [| discriminate].
-      destruct (cfire_ok T chs cands) eqn:Hcf; simpl in Hst; [| discriminate].
+      destruct (consume_args_ok T chs pats peeks) eqn:Hok; cbn [negb] in Hst; [| discriminate].
+      destruct (cfire_ok T chs cands) eqn:Hcf; cbn [negb] in Hst; [| discriminate].
       set (cm := mk_comm cands src peeks (counters_of (vcount (t_view T)))) in Hst.
-      destruct (pair_step T _ cm) as [paired' |] eqn:Hps; [| discriminate].
-      injection Hst as <-.
-      simpl in Hsg0. apply app_inj_tail in Hsg0 as [_ Hsg0]. subst sg0.
-      destruct (Hpair0 cm eq_refl) as (_ & Hver & Htrig).
+      apply stage_fire_some in Hst. subst T'.
+      cbn [t_staged txn_push] in Hsg0. apply app_inj_tail in Hsg0 as [_ Hsg0]. subst sg0.
+      destruct (Hpair0 cm eq_refl) as (_ & Hsp & Htrig & _).
+      cbn [sg_paired sg_op is_fire] in Hsp, Hfp0.
+      set (sp := snd (pair_step T (KConsume src) cm)) in *. clearbody sp.
+      assert (Hver : backend (t_mode T) <> Play ->
+                     verify (t_rd T) (t_paired T) (trigger_key (OConsume chs pats k persist peeks (CFire cands))) cm = true
+                     /\ sp = true).
+      { intros Hnp. specialize (Hfp0 Hnp eq_refl). split; [| exact Hfp0].
+        rewrite Hfp0 in Hsp. destruct (backend (t_mode T)); [contradiction | symmetry; exact Hsp | symmetry; exact Hsp]. }
       destruct (cfire_ok_spec T chs cands Hcf) as (Hmap & Hnoinc & Hso).
       eexists. split; [reflexivity |]. cbv zeta.
       assert (Hcm_c : mk_comm cands src peeks (counters_of (s_count Sc)) = cm).
@@ -4010,23 +4154,25 @@ Proof.
            destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl.
            ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
            ++ split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-      * assert (Hb' : bound rd (KConsume src) cm = true).
-        { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) Htrig). }
+      * destruct (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) as [Hv Hsp1].
+        assert (Hb' : bound rd (KConsume src) cm = true).
+        { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm Hv Htrig). }
         unfold commit_replay_consume, host_replay_consume. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcC src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
            split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- rewrite Hcm_c, Hcm_h, comm_eqb_refl, Hb'. simpl.
+        -- rewrite Hcm_c, Hcm_h, comm_eqb_refl, Hb'. rewrite ?Hsp1. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl.
            ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
            ++ split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-      * assert (Hb' : bound rd (KConsume src) cm = true).
-        { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) Htrig). }
+      * destruct (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) as [Hv Hsp1].
+        assert (Hb' : bound rd (KConsume src) cm = true).
+        { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm Hv Htrig). }
         unfold commit_replay_consume, host_replay_consume. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcC src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
            split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- rewrite Hcm_c, Hcm_h, comm_eqb_refl, Hb'. simpl.
+        -- rewrite Hcm_c, Hcm_h, comm_eqb_refl, Hb'. rewrite ?Hsp1. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl.
            ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
            ++ split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
@@ -4084,8 +4230,8 @@ Proof.
     eapply store_eq_trans; [apply view_put_datum |]. apply (proj1 (put_datum_cong _ _ _ _ (view_bump _ _ _))).
   - unfold stage in Hst. fold V in Hst.
     destruct (t_installed T ch); [discriminate |].
-    destruct (pfire_ok T ch v persist chs wk cands); simpl in Hst; [| discriminate].
-    destruct (pair_step T _ _); [| discriminate]. injection Hst as <-. simpl.
+    destruct (pfire_ok T ch v persist chs wk cands); cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T'. simpl.
     unfold vpf_effects, pf_effect.
     set (src := produce_id ch v persist).
     assert (E0 : store_eq (view_store (vbump V src persist)) (bump (view_store V) src persist)) by apply view_bump.
@@ -4100,9 +4246,9 @@ Proof.
     destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
     injection Hst as <-. simpl. apply view_store_wk, store_eq_refl.
   - unfold stage in Hst. fold V in Hst.
-    destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
-    destruct (cfire_ok T chs cands); simpl in Hst; [| discriminate].
-    destruct (pair_step T _ _); [| discriminate]. injection Hst as <-. simpl.
+    destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+    destruct (cfire_ok T chs cands); cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T'. simpl.
     apply view_cf_loop, store_eq_refl.
 Qed.
 
@@ -4460,6 +4606,12 @@ Proof.
       split; [intros C; congruence |]. split; intro C; congruence.
     + exfalso. apply Hnp. reflexivity.
     + exfalso. apply Hnn. reflexivity.
+    + (* an unpaired replay fire (decision 36): the commit stops with the
+         operations before it applied (D6) *)
+      exists 0, T. simpl. destruct (Hnok ltac:(discriminate)) as (E & _).
+      split; [lia |]. split; [reflexivity |].
+      split; [eapply store_eq_trans; [exact E | apply store_eq_sym, Heq] |].
+      split; [intros C; congruence |]. split; intro C; congruence.
 Qed.
 
 Fixpoint host_valid_run (m : Mode) (H : list Obs) (S : Store) (rd : Bindings) (ops : list Op) : Prop :=
@@ -4487,6 +4639,7 @@ Lemma run_sim_gen :
     WF (view_store (t_view T)) ->
     host_valid_run (t_mode T) H Sh rd ops ->
     replay_pre T rd io rem ops ->
+    Forall (fire_paired (t_mode T)) (skipn (length (t_staged T)) (t_staged T')) ->
     let rc := commit_run (t_mode T) H Sc rd (skipn (length (t_staged T)) (t_staged T')) in
     let rh := host_run (t_mode T) H Sh rd ops in
     r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\ r_rd rc = r_rd rh /\
@@ -4496,7 +4649,7 @@ Lemma run_sim_gen :
          exists op, In op ops /\ retaining op = true /\ In d (retained op c)) /\
       ((forall op c, In op ops -> retained op c = []) -> forall c, Permutation (kept' c) (kept c)).
 Proof.
-  induction ops as [| op rest IH]; intros T T' H Sc Sh rd kept io rem Hnd Hst Heq Hrel Hwf Hhv Hpre;
+  induction ops as [| op rest IH]; intros T T' H Sc Sh rd kept io rem Hnd Hst Heq Hrel Hwf Hhv Hpre Hfps;
     simpl in Hst.
   - injection Hst as <-. cbv zeta. rewrite skipn_len_self.
     simpl. repeat split; try reflexivity.
@@ -4507,12 +4660,16 @@ Proof.
     assert (Hbo : bound_ok T op rd).
     { apply (bound_ok_of_inv T op rd io rem). intros Hnp. destruct (Hpre Hnp) as (A & B & C).
       inversion C; subst. auto. }
-    destruct (op_sim T op T1 H Sc Sh rd kept Hnd H1 Heq Hrel HwfSc Hhv0 Hbo)
-      as (sg & Hsg & Hobs & Hev & Hstatus & Hrd & Hrok & Hrnok).
     destruct (commit_op_coherent T op T1 H Sc rd H1 Heq)
-      as (sg' & Hsg' & _ & Hmode & _ & Hrd1 & Hpn & Hps & Hnp & Hnn & Hrda & Hok & Hnok).
-    rewrite Hsg in Hsg'. apply app_inj_tail in Hsg' as [_ <-].
+      as (sg' & Hsg' & Hsgop & Hmode & _ & Hrd1 & Hpn & Hps & Hnp & Hnn & Hrda & Hok & Hnok).
     destruct (stage_all_props rest T1 T' Hst) as ((new & Hnew & _) & _).
+    rewrite (skipn_step T T1 T' sg' Hsg' (ex_intro _ new Hnew)) in Hfps.
+    inversion Hfps as [| sg0 rest0 Hfp0 Hfps1 E0]; subst sg0 rest0.
+    assert (Hfp_op : forall sg0, t_staged T1 = t_staged T ++ [sg0] -> fire_paired (t_mode T) sg0).
+    { intros sg0 Hsg0. rewrite Hsg' in Hsg0. apply app_inj_tail in Hsg0 as [_ <-]. exact Hfp0. }
+    destruct (op_sim T op T1 H Sc Sh rd kept Hnd H1 Heq Hrel HwfSc Hhv0 Hbo Hfp_op)
+      as (sg & Hsg & Hobs & Hev & Hstatus & Hrd & Hrok & Hrnok).
+    rewrite Hsg in Hsg'. apply app_inj_tail in Hsg' as [_ <-].
     cbv zeta. rewrite (skipn_step T T1 T' sg Hsg (ex_intro _ new Hnew)).
     simpl (commit_run _ _ _ _ (sg :: _)). simpl (host_run _ _ _ _ (op :: _)).
     rewrite <- Hstatus.
@@ -4530,17 +4687,20 @@ Proof.
         split; [| inversion Htr; assumption].
         rewrite Hrda, Hrdt. unfold rd_after.
         destruct (sg_comm sg) as [cm |] eqn:Hc.
-        - destruct (Hps cm eq_refl) as (Hp & _).
+        - destruct (Hps cm eq_refl) as (Hp & _ & _ & Hfire).
+          assert (Hsp : sg_paired sg = true).
+          { apply Hfp0; [exact Hnp1 | rewrite Hsgop; exact Hfire]. }
           destruct (backend (t_mode T)) eqn:Hb; [contradiction | |];
-            rewrite Hp, fold_left_app, <- Hrdeq; reflexivity.
-        - rewrite (Hpn eq_refl). destruct (backend (t_mode T)); exact Hrdeq. }
+            rewrite Hp, Hsp, fold_left_app, <- Hrdeq; reflexivity.
+        - rewrite (proj1 (Hpn eq_refl)). destruct (backend (t_mode T)); exact Hrdeq. }
       assert (Hhv1 : host_valid_run (t_mode T1) (H ++ r_obs (commit_op (t_mode T) H Sc rd sg))
                        (r_st (host_op (t_mode T) H Sh rd op)) (r_rd (commit_op (t_mode T) H Sc rd sg)) rest).
       { rewrite Hmode, Hobs, Hrd. apply Hhvr. rewrite <- Hstatus. first [reflexivity | exact Hs]. }
       destruct (IH T1 T' (H ++ r_obs (commit_op (t_mode T) H Sc rd sg))
                    (r_st (commit_op (t_mode T) H Sc rd sg)) (r_st (host_op (t_mode T) H Sh rd op))
                    (r_rd (commit_op (t_mode T) H Sc rd sg)) (kept_after op kept) io rem
-                   Hnd Hst (store_eq_sym _ _ Hok) Hrok HwfT1 Hhv1 Hpre1)
+                   Hnd Hst (store_eq_sym _ _ Hok) Hrok HwfT1 Hhv1 Hpre1
+                   ltac:(rewrite Hmode; exact Hfps1))
         as (Iobs & Iev & Ist & Ird & kept'' & Irel & Ik1 & Ik2).
       rewrite Hmode in Iobs, Iev, Ist, Ird, Irel.
       rewrite <- Hobs, <- Hrd in *.
@@ -4564,6 +4724,11 @@ Proof.
       split; [intros c d Hin; left; exact Hin | intros _ c; reflexivity].
     + exfalso. apply Hnp. reflexivity.
     + exfalso. apply Hnn. reflexivity.
+    + (* diverged: the proof of the rejected case applies. The host never
+         diverges, so op_sim excludes this case *)
+      simpl. split; [exact Hobs |]. split; [exact Hev |]. split; [congruence |]. split; [exact Hrd |].
+      exists kept. split; [apply Hrnok; congruence |].
+      split; [intros c d Hin; left; exact Hin | intros _ c; reflexivity].
 Qed.
 
 (* ═════════════════════════ Headline theorems ═════════════════════════════ *)
@@ -4585,6 +4750,7 @@ Lemma run_sim_fresh :
     WF S ->
     host_valid_run (t_mode T0) H S rd ops ->
     replay_ctx T0 rd io rem ops ->
+    Forall (fire_paired (t_mode T0)) (t_staged T) ->
     let rc := commit_run (t_mode T0) H S rd (t_staged T) in
     let rh := host_run (t_mode T0) H S rd ops in
     r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\ r_rd rc = r_rd rh /\
@@ -4593,12 +4759,13 @@ Lemma run_sim_fresh :
       (forall c d, In d (kept' c) -> exists op, In op ops /\ retaining op = true /\ In d (retained op c)) /\
       ((forall op c, In op ops -> retained op c = []) -> forall c, kept' c = []).
 Proof.
-  intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx.
+  intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp.
   assert (Hwfv : WF (view_store (t_view T0))) by (eapply WF_store_eq; [apply store_eq_sym, Heq | exact Hwf]).
   assert (Hpre : replay_pre T0 rd io rem ops).
   { intros Hnp. destruct (Hctx Hnp) as (Hrd & Hinv & Htr).
     split; [rewrite <- Hrd; exact Hinv |]. split; [rewrite Hp0; exact Hrd | exact Htr]. }
-  destruct (run_sim_gen ops T0 T H S S rd (fun _ => []) io rem Hnd Hst Heq (store_rel_self S) Hwfv Hhv Hpre)
+  destruct (run_sim_gen ops T0 T H S S rd (fun _ => []) io rem Hnd Hst Heq (store_rel_self S) Hwfv Hhv Hpre
+              ltac:(rewrite Hs0; exact Hfp))
     as (A & B & C & D & kept' & Rel & K1 & K2).
   rewrite Hs0 in A, B, C, D, Rel. simpl in A, B, C, D, Rel.
   split; [exact A |]. split; [exact B |]. split; [exact C |]. split; [exact D |].
@@ -4608,7 +4775,10 @@ Proof.
 Qed.
 
 (* H1: committing the staged operations makes exactly the observer calls,
-   the events and the status that the host makes for the same operations. *)
+   the events and the status that the host makes for the same operations.
+   Decision 36: in replay, every staged fire paired (fire_paired). Under the
+   rule of decision 19 a successful staging implied it. An unpaired fire
+   fails at commit (H4), where the host would fail its bound assertion. *)
 Theorem commit_trace_eq_host :
   forall ops T0 T H S rd io rem,
     no_dir_some ->
@@ -4618,12 +4788,13 @@ Theorem commit_trace_eq_host :
     WF S ->
     host_valid_run (t_mode T0) H S rd ops ->
     replay_ctx T0 rd io rem ops ->
+    Forall (fire_paired (t_mode T0)) (t_staged T) ->
     let rc := commit_run (t_mode T0) H S rd (t_staged T) in
     let rh := host_run (t_mode T0) H S rd ops in
     r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\ r_rd rc = r_rd rh.
 Proof.
-  intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx.
-  destruct (run_sim_fresh ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx)
+  intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp.
+  destruct (run_sim_fresh ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp)
     as (A & B & C & D & _). auto.
 Qed.
 
@@ -4639,6 +4810,7 @@ Theorem commit_state_eq_host :
     WF S ->
     host_valid_run (t_mode T0) H S rd ops ->
     replay_ctx T0 rd io rem ops ->
+    Forall (fire_paired (t_mode T0)) (t_staged T) ->
     (forall op, In op ops -> retaining op = false) ->
     let rc := commit_run (t_mode T0) H S rd (t_staged T) in
     let rh := host_run (t_mode T0) H S rd ops in
@@ -4648,8 +4820,8 @@ Theorem commit_state_eq_host :
     (forall p, s_count (r_st rc) p = s_count (r_st rh) p) /\
     r_rd rc = r_rd rh.
 Proof.
-  intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hnr.
-  destruct (run_sim_fresh ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx)
+  intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp Hnr.
+  destruct (run_sim_fresh ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp)
     as (_ & _ & _ & D & kept' & (Rd & Rc & Rj & Rn) & _ & K2).
   assert (Hnk : forall op c, In op ops -> retained op c = []).
   { intros op c Hin. apply retained_nonretaining, Hnr, Hin. }
@@ -4738,6 +4910,7 @@ Theorem peek_retention_trace_eq_host :
      WF S ->
      host_valid_run (t_mode T0) H S rd ops ->
      replay_ctx T0 rd io rem ops ->
+     Forall (fire_paired (t_mode T0)) (t_staged T) ->
      let rc := commit_run (t_mode T0) H S rd (t_staged T) in
      let rh := host_run (t_mode T0) H S rd ops in
      r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\ r_rd rc = r_rd rh /\
@@ -4796,8 +4969,8 @@ Theorem peek_retention_trace_eq_host :
      ~ no_pending_match wmatch [w2] [d]).
 Proof.
   split.
-  { intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx.
-    destruct (run_sim_fresh ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx)
+  { intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp.
+    destruct (run_sim_fresh ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp)
       as (A & B & C & D & kept' & (Rd & Rc & Rj & Rn) & K1 & K2).
     split; [exact A |]. split; [exact B |]. split; [exact C |]. split; [exact D |].
     exists kept'. split; [exact Rd |]. split; [exact Rc |]. split; [exact Rj |]. split; [exact Rn |].
@@ -4985,7 +5158,7 @@ Proof.
   - (* produce, Store *)
     unfold stage in Hst. destruct (t_installed T ch); [discriminate |]. injection Hst as <-.
     eexists. split; [reflexivity |].
-    destruct (coh_produce_store (t_mode T) H S rd ch v persist (vjoins (t_view T) ch))
+    destruct (coh_produce_store (t_mode T) H S rd ch v persist (vjoins (t_view T) ch) false)
       as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx; [| apply covered_nil].
     simpl. repeat split; intros; simpl in *;
       repeat match goal with H0 : _ \/ _ |- _ => destruct H0 end; try discriminate; try contradiction.
@@ -4993,17 +5166,18 @@ Proof.
     + apply cat_one. exact I.
   - (* produce, Fire *)
     unfold stage in Hst. destruct (t_installed T ch); [discriminate |].
-    destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; simpl in Hst; [| discriminate].
+    destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; cbn [negb] in Hst; [| discriminate].
     set (cm := mk_comm cands (w_src wk) (w_peeks wk)
                  (play_counters_closure (vcount (t_view T)) (produce_id ch v persist) persist)) in Hst.
-    destruct (pair_step T _ cm); [| discriminate]. injection Hst as <-.
+    apply stage_fire_some in Hst. subst T'.
     destruct (pfire_ok_spec T ch v persist chs wk cands Hok) as (_ & _ & Hmap & Hex & Hinc & Hwk & _).
     eexists. split; [reflexivity |].
     assert (Hcm : cm = mk_comm cands (w_src wk) (w_peeks wk)
                          (play_counters_closure (s_count S) (produce_id ch v persist) persist)).
     { subst cm. apply mk_comm_play_ext. intros p. apply En. }
-    destruct (coh_produce_fire (t_mode T) H S rd ch v persist chs wk kidx cands (vjoins (t_view T) ch) cm Hcm)
-      as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx; [| apply covered_nil].
+    destruct (coh_produce_fire (t_mode T) H S rd ch v persist chs wk kidx cands (vjoins (t_view T) ch) cm
+                (snd (pair_step T (KProduce (produce_id ch v persist)) cm)) Hcm)
+      as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx; [| apply covered_nil].
     set (src := produce_id ch v persist).
     assert (Hwk' : In wk (s_conts S chs)) by (rewrite <- Ec; exact Hwk).
     set (S1 := bump S src persist).
@@ -5045,7 +5219,7 @@ Proof.
   - (* consume, Park *)
     unfold stage in Hst. destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
     injection Hst as <-. eexists. split; [reflexivity |].
-    destruct (coh_consume_park (t_mode T) H S rd chs pats k persist peeks)
+    destruct (coh_consume_park (t_mode T) H S rd chs pats k persist peeks false)
       as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx; [| apply covered_nil].
     set (src := consume_id chs pats k persist).
     set (w := mkWK pats k persist peeks src).
@@ -5063,15 +5237,16 @@ Proof.
     + intros c g Hf. destruct (swc_fx _ _ _ _ Hf) as [(E & _) | (c' & E & _)]; discriminate.
     + apply cat_one. exact I.
   - (* consume, Fire *)
-    unfold stage in Hst. destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
-    destruct (cfire_ok T chs cands) eqn:Hcf; simpl in Hst; [| discriminate].
+    unfold stage in Hst. destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+    destruct (cfire_ok T chs cands) eqn:Hcf; cbn [negb] in Hst; [| discriminate].
     set (cm := mk_comm cands (consume_id chs pats k persist) peeks (counters_of (vcount (t_view T)))) in Hst.
-    destruct (pair_step T _ cm); [| discriminate]. injection Hst as <-.
+    apply stage_fire_some in Hst. subst T'.
     eexists. split; [reflexivity |].
     assert (Hcm : cm = mk_comm cands (consume_id chs pats k persist) peeks (counters_of (s_count S))).
     { subst cm. apply mk_comm_counters_ext. intros p. apply En. }
-    destruct (coh_consume_fire (t_mode T) H S rd chs pats k persist peeks cands cm Hcm)
-      as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx; [| apply covered_nil].
+    destruct (coh_consume_fire (t_mode T) H S rd chs pats k persist peeks cands cm
+                (snd (pair_step T (KConsume (consume_id chs pats k persist)) cm)) Hcm)
+      as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx; [| apply covered_nil].
     split; [| split; [| split; [| split; [| split; [| split]]]]].
     + intros c d Hf. destruct (space_cf_loop_fx _ _ _ _ Hf) as (cd & _ & E). discriminate.
     + intros c d Hf. destruct (space_cf_loop_fx _ _ _ _ Hf) as (cd & Hcd & E).
@@ -5110,56 +5285,85 @@ Proof.
   apply (verify_spec rd io rem paired k c Hinv) in Hv as (_ & _ & Hlt). exact Hlt.
 Qed.
 
-(* A fire operation: a produce Fire or a consume Fire. *)
-Definition is_fire (op : Op) : bool :=
-  match op with
-  | OProduce _ _ _ (PFire _ _ _ _) | OConsume _ _ _ _ _ (CFire _) => true
-  | _ => false
-  end.
-
-(* A replay fire whose trigger event the log lacks fails at staging
-   (ReplayDivergence). Staging returns no transaction, so the fire has no
-   effect (H9). *)
-Lemma stage_without_trigger_fails :
-  forall T op io rem,
+(* Decision 36: a replay fire whose trigger event the log lacks does not
+   pair, so it stages unpaired. Its staging adds no pairing and leaves the
+   recorded bindings. The commit fails it after the calls of play
+   (unpaired_fire_inert). Under decision 19 it failed at staging. *)
+Lemma stage_without_trigger_unpaired :
+  forall T op io rem T',
     backend (t_mode T) <> Play ->
     binding_inv (t_rd T) io rem ->
     ~ In (trigger_key op) io ->
     is_fire op = true ->
-    stage T op = None.
+    stage T op = Some T' ->
+    exists sg, t_staged T' = t_staged T ++ [sg] /\ sg_op sg = op /\ sg_paired sg = false /\
+      t_paired T' = t_paired T /\ t_rd T' = t_rd T.
 Proof.
-  intros T op io rem Hnp Hinv Hni Hf.
-  destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
-    simpl in Hf; try discriminate; unfold stage; cbv zeta.
-  - destruct (t_installed T ch); [reflexivity |].
-    destruct (pfire_ok T ch v persist chs wk cands); simpl; [| reflexivity].
-    unfold pair_step.
-    destruct (verify (t_rd T) (t_paired T) (KProduce (produce_id ch v persist)) _) eqn:Ev.
-    + exfalso. apply (verify_spec (t_rd T) io rem _ _ _ Hinv) in Ev as (Hio & _). exact (Hni Hio).
-    + destruct (backend (t_mode T)); [contradiction | reflexivity | reflexivity].
-  - destruct (consume_args_ok T chs pats peeks); simpl; [| reflexivity].
-    destruct (cfire_ok T chs cands); simpl; [| reflexivity].
-    unfold pair_step.
-    destruct (verify (t_rd T) (t_paired T) (KConsume (consume_id chs pats k persist)) _) eqn:Ev.
-    + exfalso. apply (verify_spec (t_rd T) io rem _ _ _ Hinv) in Ev as (Hio & _). exact (Hni Hio).
-    + destruct (backend (t_mode T)); [contradiction | reflexivity | reflexivity].
+  intros T op io rem T' Hnp Hinv Hni _ Hst.
+  destruct (commit_op_coherent T op T' [] (view_store (t_view T)) (fun _ _ => 0) Hst (store_eq_refl _))
+    as (sg & Hsg & Hop & _ & _ & Hrd & Hpn & Hps & _).
+  exists sg. split; [exact Hsg |]. split; [exact Hop |].
+  destruct (sg_comm sg) as [cm |] eqn:Hc.
+  - destruct (Hps cm eq_refl) as (Hp & Hsp & _ & _).
+    assert (Hv : verify (t_rd T) (t_paired T) (trigger_key op) cm = false).
+    { apply Bool.not_true_iff_false. intros Hv.
+      apply (verify_spec (t_rd T) io rem _ _ _ Hinv) in Hv as (Hio & _). exact (Hni Hio). }
+    assert (Hsp' : sg_paired sg = false).
+    { rewrite Hsp. destruct (backend (t_mode T)); [reflexivity | exact Hv | exact Hv]. }
+    split; [exact Hsp' |]. split; [rewrite Hp, Hsp', app_nil_r; reflexivity | exact Hrd].
+  - destruct (Hpn eq_refl) as (Hp & Hsp). split; [exact Hsp |]. split; [exact Hp | exact Hrd].
 Qed.
 
-(* H4 (FR-3): verify looks up only the trigger key, and it accepts a COMM
-   exactly when the log holds the trigger event and an unpaired recorded
-   occurrence remains. recorded_comms reports exactly the COMMs that verify
-   accepts under the same key. A replay fire whose log lacks the trigger
-   event fails at staging. The rule before FR-3 pairs such a fire (review
-   D3), and the literal design rule over-pairs a repeated produce. *)
+(* Decision 36: an unpaired replay fire never commits. When the observer
+   accepts every call of the operation, it fails with ReplayDivergence
+   (StDiverged); otherwise the rejected call stops it first, as in play. It
+   emits no event and no effect, it leaves the bindings, and the store keeps
+   its state: the counter step rolls back. *)
+Lemma unpaired_fire_inert :
+  forall m H S rd sg,
+    backend m <> Play -> is_fire (sg_op sg) = true -> sg_paired sg = false ->
+    let r := commit_op m H S rd sg in
+    r_status r <> StOk /\ r_ev r = [] /\ r_fx r = [] /\ r_rd r = rd /\ store_eq (r_st r) S.
+Proof.
+  intros m H S rd [op j0 scomm sp] Hnp Hf Hsp r. subst r.
+  cbn [sg_op sg_paired] in Hf, Hsp.
+  unfold commit_op. cbn [sg_op sg_joins0 sg_comm sg_paired].
+  destruct (backend m) eqn:Hb; [contradiction | |];
+    (destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
+     cbn [is_fire] in Hf; try discriminate);
+    [unfold commit_replay_produce | unfold commit_replay_consume
+    | unfold commit_replay_produce | unfold commit_replay_consume];
+    cbn zeta; destruct scomm as [cm |]; commit_split; cbn [r_status r_st r_rd r_ev r_fx];
+    first
+      [ match goal with
+        | E : space_prelude _ _ _ _ _ = PreStop _ ?st |- _ => apply space_prelude_status in E; subst st
+        | |- _ => idtac
+        end;
+        split; [discriminate | split; [reflexivity | split; [reflexivity | split;
+          [reflexivity | first [apply store_eq_refl | apply bump_unbump_eq]]]]]
+      | exfalso; match goal with E : negb sp = false |- _ => rewrite Hsp in E; discriminate E end ].
+Qed.
+
+(* H4 (FR-3, decision 36): verify looks up only the trigger key, and it
+   accepts a COMM exactly when the log holds the trigger event and an
+   unpaired recorded occurrence remains. recorded_comms reports exactly the
+   COMMs that verify accepts under the same key. A replay fire whose log
+   lacks the trigger event stages unpaired: it adds no pairing and leaves
+   the bindings. An unpaired fire never commits: it emits no event and no
+   effect, leaves the bindings and keeps the store. The rule before FR-3
+   pairs such a fire (review D3), and the literal design rule over-pairs a
+   repeated produce. *)
 Theorem verify_sound_complete :
   (forall rd paired k c, verify rd paired k c = true <-> 0 < available rd paired k c) /\
   (forall rd io rem paired k c,
      binding_inv rd io rem ->
      (verify rd paired k c = true <->
         In k io /\ In k (keys c) /\ count_occ comm_eq_dec paired c < rem c)) /\
-  (forall T op io rem,
+  (forall T op io rem T',
      backend (t_mode T) <> Play -> binding_inv (t_rd T) io rem ->
-     ~ In (trigger_key op) io -> is_fire op = true -> stage T op = None) /\
+     ~ In (trigger_key op) io -> is_fire op = true -> stage T op = Some T' ->
+     exists sg, t_staged T' = t_staged T ++ [sg] /\ sg_op sg = op /\ sg_paired sg = false /\
+       t_paired T' = t_paired T /\ t_rd T' = t_rd T) /\
   (forall cons p peeks times rd,
      let c := mkComm cons [p] peeks times in
      binding_inv rd [KConsume cons] (fun c' => if comm_eq_dec c' c then 1 else 0) ->
@@ -5169,22 +5373,32 @@ Theorem verify_sound_complete :
      let c := mkComm cons [p; p] peeks times in
      binding_inv rd io (fun c' => if comm_eq_dec c' c then 1 else 0) ->
      verify_literal rd [c] c = true /\ verify rd [c] (KProduce p) c = false /\
-     verify_any_key rd [c] c = false /\ count_occ comm_eq_dec [c] c = 1).
+     verify_any_key rd [c] c = false /\ count_occ comm_eq_dec [c] c = 1) /\
+  (forall m H S rd sg,
+     backend m <> Play -> is_fire (sg_op sg) = true -> sg_paired sg = false ->
+     let r := commit_op m H S rd sg in
+     r_status r <> StOk /\ r_ev r = [] /\ r_fx r = [] /\ r_rd r = rd /\ store_eq (r_st r) S).
 Proof.
-  split; [| split; [| split; [| split]]].
+  split; [| split; [| split; [| split; [| split]]]].
   - exact available_spec.
   - exact verify_spec.
-  - exact stage_without_trigger_fails.
+  - exact stage_without_trigger_unpaired.
   - exact any_key_pairs_without_trigger.
   - exact design_verify_overpairs.
+  - exact unpaired_fire_inert.
 Qed.
 
 (* ── Pairing over a whole transaction (H5) ─────────────────────────────── *)
 
+(* The COMMs that the staged operations pair in replay: the COMM of each
+   paired fire. An unpaired fire pairs nothing (decision 36). *)
 Definition paired_of (m : Mode) (sgs : list Staged) : list Comm :=
   match backend m with
   | Play => []
-  | _ => flat_map (fun sg => match sg_comm sg with Some cm => [cm] | None => [] end) sgs
+  | _ => flat_map (fun sg => match sg_comm sg with
+                             | Some cm => if sg_paired sg then [cm] else []
+                             | None => []
+                             end) sgs
   end.
 
 (* A staged store or park never carries a COMM. *)
@@ -5203,14 +5417,14 @@ Proof.
   - destruct (t_installed T ch); [discriminate |]. injection Hst as <-.
     eexists. split; [reflexivity | reflexivity].
   - destruct (t_installed T ch); [discriminate |].
-    destruct (pfire_ok T ch v persist chs wk cands); simpl in Hst; [| discriminate].
-    destruct (pair_step T _ _); [| discriminate]. injection Hst as <-.
+    destruct (pfire_ok T ch v persist chs wk cands); cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T'.
     eexists. split; [reflexivity | exact I].
   - destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
     injection Hst as <-. eexists. split; [reflexivity | reflexivity].
-  - destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
-    destruct (cfire_ok T chs cands); simpl in Hst; [| discriminate].
-    destruct (pair_step T _ _); [| discriminate]. injection Hst as <-.
+  - destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+    destruct (cfire_ok T chs cands); cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T'.
     eexists. split; [reflexivity | exact I].
 Qed.
 
@@ -5224,57 +5438,33 @@ Proof.
     apply (IH T1 T' Hst). rewrite Hsg. apply Forall_app. split; [exact Hwf | constructor; [exact Hw | constructor]].
 Qed.
 
+(* A well-formed staged operation with a COMM is a fire. *)
+Lemma sg_wf_comm_fire : forall sg cm, sg_wf sg -> sg_comm sg = Some cm -> is_fire (sg_op sg) = true.
+Proof.
+  intros [op j0 scomm sp] cm Hw Hc. unfold sg_wf in Hw. cbn [sg_op sg_comm] in *.
+  destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
+    cbn in Hw |- *; congruence.
+Qed.
+
 Lemma commit_op_rd :
   forall m H S rd sg, sg_wf sg ->
     r_rd (commit_op m H S rd sg) = rd_after m (r_status (commit_op m H S rd sg)) (sg_comm sg) rd.
 Proof.
-  intros m H S rd [op j0 scomm] Hwf. unfold sg_wf in Hwf. simpl in Hwf.
-  unfold commit_op, rd_after. simpl.
-  destruct op as [ch v persist out | chs pats k persist peeks out].
-  - destruct (backend m) eqn:Hb.
-    + unfold commit_play_produce.
-      destruct (space_prelude Play _ _ _ _) as [obs st | obs]; [reflexivity |].
-      destruct out as [| chs wk kidx cands]; [reflexivity |].
-      destruct scomm as [cm |]; [| reflexivity].
-      destruct (negb (comm_eqb _ cm)); [reflexivity |].
-      destruct (negb (ob_accept _ _)); reflexivity.
-    + unfold commit_replay_produce.
-      destruct (space_prelude Replay _ _ _ _) as [obs st | obs] eqn:Ep;
-        [apply space_prelude_status in Ep; subst st; destruct scomm; reflexivity |].
-      destruct out as [| chs wk kidx cands]; [rewrite Hwf; reflexivity |].
-      destruct scomm as [cm |]; [| reflexivity].
-      destruct (negb (comm_eqb _ cm)); [reflexivity |].
-      destruct (negb (ob_accept _ _)); reflexivity.
-    + unfold commit_replay_produce.
-      destruct (space_prelude Replay _ _ _ _) as [obs st | obs] eqn:Ep;
-        [apply space_prelude_status in Ep; subst st; destruct scomm; reflexivity |].
-      destruct out as [| chs wk kidx cands]; [rewrite Hwf; reflexivity |].
-      destruct scomm as [cm |]; [| reflexivity].
-      destruct (negb (comm_eqb _ cm)); [reflexivity |].
-      destruct (negb (ob_accept _ _)); reflexivity.
-  - destruct (backend m) eqn:Hb.
-    + unfold commit_play_consume.
-      destruct (space_prelude Play _ _ _ _) as [obs st | obs]; [reflexivity |].
-      destruct out as [| cands]; [reflexivity |].
-      destruct scomm as [cm |]; [| reflexivity].
-      destruct (negb (comm_eqb _ cm)); [reflexivity |].
-      destruct (negb (ob_accept _ _)); reflexivity.
-    + unfold commit_replay_consume.
-      destruct (space_prelude Replay _ _ _ _) as [obs st | obs] eqn:Ep;
-        [apply space_prelude_status in Ep; subst st; destruct scomm; reflexivity |].
-      destruct out as [| cands]; [rewrite Hwf; reflexivity |].
-      destruct scomm as [cm |]; [| reflexivity].
-      destruct (negb (comm_eqb _ cm)); [reflexivity |].
-      destruct (negb (ob_accept _ _)); reflexivity.
-    + unfold commit_replay_consume.
-      destruct (space_prelude Replay _ _ _ _) as [obs st | obs] eqn:Ep;
-        [apply space_prelude_status in Ep; subst st; destruct scomm; reflexivity |].
-      destruct out as [| cands]; [rewrite Hwf; reflexivity |].
-      destruct scomm as [cm |]; [| reflexivity].
-      destruct (negb (comm_eqb _ cm)); [reflexivity |].
-      destruct (negb (ob_accept _ _)); reflexivity.
+  intros m H S rd [op j0 scomm sp] Hwf. unfold sg_wf in Hwf. cbn [sg_op sg_comm] in Hwf.
+  unfold commit_op, rd_after. cbn [sg_op sg_joins0 sg_comm sg_paired].
+  destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
+    cbn iota in Hwf; try subst scomm;
+    destruct (backend m) eqn:Hb;
+    unfold commit_play_produce, commit_replay_produce, commit_play_consume, commit_replay_consume;
+    cbn zeta; try destruct scomm as [cm |]; commit_split; cbn [r_rd r_status];
+    first [ reflexivity
+          | match goal with
+            | E : space_prelude _ _ _ _ _ = PreStop _ ?st |- _ =>
+                apply space_prelude_status in E; subst st; reflexivity
+            end ].
 Qed.
 
+(* A committed replay fire paired (decision 36, unpaired_fire_inert). *)
 Lemma commit_run_rd :
   forall sgs m H S rd, Forall sg_wf sgs -> exists n,
     r_rd (commit_run m H S rd sgs) = fold_left unbind (paired_of m (firstn n sgs)) rd.
@@ -5287,6 +5477,14 @@ Proof.
                   (r_rd (commit_op m H S rd sg)) Hwr) as (n & Hn).
       exists (Datatypes.S n). simpl. rewrite Hn, (commit_op_rd m H S rd sg Hw), Hs.
       unfold paired_of, rd_after. simpl.
+      destruct (backend m) eqn:Hb; [reflexivity | |];
+        (destruct (sg_comm sg) as [cm |] eqn:Hc; [| reflexivity]);
+        (destruct (sg_paired sg) eqn:Hp; [reflexivity |]);
+        exfalso;
+        apply (proj1 (unpaired_fire_inert m H S rd sg ltac:(first [discriminate | rewrite Hb; discriminate])
+                        (sg_wf_comm_fire sg cm Hw Hc) Hp));
+        exact Hs.
+    + exists 0. rewrite (commit_op_rd m H S rd sg Hw), Hs. unfold paired_of, rd_after. simpl.
       destruct (backend m); [reflexivity | |]; destruct (sg_comm sg); reflexivity.
     + exists 0. rewrite (commit_op_rd m H S rd sg Hw), Hs. unfold paired_of, rd_after. simpl.
       destruct (backend m); [reflexivity | |]; destruct (sg_comm sg); reflexivity.
@@ -5315,9 +5513,10 @@ Proof.
     rewrite Hp, Hmode. change (sg :: new) with ([sg] ++ new). rewrite paired_of_app, app_assoc. f_equal.
     unfold paired_of. simpl.
     destruct (sg_comm sg) as [cm |] eqn:Hc.
-    + destruct (Hps cm eq_refl) as (Hpt & _). rewrite Hpt.
-      destruct (backend (t_mode T)); rewrite ?app_nil_r; reflexivity.
-    + rewrite (Hpn eq_refl). destruct (backend (t_mode T)); rewrite ?app_nil_r; reflexivity.
+    + destruct (Hps cm eq_refl) as (Hpt & Hsp & _ & _). rewrite Hpt. revert Hsp.
+      destruct (backend (t_mode T)); intros Hsp; rewrite Hsp; simpl; rewrite ?app_nil_r;
+        [reflexivity | |]; destruct (verify _ _ _ _); reflexivity.
+    + rewrite (proj1 (Hpn eq_refl)). destruct (backend (t_mode T)); rewrite ?app_nil_r; reflexivity.
 Qed.
 
 Lemma stage_all_paired_bound :
@@ -5335,13 +5534,16 @@ Proof.
       as (sg & _ & _ & Hmode & _ & Hrd & Hpn & Hps & _).
     apply (IH T1 T' io rem); [rewrite Hmode; exact Hnp | rewrite Hrd; exact Hinv | | exact Hst].
     intros c. destruct (sg_comm sg) as [cm |] eqn:Hc.
-    + destruct (Hps cm eq_refl) as (Hpt & Hver & _).
-      assert (Hlt := verify_sound _ _ _ _ _ _ Hinv (Hver Hnp)).
-      rewrite Hpt. destruct (backend (t_mode T)) eqn:Hb'; [contradiction | |];
-        rewrite count_occ_app; simpl;
-        destruct (comm_eq_dec cm c) as [E | N]; [subst; lia | specialize (Hb c); lia
-                                               | subst; lia | specialize (Hb c); lia].
-    + rewrite (Hpn eq_refl). apply Hb.
+    + destruct (Hps cm eq_refl) as (Hpt & Hsp & _ & _). rewrite Hpt.
+      destruct (sg_paired sg) eqn:Hp.
+      * assert (Hv : verify (t_rd T) (t_paired T) (trigger_key op) cm = true).
+        { revert Hsp. destruct (backend (t_mode T)) eqn:Hb';
+            [exfalso; apply Hnp; first [reflexivity | exact Hb'] | |]; intros Hsp; symmetry; exact Hsp. }
+        assert (Hlt := verify_sound _ _ _ _ _ _ Hinv Hv).
+        rewrite count_occ_app. simpl.
+        destruct (comm_eq_dec cm c) as [E | N]; [subst; lia | specialize (Hb c); lia].
+      * rewrite app_nil_r. apply Hb.
+    + rewrite (proj1 (Hpn eq_refl)). apply Hb.
 Qed.
 
 Lemma count_firstn_le :
@@ -5817,16 +6019,16 @@ Proof.
   - destruct (t_installed T ch); [discriminate |]. injection Hst as <-. simpl.
     unfold vput_datum, vbump. destruct persist; reflexivity.
   - destruct (t_installed T ch); [discriminate |].
-    destruct (pfire_ok T ch v persist chs wk cands); simpl in Hst; [| discriminate].
-    destruct (pair_step T _ _); [| discriminate]. injection Hst as <-. simpl.
+    destruct (pfire_ok T ch v persist chs wk cands); cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T'. simpl.
     unfold vpf_effects. rewrite Bpf.
     destruct (w_persist wk); unfold vbump, vremove_continuation; destruct persist; reflexivity.
   - destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
     injection Hst as <-. simpl. unfold vstore_wk. rewrite Bpj.
     unfold vput_continuation. destruct (existsb _ _); reflexivity.
-  - destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
-    destruct (cfire_ok T chs cands); simpl in Hst; [| discriminate].
-    destruct (pair_step T _ _); [| discriminate]. injection Hst as <-. simpl.
+  - destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+    destruct (cfire_ok T chs cands); cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T'. simpl.
     unfold vcf_effects. rewrite Bcf. reflexivity.
 Qed.
 
@@ -6062,14 +6264,25 @@ Qed.
 Definition with_mode (T : Txn) (m : Mode) : Txn :=
   mkTxn m (t_view T) (t_installed T) (t_rd T) (t_paired T) (t_staged T).
 
+(* A staged fire depends on the mode only through its backend. *)
+Lemma stage_fire_mode_indep :
+  forall T m1 m2 V k cm mk, backend m1 = backend m2 ->
+    option_map (fun T' => (t_view T', t_paired T', t_staged T')) (stage_fire (with_mode T m1) V k cm mk) =
+    option_map (fun T' => (t_view T', t_paired T', t_staged T')) (stage_fire (with_mode T m2) V k cm mk).
+Proof.
+  intros T m1 m2 V k cm mk Hb.
+  assert (Hps : pair_step (with_mode T m1) k cm = pair_step (with_mode T m2) k cm).
+  { unfold pair_step. simpl. rewrite Hb. reflexivity. }
+  unfold stage_fire. cbv zeta. rewrite Hps. cbn [t_mode with_mode]. rewrite ?Hb.
+  destruct (backend m2); destruct (snd (pair_step (with_mode T m2) k cm)); reflexivity.
+Qed.
+
 Lemma stage_mode_indep :
   forall T op m1 m2, backend m1 = backend m2 ->
     option_map (fun T' => (t_view T', t_paired T', t_staged T')) (stage (with_mode T m1) op) =
     option_map (fun T' => (t_view T', t_paired T', t_staged T')) (stage (with_mode T m2) op).
 Proof.
   intros T op m1 m2 Hb.
-  assert (Hps : forall k cm, pair_step (with_mode T m1) k cm = pair_step (with_mode T m2) k cm).
-  { intros k0 cm. unfold pair_step. simpl. rewrite Hb. reflexivity. }
   destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
     unfold stage.
   - simpl. destruct (t_installed T ch); reflexivity.
@@ -6078,8 +6291,8 @@ Proof.
     destruct (t_installed T ch); [reflexivity |].
     change (pfire_ok (with_mode T m1) ch v persist chs wk cands) with (pfire_ok T ch v persist chs wk cands).
     change (pfire_ok (with_mode T m2) ch v persist chs wk cands) with (pfire_ok T ch v persist chs wk cands).
-    destruct (pfire_ok T ch v persist chs wk cands); [| reflexivity]. simpl.
-    rewrite Hps. destruct (pair_step (with_mode T m2) _ _); reflexivity.
+    destruct (pfire_ok T ch v persist chs wk cands); [| reflexivity]. cbn [negb].
+    apply stage_fire_mode_indep, Hb.
   - change (consume_args_ok (with_mode T m1) chs pats peeks) with (consume_args_ok T chs pats peeks).
     change (consume_args_ok (with_mode T m2) chs pats peeks) with (consume_args_ok T chs pats peeks).
     destruct (consume_args_ok T chs pats peeks); reflexivity.
@@ -6088,8 +6301,8 @@ Proof.
     destruct (consume_args_ok T chs pats peeks); [| reflexivity]. simpl.
     change (cfire_ok (with_mode T m1) chs cands) with (cfire_ok T chs cands).
     change (cfire_ok (with_mode T m2) chs cands) with (cfire_ok T chs cands).
-    destruct (cfire_ok T chs cands); [| reflexivity]. simpl.
-    rewrite Hps. destruct (pair_step (with_mode T m2) _ _); reflexivity.
+    destruct (cfire_ok T chs cands); [| reflexivity]. cbn [negb].
+    apply stage_fire_mode_indep, Hb.
 Qed.
 
 (* H12: the reporting space delegates to its inner replay space, so its
@@ -6155,7 +6368,7 @@ Proof.
     destruct (ob_directive (H ++ [ObBefore (sg_src sg); sg_start sg]) (sg_src sg));
       first [contradiction | reflexivity]. }
   assert (Hop : commit_op m H S rd sg = mkRes S rd fin [] [] StRejected).
-  { destruct sg as [op j0 scomm].
+  { destruct sg as [op j0 scomm sp].
     destruct op as [ch v persist out | chs pats k persist peeks out];
       unfold commit_op; cbn [sg_op sg_joins0 sg_comm]; rewrite Hb.
     - unfold commit_replay_produce. cbv zeta.
@@ -6167,6 +6380,585 @@ Proof.
   split; [exact Hop |]. split.
   - simpl. rewrite Hop. reflexivity.
   - intros Hs observe. unfold host_prelude. rewrite Ha1, Ha2, Hs. reflexivity.
+Qed.
+
+(* ═══════════ Decision 36: replay reproduces the run of play (H23) ═══════════ *)
+
+(* The directive query (replay_operation_directive) is a replay-only call:
+   play does not make it. erase_dir removes the directive queries from a
+   list of observer calls. *)
+Definition is_directive (o : Obs) : bool :=
+  match o with ObDirective _ => true | _ => false end.
+
+Definition erase_dir (h : list Obs) : list Obs := filter (fun o => negb (is_directive o)) h.
+
+(* The premises of H23. The observer decisions do not depend on the
+   directive queries in the history: the query is stateless (design §2.2,
+   decision 36). The observer gives no replay directive, as the production
+   RhoCommObserver gives none for a space operation (H19 covers a
+   directive). *)
+Definition ob_ignores_directive : Prop := forall h o, ob_accept h o = ob_accept (erase_dir h) o.
+
+Definition dir_always_none : Prop := forall h s, ob_directive h s = DirNone.
+
+(* sg_strip forgets the pairing flag of a staged operation. *)
+Definition sg_strip (sg : Staged) : Op * list (list Chan) * option Comm :=
+  (sg_op sg, sg_joins0 sg, sg_comm sg).
+
+Lemma erase_dir_app : forall a b, erase_dir (a ++ b) = erase_dir a ++ erase_dir b.
+Proof. intros a b. unfold erase_dir. apply filter_app. Qed.
+
+Lemma erase_dir_idem : forall l, erase_dir (erase_dir l) = erase_dir l.
+Proof.
+  intros l. unfold erase_dir. induction l as [| o t IH]; [reflexivity |].
+  cbn [filter]. destruct (negb (is_directive o)) eqn:E; [| exact IH].
+  cbn [filter]. rewrite E, IH. reflexivity.
+Qed.
+
+Lemma erase_dir_keep : forall o l, is_directive o = false -> erase_dir (o :: l) = o :: erase_dir l.
+Proof. intros o l H. unfold erase_dir. cbn [filter]. rewrite H. reflexivity. Qed.
+
+Lemma erase_dir_drop : forall s l, erase_dir (ObDirective s :: l) = erase_dir l.
+Proof. reflexivity. Qed.
+
+(* erase_simpl computes erase_dir on a list of known calls. *)
+Ltac erase_simpl :=
+  repeat first
+    [ rewrite erase_dir_app
+    | rewrite erase_dir_drop
+    | rewrite erase_dir_keep by (first [reflexivity | assumption]) ].
+
+Lemma ob_accept_erase :
+  ob_ignores_directive ->
+  forall h1 h2 o, erase_dir h1 = erase_dir h2 -> ob_accept h1 o = ob_accept h2 o.
+Proof. intros Hig h1 h2 o E. rewrite (Hig h1), (Hig h2), E. reflexivity. Qed.
+
+(* The call prefix of replay is the prefix of play with the directive query,
+   and it makes the same decisions. *)
+Lemma prelude_play_replay :
+  ob_ignores_directive -> dir_always_none ->
+  forall Hp Hr s a b, erase_dir Hr = erase_dir Hp ->
+    is_directive a = false -> is_directive b = false ->
+    match space_prelude Replay Hr s a b, space_prelude Play Hp s a b with
+    | PreStop o1 st1, PreStop o2 st2 => erase_dir o1 = o2 /\ erase_dir o2 = o2 /\ st1 = st2
+    | PreGo o1, PreGo o2 => erase_dir o1 = o2 /\ erase_dir o2 = o2
+    | _, _ => False
+    end.
+Proof.
+  intros Hig Hdn Hp Hr s a b EH Ha Hb.
+  assert (E1 : erase_dir (Hr ++ [ObBefore s]) = erase_dir (Hp ++ [ObBefore s]))
+    by (rewrite !erase_dir_app, EH; reflexivity).
+  assert (E2 : erase_dir (Hr ++ [ObBefore s; a; ObDirective s]) = erase_dir (Hp ++ [ObBefore s; a])).
+  { rewrite !erase_dir_app, EH. reflexivity. }
+  unfold space_prelude. rewrite (ob_accept_erase Hig Hr Hp _ EH).
+  destruct (ob_accept Hp (ObBefore s)); cbn [negb].
+  - rewrite (ob_accept_erase Hig _ _ a E1).
+    destruct (ob_accept (Hp ++ [ObBefore s]) a); cbn [negb].
+    + rewrite Hdn. rewrite (ob_accept_erase Hig _ _ b E2).
+      destruct (ob_accept (Hp ++ [ObBefore s; a]) b); cbn [negb];
+        repeat split; erase_simpl; reflexivity.
+    + repeat split; erase_simpl; reflexivity.
+  - repeat split; erase_simpl; reflexivity.
+Qed.
+
+(* The leaf of a commit that both sides reject: the same status, the calls
+   of play (with the directive query erased), no event, and a store equal to
+   the store before the operation. *)
+Ltac sim_reject ES P1 P2 :=
+  cbn [r_status r_obs r_ev r_st];
+  split; [erase_simpl; rewrite P2; reflexivity |];
+  split; [intros C; discriminate C |];
+  intros _; split; [reflexivity |]; split; [erase_simpl; rewrite P1; reflexivity |];
+  split; [reflexivity |];
+  first [exact ES | eapply store_eq_trans; [apply bump_unbump_eq | exact ES]].
+
+(* The commit of a produce in replay makes the decisions of play. Both make
+   the same calls (replay adds the directive query), events and status, and
+   leave equal stores. When play commits a fire, replay commits it if it
+   paired. *)
+Lemma replay_produce_sim :
+  ob_ignores_directive -> dir_always_none ->
+  forall Hp Hr Sp Sr rdp rdr ch v persist out j0 scomm sp,
+    erase_dir Hr = erase_dir Hp -> store_eq Sr Sp ->
+    let rp := commit_play_produce Hp Sp rdp ch v persist out j0 scomm in
+    let rr := commit_replay_produce Hr Sr rdr ch v persist out j0 scomm sp in
+    erase_dir (r_obs rp) = r_obs rp /\
+    (r_status rp = StOk -> (match out with PStore => True | PFire _ _ _ _ => sp = true end) ->
+       r_status rr = StOk /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)) /\
+    (r_status rp <> StOk ->
+       r_status rr = r_status rp /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)).
+Proof.
+  intros Hig Hdn Hp Hr Sp Sr rdp rdr ch v persist out j0 scomm sp EH ES rp rr. subst rp rr.
+  set (src := produce_id ch v persist).
+  pose proof (prelude_play_replay Hig Hdn Hp Hr (SrcP src) (ObStart (SrcP src) [ch] j0)
+                (ObProduce src ch v persist) EH eq_refl eq_refl) as P.
+  unfold commit_play_produce, commit_replay_produce. cbn zeta. fold src.
+  revert P.
+  destruct (space_prelude Replay Hr _ _ _) as [o1 st1 | o1];
+    destruct (space_prelude Play Hp _ _ _) as [o2 st2 | o2]; intros P; try contradiction.
+  - (* both stop in the call prefix *)
+    destruct P as (P1 & P2 & P3). subst st1. cbn [r_status r_obs r_ev r_st].
+    split; [exact P2 |].
+    split; [intros Hs _; split; [exact Hs | split; [exact P1 | split; [reflexivity | exact ES]]] |].
+    intros _. split; [reflexivity | split; [exact P1 | split; [reflexivity | exact ES]]].
+  - destruct P as (P1 & P2).
+    assert (Hacc : forall o, ob_accept (Hr ++ o1) o = ob_accept (Hp ++ o2) o).
+    { intros o. apply (ob_accept_erase Hig). rewrite !erase_dir_app, EH, P1, P2. reflexivity. }
+    destruct out as [| chs wk kidx cands].
+    + (* store *)
+      cbn [r_status r_obs r_ev r_st].
+      split; [erase_simpl; rewrite P2; reflexivity |].
+      split; [intros _ _ | intros C; exfalso; apply C; reflexivity].
+      split; [reflexivity |]. split; [erase_simpl; rewrite P1; reflexivity |]. split; [reflexivity |].
+      apply (proj1 (put_datum_cong _ _ _ _ (bump_cong _ _ _ _ ES))).
+    + (* fire *)
+      assert (Hlive : mk_comm cands (w_src wk) (w_peeks wk) (counters_of (s_count (bump Sr src persist))) =
+                      mk_comm cands (w_src wk) (w_peeks wk) (play_counters_closure (s_count Sp) src persist)).
+      { unfold mk_comm. cbv zeta. f_equal.
+        change (s_count (bump Sr src persist)) with (incr (s_count Sr) src persist).
+        rewrite <- play_closure_is_replay_closure. apply play_closure_ext.
+        intros p. destruct ES as (_ & _ & _ & En). apply En. }
+      destruct scomm as [cm |].
+      * rewrite Hlive.
+        destruct (comm_eqb (mk_comm cands (w_src wk) (w_peeks wk)
+                              (play_counters_closure (s_count Sp) src persist)) cm); cbn [negb].
+        -- rewrite Hacc.
+           destruct (ob_accept (Hp ++ o2) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands)));
+             cbn [negb].
+           ++ (* play commits the fire *)
+              cbn [r_status r_obs r_ev r_st].
+              split; [erase_simpl; rewrite P2; reflexivity |].
+              split; [| intros C; exfalso; apply C; reflexivity].
+              intros _ Hsp. rewrite Hsp. cbn [negb r_status r_obs r_ev r_st].
+              split; [reflexivity |]. split; [erase_simpl; rewrite P1; reflexivity |].
+              split; [reflexivity |].
+              assert (E1 : store_eq
+                             (fst (if w_persist wk then (bump Sr src persist, [])
+                                   else space_remove_continuation (bump Sr src persist) chs wk))
+                             (fst (if w_persist wk then (bump Sp src persist, [])
+                                   else space_remove_continuation (bump Sp src persist) chs wk))).
+              { destruct (w_persist wk); cbn [fst];
+                  [apply bump_cong, ES
+                  | apply (proj1 (space_remove_continuation_cong _ _ _ _ (bump_cong _ _ _ _ ES)))]. }
+              exact (proj1 (space_pf_loop_cong (sort_desc vkey cands) _ _ chs (negb (nullb (w_peeks wk))) E1)).
+           ++ (* the observer rejects the COMM *) sim_reject ES P1 P2.
+        -- (* the staged COMM is not the live COMM *) sim_reject ES P1 P2.
+      * (* a fire with no COMM *) sim_reject ES P1 P2.
+Qed.
+
+(* The commit of a consume in replay makes the decisions of play. *)
+Lemma replay_consume_sim :
+  ob_ignores_directive -> dir_always_none ->
+  forall Hp Hr Sp Sr rdp rdr chs pats k persist peeks out scomm sp,
+    erase_dir Hr = erase_dir Hp -> store_eq Sr Sp ->
+    let rp := commit_play_consume Hp Sp rdp chs pats k persist peeks out scomm in
+    let rr := commit_replay_consume Hr Sr rdr chs pats k persist peeks out scomm sp in
+    erase_dir (r_obs rp) = r_obs rp /\
+    (r_status rp = StOk -> (match out with CPark => True | CFire _ => sp = true end) ->
+       r_status rr = StOk /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)) /\
+    (r_status rp <> StOk ->
+       r_status rr = r_status rp /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)).
+Proof.
+  intros Hig Hdn Hp Hr Sp Sr rdp rdr chs pats k persist peeks out scomm sp EH ES rp rr. subst rp rr.
+  set (src := consume_id chs pats k persist).
+  pose proof (prelude_play_replay Hig Hdn Hp Hr (SrcC src) (ObStart (SrcC src) chs [])
+                (ObConsume src chs pats k persist peeks) EH eq_refl eq_refl) as P.
+  unfold commit_play_consume, commit_replay_consume. cbn zeta. fold src.
+  revert P.
+  destruct (space_prelude Replay Hr _ _ _) as [o1 st1 | o1];
+    destruct (space_prelude Play Hp _ _ _) as [o2 st2 | o2]; intros P; try contradiction.
+  - destruct P as (P1 & P2 & P3). subst st1. cbn [r_status r_obs r_ev r_st].
+    split; [exact P2 |].
+    split; [intros Hs _; split; [exact Hs | split; [exact P1 | split; [reflexivity | exact ES]]] |].
+    intros _. split; [reflexivity | split; [exact P1 | split; [reflexivity | exact ES]]].
+  - destruct P as (P1 & P2).
+    assert (Hacc : forall o, ob_accept (Hr ++ o1) o = ob_accept (Hp ++ o2) o).
+    { intros o. apply (ob_accept_erase Hig). rewrite !erase_dir_app, EH, P1, P2. reflexivity. }
+    destruct out as [| cands].
+    + (* park *)
+      cbn [r_status r_obs r_ev r_st].
+      split; [erase_simpl; rewrite P2; reflexivity |].
+      split; [intros _ _ | intros C; exfalso; apply C; reflexivity].
+      split; [reflexivity |]. split; [erase_simpl; rewrite P1; reflexivity |]. split; [reflexivity |].
+      apply (proj1 (store_waiting_continuation_cong _ _ _ _ ES)).
+    + (* fire *)
+      assert (Hlive : mk_comm cands src peeks (counters_of (s_count Sr)) =
+                      mk_comm cands src peeks (counters_of (s_count Sp))).
+      { apply mk_comm_counters_ext. intros p. destruct ES as (_ & _ & _ & En). apply En. }
+      destruct scomm as [cm |].
+      * rewrite Hlive.
+        destruct (comm_eqb (mk_comm cands src peeks (counters_of (s_count Sp))) cm); cbn [negb].
+        -- rewrite Hacc.
+           destruct (ob_accept (Hp ++ o2) (ObComm cm k persist (comm_data cands))); cbn [negb].
+           ++ cbn [r_status r_obs r_ev r_st].
+              split; [erase_simpl; rewrite P2; reflexivity |].
+              split; [| intros C; exfalso; apply C; reflexivity].
+              intros _ Hsp. rewrite Hsp. cbn [negb r_status r_obs r_ev r_st].
+              split; [reflexivity |]. split; [erase_simpl; rewrite P1; reflexivity |].
+              split; [reflexivity |].
+              exact (proj1 (space_cf_loop_cong (sort_desc vkey cands) _ _ (negb (nullb peeks)) ES)).
+           ++ sim_reject ES P1 P2.
+        -- sim_reject ES P1 P2.
+      * sim_reject ES P1 P2.
+Qed.
+
+(* H23 for one staged operation: replay commits it as play does. A fire
+   that play commits commits in replay when it paired. *)
+Lemma replay_commit_op_sim :
+  ob_ignores_directive -> dir_always_none ->
+  forall m Hp Hr Sp Sr rdp rdr sgp sgr,
+    backend m = Replay -> sg_strip sgr = sg_strip sgp ->
+    erase_dir Hr = erase_dir Hp -> store_eq Sr Sp ->
+    let rp := commit_op Play Hp Sp rdp sgp in
+    let rr := commit_op m Hr Sr rdr sgr in
+    erase_dir (r_obs rp) = r_obs rp /\
+    (r_status rp = StOk -> (is_fire (sg_op sgr) = true -> sg_paired sgr = true) ->
+       r_status rr = StOk /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)) /\
+    (r_status rp <> StOk ->
+       r_status rr = r_status rp /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)).
+Proof.
+  intros Hig Hdn m Hp Hr Sp Sr rdp rdr [opp jp cp spp] [opr jr cr spr] Hbm Hstrip EH ES rp rr.
+  unfold sg_strip in Hstrip. cbn [sg_op sg_joins0 sg_comm] in Hstrip. injection Hstrip as -> -> ->.
+  subst rp rr. unfold commit_op. cbn [sg_op sg_joins0 sg_comm sg_paired backend]. rewrite Hbm.
+  destruct opp as [ch v persist out | chs pats k persist peeks out].
+  - destruct (replay_produce_sim Hig Hdn Hp Hr Sp Sr rdp rdr ch v persist out jp cp spr EH ES)
+      as (A & B & C).
+    split; [exact A |]. split; [| exact C].
+    intros Hok Hfp. apply B; [exact Hok |]. destruct out; [exact I | apply Hfp; reflexivity].
+  - destruct (replay_consume_sim Hig Hdn Hp Hr Sp Sr rdp rdr chs pats k persist peeks out cp spr EH ES)
+      as (A & B & C).
+    split; [exact A |]. split; [| exact C].
+    intros Hok Hfp. apply B; [exact Hok |]. destruct out; [exact I | apply Hfp; reflexivity].
+Qed.
+
+
+(* The log of a committed operation: its trigger IO event, then the COMM of
+   a fire. *)
+Lemma commit_op_ok_log :
+  forall m H S rd sg, r_status (commit_op m H S rd sg) = StOk ->
+    let r := commit_op m H S rd sg in
+    io_of_log (r_ev r) = [trigger_key (sg_op sg)] /\
+    (is_fire (sg_op sg) = true -> exists cm, sg_comm sg = Some cm /\ comms_of_log (r_ev r) = [cm]) /\
+    (is_fire (sg_op sg) = false -> comms_of_log (r_ev r) = []).
+Proof.
+  intros m H S rd [op j0 scomm sp] Hs r. subst r. revert Hs.
+  unfold commit_op. cbn [sg_op sg_joins0 sg_comm sg_paired].
+  destruct (backend m);
+    (destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]]);
+    unfold commit_play_produce, commit_replay_produce, commit_play_consume, commit_replay_consume;
+    cbn zeta; try destruct scomm as [cm |]; commit_split; cbn [r_status r_ev]; intros Hs;
+    first
+      [ discriminate Hs
+      | match goal with
+        | E : space_prelude _ _ _ _ _ = PreStop _ ?st |- _ =>
+            apply space_prelude_status in E; subst st; discriminate Hs
+        end
+      | split; [reflexivity |];
+        split; [intros Hf; first [discriminate Hf | eexists; split; reflexivity]
+               | intros Hf; first [discriminate Hf | reflexivity]] ].
+Qed.
+
+Lemma io_of_log_app : forall a b, io_of_log (a ++ b) = io_of_log a ++ io_of_log b.
+Proof. intros a b. unfold io_of_log. apply flat_map_app. Qed.
+
+Lemma comms_of_log_app : forall a b, comms_of_log (a ++ b) = comms_of_log a ++ comms_of_log b.
+Proof. intros a b. unfold comms_of_log. apply flat_map_app. Qed.
+
+(* Decision 36: replay stages exactly the operations of play. With the view
+   and the installed set of play, a staging that succeeds in play succeeds
+   in replay, with the same operation, joins, COMM and view. Only the
+   pairing flag and the paired list can differ. The rule of decision 19
+   fails here: it rejects an unpaired replay fire at staging. *)
+Lemma replay_stage_sim :
+  forall Tp Tr op Tp',
+    t_view Tr = t_view Tp -> t_installed Tr = t_installed Tp ->
+    stage Tp op = Some Tp' ->
+    exists Tr', stage Tr op = Some Tr' /\ t_view Tr' = t_view Tp' /\
+      (forall sgp sgr, t_staged Tp' = t_staged Tp ++ [sgp] -> t_staged Tr' = t_staged Tr ++ [sgr] ->
+         sg_strip sgr = sg_strip sgp).
+Proof.
+  intros Tp Tr op Tp' Hv Hi Hst.
+  destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
+    unfold stage in Hst.
+  - (* produce, store *)
+    destruct (t_installed Tp ch) eqn:Hi'; [discriminate |]. injection Hst as <-.
+    eexists. split.
+    { unfold stage. rewrite Hv, Hi, Hi'. reflexivity. }
+    split; [reflexivity |].
+    intros sgp sgr Ep Er. cbn [t_staged txn_push] in Ep, Er.
+    apply app_inj_tail in Ep as [_ <-]. apply app_inj_tail in Er as [_ <-]. reflexivity.
+  - (* produce, fire *)
+    destruct (t_installed Tp ch) eqn:Hi'; [discriminate |].
+    destruct (pfire_ok Tp ch v persist chs wk cands) eqn:Hok; cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst Tp'.
+    assert (Hok' : pfire_ok Tr ch v persist chs wk cands = true).
+    { unfold pfire_ok, not_installed in *. rewrite Hv, Hi. exact Hok. }
+    eexists. split.
+    { unfold stage. rewrite Hv, Hi, Hi', Hok'. cbn [negb]. unfold stage_fire. reflexivity. }
+    split; [reflexivity |].
+    intros sgp sgr Ep Er. cbn [t_staged txn_push] in Ep, Er.
+    apply app_inj_tail in Ep as [_ <-]. apply app_inj_tail in Er as [_ <-]. reflexivity.
+  - (* consume, park *)
+    destruct (consume_args_ok Tp chs pats peeks) eqn:Hok; cbn [negb] in Hst; [| discriminate].
+    injection Hst as <-.
+    assert (Hok' : consume_args_ok Tr chs pats peeks = true).
+    { unfold consume_args_ok, not_installed in *. rewrite Hi. exact Hok. }
+    eexists. split.
+    { unfold stage. rewrite Hv, Hok'. reflexivity. }
+    split; [reflexivity |].
+    intros sgp sgr Ep Er. cbn [t_staged txn_push] in Ep, Er.
+    apply app_inj_tail in Ep as [_ <-]. apply app_inj_tail in Er as [_ <-]. reflexivity.
+  - (* consume, fire *)
+    destruct (consume_args_ok Tp chs pats peeks) eqn:Hok; cbn [negb] in Hst; [| discriminate].
+    destruct (cfire_ok Tp chs cands) eqn:Hcf; cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst Tp'.
+    assert (Hok' : consume_args_ok Tr chs pats peeks = true).
+    { unfold consume_args_ok, not_installed in *. rewrite Hi. exact Hok. }
+    assert (Hcf' : cfire_ok Tr chs cands = true).
+    { unfold cfire_ok in *. rewrite Hv. exact Hcf. }
+    eexists. split.
+    { unfold stage. rewrite Hv, Hok', Hcf'. cbn [negb]. unfold stage_fire. reflexivity. }
+    split; [reflexivity |].
+    intros sgp sgr Ep Er. cbn [t_staged txn_push] in Ep, Er.
+    apply app_inj_tail in Ep as [_ <-]. apply app_inj_tail in Er as [_ <-]. reflexivity.
+Qed.
+
+
+(* Replay stages every operation that play stages (replay_stage_sim). *)
+Lemma replay_stage_all_sim :
+  forall ops Tp Tp' Tr,
+    t_view Tr = t_view Tp -> t_installed Tr = t_installed Tp ->
+    stage_all Tp ops = Some Tp' ->
+    exists Tr', stage_all Tr ops = Some Tr' /\
+      map sg_strip (skipn (length (t_staged Tr)) (t_staged Tr')) =
+      map sg_strip (skipn (length (t_staged Tp)) (t_staged Tp')).
+Proof.
+  induction ops as [| op rest IH]; intros Tp Tp' Tr Hv Hi Hst; simpl in Hst.
+  - injection Hst as <-. exists Tr. split; [reflexivity |]. rewrite !skipn_len_self. reflexivity.
+  - destruct (stage Tp op) as [Tp1 |] eqn:H1; [| discriminate].
+    destruct (replay_stage_sim Tp Tr op Tp1 Hv Hi H1) as (Tr1 & H1r & Hv1 & Hs1).
+    destruct (stage_props Tp op Tp1 H1) as (sgp & Hsgp & _ & _ & Hip & _).
+    destruct (stage_props Tr op Tr1 H1r) as (sgr & Hsgr & _ & _ & Hir & _).
+    assert (Hi1 : t_installed Tr1 = t_installed Tp1) by congruence.
+    destruct (IH Tp1 Tp' Tr1 Hv1 Hi1 Hst) as (Tr' & Hst' & Hmap).
+    exists Tr'. split; [simpl; rewrite H1r; exact Hst' |].
+    destruct (stage_all_props rest Tp1 Tp' Hst) as ((newp & Hnewp & _) & _).
+    destruct (stage_all_props rest Tr1 Tr' Hst') as ((newr & Hnewr & _) & _).
+    rewrite (skipn_step Tp Tp1 Tp' sgp Hsgp (ex_intro _ newp Hnewp)),
+            (skipn_step Tr Tr1 Tr' sgr Hsgr (ex_intro _ newr Hnewr)).
+    simpl. rewrite Hmap, (Hs1 sgp sgr Hsgp Hsgr). reflexivity.
+Qed.
+
+(* The simulation of H23 over a run of staged operations. The bindings of
+   replay hold the COMMs that play commits, so replay pairs each fire that
+   play commits. An operation that play rejects stops both runs with the
+   same calls, and replay stages the remaining operations as play does. *)
+Lemma replay_sim_gen :
+  ob_ignores_directive -> dir_always_none ->
+  forall ops Tp Tp' Tr Hp Hr Sp Sr rdp rdr io rem,
+    t_mode Tp = Play -> backend (t_mode Tr) = Replay ->
+    t_view Tr = t_view Tp -> t_installed Tr = t_installed Tp ->
+    stage_all Tp ops = Some Tp' ->
+    erase_dir Hr = erase_dir Hp -> store_eq Sr Sp ->
+    binding_inv (t_rd Tr) io rem ->
+    incl (io_of_log (r_ev (commit_run Play Hp Sp rdp (skipn (length (t_staged Tp)) (t_staged Tp'))))) io ->
+    (forall c, count_occ comm_eq_dec (t_paired Tr) c +
+               count_occ comm_eq_dec
+                 (comms_of_log (r_ev (commit_run Play Hp Sp rdp (skipn (length (t_staged Tp)) (t_staged Tp'))))) c
+               <= rem c) ->
+    exists Tr', stage_all Tr ops = Some Tr' /\
+      map sg_strip (skipn (length (t_staged Tr)) (t_staged Tr')) =
+      map sg_strip (skipn (length (t_staged Tp)) (t_staged Tp')) /\
+      let rp := commit_run Play Hp Sp rdp (skipn (length (t_staged Tp)) (t_staged Tp')) in
+      let rr := commit_run (t_mode Tr) Hr Sr rdr (skipn (length (t_staged Tr)) (t_staged Tr')) in
+      r_status rr = r_status rp /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+      store_eq (r_st rr) (r_st rp).
+Proof.
+  intros Hig Hdn. induction ops as [| op rest IH];
+    intros Tp Tp' Tr Hp Hr Sp Sr rdp rdr io rem Hmp Hbr Hv Hi Hst EH ES Hinv Hio Hcnt; simpl in Hst.
+  - injection Hst as <-. exists Tr. split; [reflexivity |].
+    rewrite !skipn_len_self. split; [reflexivity |]. cbv zeta. cbn [commit_run r_status r_obs r_ev r_st].
+    split; [reflexivity |]. split; [reflexivity |]. split; [reflexivity | exact ES].
+  - destruct (stage Tp op) as [Tp1 |] eqn:H1; [| discriminate].
+    destruct (replay_stage_sim Tp Tr op Tp1 Hv Hi H1) as (Tr1 & H1r & Hv1 & Hs1).
+    destruct (stage_props Tp op Tp1 H1) as (sgp & Hsgp & Hopp & Hmp1 & Hip & _).
+    destruct (stage_props Tr op Tr1 H1r) as (sgr & Hsgr & Hopr & Hmr1 & Hir & Hrdr).
+    pose proof (Hs1 sgp sgr Hsgp Hsgr) as Hstrip.
+    destruct (commit_op_coherent Tr op Tr1 [] (view_store (t_view Tr)) (fun _ _ => 0) H1r (store_eq_refl _))
+      as (sgr' & Hsgr' & _ & _ & _ & _ & Hpn & Hps & _).
+    rewrite Hsgr in Hsgr'. apply app_inj_tail in Hsgr' as [_ <-].
+    assert (Hi1 : t_installed Tr1 = t_installed Tp1) by congruence.
+    destruct (stage_all_props rest Tp1 Tp' Hst) as ((newp & Hnewp & _) & _).
+    rewrite (skipn_step Tp Tp1 Tp' sgp Hsgp (ex_intro _ newp Hnewp)) in Hio, Hcnt |- *.
+    cbn [commit_run] in Hio, Hcnt |- *. cbv zeta.
+    set (restp := skipn (length (t_staged Tp1)) (t_staged Tp')) in *.
+    set (rp1 := commit_op Play Hp Sp rdp sgp) in *.
+    destruct (replay_commit_op_sim Hig Hdn (t_mode Tr) Hp Hr Sp Sr rdp rdr sgp sgr Hbr Hstrip EH ES)
+      as (Hnd & Hok & Hnok).
+    fold rp1 in Hnd, Hok, Hnok.
+    set (rr1 := commit_op (t_mode Tr) Hr Sr rdr sgr) in *.
+    revert Hio Hcnt.
+    destruct (r_status rp1) eqn:Hs; intros Hio Hcnt.
+    + (* play commits the operation: replay pairs it and commits it *)
+      cbn [r_status r_obs r_ev r_st] in Hio, Hcnt |- *.
+      destruct (commit_op_ok_log Play Hp Sp rdp sgp Hs) as (Lio & Lf & Ln).
+      fold rp1 in Lio, Lf, Ln. rewrite Hopp in Lio, Lf, Ln.
+      assert (Hcomm : sg_comm sgr = sg_comm sgp).
+      { unfold sg_strip in Hstrip. injection Hstrip as _ _ E. exact E. }
+      assert (Hpaired : is_fire (sg_op sgr) = true -> sg_paired sgr = true).
+      { intros Hf. rewrite Hopr in Hf.
+        destruct (Lf Hf) as (cm & Hcp & Lc).
+        destruct (Hps cm ltac:(rewrite Hcomm; exact Hcp)) as (_ & Hsp & Hkey & _).
+        rewrite Hsp, Hbr.
+        apply (proj2 (verify_spec (t_rd Tr) io rem (t_paired Tr) (trigger_key op) cm Hinv)).
+        split; [| split; [exact Hkey |]].
+        - apply Hio. rewrite io_of_log_app, Lio. left. reflexivity.
+        - specialize (Hcnt cm). rewrite comms_of_log_app, Lc, count_occ_app in Hcnt.
+          cbn [count_occ] in Hcnt. destruct (comm_eq_dec cm cm) as [_ | C]; [lia | contradiction]. }
+      destruct (Hok eq_refl Hpaired) as (Rs & Robs & Rev & Rst).
+      assert (Hio1 : incl (io_of_log (r_ev (commit_run Play (Hp ++ r_obs rp1) (r_st rp1) (r_rd rp1) restp))) io).
+      { intros k Hk. apply Hio. rewrite io_of_log_app. apply in_or_app. right. exact Hk. }
+      assert (Hcnt1 : forall c, count_occ comm_eq_dec (t_paired Tr1) c +
+                        count_occ comm_eq_dec
+                          (comms_of_log (r_ev (commit_run Play (Hp ++ r_obs rp1) (r_st rp1) (r_rd rp1) restp))) c
+                        <= rem c).
+      { intros c. specialize (Hcnt c). rewrite comms_of_log_app, count_occ_app in Hcnt.
+        destruct (is_fire op) eqn:Hf.
+        - destruct (Lf eq_refl) as (cm & Hcp & Lc).
+          destruct (Hps cm ltac:(rewrite Hcomm; exact Hcp)) as (Hpt & _ & _ & _).
+          rewrite Hpt, (Hpaired ltac:(rewrite Hopr; exact Hf)), count_occ_app.
+          rewrite Lc in Hcnt. lia.
+        - destruct (sg_comm sgr) as [cm |] eqn:Hc.
+          + destruct (Hps cm eq_refl) as (_ & _ & _ & Hf'). congruence.
+          + destruct (Hpn eq_refl) as (Hpt & _). rewrite Hpt. rewrite (Ln eq_refl) in Hcnt. exact Hcnt. }
+      assert (EH1 : erase_dir (Hr ++ r_obs rr1) = erase_dir (Hp ++ r_obs rp1)).
+      { rewrite !erase_dir_app, EH, Robs, Hnd. reflexivity. }
+      destruct (IH Tp1 Tp' Tr1 (Hp ++ r_obs rp1) (Hr ++ r_obs rr1) (r_st rp1) (r_st rr1) (r_rd rp1) (r_rd rr1)
+                   io rem ltac:(congruence) ltac:(rewrite Hmr1; exact Hbr) Hv1 Hi1 Hst EH1 Rst
+                   ltac:(rewrite Hrdr; exact Hinv) Hio1 Hcnt1)
+        as (Tr' & Hst' & Hmap & Rs' & Robs' & Rev' & Rst').
+      exists Tr'. split; [simpl; rewrite H1r; exact Hst' |].
+      destruct (stage_all_props rest Tr1 Tr' Hst') as ((newr & Hnewr & _) & _).
+      rewrite (skipn_step Tr Tr1 Tr' sgr Hsgr (ex_intro _ newr Hnewr)).
+      split; [simpl; rewrite Hmap, Hstrip; reflexivity |].
+      cbn [commit_run]. cbv zeta. fold rr1. rewrite Rs.
+      cbn [r_status r_obs r_ev r_st].
+      rewrite Hmr1 in Rs', Robs', Rev', Rst'.
+      split; [exact Rs' |]. split; [rewrite erase_dir_app, Robs, Robs'; reflexivity |].
+      split; [rewrite Rev, Rev'; reflexivity | exact Rst'].
+    + (* play rejects the operation: so does replay, and both runs stop *)
+      destruct (Hnok ltac:(congruence)) as (Rs & Robs & Rev & Rst).
+      destruct (replay_stage_all_sim rest Tp1 Tp' Tr1 Hv1 Hi1 Hst) as (Tr' & Hst' & Hmap).
+      exists Tr'. split; [simpl; rewrite H1r; exact Hst' |].
+      destruct (stage_all_props rest Tr1 Tr' Hst') as ((newr & Hnewr & _) & _).
+      rewrite (skipn_step Tr Tr1 Tr' sgr Hsgr (ex_intro _ newr Hnewr)).
+      split; [simpl; rewrite Hmap, Hstrip; reflexivity |].
+      cbn [commit_run]. cbv zeta. fold rr1. rewrite Rs, Hs.
+      split; [exact Rs |]. split; [exact Robs |]. split; [exact Rev | exact Rst].
+    + destruct (Hnok ltac:(congruence)) as (Rs & Robs & Rev & Rst).
+      destruct (replay_stage_all_sim rest Tp1 Tp' Tr1 Hv1 Hi1 Hst) as (Tr' & Hst' & Hmap).
+      exists Tr'. split; [simpl; rewrite H1r; exact Hst' |].
+      destruct (stage_all_props rest Tr1 Tr' Hst') as ((newr & Hnewr & _) & _).
+      rewrite (skipn_step Tr Tr1 Tr' sgr Hsgr (ex_intro _ newr Hnewr)).
+      split; [simpl; rewrite Hmap, Hstrip; reflexivity |].
+      cbn [commit_run]. cbv zeta. fold rr1. rewrite Rs, Hs.
+      split; [exact Rs |]. split; [exact Robs |]. split; [exact Rev | exact Rst].
+    + destruct (Hnok ltac:(congruence)) as (Rs & Robs & Rev & Rst).
+      destruct (replay_stage_all_sim rest Tp1 Tp' Tr1 Hv1 Hi1 Hst) as (Tr' & Hst' & Hmap).
+      exists Tr'. split; [simpl; rewrite H1r; exact Hst' |].
+      destruct (stage_all_props rest Tr1 Tr' Hst') as ((newr & Hnewr & _) & _).
+      rewrite (skipn_step Tr Tr1 Tr' sgr Hsgr (ex_intro _ newr Hnewr)).
+      split; [simpl; rewrite Hmap, Hstrip; reflexivity |].
+      cbn [commit_run]. cbv zeta. fold rr1. rewrite Rs, Hs.
+      split; [exact Rs |]. split; [exact Robs |]. split; [exact Rev | exact Rst].
+    + destruct (Hnok ltac:(congruence)) as (Rs & Robs & Rev & Rst).
+      destruct (replay_stage_all_sim rest Tp1 Tp' Tr1 Hv1 Hi1 Hst) as (Tr' & Hst' & Hmap).
+      exists Tr'. split; [simpl; rewrite H1r; exact Hst' |].
+      destruct (stage_all_props rest Tr1 Tr' Hst') as ((newr & Hnewr & _) & _).
+      rewrite (skipn_step Tr Tr1 Tr' sgr Hsgr (ex_intro _ newr Hnewr)).
+      split; [simpl; rewrite Hmap, Hstrip; reflexivity |].
+      cbn [commit_run]. cbv zeta. fold rr1. rewrite Rs, Hs.
+      split; [exact Rs |]. split; [exact Robs |]. split; [exact Rev | exact Rst].
+Qed.
+
+(* H23 (decision 36): replay reproduces the run of play. Play and replay
+   stage the same operations from the same view and installed set, and
+   their observer histories agree up to the directive queries. When the
+   bindings of replay hold the IO events and the COMMs that play commits
+   (an honest log), replay stages exactly the operations of play, and its
+   commit makes the observer calls of play (with the directive queries
+   erased), the events of play, the status of play and the store of play.
+   So an operation that play rejects (an out-of-phlo charge) fails replay
+   at the same call, after the same prefix (D6). The second conjunct rigs
+   replay with the commit log of play (replay_rspace.rs:390-450). *)
+Theorem replay_reproduces_play_run :
+  ob_ignores_directive -> dir_always_none ->
+  (forall ops Tp0 Tp Tr0 Hp Hr S rdp rdr io rem,
+     t_mode Tp0 = Play -> backend (t_mode Tr0) = Replay ->
+     t_view Tr0 = t_view Tp0 -> t_installed Tr0 = t_installed Tp0 ->
+     t_staged Tp0 = [] -> t_staged Tr0 = [] -> t_paired Tr0 = [] ->
+     stage_all Tp0 ops = Some Tp ->
+     erase_dir Hr = erase_dir Hp ->
+     binding_inv (t_rd Tr0) io rem ->
+     let rp := commit_run Play Hp S rdp (t_staged Tp) in
+     incl (io_of_log (r_ev rp)) io ->
+     (forall c, count_occ comm_eq_dec (comms_of_log (r_ev rp)) c <= rem c) ->
+     exists Tr, stage_all Tr0 ops = Some Tr /\
+       map sg_strip (t_staged Tr) = map sg_strip (t_staged Tp) /\
+       let rr := commit_run (t_mode Tr0) Hr S rdr (t_staged Tr) in
+       r_status rr = r_status rp /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)) /\
+  (forall ops Tp0 Tp Tr0 Hp Hr S rdp rdr,
+     t_mode Tp0 = Play -> backend (t_mode Tr0) = Replay ->
+     t_view Tr0 = t_view Tp0 -> t_installed Tr0 = t_installed Tp0 ->
+     t_staged Tp0 = [] -> t_staged Tr0 = [] -> t_paired Tr0 = [] ->
+     stage_all Tp0 ops = Some Tp ->
+     erase_dir Hr = erase_dir Hp ->
+     let rp := commit_run Play Hp S rdp (t_staged Tp) in
+     t_rd Tr0 = rig (r_ev rp) ->
+     exists Tr, stage_all Tr0 ops = Some Tr /\
+       map sg_strip (t_staged Tr) = map sg_strip (t_staged Tp) /\
+       let rr := commit_run (t_mode Tr0) Hr S rdr (t_staged Tr) in
+       r_status rr = r_status rp /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)).
+Proof.
+  intros Hig Hdn.
+  assert (G : forall ops Tp0 Tp Tr0 Hp Hr S rdp rdr io rem,
+     t_mode Tp0 = Play -> backend (t_mode Tr0) = Replay ->
+     t_view Tr0 = t_view Tp0 -> t_installed Tr0 = t_installed Tp0 ->
+     t_staged Tp0 = [] -> t_staged Tr0 = [] -> t_paired Tr0 = [] ->
+     stage_all Tp0 ops = Some Tp ->
+     erase_dir Hr = erase_dir Hp ->
+     binding_inv (t_rd Tr0) io rem ->
+     let rp := commit_run Play Hp S rdp (t_staged Tp) in
+     incl (io_of_log (r_ev rp)) io ->
+     (forall c, count_occ comm_eq_dec (comms_of_log (r_ev rp)) c <= rem c) ->
+     exists Tr, stage_all Tr0 ops = Some Tr /\
+       map sg_strip (t_staged Tr) = map sg_strip (t_staged Tp) /\
+       let rr := commit_run (t_mode Tr0) Hr S rdr (t_staged Tr) in
+       r_status rr = r_status rp /\ erase_dir (r_obs rr) = r_obs rp /\ r_ev rr = r_ev rp /\
+       store_eq (r_st rr) (r_st rp)).
+  { intros ops Tp0 Tp Tr0 Hp Hr S rdp rdr io rem Hmp Hbr Hv Hi Hsp0 Hsr0 Hpr0 Hst EH Hinv rp Hio Hcnt.
+    destruct (replay_sim_gen Hig Hdn ops Tp0 Tp Tr0 Hp Hr S S rdp rdr io rem Hmp Hbr Hv Hi Hst EH
+                (store_eq_refl S) Hinv ltac:(rewrite Hsp0; exact Hio) ltac:(rewrite Hpr0, Hsp0; exact Hcnt))
+      as (Tr & Hstr & Hmap & Rs & Robs & Rev & Rst).
+    rewrite Hsr0, Hsp0 in Hmap, Rs, Robs, Rev, Rst. cbn [length skipn] in Hmap, Rs, Robs, Rev, Rst.
+    exists Tr. split; [exact Hstr |]. split; [exact Hmap |]. cbv zeta.
+    split; [exact Rs |]. split; [exact Robs |]. split; [exact Rev | exact Rst]. }
+  split; [exact G |].
+  intros ops Tp0 Tp Tr0 Hp Hr S rdp rdr Hmp Hbr Hv Hi Hsp0 Hsr0 Hpr0 Hst EH rp Hrig.
+  apply (G ops Tp0 Tp Tr0 Hp Hr S rdp rdr (io_of_log (r_ev rp))
+           (fun c => count_occ comm_eq_dec (comms_of_log (r_ev rp)) c)
+           Hmp Hbr Hv Hi Hsp0 Hsr0 Hpr0 Hst EH).
+  - rewrite Hrig. apply rig_binding_inv.
+  - intros k Hk. exact Hk.
+  - intros c. apply Nat.le_refl.
 Qed.
 
 End Substrate.
@@ -6764,6 +7556,23 @@ Proof.
   split; [reflexivity |]. split; [reflexivity |]. split; [apply perm_swap | discriminate].
 Qed.
 
+(* The premises of H23 are satisfiable, so H23 does not hold vacuously. The
+   observer of a phlo limit of B charges accepts a call while fewer than B
+   calls came before it, and it does not count the directive queries. So
+   its decisions ignore them. The observer that gives no directive gives
+   DirNone. *)
+Lemma replay_premises_satisfiable :
+  forall (Chan Val Pat Kont PId CId : Type) (B : nat),
+    let phlo := fun (h : list (Obs Chan Val Pat Kont PId CId)) (_ : Obs Chan Val Pat Kont PId CId) =>
+                  length (erase_dir Chan Val Pat Kont PId CId h) <? B in
+    ob_ignores_directive Chan Val Pat Kont PId CId phlo /\
+    dir_always_none Chan Val Pat Kont PId CId (fun _ _ => DirNone).
+Proof.
+  intros Chan Val Pat Kont PId CId B phlo. split.
+  - intros h o. subst phlo. cbv beta. rewrite erase_dir_idem. reflexivity.
+  - intros h s. reflexivity.
+Qed.
+
 (* ═══════════ Headline trust base: every headline is axiom-free ═══════════ *)
 
 Print Assumptions commit_trace_eq_host.
@@ -6782,3 +7591,4 @@ Print Assumptions non_canonical_fails_closed.
 Print Assumptions directive_fails_closed.
 Print Assumptions parent_order_single_txn.
 Print Assumptions view_identity_is_store_identity.
+Print Assumptions replay_reproduces_play_run.

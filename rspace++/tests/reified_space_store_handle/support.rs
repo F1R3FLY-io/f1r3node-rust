@@ -145,14 +145,16 @@ pub fn source_bytes(source: RSpaceOperationSource<'_>) -> Vec<u8> {
     bincode::serialize(&event).expect("serialize the operation source")
 }
 
-/// Capturing accounting observer. It can reject the n-th COMM and can
-/// return a replay directive.
+/// Capturing accounting observer. It can reject the n-th COMM or the n-th
+/// fallible call, and can return a replay directive.
 #[derive(Default)]
 pub struct Recorder {
     calls: Mutex<Vec<Call>>,
     orders: Mutex<Vec<Option<OperationOrder>>>,
     comms: Mutex<usize>,
     reject_comm_at: Mutex<Option<usize>>,
+    fallible: Mutex<usize>,
+    reject_call_at: Mutex<Option<usize>>,
     directive: Mutex<Option<ReplayOperationDirective>>,
     directive_at: Mutex<Option<usize>>,
     directives: Mutex<usize>,
@@ -165,6 +167,34 @@ impl Recorder {
         let recorder = Self::default();
         *recorder.reject_comm_at.lock().expect("reject lock") = Some(index);
         Arc::new(recorder)
+    }
+
+    /// Rejects the `index`-th fallible call with `OutOfPhlogistons`, as a
+    /// deploy that runs out of phlo at that call. The fallible calls are the
+    /// operation starts, the introductions and the COMMs, in call order.
+    /// Directive queries do not count: play makes none, and replay makes one
+    /// per operation, so play and replay reject the same charge.
+    pub fn rejecting_call(index: usize) -> Arc<Self> {
+        let recorder = Self::default();
+        *recorder.reject_call_at.lock().expect("reject lock") = Some(index);
+        Arc::new(recorder)
+    }
+
+    /// The fallible calls made so far, rejected ones included.
+    pub fn fallible_calls(&self) -> usize { *self.fallible.lock().expect("fallible calls lock") }
+
+    // Counts one fallible call and rejects it when `rejecting_call` names it.
+    fn charge(&self) -> Result<(), RSpaceError> {
+        let index = {
+            let mut fallible = self.fallible.lock().expect("fallible calls lock");
+            let index = *fallible;
+            *fallible += 1;
+            index
+        };
+        match *self.reject_call_at.lock().expect("reject lock") {
+            Some(reject) if reject == index => Err(RSpaceError::OutOfPhlogistons),
+            _ => Ok(()),
+        }
     }
 
     pub fn with_directive(directive: ReplayOperationDirective) -> Arc<Self> {
@@ -233,7 +263,7 @@ impl RSpaceAccountingObserver<String, Pat, String, String> for Recorder {
             .lock()
             .expect("orders lock")
             .push(rspace_plus_plus::rspace::operation_context::current());
-        Ok(())
+        self.charge()
     }
 
     fn observe_operation_finish(
@@ -260,7 +290,7 @@ impl RSpaceAccountingObserver<String, Pat, String, String> for Recorder {
             data: data.clone(),
             persistent,
         });
-        Ok(())
+        self.charge()
     }
 
     fn observe_consume(
@@ -280,7 +310,7 @@ impl RSpaceAccountingObserver<String, Pat, String, String> for Recorder {
             persistent,
             peeks: peeks.clone(),
         });
-        Ok(())
+        self.charge()
     }
 
     fn observe_comm(
@@ -299,12 +329,16 @@ impl RSpaceAccountingObserver<String, Pat, String, String> for Recorder {
                 .map(|(datum, persistent)| ((*datum).clone(), *persistent))
                 .collect(),
         });
-        let mut comms = self.comms.lock().expect("comms lock");
-        let index = *comms;
-        *comms += 1;
+        let index = {
+            let mut comms = self.comms.lock().expect("comms lock");
+            let index = *comms;
+            *comms += 1;
+            index
+        };
+        let charged = self.charge();
         match *self.reject_comm_at.lock().expect("reject lock") {
             Some(reject) if reject == index => Err(RSpaceError::OutOfPhlogistons),
-            _ => Ok(()),
+            _ => charged,
         }
     }
 }
@@ -839,6 +873,65 @@ pub async fn run_plans(handle: &Handle, groups: &[Vec<Planned>]) -> Commits {
         receipts.push(txn.commit().await);
     }
     receipts
+}
+
+/// Runs planned transactions through `handle` until the first failure, as a
+/// deploy ends at its first error: a staging error or a commit error ends
+/// the run. Each group is one transaction. A `Rejected` plan must fail with
+/// its error, which has no effect.
+pub async fn run_until_failure(handle: &Handle, groups: &[Vec<Planned>]) -> Commits {
+    let lock_keys = universe();
+    let mut commits = Vec::with_capacity(groups.len());
+    for group in groups {
+        let mut txn = handle.begin(&lock_keys).await.expect("begin a transaction");
+        let mut staged = Ok(());
+        for plan in group {
+            staged = match plan.is_rejected() {
+                true => {
+                    plan.stage_expected(&mut txn)
+                        .expect("the substrate rejects the operation");
+                    Ok(())
+                }
+                false => plan.stage(&mut txn, None).map(|_| ()),
+            };
+            if staged.is_err() {
+                break;
+            }
+        }
+        let commit = match staged {
+            Ok(()) => txn.commit().await,
+            Err(error) => Err(error),
+        };
+        let failed = commit.is_err();
+        commits.push(commit);
+        if failed {
+            break;
+        }
+    }
+    commits
+}
+
+/// The calls of `calls` without the directive queries, which only replay
+/// makes.
+pub fn without_directives(calls: Vec<Call>) -> Vec<Call> {
+    calls
+        .into_iter()
+        .filter(|call| !matches!(call, Call::Directive { .. }))
+        .collect()
+}
+
+/// The `index`-th fallible call of `calls` (see `Recorder::rejecting_call`).
+pub fn fallible_call(calls: &[Call], index: usize) -> Option<&Call> {
+    calls
+        .iter()
+        .filter(|call| match call {
+            Call::Start { .. } |
+            Call::Produce { .. } |
+            Call::Consume { .. } |
+            Call::Comm { .. } => true,
+            Call::BeforeObserve { .. } | Call::Directive { .. } | Call::Finish { .. } => false,
+        })
+        .nth(index)
 }
 
 /// Runs `ops` as host operations.

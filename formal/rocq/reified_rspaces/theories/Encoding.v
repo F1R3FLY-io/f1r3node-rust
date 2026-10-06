@@ -22,102 +22,167 @@
 
    Sources
    - Design: the P2 design report (second pass), sections 1, 2, 4 and 5.
-     Section 5 ("-fv") lists the 12 headline theorems of this module.
-   - Plan: decisions 18, 21 and 22, and the section "Frontend-neutral syntax
-     layer" of the campaign plan.
-   - Code: HEAD 6f7a80da3 of this repository. All Rust line numbers below are
-     HEAD line numbers. The planned module models/src/rust/reified/encoding.rs
-     does not exist at HEAD. Its item names come from design section 4.2.
+     Section 5 ("-fv") lists the 12 headline theorems of the first version
+     of this module. Plan revision I-20 adds the derived connective_used
+     flags (section 8b, headlines 13 to 15).
+   - Plan: decisions 18, 21 and 22, revision I-20, and the section
+     "Frontend-neutral syntax layer" of the campaign plan.
+   - Code: P2, P3b and P4 have landed. models/src/rust/reified/encoding.rs
+     holds the encoder and the strict decoders, the hooks run in reduce.rs
+     and reified/reducer_hooks.rs, and the normalizer builds NEWSPACE. The
+     line numbers below are those of the P3b commit of this repository. The
+     files that P3b did not change have the line numbers of the P4 commit.
    - Grammar: rholang-tree-sitter/grammar.js in the parser v3 worktree
-     (rholang-rs-reified-rspaces). The P3 work edits that file at this time.
-     This module thus cites grammar rules by name, not by line.
+     (rholang-rs-reified-rspaces). This module cites grammar rules by name,
+     not by line.
 
    ─────────────────────────────────────────────────────────────────────────
-   Spec-to-Code Traceability
+   Spec-to-Code Traceability: Rocq definition → design section → Rust code
    ─────────────────────────────────────────────────────────────────────────
-   Rocq definition          │ Design  │ Rust code at HEAD, or planned item
-   ─────────────────────────┼─────────┼──────────────────────────────────────
-   bytes, bytes_compare,    │ §1.1    │ models/src/rust/rholang/sorter/
-     bytes_lt               │         │ score_tree.rs:69-85 (ScoreAtom::compare,
-                            │         │ line 77 compares GString keys with
-                            │         │ String::cmp, the bytewise UTF-8 order)
-   is_var_token             │ §2(d),  │ grammar.js rule var,
-                            │ §4.2    │ encoding.rs::is_identifier
-   WordLists, is_identifier,│ plan    │ validation.rs::{REJECTED_PARAM_KEYS,
-     is_theory_name         │ dec. 27 │ REJECTED_THEORY_NAMES, is_param_key,
-                            │         │ is_theory_name}
-   par, par_eqb             │ §5      │ models/src/lib.rs:210-225 (Par Eq),
-                            │         │ 466-473 (New Eq), 660-666 (EList Eq),
-                            │         │ 676-680 (ETuple Eq), 705-711 (EMap Eq)
-   marker, marker_id,       │ §4.1,   │ planned encoding.rs::{REIFIED_TAG,
-     marker_of_id,          │ §4.2    │ Marker, Marker::id, Marker::from_id,
-     marker_tuple_arity     │         │ marker_of, Marker::tuple_arity}
-   reserved_system_indices  │ plan    │ plan section "Namespace (tag 0xE0)"
-   map_values, canon_map,   │ §1.1    │ models/src/rust/sorted_par_map.rs:60-74,
-     keys_strictly_sorted   │         │ models/src/rust/par_map.rs:48-55,
-                            │         │ models/src/rust/rholang/sorter/
-                            │         │ ordering.rs:58-76, score_tree.rs:170-207,
-                            │         │ expr_sort_matcher.rs:433-476 and 711-716
-   construct, wf, wfb       │ §1,     │ planned encoding.rs::{UseBlock, NewSpace,
-                            │ §4.2    │ SendParams, QuerySpec, FreeTheory} and
-                            │         │ the validators (identifiers, empty forms,
-                            │         │ annotation count)
-   encode, encode_annotation│ §4.1    │ planned encoding.rs::encode
-   build_params, send_data, │ §1.1-3  │ planned builders.rs::{send_params,
-     build_query            │         │ query_spec}
-   parse, decode            │ §4.2    │ planned encoding.rs::{decode_process_tuple,
-                            │         │ split_trailing_params, decode_query_source,
-                            │         │ decode_free_value}, each with the final
-                            │         │ NonCanonical check
-   head_marker              │ §4.2    │ planned encoding.rs::sole_marker_tuple
-   position, recognize      │ §4.3,   │ H2 rholang/src/rust/interpreter/
-                            │ §4.4    │ reduce.rs:1234-1259 (new arm between 1250
-                            │         │ and 1251), H3 reduce.rs:1309-1318 (after
-                            │         │ the data evaluation, before produce), H4
-                            │         │ reduce.rs:1673-1691 (after subst at 1675,
-                            │         │ before single_bundle at 1677)
-   split_trailing_params    │ §4.3 H3 │ planned encoding.rs::split_trailing_params
-   head_process_exprb       │ §2(g)   │ util/mod.rs:88-93 and 138-143 (EVar |
-                            │         │ EMethod)
-   process_marker_tupleb,   │ §4.3 H1 │ planned is_process_marker_tuple and
-     evaluated_process_exprb│         │ is_evaluated_process_expr, used in both
-                            │         │ filter closures of util/mod.rs
-   evaluation_terms_with    │ §2(g)   │ util/mod.rs:54-111 (evaluation_terms) and
-                            │         │ 113-158 (owned_evaluation_terms)
-   evaluation_random,       │ §2(g)   │ util/mod.rs:160-179, reduce.rs:315-453
-     term_schedule          │         │ (eval_inner: 322, 330-334, 339, 362, 385)
-   lexical_schedule_count_  │ §2(h)   │ rholang/src/rust/interpreter/accounting/
-     iff                    │ H-1     │ lexical.rs:44, 105-114 and 125-129
-   subst (Section Variable) │ §2(e)   │ rholang/src/rust/interpreter/
-                            │         │ substitute.rs:454-535 (Par, unforgeables
-                            │         │ kept at 520), 1340-1361 (EList), 1363-1382
-                            │         │ (ETuple), 1405-1428 (EMap, re-sorted by
-                            │         │ create_from_vec at 1421), 1455 (ground
-                            │         │ terms), 644-663 (New body under
-                            │         │ env.shift at 654)
-   name_decl, binder_order, │ §1.4    │ rholang/src/rust/interpreter/compiler/
-     normalize_new          │         │ normalizer/processes/p_new_normalizer.rs:
-                            │         │ 42-45 (stable sort), 57-60 (uris), 62-63
-                            │         │ (put_all_pos, new_count), 80-86 (New),
-                            │         │ compiler/bound_map.rs:30-42 and 63-69 (one
-                            │         │ index for each binding), util/mod.rs:
-                            │         │ 181-243 (allocate_new_bindings)
-   plan_encode_newspace     │ §3 C3   │ the superseded plan table ("s_i or Nil")
+   bytes, bytes_compare, bytes_lt (§1.1)
+                            models/src/rust/rholang/sorter/score_tree.rs:
+                            69-85, 77 (ScoreAtom::compare, where line 77
+                            compares GString keys with String::cmp, the
+                            bytewise UTF-8 order)
+   is_var_token (§2(d), §4.2)
+                            grammar.js rule var, and
+                            models/src/rust/reified/encoding.rs:378-386
+                            (is_identifier)
+   WordLists, is_identifier, is_theory_name (plan decision 27)
+                            models/src/rust/reified/validation.rs:18-45,
+                            50-53, 96-98, 101-103 (REJECTED_PARAM_KEYS,
+                            REJECTED_THEORY_NAMES, is_param_key,
+                            is_theory_name)
+   par, par_eqb (§5)        models/src/lib.rs:210-225, 466-473, 660-666,
+                            676-680, 705-711 (the Eq of Par, New, EList,
+                            ETuple and EMap)
+   marker, marker_id, marker_of_id, marker_tuple_arity (§4.1, §4.2)
+                            models/src/rust/reified/encoding.rs:29, 34-45,
+                            58, 61-66, 81-88, 346-356 (REIFIED_TAG, Marker,
+                            Marker::id, Marker::tuple_arity,
+                            Marker::from_id, marker_of)
+   reserved_system_indices  plan section "Namespace (tag 0xE0)"
+   map_values, canon_map, keys_strictly_sorted (§1.1)
+                            models/src/rust/sorted_par_map.rs:60-74,
+                            models/src/rust/par_map.rs:48-55,
+                            models/src/rust/rholang/sorter/ordering.rs:58-76,
+                            models/src/rust/rholang/sorter/score_tree.rs:
+                            170-207, models/src/rust/rholang/sorter/
+                            expr_sort_matcher.rs:433-476, 711-716
+   construct, wf, wfb (§1, §4.2)
+                            models/src/rust/reified/encoding.rs:110-113,
+                            118-121, 125-128, 132-136, 140-143 (UseBlock,
+                            NewSpace, SendParams, QuerySpec, FreeTheory)
+                            and the validators of the decoders
+   encode, encode_annotation (§4.1)
+                            models/src/rust/reified/encoding.rs:510-512,
+                            514-530, 532-544, 546-560, 562-573, 576-590
+                            (use_tuple, new_space_tuple, params_tuple,
+                            query_tuple, free_tuple, encode)
+   build_params, send_data, build_query (§1.1-1.3)
+                            models/src/rust/reified/builders.rs:58-64,
+                            67-74 (send_params, query_spec)
+   parse, decode (§4.2)     models/src/rust/reified/encoding.rs:692-705,
+                            707-718, 720-750, 752-769, 771-789, 791-813,
+                            816-827, 830-838, 841-848, 851-858 (the strict
+                            decoders, each with its final NonCanonical
+                            check)
+   head_marker (§4.2)       models/src/rust/reified/encoding.rs:369-374
+                            (sole_marker_tuple)
+   position, recognize (§4.3, §4.4)
+                            rholang/src/rust/interpreter/reduce.rs:1238-1264,
+                            1255, 1314-1333, 1678-1697, 1680, 1681, 1683
+                            (H2: the tuple arm of the term match at 1255.
+                            H3: the data evaluation, then reified_produce.
+                            H4: at 1681, after the substitution at 1680
+                            and before single_bundle at 1683)
+   split_trailing_params (§4.3 H3)
+                            models/src/rust/reified/encoding.rs:830-838
+   head_process_exprb, process_marker_tupleb, evaluated_process_exprb
+   (§2(g), §4.3 H1)         rholang/src/rust/interpreter/util/mod.rs:56-64,
+                            100, 145 (is_evaluated_process_expr in both
+                            filter closures), models/src/rust/reified/
+                            encoding.rs:361-366 (is_process_marker_tuple)
+   evaluation_terms_with (§2(g))
+                            rholang/src/rust/interpreter/util/mod.rs:66-118,
+                            120-160 (evaluation_terms and
+                            owned_evaluation_terms)
+   evaluation_random, term_schedule (§2(g))
+                            rholang/src/rust/interpreter/util/mod.rs:162-181,
+                            rholang/src/rust/interpreter/reduce.rs:317-455,
+                            324, 332-336, 341, 364, 387 (eval_inner)
+   lexical_schedule_count_iff (§2(h), H-1)
+                            rholang/src/rust/interpreter/accounting/
+                            lexical.rs:44, 105-114, 125-129
+   subst (Section Variable, §2(e))
+                            rholang/src/rust/interpreter/substitute.rs:
+                            454-535, 520, 1340-1361, 1363-1382, 1405-1428,
+                            1421, 1455, 644-663, 654 (Par with the
+                            unforgeables kept at 520, EList, ETuple, EMap
+                            re-sorted by create_from_vec at 1421, ground
+                            terms, the New body under env.shift at 654)
+   fval, fconstruct, derived_flags (I-20)
+                            models/src/rust/reified/encoding.rs:394-404,
+                            407-416, 418-430, 436-444, 447-456, 458-460,
+                            462-472, 475-482 (bits_of, expr_par, list_par,
+                            map_par, new_par, annotation_par, marker_tuple,
+                            tuple_par: each flag is the disjunction over
+                            the children)
+   refresh, sdecode (I-20)  rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs:683-694, 697-705, 790-830,
+                            856-888, 891-893, 927-935, 938-947, 959-968,
+                            985-994, 998-1005 (Field, marker_fields,
+                            derived_flag, refresh_field,
+                            derived_flag_of_new, refresh_tuple,
+                            refreshed_tuple, refresh_tuple_par,
+                            refreshed_marker_par, trailing_params)
+   fsubst (I-20)            rholang/src/rust/interpreter/substitute.rs:525,
+                            995-1016, 1018-1037, 1060-1083, 1340-1361,
+                            1363-1382, 1405-1428 and
+                            rholang/src/rust/interpreter/reduce.rs:3065-3087,
+                            3089-3110, 3135-3155 (substitution and
+                            evaluation keep the connective_used flags of
+                            the Par, the list, the tuple and the map)
+   name_decl, binder_order, normalize_new (§1.4)
+                            rholang/src/rust/interpreter/compiler/
+                            normalizer/processes/p_new_normalizer.rs:47-50,
+                            62-65, 67-68, 93-99, 101-104 (the stable sort,
+                            the uris, put_all_pos and new_count, the New,
+                            the NEWSPACE tuple), rholang/src/rust/
+                            interpreter/compiler/normalizer/processes/
+                            reified_syntax.rs:203-236, 240-247
+                            (normalize_space_annotations in the outer
+                            scope), models/src/rust/reified/builders.rs:
+                            28-54 (new_space keeps the plain prefix and
+                            rejects an annotation on a URI binder),
+                            rholang/src/rust/interpreter/compiler/
+                            bound_map.rs:30-42, 63-69 (one index for each
+                            binding), util/mod.rs:183-245
+                            (allocate_new_bindings)
+   plan_encode_newspace     the superseded plan table ("s_i or Nil")
    ─────────────────────────────────────────────────────────────────────────
 
    Abstraction function. The model does not contain the Rust Par type. The
    function α below maps each Rust Par to one model term.
-   - α maps a Par with exactly one GPrivate and no other component to PPriv.
+   - α maps a Par with exactly one GPrivate, no other component and the
+     connective_used flag false to PPriv. marker_of (encoding.rs:346-356)
+     rejects a head with the flag true, so α maps such a Par to POther. No
+     normalizer and no evaluation gives a GPrivate the flag true.
    - α maps a Par with exactly one expression to the matching constructor.
      The expression must be one of these: a GString, an EList without
      remainder, an ETuple, an EVar, an EMethod, or an EMap without remainder
-     and with GString keys only. The flag connective_used must be false.
+     and with GString keys only. α forgets the connective_used flags of the
+     expression and of its Par.
    - α maps a Par with exactly one New and no other component to PNew. The
      model keeps the injections map of the New as an opaque code.
    - α maps Par::default() to PNil.
    - α maps every other Par to POther with an injective code.
-   α is injective. Thus equality of model terms agrees with the Rust Par
-   equality, which ignores only locally_free (models/src/lib.rs:210-225).
+   Equality of model terms thus agrees with the Rust Par equality up to
+   locally_free (models/src/lib.rs:210-225) and up to the connective_used
+   flags of expressions. The canonical encoder derives those flags from the
+   children, so a canonical marker tuple has one flag vector for each model
+   term. Section 8b keeps the flags of the top level of a marker tuple,
+   where the strict decoder compares them.
 
    Modeling notes
    - The model represents each Par by its canonical (sorted) form. Rust
@@ -126,12 +191,32 @@
      and Other. The model adds PMethod and PNil. The HEAD filter keeps EMethod
      expressions, so PMethod is necessary for theorem 10. The superseded
      encoding uses Nil, so PNil is necessary for theorem 12.
-   - A marker tuple with connective_used = true occurs only in a pattern. α
-     maps it to POther. A pattern is an inert position.
+   - I-20. The flag connective_used of a marker tuple, of its list and map
+     fields, of the NEWSPACE annotations and of the holder Pars is the
+     disjunction over the children. Ordinary data may use connectives
+     (x!(Int)), so a canonical marker tuple can have the flag true, and the
+     hooks recognize it (connective_marker_tuple_recognized). HEAD
+     evaluation and substitution keep these flags when the children change,
+     so they can go stale. The hooks therefore recompute the derived flags
+     before the strict decode. The decoder still accepts only the exact
+     canonical image of its encoder: refresh_strict_decode_erase shows that
+     the strict decode of a refreshed tuple is the decode of this module,
+     and that a tuple with a stale flag is accepted only after the refresh.
+   - Section 8b keeps the flags only where the encoder derives them: the
+     holder Par, the tuple and the container fields of marker_fields
+     (reducer_hooks.rs:697-705). A value keeps its own flag, which no hook
+     changes, so a flagged construct pairs each value with its flag. A map
+     key is a GString, whose flag is false.
    - The substitution is a Section Variable. Its equations are premises of
-     decode_commutes_with_subst. The corollary
-     decode_commutes_with_concrete_subst discharges every premise with a
-     concrete substitution. This shows that the premises are consistent.
+     decode_commutes_with_subst. They hold up to the connective_used flags,
+     which α forgets: HEAD keeps the flags of a substituted tuple, list or
+     map. The hooks recompute the derived flags before the strict decode,
+     so the premises need no flag. The theorem
+     refreshed_decode_commutes_with_subst proves the flagged statement.
+     The corollaries decode_commutes_with_concrete_subst and
+     refreshed_decode_commutes_with_concrete_subst discharge every premise
+     with a concrete substitution. This shows that the premises are
+     consistent.
    - The P2 reducer never recognizes FREE. P4 factories read it. The position
      PosFactoryTheory models that read.
    - binder_order is a stable insertion sort. Rust sorts with the stable merge
@@ -158,9 +243,22 @@
    10. schedule_unchanged_marker_free       HEAD schedule for marker-free Pars
    11. decode_commutes_with_subst           decoding commutes with subst
    12. plan_nil_annotation_not_injective    the superseded encoding fails
+   13. refresh_strict_decode_erase          the refreshed strict decode is
+                                            decode, and it rejects stale flags
+   14. connective_marker_tuple_recognized   a tuple with the flag true is
+                                            syntax
+   15. refreshed_decode_commutes_with_subst the refresh makes the flagged
+                                            decode commute with subst
 
    The module has no unfinished proof and no assumed constant. The
    Print Assumptions lines at the end confirm this for each headline.
+
+   ─────────────────────────────────────────────────────────────────────────
+   Failed strategies (do not try them again)
+   ─────────────────────────────────────────────────────────────────────────
+   - `cbn [derived_flags ...]` reduces only one side of tuple_flags_eqb, so
+     `rewrite tuple_flags_eqb_refl` then finds no match. Destruct the value
+     flags and let the flags compute, or rewrite before the reduction.
    ═══════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import List Arith Bool Lia PeanoNat.
@@ -1282,7 +1380,7 @@ Definition split_trailing_params (data : list par) : recognition * list par :=
   end.
 
 (* H1: the HEAD filter keeps EVar and EMethod expressions
-   (util/mod.rs:88-93 and 138-143). *)
+   (util/mod.rs:56-64, 100 and 145). *)
 Definition head_process_exprb (e : par) : bool :=
   match e with
   | PVar _ => true
@@ -1440,7 +1538,7 @@ Definition schedule_suffix (pp : process_par) : list generated_message :=
   map GMCostSignedTerm (pp_cost_signed_terms pp) ++ map GMCostStack (pp_cost_stacks pp).
 
 (* evaluation_terms and owned_evaluation_terms build the same list in this
-   order (util/mod.rs:54-111 and 113-158). *)
+   order (util/mod.rs:66-118 and 120-160). *)
 Definition evaluation_terms_with (keep : par -> bool) (pp : process_par)
   : list generated_message :=
   schedule_prefix pp ++ map GMExpr (filter keep (pp_exprs pp)) ++ schedule_suffix pp.
@@ -1535,7 +1633,7 @@ Qed.
 
 Definition i16_max : nat := 2 ^ 15 - 1.
 
-(* evaluation_random (util/mod.rs:160-179). An index is always below the
+(* evaluation_random (util/mod.rs:162-181). An index is always below the
    term count. The casts `index as u8` and `index as u16 as i16` thus do not
    change it, and the model passes the index unchanged. *)
 Definition evaluation_random {R : Type} (split_byte split_short : R -> nat -> R)
@@ -1546,7 +1644,7 @@ Definition evaluation_random {R : Type} (split_byte split_short : R -> nat -> R)
   else Some (split_byte r index).
 
 (* eval_inner gives term i the random state evaluation_random r i n, where n
-   is the length of the term list (reduce.rs:322-385). The partition of the
+   is the length of the term list (reduce.rs:324-387). The partition of the
    cost stacks keeps the original indices. *)
 Definition term_schedule {R : Type} (split_byte split_short : R -> nat -> R) (r : R)
   (terms : list generated_message) : list (generated_message * option R) :=
@@ -1597,18 +1695,222 @@ Proof.
     rewrite (filter_all_false _ _ (pp_exprs pp) Hnone). simpl. lia.
 Qed.
 
+(* ── 8b. The derived connective_used flags of a marker tuple (I-20) ─── *)
+
+(* A value of the program: its model term and its own connective_used
+   flag. No hook changes a value. *)
+Definition fval : Type := par * bool.
+
+(* A construct whose values carry their flags. *)
+Inductive fconstruct : Type :=
+| FCUse : fval -> fval -> fconstruct
+| FCNewSpace : list (option fval) -> nat -> list bytes -> nat -> fval -> fconstruct
+| FCParams : list fval -> list (bytes * fval) -> fconstruct
+| FCQuery : fval -> list fval -> list (bytes * fval) -> fconstruct
+| FCFree : bytes -> list fval -> fconstruct.
+
+Definition erase_kv (kv : bytes * fval) : bytes * par := (fst kv, fst (snd kv)).
+
+Definition erase_c (fc : fconstruct) : construct :=
+  match fc with
+  | FCUse s b => CUse (fst s) (fst b)
+  | FCNewSpace anns k uris inj body => CNewSpace (map (option_map fst) anns) k uris inj (fst body)
+  | FCParams pos named => CParams (map fst pos) (map erase_kv named)
+  | FCQuery ch pay named => CQuery (fst ch) (map fst pay) (map erase_kv named)
+  | FCFree th args => CFree th (map fst args)
+  end.
+
+(* The flags of the fields after the head, as the Rust Par holds them
+   (enum Field of reducer_hooks.rs). A list or a map has the flag of its
+   Par and the flag of its expression. The NEWSPACE annotations have these
+   two flags and the two flags of each entry [] or [s]. Par{news: [New]}
+   has one flag. A value field has no derived flag. *)
+Inductive field_flags : Type :=
+| FFValue : field_flags
+| FFList : bool -> bool -> field_flags
+| FFMap : bool -> bool -> field_flags
+| FFAnnotations : bool -> bool -> list (bool * bool) -> field_flags
+| FFNewBody : bool -> field_flags.
+
+(* The flag of the holder Par, the flag of the tuple and the flags of the
+   fields. The head is the marker name, whose flag is false. *)
+Record tuple_flags : Type := mkFlags { tf_par : bool; tf_tuple : bool; tf_fields : list field_flags }.
+
+(* The top level of a marker tuple in a Rust Par: the construct with its
+   values, and the container flags as HEAD left them. *)
+Record ftuple : Type := mkFTuple { ft_construct : fconstruct; ft_flags : tuple_flags }.
+
+Definition vflag (v : fval) : bool := snd v.
+Definition entry_flag (a : option fval) : bool := match a with Some v => vflag v | None => false end.
+Definition list_flag (vs : list fval) : bool := existsb vflag vs.
+Definition map_flag (kvs : list (bytes * fval)) : bool := existsb (fun kv => vflag (snd kv)) kvs.
+
+(* The flags that the canonical encoder derives: each container takes the
+   disjunction over its children (encoding.rs bits_of, list_par, map_par,
+   new_par, annotation_par, marker_tuple and tuple_par). *)
+Definition derived_flags (fc : fconstruct) : tuple_flags :=
+  match fc with
+  | FCUse s b =>
+      let t := vflag s || vflag b in
+      mkFlags t t [FFValue; FFValue]
+  | FCNewSpace anns _ _ _ body =>
+      let a := existsb entry_flag anns in
+      let t := a || vflag body in
+      mkFlags t t [FFAnnotations a a (map (fun x => (entry_flag x, entry_flag x)) anns);
+                   FFNewBody (vflag body)]
+  | FCParams pos named =>
+      let l := list_flag pos in
+      let m := map_flag named in
+      let t := l || m in
+      mkFlags t t [FFList l l; FFMap m m]
+  | FCQuery ch pay named =>
+      let l := list_flag pay in
+      let m := map_flag named in
+      let t := vflag ch || l || m in
+      mkFlags t t [FFValue; FFList l l; FFMap m m]
+  | FCFree _ args =>
+      let l := list_flag args in
+      mkFlags l l [FFValue; FFList l l]
+  end.
+
+Definition bool_pair_eqb (x y : bool * bool) : bool := Bool.eqb (fst x) (fst y) && Bool.eqb (snd x) (snd y).
+
+Definition field_flags_eqb (a b : field_flags) : bool :=
+  match a, b with
+  | FFValue, FFValue => true
+  | FFList p e, FFList p' e' => Bool.eqb p p' && Bool.eqb e e'
+  | FFMap p e, FFMap p' e' => Bool.eqb p p' && Bool.eqb e e'
+  | FFAnnotations p e es, FFAnnotations p' e' es' =>
+      Bool.eqb p p' && Bool.eqb e e' && list_eqb bool_pair_eqb es es'
+  | FFNewBody p, FFNewBody p' => Bool.eqb p p'
+  | _, _ => false
+  end.
+
+Definition tuple_flags_eqb (a b : tuple_flags) : bool :=
+  Bool.eqb (tf_par a) (tf_par b) && Bool.eqb (tf_tuple a) (tf_tuple b) &&
+  list_eqb field_flags_eqb (tf_fields a) (tf_fields b).
+
+Lemma bool_pair_eqb_refl : forall x, bool_pair_eqb x x = true.
+Proof. intros [a b]. unfold bool_pair_eqb. cbn. rewrite !eqb_reflx. reflexivity. Qed.
+
+Lemma bool_pair_eqb_sound : forall x y, bool_pair_eqb x y = true -> x = y.
+Proof.
+  intros [a b] [c d] H. unfold bool_pair_eqb in H. cbn in H.
+  apply andb_true_iff in H as [H1 H2]. apply eqb_prop in H1. apply eqb_prop in H2. subst. reflexivity.
+Qed.
+
+Lemma field_flags_eqb_refl : forall a, field_flags_eqb a a = true.
+Proof.
+  intros [| p e | p e | p e es | p]; cbn; rewrite ?eqb_reflx; try reflexivity.
+  apply list_eqb_refl. apply Forall_forall. intros x _. apply bool_pair_eqb_refl.
+Qed.
+
+Lemma field_flags_eqb_sound : forall a b, field_flags_eqb a b = true -> a = b.
+Proof.
+  intros [| p e | p e | p e es | p] [| p' e' | p' e' | p' e' es' | p'] H; cbn in H; try discriminate H.
+  - reflexivity.
+  - apply andb_true_iff in H as [H1 H2]. apply eqb_prop in H1. apply eqb_prop in H2. subst. reflexivity.
+  - apply andb_true_iff in H as [H1 H2]. apply eqb_prop in H1. apply eqb_prop in H2. subst. reflexivity.
+  - apply andb_true_iff in H as [H H3]. apply andb_true_iff in H as [H1 H2].
+    apply eqb_prop in H1. apply eqb_prop in H2. subst.
+    apply (list_eqb_sound _ bool_pair_eqb) in H3; [subst; reflexivity |].
+    apply Forall_forall. intros x _ y. apply bool_pair_eqb_sound.
+  - apply eqb_prop in H. subst. reflexivity.
+Qed.
+
+Lemma tuple_flags_eqb_refl : forall a, tuple_flags_eqb a a = true.
+Proof.
+  intros [p t fs]. unfold tuple_flags_eqb. cbn. rewrite !eqb_reflx. cbn.
+  apply list_eqb_refl. apply Forall_forall. intros x _. apply field_flags_eqb_refl.
+Qed.
+
+Lemma tuple_flags_eqb_sound : forall a b, tuple_flags_eqb a b = true -> a = b.
+Proof.
+  intros [p t fs] [p' t' fs'] H. unfold tuple_flags_eqb in H. cbn in H.
+  apply andb_true_iff in H as [H H3]. apply andb_true_iff in H as [H1 H2].
+  apply eqb_prop in H1. apply eqb_prop in H2. subst.
+  apply (list_eqb_sound _ field_flags_eqb) in H3; [subst; reflexivity |].
+  apply Forall_forall. intros x _ y. apply field_flags_eqb_sound.
+Qed.
+
+(* The model term of the tuple: α forgets the flags. *)
+Definition ferase (x : ftuple) : par := encode (erase_c (ft_construct x)).
+
+(* refresh_tuple_par of reducer_hooks.rs: every derived flag takes its
+   derived value, and the values keep theirs. *)
+Definition refresh (x : ftuple) : ftuple := mkFTuple (ft_construct x) (derived_flags (ft_construct x)).
+
+(* The strict decoders of encoding.rs accept only the canonical image of
+   their encoder, flags included. The values of the image are the values
+   of the input, so only the container flags can differ. *)
+Definition sdecode (x : ftuple) : option construct :=
+  if tuple_flags_eqb (ft_flags x) (derived_flags (ft_construct x)) then decode (ferase x) else None.
+
+(* Headline 13. After the refresh, the strict decode of a marker tuple is
+   the decode of this module on its model term, so headlines 1 to 12 hold
+   for the refreshed decode. The refresh changes no value. The strict
+   decoder still accepts only derived flags: a tuple that it accepts is
+   already refreshed, and its term is the encoding of the result. *)
+Theorem refresh_strict_decode_erase :
+  forall x,
+    sdecode (refresh x) = decode (ferase x) /\
+    ferase (refresh x) = ferase x /\
+    (forall c, sdecode x = Some c -> refresh x = x /\ ferase x = encode c /\ wf c).
+Proof.
+  intros [fc fl]. unfold sdecode, refresh, ferase. cbn [ft_construct ft_flags].
+  split; [rewrite tuple_flags_eqb_refl; reflexivity |].
+  split; [reflexivity |].
+  intros c H. destruct (tuple_flags_eqb fl (derived_flags fc)) eqn:E; [| discriminate H].
+  apply tuple_flags_eqb_sound in E. subst fl.
+  apply decode_sound in H as [Ht Hwf]. split; [reflexivity | split; [exact Ht | exact Hwf]].
+Qed.
+
+(* Headline 14. A canonical marker tuple is recognized whatever its derived
+   flags are. A use block whose body uses a connective (x!(Int)) gives a
+   tuple with the flag true, and the hooks recognize it. With a stale flag
+   the strict decoder rejects it, and after the refresh it accepts it. *)
+Theorem connective_marker_tuple_recognized :
+  (forall fc, wf (erase_c fc) -> sdecode (mkFTuple fc (derived_flags fc)) = Some (erase_c fc)) /\
+  (forall space body fs,
+     tf_par (derived_flags (FCUse (space, fs) (body, true))) = true /\
+     tf_tuple (derived_flags (FCUse (space, fs) (body, true))) = true /\
+     sdecode (mkFTuple (FCUse (space, fs) (body, true)) (derived_flags (FCUse (space, fs) (body, true)))) =
+     Some (CUse space body)) /\
+  (forall space body fs,
+     sdecode (mkFTuple (FCUse (space, fs) (body, true)) (mkFlags false false [FFValue; FFValue])) = None /\
+     sdecode (refresh (mkFTuple (FCUse (space, fs) (body, true)) (mkFlags false false [FFValue; FFValue]))) =
+     Some (CUse space body)).
+Proof.
+  split; [| split].
+  - intros fc Hwf. unfold sdecode, ferase. cbn [ft_construct ft_flags].
+    rewrite tuple_flags_eqb_refl. apply decode_encode. exact Hwf.
+  - intros space body fs.
+    destruct fs; (split; [reflexivity | split; [reflexivity |]]);
+      unfold sdecode, ferase; cbn [ft_construct ft_flags]; rewrite tuple_flags_eqb_refl;
+      apply decode_encode; exact I.
+  - intros space body fs. split.
+    + destruct fs; reflexivity.
+    + rewrite (proj1 (refresh_strict_decode_erase _)). unfold ferase. cbn [ft_construct erase_c fst].
+      apply decode_encode. exact I.
+Qed.
+
 (* ── 9. Substitution ───────────────────────────────────────────────────── *)
 
 Section Substitution.
   (* subst sigma t models Substitute::substitute_and_charge at depth 0 with
      the environment sigma (substitute.rs:102-130). shift k sigma models
      env.shift(k). Each premise below states one equation of HEAD
-     substitution on a shape that the encoding uses.
-     The storage substitution of a receive body (reduce.rs:1429-1433) uses
+     substitution on a shape that the encoding uses. The equations hold up
+     to the connective_used flags, which α forgets: HEAD keeps the flags of
+     a substituted Par, tuple, list and map (substitute.rs:525, 995-1083,
+     1340-1428), so a substituted marker tuple can carry stale flags. The
+     hooks recompute the derived flags before the strict decode (I-20), so
+     the premises need no flag. Headline 15 states the flagged form.
+     The storage substitution of a receive body (reduce.rs:1434-1438) uses
      substitute_no_sort_and_charge. That variant satisfies the same premises
      on USE and NEWSPACE tuples, which contain no map. It also sorts the map
      values in create_from_vec. The hooks decode a PARAMS or QUERY map only
-     after the sorting variant (reduce.rs:1314 and 1675). *)
+     after the sorting variant (reduce.rs:1319 and 1680). *)
   Variable Env : Type.
   Variable subst : Env -> par -> par.
   Variable shift : nat -> Env -> Env.
@@ -1713,7 +2015,7 @@ Section Substitution.
   Qed.
 
   (* This lemma does not use subst_new. Evaluation (eval_expr,
-     reduce.rs:3059-3149 and 7745-7764) satisfies the five equations that the
+     reduce.rs:3065-3155 and 7751-7770) satisfies the five equations that the
      proof uses. Thus PARAMS, QUERY, USE and FREE decoding also commutes with
      evaluation. *)
   Lemma subst_encode_except_newspace :
@@ -1761,6 +2063,61 @@ Section Substitution.
     rewrite (subst_encode sigma c Hwf).
     apply decode_encode. apply subst_construct_wf. exact Hwf.
   Qed.
+
+  (* The flag of a value after the substitution. HEAD derives it for the
+     value. The theorem below holds for every flag function. *)
+  Variable subst_flag : Env -> par -> bool -> bool.
+
+  Definition fsubst_val (sigma : Env) (v : fval) : fval :=
+    (subst sigma (fst v), subst_flag sigma (fst v) (snd v)).
+  Definition fsubst_kv (sigma : Env) (kv : bytes * fval) : bytes * fval := (fst kv, fsubst_val sigma (snd kv)).
+
+  Definition fsubst_c (sigma : Env) (fc : fconstruct) : fconstruct :=
+    match fc with
+    | FCUse s b => FCUse (fsubst_val sigma s) (fsubst_val sigma b)
+    | FCNewSpace anns k uris inj body =>
+        FCNewSpace (map (option_map (fsubst_val sigma)) anns) k uris inj (fsubst_val (shift k sigma) body)
+    | FCParams pos named => FCParams (map (fsubst_val sigma) pos) (map (fsubst_kv sigma) named)
+    | FCQuery ch pay named =>
+        FCQuery (fsubst_val sigma ch) (map (fsubst_val sigma) pay) (map (fsubst_kv sigma) named)
+    | FCFree th args => FCFree th (map (fsubst_val sigma) args)
+    end.
+
+  (* HEAD substitution and evaluation keep the container flags of the
+     tuple (substitute.rs:995-1083, reduce.rs:3065-3155), so they can go
+     stale. *)
+  Definition fsubst (sigma : Env) (x : ftuple) : ftuple := mkFTuple (fsubst_c sigma (ft_construct x)) (ft_flags x).
+
+  Lemma erase_fsubst_c : forall sigma fc, erase_c (fsubst_c sigma fc) = subst_construct sigma (erase_c fc).
+  Proof.
+    intros sigma [s b | anns k uris inj body | pos named | ch pay named | th args]; cbn [fsubst_c erase_c subst_construct].
+    - reflexivity.
+    - f_equal. rewrite !map_map. apply map_ext. intros [a |]; reflexivity.
+    - unfold map_values. rewrite !map_map. reflexivity.
+    - unfold map_values. rewrite !map_map. reflexivity.
+    - rewrite !map_map. reflexivity.
+  Qed.
+
+  (* Headline 15. HEAD substitution of a decodable marker tuple keeps its
+     container flags. The model term of the result is the substitution of
+     the model term, and after the refresh the strict decode gives the
+     substituted construct. *)
+  Theorem refreshed_decode_commutes_with_subst :
+    forall sigma x c,
+      sdecode x = Some c ->
+      ferase (fsubst sigma x) = subst sigma (ferase x) /\
+      sdecode (refresh (fsubst sigma x)) = Some (subst_construct sigma c).
+  Proof.
+    intros sigma x c H.
+    destruct (proj2 (proj2 (refresh_strict_decode_erase x)) c H) as [_ [Hx Hwf]].
+    assert (Hc : erase_c (ft_construct x) = c) by (apply encode_injective; exact Hx).
+    assert (He : ferase (fsubst sigma x) = subst sigma (ferase x)).
+    { rewrite Hx. unfold ferase, fsubst. cbn [ft_construct]. rewrite erase_fsubst_c, Hc.
+      symmetry. apply subst_encode. exact Hwf. }
+    split; [exact He |].
+    rewrite (proj1 (refresh_strict_decode_erase (fsubst sigma x))), He, Hx.
+    apply decode_commutes_with_subst. apply decode_encode. exact Hwf.
+  Qed.
 End Substitution.
 
 (* A concrete substitution. Bound variable i takes the value sigma i. *)
@@ -1798,6 +2155,19 @@ Corollary decode_commutes_with_concrete_subst :
     Some (subst_construct concrete_env concrete_subst concrete_shift sigma c).
 Proof.
   apply decode_commutes_with_subst; reflexivity.
+Qed.
+
+(* The concrete substitution also discharges the premises of headline 15,
+   with the flag function that keeps the flag of each value. *)
+Corollary refreshed_decode_commutes_with_concrete_subst :
+  forall sigma x c,
+    sdecode x = Some c ->
+    ferase (fsubst concrete_env concrete_subst concrete_shift (fun _ _ f => f) sigma x) =
+    concrete_subst sigma (ferase x) /\
+    sdecode (refresh (fsubst concrete_env concrete_subst concrete_shift (fun _ _ f => f) sigma x)) =
+    Some (subst_construct concrete_env concrete_subst concrete_shift sigma c).
+Proof.
+  intros sigma x c H. apply refreshed_decode_commutes_with_subst; try reflexivity. exact H.
 Qed.
 
 (* Finding H-3. Recognition depends on the substitution time. A tuple whose
@@ -1839,10 +2209,10 @@ Fixpoint insert_decl (d : name_decl) (l : list name_decl) : list name_decl :=
   end.
 
 (* binder_order models sorted_bindings.sort_by(|a, b| a.0.cmp(&b.0))
-   (p_new_normalizer.rs:43-45). put_all_pos gives one de Bruijn slot to each
+   (p_new_normalizer.rs:47-50). put_all_pos gives one de Bruijn slot to each
    element in this order (bound_map.rs:30-42 and 63-69).
    allocate_new_bindings draws the fresh names of the plain binders in the
-   same order (util/mod.rs:196-202). *)
+   same order (util/mod.rs:198-204). *)
 Fixpoint binder_order (l : list name_decl) : list name_decl :=
   match l with
   | [] => []
@@ -2053,7 +2423,7 @@ Definition plan_decode_annotation (a : par) : option par :=
 
 (* nil_binding binds the variable with index 0 to Nil. A receive that gets
    Nil for s does this to its body (storage substitution,
-   reduce.rs:1429-1433). *)
+   reduce.rs:1434-1438). *)
 Definition nil_binding : concrete_env := fun i => if i =? 0 then Some PNil else None.
 
 (* Headline 12. The superseded encoding maps the annotation Nil and the
@@ -2275,3 +2645,6 @@ Print Assumptions marker_inert_elsewhere.
 Print Assumptions schedule_unchanged_marker_free.
 Print Assumptions decode_commutes_with_subst.
 Print Assumptions plan_nil_annotation_not_injective.
+Print Assumptions refresh_strict_decode_erase.
+Print Assumptions connective_marker_tuple_recognized.
+Print Assumptions refreshed_decode_commutes_with_subst.

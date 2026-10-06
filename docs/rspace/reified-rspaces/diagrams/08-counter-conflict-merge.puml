@@ -1,0 +1,100 @@
+' 08 Merge flow of the counter conflict: how the collection counter of a queue
+' turns two branch operations on one collection into a race of merge check #1,
+' and two deploys of one block into one chain.
+'
+' Source of Figure N3 in ../design.md (section N3). The figure restates the
+' bump of rholang/src/rust/interpreter/spaces/counter.rs, the filing of COMM
+' produces in rspace++/src/rspace/merger/event_log_index.rs, check #1 and
+' depends in rspace++/src/rspace/merger/merging_logic.rs, and the chains of
+' casper/src/rust/merging/block_index.rs (plan revision M-1, decision 31).
+' It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. The pre-state holds the counter produce p_v of one queue collection.
+'   2. Lane 1: two branches each run an operation on that queue. Each bump
+'      consumes p_v in a COMM without peeks, so check #1 finds p_v in both
+'      consumed sets and reports a race.
+'   3. Lane 2: two deploys of one block. The second bump consumes the counter
+'      produce that the first deploy created, so depends relates the deploys
+'      and the block index forms one chain.
+'   4. Lane 3: two branches on two open queues consume two different counter
+'      produces, so no check fires and the merge is a serial run.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 08-counter-conflict-merge.puml   Check: ./render.sh --check
+
+@startuml 08-counter-conflict-merge
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Merge flow of the counter conflict (plan revision M-1, decision 31)
+
+start
+:pre-state of a queue collection:
+the counter record on <latex>S(\mathit{sid}, k)</latex> has the value <latex>v</latex>,
+from the non-persistent produce <latex>p_v</latex>; <<$rrs_storage>>
+split
+  partition "Lane 1: two branches use one queue" {
+    split
+      :branch A, one deploy: enqueue x
+      bump: COMM of <latex>K(v)</latex> with <latex>p_v</latex>, no peeks
+      produce <latex>p_{v+1}^{A}</latex>, store x with ord <latex>v</latex>; <<$rrs_agent>>
+    split again
+      :branch B, one deploy: dequeue or peek
+      bump: COMM of <latex>K(v)</latex> with <latex>p_v</latex>, no peeks
+      produce <latex>p_{v+1}^{B}</latex>; <<$rrs_agent>>
+    end split
+    :event log index of each branch:
+    a COMM without peeks files its produces
+    under produces_consumed; <<$rrs_host>>
+    :check #1:
+    <latex>\mathit{consumed}(A) \cap \mathit{consumed}(B) = \lbrace p_v \rbrace</latex>
+    <latex>p_v</latex> is not persistent, and a Reified channel
+    is never mergeable; <<$rrs_host>>
+    :race: the merge rejects one branch,
+    so no merged queue holds two records with one ord; <<$rrs_reject>>
+  }
+split again
+  partition "Lane 2: two deploys of one block" {
+    :deploy d1: its bump consumes <latex>p_v</latex>
+    and produces <latex>p_{v+1}</latex>; <<$rrs_agent>>
+    :deploy d2: its bump consumes <latex>p_{v+1}</latex>,
+    which d1 created; <<$rrs_agent>>
+    :depends(d2, d1) holds; <<$rrs_host>>
+    :the block index puts d1 and d2 into one chain:
+    a rejection removes both deploys together; <<$rrs_host>>
+  }
+split again
+  partition "Lane 3: two branches use two open queues" {
+    split
+      :branch A: operations on queue q1
+      consume the counter produce of q1; <<$rrs_agent>>
+    split again
+      :branch B: operations on queue q2
+      consume the counter produce of q2; <<$rrs_agent>>
+    end split
+    :checks #1, #2, and #3 find nothing:
+    no shared consumed produce, no new consume
+    beside a new produce, no join of two channels; <<$rrs_host>>
+    :the merge applies both changes,
+    which equals a serial run of the branches; <<$rrs_storage>>
+  }
+end split
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_storage>    | stored state: the counter record, the merged queues |
+|<$rrs_agent>      | space operation of a deploy, with its counter bump |
+|<$rrs_host>       | merger and block index of the baseline, unchanged |
+|<$rrs_reject>     | rejection of a branch |
+endlegend
+@enduml

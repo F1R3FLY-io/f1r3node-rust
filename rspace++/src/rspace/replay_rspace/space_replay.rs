@@ -10,6 +10,12 @@
 // counter without the staged changes and iterate bindings in HashMap order,
 // so their staged-view forms are `TxnCore::verify`, `SpaceTxn::admits` and
 // `SpaceTxn::recorded_comms` in space_store_handle.rs.
+//
+// A fire that staging left unpaired (the log holds no COMM for it) makes
+// the observer calls of play through `observe_comm`. A call that the
+// observer rejects fails it with the error of play. Otherwise it fails with
+// `ReplayDivergence` before it logs, stores or unbinds anything (decision
+// 36).
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -199,13 +205,15 @@ where
     }
 
     // replay_rspace.rs `handle_match`: the counter was incremented before
-    // matching, then observe_comm, log the produce and the COMM, remove the
-    // continuation unless persistent, retire the candidates, and remove the
-    // COMM's bindings. The incoming datum is never stored. A retained
-    // (peeked) fire keeps the stored records and removes only the fired
-    // joins; the agent offers a non-persistent incoming datum again as the
-    // next produce (FR-10). The receipt carries the produce as recorded in
-    // the paired COMM.
+    // matching, then observe_comm. An unpaired fire stops there with
+    // `ReplayDivergence`, and `produce_observed` rolls the counter back. A
+    // paired fire logs the produce and the COMM, removes the continuation
+    // unless persistent, retires the candidates, and removes the COMM's
+    // bindings. The incoming datum is never stored. A retained (peeked) fire
+    // keeps the stored records and removes only the fired joins; the agent
+    // offers a non-persistent incoming datum again as the next produce
+    // (FR-10). The receipt carries the produce as recorded in the paired
+    // COMM.
     fn produce_fire(
         &self,
         store: &dyn HotStore<C, P, A, K>,
@@ -242,6 +250,9 @@ where
             continuation.persist,
             &candidates,
         )?;
+        let Some(recorded) = recorded else {
+            return Err(SpaceTxnError::ReplayDivergence(Box::new(comm)));
+        };
         self.space
             .log_produce(source.clone(), &channel, &data, persist);
         events.push(Event::IoEvent(IOEvent::Produce(source.clone())));
@@ -274,12 +285,9 @@ where
         self.space.remove_bindings_for(comm.clone());
 
         let produce = recorded
-            .and_then(|recorded| {
-                recorded
-                    .produces
-                    .into_iter()
-                    .find(|produce| produce.hash == source.hash)
-            })
+            .produces
+            .into_iter()
+            .find(|produce| produce.hash == source.hash)
             .unwrap_or(source);
         let consume_ref = continuation.source.clone();
         let retained = retained_results(&candidates, retain);
@@ -314,9 +322,10 @@ where
     }
 
     // replay_rspace.rs `locked_consume_observed`: refuse a directive, observe
-    // the introduction, then park, or fire: observe_comm, log the consume and
-    // the COMM, remove the stored non-persistent records unless retaining,
-    // and remove the COMM's bindings.
+    // the introduction, then park, or fire: observe_comm, after which an
+    // unpaired fire stops with `ReplayDivergence`, and a paired fire logs
+    // the consume and the COMM, removes the stored non-persistent records
+    // unless retaining, and removes the COMM's bindings.
     fn consume_observed(
         &self,
         consume: ReadyConsume<C, P, A, K>,
@@ -369,7 +378,10 @@ where
             Some(ReadyConsumeFire {
                 fire:
                     StagedConsumeFire {
-                        candidates, retain, ..
+                        candidates,
+                        retain,
+                        recorded,
+                        ..
                     },
                 comm,
                 committed,
@@ -381,6 +393,9 @@ where
                     wk.persist,
                     &candidates,
                 )?;
+                if recorded.is_none() {
+                    return Err(SpaceTxnError::ReplayDivergence(Box::new(comm)));
+                }
                 self.space.log_consume(
                     consume_ref.clone(),
                     &channels,

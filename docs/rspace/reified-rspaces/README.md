@@ -23,8 +23,8 @@ This README is the index and the reading order of the documents.
 
 1. Read the [glossary](glossary.md) first. Each later document uses its terms and links its anchors.
 2. Read the [decision register](decision-register.md) for the normative decisions and their reasons.
-3. Read the specification, the syntax contract, and the agent API for the behavior of spaces.
-4. Read the design, the PathMap delivery, and the theory seam for the structure of the implementation.
+3. Read the [specification](specification.md), the [syntax contract](syntax-contract.md), and the [agent API](agent-api.md) for the behavior of spaces.
+4. Read the [design](design.md), the PathMap delivery, and the theory seam for the structure of the implementation.
 5. Read the security, performance, and verification documents and the FIPS matrix for the evidence.
 6. Read the F1r3lang integration document for the merge path of phase P12.
 7. Read the [design record](design-record/README.md) last, as history of the early design.
@@ -38,18 +38,19 @@ A document that a later phase writes shows the phase as "planned in Pn" and name
 |---|---|---|
 | [README.md](README.md) | This index: scope, reading order, documents, diagrams, phases, and the checking procedure. | Written |
 | [glossary.md](glossary.md) | Every campaign term with a stable anchor, in dependency order, with the background terms of Rholang, RSpace, and the verification tools. | Written |
-| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 35, M-1 to M-5, and I-1 to I-19, with dates, words of the user, reasons, and supersession links. | Written. `rrs-doc-design-record` (P10) keeps it current. |
-| `specification.md` | The normative behavior of spaces: outer stores, disciplines, qualifiers, the sweep, the VectorDB bounds, and the vector operations. | Planned in P4 to P7, which add sections. P10 completes it (`rrs-perf-docs-final-spec-design-security`). |
+| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 39, M-1 to M-5, and I-1 to I-21, with dates, words of the user, reasons, and supersession links. | Written. `rrs-doc-design-record` (P10) keeps it current. |
+| [specification.md](specification.md) | The normative behavior of spaces: outer stores, disciplines, qualifiers, the sweep, the VectorDB bounds, and the vector operations. | The P4 sections are written: the space model, the HashMap outer store, the ordered collections, the queue discipline, and the default qualifier. P5 to P7 add sections, and P10 completes it (`rrs-perf-docs-final-spec-design-security`). |
 | `fips-conformance-matrix.md` and `.json` | One row for each normative clause of the FIPS and of the agent section of the Agents FIPS, with code, proof, test, and document evidence. | Planned in P10 (`rrs-fips-clause-matrix`). P11 runs it on the frozen candidate. |
-| [design.md](design.md) | The module structure: types, the agent traits, the generic space algorithm, the space transaction, and the metrics source. | The substrate section of P1 is written. The port leaves add sections from P4, and P10 completes the document. |
-| `agent-api.md` | Factories, handles, methods, replies, errors, `getSpaceAgent`, space references, and user agent-backed spaces. | Planned in P4 and P8, which add sections. P10 completes it (`rrs-doc-agent-api`). |
+| [design.md](design.md) | The module structure: types, the agent traits, the generic space algorithm, the space transaction, and the metrics source. | The substrate section of P1 and the native-spaces section of P4 are written. Later phases add sections, and P10 completes the document. |
+| [agent-api.md](agent-api.md) | Factories, handles, methods, replies, errors, `getSpaceAgent`, space references, and user agent-backed spaces. | The P4 sections are written: the system processes, the factory, the handle and its methods, the replies, the typed replies, `getSpaceAgent`, and `assertEqual`. P8 adds sections, and P10 completes it (`rrs-doc-agent-api`). |
 | `theory-seam.md` | Admission verdicts, builtin theories, theory identity, charging, guard composition, and the path after the F1r3lang merge. | Planned in P7 (`rrs-theory-seam`, `rrs-reducer-theory-admission`). P10 completes it (`rrs-doc-theory-seam`). |
 | `pathmap-prefix-delivery.md` | Paths, prefix keys, re-rooting, path markers, waiters, and the merge behavior of PathMap spaces. | Planned in P5 (`rrs-pathmap-prefix-delivery`). |
-| [syntax-contract.md](syntax-contract.md) | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | The P3 sections are written: the grammar forms, the normalization mapping with the builders and the marker tuples, the errors, the keyword rule, and the corpus. P4 adds sections, and P12 adds the Rholang 1.4 productions. |
-| [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | The P1 sections are written. Each later phase adds the sections of its models and suites. P10 completes it (`rrs-doc-verification-dossier`). |
+| [syntax-contract.md](syntax-contract.md) | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | The P3 sections are written: the grammar forms, the normalization mapping with the builders and the marker tuples, the errors, the keyword rule, and the corpus. The P4 section on the meaning at run time is written. P12 adds the Rholang 1.4 productions. |
+| [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | The P1 sections and the P4 section are written. Each later phase adds the sections of its models and suites. P10 completes it (`rrs-doc-verification-dossier`). |
 | `security.md` | Capability checks, private channels, input validation, query limits, failure atomicity, and a threat model. | Planned in P10 (`rrs-perf-docs-final-spec-design-security`). |
 | `performance.md` | Benchmarks of the space operations against frozen baselines, with any regressions. | Planned in P10 (`rrs-perf-docs-final-benchmarks`). |
 | `f1r3lang-integration.md` | The F1r3lang merge: conflict resolutions, guard composition, and the Rholang 1.4 productions. | Planned in P10 (`rrs-doc-theory-seam`). P12 extends it after the readiness signal. |
+| [findings/space-replay-out-of-phlo.md](findings/space-replay-out-of-phlo.md) | A finding of P4: a deploy that ran out of phlo inside a space transaction replayed to a different error and cost. It holds the reproduction, the mechanism, the fix as built, and two related observations about the host code. | Written. Fixed by [decision 36](decision-register.md#decision-36) on 2026-10-05. Two questions stay open for their owners. |
 | [design-record/](design-record/README.md) | The design ledger of 2026-08-15 with its provenance record. It is history and is exempt from the documentation lint. | Written |
 | `../../rholang/21-reified-spaces.md` | The language chapter on Reified spaces, with the section "Writing your own space". | Planned in P10 (`rrs-doc-language-chapter`). |
 
@@ -68,21 +69,22 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | Number | Diagram | Status |
 |---|---|---|
 | 01 | [Substrate components](diagrams/01-substrate-components.svg) | Drawn for the substrate in P1. P10 extends it to all components (`rrs-doc-diagrams`). |
-| 02 | [Namespace bytes](diagrams/02-namespace-bytes.svg) | Drawn |
-| 03 | Native handle lifecycle (sequence) | Planned in P4 (`rrs-agent-native-factory`) |
+| 02 | [Namespace bytes](diagrams/02-namespace-bytes.svg) | Drawn. P4 corrected the status of the op channels. |
+| 03 | [Native handle lifecycle](diagrams/03-native-handle-lifecycle.svg) (sequence) | Drawn in P4 |
 | 04 | User-agent translation (sequence) | Planned in P10 (`rrs-doc-diagrams`) |
-| 05 | Head-only state machine | Planned in P10 (`rrs-doc-diagrams`) |
+| 05 | [Head-only queue](diagrams/05-head-only-queue.svg) (state) | Drawn in P4 for the queue. P10 extends it to the other ordered disciplines (`rrs-doc-diagrams`). |
 | 06 | [Commit of a space transaction](diagrams/06-space-txn-commit.svg) (activity) | Drawn in P1 |
 | 06a | [Lifecycle of a space transaction](diagrams/06a-space-txn-lifecycle.svg) (state), a sub-figure of figure 06 | Drawn in P1 |
 | 07 | [Checkpoint, replay, and sweep](diagrams/07-checkpoint-replay-sweep.svg) (sequence) | Drawn in P1. The restart suite adds the restart part (`rrs-tests-verification-restart-rehydrate`). |
-| 08 | Merge flow of the counter conflict | Planned in P10 (`rrs-doc-diagrams`) |
+| 08 | [Merge flow of the counter conflict](diagrams/08-counter-conflict-merge.svg) (activity) | Drawn in P4 |
 | 09 | PathMap re-rooting and path markers | Planned in P5 (`rrs-pathmap-prefix-delivery`) |
 | 10 | Theory admission | Planned in P7 (`rrs-theory-seam`) |
 | 11 | Layout of the record envelope | Planned in P10 (`rrs-doc-diagrams`) |
-| 12 | Routing decision | Planned in P10 (`rrs-doc-diagrams`) |
+| 12 | [Routing decision](diagrams/12-routing-decision.svg) (activity) | Drawn in P4 |
 | 13 | [Verification pipeline](diagrams/13-verification-pipeline.svg) (component) | Drawn for the checks of P1. P10 extends it to all phases (`rrs-doc-diagrams`). |
 | 14 | Phase Gantt chart | Planned in P10 (`rrs-doc-diagrams`) |
 | 15 | [Normalization of the Reified syntax](diagrams/15-syntax-normalization.svg) (activity) | Drawn in P3 |
+| 16 | [Space replay when a deploy runs out of phlo](diagrams/16-space-replay-out-of-phlo.svg) (sequence) | Drawn for the finding. Its third part shows the fix of decision 36. |
 
 ## Campaign phases
 
@@ -105,6 +107,15 @@ P3 runs in parallel in the parser worktree.
 | P10 | Formal verification, the documents, the examples, the benchmarks, and the FIPS matrix |
 | P11 | Full gates, the parser revision pin, and the unchanged-fixture gate |
 | P12 | The F1r3lang merge, only after the readiness signal of the user |
+
+### Status of phase P4
+
+Phase P4 delivers the first working space family, `hashmap:queue`.
+The P4 code is in the commit `407a9b957`, and the P3b commit `a0bcaf90e` follows it.
+The P4 tests, the formal models, and the documents of this directory are in the working tree.
+The substrate fix of [decision 36](decision-register.md#decision-36), with its models and tests, is in the working tree too.
+[Section 11 of the verification dossier](verification.md#11-phase-p4-the-hashmapqueue-slice) records the local gates and their last results.
+The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decision-register.md#decision-35).
 
 ## Normative status
 

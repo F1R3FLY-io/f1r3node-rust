@@ -1,0 +1,2935 @@
+{
+  "schema": "reified-rspaces-model-map/2",
+  "phase": "P4",
+  "title": "Reified RSpaces P4: the Rust items of the hashmap:queue slice and the formal models that cover them",
+  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32",
+  "code_base": "The items are in the P4 commit of this repository. The I-20 refresh and the normalizers are as of the P3b commit. The line numbers below are informative. The checker finds each item by its scope and name.",
+  "checker": "scripts/verify-reified/check-model-map.py",
+  "formal_files": {
+    "rocq": [
+      "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "formal/rocq/reified_rspaces/theories/Encoding.v"
+    ],
+    "tla": [
+      "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+      "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+      "formal/tlaplus/reified_rspaces/NativeHandles.tla"
+    ]
+  },
+  "headlines": {
+    "Q1": {
+      "kind": "rocq",
+      "name": "kind_byte_injective",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "The KIND byte names its kind and durability: two (kind, durability) pairs with one byte are equal."
+    },
+    "Q2": {
+      "kind": "rocq",
+      "name": "storage_id_injective",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "The storage ids (data, path index, counters, allocator) are injective in their space, kind and key."
+    },
+    "Q3": {
+      "kind": "rocq",
+      "name": "handle_id_injective",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "The handle id E0‖H‖sid names exactly one native space."
+    },
+    "Q4": {
+      "kind": "rocq",
+      "name": "ephemeral_durable_disjoint",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "No ephemeral id equals a durable id."
+    },
+    "Q5": {
+      "kind": "rocq",
+      "name": "reified_ids_disjoint_from_new_ids",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "No Reified id equals the 32-byte id of a name that new makes."
+    },
+    "Q6": {
+      "kind": "rocq",
+      "name": "reified_ids_disjoint_from_byte_names_and_mettail",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "No Reified id equals a 1-byte system name or a MeTTaTron id."
+    },
+    "Q7": {
+      "kind": "rocq",
+      "name": "op_ids_pairwise_distinct",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "The op ids [E0, op] of the factories, the system processes and the markers are pairwise distinct."
+    },
+    "Q8": {
+      "kind": "rocq",
+      "name": "decode_encode_reified_id",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "decode_reified_id inverts every constructor, and it accepts only their images."
+    },
+    "Q9": {
+      "kind": "rocq",
+      "name": "space_and_collection_counters_distinct",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "The space counter S(sid) differs from every collection counter S(sid,k)."
+    },
+    "Q10": {
+      "kind": "rocq",
+      "name": "name_id_routes_to_sid",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "A name id N(sid‖tail) decodes to its space."
+    },
+    "Q11": {
+      "kind": "rocq",
+      "name": "canon_respects_par_eq",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "Channels that are equal as Par values have one canonical key."
+    },
+    "Q12": {
+      "kind": "rocq",
+      "name": "datum_unwrap_wrap",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "Unwrapping a wrapped datum gives the order and the payload back."
+    },
+    "Q13": {
+      "kind": "rocq",
+      "name": "datum_wrap_injective",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "The datum envelope is injective in the order and the payload."
+    },
+    "Q14": {
+      "kind": "rocq",
+      "name": "datum_unwrap_sound",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "The datum decoder accepts only the image of the encoder."
+    },
+    "Q15": {
+      "kind": "rocq",
+      "name": "continuation_unwrap_wrap",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "Unwrapping a wrapped continuation gives the order and the body back."
+    },
+    "Q16": {
+      "kind": "rocq",
+      "name": "counter_and_config_roundtrip",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "The counter and config records round-trip, the config as its canonical map (I-17)."
+    },
+    "Q17": {
+      "kind": "rocq",
+      "name": "envelope_kinds_disjoint",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "The tags D, K, S and C are pairwise distinct, so no record decodes as another kind."
+    },
+    "Q18": {
+      "kind": "rocq",
+      "name": "no_reified_datum_is_single_number",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "No Reified datum is a single number, so the merger never treats one as a number channel."
+    },
+    "Q19": {
+      "kind": "rocq",
+      "name": "unknown_version_rejected",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "A tag with another version or kind byte is rejected."
+    },
+    "Q20": {
+      "kind": "rocq",
+      "name": "check1_race_iff",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "The restatement of HEAD check #1: a race exactly for a shared non-persistent IO event that is not mergeable in both logs."
+    },
+    "Q21": {
+      "kind": "rocq",
+      "name": "ordered_writes_race_on_counter",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Two branches that write one queue race on its counter S(sid,k)."
+    },
+    "Q22": {
+      "kind": "rocq",
+      "name": "ordered_reads_race_on_counter",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "A peek bumps the counter too, so two branches that read one queue race (A2)."
+    },
+    "Q23": {
+      "kind": "rocq",
+      "name": "first_ops_race_on_space_counter",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Two branches whose first operations open collections of one space race on S(sid) (A25)."
+    },
+    "Q24": {
+      "kind": "rocq",
+      "name": "crossed_collections_race",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Branches that use two queues in crossed orders race on both counters."
+    },
+    "Q25": {
+      "kind": "rocq",
+      "name": "same_block_ops_chain",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Two deploys of one block that use one queue form one chain (depends)."
+    },
+    "Q26": {
+      "kind": "rocq",
+      "name": "unordered_writes_commute",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Writes to a bag need no counter: they never race, and the merge holds both serial orders."
+    },
+    "Q27": {
+      "kind": "rocq",
+      "name": "merge_without_race_is_serializable",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Without a check #1 race, the merged state and the observations are those of a serial run."
+    },
+    "Q28": {
+      "kind": "rocq",
+      "name": "counter_free_peek_admits_write_skew",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "A peek without the counter admits the peek/dequeue write skew (computed counterexample)."
+    },
+    "Q29": {
+      "kind": "rocq",
+      "name": "queue_head_is_min_ord",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "The head of each side has the least (ord, bytes)."
+    },
+    "Q30": {
+      "kind": "rocq",
+      "name": "queue_produce_preserves_inv",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "A produce keeps INV: no pending match between the heads."
+    },
+    "Q31": {
+      "kind": "rocq",
+      "name": "queue_consume_preserves_inv",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "A consume keeps INV."
+    },
+    "Q32": {
+      "kind": "rocq",
+      "name": "queue_fifo",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Records leave in arrival order."
+    },
+    "Q33": {
+      "kind": "rocq",
+      "name": "queue_head_blocks",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "A head that does not match blocks the entries behind it."
+    },
+    "Q34": {
+      "kind": "rocq",
+      "name": "queue_loop_bounded_or_reissues",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "A plan stages at most FIRE_ROUND_CAP fires, at most one more than the queue length, or it re-issues."
+    },
+    "Q35": {
+      "kind": "rocq",
+      "name": "queue_ord_fresh",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "The ord of an operation is new in its collection."
+    },
+    "Q36": {
+      "kind": "rocq",
+      "name": "queue_plan_permutation_invariant",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "The plan ignores the list order of the staged view."
+    },
+    "Q37": {
+      "kind": "rocq",
+      "name": "legacy_scan_violates_head_blocks",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "The legacy waiter scan breaks head-only matching (computed example)."
+    },
+    "Q38": {
+      "kind": "rocq",
+      "name": "classify_space_ref_total_deterministic",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "Every space reference meets exactly one of the five rules of classify_space_ref."
+    },
+    "Q39": {
+      "kind": "rocq",
+      "name": "handle_requires_write_flag",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "A reference names a native space only as a bare handle or a writable bundle of one."
+    },
+    "Q40": {
+      "kind": "rocq",
+      "name": "reified_non_handle_not_a_space_ref",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "A Reified id that is not a handle is NotASpaceRef, never an agent."
+    },
+    "Q41": {
+      "kind": "rocq",
+      "name": "route_total_deterministic",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "A route fails only on the key, and it depends on the context only through its native space."
+    },
+    "Q42": {
+      "kind": "rocq",
+      "name": "route_rules",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "The routing rules R1 to R5."
+    },
+    "Q43": {
+      "kind": "rocq",
+      "name": "space_name_route_ignores_ctx",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "A space name routes to its own space under every context."
+    },
+    "Q44": {
+      "kind": "rocq",
+      "name": "r7_route_ignores_ctx",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "The R7 backend agrees with the reducer on every channel that is not forged."
+    },
+    "Q45": {
+      "kind": "rocq",
+      "name": "ordinary_channels_route_default",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "The channels of an ordinary program route to the default space, and the fast path is exact."
+    },
+    "Q46": {
+      "kind": "rocq",
+      "name": "use_wrapper_restores_ctx",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "A body that the reducer stores under a context runs in that context when it fires."
+    },
+    "Q47": {
+      "kind": "rocq",
+      "name": "handle_dispatch_total",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "The handle process drops a call on a non-handle, aborts on a dangling handle, and replies only on a reply name."
+    },
+    "Q48": {
+      "kind": "rocq",
+      "name": "family_index_bijective",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "The 32 families have the indices 0 to 31, one each, so no two share a factory channel or a capability."
+    },
+    "Q49": {
+      "kind": "rocq",
+      "name": "aliases_map_to_family",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "The URNs and the FIPS aliases parse to their families, and a config names its family."
+    },
+    "Q50": {
+      "kind": "rocq",
+      "name": "qualifier_matrix",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "HashSet takes only seq, and P4 creates only default (durable) spaces."
+    },
+    "Q51": {
+      "kind": "rocq",
+      "name": "constructor_parse_canonical",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "Every canonical constructor parses back from its elements."
+    },
+    "Q52": {
+      "kind": "rocq",
+      "name": "constructor_parse_sound",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "The constructor parser accepts only the canonical sequence [q?][FREE?][PARAMS?]."
+    },
+    "Q53": {
+      "kind": "rocq",
+      "name": "sid_derivation_deterministic",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "The sid is the 32-byte SpaceId draw of the random state of the call."
+    },
+    "Q54": {
+      "kind": "rocq",
+      "name": "persistent_op_call_aborts",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "A persistent send to an op that takes calls, or to a handle, aborts before the call (A21)."
+    },
+    "Q55": {
+      "kind": "rocq",
+      "name": "space_already_exists_is_deterministic_abort",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "A creation over an existing C(sid) aborts in play and replay alike. A commit applies all three operations or none."
+    },
+    "Q56": {
+      "kind": "rocq",
+      "name": "refresh_strict_decode_erase",
+      "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+      "statement": "I-20: after the refresh, the strict decode is the decode of Encoding.v, and it accepts only derived flags."
+    },
+    "Q57": {
+      "kind": "rocq",
+      "name": "connective_marker_tuple_recognized",
+      "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+      "statement": "I-20: a canonical marker tuple with connective_used = true is recognized."
+    },
+    "Q58": {
+      "kind": "rocq",
+      "name": "refreshed_decode_commutes_with_subst",
+      "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+      "statement": "I-20: the refresh makes the strict decode of a substituted tuple commute with substitution."
+    },
+    "U1": {
+      "kind": "tla",
+      "name": "HeadOnlyNoPendingMatch",
+      "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+      "statement": "The head record and the head waiter never match, on every schedule."
+    },
+    "U2": {
+      "kind": "tla",
+      "name": "HeadBlocks",
+      "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+      "statement": "Every fire involves the head of its side, on every schedule."
+    },
+    "U3": {
+      "kind": "tla",
+      "name": "FifoOrder",
+      "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+      "statement": "Records leave in ord order, on every schedule."
+    },
+    "U4": {
+      "kind": "tla",
+      "name": "NoMergedOrderFabrication",
+      "file": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+      "statement": "A merge without a check #1 race is a serial run of the two branches."
+    },
+    "U5": {
+      "kind": "tla",
+      "name": "HandleUnique",
+      "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+      "statement": "One config record and one handle continuation for each created sid."
+    },
+    "U6": {
+      "kind": "tla",
+      "name": "DanglingIsDeterministicError",
+      "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+      "statement": "A handle call aborts with DanglingHandle exactly when its space has no config."
+    },
+    "U7": {
+      "kind": "tla",
+      "name": "DurableSurvivesRestart",
+      "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+      "statement": "Every durable space survives a checkpoint and a restart."
+    },
+    "U8": {
+      "kind": "tla",
+      "name": "HandleCallsMergeLikeContracts",
+      "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+      "statement": "Handle calls on disjoint collections merge like contract calls, and calls on one collection race."
+    }
+  },
+  "items": [
+    {
+      "item": "SID_LEN",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "const",
+      "name": "SID_LEN",
+      "line": 35,
+      "role": "A sid has 32 bytes.",
+      "rocq": [
+        "sid_len"
+      ],
+      "covers": [
+        "Q2",
+        "Q3"
+      ]
+    },
+    {
+      "item": "EPHEMERAL_BIT",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "const",
+      "name": "EPHEMERAL_BIT",
+      "line": 50,
+      "role": "The KIND bit of an ephemeral id.",
+      "rocq": [
+        "ephemeral_bit"
+      ],
+      "covers": [
+        "Q4"
+      ]
+    },
+    {
+      "item": "NATIVE_ENGINE_FACTORY",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "const",
+      "name": "NATIVE_ENGINE_FACTORY",
+      "line": 56,
+      "role": "The op of the reserved engine factory.",
+      "rocq": [
+        "native_engine_factory"
+      ],
+      "covers": [
+        "Q7",
+        "Q54"
+      ]
+    },
+    {
+      "item": "GET_SPACE_AGENT",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "const",
+      "name": "GET_SPACE_AGENT",
+      "line": 59,
+      "role": "The op of getSpaceAgent.",
+      "rocq": [
+        "get_space_agent"
+      ],
+      "covers": [
+        "Q7"
+      ]
+    },
+    {
+      "item": "HANDLE_OP",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "const",
+      "name": "HANDLE_OP",
+      "line": 68,
+      "role": "The op of the handle process.",
+      "rocq": [
+        "handle_op"
+      ],
+      "covers": [
+        "Q7",
+        "Q54"
+      ]
+    },
+    {
+      "item": "AGENT_TAG",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "const",
+      "name": "AGENT_TAG",
+      "line": 77,
+      "role": "The op of the agent tag of agent-minted names.",
+      "rocq": [
+        "agent_tag"
+      ],
+      "covers": [
+        "Q7",
+        "Q42"
+      ]
+    },
+    {
+      "item": "Kind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "struct",
+      "name": "Kind",
+      "line": 82,
+      "role": "The KIND of an id: its uppercase ASCII letter.",
+      "rocq": [
+        "kind",
+        "kind_letter"
+      ],
+      "covers": [
+        "Q1",
+        "Q4"
+      ]
+    },
+    {
+      "item": "Kind::has_ephemeral_form",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "scope": "Kind",
+      "kind": "fn",
+      "name": "has_ephemeral_form",
+      "line": 115,
+      "role": "M and T have no ephemeral form.",
+      "rocq": [
+        "has_ephemeral_form"
+      ],
+      "covers": [
+        "Q1",
+        "Q4"
+      ]
+    },
+    {
+      "item": "Kind::byte",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "scope": "Kind",
+      "kind": "fn",
+      "name": "byte",
+      "line": 119,
+      "role": "The KIND byte of a kind and a durability.",
+      "rocq": [
+        "kind_byte"
+      ],
+      "covers": [
+        "Q1",
+        "Q4"
+      ]
+    },
+    {
+      "item": "Kind::from_byte",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "scope": "Kind",
+      "kind": "fn",
+      "name": "from_byte",
+      "line": 128,
+      "role": "The kind and durability of a KIND byte.",
+      "rocq": [
+        "kind_of_byte",
+        "letter_kind"
+      ],
+      "covers": [
+        "Q1",
+        "Q8"
+      ]
+    },
+    {
+      "item": "Durability",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "struct",
+      "name": "Durability",
+      "line": 154,
+      "role": "Durable or ephemeral.",
+      "rocq": [
+        "durability"
+      ],
+      "covers": [
+        "Q4"
+      ]
+    },
+    {
+      "item": "NativeSpace",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "struct",
+      "name": "NativeSpace",
+      "line": 161,
+      "role": "A sid and its durability.",
+      "rocq": [
+        "native_space"
+      ],
+      "covers": [
+        "Q2",
+        "Q3"
+      ]
+    },
+    {
+      "item": "NameTail",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "struct",
+      "name": "NameTail",
+      "line": 168,
+      "role": "The tail of a name id: 32 random bytes or an 8-byte index.",
+      "rocq": [
+        "name_tail",
+        "tail_bytes"
+      ],
+      "covers": [
+        "Q8",
+        "Q10"
+      ]
+    },
+    {
+      "item": "CollectionKey",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "struct",
+      "name": "CollectionKey",
+      "line": 176,
+      "role": "The canonical bytes of the inner channel of a collection (A5).",
+      "rocq": [
+        "canon"
+      ],
+      "covers": [
+        "Q11"
+      ]
+    },
+    {
+      "item": "CollectionKey::of_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "scope": "CollectionKey",
+      "kind": "fn",
+      "name": "of_channel",
+      "line": 180,
+      "role": "The key of a channel. It fails only when the channel has no canonical bytes.",
+      "rocq": [
+        "canon",
+        "key_of"
+      ],
+      "covers": [
+        "Q11",
+        "Q41"
+      ]
+    },
+    {
+      "item": "canonical_inner_channel_bytes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "canonical_inner_channel_bytes",
+      "line": 200,
+      "role": "bincode of the sorted channel.",
+      "rocq": [
+        "canon",
+        "length_prefixed"
+      ],
+      "covers": [
+        "Q11"
+      ]
+    },
+    {
+      "item": "gprivate",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "gprivate",
+      "line": 210,
+      "role": "The Par of exactly one GPrivate.",
+      "rocq": [
+        "gprivate"
+      ],
+      "covers": [
+        "Q45"
+      ]
+    },
+    {
+      "item": "namespace::kind_byte",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "kind_byte",
+      "line": 216,
+      "role": "The KIND byte of the constructors.",
+      "rocq": [
+        "scoped_kind_byte"
+      ],
+      "covers": [
+        "Q1",
+        "Q4"
+      ]
+    },
+    {
+      "item": "space_scoped_id",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "space_scoped_id",
+      "line": 223,
+      "role": "E0‖KIND‖sid‖tail.",
+      "rocq": [
+        "space_scoped_id"
+      ],
+      "covers": [
+        "Q2",
+        "Q3"
+      ]
+    },
+    {
+      "item": "config_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "config_channel",
+      "line": 233,
+      "role": "C(sid).",
+      "rocq": [
+        "config_channel"
+      ],
+      "covers": [
+        "Q2"
+      ]
+    },
+    {
+      "item": "space_counter",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "space_counter",
+      "line": 236,
+      "role": "S(sid).",
+      "rocq": [
+        "space_counter"
+      ],
+      "covers": [
+        "Q2",
+        "Q9"
+      ]
+    },
+    {
+      "item": "collection_counter",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "collection_counter",
+      "line": 239,
+      "role": "S(sid,k).",
+      "rocq": [
+        "collection_counter"
+      ],
+      "covers": [
+        "Q2",
+        "Q9"
+      ]
+    },
+    {
+      "item": "data_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "data_channel",
+      "line": 244,
+      "role": "D(sid,k).",
+      "rocq": [
+        "data_channel"
+      ],
+      "covers": [
+        "Q2"
+      ]
+    },
+    {
+      "item": "handle_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "handle_channel",
+      "line": 249,
+      "role": "H(sid).",
+      "rocq": [
+        "handle_channel"
+      ],
+      "covers": [
+        "Q3"
+      ]
+    },
+    {
+      "item": "name_id",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "name_id",
+      "line": 252,
+      "role": "N(sid‖tail).",
+      "rocq": [
+        "name_id"
+      ],
+      "covers": [
+        "Q10",
+        "Q43"
+      ]
+    },
+    {
+      "item": "op_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "op_channel",
+      "line": 260,
+      "role": "[E0, op].",
+      "rocq": [
+        "op_channel"
+      ],
+      "covers": [
+        "Q7"
+      ]
+    },
+    {
+      "item": "ReifiedId",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "struct",
+      "name": "ReifiedId",
+      "line": 264,
+      "role": "A decoded Reified id.",
+      "rocq": [
+        "reified_id"
+      ],
+      "covers": [
+        "Q8"
+      ]
+    },
+    {
+      "item": "name_tail",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "name_tail",
+      "line": 281,
+      "role": "The tail of a name id by its length.",
+      "rocq": [
+        "decode_name_tail"
+      ],
+      "covers": [
+        "Q8"
+      ]
+    },
+    {
+      "item": "decode_reified_id",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "decode_reified_id",
+      "line": 294,
+      "role": "The total decoder of GPrivate ids.",
+      "rocq": [
+        "decode_reified_id",
+        "decode_payload"
+      ],
+      "covers": [
+        "Q5",
+        "Q6",
+        "Q8",
+        "Q10"
+      ]
+    },
+    {
+      "item": "sole_unforgeable",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "sole_unforgeable",
+      "line": 328,
+      "role": "The unforgeable of a Par that holds only it.",
+      "rocq": [
+        "sole_unforgeable"
+      ],
+      "covers": [
+        "Q38",
+        "Q45"
+      ]
+    },
+    {
+      "item": "sole_gprivate_id",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "sole_gprivate_id",
+      "line": 361,
+      "role": "The id of a Par that is exactly one GPrivate.",
+      "rocq": [
+        "sole_gprivate_id"
+      ],
+      "covers": [
+        "Q38"
+      ]
+    },
+    {
+      "item": "reified_id_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "fn",
+      "name": "reified_id_of",
+      "line": 371,
+      "role": "The decoded id of a Par that is exactly one GPrivate.",
+      "rocq": [
+        "reified_id_of"
+      ],
+      "covers": [
+        "Q38",
+        "Q40"
+      ]
+    },
+    {
+      "item": "RandomPurpose",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "kind": "struct",
+      "name": "RandomPurpose",
+      "line": 379,
+      "role": "The purpose bytes of the derived random states.",
+      "rocq": [
+        "purpose_state"
+      ],
+      "covers": [
+        "Q53"
+      ]
+    },
+    {
+      "item": "RandomPurpose::derive",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "scope": "RandomPurpose",
+      "kind": "fn",
+      "name": "derive",
+      "line": 401,
+      "role": "random.split_byte(0xE0).split_byte(purpose).",
+      "rocq": [
+        "purpose_state"
+      ],
+      "covers": [
+        "Q53"
+      ]
+    },
+    {
+      "item": "RECORD_TAG_MARK",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "const",
+      "name": "RECORD_TAG_MARK",
+      "line": 46,
+      "role": "The R of a record tag.",
+      "rocq": [
+        "record_tag_mark"
+      ],
+      "covers": [
+        "Q17",
+        "Q19"
+      ]
+    },
+    {
+      "item": "RECORD_VERSION",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "const",
+      "name": "RECORD_VERSION",
+      "line": 49,
+      "role": "Version 1 of the envelope.",
+      "rocq": [
+        "record_version"
+      ],
+      "covers": [
+        "Q19"
+      ]
+    },
+    {
+      "item": "RecordKind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "struct",
+      "name": "RecordKind",
+      "line": 54,
+      "role": "D, K, S and C.",
+      "rocq": [
+        "record_kind",
+        "kind_byte"
+      ],
+      "covers": [
+        "Q17"
+      ]
+    },
+    {
+      "item": "RecordKind::tag_bytes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "scope": "RecordKind",
+      "kind": "fn",
+      "name": "tag_bytes",
+      "line": 71,
+      "role": "[E0, R, kind, version].",
+      "rocq": [
+        "tag_bytes"
+      ],
+      "covers": [
+        "Q17",
+        "Q19"
+      ]
+    },
+    {
+      "item": "RecordKind::tag",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "scope": "RecordKind",
+      "kind": "fn",
+      "name": "tag",
+      "line": 76,
+      "role": "The GByteArray tag.",
+      "rocq": [
+        "tag"
+      ],
+      "covers": [
+        "Q17"
+      ]
+    },
+    {
+      "item": "record::list_par",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "list_par",
+      "line": 147,
+      "role": "A list with the derived bit sets.",
+      "rocq": [
+        "list_par"
+      ],
+      "covers": [
+        "Q12",
+        "Q16"
+      ]
+    },
+    {
+      "item": "record::list_elements",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "list_elements",
+      "line": 175,
+      "role": "The strict list reader: the flags must be the derived ones.",
+      "rocq": [
+        "list_elements"
+      ],
+      "covers": [
+        "Q14"
+      ]
+    },
+    {
+      "item": "record::is_tag",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "is_tag",
+      "line": 196,
+      "role": "Exactly the tag of a kind.",
+      "rocq": [
+        "is_tag"
+      ],
+      "covers": [
+        "Q17",
+        "Q19"
+      ]
+    },
+    {
+      "item": "record::natural_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "natural_of",
+      "line": 205,
+      "role": "A GInt of at least 0.",
+      "rocq": [
+        "natural_of"
+      ],
+      "covers": [
+        "Q14"
+      ]
+    },
+    {
+      "item": "datum_envelope",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "datum_envelope",
+      "line": 215,
+      "role": "[tag D, ord, Nil, Nil].",
+      "rocq": [
+        "datum_envelope"
+      ],
+      "covers": [
+        "Q12"
+      ]
+    },
+    {
+      "item": "wrap_datum",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "wrap_datum",
+      "line": 226,
+      "role": "The envelope in front of the payload.",
+      "rocq": [
+        "wrap_datum"
+      ],
+      "covers": [
+        "Q12",
+        "Q13",
+        "Q18"
+      ]
+    },
+    {
+      "item": "datum_ord",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "datum_ord",
+      "line": 239,
+      "role": "The order of a datum record.",
+      "rocq": [
+        "datum_ord"
+      ],
+      "covers": [
+        "Q14",
+        "Q18"
+      ]
+    },
+    {
+      "item": "unwrap_datum",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "unwrap_datum",
+      "line": 262,
+      "role": "The order and the datum as the program sent it.",
+      "rocq": [
+        "unwrap_datum"
+      ],
+      "covers": [
+        "Q12",
+        "Q14"
+      ]
+    },
+    {
+      "item": "continuation_envelope",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "continuation_envelope",
+      "line": 280,
+      "role": "[tag K, ord, Nil, body].",
+      "rocq": [
+        "continuation_envelope"
+      ],
+      "covers": [
+        "Q15"
+      ]
+    },
+    {
+      "item": "wrap_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "wrap_continuation",
+      "line": 292,
+      "role": "The envelope around a body.",
+      "rocq": [
+        "wrap_continuation"
+      ],
+      "covers": [
+        "Q15"
+      ]
+    },
+    {
+      "item": "continuation_parts",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "continuation_parts",
+      "line": 315,
+      "role": "The order, the body and the random state.",
+      "rocq": [
+        "continuation_parts"
+      ],
+      "covers": [
+        "Q15"
+      ]
+    },
+    {
+      "item": "unwrap_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "unwrap_continuation",
+      "line": 350,
+      "role": "The continuation as the program parked it.",
+      "rocq": [
+        "unwrap_continuation"
+      ],
+      "covers": [
+        "Q15"
+      ]
+    },
+    {
+      "item": "counter_record",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "counter_record",
+      "line": 369,
+      "role": "[[tag S], value].",
+      "rocq": [
+        "counter_record"
+      ],
+      "covers": [
+        "Q16"
+      ]
+    },
+    {
+      "item": "counter_value",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "counter_value",
+      "line": 383,
+      "role": "The value of a counter record.",
+      "rocq": [
+        "counter_value"
+      ],
+      "covers": [
+        "Q16"
+      ]
+    },
+    {
+      "item": "config_record",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "config_record",
+      "line": 396,
+      "role": "The config map behind the C tag.",
+      "rocq": [
+        "config_record"
+      ],
+      "covers": [
+        "Q16"
+      ]
+    },
+    {
+      "item": "config_map",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "config_map",
+      "line": 406,
+      "role": "The config map of a config record.",
+      "rocq": [
+        "config_map"
+      ],
+      "covers": [
+        "Q16"
+      ]
+    },
+    {
+      "item": "SpaceConfig::to_par",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/types/config.rs",
+      "scope": "SpaceConfig",
+      "kind": "fn",
+      "name": "to_par",
+      "line": 83,
+      "role": "The canonical config map (I-17).",
+      "rocq": [
+        "to_par"
+      ],
+      "covers": [
+        "Q16"
+      ]
+    },
+    {
+      "item": "SpaceConfig::from_par",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/types/config.rs",
+      "scope": "SpaceConfig",
+      "kind": "fn",
+      "name": "from_par",
+      "line": 110,
+      "role": "The strict config reader.",
+      "rocq": [
+        "from_par"
+      ],
+      "covers": [
+        "Q16"
+      ]
+    },
+    {
+      "item": "bump",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/counter.rs",
+      "kind": "fn",
+      "name": "bump",
+      "line": 118,
+      "role": "The counter COMM of every operation. The first operation consumes S(sid) and opens S(sid,k) at 1 (M-1, A25).",
+      "rocq": [
+        "exec",
+        "counter_produce",
+        "bump_ord",
+        "bump_next"
+      ],
+      "tla": [
+        "CounterStep",
+        "Exec"
+      ],
+      "covers": [
+        "Q20",
+        "Q21",
+        "Q22",
+        "Q23",
+        "Q24",
+        "Q25",
+        "Q27",
+        "Q28",
+        "Q35",
+        "U4"
+      ]
+    },
+    {
+      "item": "take",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/counter.rs",
+      "kind": "fn",
+      "name": "take",
+      "line": 185,
+      "role": "Consumes the only counter record. The COMM has no peeks.",
+      "rocq": [
+        "exec"
+      ],
+      "tla": [
+        "CounterStep"
+      ],
+      "covers": [
+        "Q20",
+        "Q21",
+        "Q22"
+      ]
+    },
+    {
+      "item": "put",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/counter.rs",
+      "kind": "fn",
+      "name": "put",
+      "line": 226,
+      "role": "Stores the next counter record, which the next operation consumes.",
+      "rocq": [
+        "exec"
+      ],
+      "tla": [
+        "CounterStep"
+      ],
+      "covers": [
+        "Q25"
+      ]
+    },
+    {
+      "item": "counter_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/counter.rs",
+      "kind": "fn",
+      "name": "counter_continuation",
+      "line": 61,
+      "role": "The counter continuation of one bump, new for each value.",
+      "rocq": [
+        "exec"
+      ],
+      "covers": [
+        "Q20"
+      ]
+    },
+    {
+      "item": "QueueDiscipline::USES_COUNTER",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+      "scope": "QueueDiscipline",
+      "kind": "const",
+      "name": "USES_COUNTER",
+      "line": 27,
+      "role": "Every queue operation bumps the counter. An unordered discipline needs none.",
+      "rocq": [
+        "exec",
+        "bag_run"
+      ],
+      "covers": [
+        "Q21",
+        "Q22",
+        "Q26"
+      ]
+    },
+    {
+      "item": "QueueDiscipline::head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+      "scope": "QueueDiscipline",
+      "kind": "fn",
+      "name": "head",
+      "line": 32,
+      "role": "The least (ord, bincode bytes), on both sides.",
+      "rocq": [
+        "head",
+        "head_from",
+        "precedes"
+      ],
+      "tla": [
+        "IsHeadR",
+        "IsHeadW"
+      ],
+      "covers": [
+        "Q29",
+        "Q36"
+      ]
+    },
+    {
+      "item": "QueueDiscipline::reaches_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+      "scope": "QueueDiscipline",
+      "kind": "fn",
+      "name": "reaches_head",
+      "line": 51,
+      "role": "An incoming element joins the tail.",
+      "rocq": [
+        "offer",
+        "receive"
+      ],
+      "tla": [
+        "Produce",
+        "Consume"
+      ],
+      "covers": [
+        "Q32",
+        "Q33"
+      ]
+    },
+    {
+      "item": "precedes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+      "kind": "fn",
+      "name": "precedes",
+      "line": 56,
+      "role": "A lesser ord, or an equal ord and lesser bytes.",
+      "rocq": [
+        "precedes",
+        "precedes_key"
+      ],
+      "covers": [
+        "Q29"
+      ]
+    },
+    {
+      "item": "GenericSpace::head_waiter",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "head_waiter",
+      "line": 300,
+      "role": "The head of the waiting continuations.",
+      "rocq": [
+        "waiter_head"
+      ],
+      "tla": [
+        "IsHeadW"
+      ],
+      "covers": [
+        "Q29",
+        "Q33"
+      ]
+    },
+    {
+      "item": "GenericSpace::head_datum",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "head_datum",
+      "line": 318,
+      "role": "The head of the records.",
+      "rocq": [
+        "record_head"
+      ],
+      "tla": [
+        "IsHeadR"
+      ],
+      "covers": [
+        "Q29",
+        "Q33"
+      ]
+    },
+    {
+      "item": "GenericSpace::offer",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "offer",
+      "line": 337,
+      "role": "The produce plan: tail join, head-only fires, re-offer, the round cap.",
+      "rocq": [
+        "offer",
+        "offer_loop"
+      ],
+      "tla": [
+        "Produce"
+      ],
+      "covers": [
+        "Q30",
+        "Q32",
+        "Q33",
+        "Q34",
+        "Q37",
+        "U1",
+        "U2",
+        "U3"
+      ]
+    },
+    {
+      "item": "GenericSpace::receive",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "receive",
+      "line": 405,
+      "role": "The consume plan.",
+      "rocq": [
+        "receive",
+        "receive_loop"
+      ],
+      "tla": [
+        "Consume"
+      ],
+      "covers": [
+        "Q31",
+        "Q32",
+        "Q33",
+        "Q34",
+        "U1",
+        "U2",
+        "U3"
+      ]
+    },
+    {
+      "item": "GenericSpace::prepare_produce",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "prepare_produce",
+      "line": 537,
+      "role": "Bump, then the produce plan.",
+      "rocq": [
+        "produce",
+        "bumped"
+      ],
+      "tla": [
+        "Produce"
+      ],
+      "covers": [
+        "Q30",
+        "Q35"
+      ]
+    },
+    {
+      "item": "GenericSpace::prepare_consume",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "prepare_consume",
+      "line": 567,
+      "role": "Bump, then the consume plan. A peek bumps too (A2).",
+      "rocq": [
+        "consume",
+        "bumped"
+      ],
+      "tla": [
+        "Consume",
+        "Exec"
+      ],
+      "covers": [
+        "Q28",
+        "Q31",
+        "Q35",
+        "U4"
+      ]
+    },
+    {
+      "item": "FIRE_ROUND_CAP",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "kind": "const",
+      "name": "FIRE_ROUND_CAP",
+      "line": 28,
+      "role": "64 fires per transaction (I-21).",
+      "rocq": [
+        "fire_round_cap"
+      ],
+      "covers": [
+        "Q34"
+      ]
+    },
+    {
+      "item": "FireRounds::after_fire",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "FireRounds",
+      "kind": "fn",
+      "name": "after_fire",
+      "line": 116,
+      "role": "Done, continue, divergent re-issue (A10) or the round cap.",
+      "rocq": [
+        "after_fire"
+      ],
+      "covers": [
+        "Q34"
+      ]
+    },
+    {
+      "item": "GenericSpace::prepare_create",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "prepare_create",
+      "line": 597,
+      "role": "SpaceAlreadyExists, then the config, S(sid) = 0 and the handle (one atomic commit).",
+      "rocq": [
+        "prepare_create",
+        "receipt_ok"
+      ],
+      "tla": [
+        "Create"
+      ],
+      "covers": [
+        "Q55",
+        "U5",
+        "U7"
+      ]
+    },
+    {
+      "item": "GenericSpace::read_config",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "read_config",
+      "line": 675,
+      "role": "A missing config record is DanglingHandle.",
+      "tla": [
+        "Call"
+      ],
+      "covers": [
+        "U6"
+      ]
+    },
+    {
+      "item": "ChannelClass",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/route.rs",
+      "kind": "struct",
+      "name": "ChannelClass",
+      "line": 21,
+      "role": "The classes of a channel.",
+      "rocq": [
+        "chan_class"
+      ],
+      "covers": [
+        "Q41",
+        "Q42"
+      ]
+    },
+    {
+      "item": "Route",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/route.rs",
+      "kind": "struct",
+      "name": "Route",
+      "line": 40,
+      "role": "Default, a native space with a key, or an agent.",
+      "rocq": [
+        "route_t"
+      ],
+      "covers": [
+        "Q41",
+        "Q42"
+      ]
+    },
+    {
+      "item": "route::sole_expr",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/route.rs",
+      "kind": "fn",
+      "name": "sole_expr",
+      "line": 52,
+      "role": "One expression and nothing else.",
+      "rocq": [
+        "sole_expr"
+      ],
+      "covers": [
+        "Q42"
+      ]
+    },
+    {
+      "item": "is_agent_tagged",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/route.rs",
+      "kind": "fn",
+      "name": "is_agent_tagged",
+      "line": 89,
+      "role": "(AGENT_TAG, A, raw).",
+      "rocq": [
+        "is_agent_tagged"
+      ],
+      "covers": [
+        "Q42",
+        "Q45"
+      ]
+    },
+    {
+      "item": "classify_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/route.rs",
+      "kind": "fn",
+      "name": "classify_channel",
+      "line": 102,
+      "role": "The total class of a channel.",
+      "rocq": [
+        "classify_channel",
+        "class_of_id"
+      ],
+      "covers": [
+        "Q41",
+        "Q42",
+        "Q43",
+        "Q45"
+      ]
+    },
+    {
+      "item": "route",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/route.rs",
+      "kind": "fn",
+      "name": "route",
+      "line": 149,
+      "role": "R1 to R5.",
+      "rocq": [
+        "route",
+        "space_route",
+        "key_of"
+      ],
+      "covers": [
+        "Q41",
+        "Q42",
+        "Q43",
+        "Q44"
+      ]
+    },
+    {
+      "item": "ReducerCore::route_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/route.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "route_channel",
+      "line": 174,
+      "role": "route under the use-context of the reducer.",
+      "rocq": [
+        "route"
+      ],
+      "covers": [
+        "Q42"
+      ]
+    },
+    {
+      "item": "UseTarget",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "struct",
+      "name": "UseTarget",
+      "line": 21,
+      "role": "The evaluated reference and its native space.",
+      "rocq": [
+        "target"
+      ],
+      "covers": [
+        "Q46"
+      ]
+    },
+    {
+      "item": "SpaceCtx",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "type",
+      "name": "SpaceCtx",
+      "line": 27,
+      "role": "None outside every use block.",
+      "rocq": [
+        "ctx"
+      ],
+      "covers": [
+        "Q41",
+        "Q46"
+      ]
+    },
+    {
+      "item": "SpaceRef",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "struct",
+      "name": "SpaceRef",
+      "line": 31,
+      "role": "A native space or an agent.",
+      "rocq": [
+        "space_ref"
+      ],
+      "covers": [
+        "Q38"
+      ]
+    },
+    {
+      "item": "SpaceRefError",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "struct",
+      "name": "SpaceRefError",
+      "line": 41,
+      "role": "EmptySpaceRef, HandleNotWritable, NotASpaceRef.",
+      "rocq": [
+        "ref_error"
+      ],
+      "covers": [
+        "Q38",
+        "Q39",
+        "Q40"
+      ]
+    },
+    {
+      "item": "scope::is_empty",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "fn",
+      "name": "is_empty",
+      "line": 68,
+      "role": "The empty Par.",
+      "rocq": [
+        "is_empty"
+      ],
+      "covers": [
+        "Q38"
+      ]
+    },
+    {
+      "item": "classify_space_ref",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "fn",
+      "name": "classify_space_ref",
+      "line": 106,
+      "role": "The five rules of a space reference.",
+      "rocq": [
+        "classify_space_ref",
+        "unbundle",
+        "space_ref_rule"
+      ],
+      "covers": [
+        "Q38",
+        "Q39",
+        "Q40"
+      ]
+    },
+    {
+      "item": "wrap_body",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "fn",
+      "name": "wrap_body",
+      "line": 134,
+      "role": "The USE wrapper of a stored body.",
+      "rocq": [
+        "wrap_body",
+        "use_tuple"
+      ],
+      "covers": [
+        "Q46"
+      ]
+    },
+    {
+      "item": "wrap",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/execution.rs",
+      "kind": "fn",
+      "name": "wrap",
+      "line": 44,
+      "role": "The R7 backend of the system processes.",
+      "rocq": [
+        "r7_produce"
+      ],
+      "covers": [
+        "Q44"
+      ]
+    },
+    {
+      "item": "RoutingExecution::produce",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/execution.rs",
+      "scope": "RoutingExecution",
+      "kind": "fn",
+      "name": "produce",
+      "line": 110,
+      "role": "route(&None, channel): no context.",
+      "rocq": [
+        "r7_produce",
+        "r7_of"
+      ],
+      "covers": [
+        "Q44"
+      ]
+    },
+    {
+      "item": "ReducerCore::eval_marker",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "eval_marker",
+      "line": 107,
+      "role": "H2: refresh, strict decode, then USE or NEWSPACE.",
+      "rocq": [
+        "fire_step",
+        "decode_use",
+        "refresh",
+        "sdecode"
+      ],
+      "covers": [
+        "Q46",
+        "Q56"
+      ]
+    },
+    {
+      "item": "ReducerCore::eval_use",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "eval_use",
+      "line": 126,
+      "role": "use s { P }: P under the context of s.",
+      "rocq": [
+        "enter_use"
+      ],
+      "covers": [
+        "Q46"
+      ]
+    },
+    {
+      "item": "ReducerCore::native_space_ref",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "native_space_ref",
+      "line": 176,
+      "role": "Evaluate, substitute and classify a space reference.",
+      "rocq": [
+        "enter_use"
+      ],
+      "covers": [
+        "Q38",
+        "Q46"
+      ]
+    },
+    {
+      "item": "ReducerCore::reified_produce",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "reified_produce",
+      "line": 205,
+      "role": "H3: params, route, the persistent-send rule.",
+      "rocq": [
+        "route",
+        "check_persistent_send",
+        "sdecode"
+      ],
+      "covers": [
+        "Q41",
+        "Q54",
+        "Q58"
+      ]
+    },
+    {
+      "item": "ReducerCore::reified_consume",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "reified_consume",
+      "line": 282,
+      "role": "H4/H5: the fast path, the USE wrapper, the route.",
+      "rocq": [
+        "routes_to_default_without_context",
+        "wrap_body"
+      ],
+      "covers": [
+        "Q45",
+        "Q46"
+      ]
+    },
+    {
+      "item": "routes_to_default_without_context",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "routes_to_default_without_context",
+      "line": 510,
+      "role": "Every class but a space name and an agent name.",
+      "rocq": [
+        "routes_to_default_without_context"
+      ],
+      "covers": [
+        "Q45"
+      ]
+    },
+    {
+      "item": "op_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "fn",
+      "name": "op_of",
+      "line": 85,
+      "role": "The op of exactly [E0, op].",
+      "rocq": [
+        "reified_id_of"
+      ],
+      "covers": [
+        "Q54"
+      ]
+    },
+    {
+      "item": "handle_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "fn",
+      "name": "handle_of",
+      "line": 93,
+      "role": "The space of exactly a handle id (A6).",
+      "rocq": [
+        "handle_of"
+      ],
+      "covers": [
+        "Q47"
+      ]
+    },
+    {
+      "item": "is_factory_op",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "fn",
+      "name": "is_factory_op",
+      "line": 101,
+      "role": "0x00..=0x20.",
+      "rocq": [
+        "is_factory_op"
+      ],
+      "covers": [
+        "Q54"
+      ]
+    },
+    {
+      "item": "is_call_op",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "fn",
+      "name": "is_call_op",
+      "line": 105,
+      "role": "0x00..=0x23 and 0x30..=0x32.",
+      "rocq": [
+        "is_call_op"
+      ],
+      "covers": [
+        "Q54"
+      ]
+    },
+    {
+      "item": "check_persistent_send",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "fn",
+      "name": "check_persistent_send",
+      "line": 110,
+      "role": "A21: `!!` aborts on every call op and every handle.",
+      "rocq": [
+        "check_persistent_send"
+      ],
+      "covers": [
+        "Q54"
+      ]
+    },
+    {
+      "item": "HandleMethod",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "kind": "struct",
+      "name": "HandleMethod",
+      "line": 70,
+      "role": "The five methods of a handle.",
+      "rocq": [
+        "method"
+      ],
+      "covers": [
+        "Q47"
+      ]
+    },
+    {
+      "item": "HandleMethod::parse",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "scope": "HandleMethod",
+      "kind": "fn",
+      "name": "parse",
+      "line": 80,
+      "role": "The method of a name.",
+      "rocq": [
+        "method_of"
+      ],
+      "covers": [
+        "Q47"
+      ]
+    },
+    {
+      "item": "HandleMethod::arity",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "scope": "HandleMethod",
+      "kind": "fn",
+      "name": "arity",
+      "line": 92,
+      "role": "The argument count of a method.",
+      "rocq": [
+        "arity"
+      ],
+      "covers": [
+        "Q47"
+      ]
+    },
+    {
+      "item": "ParsedMessage",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "kind": "struct",
+      "name": "ParsedMessage",
+      "line": 116,
+      "role": "Dropped, Malformed or a message.",
+      "rocq": [
+        "parsed"
+      ],
+      "covers": [
+        "Q47"
+      ]
+    },
+    {
+      "item": "ParsedMessage::parse",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "scope": "ParsedMessage",
+      "kind": "fn",
+      "name": "parse",
+      "line": 127,
+      "role": "[ret, method, …, (PARAMS)?] (A23).",
+      "rocq": [
+        "parse_message"
+      ],
+      "covers": [
+        "Q47"
+      ]
+    },
+    {
+      "item": "is_reply_name",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "kind": "fn",
+      "name": "is_reply_name",
+      "line": 161,
+      "role": "One unforgeable, or one bundle with the write flag.",
+      "rocq": [
+        "is_reply_name"
+      ],
+      "covers": [
+        "Q47"
+      ]
+    },
+    {
+      "item": "HandleProcess::call",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "scope": "HandleProcess",
+      "kind": "fn",
+      "name": "call",
+      "line": 200,
+      "role": "A6, DanglingHandle, the parse, the reply.",
+      "rocq": [
+        "call"
+      ],
+      "tla": [
+        "Call"
+      ],
+      "covers": [
+        "Q47",
+        "U6",
+        "U8"
+      ]
+    },
+    {
+      "item": "HandleProcess::run",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "scope": "HandleProcess",
+      "kind": "fn",
+      "name": "run",
+      "line": 248,
+      "role": "Positional params, method, arity, named params, then the body.",
+      "rocq": [
+        "run"
+      ],
+      "covers": [
+        "Q47"
+      ]
+    },
+    {
+      "item": "SpaceOuter",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "kind": "struct",
+      "name": "SpaceOuter",
+      "line": 45,
+      "role": "The outer stores.",
+      "rocq": [
+        "outer"
+      ],
+      "covers": [
+        "Q48",
+        "Q49"
+      ]
+    },
+    {
+      "item": "SpaceInner",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "kind": "struct",
+      "name": "SpaceInner",
+      "line": 95,
+      "role": "The inner collections.",
+      "rocq": [
+        "inner"
+      ],
+      "covers": [
+        "Q48",
+        "Q49"
+      ]
+    },
+    {
+      "item": "SpaceQualifier",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "kind": "struct",
+      "name": "SpaceQualifier",
+      "line": 153,
+      "role": "default, temp and seq.",
+      "rocq": [
+        "qualifier"
+      ],
+      "covers": [
+        "Q50"
+      ]
+    },
+    {
+      "item": "SpaceFactoryUrn",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "kind": "struct",
+      "name": "SpaceFactoryUrn",
+      "line": 196,
+      "role": "A space family.",
+      "rocq": [
+        "family"
+      ],
+      "covers": [
+        "Q48"
+      ]
+    },
+    {
+      "item": "SpaceFactoryUrn::parse",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryUrn",
+      "kind": "fn",
+      "name": "parse",
+      "line": 225,
+      "role": "Outer-first URNs and the FIPS aliases.",
+      "rocq": [
+        "parse_urn"
+      ],
+      "covers": [
+        "Q49"
+      ]
+    },
+    {
+      "item": "SpaceFactoryUrn::is_supported_pair",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryUrn",
+      "kind": "fn",
+      "name": "is_supported_pair",
+      "line": 267,
+      "role": "VectorDB needs HashMap or Vector.",
+      "rocq": [
+        "is_supported_pair"
+      ],
+      "covers": [
+        "Q48",
+        "Q49"
+      ]
+    },
+    {
+      "item": "SpaceFactoryUrn::supports_qualifier",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryUrn",
+      "kind": "fn",
+      "name": "supports_qualifier",
+      "line": 280,
+      "role": "HashSet takes only seq.",
+      "rocq": [
+        "supports_qualifier"
+      ],
+      "covers": [
+        "Q50"
+      ]
+    },
+    {
+      "item": "SpaceFactoryUrn::family_index",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryUrn",
+      "kind": "fn",
+      "name": "family_index",
+      "line": 293,
+      "role": "The op of the factory channel.",
+      "rocq": [
+        "family_index",
+        "family_base",
+        "ordinal"
+      ],
+      "covers": [
+        "Q48"
+      ]
+    },
+    {
+      "item": "SpaceFactoryUrn::from_family_index",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryUrn",
+      "kind": "fn",
+      "name": "from_family_index",
+      "line": 301,
+      "role": "The family of an index.",
+      "rocq": [
+        "from_family_index"
+      ],
+      "covers": [
+        "Q48"
+      ]
+    },
+    {
+      "item": "SpaceFactoryUrn::all",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryUrn",
+      "kind": "fn",
+      "name": "all",
+      "line": 306,
+      "role": "The 32 families in index order.",
+      "rocq": [
+        "all_families"
+      ],
+      "covers": [
+        "Q48"
+      ]
+    },
+    {
+      "item": "SpaceFactoryConstructor",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "kind": "struct",
+      "name": "SpaceFactoryConstructor",
+      "line": 329,
+      "role": "[q?][FREE?][PARAMS?].",
+      "rocq": [
+        "ctor"
+      ],
+      "covers": [
+        "Q51",
+        "Q52"
+      ]
+    },
+    {
+      "item": "SpaceFactoryConstructor::parse",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryConstructor",
+      "kind": "fn",
+      "name": "parse",
+      "line": 355,
+      "role": "One list without a remainder.",
+      "rocq": [
+        "parse_elements"
+      ],
+      "covers": [
+        "Q52"
+      ]
+    },
+    {
+      "item": "SpaceFactoryConstructor::parse_elements",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryConstructor",
+      "kind": "fn",
+      "name": "parse_elements",
+      "line": 368,
+      "role": "The strict constructor parser.",
+      "rocq": [
+        "parse_elements"
+      ],
+      "covers": [
+        "Q51",
+        "Q52"
+      ]
+    },
+    {
+      "item": "SpaceFactoryConstructor::to_elements",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "scope": "SpaceFactoryConstructor",
+      "kind": "fn",
+      "name": "to_elements",
+      "line": 405,
+      "role": "The canonical elements.",
+      "rocq": [
+        "to_elements"
+      ],
+      "covers": [
+        "Q51",
+        "Q52"
+      ]
+    },
+    {
+      "item": "qualifier_of",
+      "required": true,
+      "file": "models/src/rust/space_factory_urn.rs",
+      "kind": "fn",
+      "name": "qualifier_of",
+      "line": 428,
+      "role": "Exactly one string that names a qualifier, with no connective flag and no locally_free bits.",
+      "rocq": [
+        "qual_result",
+        "qual_of"
+      ],
+      "covers": [
+        "Q52"
+      ]
+    },
+    {
+      "item": "FactoryConstructor::validate",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "scope": "FactoryConstructor",
+      "kind": "fn",
+      "name": "validate",
+      "line": 48,
+      "role": "The gates of a factory call in P4.",
+      "rocq": [
+        "validate_qualifier"
+      ],
+      "covers": [
+        "Q50"
+      ]
+    },
+    {
+      "item": "FactoryConstructor::durability",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "scope": "FactoryConstructor",
+      "kind": "fn",
+      "name": "durability",
+      "line": 95,
+      "role": "Durable for default.",
+      "rocq": [
+        "durability_of"
+      ],
+      "covers": [
+        "Q50",
+        "U7"
+      ]
+    },
+    {
+      "item": "family_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "kind": "fn",
+      "name": "family_of",
+      "line": 124,
+      "role": "The family of a stored config.",
+      "rocq": [
+        "family_of_names"
+      ],
+      "covers": [
+        "Q49"
+      ]
+    },
+    {
+      "item": "factory_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "factory_channel",
+      "line": 29,
+      "role": "[E0, i].",
+      "rocq": [
+        "factory_op"
+      ],
+      "covers": [
+        "Q48"
+      ]
+    },
+    {
+      "item": "factory_capability",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "factory_capability",
+      "line": 37,
+      "role": "bundle+{[E0, i]}, the reply of getSpaceAgent.",
+      "rocq": [
+        "factory_op"
+      ],
+      "covers": [
+        "Q48"
+      ]
+    },
+    {
+      "item": "derive_space_id",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/types/id.rs",
+      "kind": "fn",
+      "name": "derive_space_id",
+      "line": 13,
+      "role": "The SpaceId draw of the call (I-19).",
+      "rocq": [
+        "derive_space_id"
+      ],
+      "covers": [
+        "Q53"
+      ]
+    },
+    {
+      "item": "FactoryProcess::call",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/factory.rs",
+      "scope": "FactoryProcess",
+      "kind": "fn",
+      "name": "call",
+      "line": 73,
+      "role": "One factory call: validate, derive the sid, create, reply.",
+      "rocq": [
+        "derive_space_id",
+        "prepare_create"
+      ],
+      "tla": [
+        "Create"
+      ],
+      "covers": [
+        "Q53",
+        "Q55",
+        "U5"
+      ]
+    },
+    {
+      "item": "handle_pattern",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/factory.rs",
+      "kind": "fn",
+      "name": "handle_pattern",
+      "line": 116,
+      "role": "[...@args]: one channel, so the join of H is [[H]].",
+      "tla": [
+        "TouchesBaseJoin"
+      ],
+      "covers": [
+        "U8"
+      ]
+    },
+    {
+      "item": "handle_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/factory.rs",
+      "kind": "fn",
+      "name": "handle_continuation",
+      "line": 126,
+      "role": "The persistent forwarder to HANDLE_OP.",
+      "tla": [
+        "NonPersistentConsumes",
+        "TouchesBaseJoin"
+      ],
+      "covers": [
+        "U8"
+      ]
+    },
+    {
+      "item": "handle_capability",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/factory.rs",
+      "kind": "fn",
+      "name": "handle_capability",
+      "line": 153,
+      "role": "bundle+{H(sid)}.",
+      "rocq": [
+        "handle_channel"
+      ],
+      "covers": [
+        "Q39"
+      ]
+    },
+    {
+      "item": "get_space_agent",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+      "kind": "fn",
+      "name": "get_space_agent",
+      "line": 151,
+      "role": "The capability of the family of a native space.",
+      "rocq": [
+        "family_of_names",
+        "factory_op"
+      ],
+      "covers": [
+        "Q48",
+        "Q49"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::create_space",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "create_space",
+      "line": 128,
+      "role": "One Intent::Space job for a creation.",
+      "rocq": [
+        "prepare_create"
+      ],
+      "tla": [
+        "Create"
+      ],
+      "covers": [
+        "Q55"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::read_config",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "read_config",
+      "line": 161,
+      "role": "The read-only config job of a handle call.",
+      "tla": [
+        "Call"
+      ],
+      "covers": [
+        "U6"
+      ]
+    },
+    {
+      "item": "Field",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "struct",
+      "name": "Field",
+      "line": 683,
+      "role": "Value, List, Map, Annotations, NewBody.",
+      "rocq": [
+        "field_flags"
+      ],
+      "covers": [
+        "Q56"
+      ]
+    },
+    {
+      "item": "marker_fields",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "marker_fields",
+      "line": 697,
+      "role": "The fields of each marker.",
+      "rocq": [
+        "derived_flags"
+      ],
+      "covers": [
+        "Q56"
+      ]
+    },
+    {
+      "item": "derived_flag",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "derived_flag",
+      "line": 790,
+      "role": "The flag that the encoder derives for a field.",
+      "rocq": [
+        "derived_flags"
+      ],
+      "covers": [
+        "Q56",
+        "Q57"
+      ]
+    },
+    {
+      "item": "refresh_field",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "refresh_field",
+      "line": 856,
+      "role": "Recompute the derived flags of a field.",
+      "rocq": [
+        "refresh"
+      ],
+      "covers": [
+        "Q56"
+      ]
+    },
+    {
+      "item": "refresh_tuple",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "refresh_tuple",
+      "line": 927,
+      "role": "Recompute the derived flags of a marker tuple.",
+      "rocq": [
+        "refresh"
+      ],
+      "covers": [
+        "Q56"
+      ]
+    },
+    {
+      "item": "refreshed_tuple",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "refreshed_tuple",
+      "line": 938,
+      "role": "A current tuple is not copied.",
+      "rocq": [
+        "refresh",
+        "sdecode"
+      ],
+      "covers": [
+        "Q56",
+        "Q58"
+      ]
+    },
+    {
+      "item": "refresh_tuple_par",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "refresh_tuple_par",
+      "line": 959,
+      "role": "The tuple and its holder Par.",
+      "rocq": [
+        "refresh"
+      ],
+      "covers": [
+        "Q56"
+      ]
+    },
+    {
+      "item": "refreshed_marker_par",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "refreshed_marker_par",
+      "line": 985,
+      "role": "H4: the QUERY source before it fails closed.",
+      "rocq": [
+        "refresh"
+      ],
+      "covers": [
+        "Q56",
+        "Q58"
+      ]
+    },
+    {
+      "item": "trailing_params",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "trailing_params",
+      "line": 998,
+      "role": "H3: refresh, then split_trailing_params.",
+      "rocq": [
+        "sdecode"
+      ],
+      "covers": [
+        "Q56",
+        "Q58"
+      ]
+    },
+    {
+      "item": "encoding::bits_of",
+      "required": true,
+      "file": "models/src/rust/reified/encoding.rs",
+      "kind": "fn",
+      "name": "bits_of",
+      "line": 394,
+      "role": "The disjunction of the children flags.",
+      "rocq": [
+        "derived_flags"
+      ],
+      "covers": [
+        "Q57"
+      ]
+    },
+    {
+      "item": "encoding::list_par",
+      "required": true,
+      "file": "models/src/rust/reified/encoding.rs",
+      "kind": "fn",
+      "name": "list_par",
+      "line": 418,
+      "role": "A list Par with the derived flags.",
+      "rocq": [
+        "derived_flags"
+      ],
+      "covers": [
+        "Q57"
+      ]
+    },
+    {
+      "item": "encoding::marker_tuple",
+      "required": true,
+      "file": "models/src/rust/reified/encoding.rs",
+      "kind": "fn",
+      "name": "marker_tuple",
+      "line": 462,
+      "role": "The tuple flag of the encoder.",
+      "rocq": [
+        "derived_flags"
+      ],
+      "covers": [
+        "Q57"
+      ]
+    },
+    {
+      "item": "encoding::tuple_par",
+      "required": true,
+      "file": "models/src/rust/reified/encoding.rs",
+      "kind": "fn",
+      "name": "tuple_par",
+      "line": 475,
+      "role": "The holder Par takes the flag of the tuple.",
+      "rocq": [
+        "derived_flags"
+      ],
+      "covers": [
+        "Q57"
+      ]
+    },
+    {
+      "item": "submit_space",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/schedule.rs",
+      "kind": "fn",
+      "name": "submit_space",
+      "line": 167,
+      "role": "The space job scheduler.",
+      "unmodeled": "The scheduler of the Intent::Space jobs. P1 T5 (TxnLockCoverage) models the lock coverage of their transactions. The P4 models take one operation as one atomic transaction."
+    }
+  ]
+}

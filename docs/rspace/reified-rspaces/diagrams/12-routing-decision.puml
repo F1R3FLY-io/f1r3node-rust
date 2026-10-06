@@ -1,0 +1,105 @@
+' 12 Routing decision: how the reducer classifies the channel of a send or a
+' receive and maps the class to the default space, a native space, or a user
+' agent (rules R1 to R7).
+'
+' Source of Figure N5 in ../design.md (section N5). The figure restates
+' classify_channel and route in rholang/src/rust/interpreter/reified/route.rs,
+' the hooks of reified/reducer_hooks.rs, and the R7 backend of
+' reified/execution.rs (P4 design C.1 and C.6). It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. The reducer removes the bundle of the channel.
+'   2. classify_channel gives the channel exactly one class, by the first
+'      test that holds.
+'   3. route maps the class to a route by the rules R1 to R5.
+'   4. A default route makes the baseline call. A space route builds the
+'      identity on the data channel (R6) and runs one space intent. An agent
+'      route fails closed until P8.
+'   5. A note at the top gives the R7 backend, which routes the replies of
+'      system processes with the same rules and no use context.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 12-routing-decision.puml   Check: ./render.sh --check
+
+@startuml 12-routing-decision
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Routing decision of a channel (rules R1 to R7)
+
+start
+:the reducer evaluates the channel <latex>c</latex> of a send or a receive
+and removes its write or read bundle; <<$rrs_host>>
+note right
+  **R7.** The replies of system processes bypass
+  the reducer. The R7 backend routes them with
+  these rules and no use context, so a forged
+  reply channel goes to the default space.
+end note
+partition "classify_channel(c): the first test that holds" {
+  if (a sole GPrivate with an id of 1 or 2 bytes?) then (yes)
+    :System: a byte name, an op channel, or a marker; <<$rrs_system>>
+  elseif (a sole GPrivate whose id decodes to KIND C, H, X, or B?) then (yes)
+    :DefaultObject: an object of the default space; <<$rrs_object>>
+  elseif (a sole GPrivate whose id decodes to KIND D, I, A, or S?) then (yes)
+    :Storage: a storage channel, already routed; <<$rrs_storage>>
+  elseif (a sole GPrivate whose id decodes to KIND N?) then (yes)
+    :SpaceName(space): a space name; <<$rrs_name>>
+  elseif (any other sole unforgeable name?) then (yes)
+    :Unforgeable: an ordinary new name; <<$rrs_host>>
+  elseif (a tuple (AGENT_TAG, A, raw)?) then (yes)
+    :AgentTagged: a name of a user agent; <<$rrs_name>>
+  else (no)
+    :Forged: any other channel, such as @"jobs"; <<$rrs_host>>
+  endif
+}
+partition "route(space_ctx, c)" {
+  switch (class?)
+  case (System, DefaultObject, Unforgeable)
+    :R1: the default space; <<$rrs_host>>
+  case (Storage)
+    :R2: the default space; <<$rrs_host>>
+  case (SpaceName(space))
+    :R3: the collection <latex>\mathrm{canon}(c)</latex> of its own space,
+    in every use context; <<$rrs_agent>>
+  case (AgentTagged)
+    :R4: the user agent A; <<$rrs_name>>
+  case (Forged)
+    if (a use context?) then (yes)
+      :R5: the collection <latex>\mathrm{canon}(c)</latex>
+      of the space of the use context; <<$rrs_agent>>
+    else (no)
+      :R5: the default space; <<$rrs_host>>
+    endif
+  endswitch
+}
+switch (route?)
+case (default space)
+  :the hook makes the baseline call
+  with identical arguments; <<$rrs_host>>
+case (native space)
+  :R6: the identity uses the data channel <latex>D(\mathit{sid}, k)</latex>
+  one space intent runs the operation; <<$rrs_agent>>
+case (user agent)
+  :AgentSpacesUnavailable until P8; <<$rrs_reject>>
+endswitch
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_system>     | system class: byte names, op channels, markers |
+|<$rrs_object>     | default-space object (KIND C, H, X, B), and the native space whose agent serves it: one space intent |
+|<$rrs_storage>    | storage channel: KIND D, I, A, S |
+|<$rrs_name>       | name class: space names and agent-tagged names |
+|<$rrs_host>       | default space and ordinary channels, with the baseline call |
+|<$rrs_reject>     | fail closed |
+endlegend
+@enduml

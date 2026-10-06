@@ -2,8 +2,10 @@
 
 They cover check-complete.py with its production scan, check-footprint.py with
 the pin, the allowed new files and the replaced blocks, and the ORD phase of check-invariant-map.py.
-They also cover check-consensus-checklist.py and the citation rule of
-check-model-map.py.
+They also cover check-consensus-checklist.py, the citation rule of
+check-model-map.py, and its maps of phases other than P1 (Q# and U# ids, no
+fix rules, const fn, restricted visibility, associated consts and type aliases).
+The P1 id lists of both map checkers include H23 and T6 (decision 36).
 
 Each checker gets passing fixtures and failing fixtures (negative controls).
 Fixtures are built in a temporary directory, so the source tree is never written.
@@ -1165,6 +1167,231 @@ class InvariantMapOrdinaryPhase(unittest.TestCase):
                 code = INVARIANT_MAP.main()
         self.assertEqual(0, code, output.getvalue())
         self.assertIn("FAIL=0", output.getvalue())
+
+
+PHASE_THEORY = """Definition head := 0.
+Theorem queue_head_is_min_ord : True. Proof. exact I. Qed.
+Print Assumptions queue_head_is_min_ord.
+Theorem route_rules : True. Proof. exact I. Qed.
+Print Assumptions route_rules.
+"""
+
+PHASE_MODULE = """---- MODULE Model ----
+Produce == TRUE
+HeadBlocks == TRUE
+====
+"""
+
+PHASE_SOURCE = """pub const fn is_call_op(op: u8) -> bool { op <= 3 }
+
+pub type SpaceCtx = Option<u8>;
+
+pub struct Core;
+
+impl Core {
+    pub const LIMIT: usize = 64;
+
+    pub(in crate::rust::interpreter) fn reified_consume<'a>(&'a self) {}
+
+    pub(super) async fn eval_marker(&self) {}
+}
+"""
+
+
+def phase_item(item, name, kind, covers, scope=None, **extra):
+    entry = {"item": item, "required": True, "file": "src/space.rs", "kind": kind, "name": name, "covers": covers}
+    if scope is not None:
+        entry["scope"] = scope
+    entry.update(extra)
+    return entry
+
+
+def phase_model_map(**changes):
+    data = {
+        "schema": "reified-rspaces-model-map/2",
+        "phase": "P4",
+        "formal_files": {"rocq": ["theories/Model.v"], "tla": ["tla/Model.tla"]},
+        "headlines": {
+            "Q1": {"kind": "rocq", "name": "queue_head_is_min_ord", "file": "theories/Model.v"},
+            "Q2": {"kind": "rocq", "name": "route_rules", "file": "theories/Model.v"},
+            "U1": {"kind": "tla", "name": "HeadBlocks", "file": "tla/Model.tla"},
+        },
+        "items": [
+            phase_item("is_call_op", "is_call_op", "fn", ["Q1"], rocq=["head"]),
+            phase_item("SpaceCtx", "SpaceCtx", "type", ["Q2"]),
+            phase_item("Core::LIMIT", "LIMIT", "const", ["U1"], scope="Core", tla=["Produce"]),
+            phase_item("Core::reified_consume", "reified_consume", "fn", ["Q1"], scope="Core"),
+            phase_item("Core::eval_marker", "eval_marker", "fn", ["Q2"], scope="Core"),
+        ],
+    }
+    data.update(changes)
+    return data
+
+
+class ModelMapPhase(unittest.TestCase):
+    """check-model-map.py: the map of a phase other than P1."""
+
+    def run_map(self, data, formal_only=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "theories/Model.v", PHASE_THEORY)
+            write(root / "tla/Model.tla", PHASE_MODULE)
+            write(root / "src/space.rs", PHASE_SOURCE)
+            report = MODEL_MAP.Report()
+            with mock.patch.object(MODEL_MAP, "REPO_ROOT", root), contextlib.redirect_stdout(io.StringIO()) as output:
+                MODEL_MAP.check(data, formal_only, report)
+            return report, output.getvalue()
+
+    def test_phase_map_with_letter_ids_passes(self):
+        report, output = self.run_map(phase_model_map())
+        self.assertEqual(0, report.failed, output)
+        self.assertIn("PASS: Q1 = theorem queue_head_is_min_ord", output)
+        self.assertIn("PASS: U1 = invariant HeadBlocks", output)
+
+    def test_phase_map_needs_no_fix_rules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "map.json"
+            write_json(path, phase_model_map())
+            self.assertEqual("P4", MODEL_MAP.load_map(path)["phase"])
+
+    def test_p1_map_still_needs_fix_rules(self):
+        data = phase_model_map()
+        del data["phase"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "map.json"
+            write_json(path, data)
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                MODEL_MAP.load_map(path)
+        self.assertEqual(2, raised.exception.code)
+
+    def test_item_that_cites_an_unknown_headline_fails(self):
+        data = phase_model_map()
+        data["items"][0]["covers"] = ["Q1", "Q9"]
+        report, output = self.run_map(data, formal_only=True)
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("cites unknown headline Q9", output)
+
+    def test_headline_without_an_item_fails(self):
+        data = phase_model_map()
+        data["items"][2]["covers"] = ["Q1"]
+        report, output = self.run_map(data, formal_only=True)
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("U1 (HeadBlocks) covers no Rust item", output)
+
+    def test_headline_id_with_two_letters_fails(self):
+        data = phase_model_map()
+        data["headlines"]["QA1"] = data["headlines"].pop("Q1")
+        for entry in data["items"]:
+            entry["covers"] = ["QA1" if hid == "Q1" else hid for hid in entry["covers"]]
+        report, output = self.run_map(data, formal_only=True)
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("headline id QA1 is not one letter and a number", output)
+
+    def test_item_absent_from_the_code_fails(self):
+        data = phase_model_map()
+        data["items"].append(phase_item("Core::absent", "absent", "fn", ["Q1"], scope="Core"))
+        report, output = self.run_map(data)
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("code: Core::absent: fn absent is not in impl Core of src/space.rs", output)
+
+    def test_item_lookup_reads_const_fn_restricted_visibility_consts_and_types(self):
+        lines = PHASE_SOURCE.split("\n")
+        self.assertEqual(1, MODEL_MAP.find_rust_item(lines, "fn", "is_call_op", None))
+        self.assertEqual(3, MODEL_MAP.find_rust_item(lines, "type", "SpaceCtx", None))
+        self.assertEqual(8, MODEL_MAP.find_rust_item(lines, "const", "LIMIT", "Core"))
+        self.assertIsNone(MODEL_MAP.find_rust_item(lines, "const", "LIMIT", None))
+        self.assertEqual(10, MODEL_MAP.find_rust_item(lines, "fn", "reified_consume", "Core"))
+        self.assertEqual(12, MODEL_MAP.find_rust_item(lines, "fn", "eval_marker", "Core"))
+        self.assertIsNone(MODEL_MAP.find_rust_item(lines, "fn", "eval_marker", None))
+
+    def test_ids_sort_by_letters_then_number(self):
+        self.assertEqual(["Q2", "Q10", "U1"], sorted(["U1", "Q10", "Q2"], key=MODEL_MAP.id_key))
+
+
+P1_THEORY = "".join(f"Theorem h{i} : True. Proof. exact I. Qed.\nPrint Assumptions h{i}.\n" for i in range(1, 25))
+P1_MODULE = "---- MODULE P1 ----\n" + "".join(f"T{i}Inv == TRUE\n" for i in range(1, 8)) + "====\n"
+
+
+def p1_phase(ids):
+    formal = {}
+    for fid in ids:
+        number = int(fid[1:])
+        if fid.startswith("H"):
+            formal[fid] = {"kind": "rocq", "name": f"h{number}", "file": "theories/P1.v", "tests": ["prop_p1"]}
+        else:
+            formal[fid] = {"kind": "tla", "name": f"T{number}Inv", "file": "tla/P1.tla", "tests": ["prop_p1"]}
+    return {
+        "test_status": "required",
+        "test_files": ["tests/p1.rs"],
+        "expected_properties": 1,
+        "formal": formal,
+        "properties": [{"number": 1, "test": "prop_p1", "file": "tests/p1.rs", "covers": list(ids)}],
+    }
+
+
+class PhaseOneDecision36Ids(unittest.TestCase):
+    """check-invariant-map.py and check-model-map.py: the P1 ids include H23 and T6 (decision 36)."""
+
+    def run_phase(self, ids):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "theories/P1.v", P1_THEORY)
+            write(root / "tla/P1.tla", P1_MODULE)
+            report = INVARIANT_MAP.Report()
+            with mock.patch.object(INVARIANT_MAP, "REPO_ROOT", root), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                INVARIANT_MAP.check_phase("P1", p1_phase(ids), 1, INVARIANT_MAP.Formal(), report)
+            return report, output.getvalue()
+
+    def test_invariant_map_requires_h23_and_t6(self):
+        ids = INVARIANT_MAP.REQUIRED_IDS["P1"]
+        self.assertEqual(29, len(ids))
+        self.assertIn("H23", ids)
+        self.assertIn("T6", ids)
+        self.assertNotIn("H24", ids)
+        self.assertNotIn("T7", ids)
+
+    def test_complete_p1_phase_passes(self):
+        report, output = self.run_phase(INVARIANT_MAP.REQUIRED_IDS["P1"])
+        self.assertEqual(0, report.failed, output)
+        self.assertIn("PASS: P1 H23 h23 -> prop_p1", output)
+        self.assertIn("PASS: P1 T6 T6Inv -> prop_p1", output)
+
+    def test_p1_phase_without_h23_and_t6_fails(self):
+        ids = [fid for fid in INVARIANT_MAP.REQUIRED_IDS["P1"] if fid not in ("H23", "T6")]
+        report, output = self.run_phase(ids)
+        self.assertEqual(2, report.failed, output)
+        self.assertIn("FAIL: P1: unmapped: H23 is not in the invariant map", output)
+        self.assertIn("FAIL: P1: unmapped: T6 is not in the invariant map", output)
+
+    def test_p1_phase_with_an_id_past_t6_fails(self):
+        report, output = self.run_phase(list(INVARIANT_MAP.REQUIRED_IDS["P1"]) + ["T7"])
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("FAIL: P1: T7 is not an id of phase P1", output)
+
+    def test_model_map_requires_h23_and_t6(self):
+        self.assertEqual(29, len(MODEL_MAP.HEADLINE_IDS))
+        self.assertIn("H23", MODEL_MAP.HEADLINE_IDS)
+        self.assertIn("T6", MODEL_MAP.HEADLINE_IDS)
+        data = {
+            "schema": "reified-rspaces-model-map/2",
+            "formal_files": {"rocq": ["theories/P1.v"], "tla": ["tla/P1.tla"]},
+            "headlines": {fid: ({"kind": "rocq", "name": f"h{fid[1:]}", "file": "theories/P1.v"}
+                                if fid.startswith("H") else
+                                {"kind": "tla", "name": f"{fid}Inv", "file": "tla/P1.tla"})
+                          for fid in MODEL_MAP.HEADLINE_IDS if fid not in ("H23", "T6")},
+            "rules": {},
+            "items": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "theories/P1.v", P1_THEORY)
+            write(root / "tla/P1.tla", P1_MODULE)
+            report = MODEL_MAP.Report()
+            with mock.patch.object(MODEL_MAP, "REPO_ROOT", root), contextlib.redirect_stdout(io.StringIO()) as output:
+                MODEL_MAP.check(data, True, report)
+        self.assertIn("FAIL: H23 is not defined in the map", output.getvalue())
+        self.assertIn("FAIL: T6 is not defined in the map", output.getvalue())
 
 
 if __name__ == "__main__":

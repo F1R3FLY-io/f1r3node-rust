@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # scripts/check-reified-rspaces-tla-invariants.sh
 #
-# TLA+ gate for the Reified RSpaces models (formal/tlaplus/reified_rspaces,
-# P1): CheckpointReplay.tla (T1-T4, checkpoint and replay) and
-# TxnLockCoverage.tla (T5, lock coverage of space transactions, FR-4).
+# TLA+ gate for the Reified RSpaces models (formal/tlaplus/reified_rspaces).
+# P1: CheckpointReplay.tla (T1-T4, checkpoint and replay, and T6 of
+# decision 36: an honest deploy replays to the failure and the spending of
+# play) and TxnLockCoverage.tla (T5, lock coverage of space transactions,
+# FR-4).
+# P4: HeadOnlyDiscipline.tla (head-only matching of a queue: no pending
+# match, a blocked head blocks the rest, FIFO), CounterConflict.tla (a merge
+# without a check #1 race is a serial run: M-1 and A2) and NativeHandles.tla
+# (handle uniqueness, dangling handles, restarts, handle calls that merge
+# like contract calls).
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -19,9 +26,11 @@
 #                  other invariants hold on the full state space
 #   4. apalache  - BASE (Init => Inv, --length=0) and STEP (Inv /\ Next =>
 #                  Inv', --length=1) for the inductive invariants IndInv
-#                  (CheckpointReplay: T3 and T4) and LockIndInv
-#                  (TxnLockCoverage: T5). Each negative control must refute
-#                  its inductive invariant in the expected conjunct.
+#                  (CheckpointReplay: T3 and T4), LockIndInv
+#                  (TxnLockCoverage: T5), HeadIndInv (HeadOnlyDiscipline)
+#                  and HandleIndInv (NativeHandles). Each negative control
+#                  must refute its inductive invariant in the expected
+#                  conjunct.
 #
 # TLC runs through scripts/lib/tlc-run.sh (tlc_bounded, tlc_metadir and the
 # source-identity check) with a heap of at most 4g and an on-disk metadir.
@@ -62,6 +71,9 @@ SAFE_CONFIGS=(
   "CheckpointReplay MC_CheckpointReplay.cfg"
   "CheckpointReplay MC_CheckpointReplay_TwoBlock.cfg"
   "TxnLockCoverage MC_TxnLockCoverage.cfg"
+  "HeadOnlyDiscipline MC_HeadOnlyDiscipline.cfg"
+  "CounterConflict MC_CounterConflict.cfg"
+  "NativeHandles MC_NativeHandles.cfg"
 )
 # <module> <config> <the one invariant that it must refute>
 UNSAFE_CONFIGS=(
@@ -69,8 +81,14 @@ UNSAFE_CONFIGS=(
   "CheckpointReplay RootIgnoresVolatileUnsafe.cfg SameRootIffSameState"
   "CheckpointReplay DoublePairUnsafe.cfg PairedOnce"
   "CheckpointReplay JoinResidueUnsafe.cfg NoVolatileResidue"
+  "CheckpointReplay StagingDivergenceUnsafe.cfg ReplayOutcomeEqual"
+  "CheckpointReplay AcceptUnpairedUnsafe.cfg ReplayPrefixEqual"
   "TxnLockCoverage UncoveredChannelUnsafe.cfg Serializable"
   "TxnLockCoverage UnjoinedChannelUnsafe.cfg Serializable"
+  "HeadOnlyDiscipline HeadOnlyScanUnsafe.cfg HeadBlocks"
+  "CounterConflict CounterDroppedUnsafe.cfg NoMergedOrderFabrication"
+  "CounterConflict PeekCounterFreeUnsafe.cfg NoMergedOrderFabrication"
+  "NativeHandles JoinDescriptorUnsafe.cfg HandleCallsMergeLikeContracts"
 )
 # <name>|<module>|<config>|<length>|<expected outcome>|<marker in the violated formula>
 APALACHE_CHECKS=(
@@ -82,6 +100,12 @@ APALACHE_CHECKS=(
   "lock-step|TxnLockCoverage|MC_TxnLockCoverage_IndStep_Apalache.cfg|1|NoError|"
   "lock-step-uncovered-unsafe|TxnLockCoverage|UncoveredChannelUnsafe_IndStep_Apalache.cfg|1|Error|stagedOne"
   "lock-step-unjoined-unsafe|TxnLockCoverage|UnjoinedChannelUnsafe_IndStep_Apalache.cfg|1|Error|stagedOne"
+  "head-base|HeadOnlyDiscipline|MC_HeadOnlyDiscipline_IndBase_Apalache.cfg|0|NoError|"
+  "head-step|HeadOnlyDiscipline|MC_HeadOnlyDiscipline_IndStep_Apalache.cfg|1|NoError|"
+  "head-step-scan-unsafe|HeadOnlyDiscipline|HeadOnlyScanUnsafe_IndStep_Apalache.cfg|1|Error|[\"fired\"]"
+  "handle-base|NativeHandles|MC_NativeHandles_IndBase_Apalache.cfg|0|NoError|"
+  "handle-step|NativeHandles|MC_NativeHandles_IndStep_Apalache.cfg|1|NoError|"
+  "handle-step-joindescriptor-unsafe|NativeHandles|JoinDescriptorUnsafe_IndStep_Apalache.cfg|1|Error|\"user\""
 )
 
 PASS=0
@@ -111,7 +135,7 @@ if [[ ! "$APALACHE_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-echo "== Reified RSpaces TLA+ gate (CheckpointReplay.tla, TxnLockCoverage.tla)"
+echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles)"
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 tools_ok=true
