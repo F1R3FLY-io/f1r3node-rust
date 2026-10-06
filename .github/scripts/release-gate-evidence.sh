@@ -138,6 +138,69 @@ write_verdict() {
 		{schema_version: 1, source_sha: $source_sha, candidate_tag: $candidate_tag, verdict: $verdict}' >"$output"
 }
 
+write_test_net_candidate() {
+	local evidence="$1" run_json="$2" soak_doc="$3" verdict_json="$4" output="$5"
+	local review="${6:-}" permission="${7:-}"
+	local base verdict reference=null
+	require_file "$soak_doc"
+	require_file "$verdict_json"
+	base="$(envelope test_net_candidate "$evidence" "$run_json" .github/workflows/merge-recovery-soak.yml)"
+	jq -e --slurpfile ev "$evidence" --slurpfile run "$run_json" \
+		--arg evidence_sha "$(sha256sum "$evidence" | awk '{print $1}')" '
+		.schema_version == 1
+		and .gate == "stability_soak"
+		and .source_sha == $ev[0].source_sha
+		and .candidate_tag == $ev[0].candidate_tag
+		and .candidate_evidence_sha256 == $evidence_sha
+		and .workflow_run.id == $run[0].id
+		and .workflow_run.attempt == $run[0].run_attempt
+		and .soak_kind == "weekend"
+		and .requested_duration_seconds == 216000
+		and .completed == true
+		and .artifact_mode == "candidate"
+		and .preflight.status == "success"
+		and (.retry_attempt == 0 or (.retry_attempt == 1 and .coverage_preserved == true))' "$soak_doc" >/dev/null ||
+		fail "soak document does not record a passing 60h stability soak of this candidate in this run"
+	jq -e --slurpfile ev "$evidence" '.source_sha == $ev[0].source_sha' "$verdict_json" >/dev/null ||
+		fail "verdict does not identify the candidate source"
+	verdict="$(jq -r '.verdict' "$verdict_json")"
+	case "$verdict" in
+	pass) ;;
+	regress)
+		[ -n "$review" ] && [ -n "$permission" ] ||
+			fail "a regress verdict needs maintainer-review.json and the reviewer permission document"
+		require_file "$review"
+		require_file "$permission"
+		jq -e --slurpfile ev "$evidence" '
+			.source_sha == $ev[0].source_sha
+			and .candidate_tag == $ev[0].candidate_tag
+			and .verdict_accepted == true
+			and (.reviewer | type == "string" and length > 0)
+			and (.reference | type == "string" and length > 0)
+			and (.reviewed_at | type == "string" and endswith("Z"))' "$review" >/dev/null ||
+			fail "maintainer review does not accept the regress verdict for this candidate"
+		jq -e --slurpfile review "$review" '
+			.login == $review[0].reviewer
+			and (.permission == "admin" or .permission == "maintain")' "$permission" >/dev/null ||
+			fail "the reviewer does not hold maintain or admin permission"
+		reference="$(jq '.reference' "$review")"
+		;;
+	*) fail "verdict $verdict cannot make a test net candidate" ;;
+	esac
+	mkdir -p "$(dirname "$output")"
+	jq \
+		--arg consensus_model "$(jq -r '.consensus_model // "cbc-casper"' "$evidence")" \
+		--arg soak_sha "$(sha256sum "$soak_doc" | awk '{print $1}')" \
+		--arg verdict "$verdict" \
+		--argjson reference "$reference" '
+		. + {
+			consensus_model: $consensus_model,
+			soak_evidence_sha256: $soak_sha,
+			verdict: $verdict,
+			maintainer_review_reference: $reference
+		}' <<<"$base" >"$output"
+}
+
 write_candidate_marker() {
 	local evidence="$1" output="$2"
 	require_file "$evidence"
@@ -151,6 +214,7 @@ usage() {
 		"usage: $0 oci-validation EVIDENCE_JSON RUN_JSON JOBS_JSON OUTPUT" \
 		"       $0 stability-soak EVIDENCE_JSON RUN_JSON SOAK_RESULT_JSON OUTPUT" \
 		"       $0 verdict EVIDENCE_JSON VERDICT OUTPUT" \
+		"       $0 test-net-candidate EVIDENCE_JSON RUN_JSON SOAK_EVIDENCE_JSON VERDICT_JSON OUTPUT [REVIEW_JSON PERMISSION_JSON]" \
 		"       $0 candidate-marker EVIDENCE_JSON OUTPUT" >&2
 	exit 2
 }
@@ -168,6 +232,10 @@ stability-soak)
 verdict)
 	[ "$#" -eq 4 ] || usage
 	write_verdict "$2" "$3" "$4"
+	;;
+test-net-candidate)
+	[ "$#" -eq 6 ] || [ "$#" -eq 8 ] || usage
+	write_test_net_candidate "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}"
 	;;
 candidate-marker)
 	[ "$#" -eq 3 ] || usage

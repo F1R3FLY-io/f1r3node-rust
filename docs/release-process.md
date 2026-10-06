@@ -228,7 +228,7 @@ The promotion controller evaluates gates against `source_sha` from the candidate
 | 60h stability soak | Soak artifact and workflow run | The exact candidate completes the full 60-hour profile |
 | Regression verdict (advisory) | `verdict.json` | A `pass` verdict satisfies the gate directly. A `regress` verdict requires documented maintainer review before promotion |
 | Feature gates | Train gate evidence | Every manifest gate succeeds |
-| Shard soak-in (proposed, Section 12) | Shard soak-in evidence | The test net candidate completes its soak period in a test net of its consensus model |
+| Shard soak-in (proposed, Section 12) | Shard soak-in evidence | The test net candidate completes its soak period in a test net of its consensus model. The repository variable `RELEASE_SHARD_SOAK_IN_GATE` controls this gate. Unset or `advisory` keeps it advisory until ratification and a running test net. `enforced` makes it binding. Any other value fails the gate |
 
 Optional and nightly slashing jobs do not block a release. The required slashing job catalog remains version-controlled.
 
@@ -419,7 +419,7 @@ All shards in one test net use the same consensus and state machine replication 
 
 The roadmap modularizes consensus behind a consensus-neutral boundary (branch `feature/consensus-neutral-boundary`, and `docs/artifacts/f1r3fly-consensus-neutral-sm.md`). Each additional model gets its own test net. A test net candidate enrolls only in the test net of its own model. A test net never mixes models, even across shards.
 
-The candidate evidence must identify the consensus model of the candidate. The exact field name is set during implementation.
+The candidate evidence can carry a `consensus_model` field. An absent field means `cbc-casper`, so existing canary evidence stays valid and regenerates byte for byte. The `test-net-candidate.json` marker always records the model.
 
 #### Incompatible releases
 
@@ -670,7 +670,8 @@ Implementation adds or changes these components.
 | `.github/workflows/oci-validation.yml` | Add trusted exact-candidate dispatch mode |
 | `.github/workflows/reusable-oci-validation.yml` | Consume a candidate image digest without rebuilding |
 | `.github/workflows/deployment-train.yml` | Validate manifests and start independent trains |
-| `.github/workflows/soak-in.yml` | Schedule and enroll stable releases into the test net for the Shard soak-in |
+| `.github/workflows/soak-in.yml` | Schedule and enroll stable releases into the test net for the Shard soak-in. Under Section 12.1, verify each test net candidate after its soak and hold enrollment until the test net runs |
+| `scripts/remote/testnet-slots.sh`, `docker/testnet.vm-*.yml` | Pin the image digest of each test net validator slot (Section 12.1) |
 | `.github/scripts/release-evidence.sh` | Build and validate evidence documents |
 | `.github/scripts/release-gates.sh` | Validate exact-SHA gate runs |
 | `.github/scripts/promote-release.sh` | Perform idempotent artifact promotion |

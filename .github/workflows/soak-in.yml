@@ -1,69 +1,181 @@
 name: Shard Soak-in Enrollment
 
-run-name: Shard Soak-in Enrollment [${{ inputs.stable_tag || github.event.release.tag_name }}]
+run-name: Shard Soak-in Enrollment [${{ inputs.candidate_tag || github.event.workflow_run.id }}]
+
+# Shard soak-in enrollment (docs/release-process.md section 12.1, proposed
+# amendment; docs/plans/test-net.md). A completed 60h stability soak, or a
+# maintainer dispatch, names one canary. The enroll job verifies that the
+# canary is a test net candidate: its test-net-candidate.json marker binds
+# to the candidate evidence and to the soak run that produced it, and the
+# same preflight, stability-soak, and regression-verdict gates that stable
+# promotion uses pass for that run.
+#
+# Enrollment itself is held: the test net is not provisioned yet (EPIC-014,
+# TASK-014-2). The job is read-only and deploys nothing.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
-      stable_tag:
-        description: Stable release tag to enroll (vMAJOR.MINOR.PATCH)
+      candidate_tag:
+        description: Canary tag to enroll (vMAJOR.MINOR.PATCH-canary.RUN)
         required: true
         type: string
+  workflow_run:
+    workflows:
+      - Merge Recovery Soak
+    types: [completed]
 
 permissions: {}
 
+concurrency:
+  group: shard-soak-in-enrollment
+  cancel-in-progress: false
+
 jobs:
-  held:
-    name: Shard Soak-in Enrollment Held
+  enroll:
+    name: Verify Test Net Candidate
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     steps:
-      - name: Validate stable tag format
-        id: tag
+      - name: Checkout trusted release controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Resolve canary tag
+        id: candidate
         env:
-          STABLE_TAG: ${{ inputs.stable_tag || github.event.release.tag_name }}
-          IS_PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.candidate_tag }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         shell: bash -euo pipefail {0}
         run: |
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            echo "enroll=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "### Shard soak-in enrollment skipped"
-              echo
-              echo "The published release is a prerelease. Only stable releases enroll."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          if ! [[ "$STABLE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            if [ "$GITHUB_EVENT_NAME" = "release" ]; then
-              echo "enroll=false" >> "$GITHUB_OUTPUT"
-              {
-                echo "### Shard soak-in enrollment skipped"
-                echo
-                echo "The published tag does not use the stable vMAJOR.MINOR.PATCH format."
-              } >> "$GITHUB_STEP_SUMMARY"
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            if [ "$TRIGGER_CONCLUSION" != "success" ]; then
+              echo "Soak run ${TRIGGER_RUN_ID} did not succeed; no canary to enroll."
+              echo "candidate_tag=" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "::error::stable_tag must use the vMAJOR.MINOR.PATCH stable release format"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TRIGGER_RUN_ID}" > "$RUNNER_TEMP/trigger-run.json"
+            jq -e --arg repository "$GITHUB_REPOSITORY" --arg default "$DEFAULT_BRANCH" '
+              .event == "workflow_dispatch"
+              and .head_branch == $default
+              and .repository.full_name == $repository
+              and .path == ".github/workflows/merge-recovery-soak.yml"' \
+              "$RUNNER_TEMP/trigger-run.json" >/dev/null || {
+              echo "Soak run ${TRIGGER_RUN_ID} is not a default-branch dispatch; not a candidate soak."
+              echo "candidate_tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+            artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TRIGGER_RUN_ID}/artifacts?per_page=100" \
+              --jq '[.artifacts[] | select(.name == "release-candidate" and .expired == false)] | first | .id // empty')"
+            if [ -z "$artifact_id" ]; then
+              echo "Soak run ${TRIGGER_RUN_ID} carries no release-candidate artifact; not a candidate soak."
+              echo "candidate_tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$RUNNER_TEMP/release-candidate.zip"
+            unzip -q -o "$RUNNER_TEMP/release-candidate.zip" -d "$RUNNER_TEMP/release-candidate"
+            tag="$(jq -r '.candidate_tag' "$RUNNER_TEMP/release-candidate/release-candidate.json")"
+          fi
+          if ! [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-canary\.[1-9][0-9]*$ ]]; then
+            echo "::error::canary tag '$tag' is not a standard canary tag"
             exit 1
           fi
-          echo "enroll=true" >> "$GITHUB_OUTPUT"
+          echo "candidate_tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Report migration state
-        if: steps.tag.outputs.enroll == 'true'
+      - name: Verify the test net candidate
+        id: verify
+        if: steps.candidate.outputs.candidate_tag != ''
         env:
-          STABLE_TAG: ${{ inputs.stable_tag || github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ steps.candidate.outputs.candidate_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          gates="$RUNNER_TEMP/gates"
+          mkdir -p "$gates"
+          gh release download "$CANDIDATE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'release-evidence.json' \
+            --pattern 'release-evidence.json.sha256' \
+            --pattern 'soak-evidence.json' \
+            --pattern 'verdict.json' \
+            --pattern 'maintainer-review.json' \
+            --pattern 'test-net-candidate.json' \
+            --dir "$gates" || true
+          [ -f "$gates/release-evidence.json" ] || {
+            echo "::error::canary ${CANDIDATE_TAG} has no release-evidence.json asset"
+            exit 1
+          }
+          (cd "$gates" && awk '{print $1 "  release-evidence.json"}' release-evidence.json.sha256 | sha256sum -c -) || {
+            echo "::error::release-evidence.json checksum does not match its published checksum"
+            exit 1
+          }
+          ci-control/.github/scripts/release-evidence.sh validate "$gates/release-evidence.json"
+          source_sha="$(jq -r '.source_sha' "$gates/release-evidence.json")"
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${CANDIDATE_TAG}")"
+          tag_sha="$(jq -r '.object.sha' <<<"$ref_json")"
+          if [ "$(jq -r '.object.type' <<<"$ref_json")" = tag ]; then
+            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')"
+          fi
+          [ "$tag_sha" = "$source_sha" ] || {
+            echo "::error::tag ${CANDIDATE_TAG} resolves to ${tag_sha}, not the evidence source ${source_sha}"
+            exit 1
+          }
+          # Release assets are mutable. Fetch the soak run the marker names
+          # so the verifier checks its identity through the API.
+          run_id="$(jq -r '.workflow_run.id // empty' "$gates/test-net-candidate.json" 2>/dev/null || true)"
+          if [[ "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" > "$gates/soak-run.json" || rm -f "$gates/soak-run.json"
+          fi
+          if [ -f "$gates/maintainer-review.json" ]; then
+            reviewer="$(jq -r '.reviewer // empty' "$gates/maintainer-review.json" 2>/dev/null || true)"
+            if [[ "$reviewer" =~ ^[A-Za-z0-9-]+$ ]]; then
+              gh api "repos/${GITHUB_REPOSITORY}/collaborators/${reviewer}/permission" \
+                --jq '{login: .user.login, permission: .permission}' > "$gates/maintainer-review-permission.json" \
+                || rm -f "$gates/maintainer-review-permission.json"
+            fi
+          fi
+          report="$RUNNER_TEMP/test-net-candidate-report.json"
+          status=0
+          ci-control/.github/scripts/release-gates.sh verify-test-net-candidate "$gates" "$GITHUB_REPOSITORY" "$report" || status=$?
+          echo "status=$(jq -r '.status' "$report")" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Test net candidate check for \`${CANDIDATE_TAG}\`"
+            echo
+            echo "| Status | Consensus model | Reason |"
+            echo "|---|---|---|"
+            jq -r '"| " + .status + " | " + .consensus_model + " | " + .reason + " |"' "$report"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in
+          0 | 10) ;;
+          *)
+            echo "::error::${CANDIDATE_TAG} is not a test net candidate: $(jq -r '.reason' "$report")"
+            exit 1
+            ;;
+          esac
+
+      - name: Report held enrollment
+        if: steps.verify.outputs.status == 'pass'
+        env:
+          CANDIDATE_TAG: ${{ steps.candidate.outputs.candidate_tag }}
         shell: bash -euo pipefail {0}
         run: |
           {
             echo "### Shard soak-in enrollment is held"
             echo
-            echo "The requested stable tag has a valid format: \`$STABLE_TAG\`."
+            echo "\`${CANDIDATE_TAG}\` is a verified test net candidate."
             echo
-            echo "The test net that hosts Shard soak-ins is not provisioned yet."
-            echo "docs/release-process.md section 12 defines the Shard soak-in phase."
-            echo "Section 18 Phase 6 defines the enrollment migration steps."
+            echo "The test net that hosts Shard soak-ins is not provisioned yet (EPIC-014, TASK-014-2)."
+            echo "docs/release-process.md section 12.1 and docs/plans/test-net.md define the enrollment."
             echo "This workflow did not deploy a node, change the test net, or grant an Anchor role."
           } >> "$GITHUB_STEP_SUMMARY"

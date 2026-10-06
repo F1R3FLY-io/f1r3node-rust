@@ -228,7 +228,7 @@ create_instance() {
   subnet_id="$(state_get subnet_id)"
   if [[ "$APPLY" == "1" ]]; then
     image_id="$(latest_ol9_arm_image)"
-    info "Using OL9 aarch64 image: $image_id"
+    info "Using OL9 image for ${SHAPE}: $image_id"
   else
     image_id="ocid1.image.oc1.us-sanjose-1.DRY-RUN"
   fi

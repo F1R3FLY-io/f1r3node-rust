@@ -139,4 +139,9 @@ jq '.images.ocir_index_digest = "sha256:0000000000000000000000000000000000000000
 expect_failure 'OCIR digest differs from Docker Hub index' "$TOOL" validate "$TMP/tampered-ocir.json"
 jq '.images.linux_amd64_digest = "sha256:bad"' "$TMP/canary-evidence.json" >"$TMP/tampered-canary.json"
 expect_failure 'invalid canary image digest' "$TOOL" validate "$TMP/tampered-canary.json"
+jq -e 'has("consensus_model") | not' "$TMP/canary-evidence.json" >/dev/null
+jq '.consensus_model = "cbc-casper"' "$TMP/canary-evidence.json" >"$TMP/consensus-model.json"
+"$TOOL" validate "$TMP/consensus-model.json"
+jq '.consensus_model = "unknown-model"' "$TMP/canary-evidence.json" >"$TMP/unknown-model.json"
+expect_failure 'unknown consensus model' "$TOOL" validate "$TMP/unknown-model.json"
 printf 'release evidence tests passed\n'

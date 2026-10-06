@@ -70,6 +70,10 @@ fail_if(release_text.include?("--prerelease"), "release promotion must create a 
 fail_if(!release_text.include?("release-gates.sh evaluate"), "release promotion must evaluate gates with release-gates.sh")
 fail_if(!release_text.include?("promote-release.sh plan"), "release promotion must execute a promote-release.sh plan")
 fail_if(!release_text.include?("promote-release.sh verify-binaries"), "release promotion must verify candidate binaries before publishing")
+fail_if(!release_text.include?("--pattern 'shard-soak-in-evidence.json'"), "release promotion must collect the Shard soak-in evidence")
+evaluate_step = gates.fetch("steps").find { |step| step["id"] == "evaluate" }
+fail_if(evaluate_step&.dig("env", "RELEASE_SHARD_SOAK_IN_GATE") != "${{ vars.RELEASE_SHARD_SOAK_IN_GATE }}", "gate evaluation must read the Shard soak-in policy from the repository variable")
+fail_if(!release_text.include?('fetch_named_run "$gates/shard-soak-in-evidence.json" "$gates/shard-soak-in-run.json"'), "release promotion must verify the Shard soak-in run through the API")
 gates_text = release_text[/  gates:.*?\n  promote:/m].to_s
 fail_if(gates_text.match?(/secrets\.(?!GITHUB_TOKEN)/), "gates job may use only the GITHUB_TOKEN")
 fail_if(gates_text.match?(/docker login|gh release create|git push|refs\/tags.*-f sha/), "gates job must not publish")
@@ -84,15 +88,28 @@ fail_if(external_uses.any? { |value| !value.match?(/@[0-9a-f]{40}$/) }, "release
 evidence_text = File.read(evidence_path)
 fail_if(!evidence_text.include?("/attempts/${run_attempt}/jobs"), "release evidence must read jobs from the recorded run attempt")
 
-# Shard soak-in enrollment: held state, no permissions, dispatch + stable
-# release publication only.
-fail_if(soakin_trigger.keys.sort != ["release", "workflow_dispatch"], "soak-in must trigger on release and dispatch only")
-fail_if(soakin_trigger.dig("release", "types") != ["published"], "soak-in release trigger must use types: [published]")
-fail_if(soakin["permissions"] != {}, "soak-in must have no permissions")
-fail_if(soakin.fetch("jobs").keys != ["held"], "soak-in must contain only the held-state job")
-fail_if(soakin.dig("jobs", "held", "permissions"), "held soak-in job cannot add permissions")
+# Shard soak-in enrollment (section 12.1): a completed soak run or a dispatch
+# names a canary, one read-only job verifies its test net candidate marker,
+# and enrollment holds until the test net runs.
+fail_if(soakin_trigger.keys.sort != ["workflow_dispatch", "workflow_run"], "soak-in must trigger on dispatch and completed soak runs only")
+fail_if(soakin_trigger.dig("workflow_run", "workflows") != ["Merge Recovery Soak"], "soak-in must follow the Merge Recovery Soak workflow")
+fail_if(soakin_trigger.dig("workflow_run", "types") != ["completed"], "soak-in must trigger on completed soak runs")
+fail_if(soakin_trigger.dig("workflow_dispatch", "inputs", "candidate_tag", "required") != true, "soak-in dispatch must require candidate_tag")
+fail_if(soakin["permissions"] != {}, "soak-in must default to no permissions")
+fail_if(soakin.fetch("jobs").keys != ["enroll"], "soak-in must contain only the enroll job")
+enroll = soakin.dig("jobs", "enroll")
+fail_if(enroll["permissions"] != {"actions" => "read", "contents" => "read"}, "soak-in enroll job must be read-only")
+fail_if(enroll.key?("environment"), "soak-in enroll job cannot use a protected environment while enrollment is held")
+enroll_checkout = enroll.fetch("steps").first
+fail_if(enroll_checkout["uses"].to_s !~ /\Aactions\/checkout@[0-9a-f]{40}\z/, "soak-in must start with a pinned checkout")
+fail_if(enroll_checkout.dig("with", "ref") != "${{ github.event.repository.default_branch }}", "soak-in must check out trusted controls from the default branch")
+fail_if(enroll_checkout.dig("with", "persist-credentials") != false, "soak-in checkout must not persist credentials")
+enroll_uses = enroll.fetch("steps").map { |step| step["uses"] }.compact
+fail_if(enroll_uses.any? { |value| !value.match?(/@[0-9a-f]{40}$/) }, "soak-in actions must use full commit SHAs")
 soakin_text = File.read(soakin_path)
-fail_if(!soakin_text.include?("prerelease"), "soak-in must gate out prereleases")
+fail_if(!soakin_text.include?("release-gates.sh verify-test-net-candidate"), "soak-in must verify the marker with release-gates.sh")
+fail_if(!soakin_text.include?("test-net-candidate.json"), "soak-in must read the test net candidate marker")
+fail_if(!soakin_text.include?("not provisioned"), "soak-in must report the held enrollment state")
 
 # Canary publisher: workflow_run from CI plus dispatch, least privilege,
 # protected environment, pinned actions, and never a rebuild.
@@ -163,6 +180,8 @@ fail_if(!reusable_text.match?(/docker pull --platform [^\n]*@\$\{ARCH_DIGEST\}/)
 fail_if(!reusable_text.match?(/Build Docker Image\n\s+if: inputs\.candidate_tag == ''/m), "OCI validation must skip the source build in candidate mode")
 soak_text = File.read(soak_path)
 fail_if(!soak_text.match?(/docker pull --platform [^\n]*@\$\{amd64_digest\}/), "soak candidate mode must pull the image by digest")
+fail_if(!soak_text.include?("release-gate-evidence.sh test-net-candidate"), "soak must write the test net candidate marker")
+fail_if(!soak_text.include?('"$work/test-net-candidate.json"'), "soak must publish the test net candidate marker")
 fail_if(!soak_text.match?(/Build node image\n\s+if: needs\.schedule_gate\.outputs\.candidate_tag == ''/m), "soak must skip the source build in candidate mode")
 ci = YAML.load_file(ci_path)
 ci_trigger = trigger(ci)

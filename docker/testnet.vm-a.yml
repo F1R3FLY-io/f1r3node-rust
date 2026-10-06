@@ -1,0 +1,132 @@
+# =================================================================
+# CBC CASPER TEST NET, SHARD 1 - VM A (docs/plans/test-net.md)
+# =================================================================
+# Runs the bootstrap node and Anchors 1 and 2. Each node pins its own
+# image digest from the slot file (scripts/remote/testnet-slots.sh check),
+# so one shard runs a mix of releases. The bootstrap node follows the
+# Anchor 1 release.
+#
+# Port bands on VM A:
+#   bootstrap: 40400-40405
+#   anchor1:   40410-40415 (genesis validator 1)
+#   anchor2:   40420-40425 (genesis validator 2)
+#
+# Usage (on VM A, env from .env.remote plus the slot file):
+#   docker compose --env-file .env.remote --env-file testnet-slots.env -f testnet.vm-a.yml up -d
+
+x-rnode-env: &rnode-env
+  MALLOC_ARENA_MAX: "2"
+  MALLOC_TRIM_THRESHOLD_: "131072"
+  MALLOC_MMAP_THRESHOLD_: "131072"
+  RUST_LOG:
+
+x-rnode-logging: &rnode-logging
+  driver: json-file
+  options:
+    max-size: 100m
+    max-file: "3"
+
+services:
+  boot:
+    image: >-
+      ${TESTNET_IMAGE_REPOSITORY:?TESTNET_IMAGE_REPOSITORY must name the image repository}@${ANCHOR1_DIGEST:?ANCHOR1_DIGEST must pin an image digest}
+    user: root
+    restart: always
+    container_name: rnode.bootstrap
+    environment: *rnode-env
+    logging: *rnode-logging
+    command:
+      - --log-sink=stdout
+      - run
+      - --host=${BOOTSTRAP_HOST}
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --allow-private-addresses
+      - --validator-private-key=${BOOTSTRAP_PRIVATE_KEY}
+      - --required-signatures
+      - "2"
+    ports:
+      - "40400:40400"
+      - "40401:40401"
+      - "40402:40402"
+      - "40403:40403"
+      - "40404:40404/udp"
+      - "40405:40405"
+    volumes:
+      - boot-data:/var/lib/rnode/
+      - ./conf/bootstrap.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+      - ./certs/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+  anchor1:
+    image: >-
+      ${TESTNET_IMAGE_REPOSITORY:?TESTNET_IMAGE_REPOSITORY must name the image repository}@${ANCHOR1_DIGEST:?ANCHOR1_DIGEST must pin an image digest}
+    user: root
+    restart: always
+    container_name: rnode.anchor1
+    environment: *rnode-env
+    logging: *rnode-logging
+    command:
+      - --log-sink=stdout
+      - run
+      - --host=${VM_A_PUBLIC_HOST}
+      - --allow-private-addresses
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --validator-public-key=${VALIDATOR1_PUBLIC_KEY}
+      - --validator-private-key=${VALIDATOR1_PRIVATE_KEY}
+      - --genesis-validator
+    ports:
+      - "40410:40410"
+      - "40411:40411"
+      - "40412:40412"
+      - "40413:40413"
+      - "40414:40414/udp"
+      - "40415:40415"
+    volumes:
+      - anchor1-data:/var/lib/rnode/
+      - ./conf/validator1-remote.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+      - ./certs/validator1/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+  anchor2:
+    image: >-
+      ${TESTNET_IMAGE_REPOSITORY:?TESTNET_IMAGE_REPOSITORY must name the image repository}@${ANCHOR2_DIGEST:?ANCHOR2_DIGEST must pin an image digest}
+    user: root
+    restart: always
+    container_name: rnode.anchor2
+    environment: *rnode-env
+    logging: *rnode-logging
+    command:
+      - --log-sink=stdout
+      - run
+      - --host=${VM_A_PUBLIC_HOST}
+      - --allow-private-addresses
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --validator-public-key=${VALIDATOR2_PUBLIC_KEY}
+      - --validator-private-key=${VALIDATOR2_PRIVATE_KEY}
+      - --genesis-validator
+    ports:
+      - "40420:40420"
+      - "40421:40421"
+      - "40422:40422"
+      - "40423:40423"
+      - "40424:40424/udp"
+      - "40425:40425"
+    volumes:
+      - anchor2-data:/var/lib/rnode/
+      - ./conf/validator2-remote.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+      - ./certs/validator2/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+volumes:
+  boot-data:
+  anchor1-data:
+  anchor2-data:

@@ -2493,7 +2493,13 @@ tasks:
       - "The design defines the compatibility check that decides between joining a shard and starting a new shard"
   - id: TASK-014-2
     title: "Stand up the CBC Casper test net on OCI from existing fleet tooling"
-    status: pending
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-06T16:14:22Z
+    pr: 654
+    notes:
+      - "2026-10-06: dry-run tooling on PR #654: scripts/remote/testnet.env (TESTBED_PROFILE=testnet, 2x amd64 E5.Flex 4 OCPU/24 GB), just testnet-plan, scripts/remote/testnet-slots.sh with its test, docker/testnet.vm-a.yml and testnet.vm-b.yml, validator3 and soaking-slot remote configs."
+      - "Blockers before the first --apply (docs/plans/test-net.md section 14): narrow the security list (SSH and 40400-40455 are open to all addresses), move validator keys to OCI Vault, teach deploy.sh the test net compose files, slot file, and keys. No --apply without maintainer approval."
   - id: TASK-014-3
     title: "Wire Shard soak-in enrollment and Anchor promotion into the test net"
     status: pending
@@ -2510,8 +2516,15 @@ tasks:
       - "A maintainer ratifies or amends the Section 12.1 items and checks the Section 19 entry"
   - id: TASK-014-6
     title: "Gate stable promotion on the Shard soak-in"
-    status: pending
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-06T16:14:22Z
+    pr: 654
     blocked_by: [TASK-014-5]
+    notes:
+      - "2026-10-06: implemented on PR #654 ahead of ratification; the PR stays a draft until TASK-014-5. consensus_model is an optional evidence field (absent = cbc-casper) so existing canary evidence regenerates byte for byte; the marker always records it."
+      - "The shard_soak_in gate reads the repository variable RELEASE_SHARD_SOAK_IN_GATE (unset or advisory passes, enforced binds, other values fail), so stable releases keep shipping while it stays unset. Enforcing it needs a running test net and the TASK-014-3 evidence publisher."
+      - "Open: release.yml does not yet resume on a completed Shard soak-in run; that lands with the TASK-014-3 evidence publisher."
     acceptance:
       - "Candidate evidence records the consensus model of the candidate"
       - "A passing 60h stability soak uploads test-net-candidate.json to the canary prerelease; a canary without it cannot enroll"

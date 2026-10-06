@@ -13,6 +13,7 @@ TOOL="$ROOT/.github/scripts/release-gate-evidence.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 REPOSITORY=example/repository
+unset RELEASE_SHARD_SOAK_IN_GATE
 PIN=0123456789abcdef0123456789abcdef01234567
 
 SOURCE="$TMP/source"
@@ -108,6 +109,41 @@ expect_failure 'unknown verdict' "$TOOL" verdict "$EVIDENCE" maybe "$TMP/x.json"
 "$TOOL" candidate-marker "$EVIDENCE" "$TMP/release-candidate.json"
 jq -e --arg sha "$SOURCE_SHA" '.candidate_tag == "v0.4.46-canary.789" and .source_sha == $sha' "$TMP/release-candidate.json" >/dev/null
 
+# --- Test net candidate marker ------------------------------------------------
+"$TOOL" test-net-candidate "$EVIDENCE" "$TMP/soak-run.json" "$GATES/soak-evidence.json" "$GATES/verdict.json" "$TMP/test-net-candidate.json"
+jq -e --arg sha "$SOURCE_SHA" --arg digest "$INDEX_DIGEST" --arg soak_sha "$(sha256sum "$GATES/soak-evidence.json" | awk '{print $1}')" '
+	.schema_version == 1 and .gate == "test_net_candidate" and .source_sha == $sha and .image_index_digest == $digest
+	and .workflow_run == {id: 888, attempt: 1, path: ".github/workflows/merge-recovery-soak.yml", conclusion: "success"}
+	and .consensus_model == "cbc-casper" and .soak_evidence_sha256 == $soak_sha
+	and .verdict == "pass" and .maintainer_review_reference == null' "$TMP/test-net-candidate.json" >/dev/null
+"$TOOL" verdict "$EVIDENCE" regress "$TMP/verdict-regress.json"
+expect_failure 'test net candidate with a regress verdict and no review' \
+	"$TOOL" test-net-candidate "$EVIDENCE" "$TMP/soak-run.json" "$GATES/soak-evidence.json" "$TMP/verdict-regress.json" "$TMP/x.json"
+jq -n --arg sha "$SOURCE_SHA" '{source_sha: $sha, candidate_tag: "v0.4.46-canary.789", verdict_accepted: true,
+	reviewer: "maintainer-a", reference: "https://example.com/review/1", reviewed_at: "2026-10-06T00:00:00Z"}' >"$TMP/review.json"
+jq -n '{login: "maintainer-a", permission: "maintain"}' >"$TMP/review-permission.json"
+"$TOOL" test-net-candidate "$EVIDENCE" "$TMP/soak-run.json" "$GATES/soak-evidence.json" "$TMP/verdict-regress.json" "$TMP/tnc-reviewed.json" \
+	"$TMP/review.json" "$TMP/review-permission.json"
+jq -e '.verdict == "regress" and .maintainer_review_reference == "https://example.com/review/1"' "$TMP/tnc-reviewed.json" >/dev/null
+jq '.permission = "write"' "$TMP/review-permission.json" >"$TMP/review-permission-write.json"
+expect_failure 'test net candidate with a reviewer below maintain' \
+	"$TOOL" test-net-candidate "$EVIDENCE" "$TMP/soak-run.json" "$GATES/soak-evidence.json" "$TMP/verdict-regress.json" "$TMP/x.json" \
+	"$TMP/review.json" "$TMP/review-permission-write.json"
+run_doc .github/workflows/merge-recovery-soak.yml 889 1 "$SOURCE_SHA" workflow_dispatch master >"$TMP/other-soak-run.json"
+expect_failure 'test net candidate for a soak document from another run' \
+	"$TOOL" test-net-candidate "$EVIDENCE" "$TMP/other-soak-run.json" "$GATES/soak-evidence.json" "$GATES/verdict.json" "$TMP/x.json"
+jq '.completed = false' "$GATES/soak-evidence.json" >"$TMP/soak-incomplete.json"
+expect_failure 'test net candidate for an incomplete soak' \
+	"$TOOL" test-net-candidate "$EVIDENCE" "$TMP/soak-run.json" "$TMP/soak-incomplete.json" "$GATES/verdict.json" "$TMP/x.json"
+jq '.preflight.status = "failure"' "$GATES/soak-evidence.json" >"$TMP/soak-preflight-failed.json"
+expect_failure 'test net candidate after a failed preflight' \
+	"$TOOL" test-net-candidate "$EVIDENCE" "$TMP/soak-run.json" "$TMP/soak-preflight-failed.json" "$GATES/verdict.json" "$TMP/x.json"
+jq '.source_sha = "0000000000000000000000000000000000000000"' "$GATES/verdict.json" >"$TMP/verdict-other-source.json"
+expect_failure 'test net candidate with a verdict for another source' \
+	"$TOOL" test-net-candidate "$EVIDENCE" "$TMP/soak-run.json" "$GATES/soak-evidence.json" "$TMP/verdict-other-source.json" "$TMP/x.json"
+expect_failure 'test net candidate for an evidence-only candidate' \
+	"$TOOL" test-net-candidate "$TMP/evidence-only.json" "$TMP/soak-run.json" "$GATES/soak-evidence.json" "$GATES/verdict.json" "$TMP/x.json"
+
 # --- The evaluator accepts everything the writer produced ----------------------
 # The workflow fetches the run each document names; here the run fixtures
 # are the same documents the writer consumed.
@@ -116,6 +152,38 @@ cp "$TMP/soak-run.json" "$GATES/soak-run.json"
 jq -e --arg esha "$(sha256sum "$EVIDENCE" | awk '{print $1}')" '.candidate_evidence_sha256 == $esha' "$GATES/oci-validation-evidence.json" >/dev/null
 "$GATES_TOOL" evaluate "$GATES" "$REPOSITORY" "$TMP/gate-report.json" 2>/dev/null
 jq -e '.promotable == true' "$TMP/gate-report.json" >/dev/null
+
+# --- Test net candidate verification agrees with the writer --------------------
+TNC="$TMP/tnc-gates"
+cp -R "$GATES" "$TNC"
+cp "$TMP/test-net-candidate.json" "$TNC/test-net-candidate.json"
+"$GATES_TOOL" verify-test-net-candidate "$TNC" "$REPOSITORY" "$TMP/tnc-report.json" 2>/dev/null
+jq -e '.eligible == true and .consensus_model == "cbc-casper"' "$TMP/tnc-report.json" >/dev/null
+expect_tnc_status() {
+	local expected="$1" label="$2" dir="$3" actual=0
+	"$GATES_TOOL" verify-test-net-candidate "$dir" "$REPOSITORY" "$dir/report.json" >/dev/null 2>&1 || actual=$?
+	[ "$actual" -eq "$expected" ] || { printf 'expected exit %s for %s, got %s\n' "$expected" "$label" "$actual" >&2; exit 1; }
+	jq -e '.eligible == false' "$dir/report.json" >/dev/null
+}
+tnc_case() {
+	local expected="$1" label="$2" dir="$TMP/tnc-$RANDOM"
+	cp -R "$TNC" "$dir"
+	shift 2
+	"$@" "$dir"
+	expect_tnc_status "$expected" "$label" "$dir"
+}
+drop_marker() { rm "$1/test-net-candidate.json"; }
+drop_soak_run() { rm "$1/soak-run.json"; }
+tamper_soak_doc() { jq '.soak_kind = "daily"' "$TNC/soak-evidence.json" >"$1/soak-evidence.json"; }
+regress_verdict() { jq '.verdict = "regress"' "$TNC/verdict.json" >"$1/verdict.json"; }
+other_model() { jq '.consensus_model = "other-model"' "$TNC/test-net-candidate.json" >"$1/test-net-candidate.json"; }
+other_run() { jq '.workflow_run.id = 889' "$TNC/test-net-candidate.json" >"$1/test-net-candidate.json"; }
+tnc_case 10 'canary without a test net candidate marker' drop_marker
+tnc_case 10 'marker before API run verification' drop_soak_run
+tnc_case 20 'marker whose soak document changed' tamper_soak_doc
+tnc_case 10 'marker beside a regress verdict without review' regress_verdict
+tnc_case 20 'marker in another consensus model' other_model
+tnc_case 20 'marker naming another soak run' other_run
 
 # A document built from different evidence is refused by the evaluator even
 # though every other field matches: the run must carry its verified file.

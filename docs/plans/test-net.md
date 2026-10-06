@@ -180,9 +180,29 @@ This design covers the CBC Casper test net only. A model from the consensus-neut
 3. Which partners need access first, and do they need a separate shard (TASK-014-4)?
 4. Does a Deployment Train candidate enroll in the same shard as a standard candidate?
 
-## 14. Next steps
+## 14. Implementation state
+
+PR #654 implements these parts:
+
+| Part | Files | State |
+|---|---|---|
+| Test net candidate marker | `release-gate-evidence.sh test-net-candidate`, `merge-recovery-soak.yml` | A pass verdict writes the marker. A regress verdict writes it only after an accepted review by a maintain or admin collaborator, when a maintainer reruns the publish job |
+| Marker verification | `release-gates.sh verify-test-net-candidate`, `soak-in.yml` | The verification reuses the preflight, stability-soak, and regression-verdict gates. Enrollment stays held |
+| Shard soak-in gate | `release-gates.sh`, `release.yml`, repository variable `RELEASE_SHARD_SOAK_IN_GATE` | The variable is unset, so the gate is advisory and stable releases keep shipping |
+| Consensus model | `release-evidence.sh` | An optional evidence field. Absent means `cbc-casper` |
+| Test net VMs | `scripts/remote/testnet.env`, `just testnet-plan` | Dry run only |
+| Slot pins | `scripts/remote/testnet-slots.sh`, `docker/testnet.vm-a.yml`, `docker/testnet.vm-b.yml` | Digest-only pins. The registry path comes from `TESTNET_IMAGE_REPOSITORY` at deploy time |
+
+These items block the first `--apply` (TASK-014-2):
+
+1. The testbed security list opens SSH and ports 40400 to 40455 to all addresses. Section 10 needs SSH limited to the operator network.
+2. Validator keys reach the nodes as command-line arguments from `.env.remote`. Section 10 needs the keys in OCI Vault.
+3. `deploy.sh` ships only the testbed compose files and key set. It must ship the test net compose files, the slot file, and the Anchor 3 and soaking-slot keys.
+4. No workflow publishes `shard-soak-in-evidence.json` yet (TASK-014-3).
+
+The remaining steps are:
 
 1. A maintainer reviews this record and the proposed values.
 2. A maintainer ratifies Section 12.1 (TASK-014-5).
-3. TASK-014-2 extends `scripts/remote/` for the long-lived shard, in dry-run mode first.
-4. TASK-014-6 adds the `test-net-candidate.json` marker, changes the `soak-in.yml` trigger, and adds the Shard soak-in gate to `release.yml`.
+3. TASK-014-2 closes the four blockers and runs the first `--apply` with maintainer approval.
+4. After the test net runs, a maintainer sets the repository variable `RELEASE_SHARD_SOAK_IN_GATE` to `enforced`. A variable change has no review gate, so the maintainer records the change and its reason in EPIC-014.
