@@ -1741,4 +1741,101 @@ mod tests {
             );
         }
     }
+
+    /// PB-B-3 pin: the composed FsGenesis source must invoke
+    /// `insertVersion("serve", "fs", "1.0.0", fs, ...)` on the
+    /// versioned-registry `v1Api` channel.  A regression that
+    /// silently drops the call would leave
+    /// `rho:serve:1.0.0:<pk>:fs:1.0.0` unresolvable — deploys
+    /// relying on the serve-URN resolution path would see "lookup
+    /// returned empty" at runtime rather than a build-time error.
+    #[test]
+    fn compose_fs_genesis_source_calls_insert_version_for_fs() {
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        assert!(
+            src.contains(r#"v1Api!("insertVersion", "serve", "fs", "1.0.0", fs,"#),
+            "composed source must invoke insertVersion for the fs cap \
+             under (serve, fs, 1.0.0); a missing call site drops PB-B-3 \
+             coverage silently."
+        );
+        assert!(
+            src.contains("v1Api(`rho:registry:v1:internal`)"),
+            "composed source must bind `v1Api` to `rho:registry:v1:internal` \
+             so the insertVersion send routes to VersionedRegistry.rho's \
+             persistent contract."
+        );
+    }
+
+    /// PB-B-5 pin: the composed FsGenesis source must invoke
+    /// `insertVersion("serve", "buffer", "1.0.0", alloc, ...)` on
+    /// the versioned-registry `v1Api` channel.  A regression that
+    /// silently drops the call would leave
+    /// `rho:serve:1.0.0:<pk>:buffer:1.0.0` unresolvable, keeping
+    /// the Buffer / Rows / Allocator surface functionally dead
+    /// for user deploys.
+    #[test]
+    fn compose_fs_genesis_source_calls_insert_version_for_buffer() {
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        assert!(
+            src.contains(r#"v1Api!("insertVersion", "serve", "buffer", "1.0.0", alloc,"#),
+            "composed source must invoke insertVersion for the Allocator \
+             cap under (serve, buffer, 1.0.0); a missing call site drops \
+             PB-B-5 coverage silently."
+        );
+        assert!(
+            src.contains("for (@alloc <- Allocator!?())"),
+            "composed source must mint the Allocator via Allocator!?() \
+             before publishing.  A missing mint site leaves the \
+             insertVersion call attempting to store an unbound name."
+        );
+        assert!(
+            src.contains("allocInsertVerRet"),
+            "composed source must bind `allocInsertVerRet` in the outer \
+             new-clause so the insertVersion send has a distinct reply \
+             channel; sharing insertVerRet with the fs publish would \
+             race the two drains."
+        );
+    }
+
+    /// Cross-crate cmode-string pin: `CMODE_ORACULAR_STR` /
+    /// `CMODE_CONSENSUS_STR` live in rholang/interpreter/io/mod.rs
+    /// as the single source of truth.  Fs.rho / File.rho / Dir.rho
+    /// each reference these string literals verbatim (match arms,
+    /// state-cell binders).  A rename of either Rust constant
+    /// without matching .rho edits would silently fall into the
+    /// REVOKED default arm on every affected dispatch.  This test
+    /// catches the drift by scanning the shipped .rho sources for
+    /// at least one occurrence of each literal.
+    #[test]
+    fn cmode_string_literals_pinned_across_rholang_and_rust() {
+        let oracular: &str = rholang::rust::interpreter::io::CMODE_ORACULAR_STR;
+        let consensus: &str = rholang::rust::interpreter::io::CMODE_CONSENSUS_STR;
+        assert_eq!(oracular, "oracular");
+        assert_eq!(consensus, "consensus");
+
+        let rho_files: &[&str] = &[
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/main/resources/Fs.rho"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/main/resources/File.rho"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/main/resources/Dir.rho"),
+        ];
+        let quoted_oracular = format!("\"{oracular}\"");
+        let quoted_consensus = format!("\"{consensus}\"");
+        let mut total_oracular = 0usize;
+        let mut total_consensus = 0usize;
+        for path in rho_files {
+            let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+            total_oracular += src.matches(&quoted_oracular).count();
+            total_consensus += src.matches(&quoted_consensus).count();
+        }
+        assert!(
+            total_oracular > 0,
+            "`{quoted_oracular}` not found in shipped .rho library files; \
+             CMODE_ORACULAR_STR was renamed without updating .rho match arms."
+        );
+        assert!(
+            total_consensus > 0,
+            "`{quoted_consensus}` not found in shipped .rho library files; \
+             CMODE_CONSENSUS_STR was renamed without updating .rho match arms."
+        );
+    }
 }
