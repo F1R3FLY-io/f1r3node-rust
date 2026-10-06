@@ -1583,4 +1583,69 @@ mod tests {
         );
         println!("compose_fs_genesis_source hash = {hex}");
     }
+
+    /// Drift gate: every URN listed in `FS_NATIVE_URN_SUFFIXES` must
+    /// be bound as a backtick-URN literal in the composed source's
+    /// top-level `new` scope.  Fires when a suffix is added to the
+    /// constant without updating the composed-source template (or
+    /// vice-versa — the reverse direction is covered by the
+    /// companion test below).
+    #[test]
+    fn fs_native_urn_suffixes_covered_by_composed_source() {
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        for suffix in FS_NATIVE_URN_SUFFIXES {
+            let expected = format!("`{FS_NATIVE_URN_PREFIX}{suffix}`");
+            assert!(
+                src.contains(&expected),
+                "composed source missing URN binding: {expected}"
+            );
+        }
+    }
+
+    /// Reverse drift gate: every `rho:io:fs:native:1.0.0/<suffix>`
+    /// backtick-URN literal in the composed source must appear in
+    /// `FS_NATIVE_URN_SUFFIXES`.  Fires when a composed-source
+    /// template edit adds a native URN without updating the
+    /// constant list.
+    #[test]
+    fn composed_source_urns_covered_by_fs_native_urn_suffixes() {
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        let suffix_set: std::collections::HashSet<&&str> = FS_NATIVE_URN_SUFFIXES.iter().collect();
+
+        // Scan the composed source for `rho:io:fs:native:1.0.0/<suffix>`
+        // occurrences.  Each URN appears inside a backtick-literal
+        // `rho:io:fs:native:1.0.0/<suffix>`.  We extract the suffix
+        // between the prefix and the closing backtick.
+        let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut rest: &str = &src;
+        while let Some(idx) = rest.find(FS_NATIVE_URN_PREFIX) {
+            let after = &rest[idx + FS_NATIVE_URN_PREFIX.len()..];
+            if let Some(end) = after.find('`') {
+                found.insert(after[..end].to_string());
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+        }
+
+        for s in &found {
+            assert!(
+                suffix_set.contains(&s.as_str()),
+                "composed source binds URN suffix `{s}` that is NOT in \
+                 FS_NATIVE_URN_SUFFIXES — add it to the constant list \
+                 (or remove the binding from the composed source)"
+            );
+        }
+        // Mutually-covering check: `found` and `FS_NATIVE_URN_SUFFIXES`
+        // must be exactly the same set (combined with the forward
+        // test above, this ensures bidirectional coverage).
+        assert_eq!(
+            found.len(),
+            FS_NATIVE_URN_SUFFIXES.len(),
+            "composed source has {} native URN bindings; \
+             FS_NATIVE_URN_SUFFIXES has {}.  Set-equality required.",
+            found.len(),
+            FS_NATIVE_URN_SUFFIXES.len()
+        );
+    }
 }
