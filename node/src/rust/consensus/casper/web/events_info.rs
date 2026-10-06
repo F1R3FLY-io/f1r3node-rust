@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::{EventStream, StartupBuffer};
 
-use crate::rust::web::shared_handlers::AppState;
+use crate::rust::consensus::casper::web::shared_handlers::AppState;
 
 /// WebSocket event handler for /ws/events endpoint.
 ///

@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use super::api_compat::PreparedApplication;
-use crate::rust::api::grpc_package::{acquire_external_server, acquire_internal_server};
+use crate::rust::consensus::casper::api::grpc_package::{
+    acquire_external_server, acquire_internal_server,
+};
+use crate::rust::consensus::casper::web::routes::Routes;
+use crate::rust::consensus::casper::web::shared_handlers::AppState;
 use crate::rust::runtime::application::{
     ApplicationContext, ApplicationProvider, ApplicationRoutes,
 };
-use crate::rust::web::routes::Routes;
-use crate::rust::web::shared_handlers::AppState;
 
 #[async_trait::async_trait]
 impl ApplicationProvider for PreparedApplication {

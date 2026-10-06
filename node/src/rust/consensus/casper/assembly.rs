@@ -31,10 +31,10 @@ use tracing::{debug, info, trace, warn};
 use super::api_compat::PreparedApplication;
 use super::{CasperConsensusAdapter, CasperLoop, NativeTask};
 use crate::rust::configuration::NodeConf;
+use crate::rust::consensus::casper::api::servers::APIServers;
+use crate::rust::consensus::casper::web::reporting_routes::ReportingRoutes;
 use crate::rust::consensus::manifest::ManifestGuard;
-use crate::rust::runtime::api_servers::APIServers;
 use crate::rust::runtime::setup::PreparedNode;
-use crate::rust::web::reporting_routes::ReportingRoutes;
 
 const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
 const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
@@ -644,7 +644,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
 
     // Transfer unforgeable channel — used for transfer extraction from block reports
     let transfer_unforgeable = {
-        use crate::rust::web::transaction::transfer_unforgeable;
+        use crate::rust::consensus::casper::web::transaction::transfer_unforgeable;
         transfer_unforgeable()
     };
 
@@ -880,7 +880,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
 
     // Web API - HTTP REST API implementation
     let web_api = {
-        use crate::rust::api::web_api::WebApiImpl;
+        use crate::rust::consensus::casper::api::web_api::WebApiImpl;
 
         let is_node_read_only = conf.casper.validator_private_key.is_none();
 
@@ -918,7 +918,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
 
     // Admin Web API - Admin HTTP REST API implementation
     let admin_web_api = {
-        use crate::rust::api::admin_web_api::AdminWebApiImpl;
+        use crate::rust::consensus::casper::api::admin_web_api::AdminWebApiImpl;
 
         AdminWebApiImpl::new(
             trigger_propose_f_opt_for_admin_web_api,
@@ -1095,7 +1095,7 @@ async fn handle_block_finalized(
 ) {
     use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 
-    use crate::rust::web::block_info_enricher::extract_transfers_from_report;
+    use crate::rust::consensus::casper::web::block_info_enricher::extract_transfers_from_report;
 
     let block_hash_bytes: prost::bytes::Bytes = match hex::decode(&block_hash) {
         Ok(bytes) => bytes.into(),

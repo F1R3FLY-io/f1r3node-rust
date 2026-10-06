@@ -80,7 +80,7 @@ pub fn transfer_unforgeable() -> Par {
 pub mod helpers {
     use models::rust::par_ext::ParExt;
 
-    use crate::rust::web::transaction::Transaction;
+    use crate::rust::consensus::casper::web::transaction::Transaction;
 
     /// Parse a transaction from a produce event
     pub fn parse_transaction_from_produce(

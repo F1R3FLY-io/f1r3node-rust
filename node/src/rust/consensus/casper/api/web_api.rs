@@ -29,11 +29,11 @@ use tokio::time::sleep;
 use tracing::warn;
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::block_info::BlockInfoSerde;
-use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
-use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
-use crate::rust::web::block_info_enricher::extract_transfers_from_report;
-use crate::rust::web::version_info::get_version_info_str;
+use crate::rust::api::version_info::get_version_info_str;
+use crate::rust::consensus::casper::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::consensus::casper::api::serde_types::deploy_info::TransferInfoSerde;
+use crate::rust::consensus::casper::api::serde_types::light_block_info::LightBlockInfoSerde;
+use crate::rust::consensus::casper::web::block_info_enricher::extract_transfers_from_report;
 
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 50;
 const FIND_DEPLOY_MAX_ATTEMPTS: u16 = 1;
@@ -368,7 +368,7 @@ impl WebApiImpl {
 #[async_trait::async_trait]
 impl WebApi for WebApiImpl {
     async fn status(&self) -> Result<ApiStatus> {
-        use crate::rust::web::shared_handlers::STATUS_SLOW_THRESHOLD;
+        use crate::rust::consensus::casper::web::shared_handlers::STATUS_SLOW_THRESHOLD;
         let total_start = Instant::now();
 
         let rp_conf_start = Instant::now();

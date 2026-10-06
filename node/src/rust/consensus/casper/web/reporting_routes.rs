@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::block_event_info::BlockEventInfoSerde;
-use crate::rust::web::shared_handlers::{AppQuery, AppState};
+use crate::rust::consensus::casper::api::serde_types::block_event_info::BlockEventInfoSerde;
+use crate::rust::consensus::casper::web::shared_handlers::{AppQuery, AppState};
 
 pub struct ReportingRoutes;
 

@@ -13,10 +13,10 @@ use comm::rust::rp::connect::ConnectionsCell;
 use rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl;
 use tokio::sync::RwLock;
 
-use crate::rust::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
 use crate::rust::api::lsp_grpc_service::LspGrpcServiceImpl;
-use crate::rust::api::propose_grpc_service_v1::ProposeGrpcServiceV1Impl;
 use crate::rust::api::repl_grpc_service::ReplGrpcServiceImpl;
+use crate::rust::consensus::casper::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
+use crate::rust::consensus::casper::api::propose_grpc_service_v1::ProposeGrpcServiceV1Impl;
 
 /// Container for all gRPC API service implementations
 ///

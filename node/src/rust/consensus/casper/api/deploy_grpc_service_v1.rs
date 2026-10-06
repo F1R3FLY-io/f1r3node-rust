@@ -37,7 +37,7 @@ use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
 use tracing::error;
 
-use crate::rust::web::version_info::get_version_info_str;
+use crate::rust::api::version_info::get_version_info_str;
 
 trait IntoServiceError {
     fn into_service_error(self) -> ServiceError;
@@ -170,7 +170,7 @@ impl DeployGrpcServiceV1Impl {
         {
             Ok(report) => {
                 let transfers_by_deploy =
-                    crate::rust::web::block_info_enricher::extract_transfers_from_report(
+                    crate::rust::consensus::casper::web::block_info_enricher::extract_transfers_from_report(
                         &report,
                         &self.transfer_unforgeable,
                     );

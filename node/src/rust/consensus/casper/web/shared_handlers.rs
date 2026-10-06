@@ -27,9 +27,9 @@ use shared::rust::shared::f1r3fly_events::{EventStream, StartupBuffer};
 use tracing::warn;
 use utoipa::ToSchema;
 
-use crate::rust::api::admin_web_api::AdminWebApi;
-use crate::rust::api::serde_types::block_info::BlockInfoSerde;
-use crate::rust::api::web_api::{
+use crate::rust::consensus::casper::api::admin_web_api::AdminWebApi;
+use crate::rust::consensus::casper::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::consensus::casper::api::web_api::{
     DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
     WebApi,
 };
@@ -595,7 +595,7 @@ pub async fn explore_deploy_by_block_hash_handler(
 )]
 pub async fn get_blocks_handler(
     State(app_state): State<AppState>,
-    AppQuery(query): AppQuery<crate::rust::web::web_api_routes::ViewQuery>,
+    AppQuery(query): AppQuery<crate::rust::consensus::casper::web::web_api_routes::ViewQuery>,
 ) -> Response {
     let view = match query.view.as_deref() {
         Some("full") => ViewMode::Full,
@@ -626,7 +626,7 @@ pub async fn get_blocks_handler(
 pub async fn get_block_handler(
     State(app_state): State<AppState>,
     AppPath(hash): AppPath<String>,
-    AppQuery(query): AppQuery<crate::rust::web::web_api_routes::ViewQuery>,
+    AppQuery(query): AppQuery<crate::rust::consensus::casper::web::web_api_routes::ViewQuery>,
 ) -> Response {
     let view = match query.view.as_deref() {
         Some("summary") => ViewMode::Summary,

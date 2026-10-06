@@ -2,7 +2,7 @@
 
 use utoipa::OpenApi;
 
-use crate::rust::web::{
+use crate::rust::consensus::casper::web::{
     admin_web_api_routes, reporting_routes, shared_handlers, status_info, web_api_routes,
 };
 

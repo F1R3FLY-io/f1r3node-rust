@@ -8,14 +8,15 @@ use tower_http::cors::{Any, CorsLayer};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use crate::rust::api::version_info;
+use crate::rust::consensus::casper::web::admin_web_api_routes::AdminWebApiRoutes;
+use crate::rust::consensus::casper::web::reporting_routes::ReportingRoutes;
+use crate::rust::consensus::casper::web::shared_handlers::AppState;
+use crate::rust::consensus::casper::web::web_api_docs::{AdminApi, PublicApi};
+use crate::rust::consensus::casper::web::web_api_routes::WebApiRoutes;
+use crate::rust::consensus::casper::web::web_api_routes_v1::WebApiRoutesV1;
+use crate::rust::consensus::casper::web::{events_info, status_info};
 use crate::rust::diagnostics::new_prometheus_reporter::NewPrometheusReporter;
-use crate::rust::web::admin_web_api_routes::AdminWebApiRoutes;
-use crate::rust::web::reporting_routes::ReportingRoutes;
-use crate::rust::web::shared_handlers::AppState;
-use crate::rust::web::web_api_docs::{AdminApi, PublicApi};
-use crate::rust::web::web_api_routes::WebApiRoutes;
-use crate::rust::web::web_api_routes_v1::WebApiRoutesV1;
-use crate::rust::web::{events_info, status_info, version_info};
 
 pub struct Routes;
 

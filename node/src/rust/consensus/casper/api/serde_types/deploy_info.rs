@@ -7,7 +7,7 @@ use models::casper::{DeployInfo, DeployInfoWithEventData, TransferInfo};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::system_deploy_info::SingleReportSerde;
+use crate::rust::consensus::casper::api::serde_types::system_deploy_info::SingleReportSerde;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TransferInfoSerde {

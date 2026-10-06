@@ -6,12 +6,12 @@ use axum::routing::{get, post};
 use axum::Router;
 use serde::Deserialize;
 
-use crate::rust::api::serde_types::block_info::BlockInfoSerde;
-use crate::rust::api::web_api::{
+use crate::rust::consensus::casper::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::consensus::casper::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, ReadyResponse,
     RhoDataResponse, WebApi,
 };
-use crate::rust::web::shared_handlers::{
+use crate::rust::consensus::casper::web::shared_handlers::{
     self, offload, ApiErrorResponse, AppError, AppJson, AppPath, AppQuery, AppState,
 };
 
@@ -175,7 +175,7 @@ pub async fn last_finalized_block_handler(
     State(app_state): State<AppState>,
     AppQuery(query): AppQuery<ViewQuery>,
 ) -> Response {
-    use crate::rust::api::web_api::ViewMode;
+    use crate::rust::consensus::casper::api::web_api::ViewMode;
 
     let view = match query.view.as_deref() {
         Some("summary") => ViewMode::Summary,
@@ -208,7 +208,7 @@ pub async fn get_blocks_by_heights_handler(
     AppPath((start, end)): AppPath<(i64, i64)>,
     AppQuery(query): AppQuery<ViewQuery>,
 ) -> Response {
-    use crate::rust::api::web_api::ViewMode;
+    use crate::rust::consensus::casper::api::web_api::ViewMode;
 
     let view = match query.view.as_deref() {
         Some("full") => ViewMode::Full,
@@ -242,7 +242,7 @@ pub async fn get_blocks_by_depth_handler(
     AppPath(depth): AppPath<i32>,
     AppQuery(query): AppQuery<ViewQuery>,
 ) -> Response {
-    use crate::rust::api::web_api::ViewMode;
+    use crate::rust::consensus::casper::api::web_api::ViewMode;
 
     let view = match query.view.as_deref() {
         Some("full") => ViewMode::Full,
@@ -275,7 +275,7 @@ pub async fn find_deploy_handler(
     AppPath(deploy_id): AppPath<String>,
     AppQuery(query): AppQuery<ViewQuery>,
 ) -> Response {
-    use crate::rust::api::web_api::ViewMode;
+    use crate::rust::consensus::casper::api::web_api::ViewMode;
 
     let view = match query.view.as_deref() {
         Some("summary") => ViewMode::Summary,
@@ -313,7 +313,7 @@ pub async fn is_finalized_handler(
     }
 }
 
-use crate::rust::api::web_api::{
+use crate::rust::consensus::casper::api::web_api::{
     BalanceResponse, EpochResponse, PendingDeploysJson, RegistryResponse, ValidatorsResponse,
 };
 
@@ -327,7 +327,7 @@ use crate::rust::api::web_api::{
         (
             status = 200,
             description = "Canonical-state finalization status for the deploy. Prefer this over block-hash finalization polling — a block can finalize while some of its deploys' effects are dropped during merge",
-            body = crate::rust::api::web_api::DeployFinalizationStatusJson
+            body = crate::rust::consensus::casper::api::web_api::DeployFinalizationStatusJson
         ),
         (status = 400, description = "Signature is not valid hex (`invalid_hash`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
@@ -491,7 +491,7 @@ pub async fn epoch_handler(
     }
 }
 
-use crate::rust::api::web_api::{
+use crate::rust::consensus::casper::api::web_api::{
     BondStatusResponse as BondStatusResp, EpochRewardsResponse, EstimateCostRequest,
     EstimateCostResponse, ValidatorStatusResponse,
 };
@@ -619,7 +619,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::rust::api::web_api::{
+    use crate::rust::consensus::casper::api::web_api::{
         ApiStatus, DataAtNameByBlockHashRequest, DeployRequest, DeployResponse, RhoDataResponse,
         ViewMode, WebApi,
     };
@@ -668,8 +668,8 @@ mod tests {
         fn is_ready(&self) -> bool { unimplemented!() }
         async fn prepare_deploy(
             &self,
-            _: Option<crate::rust::api::web_api::PrepareRequest>,
-        ) -> eyre::Result<crate::rust::api::web_api::PrepareResponse> {
+            _: Option<crate::rust::consensus::casper::api::web_api::PrepareRequest>,
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::PrepareResponse> {
             unimplemented!()
         }
         async fn deploy(&self, _: DeployRequest) -> eyre::Result<String> { unimplemented!() }
@@ -682,21 +682,27 @@ mod tests {
         async fn last_finalized_block(
             &self,
             _: ViewMode,
-        ) -> eyre::Result<crate::rust::api::serde_types::block_info::BlockInfoSerde> {
+        ) -> eyre::Result<
+            crate::rust::consensus::casper::api::serde_types::block_info::BlockInfoSerde,
+        > {
             unimplemented!()
         }
         async fn get_block(
             &self,
             _: String,
             _: ViewMode,
-        ) -> eyre::Result<crate::rust::api::serde_types::block_info::BlockInfoSerde> {
+        ) -> eyre::Result<
+            crate::rust::consensus::casper::api::serde_types::block_info::BlockInfoSerde,
+        > {
             unimplemented!()
         }
         async fn get_blocks(
             &self,
             _: i32,
             _: ViewMode,
-        ) -> eyre::Result<Vec<crate::rust::api::serde_types::block_info::BlockInfoSerde>> {
+        ) -> eyre::Result<
+            Vec<crate::rust::consensus::casper::api::serde_types::block_info::BlockInfoSerde>,
+        > {
             unimplemented!()
         }
         async fn find_deploy(&self, _: String, view: ViewMode) -> eyre::Result<DeployResponse> {
@@ -715,21 +721,27 @@ mod tests {
             _: i64,
             _: i64,
             _: ViewMode,
-        ) -> eyre::Result<Vec<crate::rust::api::serde_types::block_info::BlockInfoSerde>> {
+        ) -> eyre::Result<
+            Vec<crate::rust::consensus::casper::api::serde_types::block_info::BlockInfoSerde>,
+        > {
             unimplemented!()
         }
         async fn is_finalized(&self, _: String) -> eyre::Result<bool> { unimplemented!() }
         async fn deploy_finalization_status(
             &self,
             _: String,
-        ) -> eyre::Result<crate::rust::api::web_api::DeployFinalizationStatusJson> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::DeployFinalizationStatusJson>
+        {
             unimplemented!()
         }
         async fn get_pending_deploys(
             &self,
             deployer: Option<String>,
-        ) -> eyre::Result<crate::rust::api::web_api::PendingDeploysJson> {
-            use crate::rust::api::web_api::{PendingDeployJson, PendingDeploysJson};
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::PendingDeploysJson>
+        {
+            use crate::rust::consensus::casper::api::web_api::{
+                PendingDeployJson, PendingDeploysJson,
+            };
 
             let deploys = match deployer.as_deref() {
                 Some(pk) if !pk.is_empty() => vec![PendingDeployJson {
@@ -784,26 +796,27 @@ mod tests {
             &self,
             _: String,
             _: Option<String>,
-        ) -> eyre::Result<crate::rust::api::web_api::BalanceResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::BalanceResponse> {
             unimplemented!()
         }
         async fn get_registry(
             &self,
             _: String,
             _: Option<String>,
-        ) -> eyre::Result<crate::rust::api::web_api::RegistryResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::RegistryResponse> {
             unimplemented!()
         }
         async fn get_validators(
             &self,
             _: Option<String>,
-        ) -> eyre::Result<crate::rust::api::web_api::ValidatorsResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::ValidatorsResponse>
+        {
             unimplemented!()
         }
         async fn get_epoch(
             &self,
             _: Option<String>,
-        ) -> eyre::Result<crate::rust::api::web_api::EpochResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::EpochResponse> {
             unimplemented!()
         }
         async fn estimate_cost(
@@ -811,26 +824,30 @@ mod tests {
             _: String,
             _: Option<String>,
             _: Option<String>,
-        ) -> eyre::Result<crate::rust::api::web_api::EstimateCostResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::EstimateCostResponse>
+        {
             unimplemented!()
         }
         async fn get_epoch_rewards(
             &self,
             _: Option<String>,
-        ) -> eyre::Result<crate::rust::api::web_api::EpochRewardsResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::EpochRewardsResponse>
+        {
             unimplemented!()
         }
         async fn get_validator(
             &self,
             _: String,
             _: Option<String>,
-        ) -> eyre::Result<crate::rust::api::web_api::ValidatorStatusResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::ValidatorStatusResponse>
+        {
             unimplemented!()
         }
         async fn get_bond_status(
             &self,
             _: String,
-        ) -> eyre::Result<crate::rust::api::web_api::BondStatusResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::BondStatusResponse>
+        {
             unimplemented!()
         }
     }
@@ -1020,9 +1037,9 @@ mod router_tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::rust::api::admin_web_api::AdminWebApi;
-    use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
-    use crate::rust::api::web_api::{
+    use crate::rust::consensus::casper::api::admin_web_api::AdminWebApi;
+    use crate::rust::consensus::casper::api::serde_types::light_block_info::LightBlockInfoSerde;
+    use crate::rust::consensus::casper::api::web_api::{
         ApiStatus, BalanceResponse, BondStatusResponse, DeployFinalizationStatusJson,
         DeployRequest, DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
         PendingDeploysJson, PrepareResponse, RegistryResponse, RhoExpr, ValidatorInfo,
@@ -1100,7 +1117,7 @@ mod router_tests {
 
         async fn prepare_deploy(
             &self,
-            request: Option<crate::rust::api::web_api::PrepareRequest>,
+            request: Option<crate::rust::consensus::casper::api::web_api::PrepareRequest>,
         ) -> eyre::Result<PrepareResponse> {
             Ok(PrepareResponse {
                 names: request.map(|r| vec![r.deployer]).unwrap_or_default(),
@@ -1135,7 +1152,7 @@ mod router_tests {
             &self,
             _: String,
             view: ViewMode,
-        ) -> eyre::Result<crate::rust::api::web_api::DeployResponse> {
+        ) -> eyre::Result<crate::rust::consensus::casper::api::web_api::DeployResponse> {
             Ok(super::tests::sample_deploy_response(view))
         }
 

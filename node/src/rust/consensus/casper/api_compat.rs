@@ -7,10 +7,10 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::Message;
 
-use crate::rust::api::admin_web_api::AdminWebApi;
-use crate::rust::api::web_api::WebApi;
-use crate::rust::runtime::api_servers::APIServers;
-use crate::rust::web::reporting_routes::ReportingHttpRoutes;
+use crate::rust::consensus::casper::api::admin_web_api::AdminWebApi;
+use crate::rust::consensus::casper::api::servers::APIServers;
+use crate::rust::consensus::casper::api::web_api::WebApi;
+use crate::rust::consensus::casper::web::reporting_routes::ReportingHttpRoutes;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
@@ -85,7 +85,8 @@ pub fn command_error(error: eyre::Report) -> ConsensusError {
             };
         }
     }
-    let (status, code, message) = crate::rust::web::shared_handlers::classify_error(&error);
+    let (status, code, message) =
+        crate::rust::consensus::casper::web::shared_handlers::classify_error(&error);
     ConsensusError::Rejected {
         code,
         message,
@@ -153,7 +154,8 @@ mod tests {
         assert!(empty.downcast_ref::<NoNewDeploysError>().is_some());
         let native = casper::rust::errors::CasperError::RuntimeError("runtime failed".into());
         let bridged = restore_error(command_error(native.into()));
-        let (status, kind, _) = crate::rust::web::shared_handlers::classify_error(&bridged);
+        let (status, kind, _) =
+            crate::rust::consensus::casper::web::shared_handlers::classify_error(&bridged);
         assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(kind, "runtime_error");
     }

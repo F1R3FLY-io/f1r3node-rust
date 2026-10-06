@@ -6,15 +6,17 @@ use models::casper::v1::deploy_service_server::DeployServiceServer;
 use models::casper::v1::propose_service_server::ProposeServiceServer;
 use tonic::transport::Server as TonicServer;
 
-use crate::rust::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
 use crate::rust::api::lsp_grpc_service::lsp::lsp_server::LspServer;
 use crate::rust::api::lsp_grpc_service::LspGrpcServiceImpl;
-use crate::rust::api::propose_grpc_service_v1::ProposeGrpcServiceV1Impl;
 use crate::rust::api::repl_grpc_service::repl::repl_server::ReplServer;
 use crate::rust::api::repl_grpc_service::ReplGrpcServiceImpl;
+use crate::rust::consensus::casper::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
+use crate::rust::consensus::casper::api::propose_grpc_service_v1::ProposeGrpcServiceV1Impl;
 
-pub const FILE_DESCRIPTOR_SET: &[u8] =
-    include_bytes!("../../../build/descriptors/reflection_protos.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/build/descriptors/reflection_protos.bin"
+));
 
 // Note: Deploy and Propose services are defined in the models crate
 // These would be imported from models::casper::v1::{deploy_service_v1_server, propose_service_v1_server}

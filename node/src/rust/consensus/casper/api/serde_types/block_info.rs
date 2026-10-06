@@ -7,8 +7,8 @@ use models::casper::{BlockInfo, DeployInfo};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::deploy_info::DeployInfoSerde;
-use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
+use crate::rust::consensus::casper::api::serde_types::deploy_info::DeployInfoSerde;
+use crate::rust::consensus::casper::api::serde_types::light_block_info::LightBlockInfoSerde;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[derive(Default)]

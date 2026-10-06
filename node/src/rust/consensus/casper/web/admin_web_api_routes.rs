@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum::routing::post;
 use axum::Router;
 
-use crate::rust::web::shared_handlers::{ApiErrorResponse, AppError, AppState};
+use crate::rust::consensus::casper::web::shared_handlers::{ApiErrorResponse, AppError, AppState};
 
 pub struct AdminWebApiRoutes;
 

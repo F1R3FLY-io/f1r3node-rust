@@ -12,7 +12,6 @@ pub mod repl;
 pub mod rho_trie_traverser;
 pub mod runtime;
 pub mod state;
-pub mod web;
 
 // Re-export for convenience
 pub use encode::JsonEncoder;

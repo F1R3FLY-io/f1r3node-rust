@@ -6,7 +6,6 @@ pub mod routes;
 pub mod shared_handlers;
 pub mod status_info;
 pub mod transaction;
-pub mod version_info;
 pub mod web_api_docs;
 pub mod web_api_routes;
 pub mod web_api_routes_v1;
