@@ -60,6 +60,7 @@ impl NodeRuntime {
     ///
     /// Returns `Ok(())` on successful node shutdown, or an error if initialization fails
     pub async fn main(&self) -> eyre::Result<()> {
+        crate::rust::consensus::factory::ensure_available(self.node_conf.consensus.protocol)?;
         info!("NodeRuntime.main() called");
 
         // Fetch local peer node
@@ -869,6 +870,7 @@ async fn await_http_server_task(
 /// # Returns
 /// Returns `Ok(())` on successful node shutdown, or an error if initialization fails
 pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
+    crate::rust::consensus::factory::ensure_available(node_conf.consensus.protocol)?;
     info!("Starting RChain node runtime...");
 
     // Create node identifier from certificate

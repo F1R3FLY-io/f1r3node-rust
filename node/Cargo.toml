@@ -5,7 +5,8 @@ edition = "2021"
 publish = false
 
 [features]
-default = []
+default = ["cbc-casper"]
+cbc-casper = []
 schnorr_secp256k1_experimental = [
     "crypto/schnorr_secp256k1_experimental",
     "casper/schnorr_secp256k1_experimental",

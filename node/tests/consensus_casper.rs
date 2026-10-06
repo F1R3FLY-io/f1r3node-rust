@@ -1,3 +1,5 @@
+#![cfg(feature = "cbc-casper")]
+
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;

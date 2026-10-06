@@ -99,6 +99,8 @@ async fn start_node(options: Options) -> Result<()> {
     let (mut node_conf, profile, config_file, deferred_warnings) =
         node::rust::configuration::builder::build(options)?;
 
+    node::rust::consensus::factory::ensure_available(node_conf.consensus.protocol)?;
+
     apply_log_cli_overrides_raw(log_overrides, &mut node_conf.logging);
 
     let data_dir = node_conf.storage.data_dir.clone();

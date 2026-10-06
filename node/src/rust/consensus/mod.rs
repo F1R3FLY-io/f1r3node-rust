@@ -1,3 +1,4 @@
+#[cfg(feature = "cbc-casper")]
 pub mod casper;
 pub mod factory;
 pub mod manifest;
