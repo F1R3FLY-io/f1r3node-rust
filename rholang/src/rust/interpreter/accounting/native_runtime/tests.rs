@@ -765,3 +765,6 @@ mod observation_construction_tests;
 
 #[path = "tests/history_decode.rs"]
 mod history_decode_tests;
+
+#[path = "tests/store_keys.rs"]
+mod store_key_tests;

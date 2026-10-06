@@ -208,3 +208,71 @@ fn rejected_growth_preserves_prior_buffer_and_paid_capacity() {
     assert_eq!(bytes, vec![1; 8]);
     assert_eq!(paid, 8);
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-S1 (D-C2a, DR-96): `consume_keys` returns the source of `consume`
+    /// and one key per channel in channel order, repeats included. Its only
+    /// extra charge is the key vector and one 32-byte copy per key.
+    #[test]
+    fn consume_keys_follow_channel_order(
+        channels in prop::collection::vec("[a-c]{0,3}", 1..6),
+        patterns in prop::collection::vec("[p-r]{0,3}", 1..6),
+        persistent in any::<bool>(),
+    ) {
+        let plain = Meter::default();
+        let source = consume(&channels, &patterns, &"body", persistent, &plain).unwrap();
+        let keyed = Meter::default();
+        let (keyed_source, keys) =
+            consume_keys(&channels, &patterns, &"body", persistent, &keyed).unwrap();
+        prop_assert_eq!(&keyed_source, &source);
+        prop_assert_eq!(&source, &Consume::create(&channels, &patterns, &"body", persistent));
+        prop_assert_eq!(keys.len(), channels.len());
+        for (key, channel) in keys.iter().zip(&channels) {
+            prop_assert_eq!(*key, channel_key(channel, &Meter::default()).unwrap());
+        }
+        let [plain_operations, plain_scanned, plain_backing] = plain.used.get();
+        let [operations, scanned, backing] = keyed.used.get();
+        let count = channels.len();
+        let vector_bytes = count * size_of::<StoreKey>();
+        prop_assert_eq!(operations - plain_operations, count + 1 + count);
+        prop_assert_eq!(scanned - plain_scanned, vector_bytes + 32 * count);
+        prop_assert_eq!(backing - plain_backing, vector_bytes);
+    }
+
+    /// D-S1 (D-C2a, DR-96): a channel key is the channel's history digest.
+    #[test]
+    fn channel_key_equals_hash(channel in "[a-z]{0,40}") {
+        let key = channel_key(&channel, &Meter::default()).unwrap();
+        let digest = hash(&channel, &Meter::default()).unwrap();
+        prop_assert_eq!(key.0.as_slice(), digest.0.as_slice());
+        prop_assert_eq!(key, StoreKey::from_digest(&digest, &Meter::default()).unwrap());
+    }
+}
+
+/// D-S1 (D-C2a, DR-96): a group key hashes the domain separator and the
+/// channel keys in channel order, so a reordered or repeated group has a
+/// different key; join groups keep their positions.
+#[test]
+fn group_key_preserves_order() {
+    let free = Meter::default();
+    let a = channel_key(&"a", &free).unwrap();
+    let b = channel_key(&"b", &free).unwrap();
+    let ab = group_key(&[a, b], &free).unwrap();
+    assert_ne!(ab, group_key(&[b, a], &free).unwrap());
+    assert_ne!(group_key(&[a], &free).unwrap(), group_key(&[a, a], &free).unwrap());
+    let mut reference = Blake2b::<U32>::new();
+    reference.update(GROUP_KEY_DOMAIN);
+    reference.update(a.0);
+    reference.update(b.0);
+    assert_eq!(ab.0.as_slice(), &reference.finalize()[..]);
+    let built = GroupKeys::build(&["a", "b"], &free).unwrap();
+    assert_eq!(built.channels, vec![a, b]);
+    assert_eq!(built.group, ab);
+    let operation = OperationKeys::build(&[vec!["b", "a"], vec!["a", "b"]], &free).unwrap();
+    assert_eq!(operation.groups.len(), 2);
+    assert_eq!(operation.groups[0].channels, vec![b, a]);
+    assert_eq!(operation.groups[1].group, ab);
+    assert_ne!(operation.groups[0].group, operation.groups[1].group);
+}

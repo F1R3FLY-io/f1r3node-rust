@@ -11,6 +11,9 @@ use crate::rspace::trace::event::{Consume, Produce};
 
 type Result<T> = std::result::Result<T, RSpaceError>;
 
+pub mod keys;
+pub use keys::*;
+
 pub trait SourceMeter {
     fn reserve(&self, operations: usize, scanned: usize, backing: usize) -> Result<()>;
 }
@@ -216,9 +219,40 @@ pub fn consume<C: Serialize, P: Serialize, K: Serialize>(
     persistent: bool,
     meter: &impl SourceMeter,
 ) -> Result<Consume> {
+    consume_with(channels, patterns, continuation, persistent, None, meter)
+}
+
+/// D-S1 (D-C2a, DR-96): a consume source and the store keys of its channels,
+/// in channel order. The keys are the channel digests that the source
+/// computes before it sorts them, so no channel is hashed twice.
+pub fn consume_keys<C: Serialize, P: Serialize, K: Serialize>(
+    channels: &[C],
+    patterns: &[P],
+    continuation: &K,
+    persistent: bool,
+    meter: &impl SourceMeter,
+) -> Result<(Consume, Vec<StoreKey>)> {
+    let mut keys = vector(channels.len(), meter)?;
+    let source =
+        consume_with(channels, patterns, continuation, persistent, Some(&mut keys), meter)?;
+    Ok((source, keys))
+}
+
+fn consume_with<C: Serialize, P: Serialize, K: Serialize>(
+    channels: &[C],
+    patterns: &[P],
+    continuation: &K,
+    persistent: bool,
+    mut keys: Option<&mut Vec<StoreKey>>,
+    meter: &impl SourceMeter,
+) -> Result<Consume> {
     let mut channel_hashes = vector(channels.len(), meter)?;
     for channel in channels {
-        channel_hashes.push(hash(channel, meter)?);
+        let digest = hash(channel, meter)?;
+        if let Some(keys) = keys.as_deref_mut() {
+            keys.push(StoreKey::from_digest(&digest, meter)?);
+        }
+        channel_hashes.push(digest);
     }
     sort(&mut channel_hashes, |hash| &hash.0, meter)?;
     let mut encoded_patterns = vector(patterns.len(), meter)?;

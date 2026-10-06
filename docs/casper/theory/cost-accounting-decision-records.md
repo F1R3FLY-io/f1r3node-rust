@@ -6907,3 +6907,79 @@ spread is up to 40 MB of hot-store write charges.
 
 **Cross-refs.** DR-77. Leaves `ofp-2-cap-d-c1a-tree-set-tag`,
 `ofp-2-cap-d-c1b-exact-decode-model` and `ofp-2-cap-d-c1c-switch-decode-sites`.
+
+## DR-96 — Digest-keyed ordered index for the native session store
+
+**Status.** In progress for Phase D item D-C2 of epic 8946 (D-S1 of the
+Phase D plan). Part 1 (D-C2a) implemented 2026-10-06.
+
+**Context.** The native replay session keeps its data, continuations and
+joins in the hot store of the replay space: 256 `imbl::HashMap` shards keyed
+by the channel values (`rspace++/src/rspace/hot_store/native.rs`). The
+charges of this store grow with the population of a shard. A lookup inspects
+every key of the shard, and an insert charges a 12-level persistent-map model
+and copies every entry of the shard. The population of a shard depends on how
+concurrent operations interleave, so the charges depend on the thread
+schedule. In the Phase C probe of the gateway funding block, these charges
+were about 1,152 MB of VerificationBytes and 272 MB of SearchStateBytes per
+validator replay.
+
+The plan replaces the shards with an ordered index keyed by channel digests.
+Its charges depend only on a fixed bound of the index depth. The index needs
+a key for each channel and for each channel group.
+
+**Decision (part 1, D-C2a).**
+
+1. `StoreKey` is a 32-byte digest
+   (`rspace++/src/rspace/hashing/native_source/keys.rs`). It is `Copy` and
+   ordered.
+2. The key of a channel is the Blake2b-256 digest of its bincode encoding.
+   This digest already keys the channel's history leaves.
+   - A produce takes the key from `Produce::channel_hash`.
+   - A consume takes the digests that its source computes before it sorts
+     them. `consume_keys` returns them in channel order.
+   - Other channels use `channel_key`.
+3. The key of a channel group, such as the channels of a continuation or of
+   a join, is the digest of a domain separator and the channel keys in
+   channel order. So `[a, b]` and `[b, a]` are different groups, as in the
+   legacy store.
+4. `OperationKeys` holds the keys of the join groups that one operation
+   reads, by position. The operation computes them once.
+5. Each digest is charged where it is computed. The charges of `consume` do
+   not change. `consume_keys` adds the key vector and one 32-byte copy per
+   key.
+
+This part changes no production path. Part 3 (D-C2c) uses the keys.
+
+**Soundness of key identity.** Two channels have the same key exactly when
+they are equal, up to a Blake2b collision.
+
+- The 13 rhoapi types with a `locally_free` field are `Par`, `Send`,
+  `Receive`, `New`, `Match`, `If` and seven collection expressions. Their
+  hand-written `PartialEq` and `Hash` (`models/src/lib.rs`) compare every
+  field except `locally_free`.
+- `models/build.rs` makes every `locally_free` field encode as empty bytes.
+
+So equal channels have equal encodings, and unequal channels have unequal
+encodings. Part 5 (D-C2e) handles a digest collision.
+
+**Verification (part 1).** Tests:
+
+- `channel_digest_equality_matches_partial_eq` (rholang, 128 cases):
+  channels that differ only in `locally_free`, at every level, are equal and
+  have equal keys. A change to another field, at the top or in a nested
+  send, makes both the channels and the keys differ. For generated pairs,
+  key equality is channel equality.
+- `consume_keys_follow_channel_order` (256 cases): one key per channel in
+  channel order, the same source as `consume` and `Consume::create`, and
+  exactly the predicted extra charge.
+- `channel_key_equals_hash` (256 cases): the key bytes are the history
+  digest.
+- `group_key_preserves_order`: a reordered or repeated group has a different
+  key, the group key equals a reference Blake2b computation, and join groups
+  keep their positions.
+
+**Cross-refs.** DR-77, DR-82, DR-95. Leaves `ofp-2-cap-d-c2a-digest-keys`,
+`ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,
+`ofp-2-cap-d-c2d-digest-cold-fill-export` and
+`ofp-2-cap-d-c2e-key-bound-collisions`.
