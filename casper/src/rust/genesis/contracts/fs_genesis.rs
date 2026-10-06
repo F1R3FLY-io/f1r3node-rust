@@ -346,6 +346,246 @@ fn reject_char_set(value: &str) -> Result<(), String> {
 /// paths untouched" — see auto-memory line 37-38).
 pub const BUNDLE_ROOT_PREFIX: &str = "/@bundle";
 
+/// Format a bundle as a Rholang map literal suitable for splicing
+/// into the `Fs!?(0, 1, 2, <bundle>)` position of the composed
+/// source.  Produces:
+///
+/// ```text
+/// {"logical/name": ("/canon/path", "", "r", "file", "oracular"),
+///  "cap":         ("/@bundle", "cap", "rw", "file", "consensus"), ...}
+/// ```
+///
+/// The tuple shape matches Fs.rho's `bMap.get(n)` match pattern
+/// `(canonRoot, rel, provisioned, kind, consensusMode)` (slice 26).
+/// `consensusMode` is `"oracular"` or `"consensus"` per
+/// `BundleConsensusMode::as_str`.
+///
+/// Root-slot semantics (Shape A, 2026-08-31 — see
+/// `BUNDLE_ROOT_PREFIX` docs and auto-memory
+/// `fileio_consensus_fs_shape_a.md`):
+///   - **Oracular entries**: unchanged pre-Shape-A behavior — the
+///     root slot is derived from the absolute `canon_path` (parent
+///     directory for File entries, the path itself for Dir entries).
+///     Operators sync Oracular-mode staging paths across validators,
+///     so the composed source is byte-identical without further
+///     transformation.
+///   - **Consensus entries**: the root slot is `/@bundle/<X>` where
+///     `X` derives from `logical_name` using the same File-vs-Dir
+///     split as Oracular (parent-segments for File, whole
+///     `logical_name` for Dir).  The Rholang side stays oblivious to
+///     the on-disk absolute; each validator's registry resolves
+///     `/@bundle/<X>` to `<validator_subdir>/<X>` at syscall time.
+///
+/// Deterministic output: entries sorted by logical name so the
+/// composed source is byte-identical across runs (required for
+/// genesis-block consensus).
+pub fn format_bundle_for_rholang(bundle: &[BundleEntry]) -> String {
+    if bundle.is_empty() {
+        return "{}".to_string();
+    }
+    let mut sorted: Vec<&BundleEntry> = bundle.iter().collect();
+    sorted.sort_by(|a, b| a.logical_name.cmp(&b.logical_name));
+
+    // M-25-6 slice-25 review fix: assert no duplicate logical
+    // names.  Slice 24's merge guarantees per-bucket uniqueness;
+    // slice 23's cross-bucket check (M-25-7) covers the remaining
+    // case.  A duplicate here would silently overwrite in the
+    // Rholang map — panic before emitting.
+    for window in sorted.windows(2) {
+        assert!(
+            window[0].logical_name != window[1].logical_name,
+            "format_bundle_for_rholang: duplicate logical name `{}` — \
+             slice-23 cross-bucket-name check should have caught this",
+            window[0].logical_name
+        );
+    }
+
+    let mut out = String::from("{");
+    for (i, entry) in sorted.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        // H-25-4 slice-25 review fix: require UTF-8 paths.  Slice
+        // 21 and slice 22 both enforce; a non-UTF-8 path here
+        // indicates programmatic bypass.  Panic rather than emit
+        // U+FFFD (which would silently open a different file at
+        // runtime).
+        let path_str = entry.canon_path.to_str().unwrap_or_else(|| {
+            panic!(
+                "format_bundle_for_rholang: non-UTF-8 canon_path {:?}; \
+                 upstream validators should have rejected this input",
+                entry.canon_path
+            )
+        });
+        // Slice 30c H-P7-8 fix: split the (canonRoot, rel) tuple
+        // differently by kind so `Fs.openFile`'s downstream
+        // `safe_descend` has a leaf to walk.
+        //
+        // Pre-fix (all entries): emitted `(canon_path, "")`.  For
+        // FILE entries, that made `openFileImplInner` call
+        // `fs_stat(canon_path, "", ...)` → `safe_descend(root, "")`
+        // → `QuarantineError::Empty` → "empty relative path".
+        // Every consensus/oracle-static-file entry silently failed
+        // to open in production.
+        //
+        // Post-fix:
+        //   - FILE entries: emit `(parent_dir, filename)`.
+        //     `fs_stat(parent, filename, ...)` gives safe_descend a
+        //     real leaf; the syscall lands on the file.
+        //   - DIR  entries: keep `(canon_path, "")` — Dir caps root
+        //     ON the provisioned path, not inside it.  Nested
+        //     `Dir.openFile("child")` uses `openFileImpl(canonRoot=dir,
+        //     subPath="", rel="child", ...)` which is already correct.
+        //
+        // The operator-facing bundle shape is unchanged (still
+        // `{"logical": (root, rel, mode, kind, cmode)}`); only the
+        // interpretation of the (root, rel) split differs by kind.
+        //
+        // Shape A (2026-08-31): for Consensus-mode entries the root
+        // slot derives from `logical_name` prefixed with
+        // `BUNDLE_ROOT_PREFIX` instead of from the operator's
+        // absolute `canon_path`.  This keeps the composed Rholang
+        // source validator-independent (genesis-hash stable) while
+        // each validator resolves `/@bundle/...` against its own
+        // on-disk staging directory at syscall time.  Oracular
+        // entries continue to emit the canon_path split — the plan
+        // deliberately leaves non-Consensus paths untouched (see
+        // auto-memory `fileio_consensus_fs_shape_a.md`).
+        let (root_str, rel_str) = match (entry.kind, entry.consensus_mode) {
+            (BundleEntryKind::File, BundleConsensusMode::Oracular) => {
+                let parent = entry
+                    .canon_path
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "format_bundle_for_rholang: file entry `{}` has no parent \
+                         directory or non-UTF-8 parent; canon_path = {:?}.  \
+                         Slice 25 requires absolute paths so this indicates \
+                         upstream validator drift.",
+                            entry.logical_name, entry.canon_path
+                        )
+                    });
+                let filename = entry
+                    .canon_path
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "format_bundle_for_rholang: file entry `{}` has no \
+                             file_name component or non-UTF-8 name; canon_path = {:?}",
+                            entry.logical_name, entry.canon_path
+                        )
+                    });
+                (parent.to_string(), filename.to_string())
+            }
+            (BundleEntryKind::Dir, BundleConsensusMode::Oracular) => {
+                (path_str.to_string(), String::new())
+            }
+            (BundleEntryKind::File, BundleConsensusMode::Consensus) => {
+                // Shape A: split `logical_name` at its last `/` and
+                // prepend `BUNDLE_ROOT_PREFIX` to the parent segment,
+                // mirroring the Oracular File-split shape.  A bare
+                // logical name (no `/`) yields `(BUNDLE_ROOT_PREFIX,
+                // logical_name)` — the whole file lives directly under
+                // the validator's bundle root.
+                let logical_path = std::path::Path::new(&entry.logical_name);
+                let filename = logical_path
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "format_bundle_for_rholang: Consensus file entry `{}` \
+                             has no file_name component; logical_name must not end \
+                             in `/` or be `.`/`..`.  Upstream validation should \
+                             have rejected this.",
+                            entry.logical_name
+                        )
+                    });
+                let parent_rel = logical_path.parent().and_then(|p| p.to_str()).unwrap_or("");
+                let root = if parent_rel.is_empty() {
+                    BUNDLE_ROOT_PREFIX.to_string()
+                } else {
+                    format!("{BUNDLE_ROOT_PREFIX}/{parent_rel}")
+                };
+                (root, filename.to_string())
+            }
+            (BundleEntryKind::Dir, BundleConsensusMode::Consensus) => {
+                // Shape A: Dir caps root ON the bundled directory
+                // itself, so the whole `logical_name` sits under
+                // `BUNDLE_ROOT_PREFIX`.  Nested `Dir.openFile("child")`
+                // hands `("/@bundle/<logical_name>", "", "child")`
+                // to the handler; the resolver joins the bundle root
+                // to the validator's on-disk staging dir before
+                // safe_descend.
+                (
+                    format!("{BUNDLE_ROOT_PREFIX}/{}", entry.logical_name),
+                    String::new(),
+                )
+            }
+        };
+        let name = rholang_string_escape(&entry.logical_name);
+        let root = rholang_string_escape(&root_str);
+        let rel = rholang_string_escape(&rel_str);
+        let mode = rholang_string_escape(&entry.mode);
+        let kind = match entry.kind {
+            BundleEntryKind::File => "file",
+            BundleEntryKind::Dir => "dir",
+        };
+        let cmode = entry.consensus_mode.as_str();
+        // ("canonRoot", "rel", "provisioned", "kind", "cmode") —
+        // slice 30c H-P7-8: for File entries (parent, filename);
+        // for Dir entries (canon_path, "").  `cmode` (slice 26) is
+        // "oracular"/"consensus" — routed by Fs.rho into the
+        // File/Dir constructor and back into native chown/stat/
+        // entries dispatch.
+        out.push_str(&format!(
+            r#""{name}": ("{root}", "{rel}", "{mode}", "{kind}", "{cmode}")"#
+        ));
+    }
+    out.push('}');
+    out
+}
+
+/// Escape a string for safe embedding in a Rholang `"..."` literal.
+///
+/// Rholang string grammar (`rholang_mercury.cf`):
+///   StringLiteral ::= '"' ((char - ["\"\\"]) | ('\\' ["\"\\nt"]))* '"'
+///
+/// Only `\"`, `\\`, `\n`, `\t` are valid escapes; `\r` and other
+/// escape sequences would produce a lexer error.  Slice 21's HOCON
+/// deserializer + slice 22's CLI parser + slice 23's boot
+/// validation all call `reject_forbidden_chars`, which rejects NUL
+/// / C0 controls / DEL / C1 controls / BOM / RTL overrides / line
+/// separators before this function is ever reached.  Any control
+/// char that does reach this function indicates a programmatic-
+/// construction bypass — we panic rather than emit a Rholang
+/// source that would fail at deploy time (C-25-2 slice-25 review
+/// fix: previously we emitted `\r` which the Rholang lexer rejects,
+/// causing genesis-time panic on legitimate Windows-CRLF input).
+fn rholang_string_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str(r"\\"),
+            '"' => out.push_str(r#"\""#),
+            '\n' => out.push_str(r"\n"),
+            '\t' => out.push_str(r"\t"),
+            c if (c as u32) < 0x20 || (c as u32) == 0x7F => {
+                panic!(
+                    "rholang_string_escape: control char U+{:04X} unexpectedly \
+                     reached the composer; upstream validators should have \
+                     rejected this input.  If this fires in production, some \
+                     caller bypassed reject_forbidden_chars.",
+                    c as u32
+                );
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +683,166 @@ mod tests {
     #[test]
     fn bundle_root_prefix_pinned() {
         assert_eq!(BUNDLE_ROOT_PREFIX, "/@bundle");
+    }
+
+    #[test]
+    fn format_bundle_for_rholang_empty_bundle_returns_empty_map() {
+        assert_eq!(format_bundle_for_rholang(&[]), "{}");
+    }
+
+    #[test]
+    fn format_bundle_for_rholang_oracular_file_splits_parent_filename() {
+        let entry = BundleEntry::try_new(
+            "data".into(),
+            PathBuf::from("/host/dir/data.bin"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        )
+        .expect("try_new");
+        let s = format_bundle_for_rholang(&[entry]);
+        // Oracular File: (parent, filename, mode, "file", cmode).
+        assert_eq!(
+            s,
+            r#"{"data": ("/host/dir", "data.bin", "r", "file", "oracular")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_for_rholang_oracular_dir_leaves_rel_empty() {
+        let entry = BundleEntry::try_new(
+            "root".into(),
+            PathBuf::from("/host/dir"),
+            BundleEntryKind::Dir,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        )
+        .expect("try_new");
+        let s = format_bundle_for_rholang(&[entry]);
+        // Oracular Dir: (canon_path, "", mode, "dir", cmode).
+        assert_eq!(s, r#"{"root": ("/host/dir", "", "r", "dir", "oracular")}"#);
+    }
+
+    #[test]
+    fn format_bundle_for_rholang_consensus_file_bundle_root_split() {
+        let entry = BundleEntry::try_new(
+            "nested/data.bin".into(),
+            PathBuf::from("/host/dir/data.bin"),
+            BundleEntryKind::File,
+            "rw".into(),
+            BundleConsensusMode::Consensus,
+        )
+        .expect("try_new");
+        let s = format_bundle_for_rholang(&[entry]);
+        // Consensus File: ("/@bundle/<parent>", filename, mode, "file", "consensus").
+        assert_eq!(
+            s,
+            r#"{"nested/data.bin": ("/@bundle/nested", "data.bin", "rw", "file", "consensus")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_for_rholang_consensus_file_bare_logical_name_uses_bare_root() {
+        let entry = BundleEntry::try_new(
+            "flat.bin".into(),
+            PathBuf::from("/host/anywhere/flat.bin"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Consensus,
+        )
+        .expect("try_new");
+        let s = format_bundle_for_rholang(&[entry]);
+        // No parent segment → ("/@bundle", "flat.bin", ...).
+        assert_eq!(
+            s,
+            r#"{"flat.bin": ("/@bundle", "flat.bin", "r", "file", "consensus")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_for_rholang_consensus_dir_whole_logical_under_bundle() {
+        let entry = BundleEntry::try_new(
+            "subdir".into(),
+            PathBuf::from("/host/path"),
+            BundleEntryKind::Dir,
+            "r".into(),
+            BundleConsensusMode::Consensus,
+        )
+        .expect("try_new");
+        let s = format_bundle_for_rholang(&[entry]);
+        // Consensus Dir: ("/@bundle/<logical_name>", "", ...).
+        assert_eq!(
+            s,
+            r#"{"subdir": ("/@bundle/subdir", "", "r", "dir", "consensus")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_for_rholang_sorts_entries_by_logical_name() {
+        let a = BundleEntry::try_new(
+            "zebra".into(),
+            PathBuf::from("/host/z/file"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        )
+        .expect("try_new");
+        let b = BundleEntry::try_new(
+            "aardvark".into(),
+            PathBuf::from("/host/a/file"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        )
+        .expect("try_new");
+        let s = format_bundle_for_rholang(&[a, b]);
+        // aardvark comes first — determinism for genesis-hash
+        // stability.
+        let a_pos = s.find("aardvark").expect("has aardvark");
+        let z_pos = s.find("zebra").expect("has zebra");
+        assert!(a_pos < z_pos, "entries must sort by logical name: {s}");
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate logical name")]
+    fn format_bundle_for_rholang_panics_on_duplicate_logical_name() {
+        let a = BundleEntry::try_new(
+            "dup".into(),
+            PathBuf::from("/host/a/f"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        )
+        .unwrap();
+        let b = BundleEntry::try_new(
+            "dup".into(),
+            PathBuf::from("/host/b/f"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        )
+        .unwrap();
+        let _ = format_bundle_for_rholang(&[a, b]);
+    }
+
+    #[test]
+    fn rholang_string_escape_backslash_and_quote() {
+        assert_eq!(rholang_string_escape(r#"a\b"c"#), r#"a\\b\"c"#);
+    }
+
+    #[test]
+    fn rholang_string_escape_newline_and_tab() {
+        assert_eq!(
+            rholang_string_escape("line1\nline2\ttab"),
+            r"line1\nline2\ttab"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "control char U+0000")]
+    fn rholang_string_escape_panics_on_control_char() {
+        // Upstream validators should reject before reaching this fn;
+        // panic confirms the defense-in-depth guard.
+        let _ = rholang_string_escape("\0");
     }
 }
