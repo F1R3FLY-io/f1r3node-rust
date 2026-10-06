@@ -112,6 +112,17 @@
 
 use std::path::PathBuf;
 
+use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{Expr, Par};
+use models::rust::utils::{new_etuple_par, new_gint_par};
+use prost::Message;
+use rholang::rust::interpreter::registry::registry::Registry;
+
 /// Static-provisioning bundle-entry kind.  Matches slice 23's
 /// `EntryKind` shape but redefined here to avoid a `node → casper`
 /// dependency direction issue (casper is a lower-level crate).
@@ -700,6 +711,103 @@ pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     "entriesStreamNext",
     "entriesStreamClose",
 ];
+/// Deterministically derive the secp256k1 signature the composed
+/// FsGenesis source needs for the `rs!(...)` call.  Matches
+/// RegistrySigGen::derive_from's `to_sign` construction and hashing.
+/// Signing is RFC 6979 (deterministic k) via the k256 crate — cross-
+/// process consistency required for consensus.
+pub fn fs_genesis_signature_hex(sk: &PrivateKey, timestamp: i64) -> String {
+    let secp256k1 = Secp256k1;
+    let pk: PublicKey = secp256k1.to_public(sk);
+    let to_sign: Par = new_etuple_par(vec![
+        new_gint_par(timestamp, Vec::new(), false),
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GByteArray(pk.bytes.to_vec())),
+        }]),
+        new_gint_par(FS_NONCE, Vec::new(), false),
+    ]);
+    let sign_bytes = Blake2b256::hash(to_sign.encode_to_vec());
+    let sig = secp256k1.sign(&sign_bytes, &sk.bytes);
+    hex::encode(sig)
+}
+
+/// The legacy `rho:id:<hash>` URI at which the FsGenesis deploy
+/// publishes the shared Fs cap via `insertSigned`.  Deterministic
+/// function of FS_GENERATOR_PK.  Kept alongside `fs_versioned_uri`
+/// (below) for callers that either prefer the terse `rho:id:` form
+/// or are pinned to it by prior code.  Both URIs resolve to the
+/// same `bundle+{*this}` handle produced by the single `Fs!?(0, 1, 2,
+/// bundle)` mint inside the composed source.
+pub fn fs_genesis_uri(pk: &PublicKey) -> String {
+    let key_hash = Blake2b256::hash(pk.bytes.to_vec());
+    Registry::build_uri(&key_hash)
+}
+
+/// PB-B-3 (2026-08-24): the Versioned Registry URN at which the
+/// FsGenesis deploy also publishes the shared Fs cap via
+/// `insertVersion` — resolvable through `rho:registry:1.0.0`'s
+/// `lookupVersion` machinery with semver + notify support.
+///
+/// URN shape: `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:fs:1.0.0`.
+///
+/// The FIP spec §325 aspirationally uses the shorter
+/// `rho:io:fs:1.0.0` form, but the current versioned URN parser
+/// (`rholang/src/rust/interpreter/registry/versioned_urn.rs`) only
+/// recognizes `rho:lib:*` / `rho:serve:*` / `rho:registry:*` shapes.
+/// Extending the parser + registry store schema to add an `io`
+/// namespace is a substantial cross-cutting change (URN parser,
+/// store key shape, namespace-policy gate for who may register
+/// there); deferred as a separate slice.  Callers use the serve
+/// URN today.
+///
+/// The `serve` namespace's authenticated-caller discipline means
+/// only holders of `FS_GENERATOR_PK` can register under
+/// `<FS_GENERATOR_PUB_KEY_HEX>:fs:*` — genesis is the sole such
+/// caller by construction.  Wildcard lookup
+/// `rho:serve:1.0.0:<hex>:fs:1.*` works via the resolver's semver
+/// matching.
+///
+/// **E2E resolution + method-dispatch verified** by
+/// `fs_cap_is_resolvable_via_versioned_registry_uri` in
+/// `casper/tests/genesis/contracts/fileio_fs_spec.rs` — looks up
+/// via `lookupVersion`, invokes `stdin()`, asserts `[true, cap]`.
+pub fn fs_versioned_uri(pk: &PublicKey) -> String {
+    let pk_hex = hex::encode(pk.bytes.clone());
+    format!("rho:serve:1.0.0:{pk_hex}:fs:1.0.0")
+}
+
+/// PB-B-5 (2026-09-02): the Versioned Registry URN at which the
+/// FsGenesis deploy publishes the shared `Allocator` cap via
+/// `insertVersion`.  Mirrors `fs_versioned_uri` — same serve
+/// namespace, same authenticated-caller discipline (only holders of
+/// `FS_GENERATOR_PK` can register under this projection), same
+/// wildcard-lookup support (`rho:serve:1.0.0:<hex>:buffer:1.*` via
+/// the resolver's semver matching).
+///
+/// URN shape: `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:buffer:1.0.0`.
+///
+/// Callers resolve via `lookupVersion` on `rho:registry:1.0.0` and
+/// obtain an Allocator cap, which they invoke with `allocBytes(n)` /
+/// `allocRows(m, innerN, unit)` etc. to mint `Buffer` and `Rows`
+/// instances.  This unblocks the buffer-taking File methods
+/// (`readInto` / `writeFrom` / `readLineInto` / `readLinesInto` and
+/// their arity-N+1 variants) for user deploys.
+///
+/// Unlike `fs_versioned_uri`, there is NO `insertSigned` counterpart
+/// for the Allocator — the legacy `rho:id:<hash>` publication was a
+/// compatibility affordance for the Fs cap.  Allocator ships fresh
+/// under PB-B-5, so callers use the serve-URN form exclusively.
+///
+/// The FIP spec §Table 4 lists the shorter `rho:lang:buffer:1.0.0`
+/// aspirational form.  Same URN-parser-extension constraint as
+/// `rho:io:fs:1.0.0`: the current parser recognizes only `rho:lib:*`
+/// / `rho:serve:*` / `rho:registry:*`.  Adding a `lang` namespace
+/// alias is the same URN-parser extension slice that would add `io`
+/// aliasing; both are deferred together.
+pub fn buffer_versioned_uri(pk: &PublicKey) -> String {
+    let pk_hex = hex::encode(pk.bytes.clone());
+    format!("rho:serve:1.0.0:{pk_hex}:buffer:1.0.0")
+}
 
 #[cfg(test)]
 mod tests {
@@ -1040,5 +1148,76 @@ mod tests {
                 "FS_NATIVE_URN_SUFFIXES contains duplicate: `{s}`"
             );
         }
+    }
+
+    /// Signature derivation is deterministic (RFC 6979 k).  Same
+    /// (sk, timestamp) must produce the same hex every call —
+    /// otherwise consensus-time replay would see different genesis
+    /// deploy signatures.
+    #[test]
+    fn fs_genesis_signature_hex_is_deterministic() {
+        use crate::rust::genesis::contracts::standard_deploys::FS_GENERATOR_PK;
+        let sk = PrivateKey::from_bytes(&hex::decode(FS_GENERATOR_PK).expect("hex decode"));
+        let a = fs_genesis_signature_hex(&sk, 1785600000000);
+        let b = fs_genesis_signature_hex(&sk, 1785600000000);
+        assert_eq!(a, b);
+        // DER-encoded secp256k1 signature is 70-72 bytes depending on
+        // R/S byte lengths after leading-zero stripping; hex double
+        // the byte count.  Pin the shape (even length, all hex) rather
+        // than an exact length to tolerate benign DER-length drift.
+        assert!(
+            a.len() >= 140 && a.len() <= 144,
+            "unexpected sig len: {}",
+            a.len()
+        );
+        assert!(a.len().is_multiple_of(2));
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    /// Different timestamps produce different signatures (the
+    /// `to_sign` payload includes the timestamp).
+    #[test]
+    fn fs_genesis_signature_hex_timestamp_sensitive() {
+        use crate::rust::genesis::contracts::standard_deploys::FS_GENERATOR_PK;
+        let sk = PrivateKey::from_bytes(&hex::decode(FS_GENERATOR_PK).expect("hex decode"));
+        let a = fs_genesis_signature_hex(&sk, 1785600000000);
+        let b = fs_genesis_signature_hex(&sk, 1785600000001);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fs_genesis_uri_is_rho_id_shape() {
+        use crate::rust::genesis::contracts::standard_deploys::FS_GENERATOR_PUB_KEY;
+        let uri = fs_genesis_uri(&FS_GENERATOR_PUB_KEY);
+        assert!(
+            uri.starts_with("rho:id:"),
+            "fs_genesis_uri must be rho:id:-shaped; got {uri}"
+        );
+    }
+
+    #[test]
+    fn fs_versioned_uri_shape_pinned() {
+        use crate::rust::genesis::contracts::standard_deploys::{
+            FS_GENERATOR_PK, FS_GENERATOR_PUB_KEY,
+        };
+        let uri = fs_versioned_uri(&FS_GENERATOR_PUB_KEY);
+        // Lower-case hex-encoded pub key between `rho:serve:1.0.0:`
+        // and `:fs:1.0.0`.
+        let sk = PrivateKey::from_bytes(&hex::decode(FS_GENERATOR_PK).expect("hex decode"));
+        let pk_hex = hex::encode(Secp256k1.to_public(&sk).bytes);
+        assert_eq!(uri, format!("rho:serve:1.0.0:{pk_hex}:fs:1.0.0"));
+    }
+
+    #[test]
+    fn buffer_versioned_uri_shape_pinned() {
+        use crate::rust::genesis::contracts::standard_deploys::{
+            FS_GENERATOR_PK, FS_GENERATOR_PUB_KEY,
+        };
+        let uri = buffer_versioned_uri(&FS_GENERATOR_PUB_KEY);
+        let sk = PrivateKey::from_bytes(&hex::decode(FS_GENERATOR_PK).expect("hex decode"));
+        let pk_hex = hex::encode(Secp256k1.to_public(&sk).bytes);
+        assert_eq!(uri, format!("rho:serve:1.0.0:{pk_hex}:buffer:1.0.0"));
     }
 }
