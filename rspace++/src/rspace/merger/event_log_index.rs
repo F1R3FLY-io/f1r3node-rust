@@ -342,8 +342,8 @@ impl EventLogIndex {
 
     pub fn combine(x: &Self, y: &Self) -> Result<Self, HistoryError> {
         // Merge number channels (combine differences according to per-channel
-        // merge strategy: IntegerAdd uses wrapping addition, BitmaskOr uses
-        // bitwise OR through u64). Both branches must agree on merge_type for
+        // merge strategy: IntegerAdd uses bounded exact addition, BitmaskOr uses
+        // bitwise OR). Both branches must agree on merge_type for
         // a given channel; disagreement yields a tagged error so callers can
         // reject the merge instead of crashing the validator.
         tracing::debug!(
@@ -678,12 +678,19 @@ mod tests {
 
     #[test]
     fn combine_rejects_integer_add_overflow() {
-        let a = empty_with_channels(BTreeMap::from([(mk_hash(1), i64::MAX)]));
+        let mut a = empty_with_channels(BTreeMap::new());
+        a.number_channels_data.insert(
+            mk_hash(1),
+            (
+                (num_bigint::BigInt::from(1) << super::super::merging_logic::INTEGER_ADD_BITS) - 1,
+                super::super::merging_logic::MergeType::IntegerAdd,
+            ),
+        );
         let b = empty_with_channels(BTreeMap::from([(mk_hash(1), 1i64)]));
-        // i64::MAX + 1 overflows: combine must fail loudly (Err), not wrap.
+        // (2^256 - 1) + 1 leaves the IntegerAdd bound: combine must fail loudly (Err).
         assert!(
             EventLogIndex::combine(&a, &b).is_err(),
-            "IntegerAdd overflow in the intra-chain combine must Err, not wrap"
+            "IntegerAdd overflow in the intra-chain combine must Err"
         );
     }
 

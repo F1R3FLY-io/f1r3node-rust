@@ -626,10 +626,9 @@ impl RuntimeOps {
         )
     }
 
-    /// Reads a mergeable number channel. The returned merge type refines the
-    /// tag's strategy by the value kind (see
-    /// `RholangMergingLogic::number_merge_type`): an additive tag holding a
-    /// `BigInt` merges as `BigIntAdd`.
+    /// Reads a mergeable number channel. The merge type is the tag's strategy
+    /// for every value kind (see `RholangMergingLogic::number_merge_type`), so
+    /// all branches agree on it.
     pub async fn get_number_channel(
         &self,
         channel: &Par,
@@ -643,7 +642,7 @@ impl RuntimeOps {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
                 match merge_type {
-                    MergeType::IntegerAdd | MergeType::BigIntAdd => {
+                    MergeType::IntegerAdd => {
                         let nums: Vec<String> = ch_values
                             .iter()
                             .filter_map(|datum| {

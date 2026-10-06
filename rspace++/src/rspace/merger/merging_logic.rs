@@ -4,7 +4,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use num_bigint::{BigInt, Sign};
-use num_traits::ToPrimitive;
 use shared::rust::hashable_set::HashableSet;
 
 use super::event_log_index::EventLogIndex;
@@ -12,8 +11,9 @@ use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::trace::event::{Consume, Produce};
 
 /// Merge strategy for a mergeable channel. `IntegerAdd` combines diffs by
-/// checked addition (vault balances, gas accumulators). `BitmaskOr` combines
-/// them by bitwise OR through `u64` (Registry.rho interior-node bitmaps).
+/// bounded exact addition (vault balances, gas accumulators). `BitmaskOr`
+/// combines them by bitwise OR through `u64` (Registry.rho interior-node
+/// bitmaps).
 #[derive(
     Clone,
     Copy,
@@ -29,33 +29,34 @@ use crate::rspace::trace::event::{Consume, Produce};
 pub enum MergeType {
     IntegerAdd,
     BitmaskOr,
-    BigIntAdd,
 }
 
 pub type NumberChannelsEndVal = BTreeMap<Blake2b256Hash, (BigInt, MergeType)>;
 
 pub type NumberChannelsDiff = BTreeMap<Blake2b256Hash, (BigInt, MergeType)>;
 
+/// Magnitude bound of `IntegerAdd` values and diffs: every channel value is in
+/// `[0, 2^256 - 1]` and every combined diff in `[-(2^256 - 1), 2^256 - 1]`.
+/// Merge-time arithmetic and the `NumberChannel` payload carry no phlo charge,
+/// so the bound keeps that work fixed-size on every validator.
+pub const INTEGER_ADD_BITS: u64 = 256;
+
+fn within_integer_add_bound(v: &BigInt) -> bool { v.bits() <= INTEGER_ADD_BITS }
+
 /// Combine two values according to the strategy. Used by
 /// `EventLogIndex::combine` to aggregate diffs within a chain and by the merge
 /// engine to combine across chains.
 ///
-/// `IntegerAdd` is OVERFLOW-CHECKED: it returns `None` when the addition would
-/// wrap `i64`, so the caller REJECTS the branch ("fails loudly") instead of
-/// laundering a silently-wrapped value past the apply-time `checked_add >= 0`
-/// gate in `conflict_set_merger::cal_merged_result`. (A wrapped combine could
-/// otherwise produce an in-range/non-negative value that the apply gate accepts
-/// with a wrong result — see IntegerAdd.v `launder_exhibit` / the Z3 BitVec-64
-/// cross-witness.) `BigIntAdd` is exact arbitrary-precision addition and never
-/// overflows. `BitmaskOr` is a two's-complement bitwise OR (identical to the
-/// `u64` OR for i64-range inputs) and never overflows.
+/// `IntegerAdd` is OVERFLOW-CHECKED: it returns `None` when the sum leaves the
+/// `INTEGER_ADD_BITS` range, so the caller REJECTS the branch ("fails loudly")
+/// instead of carrying an out-of-range value to the apply-time gate in
+/// `conflict_set_merger::cal_merged_result`. (See IntegerAdd.v
+/// `launder_exhibit` for why the combine step must check, not only apply.)
+/// `BitmaskOr` is a two's-complement bitwise OR (identical to the `u64` OR for
+/// i64-range inputs) and never overflows.
 pub fn combine_mergeable_value(a: &BigInt, b: &BigInt, merge_type: MergeType) -> Option<BigInt> {
     let result = match merge_type {
-        MergeType::IntegerAdd => match (a.to_i64(), b.to_i64()) {
-            (Some(x), Some(y)) => x.checked_add(y).map(BigInt::from),
-            _ => None,
-        },
-        MergeType::BigIntAdd => Some(a + b),
+        MergeType::IntegerAdd => Some(a + b).filter(within_integer_add_bound),
         MergeType::BitmaskOr => Some(a | b),
     };
     tracing::debug!(
@@ -72,33 +73,28 @@ pub fn combine_mergeable_value(a: &BigInt, b: &BigInt, merge_type: MergeType) ->
 }
 
 /// Apply a combined diff to a channel's base value. Returns `None` when the
-/// result is not a valid channel value: for `IntegerAdd` an i64 overflow or a
-/// negative result, for `BigIntAdd` a negative result.
+/// result is not a valid channel value: for `IntegerAdd` a negative result or
+/// one above `2^INTEGER_ADD_BITS - 1`.
 pub fn apply_mergeable_value(
     base: &BigInt,
     diff: &BigInt,
     merge_type: MergeType,
 ) -> Option<BigInt> {
     match merge_type {
-        MergeType::IntegerAdd => match (base.to_i64(), diff.to_i64()) {
-            (Some(x), Some(y)) => x.checked_add(y).filter(|v| *v >= 0).map(BigInt::from),
-            _ => None,
-        },
-        MergeType::BigIntAdd => Some(base + diff).filter(|v| v.sign() != Sign::Minus),
+        MergeType::IntegerAdd => {
+            Some(base + diff).filter(|v| v.sign() != Sign::Minus && within_integer_add_bound(v))
+        }
         MergeType::BitmaskOr => Some(base | diff),
     }
 }
 
-/// Diff that turns `prev` into `end` under the strategy. `IntegerAdd` uses
-/// i64 wrapping subtraction, the exact group inverse of the wrapping add that
-/// language-level `Int` execution used to produce `end`.
+/// Diff that turns `prev` into `end` under the strategy. `IntegerAdd` values
+/// are BigInt, so the diff is exact subtraction. An out-of-range diff is not
+/// rejected here but at combine and apply, where the merge rejects the deploy
+/// instead of failing block processing.
 pub fn mergeable_value_diff(prev: &BigInt, end: &BigInt, merge_type: MergeType) -> BigInt {
     match merge_type {
-        MergeType::IntegerAdd => match (prev.to_i64(), end.to_i64()) {
-            (Some(p), Some(e)) => BigInt::from(e.wrapping_sub(p)),
-            _ => end - prev,
-        },
-        MergeType::BigIntAdd => end - prev,
+        MergeType::IntegerAdd => end - prev,
         MergeType::BitmaskOr => end & !prev,
     }
 }
@@ -1414,6 +1410,8 @@ pub fn compute_rejection_options<A: Eq + std::hash::Hash + Clone>(
 mod tests {
     use std::iter::FromIterator;
 
+    use num_traits::ToPrimitive;
+
     use super::*;
 
     #[test]
@@ -2119,6 +2117,8 @@ mod tests {
             .map(|v| v.to_i64().expect("i64-range combine result"))
     }
 
+    fn integer_add_max() -> BigInt { (BigInt::from(1) << INTEGER_ADD_BITS) - 1 }
+
     proptest::proptest! {
         #[test]
         fn bitmask_or_is_commutative(a: i64, b: i64) {
@@ -2157,99 +2157,86 @@ mod tests {
         #[test]
         fn integer_add_is_commutative(a: i64, b: i64) {
             proptest::prop_assert_eq!(
-                combine_i64(a, b, MergeType::IntegerAdd),
-                combine_i64(b, a, MergeType::IntegerAdd),
+                combine_mergeable_value(&BigInt::from(a), &BigInt::from(b), MergeType::IntegerAdd),
+                combine_mergeable_value(&BigInt::from(b), &BigInt::from(a), MergeType::IntegerAdd),
             );
         }
 
         #[test]
         fn integer_add_is_associative(a: i64, b: i64, c: i64) {
-            // Overflow-checked add is associative only where both groupings
-            // succeed (one grouping can overflow while the other does not, e.g.
-            // a=MAX, b=1, c=-1); compare only when both are Some.
-            let l = combine_i64(a, b, MergeType::IntegerAdd)
-                .and_then(|ab| combine_i64(ab, c, MergeType::IntegerAdd));
-            let r = combine_i64(b, c, MergeType::IntegerAdd)
-                .and_then(|bc| combine_i64(a, bc, MergeType::IntegerAdd));
-            if let (Some(x), Some(y)) = (l, r) {
-                proptest::prop_assert_eq!(x, y);
-            }
+            let (a, b, c) = (BigInt::from(a), BigInt::from(b), BigInt::from(c));
+            let l = combine_mergeable_value(&a, &b, MergeType::IntegerAdd)
+                .and_then(|ab| combine_mergeable_value(&ab, &c, MergeType::IntegerAdd));
+            let r = combine_mergeable_value(&b, &c, MergeType::IntegerAdd)
+                .and_then(|bc| combine_mergeable_value(&a, &bc, MergeType::IntegerAdd));
+            proptest::prop_assert_eq!(l, r);
         }
 
         #[test]
-        fn integer_add_overflow_returns_none(a: i64, b: i64) {
-            // Matches i64::checked_add exactly: None iff the true sum is out of range.
+        fn integer_add_is_exact_past_i64(a: i64, b: i64) {
             proptest::prop_assert_eq!(
-                combine_i64(a, b, MergeType::IntegerAdd),
-                a.checked_add(b),
+                combine_mergeable_value(&BigInt::from(a), &BigInt::from(b), MergeType::IntegerAdd),
+                Some(BigInt::from(a as i128 + b as i128)),
             );
         }
     }
 
     // Direct unit witnesses for the fail-loudly overflow behavior (the fix for
-    // the IntegerAdd overflow-launder).
+    // the IntegerAdd overflow-launder), now at the INTEGER_ADD_BITS bound.
     #[test]
     fn integer_add_rejects_overflow_and_underflow() {
+        let max = integer_add_max();
         assert_eq!(
-            combine_i64(i64::MAX, 1, MergeType::IntegerAdd),
-            None,
-            "IntegerAdd must reject (None) on positive overflow, not wrap"
+            combine_mergeable_value(&max, &BigInt::from(0), MergeType::IntegerAdd),
+            Some(max.clone())
         );
         assert_eq!(
-            combine_i64(i64::MIN, -1, MergeType::IntegerAdd),
+            combine_mergeable_value(&max, &BigInt::from(1), MergeType::IntegerAdd),
             None,
-            "IntegerAdd must reject (None) on negative overflow, not wrap"
+            "IntegerAdd must reject (None) above the bound"
+        );
+        assert_eq!(
+            combine_mergeable_value(&-&max, &BigInt::from(-1), MergeType::IntegerAdd),
+            None,
+            "IntegerAdd must reject (None) below the negated bound"
         );
         assert!(
             combine_i64(i64::MAX, 1, MergeType::BitmaskOr).is_some(),
             "BitmaskOr never overflows"
         );
     }
-    #[test]
-    fn bigint_add_is_exact_past_i64() {
-        let max = BigInt::from(i64::MAX);
-        let sum = combine_mergeable_value(&max, &max, MergeType::BigIntAdd);
-        assert_eq!(sum, Some(BigInt::from(i64::MAX) * 2));
-        assert_eq!(
-            combine_mergeable_value(&max, &max, MergeType::IntegerAdd),
-            None,
-            "IntegerAdd keeps its i64 overflow rejection"
-        );
-    }
 
     #[test]
     fn apply_mergeable_value_enforces_channel_range() {
         let big = BigInt::parse_bytes(b"1000000000000000000000000000000", 10).unwrap();
+        let max = integer_add_max();
         assert_eq!(
-            apply_mergeable_value(&big, &BigInt::from(-1), MergeType::BigIntAdd),
+            apply_mergeable_value(&big, &BigInt::from(-1), MergeType::IntegerAdd),
             Some(&big - 1)
         );
         assert_eq!(
-            apply_mergeable_value(&BigInt::from(5), &BigInt::from(-6), MergeType::BigIntAdd),
-            None
-        );
-        assert_eq!(
             apply_mergeable_value(&BigInt::from(i64::MAX), &BigInt::from(1), MergeType::IntegerAdd),
-            None
+            Some(BigInt::from(i64::MAX) + 1)
         );
         assert_eq!(
             apply_mergeable_value(&BigInt::from(5), &BigInt::from(-6), MergeType::IntegerAdd),
             None
         );
+        assert_eq!(
+            apply_mergeable_value(&(&max - 1), &BigInt::from(1), MergeType::IntegerAdd),
+            Some(max.clone())
+        );
+        assert_eq!(apply_mergeable_value(&max, &BigInt::from(1), MergeType::IntegerAdd), None);
     }
 
     #[test]
     fn mergeable_value_diff_matches_merge_type() {
         let big = BigInt::parse_bytes(b"1000000000000000000000000000000", 10).unwrap();
-        assert_eq!(mergeable_value_diff(&BigInt::from(1), &big, MergeType::BigIntAdd), &big - 1);
+        assert_eq!(mergeable_value_diff(&BigInt::from(1), &big, MergeType::IntegerAdd), &big - 1);
         assert_eq!(
-            mergeable_value_diff(
-                &BigInt::from(i64::MAX),
-                &BigInt::from(i64::MIN),
-                MergeType::IntegerAdd
-            ),
-            BigInt::from(1),
-            "IntegerAdd diff is the i64 wrapping inverse"
+            mergeable_value_diff(&BigInt::from(i64::MAX), &big, MergeType::IntegerAdd),
+            &big - i64::MAX,
+            "IntegerAdd diff is exact when prev and end have different value kinds"
         );
         assert_eq!(
             mergeable_value_diff(

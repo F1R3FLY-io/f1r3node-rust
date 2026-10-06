@@ -5,7 +5,8 @@ new
   rl(`rho:registry:lookup`), RhoSpecCh, NonNegativeNumberCh,
   test_initialize_with_negative_value, test_initialize_with_nonnegative_value,
   test_operations_with_negative_numbers, test_subtract_too_much, test_add_successful,
-  test_subtract_successful, test_add_past_long_max, test_bigint_arguments
+  test_subtract_successful, test_add_past_long_max, test_bigint_arguments,
+  test_add_past_upper_bound
 in {
   rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
   for(@(_, RhoSpec) <- RhoSpecCh) {
@@ -18,7 +19,8 @@ in {
         ("Adding a positive number works if there's no overflow.", *test_add_successful),
         ("Subtracting a positive number less than or equal to the balance works", *test_subtract_successful),
         ("Addition past 2^63-1 does not overflow", *test_add_past_long_max),
-        ("BigInt arguments are accepted", *test_bigint_arguments)
+        ("BigInt arguments are accepted", *test_bigint_arguments),
+        ("Addition past 2^256-1 fails and keeps the value", *test_add_past_upper_bound)
       ])
   } |
 
@@ -149,6 +151,28 @@ in {
                   ((true, "==", added), "BigInt add succeeds"),
                   ((true, "==", subtracted), "BigInt sub succeeds"),
                   ((1n, "== <-", *valueCh), "BigInt result is correct"),
+                ],
+                *ackCh)
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_add_past_upper_bound(rhoSpec, _, ackCh) = {
+      new ch, atMaxCh, pastMaxCh, valueCh in {
+        @NonNegativeNumber!(0n, *ch) |
+        for (nn <- ch) {
+          nn!("add", 115792089237316195423570985008687907853269984665640564039457584007913129639935n, *atMaxCh) |
+          for (@atMax <- atMaxCh) {
+            nn!("add", 1, *pastMaxCh) |
+            for (@pastMax <- pastMaxCh) {
+              nn!("value", *valueCh) |
+              rhoSpec!("assertMany",
+                [
+                  ((true, "==", atMax), "add up to 2^256-1 succeeds"),
+                  ((false, "==", pastMax), "add past 2^256-1 fails"),
+                  ((115792089237316195423570985008687907853269984665640564039457584007913129639935n, "== <-", *valueCh), "the value stays at 2^256-1"),
                 ],
                 *ackCh)
             }

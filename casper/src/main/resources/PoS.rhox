@@ -239,7 +239,7 @@ in {
                   for (@(posBalance, totalBond, activeBonds, totalWithdraw, totalCommittedRewards, bondsMap, activeValidatorsSet) <- rewardCh){
                     @ListOps!("fold", bondsMap.toList(), {}, *computeReward, *returnCh) |
                     contract computeReward(@(pk, bonds), @acc,  outCh) = {
-                      //  someAmount / minimumBond to reduce the possibility on overflow long
+                      // Rewards are BigInt, so this product cannot overflow. Each bond is divided by minimumBond first, which truncates the validator's share.
                       if (activeValidatorsSet.contains(pk)){
                         outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$).toBigInt() / (activeBonds / $$minimumBond$$).toBigInt()))
                       } else {
@@ -333,6 +333,8 @@ in {
                        @userPk          <- userCh) {
                     if (state.get("allBonds").contains(userPk)) {
                       resultCh!(state, (false, "Public key is already bonded."))
+                    } else if (not (amount matches Int)) {
+                      resultCh!(state, (false, "Bond amount must be an Int."))
                     } else if (amount <= 0) {
                       // Bug #5 fix: explicit positive-stake assertion. The
                       // Rocq invariant `active_implies_bonded` (T-9.5,

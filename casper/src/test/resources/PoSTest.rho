@@ -23,6 +23,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_bonding_fails_if_already_bonded,
       test_bonding_fails_if_bond_too_small,
       test_bonding_fails_if_not_positive,
+      test_bonding_fails_if_not_int,
       test_bonding_fails_if_bond_too_large,
       test_pay_succeeds,
       test_refund_succeeds,
@@ -62,6 +63,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("bonding fails if already bonded", *test_bonding_fails_if_already_bonded),
               ("bonding fails if bond is too small", *test_bonding_fails_if_bond_too_small),
               ("bonding fails if bond is not positive", *test_bonding_fails_if_not_positive),
+              ("bonding fails if bond is not an Int", *test_bonding_fails_if_not_int),
               ("bonding fails if bond is too large", *test_bonding_fails_if_bond_too_large),
               ("payment is not distributed to inactive validators", *test_dont_reward_inactive_validators),
               // TODO we should reimplement the random test in the future when it is available
@@ -608,6 +610,11 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             // The explicit positive-stake gate (Bug #5 / T-9.5 active_implies_bonded, PoS.rhox):
             // amount <= 0 is rejected before the minimum-bond check.
             test_bonding_failure!(*rhoSpec, "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f", -1, "Bond amount must be positive.", *ackCh)
+          } |
+
+          contract test_bonding_fails_if_not_int(rhoSpec, _, ackCh) = {
+            // Stakes stay Int: a BigInt amount is rejected with the contract's own message.
+            test_bonding_failure!(*rhoSpec, "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e", 5n, "Bond amount must be an Int.", *ackCh)
           } |
 
           contract test_bonding_fails_if_bond_too_large(rhoSpec, _, ackCh) = {

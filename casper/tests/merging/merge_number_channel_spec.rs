@@ -17,7 +17,7 @@ use models::rhoapi::{
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
+use rholang::rust::interpreter::rho_type::RhoBigInt;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
@@ -139,7 +139,7 @@ async fn test_case(
         left_terms,
         right_terms,
         expected_rejected,
-        RhoNumber::create_par(expected_final_result),
+        RhoBigInt::create_par(&num_bigint::BigInt::from(expected_final_result)),
     )
     .await
 }
