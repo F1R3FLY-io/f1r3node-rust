@@ -328,6 +328,9 @@ jobs:
     needs: build_base
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -349,19 +352,30 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-check-commit-trailers.sh
 
-      # Co-authored-by trailers with an @anthropic.com address list an AI
-      # account in the GitHub contributors graph (CLAUDE.md "Commit
-      # Messages"). Only the pull request's own commits are checked; the
-      # fetch takes commit objects only, without trees or blobs.
-      - name: Reject AI co-author trailers in pull request commits
+      # Every commit author and Co-authored-by trailer in the pull request must
+      # be ratified: an email that already authored a commit in the base
+      # history, which only accepted pull requests reach (CLAUDE.md "Commit
+      # Messages"). A trailer never ratifies an identity, and a pull request
+      # cannot ratify its own identities. Commits that GitHub attributes to
+      # the pull request author skip the author check, so an outside
+      # contributor can open a pull request; maintainer review decides
+      # acceptance. The fetch takes commit objects only.
+      - name: Verify commit identities in pull request commits
         if: github.event_name == 'pull_request'
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         shell: bash -euo pipefail {0}
         run: |
           git fetch --quiet --no-tags --unshallow --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
-          .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}"
+          exempt="$RUNNER_TEMP/exempt-authors.txt"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" --paginate \
+            --jq '.[] | select(.author.login == env.PR_AUTHOR) | .sha' > "$exempt"
+          .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}" \
+            --ratified-from "$BASE_SHA" --exempt-authors "$exempt"
 
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}

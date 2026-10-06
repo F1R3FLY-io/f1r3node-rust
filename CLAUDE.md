@@ -186,8 +186,10 @@ Both settings take effect at the next session start.
 - Do NOT include Claude Code attribution footer or emoji
 - Do NOT include Co-Authored-By lines
 - Keep commit messages clean and professional
-- A `Co-authored-by` trailer with an `@anthropic.com` address makes GitHub list an AI account in the contributors graph.
-- The `.githooks/commit-msg` hook and the CI `Lint` job reject these trailers and `Claude-Session` trailers. Human co-authors stay allowed.
+- Every commit author and `Co-authored-by` trailer must be ratified. GitHub lists each co-author email that maps to an account in the contributors graph.
+- An email is ratified when it authored a commit in the base branch history. Only accepted pull requests reach that history. A `Co-authored-by` trailer never ratifies an email.
+- The `.githooks/commit-msg` hook and the CI `Lint` job enforce this rule and reject `Claude-Session` trailers. A pull request cannot ratify its own identities.
+- An outside contributor's own commits in their own pull request pass. Maintainer review decides their acceptance.
 - Turn off the co-author attribution setting in your Claude Code `settings.json`.
 
 ### Branch Strategy

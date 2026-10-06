@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# commit-msg hook - Reject AI co-author and assistant session trailers
+# commit-msg hook - Reject unratified commit identities and session trailers
 #
-# A Co-authored-by trailer with an @anthropic.com address makes GitHub list
-# an AI account in the contributors graph. CLAUDE.md "Commit Messages"
-# forbids these trailers; CI rejects them on pull requests.
+# The commit author and every Co-authored-by trailer must be ratified: an
+# email that already authored a commit in this history (CLAUDE.md "Commit
+# Messages"). CI applies the same check to pull requests.
 #
 
 set -euo pipefail

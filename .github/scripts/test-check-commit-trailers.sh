@@ -20,48 +20,98 @@ message() {
 	[ "$#" -eq 0 ] || printf '\n%s\n' "$@"
 }
 
-# --- Single message (commit-msg hook) ---------------------------------------
 message >"$TMP/clean.txt"
-"$TOOL" message "$TMP/clean.txt"
-message 'Co-authored-by: Jane Smith <jane@example.com>' >"$TMP/human.txt"
-"$TOOL" message "$TMP/human.txt"
+message 'Co-authored-by: Jane Smith <Jane@Example.com>' >"$TMP/ratified-coauthor.txt"
+message 'Co-authored-by: Unknown Person <unknown@example.com>' >"$TMP/unratified-coauthor.txt"
 message 'Co-Authored-By: Claude <noreply@anthropic.com>' >"$TMP/claude.txt"
-expect_failure 'Anthropic co-author trailer' "$TOOL" message "$TMP/claude.txt"
-grep -q 'Co-Authored-By: Claude' "$TMP/err"
 message 'co-authored-by: Claude Fable 5.1 <NOREPLY@ANTHROPIC.COM>' >"$TMP/case.txt"
-expect_failure 'trailer in another letter case' "$TOOL" message "$TMP/case.txt"
 message 'Claude-Session: https://claude.ai/code/session_example' >"$TMP/session.txt"
-expect_failure 'session link trailer' "$TOOL" message "$TMP/session.txt"
 message '# Co-Authored-By: Claude <noreply@anthropic.com>' >"$TMP/comment.txt"
-"$TOOL" message "$TMP/comment.txt"
-printf 'docs: mention that Co-authored-by: lines with @anthropic.com are rejected\n' >"$TMP/subject.txt"
-"$TOOL" message "$TMP/subject.txt"
+printf 'docs: mention that Co-authored-by: lines name co-authors\n' >"$TMP/subject.txt"
 
-# --- Commit range (CI) ------------------------------------------------------
+# --- Fixture history: the base branch holds the ratified authors ------------
+# test@example.com and jane@example.com authored merged commits. Claude only
+# appears as a co-author trailer, which never ratifies an identity.
 REPO="$TMP/repo"
 git init -q "$REPO"
 git -C "$REPO" config user.name 'Trailer Test'
 git -C "$REPO" config user.email 'test@example.com'
-commit() { git -C "$REPO" commit -q --allow-empty -F "$1"; }
+commit() { git -C "$REPO" commit -q --no-verify --allow-empty -F "$1"; }
+in_repo() { (cd "$REPO" && "$@"); }
 commit "$TMP/clean.txt"
-BASE="$(git -C "$REPO" rev-parse HEAD)"
-commit "$TMP/human.txt"
-commit "$TMP/clean.txt"
-"$TOOL" range "$BASE..HEAD" "$REPO"
+GIT_AUTHOR_NAME='Jane Smith' GIT_AUTHOR_EMAIL='jane@example.com' commit "$TMP/clean.txt"
 commit "$TMP/claude.txt"
-BAD="$(git -C "$REPO" rev-parse --short HEAD)"
-commit "$TMP/clean.txt"
-expect_failure 'range with an Anthropic co-author trailer' "$TOOL" range "$BASE..HEAD" "$REPO"
-grep -q "$BAD" "$TMP/err"
-"$TOOL" range "HEAD~1..HEAD" "$REPO"
-expect_failure 'unknown range' "$TOOL" range "no-such-ref..HEAD" "$REPO"
+BASE="$(git -C "$REPO" rev-parse HEAD)"
+
+# --- Single message (commit-msg hook): ratified from the local history -------
+in_repo "$TOOL" message "$TMP/clean.txt"
+in_repo "$TOOL" message "$TMP/ratified-coauthor.txt"
+expect_failure 'unratified co-author' in_repo "$TOOL" message "$TMP/unratified-coauthor.txt"
+grep -q 'Unknown Person' "$TMP/err"
+expect_failure 'AI co-author that only appears in trailers' in_repo "$TOOL" message "$TMP/claude.txt"
+expect_failure 'trailer in another letter case' in_repo "$TOOL" message "$TMP/case.txt"
+expect_failure 'session link trailer' in_repo "$TOOL" message "$TMP/session.txt"
+in_repo "$TOOL" message "$TMP/comment.txt"
+in_repo "$TOOL" message "$TMP/subject.txt"
+expect_failure 'unratified commit author' \
+	env GIT_AUTHOR_NAME='Stranger' GIT_AUTHOR_EMAIL='stranger@example.com' bash -c 'cd "$1" && "$2" message "$3"' _ "$REPO" "$TOOL" "$TMP/clean.txt"
+grep -q 'Stranger' "$TMP/err"
+
+# The first commit of a new repository has no history to ratify from, so
+# only the Claude-Session rule applies.
+EMPTY="$TMP/empty"
+git init -q "$EMPTY"
+(cd "$EMPTY" && "$TOOL" message "$TMP/unratified-coauthor.txt")
+expect_failure 'session trailer in a new repository' bash -c 'cd "$1" && "$2" message "$3"' _ "$EMPTY" "$TOOL" "$TMP/session.txt"
 
 # --- commit-msg hook ----------------------------------------------------------
 HOOK="$ROOT/.githooks/commit-msg"
-git -C "$REPO" config core.hooksPath "$ROOT/.githooks"
-(cd "$REPO" && "$HOOK" "$TMP/clean.txt")
-expect_failure 'commit-msg hook with an Anthropic co-author trailer' "$HOOK" "$TMP/claude.txt"
-expect_failure 'commit through the hook with an Anthropic co-author trailer' \
+in_repo "$HOOK" "$TMP/clean.txt"
+expect_failure 'commit-msg hook with an AI co-author trailer' in_repo "$HOOK" "$TMP/claude.txt"
+expect_failure 'commit through the hook with an AI co-author trailer' \
 	git -C "$REPO" -c core.hooksPath="$ROOT/.githooks" commit -q --allow-empty -F "$TMP/claude.txt"
+
+# --- Commit range (CI): ratified from the base commit ------------------------
+commit "$TMP/ratified-coauthor.txt"
+commit "$TMP/clean.txt"
+"$TOOL" range "$BASE..HEAD" --repo "$REPO" --ratified-from "$BASE"
+commit "$TMP/claude.txt"
+BAD="$(git -C "$REPO" rev-parse --short HEAD)"
+expect_failure 'range with an AI co-author trailer' "$TOOL" range "$BASE..HEAD" --repo "$REPO" --ratified-from "$BASE"
+grep -q "$BAD" "$TMP/err"
+STRANGER_BASE="$(git -C "$REPO" rev-parse HEAD)"
+GIT_AUTHOR_NAME='Stranger' GIT_AUTHOR_EMAIL='stranger@example.com' commit "$TMP/clean.txt"
+expect_failure 'range with an unratified author' \
+	"$TOOL" range "$STRANGER_BASE..HEAD" --repo "$REPO" --ratified-from "$STRANGER_BASE"
+grep -q 'Stranger' "$TMP/err"
+# A pull request cannot ratify itself: an author that first appears inside
+# the range is not ratified by the base commit.
+"$TOOL" range "$STRANGER_BASE..HEAD" --repo "$REPO" --ratified-from HEAD
+expect_failure 'unknown range' "$TOOL" range "no-such-ref..HEAD" --repo "$REPO" --ratified-from "$BASE"
+expect_failure 'unknown ratification base' "$TOOL" range "$BASE..HEAD" --repo "$REPO" --ratified-from no-such-ref
+
+# An outside contributor's own commits in their own pull request pass: CI
+# names those commits in an exempt-author file. Their co-authors are still
+# checked, and a commit by another identity is not exempt.
+git -C "$REPO" rev-parse HEAD >"$TMP/exempt.txt"
+"$TOOL" range "$STRANGER_BASE..HEAD" --repo "$REPO" --ratified-from "$STRANGER_BASE" --exempt-authors "$TMP/exempt.txt"
+OUTSIDE_BASE="$(git -C "$REPO" rev-parse HEAD)"
+GIT_AUTHOR_NAME='Stranger' GIT_AUTHOR_EMAIL='stranger@example.com' commit "$TMP/unratified-coauthor.txt"
+git -C "$REPO" rev-parse HEAD >"$TMP/exempt.txt"
+expect_failure 'exempt author with an unratified co-author' \
+	"$TOOL" range "$OUTSIDE_BASE..HEAD" --repo "$REPO" --ratified-from "$OUTSIDE_BASE" --exempt-authors "$TMP/exempt.txt"
+grep -q 'Unknown Person' "$TMP/err"
+if grep -q 'Stranger' "$TMP/err"; then
+	printf 'the exempt author was reported\n' >&2
+	exit 1
+fi
+GIT_AUTHOR_NAME='Claude' GIT_AUTHOR_EMAIL='noreply@anthropic.com' commit "$TMP/clean.txt"
+: >"$TMP/exempt-none.txt"
+expect_failure 'AI-authored commit that is not the pull request author' \
+	"$TOOL" range "HEAD~1..HEAD" --repo "$REPO" --ratified-from "$OUTSIDE_BASE" --exempt-authors "$TMP/exempt-none.txt"
+if grep -i -q 'anthropic' "$TOOL"; then
+	printf 'the check must not name a vendor; the history decides\n' >&2
+	exit 1
+fi
 
 printf 'commit trailer tests passed\n'
