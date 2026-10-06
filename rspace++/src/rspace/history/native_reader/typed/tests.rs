@@ -178,3 +178,99 @@ proptest! {
         prop_assert!(allocations <= meter.bytes.get());
     }
 }
+
+/// D-S2 (DR-95): a record with a tagged tree set, and its untagged twin.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct TaggedSet {
+    before: u64,
+    #[serde(deserialize_with = "tree_set")]
+    peeks: BTreeSet<i32>,
+    after: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct UntaggedSet {
+    before: u64,
+    peeks: BTreeSet<i32>,
+    after: String,
+}
+
+fn history_options() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-S2 (DR-95): the tree-set tag is transparent on the wire in every
+    /// bincode configuration that decodes these records: the tagged and
+    /// untagged types encode to the same bytes, and the tagged type decodes
+    /// those bytes to the same value, also through the metered decoder.
+    #[test]
+    fn tree_set_tag_is_wire_transparent(
+        before in any::<u64>(),
+        peeks in prop::collection::btree_set(any::<i32>(), 0..16),
+        after in "[a-z]{0,12}",
+    ) {
+        let tagged = TaggedSet { before, peeks: peeks.clone(), after: after.clone() };
+        let untagged = UntaggedSet { before, peeks, after };
+        let default_bytes = bincode::serialize(&untagged).unwrap();
+        prop_assert_eq!(&bincode::serialize(&tagged).unwrap(), &default_bytes);
+        prop_assert_eq!(&bincode::deserialize::<TaggedSet>(&default_bytes).unwrap(), &tagged);
+        let history_bytes = history_options().serialize(&untagged).unwrap();
+        prop_assert_eq!(&history_options().serialize(&tagged).unwrap(), &history_bytes);
+        prop_assert_eq!(&history_options().deserialize::<TaggedSet>(&history_bytes).unwrap(), &tagged);
+        prop_assert_eq!(
+            &decode_record::<TaggedSet, _>(&history_bytes, &Meter::new(usize::MAX)).unwrap(),
+            &tagged
+        );
+        let varint_bytes = bincode::DefaultOptions::new().serialize(&untagged).unwrap();
+        prop_assert_eq!(
+            &bincode::DefaultOptions::new().deserialize::<TaggedSet>(&varint_bytes).unwrap(),
+            &tagged
+        );
+    }
+}
+
+/// D-S2 (DR-95): the tag is not a node of its own: the metered decoder makes
+/// the same reservations for the tagged and the untagged type.
+#[test]
+fn tree_set_tag_leaves_the_decode_charge_unchanged() {
+    let untagged = UntaggedSet {
+        before: 7,
+        peeks: (0..9).collect(),
+        after: "peeks".to_owned(),
+    };
+    let bytes = history_options().serialize(&untagged).unwrap();
+    let tagged_meter = Meter::new(usize::MAX);
+    let untagged_meter = Meter::new(usize::MAX);
+    decode_record::<TaggedSet, _>(&bytes, &tagged_meter).unwrap();
+    decode_record::<UntaggedSet, _>(&bytes, &untagged_meter).unwrap();
+    assert_eq!(tagged_meter.calls.get(), untagged_meter.calls.get());
+    assert_eq!(tagged_meter.bytes.get(), untagged_meter.bytes.get());
+}
+
+/// D-S2 (DR-95): history records of waiting continuations decode to the
+/// values that plain bincode decodes, with the tagged peek set.
+#[test]
+fn history_decode_values_equal_bincode() {
+    use crate::rspace::internal::WaitingContinuation;
+
+    for peeks in [BTreeSet::new(), [0].into(), [0, 2, 5, 9].into()] {
+        let continuation = WaitingContinuation::create(
+            &vec!["channel-a".to_owned(), "channel-b".to_owned()],
+            &vec!["pattern".to_owned(), "other".to_owned()],
+            &"body".to_owned(),
+            true,
+            peeks,
+        );
+        let bytes = history_options().serialize(&continuation).unwrap();
+        let expected: WaitingContinuation<String, String> = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(expected, continuation);
+        let decoded: WaitingContinuation<String, String> =
+            decode_record(&bytes, &Meter::new(usize::MAX)).unwrap();
+        assert_eq!(decoded, continuation);
+    }
+}

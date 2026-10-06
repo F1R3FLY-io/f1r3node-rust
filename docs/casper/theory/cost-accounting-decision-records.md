@@ -6685,3 +6685,48 @@ for this cluster.
 
 **Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93. Leaf
 `ofp-2-cap-d-b4-walker-stage-a`.
+
+## DR-95 — History decode charged by the decoded structure
+
+**Status.** In progress for Phase D item D-C1 of epic 8946 (D-S2 of the
+Phase D plan). Part 1 (D-C1a) implemented 2026-10-06.
+
+**Context.** The metered history decoder
+(`rspace++/src/rspace/history/native_reader/typed.rs`) does not know the
+types that it decodes. For every decoded value it reserves a generic worst
+case: eight times the value's size, plus a B-tree node and a hash table. It
+reserves this twice, once at the seed hook and once at the deserializer
+hook. In the Phase C probe of the gateway funding block, history reads were
+about 505 MB of VerificationBytes and 508 MB of SearchStateBytes per
+validator replay. A 32-byte array, for example, was charged 20,928 bytes of
+backing for 56 allocated bytes.
+
+The plan replaces the generic charge with a charge that follows the
+structure of the decoded value: one charge per node, and backing only for
+real allocations. Vector growth, B-tree nodes and strings are the only
+allocations. To charge a B-tree set's nodes, the decoder must recognize the
+set.
+
+**Decision (part 1, D-C1a).** `WaitingContinuation.peeks`, the one B-tree
+set in the history records, deserializes through
+`native_reader::tree_set`. That function decodes the set inside a newtype
+named `NATIVE_TREE_SET`. Bincode ignores newtype names (bincode 1.3.3
+`deserialize_newtype_struct` calls `visit_newtype_struct` directly), so the
+wire format does not change. Serialization does not change either. The
+metered decoder passes the tag through without a node charge of its own, so
+this part changes no charge.
+
+**Verification (part 1).** Tests in
+`rspace++/src/rspace/history/native_reader/typed/tests.rs`:
+
+- `tree_set_tag_is_wire_transparent` (256 cases): the tagged and untagged
+  types encode to the same bytes in the default, history and variable-length
+  bincode configurations. The tagged type decodes those bytes to the same
+  value, also through the metered decoder.
+- `tree_set_tag_leaves_the_decode_charge_unchanged`: the metered decoder
+  makes the same reservations for both types.
+- `history_decode_values_equal_bincode`: history records of waiting
+  continuations decode to the values that plain bincode decodes.
+
+**Cross-refs.** DR-77. Leaves `ofp-2-cap-d-c1a-tree-set-tag`,
+`ofp-2-cap-d-c1b-exact-decode-model` and `ofp-2-cap-d-c1c-switch-decode-sites`.

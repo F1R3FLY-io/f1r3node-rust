@@ -1,18 +1,53 @@
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::fmt;
+use std::marker::PhantomData;
 use std::mem::size_of;
 
 use bincode::Options;
-use serde::Deserializer;
 use serde::de::{
     DeserializeOwned, DeserializeSeed, EnumAccess, Error, MapAccess, SeqAccess, VariantAccess,
     Visitor,
 };
+use serde::{Deserialize, Deserializer};
 use shared::rust::collection_backing::{hash_backing, tree_backing};
 
 use super::{NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter};
 
 const MAX_DEPTH: usize = 128;
+
+/// D-S2 (DR-95): the newtype name that marks a B-tree set for the metered
+/// history decoder. Bincode ignores newtype names, so the tag does not change
+/// the wire format.
+pub const NATIVE_TREE_SET: &str = "NativeTreeSet";
+
+/// D-S2 (DR-95): deserializes a B-tree set through the tree-set tag, so that
+/// the metered history decoder can recognize the set and charge its node
+/// allocations. Use it with `#[serde(deserialize_with = ...)]`.
+pub fn tree_set<'de, D, T>(deserializer: D) -> Result<BTreeSet<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Ord,
+{
+    struct Tagged<T>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de> + Ord> Visitor<'de> for Tagged<T> {
+        type Value = BTreeSet<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a tagged tree set")
+        }
+
+        fn visit_newtype_struct<D: Deserializer<'de>>(
+            self,
+            inner: D,
+        ) -> Result<Self::Value, D::Error> {
+            BTreeSet::deserialize(inner)
+        }
+    }
+
+    deserializer.deserialize_newtype_struct(NATIVE_TREE_SET, Tagged(PhantomData))
+}
 
 struct Budget<'a, M: NativeReadMeter + ?Sized> {
     meter: &'a M,
@@ -92,13 +127,34 @@ impl<'de, D: Deserializer<'de>, M: NativeReadMeter + ?Sized> Deserializer<'de>
         deserialize_i64, deserialize_i128, deserialize_u8, deserialize_u16, deserialize_u32,
         deserialize_u64, deserialize_u128, deserialize_f32, deserialize_f64, deserialize_char,
         deserialize_str, deserialize_bytes, deserialize_option, deserialize_unit,
-        deserialize_unit_struct(name: &'static str),
-        deserialize_newtype_struct(name: &'static str), deserialize_seq,
+        deserialize_unit_struct(name: &'static str), deserialize_seq,
         deserialize_tuple(len: usize), deserialize_tuple_struct(name: &'static str, len: usize),
         deserialize_map, deserialize_struct(name: &'static str, fields: &'static [&'static str]),
         deserialize_enum(name: &'static str, variants: &'static [&'static str]),
         deserialize_identifier, deserialize_ignored_any,
     );
+
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        if name == NATIVE_TREE_SET {
+            // D-S2 (DR-95): the tag is not a node of its own; the tagged set is
+            // charged when it is decoded.
+            return self.inner.deserialize_newtype_struct(name, Guard {
+                inner: visitor,
+                budget: self.budget,
+                depth: self.depth,
+            });
+        }
+        self.budget.value::<V::Value, Self::Error>(self.depth)?;
+        self.inner.deserialize_newtype_struct(name, Guard {
+            inner: visitor,
+            budget: self.budget,
+            depth: self.depth + 1,
+        })
+    }
 
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         self.deserialize_str(visitor)

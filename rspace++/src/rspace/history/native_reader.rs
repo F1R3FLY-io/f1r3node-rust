@@ -8,7 +8,7 @@ mod framing;
 mod typed;
 use framing::{MAX_NODE_BYTES, NodeStep, node_step};
 pub use framing::{NativeLeafKind, NativeRecords};
-pub use typed::decode_record;
+pub use typed::{NATIVE_TREE_SET, decode_record, tree_set};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeReadCharge {
