@@ -66,6 +66,7 @@ pub fn reviews_due(
             due.push((id.clone(), deadline));
         }
     }
+    due.sort_by_key(|(_, d)| *d);
     Ok(due)
 }
 
