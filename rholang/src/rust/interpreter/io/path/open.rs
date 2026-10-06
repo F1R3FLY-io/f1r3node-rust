@@ -26,8 +26,9 @@
 
 use std::fs::File;
 use std::os::fd::FromRawFd;
+use std::path::Path;
 
-use super::descend::{map_open_err, safe_descend};
+use super::descend::{map_open_err, safe_descend, safe_descend_verified};
 use super::identity::Root;
 use super::QuarantineError;
 
@@ -67,6 +68,53 @@ pub fn safe_open(
     // outlive this call.  `openat` reads them without retention.
     // On success `fd` is a fresh open fd; `File::from_raw_fd`
     // takes ownership so `Drop` closes it.
+    unsafe {
+        let full_flags = flags | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        let fd = libc::openat(
+            parent.as_raw_fd(),
+            parent.leaf_ptr(),
+            full_flags,
+            mode as libc::c_uint,
+        );
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            return Err(map_open_err(e));
+        }
+        Ok(File::from_raw_fd(fd))
+    }
+}
+
+/// Shape-A variant of [`safe_open`] that threads an
+/// `expected_root_id: Option<(u64, u64)>` through
+/// [`safe_descend_verified`] — the identity-check gated form.
+///
+/// `None` → ungated behavior (pre-Shape-A compat; identity check
+/// is skipped at descent).  `Some((dev, ino))` → full M-04
+/// identity check at every intermediate component.
+///
+/// Takes `&Path` for the root (not `&Root`), so the caller can
+/// pass the on-disk root resolved by
+/// `RootIdentityRegistry::resolve_or_identity`.
+///
+/// All other semantics (`O_NOFOLLOW | O_CLOEXEC` forced, descent-
+/// phase error mapping, leaf-phase `ELOOP` → `SymlinkComponent`)
+/// match [`safe_open`].  Used by fs_open's `open_impl_via_table`
+/// — the handler-layer wrapper that resolves cmode + registry
+/// before calling here.
+pub fn safe_open_verified(
+    root: &Path,
+    rel: &str,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+    expected_root_id: Option<(u64, u64)>,
+) -> Result<File, QuarantineError> {
+    let parent = safe_descend_verified(root, rel, expected_root_id)?;
+    // SAFETY: `parent` is a `SafeParent` RAII wrapper with an open
+    // dirfd for its lifetime; `parent.leaf_ptr()` returns a NUL-
+    // terminated `*const c_char` valid for the same lifetime.
+    // `openat` reads them without retention.  On success `fd` is a
+    // fresh open fd — `File::from_raw_fd` takes ownership (its
+    // `Drop` closes the fd).
     unsafe {
         let full_flags = flags | libc::O_NOFOLLOW | libc::O_CLOEXEC;
         let fd = libc::openat(

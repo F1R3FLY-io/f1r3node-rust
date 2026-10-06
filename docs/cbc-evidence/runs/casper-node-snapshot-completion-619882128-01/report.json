@@ -1,0 +1,94 @@
+{
+  "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-002",
+  "status": "pending",
+  "adapter": null,
+  "proof_execution": false,
+  "execution": {
+    "source_base": "6198821283b960c3aafae1e8c35966b883dfd2f3",
+    "observed_metadata_head": "566a21223830eb6594467615eb45fe3e4ccb3c2e",
+    "per_command_checkout_recorded": false,
+    "intervening_commit_paths": [
+      "docs/ToDos.md"
+    ],
+    "working_tree": true,
+    "branch": "feature/casper-node-observation",
+    "platform": "Linux aarch64",
+    "rust": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+    "recorded_at": "2026-09-21T20:22:18Z"
+  },
+  "snapshot_schema": 2,
+  "corrections": [
+    "nested-metadata-preflight",
+    "capture-work-and-output-bounds",
+    "independent-scratch-block-store",
+    "sealed-complete-canonical-identity"
+  ],
+  "tests": {
+    "red": {
+      "exit": 101,
+      "passed": 15,
+      "failed": 4
+    },
+    "first_implementation": {
+      "exit": 0,
+      "passed": 21,
+      "warning": "unused-import"
+    },
+    "final": {
+      "exit": 0,
+      "executions": 301,
+      "reader": 19,
+      "capture": 24
+    },
+    "aggregate_fixture_failure": {
+      "exit": 101,
+      "reason": "fixture-edge-limit-too-low",
+      "retained": "aggregate-fixture-failure",
+      "corrected_limit": 5
+    },
+    "read_only_compile_exit": 0,
+    "mutation_compile_exit": 1,
+    "mutation_diagnostic": "E0596",
+    "clippy_exit": 0,
+    "fmt_exit": 0,
+    "workspace_check_exit": 0
+  },
+  "sources": {
+    "ref": "sources.sha256",
+    "sha256": "3441cd53cec292005bd860f4483a6e34b7d8c82ee3d318489de7f2f0c7cdd6bd"
+  },
+  "evidence": {
+    "bulk": "target/node-b1-completion-619882128-NMpVOo",
+    "manifest": "target/node-b1-completion-619882128-NMpVOo/artifacts.sha256",
+    "sha256": "ef019b01e456fb6648c65c0598da0631f62604de8567b8c339117d72137cc511",
+    "executables": "post-run-copies",
+    "failed_executable_retained": false
+  },
+  "work_model": "logical-visits-and-bytes-not-instructions-or-elapsed-time",
+  "limits": {
+    "allocation_instrumentation": false,
+    "independent_rebuild": false,
+    "formal_proof": false,
+    "hosted_verification": false,
+    "live_node": false,
+    "campaign": false,
+    "claim_acceptance": false
+  },
+  "previous_reports": [
+    "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json",
+    "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json"
+  ],
+  "final_task": {
+    "id": "TASK-019-6",
+    "epic": "EPIC-019",
+    "tracker": "docs/ToDos.md",
+    "review_requirement": "minimum-necessary-codebase-scope",
+    "status": "pending"
+  },
+  "tiers": {
+    "refutation": "pending",
+    "construction": "pending",
+    "binding": "pending",
+    "soak": "pending"
+  }
+}
