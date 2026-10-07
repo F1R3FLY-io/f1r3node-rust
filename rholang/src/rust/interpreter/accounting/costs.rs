@@ -233,6 +233,11 @@ pub fn bytes_to_hex_cost(bytes: &Vec<u8>) -> Cost {
     Cost::create(bytes.len() as i64, "bytes to hex")
 }
 
+// Concatenation of a list of ByteArrays: linear in the total byte length.
+pub fn concat_bytes_cost(total_len: usize) -> Cost {
+    Cost::create(total_len as i64, "concat bytes")
+}
+
 // Both Set#remove and Map#remove have complexity of eC
 pub fn diff_cost(num_elements: i64) -> Cost {
     Cost::create(
