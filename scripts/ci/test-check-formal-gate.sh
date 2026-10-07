@@ -22,7 +22,8 @@ case "$1" in
             --error-unmatch) test -f scripts/ci/check-formal-gate.sh && test -f scripts/ci/test-check-formal-gate.sh ;;
             *)
                 if [[ "${TEST_GIT_FAILURE:-}" == inventory ]]; then printf '%s\n' Cargo.toml; exit 2; fi
-                printf '%s\n' .github/workflows/slashing-tests.yml scripts/ci/check-formal-gate.sh scripts/ci/test-check-formal-gate.sh Cargo.toml ;;
+                printf '%s\n' .github/workflows/slashing-tests.yml scripts/ci/check-formal-gate.sh scripts/ci/test-check-formal-gate.sh Cargo.toml
+                [[ -z "${TEST_INVENTORY_EXTRA:-}" ]] || cat "$TEST_INVENTORY_EXTRA" ;;
         esac ;;
     *) exit 2 ;;
 esac
@@ -56,6 +57,19 @@ for job in tla-model-check rocq-build; do
     bash "$GATE" complete "$job" "receipts/$job"
 done
 bash "$GATE" verify receipts
+# A large formal tree gives a source inventory larger than the 128 KiB that
+# Linux allows for one argument. Recording it must still succeed.
+large_dir=formal/a-large-formal-tree-with-long-model-names-to-exceed-the-single-argument-limit-of-linux
+mkdir -p "$large_dir"
+for index in $(seq 1 700); do
+    path=$(printf '%s/model-%04d-with-a-long-name-for-the-source-inventory.cfg' "$large_dir" "$index")
+    printf '%s\n' "$index" > "$path"
+    printf '%s\n' "$path"
+done > "$WORK/large-inventory.txt"
+TEST_INVENTORY_EXTRA="$WORK/large-inventory.txt" bash "$GATE" record tla-model-check large-record
+jq -e '.sources | length == 704' large-record/inputs.json > /dev/null
+[[ $(jq -c '.sources' large-record/inputs.json | wc -c) -gt 131072 ]]
+rm -rf formal large-record
 reject env GITHUB_RUN_ATTEMPT=2 bash "$GATE" verify receipts
 reject env GITHUB_RUN_ID=124 bash "$GATE" verify receipts
 reject env GITHUB_EVENT_NAME=push bash "$GATE" verify receipts
