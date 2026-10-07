@@ -1890,4 +1890,54 @@ mod tests {
         );
         assert_eq!(*body_ref, BodyRefs::FS_REMOVE_DIR);
     }
+
+    /// `fs_remove_dir` is trait-exempt — its four divergence reply
+    /// shapes don't fit the `FsHandler` trait (see
+    /// `handler_trait::fs_handler` docstring "Trait-exempt handler
+    /// (fs_remove_dir)").  It MUST NOT appear in `FS_HANDLERS`
+    /// because the trait-exempt stub (slice 5.44) is registered
+    /// separately in `dispatch_table_creator`.  If both were
+    /// registered, the dispatcher's `HashMap<body_ref, handler>`
+    /// insert would silently clobber one with the other — depending
+    /// on insertion order, callers might get either the stub's
+    /// FSERR_UNSUPPORTED reply or the (future) real handler's
+    /// response, with no compile-time or load-time warning.
+    ///
+    /// This test catches a regression where someone adds a
+    /// `fs_remove_dir` entry to `FS_HANDLERS` without first removing
+    /// the explicit stub registration in `dispatch_table_creator`.
+    /// Pins both axes: `urn_suffix == "removeDir"` AND `body_ref ==
+    /// BodyRefs::FS_REMOVE_DIR` — either match would collide.
+    #[test]
+    fn fs_remove_dir_stays_trait_exempt_in_fs_handlers() {
+        for entry in FS_HANDLERS.iter() {
+            assert_ne!(
+                entry.urn_suffix, "removeDir",
+                "FS_HANDLERS contains an entry with urn_suffix = \
+                 \"removeDir\" (name = `{}`).  fs_remove_dir is \
+                 trait-exempt; the explicit stub registration in \
+                 `dispatch_table_creator` would collide at the \
+                 dispatcher's body_ref HashMap, silently clobbering \
+                 one handler with the other.  Either (a) remove the \
+                 new FS_HANDLERS entry if fs_remove_dir still needs \
+                 the four divergence reply shapes, or (b) if the \
+                 real handler now fits the FsHandler trait, remove \
+                 the explicit stub registration in \
+                 `dispatch_table_creator` and this test.",
+                entry.name,
+            );
+            assert_ne!(
+                entry.body_ref,
+                BodyRefs::FS_REMOVE_DIR,
+                "FS_HANDLERS contains an entry with body_ref = \
+                 BodyRefs::FS_REMOVE_DIR ({}) (name = `{}`, \
+                 urn_suffix = `{}`).  fs_remove_dir is trait-exempt; \
+                 the body_ref slot is reserved for the explicit stub \
+                 registration (slice 5.44) and must not be reused.",
+                BodyRefs::FS_REMOVE_DIR,
+                entry.name,
+                entry.urn_suffix,
+            );
+        }
+    }
 }
