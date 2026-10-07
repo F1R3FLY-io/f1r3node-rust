@@ -1891,6 +1891,44 @@ mod tests {
         assert_eq!(*body_ref, BodyRefs::FS_REMOVE_DIR);
     }
 
+    /// Every `FS_HANDLERS` entry's `arity` (declared `usize`) must
+    /// fit in the `Arity` type (currently `i32`) WITHOUT truncation
+    /// on the `as Arity` cast performed by `fs_handlers_to_definitions`
+    /// (slice 5.31) and `setup_maps_and_refs` (slice 5.43).  Rust's
+    /// `as` conversion on an out-of-range `usize → i32` silently
+    /// wraps (two's-complement) rather than panicking.  Current
+    /// handler arities fall in `[1, 7]` — far from `i32::MAX` — but a
+    /// defensive pin keeps the compiler-silent wrap from surfacing as
+    /// a hard-to-diagnose "dispatcher mismatch on arity" at runtime.
+    ///
+    /// If this test fires, either the `FsHandlerEntry::arity` field
+    /// gained an entry out of `[0, i32::MAX]`, OR the `Arity` type
+    /// alias was renarrowed (e.g., `i16`).  In either case the
+    /// dispatcher's arity match would silently see the wrapped
+    /// value.  Fix: widen `Arity` to accommodate, or audit the new
+    /// entry.
+    #[test]
+    fn fs_handlers_arity_fits_in_arity_type() {
+        let max_arity: usize = Arity::MAX as usize;
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                entry.arity <= max_arity,
+                "FS_HANDLERS entry `{}` (urn_suffix = `{}`) has \
+                 arity = {}, which overflows the dispatcher's Arity \
+                 type (max = {}).  The `as Arity` cast in \
+                 fs_handlers_to_definitions + setup_maps_and_refs \
+                 would silently wrap this value, producing a \
+                 negative arity in the Definition.  Widen the Arity \
+                 type alias in system_processes.rs or correct the \
+                 entry.",
+                entry.name,
+                entry.urn_suffix,
+                entry.arity,
+                max_arity,
+            );
+        }
+    }
+
     /// `fs_remove_dir` is trait-exempt — its four divergence reply
     /// shapes don't fit the `FsHandler` trait (see
     /// `handler_trait::fs_handler` docstring "Trait-exempt handler
