@@ -166,15 +166,24 @@ tasks:
       - "No change to the system-integration repository is necessary."
   - id: TASK-022-4
     title: "Terminate the VMs of a heavy CI run when the run ends for any reason"
-    status: pending
-    claimed_by: null
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T01:30:00Z
     blocked_by: [TASK-022-3]
+    files:
+      - .github/workflows/ci-runner-reclaim.yml
+      - .github/workflows/_integration-pipeline.yml
+      - .github/scripts/test-ci-runner-reclaim.sh
+      - .github/scripts/check-workflow-invariants.sh
+      - .github/workflows/ci.yml
+    progress: "2026-10-08: ci-runner-reclaim.yml runs on workflow_run (CI and CI (fork PRs), completed). Its detect job uses only GITHUB_TOKEN and starts the oci-credentials job only when the run launch job ran. That job terminates live VMs whose name matches ^ci-eph-[A-Za-z0-9._-]+$ and whose github-run-id and github-run-key equal the completed run attempt. A workflow_dispatch input allows a manual run with dry_run. The in-run reclaim step now also finds VMs by tag, does not stop when no runner registered, and skips the VMs that its runner loop already terminated. Invariant 6 now covers the compartment literal of the new workflow. test-ci-runner-reclaim.sh runs the three steps against stub gh and oci commands. Deliberate removals of the attempt-key filter and of the handled-list skip each made the test fail. The Lint job runs the test. All EPIC-022 tests pass in ubuntu:24.04, and the invariants pass there with a UTF-8 locale."
+    out_of_scope: "Full OCI Validation (oci-validation.yml) launches 22 VMs with its own launcher and does not tag them. The reaper still covers those VMs."
     design: "A new workflow on workflow_run (CI, completed) terminates the VMs tagged with the completed run id and deregisters their runners, for every conclusion. It does not check out code. It complements the in-run reclaim job, which also changes to find VMs by tag instead of only by GitHub registration."
     acceptance:
       - "A cancelled heavy run and a run with a failed launch leave no VM tagged with their run id 15 minutes after the run completes."
       - "A successful run terminates idle leftover runners, for example the second arm64 runner that waits up to 2 hours."
       - "The workflow never terminates an instance without both the ci-eph- name prefix and a matching github-run-id tag."
-      - "The task records why the Reclaim job did not exist in 18 of 30 sampled runs, or records that the cause is not found."
+      - "The task records why the Reclaim job did not exist in 18 of 30 sampled runs, or records that the cause is not found. Recorded 2026-10-08: the cause is not found. The sampled run 36820334083 had a failed launch, skipped integration matrices that never expanded, and no Reclaim job. ci-runner-reclaim.yml does not depend on that job."
     notes: "workflow_run runs only from the default branch, so the new workflow is effective after master promotion."
   - id: TASK-022-5
     title: "Measure the effect one week after deployment"
@@ -187,7 +196,7 @@ tasks:
 ---
 ```
 
-**Current state:** TASK-022-1 code and tests are in PR #668 and not deployed. TASK-022-2 code and tests are on the same branch and not deployed. TASK-022-3 is next.
+**Current state:** TASK-022-1 code and tests are in PR #668 and not deployed. TASK-022-1 to TASK-022-4 code and tests are in PR #668. The two OCI Functions are not deployed, and ci-runner-reclaim.yml becomes active after master promotion. TASK-022-5 measures the effect one week after deployment.
 
 ---
 

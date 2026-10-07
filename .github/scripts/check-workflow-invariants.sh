@@ -253,7 +253,7 @@ fi
 #    must agree with the reaper — checked below — but absence is no longer a
 #    violation for the soak.
 ocid_required=".github/workflows/ci-runner-reaper.yml"
-ocid_optional=".github/workflows/merge-recovery-soak.yml"
+ocid_optional=".github/workflows/merge-recovery-soak.yml .github/workflows/ci-runner-reclaim.yml"
 ocid_values=""
 for ocid_file in $ocid_optional; do
 	ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \

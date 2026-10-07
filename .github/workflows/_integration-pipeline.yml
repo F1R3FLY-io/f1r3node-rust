@@ -823,22 +823,36 @@ jobs:
               --jq ".runners[] | select(any(.labels[]; .name == \"run-$GITHUB_RUN_ID\")) | \"\(.id)\t\(.name)\t\(.busy)\""
           }
 
+          # VMs of this attempt, found by the tags of the launch job. This also
+          # finds a VM that never registered with GitHub (EPIC-022).
+          list_tagged() {
+            oci compute instance list -c "$COMP" --region "$REGION" --all --output json 2>/dev/null |
+              jq -r --arg id "$GITHUB_RUN_ID" --arg key "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" '
+                (.data // [])[]
+                | select(."lifecycle-state" != "TERMINATED" and ."lifecycle-state" != "TERMINATING")
+                | select(."display-name" | test("^ci-eph-[A-Za-z0-9._-]+$"))
+                | select((."freeform-tags"["github-run-id"] // "") == $id)
+                | select((."freeform-tags"["github-run-key"] // "") == $key)
+                | "\(.id)\t\(."display-name")"' || true
+          }
+
           # An empty list can mean the VMs are still registering, not that there
           # is nothing to reclaim; a partly rejected launch left one behind that
-          # way. Re-check before concluding.
+          # way. Re-check before concluding, unless the tags already name VMs.
           runners="$(list_runners)"
+          tagged="$(list_tagged)"
           for _ in 1 2 3 4 5 6; do
-            [ -z "$runners" ] || break
+            [ -z "$runners" ] && [ -z "$tagged" ] || break
             sleep 30
             runners="$(list_runners)"
+            tagged="$(list_tagged)"
           done
 
-          if [ -z "$runners" ]; then
-            echo "No runners registered for run $GITHUB_RUN_ID after 3 minutes; nothing to reclaim."
-            exit 0
-          fi
-
           failures=0
+          handled=""
+          if [ -z "$runners" ]; then
+            echo "No runners registered for run $GITHUB_RUN_ID."
+          fi
           while IFS=$'\t' read -r id name busy; do
             [ -n "$name" ] || continue
             echo "=== $name (runner $id, busy=$busy)"
@@ -850,6 +864,7 @@ jobs:
             if [ -n "$ocid" ] && [ "$ocid" != "null" ]; then
               if oci compute instance terminate --instance-id "$ocid" --force --region "$REGION"; then
                 echo "  terminated $ocid"
+                handled="$handled $ocid "
               else
                 echo "  ::warning::could not terminate $ocid"
                 failures=$((failures + 1))
@@ -866,6 +881,22 @@ jobs:
               failures=$((failures + 1))
             fi
           done <<< "$runners"
+
+          # Tagged VMs that the loop above did not reach, for example a VM that
+          # never registered. OCI can still report a VM that the loop just
+          # terminated as RUNNING, so the handled list skips those VMs.
+          tagged="$(list_tagged)"
+          while IFS=$'\t' read -r ocid name; do
+            [ -n "$ocid" ] || continue
+            case "$handled" in *" $ocid "*) continue ;; esac
+            echo "=== $name (tagged, not reclaimed through its runner)"
+            if oci compute instance terminate --instance-id "$ocid" --force --region "$REGION"; then
+              echo "  terminated $ocid"
+            else
+              echo "  ::warning::could not terminate $ocid"
+              failures=$((failures + 1))
+            fi
+          done <<< "$tagged"
 
           echo "reclaim finished with $failures problem(s)"
 

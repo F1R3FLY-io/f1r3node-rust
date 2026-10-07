@@ -421,6 +421,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ephemeral-run-tagging.sh
 
+      - name: Verify CI runner reclaim
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ci-runner-reclaim.sh
+
       - name: Verify OCI runner reaper Function
         shell: bash -euo pipefail {0}
         run: bash oci/runner-reaper/test-handler.sh
