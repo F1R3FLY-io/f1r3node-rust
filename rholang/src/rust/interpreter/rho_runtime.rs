@@ -1300,10 +1300,68 @@ fn setup_maps_and_refs(
             urn_map.insert(key, value);
         });
 
-    let proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
+    let mut proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
         .iter()
         .map(|process| process.to_proc_defs())
         .collect();
+
+    // File I/O native URNs — must land in `urn_map` (so the reducer's
+    // `eval_new` can resolve `new x(`rho:io:fs:native:1.0.0/...`)` to
+    // the handler's fixed_channel bundle) AND in `proc_defs` (so
+    // `introduce_system_process` installs the per-channel reader that
+    // the dispatcher drives via `body_ref`).  Slice 5.34 wired the fs
+    // handlers into `dispatch_table_creator` but omitted this half
+    // of the registration, so genesis composition (where the filter
+    // is toggled off and FsGenesis tries to bind the raw primitives)
+    // tripped at `urn_map.contains_key(urn) == false`.
+    //
+    // Fields read from each `FsHandlerEntry`: `urn_suffix`,
+    // `fixed_channel`, `arity`, `body_ref`.  The handler closure is
+    // NOT touched here — it lives only on the Definition produced by
+    // `fs_handlers_to_definitions` for the dispatch table.
+    for entry in super::io::handler_trait::FS_HANDLERS.iter() {
+        let urn = format!(
+            "{}{}",
+            super::io::FS_NATIVE_URN_PREFIX_VERSIONED,
+            entry.urn_suffix
+        );
+        let fixed_channel: Par = (entry.fixed_channel)();
+        let bundle: Par = Par::default().with_bundles(vec![Bundle {
+            body: Some(fixed_channel.clone()),
+            write_flag: true,
+            read_flag: false,
+        }]);
+        urn_map.insert(urn, bundle);
+        proc_defs.push((fixed_channel, entry.arity as Arity, None, entry.body_ref));
+    }
+
+    // Trait-exempt FS native URN: `fs_remove_dir` is intentionally
+    // NOT in `FS_HANDLERS` (its four divergence reply shapes don't
+    // fit the `FsHandler` trait — see `handler_trait::fs_handler`
+    // docstring).  The real dispatcher wiring lands at a future
+    // Wave 4 handler slice.  Register the URN here so FsGenesis
+    // composition (slice 5.36) can bind `new fsRemoveDir(
+    // `rho:io:fs:native:1.0.0/removeDir`)` without tripping
+    // `eval_new`'s "No value set for URN" check.  Dir.rho sends to
+    // this channel inside its `removeDir` method only fire when a
+    // user-held Dir cap invokes removeDir — not during genesis
+    // composition.
+    {
+        let fixed_channel = FixedChannels::fs_remove_dir();
+        let bundle: Par = Par::default().with_bundles(vec![Bundle {
+            body: Some(fixed_channel.clone()),
+            write_flag: true,
+            read_flag: false,
+        }]);
+        urn_map.insert(
+            format!("{}removeDir", super::io::FS_NATIVE_URN_PREFIX_VERSIONED),
+            bundle,
+        );
+        // Arity 5 = (rootCanon, rel, recursive, cmode, ack); matches
+        // the Dir.rho call-site `fsRemoveDir!(canonRoot, joined, b,
+        // cmode, *retCh)`.
+        proc_defs.push((fixed_channel, 5 as Arity, None, BodyRefs::FS_REMOVE_DIR));
+    }
 
     (
         block_data_ref,
