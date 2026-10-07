@@ -257,6 +257,44 @@ pub const EXPECTED_PER_FAMILY_HANDLER_COUNTS: [(super::family::HandlerFamily, us
     (super::family::HandlerFamily::Lifecycle, 3),
 ];
 
+/// Expected count of VERIFYING trait-registered handlers per
+/// family.  Verifying handlers re-execute + verify reply hash on
+/// Consensus-cmode replay (see `FsHandler::VERIFYING` docstring).
+///
+///   - Mutation = 7 verifying out of 8 (fs_chown is non-verifying
+///     — host-fallible, authority-opaque).
+///   - Observation = 7 verifying out of 9 (fs_flush and fs_tell
+///     are shape-only).
+///   - Stream = 0 verifying out of 3 (every streaming handler on
+///     this tree declares `const VERIFYING = false`, matching the
+///     per-stream-step host-fd dependency; the family-docstring's
+///     "fs_entries_stream_next verifying" claim is aspirational,
+///     not current — the handler module explicitly comments
+///     "Non-verifying stream" and asserts `!VERIFYING`).
+///   - Lock = 0 verifying out of 4 (lock registry is host-local).
+///   - Lifecycle = 0 verifying out of 3 (fs_open installs a
+///     shadow fd via on_replay_side_effect, not reply verify).
+///
+/// Sum = 7 + 7 + 0 + 0 + 0 = 14 =
+/// [`EXPECTED_VERIFYING_HANDLER_COUNT`].  (The 15th verifying
+/// handler called out in the family docstring is the trait-exempt
+/// `fs_remove_dir`, NOT in FS_HANDLERS.)
+///
+/// Pin addresses the gap between whole-slice counts (slice 5.50)
+/// and the per-family split: a drift where someone flips one
+/// family's verifying handler off and another's on preserves the
+/// total but changes which families are consensus-sensitive.
+/// Mutation vs. Lifecycle, for example, interact with WAL
+/// journaling differently; a mis-labeled flip changes the
+/// replay-side effect ordering.
+pub const EXPECTED_PER_FAMILY_VERIFYING_COUNTS: [(super::family::HandlerFamily, usize); 5] = [
+    (super::family::HandlerFamily::Mutation, 7),
+    (super::family::HandlerFamily::Observation, 7),
+    (super::family::HandlerFamily::Stream, 0),
+    (super::family::HandlerFamily::Lock, 0),
+    (super::family::HandlerFamily::Lifecycle, 0),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,6 +682,65 @@ mod tests {
              but EXPECTED_MIGRATED_HANDLER_COUNT is \
              {EXPECTED_MIGRATED_HANDLER_COUNT}.  The two must agree: \
              bump both when a new handler lands."
+        );
+    }
+
+    /// Per-family verifying count pin.  Complements the whole-slice
+    /// verifying count (slice 5.50) by catching cross-family drift:
+    /// a change where one family's verifying handler is flipped off
+    /// AND another family's is flipped on preserves the whole-slice
+    /// count 14 but changes which families are consensus-sensitive.
+    ///
+    /// The hazard class: Mutation vs. Lifecycle interact with WAL
+    /// journaling differently.  Flipping a Lifecycle handler to
+    /// verifying would add a Consensus-cmode replay-verify where
+    /// none existed; flipping a Mutation handler off would skip a
+    /// previously-verified reply — both consensus-observable in
+    /// different ways.
+    #[test]
+    fn fs_handlers_per_family_verifying_counts_match_pinned() {
+        use std::collections::HashMap;
+
+        let mut actual: HashMap<super::super::family::HandlerFamily, usize> = HashMap::new();
+        for entry in FS_HANDLERS.iter().filter(|e| e.verifying) {
+            *actual.entry(entry.family).or_insert(0) += 1;
+        }
+
+        let mut expected_total = 0usize;
+        for (family, expected_n) in EXPECTED_PER_FAMILY_VERIFYING_COUNTS.iter() {
+            let actual_n = actual.remove(family).unwrap_or(0);
+            assert_eq!(
+                actual_n, *expected_n,
+                "FS_HANDLERS has {actual_n} verifying entries with \
+                 family = {family:?} but expected {expected_n}.  A \
+                 handler's `const VERIFYING: bool` was flipped \
+                 without updating EXPECTED_PER_FAMILY_VERIFYING_\
+                 COUNTS, or a handler was moved to a different \
+                 family.  The hazard class is cross-family drift: \
+                 Mutation vs. Lifecycle interact with WAL \
+                 journaling differently; a mis-labeled flip changes \
+                 Consensus-cmode replay-verify shape and is \
+                 consensus-observable.  Audit the per-handler \
+                 `impl FsHandler for Fs*Handler {{ const VERIFYING: \
+                 bool = ...; }}` + `family:` fields and reconcile."
+            );
+            expected_total += *expected_n;
+        }
+
+        assert!(
+            actual.is_empty(),
+            "FS_HANDLERS contains verifying entries with family \
+             variants not present in \
+             EXPECTED_PER_FAMILY_VERIFYING_COUNTS: {:?}.",
+            actual
+        );
+
+        assert_eq!(
+            expected_total, EXPECTED_VERIFYING_HANDLER_COUNT,
+            "EXPECTED_PER_FAMILY_VERIFYING_COUNTS sums to \
+             {expected_total} but EXPECTED_VERIFYING_HANDLER_COUNT \
+             is {EXPECTED_VERIFYING_HANDLER_COUNT}.  The two \
+             constants must agree."
         );
     }
 }
