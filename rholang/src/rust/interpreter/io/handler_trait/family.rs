@@ -1,11 +1,18 @@
 // Handler family — groups fs_* handlers by effect shape.  Used by:
 //
-//   - The yet-to-land per-family count pin in the handler-dispatcher
-//     slice (which locks the breakdown against the plan-documented
-//     shape so a copy-paste miscategorization surfaces).
-//   - Future per-family file splits (`handlers/lifecycle.rs`,
-//     `handlers/observation.rs`, etc.) — the count per family MUST
-//     match the per-file registration count.
+//   - The per-family count pin
+//     `fs_handlers::fs_handlers_per_family_counts_match_pinned`
+//     (slice 5.51) which locks the breakdown against the shape in
+//     `EXPECTED_PER_FAMILY_HANDLER_COUNTS` so a copy-paste
+//     miscategorization surfaces at test time.
+//   - The per-family verifying count pin
+//     `fs_handlers::fs_handlers_per_family_verifying_counts_match_pinned`
+//     (slice 5.53) which locks the per-family VERIFYING split.
+//   - The per-family handler file split under
+//     `handlers/{mutation,observation,stream,lock,lifecycle}/*.rs`
+//     — each handler lives under the subdirectory that names its
+//     family, so the per-family count must match the per-directory
+//     file count.
 //
 // Taxonomy is Wave 6 consensus-aware: the Mutation vs. Observation
 // split determines WAL-journaling defaults; the Lifecycle family
