@@ -477,8 +477,26 @@ mod tests {
     fn fs_handlers_body_ref_matches_fixed_channel_byte() {
         use crate::rust::interpreter::system_processes::byte_name;
         for entry in FS_HANDLERS.iter() {
+            // Guard the `as u8` cast: `byte_name` takes `Byte = u8`
+            // and the convention assumes `body_ref ∈ [0, 255]`.
+            // A future BodyRefs::FS_* constant with a value outside
+            // that range would silently truncate here and the pin
+            // would produce a misleading equality result.  The
+            // explicit u8::try_from check catches that drift with
+            // a clear error.
+            let body_ref_u8: u8 = u8::try_from(entry.body_ref).unwrap_or_else(|_| {
+                panic!(
+                    "FS_HANDLERS entry `{}` (urn_suffix `{}`): \
+                     body_ref = {} is outside [0, 255].  The \
+                     body_ref ↔ fixed_channel convention assumes \
+                     a u8 — if a BodyRefs::FS_* constant now exceeds \
+                     this range, the `byte_name` convention needs to \
+                     be revisited and this test updated.",
+                    entry.name, entry.urn_suffix, entry.body_ref,
+                );
+            });
             let actual = (entry.fixed_channel)();
-            let expected = byte_name(entry.body_ref as u8);
+            let expected = byte_name(body_ref_u8);
             assert_eq!(
                 actual, expected,
                 "FS_HANDLERS entry `{}` (urn_suffix `{}`): \
