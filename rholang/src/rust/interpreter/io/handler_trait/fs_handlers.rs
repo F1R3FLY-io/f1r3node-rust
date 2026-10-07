@@ -1,19 +1,20 @@
 // Distributed-slice registry of migrated fs_* handlers.  Populated
 // at link time by `#[distributed_slice(FS_HANDLERS)] static X_ENTRY`
-// declarations in the per-family handler modules (yet to land —
-// slices 4.12+).  Consumed by `rho_runtime.rs` wiring at the
-// yet-to-land handler-registration slice to replace the pre-trait
-// 28-way `fs_native_def(...)` block with a `FS_HANDLERS.iter()`
-// loop.
+// declarations in the per-family handler modules under
+// `handlers/{mutation,observation,stream,lock,lifecycle}/*.rs`.
+// Consumed by `rho_runtime::fs_handlers_to_definitions` (slice 5.31)
+// which walks `FS_HANDLERS.iter()` to replace the pre-trait 28-way
+// `fs_native_def(...)` block.
 //
 // # Status
 //
-// Zero migrated handlers at Wave 4 slice 4.10.  The slice is
-// declared empty; `EXPECTED_MIGRATED_HANDLER_COUNT = 0`.  Each
-// per-family handler slice (4.12+) adds its handlers' entries and
-// bumps the count by the family size.  At migration-complete,
-// count reaches 27 (fs_remove_dir trait-exempt — see
-// `handler_trait::fs_handler` module docstring).
+// Migration complete: 27 trait-registered handlers + 1 trait-exempt
+// (`fs_remove_dir`, dispatched via its own stub in slice 5.44).
+// See [`EXPECTED_MIGRATED_HANDLER_COUNT`] for the authoritative
+// count; [`EXPECTED_PER_FAMILY_HANDLER_COUNTS`] for the per-family
+// breakdown; [`EXPECTED_VERIFYING_HANDLER_COUNT`] +
+// [`EXPECTED_PER_FAMILY_VERIFYING_COUNTS`] for the Consensus-cmode
+// verify matrix.
 //
 // # linkme truncation guard
 //
@@ -31,11 +32,13 @@
 // # Wave 6 (cost-accounted-rho) coupling
 //
 // `FsHandlerEntry.verifying` carries each handler's `VERIFYING`
-// const (from the `FsHandler` trait, slice 4.6).  Under Wave 6
-// the per-family count pin + the `fs_handlers_family_counts_
-// match_pinned` runtime pin (yet to land) catches a drop in
-// `const VERIFYING` — the hazard class flagged in
-// `FsHandler::VERIFYING`'s docstring.
+// const (from the `FsHandler` trait, slice 4.6).  Under Wave 6,
+// the per-family verifying count pin
+// (`fs_handlers_per_family_verifying_counts_match_pinned`, slice
+// 5.53) + the whole-slice verifying count pin
+// (`fs_handlers_verifying_count_matches_pinned`, slice 5.50)
+// together catch a silent drop in `const VERIFYING` — the hazard
+// class flagged in `FsHandler::VERIFYING`'s docstring.
 //
 // # Entry fn-pointer shape
 //
@@ -43,8 +46,8 @@
 // `async fn` — Rust fn pointers can't carry async directly).
 // Each handler's registration site coerces a non-capturing
 // `|fs, args| Box::pin(...)` closure into this pointer type.  The
-// closure calls `dispatch_via_trait_owned::<H>(fs, args)` (yet to
-// land, slice 4.11) which internally awaits the handler's async
+// closure calls `dispatch_via_trait_owned::<H>(fs, args)`
+// (slice 4.11) which internally awaits the handler's async
 // `dispatch` method and returns the resulting
 // `Result<Vec<Par>, InterpreterError>`.
 
@@ -72,18 +75,20 @@ pub struct FsHandlerEntry {
     pub name: &'static str,
 
     /// Total arity including the trailing ack channel — same as
-    /// `<H as FsHandler>::ARITY`.  Used by the yet-to-land
-    /// handler-registration site to construct the
-    /// `fs_native_def(..., arity, ...)` call from the slice entry.
+    /// `<H as FsHandler>::ARITY`.  Used by
+    /// `rho_runtime::fs_handlers_to_definitions` (slice 5.31) to
+    /// construct the `Definition` row's `arity` field from the
+    /// slice entry.
     pub arity: usize,
 
     /// Verifying flag — same as `<H as FsHandler>::VERIFYING`.
     /// `true` = re-execute + verify reply hash on Consensus-cmode
-    /// replay.  Used by the yet-to-land per-family verifying-count
-    /// pin to guard the 15/27 verify-matrix invariant (14 verifying
-    /// in the trait-registered slice + 1 verifying in the trait-
-    /// exempt fs_remove_dir = 15 total; see fileio's
-    /// `handler_trait::fs_handler` docstring).
+    /// replay.  Pinned by
+    /// [`EXPECTED_VERIFYING_HANDLER_COUNT`] + the per-family
+    /// [`EXPECTED_PER_FAMILY_VERIFYING_COUNTS`] (14 verifying in
+    /// the trait-registered slice + 1 verifying in the trait-
+    /// exempt `fs_remove_dir` = 15 total verifying in the full
+    /// verify matrix; see `handler_trait::fs_handler` docstring).
     pub verifying: bool,
 
     /// The type-erased dispatch fn.  Each per-handler registration
@@ -91,7 +96,7 @@ pub struct FsHandlerEntry {
     /// closure into this fn-pointer type.  The closure body is
     /// one line:
     /// `dispatch_via_trait_owned::<H>(fs, args)` — the generic
-    /// framework loop (yet to land, slice 4.11).
+    /// framework loop (slice 4.11).
     ///
     /// The tuple parameter is `(args, is_replay, previous)` —
     /// matches [`ContractCall::unapply`](crate::rust::interpreter::contract_call::ContractCall::unapply)
@@ -113,33 +118,40 @@ pub struct FsHandlerEntry {
     )
         -> Pin<Box<dyn Future<Output = Result<Vec<Par>, InterpreterError>> + Send>>,
 
-    /// URN suffix appended to `"rho:io:fs:native:1.0.0/"` when
-    /// registering the handler at genesis.  E.g., `"open"`,
-    /// `"readAt"`, `"removeFile"`.  camelCase per the pre-trait
-    /// `fs_native_def` call sites in `rho_runtime.rs`; the
-    /// composed source at `fs_genesis.rs` (yet to land, Wave 5)
+    /// URN suffix appended to
+    /// [`FS_NATIVE_URN_PREFIX_VERSIONED`](super::super::FS_NATIVE_URN_PREFIX_VERSIONED)
+    /// (`"rho:io:fs:native:1.0.0/"`) when registering the handler
+    /// at genesis.  E.g., `"open"`, `"readAt"`, `"removeFile"`.
+    /// camelCase per the pre-trait `fs_native_def` call sites in
+    /// `rho_runtime.rs`; the composed FsGenesis source at
+    /// `casper::genesis::contracts::fs_genesis` (slice 5.15)
     /// expects the exact same string.
     ///
-    /// A regression that drifted this field from the pre-trait
-    /// hard-coded string in `rho_runtime.rs` would silently rename
-    /// the URN, breaking URN-map lookups from `Fs.rho`.  Will be
-    /// guarded by the handler-registration slice's URN-suffix pin.
+    /// Pinned uniqueness: slice 5.48
+    /// (`fs_handlers_urn_suffixes_are_unique`) + slice 5.39's
+    /// output-side `fs_handlers_to_definitions_urns_unique`.
     pub urn_suffix: &'static str,
 
     /// Fixed-channel constructor: `FixedChannels::fs_x` fn pointer.
-    /// The yet-to-land handler-registration loop calls
+    /// `rho_runtime::fs_handlers_to_definitions` (slice 5.31) +
+    /// `rho_runtime::setup_maps_and_refs` (slice 5.43) call
     /// `(entry.fixed_channel)()` to obtain the `Par` byte-name
-    /// used as the rendezvous channel.
+    /// used as the rendezvous channel in the `urn_map` Bundle and
+    /// in `introduce_system_process`'s per-channel reader.
     pub fixed_channel: fn() -> Name,
 
     /// `BodyRefs::FS_X` constant.  Rholang's built-in dispatch
     /// table keys handler resolution on this `i64`.
     pub body_ref: BodyRef,
 
-    /// Handler family.  Groups handlers by effect shape; used by
-    /// the yet-to-land per-family count pin + by the per-family
-    /// handler file split.  See
-    /// [`HandlerFamily`](super::family::HandlerFamily) for the
+    /// Handler family.  Groups handlers by effect shape.  Pinned
+    /// by the per-family count pin
+    /// (`fs_handlers_per_family_counts_match_pinned`, slice 5.51)
+    /// + the per-family verifying count pin
+    /// (`fs_handlers_per_family_verifying_counts_match_pinned`,
+    /// slice 5.53).  Also drives the per-family file split
+    /// (`handlers/mutation/`, `handlers/observation/`, etc.).
+    /// See [`HandlerFamily`](super::family::HandlerFamily) for the
     /// taxonomy.
     pub family: HandlerFamily,
 }
@@ -147,23 +159,20 @@ pub struct FsHandlerEntry {
 /// Distributed slice of every migrated handler's
 /// [`FsHandlerEntry`].  Populated at link time by
 /// `#[distributed_slice(FS_HANDLERS)] static ...` declarations
-/// in per-family handler modules (yet to land, slices 4.12+).
+/// in per-family handler modules under
+/// `handlers/{mutation,observation,stream,lock,lifecycle}/*.rs`.
 #[distributed_slice]
 pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 
-/// Expected count of migrated handlers in [`FS_HANDLERS`].  Bumped
-/// at every per-family handler slice as handlers get registered;
-/// the pin `fs_handlers_count_matches_migrated_pinned` fires on
-/// drift.
+/// Expected count of migrated handlers in [`FS_HANDLERS`].  The
+/// pin `fs_handlers_count_matches_migrated_pinned` fires on drift.
 ///
 /// # Wave 4 progression (reference)
 ///
-/// Each per-family handler slice adds its handlers' entries and
-/// bumps this count.  At migration-complete (handlers slices
-/// finished), count reaches 27 — fs_remove_dir trait-exempt
-/// (see `handler_trait::fs_handler` module docstring).
-///
-/// Current: 18 handlers migrated.
+/// Migration is COMPLETE: 27 trait-registered + 1 trait-exempt
+/// (`fs_remove_dir`) = 28 fs_* natives.  See
+/// `handler_trait::fs_handler` module docstring for the trait-
+/// exempt handler's rationale.
 ///
 /// Wave 4 slice progression:
 ///   - 4.10: 0 (empty registry infrastructure).
