@@ -5557,6 +5557,10 @@ Tests in `hot_store/native/tests.rs`:
 channels, and the selection reads the position of each channel's entry,
 which the build of the entries records (DR-106).
 
+**Amendment (DR-107).** The incoming datum of a produce is also borrowed,
+so no datum in the channel data is owned. The produce selection moves the
+incoming value into its result (DR-107).
+
 **Cross-refs.** DR-81. Leaf `ofp-2-cap-c2-data-views`.
 
 ## DR-83 — Continuation-shard replaces count store-owned pointers inline
@@ -9436,3 +9440,245 @@ to 4.38 in VerificationBytes and 1.04 in SearchStateBytes.
 
 **Cross-refs.** DR-75, DR-82, DR-88. Leaf
 `ofp-2-cap-d-d4-channel-positions`.
+
+## DR-107 — The produce selection borrows its incoming datum and moves the value into the result
+
+**Status.** Implemented 2026-10-07 for Phase D item D-D5 of epic 8946 (D-M5
+of the Phase D plan). A read-only design pass checked the approved design
+against the code after DR-106 and corrected it in five places. This record
+includes the corrections.
+
+**Context.** A produce selects a waiting continuation in
+`prepare_metered_produce_candidate` (`native_candidate/metered.rs`):
+
+- `metered_channel_data` copied the produce's value and source into the
+  entry of the produced channel, with their copy and cleanup reserved. It
+  did so at each occurrence of the channel in each join group that it
+  examined.
+- `metered_match_data` copied the value again as the removed value of each
+  candidate that took the incoming datum. It did so for each continuation
+  that it tried, before the commit check, so failed attempts paid too.
+- The native session (`native_session/operations.rs`) dropped its own value
+  after a match, or moved it into the store when nothing matched.
+
+The selection only reads the incoming datum, and the result needs the value
+once. The probe attributed about 23 MB of VerificationBytes and 4.2 MB of
+SearchStateBytes to the copies in the channel data, and about 26 MB and
+4.2 MB to the removed-value copies on the produce path.
+
+**Decision.**
+
+1. The native session passes the incoming datum by value. The selection
+   returns `ProduceSelection::Unmatched(datum)` when nothing matches or when
+   the replay identity rejects the match. Otherwise it returns
+   `ProduceSelection::Matched { prepared, group, source }`. The session
+   stores the returned datum, or it uses the returned source for the
+   counter and the trace.
+2. `metered_channel_data` borrows the incoming datum (`Cow::Borrowed`). The
+   borrow reserves one operation and `size_of::<Cow<Datum<A>>>()` scanned
+   bytes, as each borrow of a cached datum does (DR-82). It reserves no
+   backing.
+3. `metered_match_data` leaves the removed value of an incoming candidate
+   (`datum_index` −1, `INCOMING_INDEX`) at `A::default()`. A stored
+   candidate still copies its removed value.
+4. `fill_incoming` runs once, on the selected match. It reserves one
+   operation for each candidate and one more, 4 scanned bytes for each
+   candidate's index (`INDEX_BYTES`) and twice the size of `A` for the move.
+   Then it moves the value into the first incoming candidate. For each
+   further incoming candidate it reserves a copy and cleanup and copies the
+   value.
+5. The replaced lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨build the entries⟩ ≡                          -- metered_channel_data
+  at each occurrence of the produced channel:
+    reserve (1 operation, size_of::<Cow<Datum<A>>>() scanned bytes, 0)
+    put (a borrow of the incoming datum, INCOMING_INDEX) before the stored data
+
+⟨push a candidate⟩ ≡                           -- metered_match_data
+  reserve the copies of the channel and of the source
+  if the datum is the incoming datum:
+    removed ← A::default()                      -- owns no allocation
+  else:
+    reserve the copy and cleanup of the value
+    removed ← a copy of the value
+
+⟨select⟩ ≡                                     -- prepare_metered_produce_candidate
+  for each join group and each continuation, as before:
+    if the identity rejects the match: return Unmatched(incoming)
+    if the match is accepted: ⟨fill⟩; return Matched { prepared, group, source }
+  return Unmatched(incoming)
+
+⟨fill⟩ ≡                                       -- fill_incoming
+  reserve (n + 1 operations, 4n + 2 size_of::<A>() scanned bytes, 0)
+  for each candidate, in order:
+    if it is an incoming candidate after the first:
+      reserve the copy and cleanup of the value
+      removed ← a copy of the value
+  the first incoming candidate: removed ← the value (moved)
+```
+
+**Soundness.**
+
+- *Same selection.* The borrowed entry holds the incoming datum itself, so
+  the selection reads the same values
+  (`IncomingDatumMove.borrowed_incoming_selection_equals_owned`, from
+  `NativeSharedReads.shared_selection_equals_deep_selection`).
+- *Same removed values.* After the fill, each incoming candidate holds the
+  produce's value, and each stored candidate keeps its copy
+  (`incoming_fill_equals_copies`, `fill_gives_every_incoming_slot_the_value`).
+  A persistent datum matched through a repeated channel gives several
+  incoming candidates. The first receives the value and each further one a
+  copy, as play gives each one a copy (`fill_moves_once`,
+  `fill_copies_further`). The removed values go back to the interpreter
+  (`result::prepare`), which reads them, so each must be the produce's
+  value.
+- *No default value leaves the selection.* A default removed value exists
+  only inside `prepare_metered_produce_candidate`. The fill replaces it
+  before the selection returns, and an error drops the whole selection.
+  The selection owns the incoming datum, so the session can store only the
+  datum that the selection gives back.
+- *Rejections.* A rejected reservation returns an error and drops the
+  datum. The session dropped its data on the same error before D-D5. The
+  selection writes neither the store nor the counters, so every cut leaves
+  them unchanged.
+- *Charges.* Each new step reserves before it works (`fill_trace_covered`).
+  The default value owns no allocation, so its creation and its drop cost
+  nothing (premise test). When one borrow and the fill pass cost no more
+  than a copy of the value and of the source, the new charge is at most the
+  legacy charge (`moved_charge_le_legacy`, `unmatched_charge_le_legacy`).
+  The premise fails for the `u8` values of the test spaces, where a pass
+  can cost more than the copies (`tiny_value_pass_exceeds_copies_example`).
+  The measurement below shows the decrease for the production payload.
+- *Determinism.* Every charge depends only on the shape of the values, on
+  compile-time sizes and on the constants `INDEX_BYTES` and
+  `INCOMING_INDEX`. No new SearchStateBytes term uses `size_of`.
+
+**Corrections to the approved design.**
+
+- `ProduceSelection::Matched` also carries the index of the join group,
+  which the retirement needs (DR-96).
+- The borrow charges the full `Cow` slot, as each borrow of a cached datum
+  does, not one pointer.
+- The fill is new work. It reserves its pass before it reads the indices
+  and moves the value.
+- The default removed value is sound only because it owns no allocation. A
+  premise test pins that for `ListParWithRandom`.
+- Two D-D4 tests compared the removed values of the selection directly.
+  They now fill the incoming candidates first, and their charge relation
+  counts the legacy copies of the incoming value.
+
+**Scope.** This change is cost-accounting work. Native replay exists only on
+this branch. The change alters host-work charges of protocol 6, which is not
+yet released. Native replay selects the same candidates, returns the same
+removed values and builds the same COMM. No encoding, root, event or receipt
+changes.
+
+**Verification.** `IncomingDatumMove.v` proves these results without
+axioms:
+
+- `incoming_fill_equals_copies`, `fill_gives_every_incoming_slot_the_value`,
+  `selection_differs_only_at_incoming`, `fill_moves_once`,
+  `fill_copies_further`, `fill_without_incoming_moves_nothing` and
+  `borrowed_incoming_selection_equals_owned`.
+- `fill_trace_covered`, `fill_trace_reserved`, `moved_charge_le_legacy`,
+  `unmatched_charge_le_legacy` and
+  `legacy_incoming_charge_counts_two_copies`.
+- Negative controls: `legacy_incoming_charge_example` (210 against 28),
+  `first_only_fill_differs_example`, `unfilled_selection_differs_example`,
+  `copy_first_fill_is_not_covered_example` and
+  `tiny_value_pass_exceeds_copies_example`.
+
+Tests in rspace++ `native_candidate/metered/tests.rs`, against a frozen copy
+of the selection before D-D5 (`legacy_prepare_produce`), which counts its
+copies of the incoming value and of its source:
+
+- `produce_selection_matches_frozen_legacy_produce` (128 cases): on one to
+  three join groups with repeated channels, stored and persistent data,
+  peeks, failed commits and replay identities, the selection equals the
+  frozen selection. It returns the input datum or the input source. Its
+  charge differs from the frozen charge by exactly the frozen copies less
+  the borrows, the fill pass and the further copies of the fill. Wildcard
+  patterns are three times as likely as the others, so 57 of 129 cases
+  select data (10 with two or more incoming candidates). Three runs of
+  2,000 cases pass.
+- `incoming_datum_is_borrowed_during_selection`: a value of 65,536 bytes
+  allocates and charges what a value of 1 byte does, except the matcher's
+  binding of the matched value. The removed value is the incoming value
+  itself.
+- `legacy_incoming_charge_counts_two_copies`: the negative control. The
+  frozen selection copies the value twice and the source once. Its
+  allocations and its charge exceed the current ones by exactly those
+  copies, less the borrow and the fill pass.
+- `stored_produce_stores_the_incoming_datum`: without a match, and with a
+  replay identity that rejects the match, the selection gives back the
+  input datum itself.
+- `incoming_removed_datum_is_the_produce_value`: one and three incoming
+  candidates hold the value. Only the first holds the original allocation,
+  and the candidates equal those of play.
+- `matched_selection_without_the_trigger_drops_the_value`: a replay identity
+  can select stored data only.
+- `incoming_fill_accepts_exact_credit_and_rejects_each_smaller_dimension`,
+  `every_incoming_fill_cut_rejects_without_unpaid_copy` and
+  `fill_incoming_charges_one_pass_and_each_further_copy` (counting
+  allocator).
+- `default_list_par_with_random_owns_no_allocation` (rholang): the premise.
+- The amended D-D4 tests and the existing every-cut and differential tests
+  of candidate selection pass.
+
+Two observations came from the tests:
+
+- The first selection on a fresh space fills the cache of the channel data
+  and makes more reservations (627 against 608 in one fixture). The charge
+  tests therefore run warm.
+- The first version of the produce property test also compared the
+  selection with play. It found that play and the metered selection choose
+  other data after a continuation that fails its commit matched a channel
+  twice. The frozen selection before D-D5 does the same, so D-D5 does not
+  cause it. pgmcp bug 10137 records it, and the oracle is the frozen
+  metered selection.
+
+Six mutations in a scratch copy fail tests:
+
+- A default removed value for every candidate fails six tests, among them
+  both frozen-legacy property tests.
+- A fill of the first incoming candidate only fails five tests.
+- A copy in the fill without its reservation fails three tests, among them
+  the every-cut test with the counting allocator.
+- A borrow without its reservation fails the two tests with exact charge
+  relations.
+- A selection that gives back a default datum when the identity rejects the
+  match fails `stored_produce_stores_the_incoming_datum`.
+- An incoming index of 0 instead of −1 fails eight tests.
+
+
+**Measurement.** The D-G0 probe ran the gateway test twice with DR-106 and
+twice with DR-107, under the provisional caps. Every role charged exactly
+the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-106, run 1 | 1,181,480,379 | 139,070,263 | 60,004,315 |
+| DR-106, run 2 | 1,169,835,253 | 138,834,641 | 59,988,090 |
+| DR-107, run 1 | 1,115,096,284 | 135,174,339 | 57,868,930 |
+| DR-107, run 2 | 1,102,623,236 | 135,097,087 | 57,853,668 |
+| Change of the means | −66.8 MB (−5.7 %) | −3.82 MB (−2.7 %) | −2.13 M (−3.6 %) |
+
+The runs of the two builds do not overlap. The change of VerificationBytes
+is about 5.4 times the largest difference between two runs of one build,
+and the changes of SearchStateBytes and VerificationOperations are about 16
+and 132 times it. The sampled call sites, averaged over the two runs of
+each build, put about 27.3 MB of the VerificationBytes saving at the
+removed-value copies in `metered_match_data` and about 22.5 MB at the
+copies in `metered_channel_data`. The VerificationBytes saving is about 1.4
+times the 49 MB of the plan. The SearchStateBytes saving is about 45 % of
+the 8.4 MB of the plan, and the samples, in steps of 1 MiB, are too coarse
+to place it. In multiples of the original caps, the replay falls to 4.13 in
+VerificationBytes and 1.01 in SearchStateBytes, which is 0.92 MB above the
+original SearchStateBytes cap.
+
+
+**Cross-refs.** DR-81, DR-82, DR-88, DR-96, DR-106. Leaf
+`ofp-2-cap-d-d5-incoming-datum`.

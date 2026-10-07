@@ -980,3 +980,18 @@ fn deep_chain_charge_grows_with_depth() {
         work.length + work.encode
     );
 }
+
+/// D-D5 (DR-107) premise: the default produce payload owns no allocation.
+/// The metered selection leaves the removed value of an incoming candidate
+/// at the default until the produce's own value is moved in, so creating
+/// and dropping that default value costs nothing.
+#[test]
+fn default_list_par_with_random_owns_no_allocation() {
+    let (value, created) = measured(ListParWithRandom::default);
+    assert_eq!(created, 0);
+    assert_eq!(value.pars.capacity(), 0);
+    assert_eq!(value.random_state.capacity(), 0);
+    assert!(value.cost_authority.is_none());
+    let ((), dropped) = measured(|| drop(value));
+    assert_eq!(dropped, 0);
+}

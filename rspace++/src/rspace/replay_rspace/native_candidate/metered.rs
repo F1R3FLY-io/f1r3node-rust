@@ -67,6 +67,66 @@ fn position_buffer(length: usize, meter: &dyn SourceMeter) -> Result<Vec<usize>>
     Ok(positions)
 }
 
+/// D-D5 (DR-107): the datum index of the incoming datum of a produce
+/// (`native_candidate.rs`). The retirement skips it, because it retires only
+/// stored data (`native_session/result.rs`).
+const INCOMING_INDEX: i32 = -1;
+
+/// D-D5 (DR-107): the bytes charged to read the datum index of one
+/// candidate in the fill. The constant keeps the charge independent of the
+/// platform's layout, and the assertion keeps it at or above the read.
+const INDEX_BYTES: usize = 4;
+const _: () = assert!(size_of::<i32>() <= INDEX_BYTES);
+
+/// D-D5 (DR-107): the selection of a produce owns the incoming datum. A
+/// produce that matches nothing gets its datum back to store it, and a
+/// matched produce gets its source back for the counter and the trace.
+pub(in crate::rspace::replay_rspace) enum ProduceSelection<C, P: Clone, A: Clone, K: Clone> {
+    Unmatched(Datum<A>),
+    Matched {
+        prepared: PreparedProduceCandidate<C, P, A, K>,
+        group: usize,
+        source: Produce,
+    },
+}
+
+/// D-D5 (DR-107): gives the incoming value to the incoming candidates of
+/// the selected match. The first one receives the value itself, and each
+/// further one (a persistent datum matched through a repeated channel)
+/// receives a copy. The pass reserves its reads and the move first, and
+/// each copy reserves its copy and cleanup before the copy.
+fn fill_incoming<C, A: Clone + CloneBacking>(
+    candidates: &mut [ConsumeCandidate<C, A>],
+    value: A,
+    meter: &dyn SourceMeter,
+) -> Result<()> {
+    let count = candidates.len();
+    let moved = size_of::<A>()
+        .checked_mul(2)
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    let scanned = count
+        .checked_mul(INDEX_BYTES)
+        .and_then(|bytes| bytes.checked_add(moved))
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, scanned, 0)?;
+    let mut first = None;
+    for candidate in candidates.iter_mut() {
+        if candidate.datum_index != INCOMING_INDEX {
+            continue;
+        }
+        if first.is_none() {
+            first = Some(candidate);
+            continue;
+        }
+        native_backing::reserve_copy_and_cleanup(&value, meter)?;
+        candidate.removed_datum = value.clone();
+    }
+    if let Some(first) = first {
+        first.removed_datum = value;
+    }
+    Ok(())
+}
+
 // Legacy metered (digest, index) order: it inspected and hashed every candidate
 // on every operation. Disabled by I1 (DR-75); the canonical order below
 // digests only tie runs and matches play's
@@ -410,12 +470,15 @@ where
 
     /// One entry for each distinct channel, and for each channel of
     /// `channels` the position of its entry (D-D4, DR-106). The entries
-    /// borrow the channels.
+    /// borrow the channels, and the incoming datum of a produce (D-D5,
+    /// DR-107).
     fn metered_channel_data<'v>(
         &self,
         channels: &'v [C],
         views: &'v [NativeDataView<C, A>],
-        incoming: Option<(&C, &A, bool, &Produce)>,
+        // Changed by D-D5 (DR-107): the entries borrow the incoming datum.
+        // incoming: Option<(&C, &A, bool, &Produce)>,
+        incoming: Option<(&C, &'v Datum<A>)>,
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<(Vec<ChannelData<'v, C, A>>, Vec<usize>)> {
@@ -430,7 +493,9 @@ where
                 borrowed.push(Cow::Borrowed(datum));
             }
             let mut values = sorted(borrowed, reader.meter)?;
-            if let Some((trigger, data, persist, source)) = incoming {
+            // Changed by D-D5 (DR-107): the incoming datum is borrowed.
+            // if let Some((trigger, data, persist, source)) = incoming {
+            if let Some((trigger, datum)) = incoming {
                 native_backing::inspect(channel, reader.meter)?;
                 native_backing::inspect(trigger, reader.meter)?;
                 if channel == trigger {
@@ -439,24 +504,33 @@ where
                         .checked_add(1)
                         .ok_or(RSpaceError::HostWorkRejected)?;
                     let mut all = buffer(count, reader.meter)?;
-                    native_backing::reserve_copy_and_cleanup(data, reader.meter)?;
-                    native_backing::reserve_copy_and_cleanup(source, reader.meter)?;
-                    all.push((
-                        Cow::Owned(Datum {
-                            a: data.clone(),
-                            persist,
-                            source: source.clone(),
-                        }),
-                        -1,
-                    ));
+                    // Changed by D-D5 (DR-107): the entry borrows the
+                    // incoming datum, as it borrows the cached data (DR-82),
+                    // so the value and the source are not copied.
+                    // native_backing::reserve_copy_and_cleanup(data, reader.meter)?;
+                    // native_backing::reserve_copy_and_cleanup(source, reader.meter)?;
+                    // all.push((
+                    //     Cow::Owned(Datum {
+                    //         a: data.clone(),
+                    //         persist,
+                    //         source: source.clone(),
+                    //     }),
+                    //     -1,
+                    // ));
+                    reader.meter.reserve(1, size_of::<Cow<'v, Datum<A>>>(), 0)?;
+                    all.push((Cow::Borrowed(datum), INCOMING_INDEX));
                     all.extend(values);
                     values = all;
                 }
             }
             let mut position = 0;
             while position < values.len() {
+                // Changed by D-D5 (DR-107): the source of the borrowed datum.
+                // let source = incoming.and_then(|(_, _, persist, source)| {
+                //     (!persist).then_some(source)
+                // });
                 let source =
-                    incoming.and_then(|(_, _, persist, source)| (!persist).then_some(source));
+                    incoming.and_then(|(_, datum)| (!datum.persist).then_some(&datum.source));
                 if self.metered_candidate_matches(
                     &values[position].0,
                     expected,
@@ -563,7 +637,17 @@ where
                 };
                 native_backing::reserve_copy_and_cleanup(channel, meter)?;
                 native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
-                native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+                // Changed by D-D5 (DR-107): the removed value of an incoming
+                // candidate is the produce's own value, which the produce
+                // preparation moves in after the selection (`fill_incoming`).
+                // The default value owns no allocation.
+                // native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+                let removed_datum = if *index == INCOMING_INDEX {
+                    A::default()
+                } else {
+                    native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+                    datum.a.clone()
+                };
                 candidates.push(ConsumeCandidate {
                     channel: channel.clone(),
                     datum: Datum {
@@ -571,7 +655,8 @@ where
                         persist: datum.persist,
                         source: datum.source.clone(),
                     },
-                    removed_datum: datum.a.clone(),
+                    // removed_datum: datum.a.clone(),
+                    removed_datum,
                     datum_index: *index,
                 });
                 if !datum.persist {
@@ -771,28 +856,43 @@ where
         Ok(Some(PreparedConsumeCandidate { data, comm }))
     }
 
-    /// The produce candidate and the index of its join group in
-    /// `grouped_channels` (D-C2c, DR-96: the retirement uses that group's
-    /// keys).
-    #[allow(clippy::too_many_arguments)]
+    /// The selection of a produce: the produce candidate, the index of its
+    /// join group in `grouped_channels` (D-C2c, DR-96: the retirement uses
+    /// that group's keys) and the produce's source, or the incoming datum
+    /// when nothing matches (D-D5, DR-107).
+    // Changed by D-D5 (DR-107): the selection owns the incoming datum, so
+    // the selection borrows it and the match moves its value.
+    // #[allow(clippy::too_many_arguments)]
+    // pub(in crate::rspace::replay_rspace) fn prepare_metered_produce_candidate(
+    //     &self,
+    //     channel: &C,
+    //     value: &A,
+    //     persist: bool,
+    //     source: &Produce,
+    //     grouped_channels: Vec<Vec<C>>,
+    //     keys: &OperationKeys,
+    //     expected: Option<&dyn NativeCandidateIdentity>,
+    //     reader: &CandidateReader<'_, C, P, A, K>,
+    // ) -> Result<Option<(PreparedProduceCandidate<C, P, A, K>, usize)>> {
     pub(in crate::rspace::replay_rspace) fn prepare_metered_produce_candidate(
         &self,
         channel: &C,
-        value: &A,
-        persist: bool,
-        source: &Produce,
+        incoming: Datum<A>,
         grouped_channels: Vec<Vec<C>>,
         keys: &OperationKeys,
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
-    ) -> Result<Option<(PreparedProduceCandidate<C, P, A, K>, usize)>> {
+    ) -> Result<ProduceSelection<C, P, A, K>> {
         if keys.groups.len() != grouped_channels.len() {
             return Err(RSpaceError::HostWorkRejected);
         }
-        let next = if persist {
+        // Changed by D-D5 (DR-107): the fields of the incoming datum.
+        // let next = if persist {
+        let next = if incoming.persist {
             None
         } else {
-            let count = self.metered_produce_count(source, reader.meter)?;
+            // let count = self.metered_produce_count(source, reader.meter)?;
+            let count = self.metered_produce_count(&incoming.source, reader.meter)?;
             let Some(next) = count.checked_add(1) else {
                 let message = "Native replay produce counter overflow";
                 reader.meter.reserve(1, message.len(), message.len())?;
@@ -812,7 +912,9 @@ where
             let (data, positions) = self.metered_channel_data(
                 &channels,
                 &views,
-                Some((channel, value, persist, source)),
+                // Changed by D-D5 (DR-107): the entries borrow the datum.
+                // Some((channel, value, persist, source)),
+                Some((channel, &incoming)),
                 expected,
                 reader,
             )?;
@@ -838,27 +940,51 @@ where
                     &data_candidates,
                     &continuation.source,
                     &continuation.peeks,
-                    next.map(|next| (source, next)),
+                    // Changed by D-D5 (DR-107): the source of the datum.
+                    // next.map(|next| (source, next)),
+                    next.map(|next| (&incoming.source, next)),
                     reader.meter,
                 )?;
                 if let Some(identity) = expected {
                     if !identity.metered_matches_comm(&comm, reader.meter)? {
-                        return Ok(None);
+                        // Changed by D-D5 (DR-107): the datum goes back.
+                        // return Ok(None);
+                        return Ok(ProduceSelection::Unmatched(incoming));
                     }
                 }
                 // C1 (DR-81): only the selected continuation is copied.
                 native_backing::reserve_copy_and_cleanup(continuation.as_ref(), reader.meter)?;
                 let continuation = continuation.as_ref().clone();
+                // Changed by D-D5 (DR-107): the incoming candidates receive
+                // the produce's value, and the source goes back.
+                // let candidate = ProduceCandidate {
+                //     channels,
+                //     continuation,
+                //     continuation_index: index,
+                //     data_candidates,
+                // };
+                // return Ok(Some((PreparedProduceCandidate { candidate, comm }, group)));
+                let mut data_candidates = data_candidates;
+                let Datum {
+                    a: value, source, ..
+                } = incoming;
+                fill_incoming(&mut data_candidates, value, reader.meter)?;
                 let candidate = ProduceCandidate {
                     channels,
                     continuation,
                     continuation_index: index,
                     data_candidates,
                 };
-                return Ok(Some((PreparedProduceCandidate { candidate, comm }, group)));
+                return Ok(ProduceSelection::Matched {
+                    prepared: PreparedProduceCandidate { candidate, comm },
+                    group,
+                    source,
+                });
             }
         }
-        Ok(None)
+        // Changed by D-D5 (DR-107): the datum goes back.
+        // Ok(None)
+        Ok(ProduceSelection::Unmatched(incoming))
     }
 }
 

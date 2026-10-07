@@ -4,7 +4,9 @@ use shared::rust::clone_backing::CloneBacking;
 
 use super::*;
 use crate::rspace::hashing::native_source::{GroupKeys, OperationKeys, StoreKey};
-use crate::rspace::replay_rspace::native_candidate::metered::CandidateReader;
+// Changed by D-D5 (DR-107): the produce selection owns the incoming datum.
+// use crate::rspace::replay_rspace::native_candidate::metered::CandidateReader;
+use crate::rspace::replay_rspace::native_candidate::metered::{CandidateReader, ProduceSelection};
 use crate::rspace::replay_rspace::native_epoch::{
     NativeOperationEpoch, NativeOperationPublication, NativeOperationTicket, NativeReplayDecision,
     NativeReplayOutcome,
@@ -366,23 +368,46 @@ where
             data: &read_data,
             continuations: &read_continuations,
         };
-        let prepared = self.space.prepare_metered_produce_candidate(
+        // Changed by D-D5 (DR-107): the selection owns the incoming datum.
+        // It gives the datum back when nothing matches, and the source back
+        // when a continuation matches.
+        // let prepared = self.space.prepare_metered_produce_candidate(
+        //     &channel,
+        //     &data,
+        //     persist,
+        //     &source,
+        //     joins,
+        //     &join_keys,
+        //     ticket.candidate_identity(),
+        //     &reader,
+        // )?;
+        let selection = self.space.prepare_metered_produce_candidate(
             &channel,
-            &data,
-            persist,
-            &source,
+            Datum {
+                a: data,
+                persist,
+                source,
+            },
             joins,
             &join_keys,
             ticket.candidate_identity(),
             &reader,
         )?;
         if outcome == NativeReplayOutcome::Stored {
-            if prepared.is_some() {
+            // if prepared.is_some() {
+            //     return Err(mismatch());
+            // }
+            let ProduceSelection::Unmatched(incoming) = selection else {
                 return Err(mismatch());
-            }
-            let counter = self
-                .space
-                .prepare_metered_produce_counter(&source, persist, &reserve)?;
+            };
+            // let counter = self
+            //     .space
+            //     .prepare_metered_produce_counter(&source, persist, &reserve)?;
+            let counter = self.space.prepare_metered_produce_counter(
+                &incoming.source,
+                incoming.persist,
+                &reserve,
+            )?;
             let mut completion = ticket.prepare(outcome)?;
             let publication =
                 PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
@@ -408,16 +433,19 @@ where
             //     },
             //     &reserve,
             // )?;
-            self.store.put_datum(
-                &channel,
-                key,
-                Datum {
-                    a: data,
-                    persist,
-                    source,
-                },
-                &reserve,
-            )?;
+            // Changed by D-D5 (DR-107): the store receives the datum that
+            // the selection gave back.
+            // self.store.put_datum(
+            //     &channel,
+            //     key,
+            //     Datum {
+            //         a: data,
+            //         persist,
+            //         source,
+            //     },
+            //     &reserve,
+            // )?;
+            self.store.put_datum(&channel, key, incoming, &reserve)?;
             counter.publish();
             completion.publish();
             publication.complete();
@@ -425,7 +453,16 @@ where
         }
         // Changed by D-C2c (D-S1, DR-96): the candidate names its join group.
         // let prepared = prepared.ok_or_else(mismatch)?;
-        let (prepared, group) = prepared.ok_or_else(mismatch)?;
+        // Changed by D-D5 (DR-107): the selection also gives the source back.
+        // let (prepared, group) = prepared.ok_or_else(mismatch)?;
+        let ProduceSelection::Matched {
+            prepared,
+            group,
+            source,
+        } = selection
+        else {
+            return Err(mismatch());
+        };
         let group_keys = join_keys.groups.get(group).ok_or_else(mismatch)?;
         let candidate = prepared.candidate;
         let decision = ticket.observe_comm(
