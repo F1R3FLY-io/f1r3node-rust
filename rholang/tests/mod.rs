@@ -2,6 +2,7 @@ mod abort_spec;
 mod accounting;
 mod fileio_bounds_spec;
 mod fileio_edge_cases_spec;
+mod fileio_lifecycle_spec;
 mod fileio_stream_spec;
 mod cli_smoke_spec;
 mod crypto_channels_spec;
