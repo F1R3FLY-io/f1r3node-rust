@@ -363,6 +363,31 @@ tasks:
       - "A property test checks state equivalence on random action batches, with the previous process and record_root path as the oracle. The state root is consensus data, so any difference fails the test."
       - "/cbc verify writes an evidence record for CLAIM-RSPACE-002, and /cbc discharge passes for the step-1 diff. The claims audit of CLAIM-CASPER-SOAK-001 to -008 still exits 0."
       - "The maintainer accepts the evidence before PR #653 leaves draft."
+  - id: TASK-021-12
+    title: "Release parked blocks without queue, scan, and stale-link delays (issue #24)"
+    status: in_progress
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T00:40:00Z
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr: 653
+    tdd_plan: docs/tdd-plans/issue-24-parked-block-release-2026-10-07.md
+    origin: "On 2026-10-07 the user chose to fix issue #24 on the #653 branch. Soak 37469364217 on dev 778cc6754 failed 8 of 49 iterations with test_load 'N deploy(s) not finalized within 45s'. The 2026-09-25 issue breakdown shows that 56% of blocks park on missing parents, 7.1 s median and 39.6 s p90. A code trace found three release-path causes."
+    scope: "Release priority, the stale-link defect, and an incremental release scan, plus the round-length metrics. The recovery re-request for parents that the node already holds is out of scope."
+    files:
+      - docs/claims/casper-buffer-release.md
+      - casper/src/rust/blocks/block_processor.rs
+      - casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs
+      - node/src/rust/instances/block_processor_instance.rs
+      - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
+      - scripts/bench/extend-issue24-metrics.sh
+    acceptance:
+      - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 as pending before any code change (EPIC-021 cbc_policy)."
+      - "Each plan behavior has a test that fails before its change and passes after it. B5 reproduces the stale-link hold on the current code."
+      - "The soak records park time, release queue wait, release scan duration, and recovery re-requests."
+      - "A comparison soak against the scheduled dev soak on the same base reports sustained finalization p95, the test_load failure count, and the new metrics."
+      - "The maintainer accepts the soak and CbC evidence before PR #653 leaves draft."
 ---
 ```
 
