@@ -19,7 +19,10 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use tokio::sync::mpsc;
 
+use crate::rust::instances::release_queue::{run_scheduler, ReleaseQueue};
+
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
+const RELEASED_BLOCKS_BEFORE_GOSSIP_TURN: usize = 4;
 
 struct ActiveBlockProcessingGuard;
 
@@ -94,6 +97,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 block_processor,
                 blocks_in_processing,
             } = self;
+            drop(block_queue_tx);
 
             tracing::info!(
                 max_parallel_blocks = MAX_PARALLEL_BLOCKS,
@@ -104,19 +108,26 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 "source" => BLOCK_PROCESSOR_METRICS_SOURCE
             )
             .set(MAX_PARALLEL_BLOCKS as f64);
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_BLOCKS));
 
-            while let Some((casper, block, in_flight_guard)) = blocks_queue_rx.recv().await {
+            let queue = Arc::new(ReleaseQueue::new(
+                RELEASED_BLOCKS_BEFORE_GOSSIP_TURN,
+                MAX_PARALLEL_BLOCKS,
+            ));
+            let gossip_queue = queue.clone();
+            tokio::spawn(async move {
+                while let Some(item) = blocks_queue_rx.recv().await {
+                    gossip_queue.push_gossip_wait(item).await;
+                }
+                gossip_queue.close();
+            });
+
+            let release_processor = block_processor.clone();
+            run_scheduler(queue, MAX_PARALLEL_BLOCKS, move |item: BlockQueueItem| {
+                let (casper, block, in_flight_guard) = item;
                 let block_processor = block_processor.clone();
-                let blocks_in_processing = blocks_in_processing.clone();
-                let block_queue_tx = block_queue_tx.clone();
-                let casper = casper.clone();
                 let result_tx = result_tx.clone();
 
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-
-                // Spawn task to process the block
-                tokio::spawn(async move {
+                async move {
                     let _active_guard = ActiveBlockProcessingGuard::new();
                     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
                     // Process the block with all its validation steps
@@ -188,7 +199,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     // This avoids suppressing re-enqueue when another task resolves a dependency
                     // while this task is still in post-processing.
                     drop(in_flight_guard);
-
+                    (casper, block_str)
+                }
+            },
+            move |(casper, block_str): (Arc<dyn MultiParentCasper + Send + Sync>, String)| {
+                let block_processor = release_processor.clone();
+                let blocks_in_processing = blocks_in_processing.clone();
+                async move {
+                    let mut released = Vec::new();
                     // Step 6 (from Scala): Get dependency-free blocks from buffer and enqueue them
                     // Equivalent to: c.getDependencyFreeFromBuffer
                     match casper.get_dependency_free_from_buffer() {
@@ -222,24 +240,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                 }
                                 match mark_in_flight(&blocks_in_processing, pendant_hash.clone()) {
                                     InFlightMark::Marked(guard) => {
-                                        if block_queue_tx
-                                            .send((casper.clone(), pendant.clone(), guard))
-                                            .await
-                                            .is_err()
-                                        {
-                                            tracing::warn!(
-                                                "Dropping dependency-free pendant {} because block \
-                                                 queue is closed",
-                                                PrettyPrinter::build_string_bytes(&pendant.block_hash)
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                "Enqueued dependency-free pendant {}",
-                                                PrettyPrinter::build_string_bytes(
-                                                    &pendant.block_hash
-                                                )
-                                            );
-                                        }
+                                        tracing::info!(
+                                            "Enqueued dependency-free pendant {}",
+                                            PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                        );
+                                        released.push((casper.clone(), pendant.clone(), guard));
                                     }
                                     InFlightMark::CapReached => {
                                         block_processor.note_local_backpressure_drop(
@@ -268,9 +273,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         }
                     }
 
-                    drop(permit);
-                });
-            }
+                    released
+                }
+            })
+            .await;
 
             tracing::info!("Block processing queue closed, stopping processor");
 
