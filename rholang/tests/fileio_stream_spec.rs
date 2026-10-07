@@ -14,11 +14,10 @@
 //!
 //! **Triage port note:** two tests (`deploy_error_rollback_sweeps_stream_fds`
 //! and `nested_soft_checkpoints_preserve_outer_dir_fd_snapshot`)
-//! depend on `dir_fs_snapshot_stack` on `RhoRuntimeImpl` + its
-//! push/pop wiring into `create_soft_checkpoint` /
-//! `revert_to_soft_checkpoint` / `reset`.  That wiring is a
-//! streaming-slice Step 4 artifact not yet ported into triage;
-//! those tests are `#[ignore]` with a reason naming the gap.
+//! depend on `dir_fs_snapshot_stack` push/pop wiring on
+//! `RhoRuntimeImpl` (`create_soft_checkpoint` /
+//! `revert_to_soft_checkpoint` / `reset`).  Slice 5.80 ported that
+//! wiring; both tests are active again.
 
 #[cfg(test)]
 mod tests {
@@ -229,13 +228,9 @@ mod tests {
     /// `revert_to_soft_checkpoint`, clear on `reset`.  Now serves as
     /// the regression pin for that wiring.
     ///
-    /// **Triage status (slice 5.79)**: `#[ignore]` — the
-    /// `dir_fs_snapshot_stack` push/pop wiring on `RhoRuntimeImpl`
-    /// has not been ported into triage.  Un-ignore when a future
-    /// slice adds the dir-fd snapshot-stack push to
-    /// `create_soft_checkpoint`, pop + `truncate_to` to
-    /// `revert_to_soft_checkpoint`, and clear to `reset`.
-    #[ignore = "needs dir_fs_snapshot_stack push/pop on RhoRuntimeImpl (streaming-slice Step 4 not yet ported)"]
+    /// **Triage status**: un-ignored by slice 5.80, which ported the
+    /// `dir_fs_snapshot_stack` push/pop/clear wiring on
+    /// `RhoRuntimeImpl` (streaming-slice Step 4).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn deploy_error_rollback_sweeps_stream_fds() {
         let dir = tempfile::tempdir().unwrap();
@@ -288,9 +283,7 @@ mod tests {
     /// create overwrites outer mark; outer revert finds nothing and
     /// leaks `fd_b`).
     ///
-    /// **Triage status (slice 5.79)**: `#[ignore]` — same gap as
-    /// `deploy_error_rollback_sweeps_stream_fds`.
-    #[ignore = "needs dir_fs_snapshot_stack push/pop on RhoRuntimeImpl (streaming-slice Step 4 not yet ported)"]
+    /// **Triage status**: un-ignored by slice 5.80 (same wiring).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn nested_soft_checkpoints_preserve_outer_dir_fd_snapshot() {
         let dir = tempfile::tempdir().unwrap();
@@ -355,7 +348,6 @@ mod tests {
     /// Helper for the nested-checkpoint pin: open a dir stream via the
     /// native URN and drain the ack.  Returns after the deploy
     /// completes; the fd is left registered in `dir_handles`.
-    #[allow(dead_code)]
     async fn run_open(runtime: &mut RhoRuntimeImpl, root: &std::path::Path, rel: &str) {
         let term = format!(
             r#"

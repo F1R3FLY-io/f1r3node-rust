@@ -265,10 +265,27 @@ pub struct RhoRuntimeImpl {
     /// Shared with every FS native handler's `FsProcesses` dispatch
     /// surface via `Arc` under the hood, so a single Arc-bump at
     /// construction time threads the same table through every
-    /// handler.  Public so test harnesses + the (yet-to-land)
-    /// soft-checkpoint fd-snapshot wiring can inspect and manipulate
-    /// the table directly.
+    /// handler.  Public so test harnesses + the soft-checkpoint
+    /// fd-snapshot wiring can inspect and manipulate the table
+    /// directly.
     pub fs_handles: super::io::handle_table::FileHandleTable,
+    /// Stack of file-fd counter snapshots captured at soft-checkpoint
+    /// time.  On revert we pop the innermost snapshot and truncate
+    /// the fd table to it, freeing every fd allocated after the
+    /// checkpoint (spec §Fd-table lifecycle).  Stack (not single
+    /// slot) so nested `create_soft_checkpoint` calls preserve the
+    /// outer marks — H4/M1 review fix (slice 29 round 2).  Pre-fix
+    /// design was `Option<u64>` which silently dropped the outer
+    /// mark on the inner `create`.
+    fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
+    /// Stack of dir-stream fd-counter snapshots captured at soft-
+    /// checkpoint time.  Companion to `fs_snapshot_stack` — same
+    /// push-on-create / pop-on-revert / clear-on-reset semantics,
+    /// applied to `fs_handles.dir_handles`.  Kept as its own stack
+    /// (rather than a tuple in `fs_snapshot_stack`) so a revert that
+    /// touches only one table doesn't accidentally pop the other's
+    /// mark.  Streaming-backing slice Step 4 (2026-08-25).
+    dir_fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -289,6 +306,8 @@ impl RhoRuntimeImpl {
             deploy_data_ref,
             merge_chs,
             fs_handles,
+            fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            dir_fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -383,6 +402,26 @@ impl RhoRuntime for RhoRuntimeImpl {
     ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
         let start = Instant::now();
         let checkpoint = self.reducer.space.create_soft_checkpoint().await;
+        // Snapshot the fd counter so an evaluation error can roll back
+        // any opens issued during the deploy — spec §Phase 1 fd-table
+        // lifecycle.  Monotonic counter guarantees no fd aliasing across
+        // rollback boundaries.
+        // H4/M1 review fix (round 2): PUSH onto a stack rather than
+        // overwriting a single slot, so nested soft-checkpoints
+        // preserve outer marks.  Revert POPs the innermost.
+        {
+            let mut stack = self.fs_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.snapshot_next_fd());
+        }
+        // Streaming-backing slice Step 4: mirror the file-fd stack for
+        // dir-stream fds so a reverted deploy sweeps stream fds it
+        // opened between checkpoint and revert.  Same nested-stack
+        // semantics as fs_snapshot_stack — the inner create pushes on
+        // top of the outer mark; each revert pops one.
+        {
+            let mut stack = self.dir_fs_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.dir_handles.snapshot_next_fd());
+        }
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_SOFT_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -419,6 +458,26 @@ impl RhoRuntime for RhoRuntimeImpl {
             "source" => RUNTIME_METRICS_SOURCE
         )
         .increment(1);
+        // Roll back the fd table to the snapshot captured at
+        // create_soft_checkpoint time.  Any fds opened during the failed
+        // eval are closed and removed; the monotonic counter is not
+        // rewound so stale fds observed by any caller reliably see
+        // FSERR_CLOSED rather than aliasing a later open.
+        // H4/M1 round-2 fix: POP the innermost snapshot from the stack
+        // so nested checkpoints unwind correctly.  A revert without a
+        // matching create is a no-op (defensive against unbalanced calls).
+        let snap = { self.fs_snapshot_stack.lock().unwrap().pop() };
+        if let Some(s) = snap {
+            self.fs_handles.truncate_to(s).await;
+        }
+        // Streaming-backing slice Step 4: symmetric pop + truncate for
+        // the dir-stream fd table.  Unbalanced revert (no matching
+        // create) is a no-op, same defensive posture as the file-fd
+        // stack.
+        let dir_snap = { self.dir_fs_snapshot_stack.lock().unwrap().pop() };
+        if let Some(s) = dir_snap {
+            self.fs_handles.dir_handles.truncate_to(s).await;
+        }
         self.reducer
             .space
             .revert_to_soft_checkpoint(soft_checkpoint)
@@ -468,6 +527,13 @@ impl RhoRuntime for RhoRuntimeImpl {
         self.fs_handles
             .dir_handles
             .seed_next_fd_from_state_hash(&root.bytes());
+        // M6 round-2 fix: also clear stashed checkpoint marks so a
+        // subsequent revert doesn't pop a stale mark (which would
+        // truncate the fd table to a pre-reset watermark).  A reset
+        // semantically means "start fresh at this state root"; leaving
+        // a mark stashed is inconsistent with that.
+        self.fs_snapshot_stack.lock().unwrap().clear();
+        self.dir_fs_snapshot_stack.lock().unwrap().clear();
         Ok(())
     }
 
