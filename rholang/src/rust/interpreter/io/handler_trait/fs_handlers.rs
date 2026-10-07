@@ -454,6 +454,49 @@ mod tests {
         }
     }
 
+    /// Each FS_HANDLERS entry's `(fixed_channel)()` byte_name Par
+    /// must agree with `body_ref` cast to u8.  Convention observed
+    /// throughout `FixedChannels::fs_*` and `BodyRefs::FS_*` in
+    /// `system_processes.rs`: the two use identical byte values
+    /// (e.g., `BodyRefs::FS_CLOSE = 39` ↔ `FixedChannels::fs_close()
+    /// = byte_name(39)`).  The convention isn't strictly required by
+    /// the dispatcher (body_ref keys the handler HashMap and
+    /// fixed_channel keys the urn_map / rendezvous channel —
+    /// independently), but keeping them in lock-step makes
+    /// system_processes.rs auditable at a glance and prevents a
+    /// class of hard-to-diagnose mismatches where a handler is
+    /// registered on one channel but dispatched via a different
+    /// body_ref.
+    ///
+    /// A regression that drifted the convention (e.g.,
+    /// `FixedChannels::fs_new_handler() = byte_name(42)` paired with
+    /// `BodyRefs::FS_NEW_HANDLER = 99`) would surface here before
+    /// the FS_HANDLERS entry's downstream registration layered-in a
+    /// confusing runtime behavior.
+    #[test]
+    fn fs_handlers_body_ref_matches_fixed_channel_byte() {
+        use crate::rust::interpreter::system_processes::byte_name;
+        for entry in FS_HANDLERS.iter() {
+            let actual = (entry.fixed_channel)();
+            let expected = byte_name(entry.body_ref as u8);
+            assert_eq!(
+                actual, expected,
+                "FS_HANDLERS entry `{}` (urn_suffix `{}`): \
+                 (fixed_channel)() = {:?}, but byte_name(body_ref = \
+                 {}) = {:?}.  The convention is \
+                 `FixedChannels::fs_<name>() = byte_name(N)` ↔ \
+                 `BodyRefs::FS_<NAME> = N`.  Either the \
+                 FixedChannels fn's byte literal drifted from the \
+                 BodyRefs const, or the FS_HANDLERS entry pairs the \
+                 wrong fixed_channel with its body_ref.  Audit \
+                 `system_processes.rs::FixedChannels` and \
+                 `system_processes.rs::BodyRefs` for mismatched \
+                 byte literals.",
+                entry.name, entry.urn_suffix, actual, entry.body_ref, expected,
+            );
+        }
+    }
+
     /// Every entry's `fixed_channel` fn-pointer must produce a
     /// unique `Par` across FS_HANDLERS.  Two entries pointing at
     /// the same `FixedChannels::fs_x` fn (a copy-paste bug in
