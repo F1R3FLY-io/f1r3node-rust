@@ -21,6 +21,14 @@
 // every record and continuation that it removes must sit where the staged
 // view held it. After its effects, every staged change must have its event.
 //
+// Reads in native execution (decision 47). A transaction that
+// `begin_metered` opens charges each key computation and each value that its
+// view or its commit checks read on the meter of the space job, the same on
+// a cache hit and a miss (I-12). It reads a value that is not in the hot
+// store at the history root through the native history reader, so native
+// play and native replay decode a cold value with the same limits. A
+// transaction that `begin` opens reads as the host does in legacy execution.
+//
 // Module layout:
 //   space_store_handle.rs          — public API, staged view, staging rules,
 //                                    commit loop, event correlation, sweep
@@ -40,6 +48,7 @@ use std::thread::ThreadId;
 
 use async_trait::async_trait;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use shared::rust::clone_backing::CloneBacking;
 
 use crate::rspace::candidate_order::{self, CandidateSource, OrderWork};
@@ -48,9 +57,15 @@ use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::native_source::{self, SourceMeter};
 use crate::rspace::hashing::stable_hash_provider::hash_from_hashes;
 use crate::rspace::history::history_reader::HistoryReader;
+use crate::rspace::history::history_repository::HistoryRepository;
+use crate::rspace::history::native_reader::{
+    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
+    decode_record,
+};
 use crate::rspace::hot_store::HotStore;
 use crate::rspace::internal::{ConsumeCandidate, Datum, Install, WaitingContinuation};
 use crate::rspace::r#match::Match;
+use crate::rspace::native_backing;
 use crate::rspace::operation_context::{self, CausalPath, OperationOrder};
 use crate::rspace::rspace_interface::{
     ContResult, MaybeConsumeResult, RSpaceOperationCompletion, RSpaceOperationSource, RSpaceResult,
@@ -64,6 +79,11 @@ pub enum SpaceMode {
     Play,
     Replay,
     Reporting,
+    /// Native replay through the native replay session (decision 47). The
+    /// session has no rigged log: each staged operation meets its recorded
+    /// journal row at commit. Staging therefore pairs nothing and admits every
+    /// candidate, as in play.
+    NativeReplay,
 }
 
 /// Typed failure of a space transaction. Host and observer errors pass
@@ -617,11 +637,21 @@ struct HandleState {
 /// and every sweep goes through a handle: the handle refuses a nested `begin`
 /// or sweep in one task and admits one commit per parent operation order.
 /// The registration ends when the transaction commits, fails closed, or is
-/// dropped, and when the sweep returns.
+/// dropped, and when the sweep returns. A registration of
+/// [`SpaceStoreHandle::begin_metered`] also carries the metered reads of the
+/// transaction.
 pub struct TxnRegistration {
     state: Arc<HandleState>,
     context: TxnContext,
+    reads: Option<ErasedReads>,
 }
+
+// The metered reads that a transaction of native execution carries from
+// `begin_metered` to `HostTxn::new` (decision 47). The registration and the
+// `SpaceTxnHost::begin` signature are not generic, so the registration holds
+// an `Arc<dyn ViewReads<C, P, A, K>>` type-erased, and `HostTxn::new` takes
+// it back with the types of its handle, as `StoreIdentity` erases a store.
+type ErasedReads = Arc<dyn Any + Send + Sync>;
 
 impl TxnRegistration {
     fn register(state: &Arc<HandleState>) -> Result<Self, SpaceTxnError> {
@@ -635,8 +665,33 @@ impl TxnRegistration {
             true => Ok(Self {
                 state: Arc::clone(state),
                 context,
+                reads: None,
             }),
             false => Err(SpaceTxnError::NestedTransaction),
+        }
+    }
+
+    /// True when the transaction reads with the metered reads of native
+    /// execution ([`SpaceStoreHandle::begin_metered`]).
+    pub fn is_metered(&self) -> bool { self.reads.is_some() }
+
+    // The metered reads of the transaction with the types of its handle, or
+    // `None` for a transaction of `begin`.
+    fn metered_reads<C, P, A, K>(&self) -> Result<Option<SharedReads<C, P, A, K>>, SpaceTxnError>
+    where
+        C: Clone + Hash + Eq + 'static,
+        P: Clone + 'static,
+        A: Clone + 'static,
+        K: Clone + 'static,
+    {
+        match &self.reads {
+            None => Ok(None),
+            Some(reads) => reads
+                .downcast_ref::<SharedReads<C, P, A, K>>()
+                .map(|reads| Some(Arc::clone(reads)))
+                .ok_or(SpaceTxnError::Inconsistent(
+                    "the metered reads do not have the types of the transaction",
+                )),
         }
     }
 
@@ -731,6 +786,24 @@ where
         self.host.begin(lock_keys, registration).await
     }
 
+    /// [`SpaceStoreHandle::begin`] for native execution (decision 47): the
+    /// transaction reads its view and its commit checks through `reads`,
+    /// which charges each key and each value on the meter of the space job,
+    /// the same on a cache hit and a miss (I-12).
+    pub async fn begin_metered(
+        &self,
+        lock_keys: &[C],
+        reads: SharedReads<C, P, A, K>,
+    ) -> Result<BoxedSpaceTxn<C, P, A, K>, SpaceTxnError>
+    where
+        C: Hash + Eq,
+    {
+        let mut registration = TxnRegistration::register(&self.state)?;
+        let erased: ErasedReads = Arc::new(reads);
+        registration.reads = Some(erased);
+        self.host.begin(lock_keys, registration).await
+    }
+
     /// Starts a root evaluation: the parent orders committed before it no
     /// longer count, so a deploy that is evaluated again (after a revert, or
     /// in a later block) commits under the same parent orders. Call it at the
@@ -793,12 +866,12 @@ where
 
     /// Recorded COMMs bound to `source` (its own trigger key) and not yet
     /// paired in this transaction, one entry per recorded occurrence, sorted
-    /// by bincode bytes. `None` in play.
+    /// by bincode bytes. `None` in play and in native replay.
     fn recorded_comms(&mut self, source: RSpaceOperationSource<'_>) -> Option<Vec<COMM>>;
 
     /// Replay admission of `datum` for `comm` over the staged counters;
-    /// always `true` in play. `incoming` is `true` when `datum.source` is the
-    /// source of the produce being matched.
+    /// always `true` in play and in native replay. `incoming` is `true` when
+    /// `datum.source` is the source of the produce being matched.
     fn admits(
         &mut self,
         comm: &COMM,
@@ -817,6 +890,409 @@ where
 }
 
 pub(crate) type SharedStore<C, P, A, K> = Arc<Box<dyn HotStore<C, P, A, K>>>;
+
+/// The history repository of a host. The hot store of the host layers on
+/// its root.
+pub(crate) type SharedHistory<C, P, A, K> =
+    Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>;
+
+/// The [`ViewReads`] of one transaction.
+pub type SharedReads<C, P, A, K> = Arc<dyn ViewReads<C, P, A, K>>;
+
+/// Where a metered read finds a value: the hot store, and the history root
+/// that the hot store layers on.
+pub struct ViewSource<'s, C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> {
+    pub store: &'s dyn HotStore<C, P, A, K>,
+    pub history: &'s dyn HistoryRepository<C, P, A, K>,
+    pub root: [u8; 32],
+}
+
+// The fields are references and an array, so a source copies for any type
+// parameters. A derive would require `C: Copy` and the others.
+impl<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> Clone for ViewSource<'_, C, P, A, K> {
+    fn clone(&self) -> Self { *self }
+}
+
+impl<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> Copy for ViewSource<'_, C, P, A, K> {}
+
+/// The reads of a transaction in native execution (decision 47, design v2,
+/// S4 and S5). Each key computation and each value that enters a view or a
+/// commit check is charged on the meter of the space job. A charge is a
+/// function of the key and of the logical value only, so it is the same on a
+/// cache hit and a miss (I-12). A value that is not in the hot store is read
+/// at the history root through the native history reader, with a meter that
+/// accepts every reservation: that physical read is node work, bounded by
+/// the structural limits of the reader. The implementation carries the
+/// bounds of the native reader, so the generic substrate needs none.
+pub trait ViewReads<C, P, A, K>: Send + Sync
+where
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    /// The store identity of `channel`, charged: the walk of the channel,
+    /// then the metered hash of its bincode bytes.
+    fn key(&self, channel: &C) -> Result<Blake2b256Hash, RSpaceError>;
+
+    /// The data of `channel`, whose key is `key`. The copy of the records is
+    /// charged before the copy.
+    fn data(
+        &self,
+        source: ViewSource<'_, C, P, A, K>,
+        channel: &C,
+        key: &Blake2b256Hash,
+    ) -> Result<Vec<Datum<A>>, RSpaceError>;
+
+    /// The waiting continuations of the group `channels`. The history key of
+    /// the group and the copy of the continuations are charged.
+    fn continuations(
+        &self,
+        source: ViewSource<'_, C, P, A, K>,
+        channels: &[C],
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>;
+
+    /// The join groups of `channel`, whose key is `key`. The copy of the
+    /// groups is charged.
+    fn joins(
+        &self,
+        source: ViewSource<'_, C, P, A, K>,
+        channel: &C,
+        key: &Blake2b256Hash,
+    ) -> Result<Vec<Vec<C>>, RSpaceError>;
+}
+
+/// The [`ViewReads`] of native execution over the meter of a space job.
+pub struct NativeViewReads<M> {
+    meter: M,
+}
+
+impl<M> NativeViewReads<M> {
+    /// The reads that charge `meter`.
+    pub fn new(meter: M) -> Self { Self { meter } }
+}
+
+impl<C, P, A, K, M> ViewReads<C, P, A, K> for NativeViewReads<M>
+where
+    C: Clone + Hash + Eq + Serialize + DeserializeOwned + CloneBacking + Send + Sync,
+    P: Clone + Serialize + DeserializeOwned + CloneBacking + Send + Sync,
+    A: Clone + Serialize + DeserializeOwned + CloneBacking + Send + Sync,
+    K: Clone + Serialize + DeserializeOwned + CloneBacking + Send + Sync,
+    M: SourceMeter + Send + Sync,
+{
+    fn key(&self, channel: &C) -> Result<Blake2b256Hash, RSpaceError> {
+        native_backing::inspect(channel, &self.meter)?;
+        native_source::hash(channel, &self.meter)
+    }
+
+    fn data(
+        &self,
+        source: ViewSource<'_, C, P, A, K>,
+        channel: &C,
+        key: &Blake2b256Hash,
+    ) -> Result<Vec<Datum<A>>, RSpaceError> {
+        let view = source.store.get_data_view_with_reader(
+            channel,
+            &|| history_records(source.history, source.root, NativeLeafKind::Data, key),
+            &accept_all,
+        )?;
+        native_backing::reserve_slice_copy_and_cleanup(view.values(), &self.meter)?;
+        Ok(view.values().to_vec())
+    }
+
+    fn continuations(
+        &self,
+        source: ViewSource<'_, C, P, A, K>,
+        channels: &[C],
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
+        // The history key of the group, the hash of its sorted channel keys
+        // (`hash_from_hashes`). Native replay of a host consume computes it
+        // with `channels_hash` (`native_session/history.rs`), so this read
+        // charges the same function.
+        let projection = native_source::channels_hash(channels, &self.meter)?;
+        let views = source.store.get_continuation_views_with_reader(
+            channels,
+            &|| {
+                history_records(
+                    source.history,
+                    source.root,
+                    NativeLeafKind::Continuations,
+                    &projection,
+                )
+            },
+            &accept_all,
+        )?;
+        let mut waiting = Vec::new();
+        waiting
+            .try_reserve_exact(views.len())
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        for view in &views {
+            native_backing::reserve_copy_and_cleanup(&**view, &self.meter)?;
+            waiting.push(WaitingContinuation::clone(view));
+        }
+        Ok(waiting)
+    }
+
+    fn joins(
+        &self,
+        source: ViewSource<'_, C, P, A, K>,
+        channel: &C,
+        key: &Blake2b256Hash,
+    ) -> Result<Vec<Vec<C>>, RSpaceError> {
+        let joins = source.store.get_joins_with_reader(
+            channel,
+            &|| history_records(source.history, source.root, NativeLeafKind::Joins, key),
+            &accept_all,
+        )?;
+        native_backing::reserve_slice_copy_and_cleanup(&joins, &self.meter)?;
+        Ok(joins)
+    }
+}
+
+// The meter of the physical read of a metered view load. That read is node
+// work (design v2, S4), so its reservations charge no deploy.
+fn accept_all(_operations: usize, _scanned: usize, _backing: usize) -> Result<(), RSpaceError> {
+    Ok(())
+}
+
+// The decode meter of the physical read, with the same rule as `accept_all`.
+struct AcceptAll;
+
+impl NativeReadMeter for AcceptAll {
+    type Error = RSpaceError;
+
+    fn reserve(&self, _charge: NativeReadCharge) -> Result<(), RSpaceError> { Ok(()) }
+}
+
+// The fault mapping of every native history read of the host
+// (`ispace_impl.rs`, `native_session/history.rs`): a structural fault is a
+// deterministic host-work rejection.
+fn native_read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
+    match error {
+        NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+        NativeReadError::Store(error) => error.into(),
+        NativeReadError::Invalid(
+            NativeReadFault::Depth | NativeReadFault::Allocation | NativeReadFault::Overflow,
+        ) => RSpaceError::HostWorkRejected,
+        NativeReadError::Invalid(error) => {
+            RSpaceError::InterpreterError(format!("native history: {error:?}"))
+        }
+    }
+}
+
+// The records of the leaf `projection` of `kind` at `root`, decoded by the
+// native history reader, as the native replay session reads them
+// (`native_session/history.rs`, `read_records`). The meters accept every
+// reservation (S4), and the structural limits of the reader still apply.
+fn history_records<C, P, A, K, T>(
+    history: &dyn HistoryRepository<C, P, A, K>,
+    root: [u8; 32],
+    kind: NativeLeafKind,
+    projection: &Blake2b256Hash,
+) -> Result<Vec<T>, RSpaceError>
+where
+    C: Clone,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+    T: DeserializeOwned,
+{
+    let projection: [u8; 32] = projection.0.as_slice().try_into().map_err(|_| {
+        RSpaceError::InterpreterError("native history projection length".to_owned())
+    })?;
+    history
+        .native_history_reader(root)
+        .with_records(kind, &projection, &AcceptAll, |rows| {
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(rows.len())
+                .map_err(|_| RSpaceError::HostWorkRejected)?;
+            for row in rows.iter() {
+                values.push(decode_record(row, &AcceptAll).map_err(native_read_error)?);
+            }
+            Ok(values)
+        })
+        .map_err(native_read_error)
+        .map(Option::unwrap_or_default)
+}
+
+// The history repository and the root of a host, with the root as the bytes
+// that the native history reader takes.
+pub(crate) fn history_at_root<C, P, A, K>(
+    history: SharedHistory<C, P, A, K>,
+) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError>
+where
+    C: Clone,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    let root: [u8; 32] = history
+        .root()
+        .0
+        .as_slice()
+        .try_into()
+        .map_err(|_| SpaceTxnError::Inconsistent("a history root is not 32 bytes"))?;
+    Ok((history, root))
+}
+
+// The metered reads of an open transaction: the reads of `begin_metered`,
+// and the history repository and root of its host.
+pub(crate) struct MeteredReads<C, P, A, K>
+where
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    reads: SharedReads<C, P, A, K>,
+    history: SharedHistory<C, P, A, K>,
+    root: [u8; 32],
+}
+
+/// How a transaction reads the hot store: as the host does in legacy
+/// execution, or through its [`MeteredReads`] in native execution. The plain
+/// arms make exactly the calls that the substrate made before decision 47,
+/// so legacy execution is unchanged.
+pub(crate) struct Reads<'r, C, P, A, K>
+where
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    metered: Option<&'r MeteredReads<C, P, A, K>>,
+}
+
+impl<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> Clone for Reads<'_, C, P, A, K> {
+    fn clone(&self) -> Self { *self }
+}
+
+impl<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> Copy for Reads<'_, C, P, A, K> {}
+
+impl<'r, C, P, A, K> Reads<'r, C, P, A, K>
+where
+    C: Clone + Hash + Eq + Serialize,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    pub(crate) fn new(metered: Option<&'r MeteredReads<C, P, A, K>>) -> Self { Self { metered } }
+
+    fn source<'s>(
+        metered: &'s MeteredReads<C, P, A, K>,
+        store: &'s dyn HotStore<C, P, A, K>,
+    ) -> ViewSource<'s, C, P, A, K> {
+        ViewSource {
+            store,
+            history: &**metered.history,
+            root: metered.root,
+        }
+    }
+
+    /// The store identity of `channel` ([`channel_key`]).
+    pub(crate) fn key(&self, channel: &C) -> Result<Blake2b256Hash, SpaceTxnError> {
+        match self.metered {
+            None => channel_key(channel),
+            Some(metered) => metered.reads.key(channel).map_err(SpaceTxnError::Host),
+        }
+    }
+
+    /// The store identity of a group ([`group_identity`]).
+    pub(crate) fn group_identity(&self, group: &[C]) -> Result<Vec<Blake2b256Hash>, SpaceTxnError> {
+        match self.metered {
+            None => group_identity(group),
+            Some(_) => {
+                let mut keys = Vec::with_capacity(group.len());
+                for channel in group {
+                    keys.push(self.key(channel)?);
+                }
+                Ok(keys)
+            }
+        }
+    }
+
+    /// The key of a non-empty canonical group ([`canonical_group_key`]).
+    pub(crate) fn canonical_group_key(
+        &self,
+        group: &[C],
+    ) -> Result<Vec<Blake2b256Hash>, SpaceTxnError> {
+        match self.metered {
+            None => canonical_group_key(group),
+            Some(_) => {
+                if group.is_empty() {
+                    return Err(SpaceTxnError::InvalidOperation("channels must not be empty"));
+                }
+                let keys = self.group_identity(group)?;
+                require_canonical(&keys)?;
+                Ok(keys)
+            }
+        }
+    }
+
+    /// The data of `channel`, whose key is `key`.
+    pub(crate) fn data(
+        &self,
+        store: &dyn HotStore<C, P, A, K>,
+        channel: &C,
+        key: &Blake2b256Hash,
+    ) -> Result<Vec<Datum<A>>, SpaceTxnError> {
+        match self.metered {
+            None => Ok(store.get_data(channel)),
+            Some(metered) => metered
+                .reads
+                .data(Self::source(metered, store), channel, key)
+                .map_err(SpaceTxnError::Host),
+        }
+    }
+
+    /// The waiting continuations of the group `channels`.
+    pub(crate) fn continuations(
+        &self,
+        store: &dyn HotStore<C, P, A, K>,
+        channels: &[C],
+    ) -> Result<Vec<WaitingContinuation<P, K>>, SpaceTxnError> {
+        match self.metered {
+            None => Ok(store.get_continuations(channels)),
+            Some(metered) => metered
+                .reads
+                .continuations(Self::source(metered, store), channels)
+                .map_err(SpaceTxnError::Host),
+        }
+    }
+
+    /// The join groups of `channel`, whose key is `key`.
+    pub(crate) fn joins(
+        &self,
+        store: &dyn HotStore<C, P, A, K>,
+        channel: &C,
+        key: &Blake2b256Hash,
+    ) -> Result<Vec<Vec<C>>, SpaceTxnError> {
+        match self.metered {
+            None => Ok(store.get_joins(channel)),
+            Some(metered) => metered
+                .reads
+                .joins(Self::source(metered, store), channel, key)
+                .map_err(SpaceTxnError::Host),
+        }
+    }
+
+    /// The join groups of `channel`. Only a metered read computes the key of
+    /// the channel, so a plain read makes the single host call of before.
+    pub(crate) fn channel_joins(
+        &self,
+        store: &dyn HotStore<C, P, A, K>,
+        channel: &C,
+    ) -> Result<Vec<Vec<C>>, SpaceTxnError> {
+        match self.metered {
+            None => Ok(store.get_joins(channel)),
+            Some(_) => {
+                let key = self.key(channel)?;
+                self.joins(store, channel, &key)
+            }
+        }
+    }
+}
 
 pub(crate) fn record_bytes<T: Serialize + ?Sized>(record: &T) -> Result<Vec<u8>, SpaceTxnError> {
     bincode::serialize(record)
@@ -1195,34 +1671,43 @@ where
     A: Clone + Serialize,
     K: Clone + Debug + Serialize,
 {
+    /// Loads `channel`'s data on the first touch of `key`. A failed read
+    /// caches nothing in the view.
     pub(crate) fn load_data(
         &mut self,
         store: &dyn HotStore<C, P, A, K>,
         key: &Blake2b256Hash,
         channel: &C,
-    ) -> &[Datum<A>] {
-        &self
-            .data
-            .entry(key.clone())
-            .or_insert_with(|| DataEntry {
-                records: store.get_data(channel),
-            })
-            .records
+        reads: Reads<'_, C, P, A, K>,
+    ) -> Result<&[Datum<A>], SpaceTxnError> {
+        if !self.data.contains_key(key) {
+            let records = reads.data(store, channel, key)?;
+            self.data.insert(key.clone(), DataEntry { records });
+        }
+        self.data
+            .get(key)
+            .map(|entry| entry.records.as_slice())
+            .ok_or(SpaceTxnError::Inconsistent("staged data is not loaded"))
     }
 
+    /// Loads the continuations of the group `channels` on the first touch of
+    /// `key`. A failed read caches nothing in the view.
     pub(crate) fn load_continuations(
         &mut self,
         store: &dyn HotStore<C, P, A, K>,
         key: &[Blake2b256Hash],
         channels: &[C],
-    ) -> &[WaitingContinuation<P, K>] {
-        &self
-            .conts
-            .entry(key.to_vec())
-            .or_insert_with(|| ContinuationEntry {
-                waiting: store.get_continuations(channels),
-            })
-            .waiting
+        reads: Reads<'_, C, P, A, K>,
+    ) -> Result<&[WaitingContinuation<P, K>], SpaceTxnError> {
+        if !self.conts.contains_key(key) {
+            let waiting = reads.continuations(store, channels)?;
+            self.conts
+                .insert(key.to_vec(), ContinuationEntry { waiting });
+        }
+        self.conts
+            .get(key)
+            .map(|entry| entry.waiting.as_slice())
+            .ok_or(SpaceTxnError::Inconsistent("staged continuations are not loaded"))
     }
 
     /// Loads `channel`'s join groups. A stored group that is not canonical
@@ -1232,12 +1717,13 @@ where
         store: &dyn HotStore<C, P, A, K>,
         key: &Blake2b256Hash,
         channel: &C,
+        reads: Reads<'_, C, P, A, K>,
     ) -> Result<&JoinEntry<C>, SpaceTxnError> {
         if !self.joins.contains_key(key) {
-            let groups = store.get_joins(channel);
+            let groups = reads.joins(store, channel, key)?;
             let mut keys = Vec::with_capacity(groups.len());
             for group in &groups {
-                let group_key = group_identity(group)?;
+                let group_key = reads.group_identity(group)?;
                 require_canonical(&group_key)?;
                 keys.push(group_key);
             }
@@ -1628,13 +2114,18 @@ where
     /// The recorded copy of `comm` under `event` and its multiplicity.
     fn recorded_binding(&self, event: &IOEvent, comm: &COMM) -> Option<(COMM, usize)>;
 
+    /// The history repository of the host and the root that its hot store
+    /// layers on. Metered reads take a cold value from there (decision 47).
+    fn history(&self) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError>;
+
     /// Applies one staged operation to `store` and reports the events it
-    /// emitted.
+    /// emitted. Its commit checks read through `reads`.
     fn apply_op(
         &self,
         store: &dyn HotStore<C, P, A, K>,
         operation: StagedOperation<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError>;
 }
@@ -1654,6 +2145,8 @@ where
     paired: Vec<COMM>,
     staged: Vec<Staged<C, P, A, K>>,
     finished: bool,
+    // The metered reads of a transaction of `begin_metered` (decision 47).
+    metered: Option<MeteredReads<C, P, A, K>>,
 }
 
 impl<C, P, A, K> TxnCore<C, P, A, K>
@@ -1686,7 +2179,7 @@ where
         lock_use: LockUse,
     ) -> Result<Vec<Blake2b256Hash>, SpaceTxnError> {
         check_arity(channels, patterns)?;
-        let key = canonical_group_key(channels)?;
+        let key = Reads::new(self.metered.as_ref()).canonical_group_key(channels)?;
         for channel in channels {
             self.coverage.require(channel, lock_use)?;
         }
@@ -1698,9 +2191,10 @@ where
 
     fn read_data(&mut self, channel: &C) -> Result<&[Datum<A>], SpaceTxnError> {
         self.ensure_open()?;
-        let key = channel_key(channel)?;
+        let reads = Reads::new(self.metered.as_ref());
+        let key = reads.key(channel)?;
         self.admit(&key)?;
-        Ok(self.view.load_data(&**self.store, &key, channel))
+        self.view.load_data(&**self.store, &key, channel, reads)
     }
 
     fn read_continuations(
@@ -1708,19 +2202,22 @@ where
         channels: &[C],
     ) -> Result<&[WaitingContinuation<P, K>], SpaceTxnError> {
         self.ensure_open()?;
-        let key = canonical_group_key(channels)?;
+        let reads = Reads::new(self.metered.as_ref());
+        let key = reads.canonical_group_key(channels)?;
         for channel_key in &key {
             self.admit(channel_key)?;
         }
-        Ok(self.view.load_continuations(&**self.store, &key, channels))
+        self.view
+            .load_continuations(&**self.store, &key, channels, reads)
     }
 
     fn read_joins(&mut self, channel: &C) -> Result<&[Vec<C>], SpaceTxnError> {
         self.ensure_open()?;
-        let key = channel_key(channel)?;
+        let reads = Reads::new(self.metered.as_ref());
+        let key = reads.key(channel)?;
         self.admit(&key)?;
         self.view
-            .load_joins(&**self.store, &key, channel)
+            .load_joins(&**self.store, &key, channel, reads)
             .map(|entry| entry.groups.as_slice())
     }
 
@@ -1792,10 +2289,11 @@ where
     // consume-side fire. The key holds one binding per occurrence of the key
     // in the COMM (`binding_multiplicity`), so a recorded occurrence is
     // available while the paired copies use fewer bindings than it holds.
-    // Returns the recorded copy, or `None` in play and for an unpaired fire.
-    // An unpaired fire stages as in play, never pairs, and fails at commit
-    // after the observer calls of play (decision 36), so replay staging
-    // equals play staging for every log.
+    // Returns the recorded copy, or `None` in play, in native replay and for
+    // an unpaired fire. An unpaired fire stages as in play, never pairs, and
+    // fails at commit after the observer calls of play (decision 36), so
+    // replay staging equals play staging for every log. Native replay
+    // checks each fire against its journal row at commit (decision 47).
     fn verify<B: TxnBackend<C, P, A, K>>(
         &self,
         backend: &B,
@@ -1803,7 +2301,7 @@ where
         trigger: &IOEvent,
     ) -> Option<COMM> {
         match self.mode {
-            SpaceMode::Play => None,
+            SpaceMode::Play | SpaceMode::NativeReplay => None,
             SpaceMode::Replay | SpaceMode::Reporting => {
                 let (recorded, count) = backend.recorded_binding(trigger, comm)?;
                 let available = match binding_multiplicity(trigger, comm) {
@@ -1820,11 +2318,12 @@ where
     // the group's continuations.
     fn load_group(&mut self, key: &[Blake2b256Hash], channels: &[C]) -> Result<(), SpaceTxnError> {
         let store = &**self.store;
+        let reads = Reads::new(self.metered.as_ref());
         for (channel_key, channel) in key.iter().zip(channels) {
-            self.view.load_data(store, channel_key, channel);
-            self.view.load_joins(store, channel_key, channel)?;
+            self.view.load_data(store, channel_key, channel, reads)?;
+            self.view.load_joins(store, channel_key, channel, reads)?;
         }
-        self.view.load_continuations(store, key, channels);
+        self.view.load_continuations(store, key, channels, reads)?;
         Ok(())
     }
 
@@ -1886,7 +2385,8 @@ where
             outcome,
             before_observe,
         } = op;
-        let key = channel_key(&channel)?;
+        let reads = Reads::new(self.metered.as_ref());
+        let key = reads.key(&channel)?;
         self.coverage.require(&channel, LockUse::Produced)?;
         self.admit(&key)?;
         let source = Produce::create(&channel, &data, persist);
@@ -1905,13 +2405,13 @@ where
                     ));
                 }
                 check_peeks(channels.len(), &continuation.peeks)?;
-                check_lined_up(&group, &candidates)?;
-                check_incoming(&candidates, &key, &source, &data, persist)?;
+                check_lined_up(reads, &group, &candidates)?;
+                check_incoming(reads, &candidates, &key, &source, &data, persist)?;
                 Some((group, channels, continuation, candidates))
             }
         };
         let joins_at_start = {
-            let entry = self.view.load_joins(&**self.store, &key, &channel)?;
+            let entry = self.view.load_joins(&**self.store, &key, &channel, reads)?;
             for group in &entry.groups {
                 for joined in group {
                     self.coverage.require(joined, LockUse::Joined)?;
@@ -1919,7 +2419,7 @@ where
             }
             entry.groups.clone()
         };
-        self.view.load_data(&**self.store, &key, &channel);
+        self.view.load_data(&**self.store, &key, &channel, reads)?;
         let index = self.staged.len();
         match fired {
             None => {
@@ -2106,13 +2606,15 @@ where
         check_peeks(channels.len(), &peeks)?;
         let source = Consume::create(&channels, &patterns, &continuation, persist);
         let index = self.staged.len();
+        let reads = Reads::new(self.metered.as_ref());
         match outcome {
             ConsumeOutcome::Park => {
                 {
                     let store = &**self.store;
-                    self.view.load_continuations(store, &group, &channels);
+                    self.view
+                        .load_continuations(store, &group, &channels, reads)?;
                     for (channel_key, channel) in group.iter().zip(&channels) {
-                        self.view.load_joins(store, channel_key, channel)?;
+                        self.view.load_joins(store, channel_key, channel, reads)?;
                     }
                 }
                 let waiting = WaitingContinuation {
@@ -2146,7 +2648,7 @@ where
                 })
             }
             ConsumeOutcome::Fire { data: candidates } => {
-                check_lined_up(&group, &candidates)?;
+                check_lined_up(reads, &group, &candidates)?;
                 if candidates.iter().any(|candidate| candidate.datum_index < 0) {
                     return Err(SpaceTxnError::InvalidOperation(
                         "a consume fire binds only stored records",
@@ -2155,7 +2657,7 @@ where
                 {
                     let store = &**self.store;
                     for (channel_key, channel) in group.iter().zip(&channels) {
-                        self.view.load_data(store, channel_key, channel);
+                        self.view.load_data(store, channel_key, channel, reads)?;
                     }
                 }
                 self.check_stored_candidates(&group, &candidates)?;
@@ -2213,17 +2715,24 @@ fn check_arity<C>(channels: &[C], patterns: usize) -> Result<(), SpaceTxnError> 
 }
 
 // `candidates[i]` binds the channel with key `group[i]`.
-fn check_lined_up<C: Serialize, A: Clone>(
+fn check_lined_up<C, P, A, K>(
+    reads: Reads<'_, C, P, A, K>,
     group: &[Blake2b256Hash],
     candidates: &[ConsumeCandidate<C, A>],
-) -> Result<(), SpaceTxnError> {
+) -> Result<(), SpaceTxnError>
+where
+    C: Clone + Hash + Eq + Serialize,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
     let misaligned =
         SpaceTxnError::InvalidOperation("the candidates do not line up with the channels");
     if candidates.len() != group.len() {
         return Err(misaligned);
     }
     for (candidate, key) in candidates.iter().zip(group) {
-        if channel_key(&candidate.channel)? != *key {
+        if reads.key(&candidate.channel)? != *key {
             return Err(misaligned);
         }
     }
@@ -2232,20 +2741,27 @@ fn check_lined_up<C: Serialize, A: Clone>(
 
 // The incoming candidate carries the produced record: its channel, source,
 // original data and persistence. A produce fire has exactly one.
-fn check_incoming<C: Serialize, A: Clone + Serialize>(
+fn check_incoming<C, P, A, K>(
+    reads: Reads<'_, C, P, A, K>,
     candidates: &[ConsumeCandidate<C, A>],
     key: &Blake2b256Hash,
     source: &Produce,
     data: &A,
     persist: bool,
-) -> Result<(), SpaceTxnError> {
+) -> Result<(), SpaceTxnError>
+where
+    C: Clone + Hash + Eq + Serialize,
+    P: Clone,
+    A: Clone + Serialize,
+    K: Clone,
+{
     let source_bytes = record_bytes(source)?;
     let data_bytes = record_bytes(data)?;
     let mut incoming = 0usize;
     for candidate in candidates {
         match candidate.datum_index {
             -1 => {
-                let carries = channel_key(&candidate.channel)? == *key &&
+                let carries = reads.key(&candidate.channel)? == *key &&
                     candidate.datum.persist == persist &&
                     record_bytes(&candidate.datum.source)? == source_bytes &&
                     record_bytes(&candidate.removed_datum)? == data_bytes;
@@ -2330,6 +2846,7 @@ pub(crate) fn committed_candidates<C, P, A, K>(
     store: &dyn HotStore<C, P, A, K>,
     candidates: &[ConsumeCandidate<C, A>],
     keys: &[Blake2b256Hash],
+    reads: Reads<'_, C, P, A, K>,
 ) -> Result<Vec<ConsumeCandidate<C, A>>, SpaceTxnError>
 where
     C: Clone + Hash + Eq + Serialize,
@@ -2340,7 +2857,7 @@ where
     let mut live: BTreeMap<&Blake2b256Hash, Vec<Datum<A>>> = BTreeMap::new();
     for (candidate, key) in candidates.iter().zip(keys) {
         if candidate.datum_index >= 0 && !live.contains_key(key) {
-            live.insert(key, store.get_data(&candidate.channel));
+            live.insert(key, reads.data(store, &candidate.channel, key)?);
         }
     }
     let positions = claim_positions(
@@ -2390,21 +2907,25 @@ pub(crate) fn check_removed_records<C, A: Clone>(
 }
 
 /// Index of the fired continuation in the live store, by bincode equality.
+/// A plain read compares the shared continuations of the store, and a
+/// metered read compares a charged copy (decision 47).
 pub(crate) fn committed_continuation_index<C, P, A, K>(
     store: &dyn HotStore<C, P, A, K>,
     channels: &[C],
     continuation: &WaitingContinuation<P, K>,
+    reads: Reads<'_, C, P, A, K>,
 ) -> Result<i32, SpaceTxnError>
 where
-    C: Clone + Hash + Eq,
+    C: Clone + Hash + Eq + Serialize,
     P: Clone + Serialize,
     A: Clone,
     K: Clone + Serialize,
 {
-    let waiting = store.get_continuations_arc(channels);
-    let position = first_equal_continuation(&waiting, continuation)?.ok_or(
-        SpaceTxnError::Inconsistent("the fired continuation is absent from the hot store"),
-    )?;
+    let position = match reads.metered {
+        None => first_equal_continuation(&store.get_continuations_arc(channels), continuation)?,
+        Some(_) => first_equal_continuation(&reads.continuations(store, channels)?, continuation)?,
+    }
+    .ok_or(SpaceTxnError::Inconsistent("the fired continuation is absent from the hot store"))?;
     i32::try_from(position)
         .map_err(|_| SpaceTxnError::Inconsistent("a continuation index exceeds i32"))
 }
@@ -2425,6 +2946,7 @@ pub(crate) fn ready_produce_fire<C, P, A, K>(
     fire: StagedFire<C, P, A, K>,
     incoming: Option<&Produce>,
     counters: impl Fn(&[Produce]) -> BTreeMap<Produce, i32>,
+    reads: Reads<'_, C, P, A, K>,
 ) -> Result<ReadyFire<C, P, A, K>, SpaceTxnError>
 where
     C: Clone + Hash + Eq + Serialize,
@@ -2443,12 +2965,13 @@ where
     let continuation_index = match fire.continuation_position {
         None => None,
         Some(position) => {
-            let live = committed_continuation_index(store, &fire.channels, &fire.continuation)?;
+            let live =
+                committed_continuation_index(store, &fire.channels, &fire.continuation, reads)?;
             check_staged_position(usize::try_from(live).ok(), position)?;
             Some(live)
         }
     };
-    let committed = committed_candidates(store, &fire.candidates, &fire.group)?;
+    let committed = committed_candidates(store, &fire.candidates, &fire.group, reads)?;
     check_removed_records(&committed, &fire.removed)?;
     Ok(ReadyFire {
         fire,
@@ -2472,6 +2995,7 @@ pub(crate) fn ready_consume_fire<C, P, A, K>(
     consume: &Consume,
     peeks: &BTreeSet<i32>,
     counters: impl Fn(&[Produce]) -> BTreeMap<Produce, i32>,
+    reads: Reads<'_, C, P, A, K>,
 ) -> Result<ReadyConsumeFire<C, A>, SpaceTxnError>
 where
     C: Clone + Hash + Eq + Serialize,
@@ -2480,7 +3004,7 @@ where
     K: Clone,
 {
     let comm = live_comm(&fire.candidates, consume, peeks, None, counters, &fire.comm)?;
-    let committed = committed_candidates(store, &fire.candidates, &fire.group)?;
+    let committed = committed_candidates(store, &fire.candidates, &fire.group, reads)?;
     check_removed_records(&committed, &fire.removed)?;
     Ok(ReadyConsumeFire {
         fire,
@@ -2509,6 +3033,7 @@ pub(crate) fn ready_produce<C, P, A, K>(
     produce: StagedProduce<C, P, A, K>,
     host_counter: i32,
     counters: impl Fn(&[Produce]) -> BTreeMap<Produce, i32>,
+    reads: Reads<'_, C, P, A, K>,
 ) -> Result<(ReadyProduce<C, P, A, K>, Vec<Vec<C>>), SpaceTxnError>
 where
     C: Clone + Hash + Eq + Serialize,
@@ -2524,7 +3049,7 @@ where
         joins_at_start,
         fire,
     } = produce;
-    let joins = store.get_joins(&channel);
+    let joins = reads.channel_joins(store, &channel)?;
     if record_bytes(&joins)? != record_bytes(&joins_at_start)? {
         return Err(SpaceTxnError::Inconsistent("the join groups changed since staging"));
     }
@@ -2538,7 +3063,7 @@ where
                 true => None,
                 false => Some(&source),
             };
-            Some(ready_produce_fire(store, fire, incoming, counters)?)
+            Some(ready_produce_fire(store, fire, incoming, counters, reads)?)
         }
     };
     Ok((
@@ -2571,6 +3096,7 @@ pub(crate) fn ready_consume<C, P, A, K>(
     store: &dyn HotStore<C, P, A, K>,
     consume: StagedConsume<C, P, A, K>,
     counters: impl Fn(&[Produce]) -> BTreeMap<Produce, i32>,
+    reads: Reads<'_, C, P, A, K>,
 ) -> Result<ReadyConsume<C, P, A, K>, SpaceTxnError>
 where
     C: Clone + Hash + Eq + Serialize,
@@ -2589,7 +3115,7 @@ where
     } = consume;
     let fire = match fire {
         None => None,
-        Some(fire) => Some(ready_consume_fire(store, fire, &source, &peeks, counters)?),
+        Some(fire) => Some(ready_consume_fire(store, fire, &source, &peeks, counters, reads)?),
     };
     Ok(ReadyConsume {
         source,
@@ -2681,6 +3207,119 @@ pub(crate) fn fired_receipt<C, P, A, K>(
     }
 }
 
+// The store steps of the host, `store_data`, `remove_matched_datum_and_join`,
+// `store_waiting_continuation` and `store_persistent_data`, are private to
+// ops_produce.rs and ops_consume.rs, so they are re-stated here over the
+// public `HotStore` API, statement for statement. Play and native replay
+// apply every effect through them, so their effects are equal by
+// construction (decision 47, design v2, S2).
+
+// ops_produce.rs `store_data`.
+pub(crate) fn store_data<C, P, A, K>(
+    store: &dyn HotStore<C, P, A, K>,
+    channel: C,
+    data: A,
+    persist: bool,
+    produce_ref: Produce,
+) where
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    store.put_datum(&channel, Datum {
+        a: data,
+        persist,
+        source: produce_ref,
+    });
+}
+
+// ops_produce.rs `remove_matched_datum_and_join`.
+pub(crate) fn remove_matched_datum_and_join<C, P, A, K>(
+    store: &dyn HotStore<C, P, A, K>,
+    channels: &[C],
+    data_candidates: &[ConsumeCandidate<C, A>],
+) where
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
+    sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
+    for consume_candidate in sorted_candidates {
+        let channel = &consume_candidate.channel;
+        let datum_index = consume_candidate.datum_index;
+
+        if datum_index >= 0 &&
+            !consume_candidate.datum.persist &&
+            store.remove_datum(channel, datum_index).is_err()
+        {
+            continue;
+        }
+        store.remove_join(channel, channels);
+    }
+}
+
+// Disabled by decision 45 (Rule E, "Apply everywhere"): no fire keeps its
+// records, so the retained form of `remove_matched_datum_and_join` has no
+// caller.
+//
+// ```
+// // The retained (peek) form of `remove_matched_datum_and_join`: the records
+// // stay and only the joins of the fired group follow the continuation.
+// fn remove_joins<C, P, A, K>(
+//     store: &dyn HotStore<C, P, A, K>,
+//     channels: &[C],
+//     data_candidates: &[ConsumeCandidate<C, A>],
+// ) where
+//     C: Clone + Hash + Eq,
+//     P: Clone,
+//     A: Clone,
+//     K: Clone,
+// {
+//     for consume_candidate in by_descending_index(data_candidates) {
+//         store.remove_join(&consume_candidate.channel, channels);
+//     }
+// }
+// ```
+
+// ops_consume.rs `store_waiting_continuation`.
+pub(crate) fn store_waiting_continuation<C, P, A, K>(
+    store: &dyn HotStore<C, P, A, K>,
+    channels: Vec<C>,
+    wc: WaitingContinuation<P, K>,
+) where
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    let _ = store.put_continuation(&channels, wc);
+    for channel in channels.iter() {
+        store.put_join(channel, &channels);
+    }
+}
+
+// ops_consume.rs `store_persistent_data`.
+pub(crate) fn store_persistent_data<C, P, A, K>(
+    store: &dyn HotStore<C, P, A, K>,
+    data_candidates: &[ConsumeCandidate<C, A>],
+) where
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
+    sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
+    for consume_candidate in sorted_candidates {
+        if !consume_candidate.datum.persist {
+            let _ = store.remove_datum(&consume_candidate.channel, consume_candidate.datum_index);
+        }
+    }
+}
+
 // Commits one staged operation and correlates its staged effects with the
 // events it emitted. The state check of the entries that it removes runs in
 // `apply_op` (`ready_produce`, `ready_consume`) before any of its effects.
@@ -2691,6 +3330,7 @@ fn commit_operation<B, C, P, A, K>(
     store: &dyn HotStore<C, P, A, K>,
     index: usize,
     staged: Staged<C, P, A, K>,
+    reads: Reads<'_, C, P, A, K>,
 ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError>
 where
     B: TxnBackend<C, P, A, K>,
@@ -2705,7 +3345,7 @@ where
         effects,
     } = staged;
     let mut events = Vec::with_capacity(2);
-    let receipt = backend.apply_op(store, operation, before_observe, &mut events)?;
+    let receipt = backend.apply_op(store, operation, before_observe, reads, &mut events)?;
     check_event_correlation(index, &effects, &events)?;
     Ok(receipt)
 }
@@ -2723,6 +3363,7 @@ async fn commit_staged<B, C, P, A, K>(
     store: SharedStore<C, P, A, K>,
     registration: &TxnRegistration,
     staged: Vec<Staged<C, P, A, K>>,
+    reads: Reads<'_, C, P, A, K>,
 ) -> Result<SpaceTxnReceipt<C, P, A, K>, SpaceTxnError>
 where
     B: TxnBackend<C, P, A, K>,
@@ -2744,11 +3385,11 @@ where
             Some(parent) => {
                 let store = &**store;
                 operation_context::scope(sub_order(parent, index), async move {
-                    commit_operation(backend, store, index, entry)
+                    commit_operation(backend, store, index, entry, reads)
                 })
                 .await?
             }
-            None => commit_operation(backend, &**store, index, entry)?,
+            None => commit_operation(backend, &**store, index, entry, reads)?,
         };
         ops.push(receipt);
     }
@@ -2784,6 +3425,9 @@ where
     A: Clone,
     K: Clone,
 {
+    /// A transaction of `backend`. A registration of `begin_metered` gives
+    /// it the metered reads, with the history repository and the root of the
+    /// host (decision 47).
     pub(crate) fn new(
         mode: SpaceMode,
         backend: B,
@@ -2792,8 +3436,26 @@ where
         coverage: LockCoverage,
         locks: (ChannelLockGuard, ChannelLockGuard),
         registration: TxnRegistration,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, SpaceTxnError>
+    where
+        B: TxnBackend<C, P, A, K>,
+        C: 'static,
+        P: 'static,
+        A: 'static,
+        K: 'static,
+    {
+        let metered = match registration.metered_reads::<C, P, A, K>()? {
+            None => None,
+            Some(reads) => {
+                let (history, root) = backend.history()?;
+                Some(MeteredReads {
+                    reads,
+                    history,
+                    root,
+                })
+            }
+        };
+        Ok(Self {
             core: TxnCore {
                 mode,
                 store,
@@ -2803,13 +3465,14 @@ where
                 paired: Vec::new(),
                 staged: Vec::new(),
                 finished: false,
+                metered,
             },
             backend,
             held: Some(HeldTxn {
                 _locks: locks,
                 registration,
             }),
-        }
+        })
     }
 
     // A transaction that failed closed releases its locks and its
@@ -2861,7 +3524,7 @@ where
 
     fn recorded_comms(&mut self, source: RSpaceOperationSource<'_>) -> Option<Vec<COMM>> {
         match self.core.mode {
-            SpaceMode::Play => None,
+            SpaceMode::Play | SpaceMode::NativeReplay => None,
             SpaceMode::Replay | SpaceMode::Reporting => {
                 let key = match source {
                     RSpaceOperationSource::Produce(produce) => IOEvent::Produce(produce.clone()),
@@ -2896,7 +3559,7 @@ where
         incoming: bool,
     ) -> Result<bool, SpaceTxnError> {
         match self.core.mode {
-            SpaceMode::Play => Ok(true),
+            SpaceMode::Play | SpaceMode::NativeReplay => Ok(true),
             SpaceMode::Replay | SpaceMode::Reporting => {
                 if !comm.produces.contains(&datum.source) {
                     return Ok(false);
@@ -2938,7 +3601,8 @@ where
         self.core.paired.clear();
         self.core.view.count_delta.clear();
         let store = Arc::clone(&self.core.store);
-        let result = commit_staged(&self.backend, store, &held.registration, staged).await;
+        let reads = Reads::new(self.core.metered.as_ref());
+        let result = commit_staged(&self.backend, store, &held.registration, staged, reads).await;
         drop(held);
         result
     }

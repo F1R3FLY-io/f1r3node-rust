@@ -1770,7 +1770,7 @@ Until then, a collection that is part of a join fails with `Inconsistent`.
 
 **A collection operation.** `begin_collection` (`spaces/generic.rs:1831-1984`) opens the transaction and reads the config once.
 `run_with` (`spaces/generic.rs:2211-2343`) then stages the operation in that transaction.
-The job commits the transaction exactly once (`spaces/agent.rs:458-470`).
+The job commits the transaction exactly once (`spaces/agent.rs:475-487`).
 
 ```text
 COLLECTION-OP(op):                             ▷ FamilyAgent, begin_collection, run_with, run_op
@@ -2906,13 +2906,13 @@ A program never issues a settle job, and the reducer issues a join only through 
 
 | Item | Content |
 |---|---|
-| `JoinBind` (`spaces/agent.rs:158-167`) | The collection key, the channel as the program names it, the pattern, and the query of one bind. |
-| `JoinOp` (`spaces/agent.rs:172-195`) | The space, the binds in bind order, the body, the arrow flags, the guard, the two authorities, and the carried orders of a re-issued persistent join. |
-| `SpaceOp::Join` (`spaces/agent.rs:276-281`) | The fourth operation of a space job. |
-| `SettleOp::cascade` (`spaces/agent.rs:233-249`) | The rest of a cascade, or `None` for the settle of one stack or priority-queue collection. |
-| `CascadeState` (`spaces/agent.rs:217-226`) | The collections that can still owe a fire, the owed second sends in run order, and the operation to resume. |
-| `PendingProduce` (`spaces/agent.rs:201-213`) | One owed second send: its collection, its record with the envelope, and its persistence. |
-| `SpaceAgent::prepare_join` (`spaces/agent.rs:429-433`) | Stages a join: the classification, the scope, and the engine. |
+| `JoinBind` (`spaces/agent.rs:175-184`) | The collection key, the channel as the program names it, the pattern, and the query of one bind. |
+| `JoinOp` (`spaces/agent.rs:189-212`) | The space, the binds in bind order, the body, the arrow flags, the guard, the two authorities, and the carried orders of a re-issued persistent join. |
+| `SpaceOp::Join` (`spaces/agent.rs:293-298`) | The fourth operation of a space job. |
+| `SettleOp::cascade` (`spaces/agent.rs:250-266`) | The rest of a cascade, or `None` for the settle of one stack or priority-queue collection. |
+| `CascadeState` (`spaces/agent.rs:234-243`) | The collections that can still owe a fire, the owed second sends in run order, and the operation to resume. |
+| `PendingProduce` (`spaces/agent.rs:218-230`) | One owed second send: its collection, its record with the envelope, and its persistence. |
+| `SpaceAgent::prepare_join` (`spaces/agent.rs:446-450`) | Stages a join: the classification, the scope, and the engine. |
 
 The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:843-871`).
 Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:901-925`).

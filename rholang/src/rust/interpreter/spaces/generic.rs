@@ -1837,7 +1837,7 @@ pub async fn begin_collection<S: OuterStore>(
 ) -> Result<CollectionTxn, SpaceError> {
     let meter = &env.meter;
     let channels = CollectionChannels::new_metered(outer, space, key, meter)?;
-    let mut txn = env.store.begin(channels.lock_keys()).await?;
+    let mut txn = env.begin(channels.lock_keys()).await?;
     let (config, _) = read_space_config(
         &mut txn,
         channels.config(),
@@ -1879,7 +1879,7 @@ pub async fn prepare_collection_op(
                     config,
                 } = opened;
                 drop(txn);
-                let txn = env.store.begin(scope.lock_keys()).await?;
+                let txn = env.begin(scope.lock_keys()).await?;
                 agent.run_join(
                     env,
                     CollectionTxn {
@@ -1968,7 +1968,7 @@ pub async fn begin_join<S: OuterStore>(
         lock_keys.push(collection.counter);
         lock_keys.push(collection.data);
     }
-    let mut txn = env.store.begin(&lock_keys).await?;
+    let mut txn = env.begin(&lock_keys).await?;
     let (config, _) = read_space_config(
         &mut txn,
         channels.config(),
@@ -2033,7 +2033,7 @@ pub async fn begin_allocation(
         namespace::gprivate(namespace::config_channel(space)),
         namespace::gprivate(namespace::allocator_channel(space)),
     ];
-    let mut txn = env.store.begin(&keys).await?;
+    let mut txn = env.begin(&keys).await?;
     let [config_channel, allocator] = keys;
     let (config, _) = read_space_config(
         &mut txn,
@@ -2056,7 +2056,7 @@ pub async fn read_config_map(env: &SpaceEnv, space: NativeSpace) -> Result<Par, 
     meter.reserve_copy(&*GPRIVATE)?;
     meter.reserve_buffer::<u8>(namespace::SPACE_ID_PREFIX_LEN)?;
     let channel = namespace::gprivate(namespace::config_channel(space));
-    let mut txn = env.store.begin(std::slice::from_ref(&channel)).await?;
+    let mut txn = env.begin(std::slice::from_ref(&channel)).await?;
     let (_, map) = read_space_config(
         &mut txn,
         &channel,
@@ -2551,7 +2551,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
             self.outer
                 .creation_records(space, &creation.random, &creation.authority, meter)?;
         let mut txn = match records.is_empty() {
-            true => env.store.begin(&keys).await?,
+            true => env.begin(&keys).await?,
             false => {
                 let mut locked = meter.buffer::<Par>(keys.len() + records.len())?;
                 for channel in keys
@@ -2560,7 +2560,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
                 {
                     locked.push(meter.copy(channel)?);
                 }
-                env.store.begin(&locked).await?
+                env.begin(&locked).await?
             }
         };
         let [config_channel, space_counter, handle] = keys;

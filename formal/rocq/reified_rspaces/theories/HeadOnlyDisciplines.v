@@ -78,7 +78,7 @@
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
                             similarity scans every waiter, commit ff479042)
-   in_flight, flight_ord    spaces/agent.rs:108, 151
+   in_flight, flight_ord    spaces/agent.rs:125, 168
                             (ProduceOp::reissued_ord and
                             ConsumeOp::reissued_ord: the first-round ord of
                             a re-issued persistent operation)
@@ -119,10 +119,10 @@
                             Each FireStep branch calls fire_receive, then
                             restore_peeked.)
    remove_key, sub_step, sub_records
-                            rspace/space_play.rs:136, 196, 294, 369-386,
-                            389-413 and 456-472,
-                            replay_rspace/space_replay.rs:186, 288-289 and
-                            430, and hot_store.rs:879-897 (a Store calls
+                            rspace/space_play.rs:148, 208, 307,
+                            space_store_handle.rs:3218-3235, 3238-3262, 3305-3321,
+                            replay_rspace/space_replay.rs:197, 299-300 and
+                            442, and hot_store.rs:879-897 (a Store calls
                             store_data, which calls put_datum. put_datum
                             inserts at index 0 with no deduplication. A
                             fire always calls remove_matched_datum_and_join
@@ -131,8 +131,8 @@
                             The incoming datum of a produce-side fire has
                             no index, so no stored record leaves.)
    retention_step, retention_records
-                            rspace/space_play.rs:186-195, 285-293 and
-                            replay_rspace/space_replay.rs:272-287, 421-429
+                            rspace/space_play.rs:198-207, 298-306 and
+                            replay_rspace/space_replay.rs:283-298, 433-441
                             (the retention before decision 45, kept as
                             comments: a peek fire kept its records)
 

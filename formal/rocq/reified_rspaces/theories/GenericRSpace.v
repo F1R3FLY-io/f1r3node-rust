@@ -84,7 +84,7 @@
                             Cx::canonical_waiter_order
                             (spaces/generic.rs:715-730; DR-75 of decision
                             41, rspace++/src/rspace/space_store_handle.rs:
-                            312-344). The model takes any permutation
+                            332-364). The model takes any permutation
    after_fire, cap          FireRounds::after_fire and FIRE_ROUND_CAP
                             (reified/costs.rs:41-44, 302-334)
    first_admitting,         OFFER-SCAN (A.7, decision 37); Match.v proves

@@ -1488,7 +1488,7 @@
       "scope": "TxnView",
       "kind": "fn",
       "name": "remove_continuation",
-      "line": 1339,
+      "line": 1825,
       "role": "Removes a fired waiter by its record identity (D10).",
       "rocq": [
         "remove_one",
@@ -1506,7 +1506,7 @@
       "scope": "TxnView",
       "kind": "fn",
       "name": "put_continuation",
-      "line": 1314,
+      "line": 1800,
       "role": "Parks a waiter once: an equal park changes nothing (F14).",
       "rocq": [
         "park"

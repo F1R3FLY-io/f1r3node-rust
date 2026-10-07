@@ -1911,7 +1911,7 @@
       "file": "rholang/src/rust/interpreter/spaces/agent.rs",
       "kind": "struct",
       "name": "ProduceOp",
-      "line": 84,
+      "line": 101,
       "role": "A produce on a collection; reissued_ord carries the first-round ord of a re-issued persistent send (decision 43).",
       "rocq": [
         "in_flight",
@@ -1934,7 +1934,7 @@
       "file": "rholang/src/rust/interpreter/spaces/agent.rs",
       "kind": "struct",
       "name": "ConsumeOp",
-      "line": 123,
+      "line": 140,
       "role": "A receive on a collection; reissued_ord carries the first-round ord of a re-issued persistent receive (decision 43).",
       "rocq": [
         "in_flight",

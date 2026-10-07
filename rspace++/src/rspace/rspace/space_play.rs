@@ -7,8 +7,8 @@
 // calls of ops_produce.rs / ops_consume.rs in the same order. The store
 // steps `store_data`, `remove_matched_datum_and_join`,
 // `store_waiting_continuation` and `store_persistent_data` are private to
-// those modules, so they are re-stated at the end of this file over the
-// public `HotStore` API, statement for statement.
+// those modules. `space_store_handle.rs` re-states them over the public
+// `HotStore` API, statement for statement, for play and native replay.
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -20,16 +20,18 @@ use serde::Serialize;
 use super::RSpace;
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hot_store::HotStore;
-use crate::rspace::internal::{ConsumeCandidate, Datum, WaitingContinuation};
+use crate::rspace::internal::WaitingContinuation;
 use crate::rspace::r#match::Match;
 use crate::rspace::metrics_constants::{CONSUME_COMM_LABEL, PRODUCE_COMM_LABEL};
 use crate::rspace::rspace_interface::{RSpaceAccountingObserver, RSpaceOperationSource};
 use crate::rspace::space_store_handle::{
-    BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire, ReadyFire,
-    ReadyProduce, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost,
-    StagedConsume, StagedConsumeFire, StagedFire, StagedOperation, StagedProduce, SweepReport,
-    TxnBackend, TxnRegistration, completion, fired_receipt, installed_channels, ready_consume,
-    ready_produce, root_leaf_records, run_before_observe, sweep_channels, sweep_volatile_channels,
+    BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, Reads, ReadyConsume, ReadyConsumeFire,
+    ReadyFire, ReadyProduce, SharedHistory, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError,
+    SpaceTxnHost, StagedConsume, StagedConsumeFire, StagedFire, StagedOperation, StagedProduce,
+    SweepReport, TxnBackend, TxnRegistration, completion, fired_receipt, history_at_root,
+    installed_channels, ready_consume, ready_produce, remove_matched_datum_and_join,
+    root_leaf_records, run_before_observe, store_data, store_persistent_data,
+    store_waiting_continuation, sweep_channels, sweep_volatile_channels,
 };
 use crate::rspace::striped_locks;
 use crate::rspace::trace::event::{COMM, Event, IOEvent, Produce};
@@ -59,19 +61,24 @@ where
 
     fn recorded_binding(&self, _event: &IOEvent, _comm: &COMM) -> Option<(COMM, usize)> { None }
 
+    fn history(&self) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError> {
+        history_at_root(self.space.get_history_repository())
+    }
+
     fn apply_op(
         &self,
         store: &dyn HotStore<C, P, A, K>,
         operation: StagedOperation<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         match operation {
             StagedOperation::Produce(produce) => {
-                self.apply_produce(store, produce, before_observe, events)
+                self.apply_produce(store, produce, before_observe, reads, events)
             }
             StagedOperation::Consume(consume) => {
-                self.apply_consume(store, consume, before_observe, events)
+                self.apply_consume(store, consume, before_observe, reads, events)
             }
         }
     }
@@ -91,12 +98,17 @@ where
         store: &dyn HotStore<C, P, A, K>,
         produce: StagedProduce<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         let host_counter = self.host_counter(&produce.source);
-        let (produce, joins) = ready_produce(store, produce, host_counter, |produces| {
-            self.space.produce_counters(produces)
-        })?;
+        let (produce, joins) = ready_produce(
+            store,
+            produce,
+            host_counter,
+            |produces| self.space.produce_counters(produces),
+            reads,
+        )?;
         let produce_ref = produce.source.clone();
         let source = RSpaceOperationSource::Produce(&produce_ref);
         run_before_observe(before_observe, source)?;
@@ -207,10 +219,11 @@ where
         store: &dyn HotStore<C, P, A, K>,
         consume: StagedConsume<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         let consume =
-            ready_consume(store, consume, |produces| self.space.produce_counters(produces))?;
+            ready_consume(store, consume, |produces| self.space.produce_counters(produces), reads)?;
         let consume_ref = consume.source.clone();
         let source = RSpaceOperationSource::Consume(&consume_ref);
         run_before_observe(before_observe, source)?;
@@ -336,7 +349,7 @@ where
             coverage,
             locks,
             registration,
-        )))
+        )?))
     }
 
     fn root_leaf_record_count(&self, channel: &C) -> Result<u64, SpaceTxnError> {
@@ -365,123 +378,18 @@ where
     }
 }
 
-// ops_produce.rs `store_data`.
-fn store_data<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
-    channel: C,
-    data: A,
-    persist: bool,
-    produce_ref: Produce,
-) where
-    C: Clone + Hash + Eq,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    store.put_datum(&channel, Datum {
-        a: data,
-        persist,
-        source: produce_ref,
-    });
-}
-
-// ops_produce.rs `remove_matched_datum_and_join`.
-fn remove_matched_datum_and_join<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
-    channels: &[C],
-    data_candidates: &[ConsumeCandidate<C, A>],
-) where
-    C: Clone + Hash + Eq,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-    sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
-    for consume_candidate in sorted_candidates {
-        let channel = &consume_candidate.channel;
-        let datum_index = consume_candidate.datum_index;
-
-        if datum_index >= 0 &&
-            !consume_candidate.datum.persist &&
-            store.remove_datum(channel, datum_index).is_err()
-        {
-            continue;
-        }
-        store.remove_join(channel, channels);
-    }
-}
-
-// Disabled by decision 45 (Rule E, "Apply everywhere"): no fire keeps its
-// records, so the retained form of `remove_matched_datum_and_join` has no
-// caller.
-//
-// ```
-// // The retained (peek) form of `remove_matched_datum_and_join`: the records
-// // stay and only the joins of the fired group follow the continuation.
-// fn remove_joins<C, P, A, K>(
-//     store: &dyn HotStore<C, P, A, K>,
-//     channels: &[C],
-//     data_candidates: &[ConsumeCandidate<C, A>],
-// ) where
-//     C: Clone + Hash + Eq,
-//     P: Clone,
-//     A: Clone,
-//     K: Clone,
-// {
-//     for consume_candidate in by_descending_index(data_candidates) {
-//         store.remove_join(&consume_candidate.channel, channels);
-//     }
-// }
-// ```
-
-// ops_consume.rs `store_waiting_continuation`.
-fn store_waiting_continuation<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
-    channels: Vec<C>,
-    wc: WaitingContinuation<P, K>,
-) where
-    C: Clone + Hash + Eq,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    let _ = store.put_continuation(&channels, wc);
-    for channel in channels.iter() {
-        store.put_join(channel, &channels);
-    }
-}
-
-// ops_consume.rs `store_persistent_data`.
-fn store_persistent_data<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
-    data_candidates: &[ConsumeCandidate<C, A>],
-) where
-    C: Clone + Hash + Eq,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-    sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
-    for consume_candidate in sorted_candidates {
-        if !consume_candidate.datum.persist {
-            let _ = store.remove_datum(&consume_candidate.channel, consume_candidate.datum_index);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
+    use crate::rspace::internal::Datum;
     use crate::rspace::rspace_interface::ISpace;
     use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
     use crate::rspace::space_store_handle::{
-        ConsumeOutcome, ProduceOutcome, SpaceConsume, SpaceProduce, SpaceStoreHandle, TxnView,
-        bind_candidate, incoming_candidate,
+        ConsumeOutcome, NativeViewReads, ProduceOutcome, SharedReads, SpaceConsume, SpaceProduce,
+        SpaceStoreHandle, TxnView, bind_candidate, incoming_candidate,
     };
 
     struct AnyMatch;
@@ -644,5 +552,140 @@ mod tests {
         assert_eq!(space.take_event_log().await, vec![Event::IoEvent(IOEvent::Produce(
             Produce::create(&s("a"), &s("w"), false)
         ))]);
+    }
+
+    // Metered reads whose meter logs each reservation, in order.
+    fn logging_reads(
+        log: Arc<std::sync::Mutex<Vec<(usize, usize, usize)>>>,
+    ) -> SharedReads<String, String, String, String> {
+        Arc::new(NativeViewReads::new(move |operations: usize, scanned: usize, backing: usize| {
+            log.lock()
+                .expect("reservation log lock")
+                .push((operations, scanned, backing));
+            Ok::<(), RSpaceError>(())
+        }))
+    }
+
+    type ViewValues =
+        (Vec<Datum<String>>, Vec<WaitingContinuation<String, String>>, Vec<Vec<String>>);
+
+    // The data of `a`, the continuations of `[b]` and the joins of `b`, read
+    // by a transaction of `begin` (no reads) or of `begin_metered`.
+    async fn read_view(
+        handle: &SpaceStoreHandle<String, String, String, String>,
+        reads: Option<SharedReads<String, String, String, String>>,
+    ) -> ViewValues {
+        let keys = vec![s("a"), s("b")];
+        let mut txn = match reads {
+            Some(reads) => handle.begin_metered(&keys, reads).await,
+            None => handle.begin(&keys).await,
+        }
+        .expect("begin");
+        let data = txn.data(&s("a")).expect("read a").to_vec();
+        let waiting = txn.continuations(&[s("b")]).expect("read [b]").to_vec();
+        let joins = txn.joins(&s("b")).expect("read the joins of b").to_vec();
+        (data, waiting, joins)
+    }
+
+    // Decision 47 (I-12): a metered read charges the key and the value only.
+    // A cold read takes the value from history and a warm read takes it from
+    // the hot store, and both make the same reservations in the same order.
+    // Both return the values of a plain read.
+    #[tokio::test]
+    async fn space_store_handle_metered_reads_charge_the_same_warm_and_cold() {
+        let space = space().await;
+        let handle = SpaceStoreHandle::new(space.clone());
+        let mut txn = handle.begin(&[s("a"), s("b")]).await.expect("begin");
+        txn.produce(store_op("a", "x")).expect("stage x");
+        txn.produce(store_op("a", "y")).expect("stage y");
+        txn.consume(park_op("b", "k")).expect("stage the park");
+        txn.commit().await.expect("commit");
+        space.create_checkpoint().await.expect("checkpoint");
+        let cold_state = space.get_store().snapshot();
+        assert!(cold_state.data_flat().is_empty());
+        assert!(cold_state.continuations_flat().is_empty());
+
+        let cold_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cold = read_view(&handle, Some(logging_reads(Arc::clone(&cold_log)))).await;
+        let warm_state = space.get_store().snapshot();
+        assert_eq!(warm_state.data_flat().get(&s("a")).map(Vec::len), Some(2));
+        assert_eq!(
+            warm_state
+                .continuations_flat()
+                .get(&vec![s("b")])
+                .map(Vec::len),
+            Some(1)
+        );
+
+        let warm_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let warm = read_view(&handle, Some(logging_reads(Arc::clone(&warm_log)))).await;
+        let plain = read_view(&handle, None).await;
+
+        let cold_log = cold_log.lock().expect("reservation log lock").clone();
+        let warm_log = warm_log.lock().expect("reservation log lock").clone();
+        assert!(!cold_log.is_empty());
+        assert_eq!(cold_log, warm_log);
+        assert_eq!(cold, warm);
+        assert_eq!(cold, plain);
+        assert_eq!(cold.0.len(), 2);
+        assert_eq!(cold.1.len(), 1);
+        assert_eq!(cold.2, vec![vec![s("b")]]);
+    }
+
+    // Decision 47: a metered transaction stages and commits what a plain
+    // transaction does. Its commit checks read through the metered reads, and
+    // only the reservations differ.
+    #[tokio::test]
+    async fn space_store_handle_metered_reads_keep_the_outcome() {
+        let mut outcomes = Vec::with_capacity(2);
+        for metered in [false, true] {
+            let space = space().await;
+            let handle = SpaceStoreHandle::new(space.clone());
+            let keys = vec![s("a"), s("b")];
+            let mut txn = handle.begin(&keys).await.expect("begin");
+            txn.produce(store_op("a", "x")).expect("stage x");
+            txn.consume(park_op("b", "k")).expect("stage the park");
+            txn.commit().await.expect("commit");
+            space.create_checkpoint().await.expect("checkpoint");
+
+            let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut txn = match metered {
+                true => {
+                    handle
+                        .begin_metered(&keys, logging_reads(Arc::clone(&log)))
+                        .await
+                }
+                false => handle.begin(&keys).await,
+            }
+            .expect("begin");
+            let stored = txn.data(&s("a")).expect("read a")[0].clone();
+            let waiting = txn.continuations(&[s("b")]).expect("read [b]")[0].clone();
+            txn.consume(SpaceConsume {
+                channels: vec![s("a")],
+                patterns: vec![s("_")],
+                continuation: s("k2"),
+                persist: false,
+                peeks: BTreeSet::new(),
+                outcome: ConsumeOutcome::Fire {
+                    data: vec![bind_candidate(s("a"), &stored, s("x"), 0)],
+                },
+                before_observe: None,
+            })
+            .expect("stage the consume fire");
+            txn.produce(fire_op("b", "z", &waiting))
+                .expect("stage the produce fire");
+            let receipt = txn.commit().await.expect("commit the fires");
+            let state = space.get_store().snapshot();
+            let reservations = log.lock().expect("reservation log lock").len();
+            assert_eq!(reservations > 0, metered);
+            outcomes.push((
+                receipt,
+                space.take_event_log().await,
+                state.data_flat(),
+                state.continuations_flat(),
+                state.joins_flat(),
+            ));
+        }
+        assert_eq!(outcomes[0], outcomes[1]);
     }
 }

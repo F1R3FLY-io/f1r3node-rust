@@ -17,9 +17,9 @@
 //!
 //! Every agent method follows the substrate rules (readiness review S2, S3, S5 and S10):
 //!
-//! * A method opens at most one transaction. It locks every channel that it touches: a
-//!   collection operation `[C(sid), S(sid), S(sid,k), D(sid,k)]`, a creation `[C(sid), S(sid),
-//!   H(sid)]`, and a read-only access `[C(sid)]`.
+//! * A method opens at most one transaction, with [`SpaceEnv::begin`]. It locks every channel
+//!   that it touches: a collection operation `[C(sid), S(sid), S(sid,k), D(sid,k)]`, a creation
+//!   `[C(sid), S(sid), H(sid)]`, and a read-only access `[C(sid)]`.
 //! * A read-only access stages nothing and drops its transaction. It never commits an empty
 //!   transaction.
 //! * A method that stages work returns a [`Prepared`]. The job commits it exactly once with
@@ -39,6 +39,7 @@
 //! cascade state of a settle ([`SettleOp::cascade`]) in P5c.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -48,7 +49,7 @@ use models::rhoapi::{
 use models::rust::space_factory_urn::SpaceFactoryUrn;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceResult;
 use rspace_plus_plus::rspace::space_store_handle::{
-    BoxedSpaceTxn, SpaceStoreHandle, SpaceTxnReceipt,
+    BoxedSpaceTxn, NativeViewReads, SpaceStoreHandle, SpaceTxnError, SpaceTxnReceipt,
 };
 
 use super::errors::SpaceError;
@@ -76,6 +77,22 @@ pub struct SpaceEnv {
     /// The host-work meter of the job (readiness review S5, decision 42): the matcher and the
     /// agent reserve each read and copy on it before they make it.
     pub meter: ScanMeter,
+}
+
+impl SpaceEnv {
+    /// Opens the transaction of a method over `lock_keys`. In native execution the transaction
+    /// reads through the metered reads of the substrate on [`SpaceEnv::meter`]: each key and
+    /// each value that it reads is charged, the same on a cache hit and a miss (decision 47,
+    /// I-12). In legacy execution it reads as the host does.
+    pub async fn begin(&self, lock_keys: &[Par]) -> Result<ParSpaceTxn, SpaceTxnError> {
+        match self.budget.native_execution_active() {
+            true => {
+                let reads = Arc::new(NativeViewReads::new(self.meter.clone()));
+                self.store.begin_metered(lock_keys, reads).await
+            }
+            false => self.store.begin(lock_keys).await,
+        }
+    }
 }
 
 /// A produce on a collection of a native space: a routed send (P4 design C.3), an R7 reply

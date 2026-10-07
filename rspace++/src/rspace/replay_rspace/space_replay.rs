@@ -33,11 +33,12 @@ use crate::rspace::r#match::Match;
 use crate::rspace::reporting_rspace::ReportingRspace;
 use crate::rspace::rspace_interface::{RSpaceAccountingObserver, RSpaceOperationSource};
 use crate::rspace::space_store_handle::{
-    BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire, ReadyFire,
-    ReadyProduce, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost,
-    StagedConsume, StagedConsumeFire, StagedFire, StagedOperation, StagedProduce, SweepReport,
-    TxnBackend, TxnRegistration, completion, fired_receipt, installed_channels, ready_consume,
-    ready_produce, root_leaf_records, run_before_observe, sweep_channels, sweep_volatile_channels,
+    BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, Reads, ReadyConsume, ReadyConsumeFire,
+    ReadyFire, ReadyProduce, SharedHistory, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError,
+    SpaceTxnHost, StagedConsume, StagedConsumeFire, StagedFire, StagedOperation, StagedProduce,
+    SweepReport, TxnBackend, TxnRegistration, completion, fired_receipt, history_at_root,
+    installed_channels, ready_consume, ready_produce, root_leaf_records, run_before_observe,
+    sweep_channels, sweep_volatile_channels,
 };
 use crate::rspace::striped_locks;
 use crate::rspace::trace::event::{COMM, Event, IOEvent, Produce};
@@ -80,19 +81,24 @@ where
         binding
     }
 
+    fn history(&self) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError> {
+        history_at_root(self.space.get_history_repository())
+    }
+
     fn apply_op(
         &self,
         store: &dyn HotStore<C, P, A, K>,
         operation: StagedOperation<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         match operation {
             StagedOperation::Produce(produce) => {
-                self.apply_produce(store, produce, before_observe, events)
+                self.apply_produce(store, produce, before_observe, reads, events)
             }
             StagedOperation::Consume(consume) => {
-                self.apply_consume(store, consume, before_observe, events)
+                self.apply_consume(store, consume, before_observe, reads, events)
             }
         }
     }
@@ -128,12 +134,17 @@ where
         store: &dyn HotStore<C, P, A, K>,
         produce: StagedProduce<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         let host_counter = self.host_counter(&produce.source);
-        let (produce, joins) = ready_produce(store, produce, host_counter, |produces| {
-            self.space.produce_counters(produces)
-        })?;
+        let (produce, joins) = ready_produce(
+            store,
+            produce,
+            host_counter,
+            |produces| self.space.produce_counters(produces),
+            reads,
+        )?;
         let produce_ref = produce.source.clone();
         let source = RSpaceOperationSource::Produce(&produce_ref);
         run_before_observe(before_observe, source)?;
@@ -309,10 +320,11 @@ where
         store: &dyn HotStore<C, P, A, K>,
         consume: StagedConsume<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         let consume =
-            ready_consume(store, consume, |produces| self.space.produce_counters(produces))?;
+            ready_consume(store, consume, |produces| self.space.produce_counters(produces), reads)?;
         let consume_ref = consume.source.clone();
         let source = RSpaceOperationSource::Consume(&consume_ref);
         run_before_observe(before_observe, source)?;
@@ -462,7 +474,7 @@ where
     let backend = ReplayBackend {
         space: space.clone(),
     };
-    Ok(Box::new(HostTxn::new(mode, backend, store, installed, coverage, locks, registration)))
+    Ok(Box::new(HostTxn::new(mode, backend, store, installed, coverage, locks, registration)?))
 }
 
 fn replay_root_leaf_record_count<C, P, A, K>(

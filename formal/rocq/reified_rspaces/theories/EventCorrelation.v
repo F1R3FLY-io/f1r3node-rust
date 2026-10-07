@@ -152,12 +152,12 @@
      vpf_loop, vcf_loop      so a peek fire removes its stored
                              non-persistent records. Each commit of a fire
                              calls remove_matched_datum_and_join
-                             (rs/rspace/space_play.rs:196,
-                             rs/replay_rspace/space_replay.rs:289) or
+                             (rs/rspace/space_play.rs:208,
+                             rs/replay_rspace/space_replay.rs:300) or
                              store_persistent_data
-                             (rs/rspace/space_play.rs:294,
-                             rs/replay_rspace/space_replay.rs:430). ssh
-                             removed_records (rs/space_store_handle.rs:1089)
+                             (rs/rspace/space_play.rs:307,
+                             rs/replay_rspace/space_replay.rs:442). ssh
+                             removed_records (rs/space_store_handle.rs:1565)
                              stages the same records
    backend                   design §2.3 (ReportingRspace delegates)
    sub_order, sched_part     rholang/src/rust/interpreter/
@@ -212,25 +212,25 @@
    sid, view_get, overlay,   ssh channel_key, group_identity, the TxnView
      installed_by_sid        maps keyed by Blake2b256Hash, and the installed
                              set of TxnCore (FR-2)
-   peeks_ok                  ssh check_peeks (rs/space_store_handle.rs:1018):
+   peeks_ok                  ssh check_peeks (rs/space_store_handle.rs:1494):
                              no peeks, or every bind peeks, else
                              MixedArrowJoin. Decision 45: it only checks the
                              peek set (peek_retention is disabled)
    vpf_effects, vcf_effects, FR-10 and decision 45: ssh TxnCore::stage_produce
-     commit_play_produce,    (rs/space_store_handle.rs:1876),
-     commit_replay_produce,  apply_fire_to_view (rs/space_store_handle.rs:2029)
+     commit_play_produce,    (rs/space_store_handle.rs:2375),
+     commit_replay_produce,  apply_fire_to_view (rs/space_store_handle.rs:2529)
      commit_play_consume,    and TxnCore::stage_consume
-     commit_replay_consume   (rs/space_store_handle.rs:2090), PlayBackend::
+     commit_replay_consume   (rs/space_store_handle.rs:2590), PlayBackend::
                              produce_fire and consume_observed
-                             (rs/rspace/space_play.rs:149 and 230), and
+                             (rs/rspace/space_play.rs:161 and 243), and
                              ReplayBackend::produce_fire and consume_observed
-                             (rs/replay_rspace/space_replay.rs:215 and 335).
+                             (rs/replay_rspace/space_replay.rs:226 and 347).
                              A fire never stores its incoming datum, and a
                              peek fire removes the records of any fire
    fire_stores_no_datum,     FR-10 after decision 45 (design report §C.10):
      fire_view_removes       a fire removes exactly what the host removes,
                              and it never stores a datum
-   wrap_flags,               ssh fired_receipt (rs/space_store_handle.rs:2650)
+   wrap_flags,               ssh fired_receipt (rs/space_store_handle.rs:3176)
      fired_receipt           keeps the flags of wrap_result
                              (rs/rspace/ops_consume.rs:204-229). It fails
                              with Inconsistent when the results do not line
@@ -269,7 +269,7 @@
    stored_sources,           Produce::create (rs/trace/event.rs:238-249)
      restore_same_identity   hashes the channel, the data and the persist
                              flag. ssh stage_produce gives a staged produce
-                             that identity (rs/space_store_handle.rs:1892). So
+                             that identity (rs/space_store_handle.rs:2392). So
                              a re-store of the bytes of a record has the
                              identity of the source produce of the record
    restore_store_staged,     a re-store is a staged Store. put_datum inserts

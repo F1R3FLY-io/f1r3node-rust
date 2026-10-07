@@ -506,7 +506,7 @@ The Error controls are `step-doublepair-unsafe` (marker `vStaged[`), `step-joinr
 
 The substrate suites hold five negative controls:
 
-- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:3366`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:3382`) show that the event correlation of the commit rejects a defect.
+- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:4030`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:4046`) show that the event correlation of the commit rejects a defect.
 - `space_store_handle_remove_all_continuations_keeps_joins_control` (`reified_space_store_handle.rs:2199`) pins the HEAD behavior that `JoinResidueUnsafe` models.
 - `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2510`) shows that the host refuses a checkpoint with one channel set under two orders.
 - `space_store_handle_host_replay_repeated_channel_control` (`reified_space_store_handle.rs:3439`) shows that host replay of a repeated channel can compute another COMM than the play log.
@@ -605,7 +605,7 @@ The test `space_store_handle_commit_checks_cost_changed_entries` covers no headl
 | `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:4492` | FR-10 | H1, H11 | Every result of a peek fire keeps the persist flag of the host, and the re-store and the re-offer report Stored with the identities of their records. |
 | `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:4641` | FR-10 | H1, H2, H11, H12 | A peek and its re-stores have the events, observer calls, state, and root of the HEAD program, whose reducer sends the peeked data again, in play, replay, and reporting. |
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | FR-10 | H2, H11 | Control: the removal and the re-store leave one copy of the record. A re-store without the removal leaves two copies, and a removal without the re-store loses the record. |
-| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:3737` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4401` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
 | `space_store_handle_replay_reproduces_play_rejection` | `reified_space_store_handle.rs:1997` | Decision 36 | H23, T6 | For each position of a fallible observer call, play fails there and keeps its log. Replay with that log fails at the same call, with the outcome, the calls, and the state of play. |
 | `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:850` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
 
@@ -2048,8 +2048,8 @@ The pair still ends when the phlo runs out.
 
 [Decision 45](decision-register.md#decision-45) (Rule E) makes a peek fire on a space remove what the host removes.
 The substrate keeps no record for a peek, also not the stored candidates of a produce-side peek join.
-`check_peeks` (`rspace++/src/rspace/space_store_handle.rs:1013-1028`) only admits the peek set, and `removed_records` (`rspace++/src/rspace/space_store_handle.rs:1086-1119`) returns every stored non-persistent candidate of a fire.
-`fired_receipt` (`rspace++/src/rspace/space_store_handle.rs:2646-2682`) keeps the persist flags of the host's `wrap_result`.
+`check_peeks` (`rspace++/src/rspace/space_store_handle.rs:1489-1504`) only admits the peek set, and `removed_records` (`rspace++/src/rspace/space_store_handle.rs:1562-1595`) returns every stored non-persistent candidate of a fire.
+`fired_receipt` (`rspace++/src/rspace/space_store_handle.rs:3172-3208`) keeps the persist flags of the host's `wrap_result`.
 The play and replay backends always call `remove_matched_datum_and_join` or `store_persistent_data`.
 
 The agent then makes a [re-store](glossary.md#re-store).
@@ -2101,7 +2101,7 @@ The three mutants of decision 45 in `EventCorrelation.v` are in Table 12: `ec-pe
 | `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:4641` | A peek and its re-stores equal the HEAD program in play, replay, and reporting: events, calls, counters, state, and root. |
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | Control: Rule E leaves one copy, a re-store without the removal leaves two, and a removal without the re-store leaves none. |
 | `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2455` | Generated peek runs with re-offers and re-stores equal the HEAD peek path exactly, and they replay and report (H5, H11, H12). |
-| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:3737` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4401` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
 | `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:3331` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
 | `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:3364` | The re-store registers the authority of the record, and the peek registers its own. |
 | `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3404` | A peek of a persistent record removes nothing and stores nothing again. |
@@ -2348,7 +2348,7 @@ S1 makes these changes:
   `Cx` and `AllocCx` expose no raw transaction, and the legacy chain of a plan is private to `generic.rs`. So the types keep the design rule that only `generic.rs` and `counter.rs` stage operations.
 - `run_with` (`spaces/generic.rs:2211-2343`) checks the key, the params and the query before the bump, and bumps the counter only for a discipline that uses one.
 - The outer-store hooks check a routed key, stage the records of a creation, and allocate index names. A store without an allocator answers with `Baseline` and no work.
-- The substrate gives the canonical order of DR-75 over borrowed views (`space_store_handle.rs:322-344`).
+- The substrate gives the canonical order of DR-75 over borrowed views (`space_store_handle.rs:342-364`).
 
 **Acceptance.** The queue parity golden of 12.1 is unchanged, with its host-work usage.
 Every P4 suite passes unchanged, apart from the helper literals that the new fields need.
@@ -2374,7 +2374,7 @@ So the golden pins the one comparison of the family check.
 | `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:5909` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
 | `space_families_wire_exactly_the_listed_families` | `families.rs:566` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
 | `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:711` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
-| `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3212` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
+| `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3876` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
 | `harness_session_runs_a_queue_space_under_the_family_agent` | `reified_p5_harness.rs:28` | The shared session creates a space and runs deploys under the family agent. |
 | `harness_agent_env_runs_the_family_agent_in_fifo_order` | `reified_p5_harness.rs:65` | Over the shared agent environment, the family agent delivers in send order and bumps once for each operation (64 cases). |
 
@@ -2689,7 +2689,7 @@ Each test also runs one Rholang program in two fresh runtimes and compares the r
 A head scan of a queue, a stack or a cell does the same work in every list order (`rholang/src/rust/interpreter/spaces/generic.rs:772-788`).
 So the host work of these disciplines does not depend on the list order.
 
-The DR-75 order of a bag charges each comparison of its heapsort (`rspace++/src/rspace/space_store_handle.rs:382-410`, `shared/src/rust/fallible_sort.rs:3-33`).
+The DR-75 order of a bag charges each comparison of its heapsort (`rspace++/src/rspace/space_store_handle.rs:402-430`, `shared/src/rust/fallible_sort.rs:3-33`).
 The number of comparisons depends on the list order, so the host work of a bag selection depends on it too.
 The `MeteredOrder` of the cost-accounted-rho branch charges in the same way, so this follows [decision 40](decision-register.md#decision-40).
 The list order is a function of the pre-state root and the event sequence, so play and replay charge the same.
@@ -2697,7 +2697,7 @@ The headlines Q62 and Q63 of section [11.10](#1110-metering-of-decision-42) stat
 
 **Serialization failure.**
 An agent serializes candidates only to order a tie.
-A bag uses the DR-75 tie digest (`rspace++/src/rspace/candidate_order.rs:122-135`, `rspace++/src/rspace/space_store_handle.rs:423-428`).
+A bag uses the DR-75 tie digest (`rspace++/src/rspace/candidate_order.rs:122-135`, `rspace++/src/rspace/space_store_handle.rs:443-448`).
 A queue, a stack or a cell uses the tie-break encode of two entries with one order (`rholang/src/rust/interpreter/spaces/disciplines/queue.rs:88-132`, `rholang/src/rust/interpreter/spaces/disciplines/stack.rs:227-271`).
 The agent never stores two entries with one order, so the ordered tests store such entries with raw host operations.
 
