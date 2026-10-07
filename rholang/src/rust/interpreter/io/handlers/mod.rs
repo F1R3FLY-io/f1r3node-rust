@@ -18,20 +18,29 @@
 // bumps [`EXPECTED_MIGRATED_HANDLER_COUNT`](super::handler_trait::fs_handlers::EXPECTED_MIGRATED_HANDLER_COUNT)
 // by one.
 //
-// # Status (Wave 4)
+// # Status (Wave 4 complete)
 //
-//   - `lifecycle`: fs_quarantine (slice 4.12), fs_close (slice 4.13)
-//     registered.  fs_open yet to land.
-//   - `observation`: fs_flush (4.14), fs_tell (4.15), fs_seek (4.16),
-//     fs_size (4.17), fs_exists (4.18), fs_stat (4.19), fs_read (4.20),
-//     fs_read_at (4.21) registered.  fs_entries yet to land.
-//   - `mutation`: fs_truncate (slice 4.24) registered.  fs_chmod,
-//     fs_chown, fs_write, fs_write_at, fs_rename, fs_copy_file,
-//     fs_remove_file yet to land.
-//   - `stream`: fs_entries_stream_close (slice 4.22) registered.
-//     fs_entries_stream_open / _next yet to land.
-//   - `lock`: yet to land.
-//   - `removedir`: trait-exempt (yet to land as inline handler).
+// All 27 trait-registered handlers landed; the trait-exempt
+// fs_remove_dir has a stub handler (slice 5.44) with the real
+// DD-RemoveDirReplyShape impl deferred to a future Wave 4 slice.
+//
+//   - `lifecycle` (3): fs_quarantine (4.12), fs_close (4.13),
+//     fs_open (4.32).
+//   - `observation` (9): fs_flush (4.14), fs_tell (4.15),
+//     fs_seek (4.16), fs_size (4.17), fs_exists (4.18),
+//     fs_stat (4.19), fs_read (4.20), fs_read_at (4.21),
+//     fs_entries (4.31).
+//   - `mutation` (8): fs_truncate (4.24), fs_chmod (4.25),
+//     fs_rename (4.26), fs_chown (4.27), fs_remove_file (4.28),
+//     fs_copy_file (4.33), fs_write (4.38), fs_write_at (4.39).
+//   - `stream` (3): fs_entries_stream_close (4.22),
+//     fs_entries_stream_open (4.29), fs_entries_stream_next (4.30).
+//   - `lock` (4): fs_lock_range (4.34), fs_lock_sequential (4.35),
+//     fs_release_lock (4.36), fs_release_all_for_holder (4.37).
+//   - `removedir`: trait-exempt stub (slice 5.44 —
+//     `SystemProcesses::fs_remove_dir_stub` replies
+//     `FSERR_UNSUPPORTED`; the real divergence-reply-shape handler
+//     remains a Wave 4 follow-up).
 
 pub mod helpers;
 pub mod lifecycle;

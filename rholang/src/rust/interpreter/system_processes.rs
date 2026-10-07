@@ -928,6 +928,41 @@ impl SystemProcesses {
         self.print_std_out(&str)
     }
 
+    /// Trait-exempt `fs_remove_dir` stub.  The real handler
+    /// (DD-RemoveDirReplyShape with its 4 divergence shapes) lands at
+    /// a future Wave 4 handler slice; until then this stub replies
+    /// `[false, "FSERR_UNSUPPORTED", "fs_remove_dir handler not yet
+    /// implemented"]` on the ack channel so a user-held Dir cap that
+    /// invokes `removeDir` at state-execution gets a well-formed
+    /// error reply instead of (a) hanging on the ack channel because
+    /// the dispatcher has no entry for body_ref 58, or (b) tripping a
+    /// deploy-level `BugFoundError`.  Dir.rho's `_ => return!(reply)`
+    /// default arm forwards the 3-element shape verbatim, so the
+    /// caller observes a uniform-failure reply shape.
+    ///
+    /// Arity 5 matches Dir.rho's call site: `fsRemoveDir!(canonRoot,
+    /// rel, recursive, cmode, *retCh)`.  Only `ack` (`retCh`) is read
+    /// here — the four leading args are discarded because the stub
+    /// does no I/O.  See `BodyRefs::FS_REMOVE_DIR` and
+    /// `FixedChannels::fs_remove_dir` for the dispatch wiring + slice
+    /// 5.43 for the urn_map/proc_defs registration.
+    pub async fn fs_remove_dir_stub(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("fs_remove_dir_stub"));
+        };
+        let [_root_canon, _rel, _recursive, _cmode, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("fs_remove_dir_stub"));
+        };
+        let reply = fs_remove_dir_stub_reply();
+        let output = vec![reply];
+        let ret = output.clone();
+        produce(&output, ack).await?;
+        Ok(ret)
+    }
+
     pub async fn std_out_ack(
         mut self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -2509,6 +2544,248 @@ impl RhoTestAssertion {
             RhoTestAssertion::RhoAssertNotEquals {
                 unexpected, actual, ..
             } => actual != unexpected,
+        }
+    }
+}
+
+/// Canonical error code string returned by
+/// [`SystemProcesses::fs_remove_dir_stub`] as the second element of
+/// its reply list.  Kept as a `pub const` so the shape pin in tests
+/// can anchor on it without re-typing the literal.  Matches the
+/// FSERR taxonomy canonical form (see
+/// `rholang::interpreter::io::errors::FSERR_UNSUPPORTED`).
+pub const FS_REMOVE_DIR_STUB_CODE: &str = "FSERR_UNSUPPORTED";
+
+/// Canonical message string returned by
+/// [`SystemProcesses::fs_remove_dir_stub`] as the third element of
+/// its reply list.
+pub const FS_REMOVE_DIR_STUB_MSG: &str = "fs_remove_dir handler not yet implemented";
+
+/// Build the uniform-failure Par returned by the trait-exempt
+/// `fs_remove_dir` stub (slice 5.44).  Shape:
+///
+/// ```text
+/// [false, "FSERR_UNSUPPORTED", "fs_remove_dir handler not yet implemented"]
+/// ```
+///
+/// Factored out of [`SystemProcesses::fs_remove_dir_stub`] so a
+/// shape-pin test can inspect the resulting Par structure without
+/// constructing a full `SystemProcesses` + `ContractCall` fixture.
+/// Caller sends it on the ack channel; Dir.rho's `_ => return!(reply)`
+/// default arm forwards it verbatim to the final caller.
+pub fn fs_remove_dir_stub_reply() -> Par {
+    use models::rust::utils::{new_elist_par, new_gstring_par};
+    new_elist_par(
+        vec![
+            new_gbool_par(false, Vec::new(), false),
+            new_gstring_par(FS_REMOVE_DIR_STUB_CODE.to_string(), Vec::new(), false),
+            new_gstring_par(FS_REMOVE_DIR_STUB_MSG.to_string(), Vec::new(), false),
+        ],
+        Vec::new(),
+        false,
+        None,
+        Vec::new(),
+        false,
+    )
+}
+
+#[cfg(test)]
+mod fs_remove_dir_stub_tests {
+    use super::*;
+
+    /// Reply-shape pin for the trait-exempt `fs_remove_dir` stub
+    /// handler (slice 5.44).  The real DD-RemoveDirReplyShape handler
+    /// has four divergence shapes; the stub returns the uniform-
+    /// failure 3-element shape `[false, code, msg]` which Dir.rho's
+    /// `_ => return!(reply)` default arm forwards verbatim to the
+    /// caller.
+    ///
+    /// Walks the produced `Par` structure field-by-field to pin:
+    ///   * EList body with exactly 3 elements.
+    ///   * Element 0: GBool(false).
+    ///   * Element 1: GString(FS_REMOVE_DIR_STUB_CODE) = "FSERR_UNSUPPORTED".
+    ///   * Element 2: GString(FS_REMOVE_DIR_STUB_MSG).
+    ///
+    /// A regression that flips `false → true` (misleading the caller
+    /// into treating the stub as success) or changes the code to a
+    /// different FSERR_* trips at test time.
+    #[test]
+    fn fs_remove_dir_stub_reply_shape_pinned() {
+        use models::rhoapi::expr::ExprInstance;
+
+        let par = fs_remove_dir_stub_reply();
+        assert_eq!(
+            par.exprs.len(),
+            1,
+            "reply Par must carry exactly one Expr (the EList); got {}",
+            par.exprs.len()
+        );
+        let Some(ExprInstance::EListBody(elist)) = &par.exprs[0].expr_instance else {
+            panic!(
+                "reply Par's Expr must be an EList body; got {:?}",
+                par.exprs[0].expr_instance
+            );
+        };
+        assert_eq!(
+            elist.ps.len(),
+            3,
+            "reply EList must have exactly 3 elements (bool, code, msg); got {}",
+            elist.ps.len()
+        );
+
+        let Some(ExprInstance::GBool(b)) = elist.ps[0]
+            .exprs
+            .first()
+            .and_then(|e| e.expr_instance.as_ref())
+        else {
+            panic!(
+                "reply[0] must be GBool; got {:?}",
+                elist.ps[0]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+            );
+        };
+        assert!(
+            !*b,
+            "reply[0] (success flag) must be false; a true value \
+             would mislead Dir.rho's caller into treating the stub \
+             as a successful remove"
+        );
+
+        let Some(ExprInstance::GString(s)) = elist.ps[1]
+            .exprs
+            .first()
+            .and_then(|e| e.expr_instance.as_ref())
+        else {
+            panic!(
+                "reply[1] (error code) must be GString; got {:?}",
+                elist.ps[1]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+            );
+        };
+        assert_eq!(
+            s, FS_REMOVE_DIR_STUB_CODE,
+            "reply[1] must be the canonical FSERR_UNSUPPORTED code"
+        );
+
+        let Some(ExprInstance::GString(s)) = elist.ps[2]
+            .exprs
+            .first()
+            .and_then(|e| e.expr_instance.as_ref())
+        else {
+            panic!(
+                "reply[2] (message) must be GString; got {:?}",
+                elist.ps[2]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+            );
+        };
+        assert_eq!(
+            s, FS_REMOVE_DIR_STUB_MSG,
+            "reply[2] must match the canonical stub message"
+        );
+    }
+
+    /// Byte-anchor on the canonical constants.  A rename of either
+    /// constant without updating Dir.rho's expectations would trip
+    /// here first.
+    #[test]
+    fn fs_remove_dir_stub_constants_pinned() {
+        assert_eq!(FS_REMOVE_DIR_STUB_CODE, "FSERR_UNSUPPORTED");
+        assert_eq!(
+            FS_REMOVE_DIR_STUB_MSG,
+            "fs_remove_dir handler not yet implemented"
+        );
+    }
+}
+
+#[cfg(test)]
+mod body_refs_fs_tests {
+    use super::*;
+
+    /// Every `BodyRefs::FS_*` constant catalogued here must have a
+    /// unique i64 value.  Keyed to the dispatcher's
+    /// `HashMap<body_ref, handler>` keyspace: two constants with
+    /// the same value would silently resolve to whichever handler
+    /// was registered later.  Slice 5.48's
+    /// `fs_handlers_body_refs_are_unique` catches collisions WITHIN
+    /// FS_HANDLERS; this pin catches collisions ACROSS the full
+    /// FS_* constant set (including the trait-exempt
+    /// `FS_REMOVE_DIR = 58`).
+    ///
+    /// The hardcoded (name, const) list below is the authoritative
+    /// enumeration — a new `BodyRefs::FS_*` constant must be
+    /// appended here when it lands, otherwise it's invisible to
+    /// this cross-constant pin.  Slice 5.48 catches the subset of
+    /// hazards that reach `FS_HANDLERS`; this one catches hazards
+    /// in the constant namespace alone (e.g., someone declares
+    /// `pub const FS_FOO: i64 = 42;` where 42 is already
+    /// `FS_READ` — the body_ref keyspace collides).
+    #[test]
+    fn body_refs_fs_constants_are_unique() {
+        const ENUMERATED_FS_BODY_REFS: &[(&str, i64)] = &[
+            ("FS_QUARANTINE", BodyRefs::FS_QUARANTINE),
+            ("FS_CLOSE", BodyRefs::FS_CLOSE),
+            ("FS_FLUSH", BodyRefs::FS_FLUSH),
+            ("FS_TELL", BodyRefs::FS_TELL),
+            ("FS_SEEK", BodyRefs::FS_SEEK),
+            ("FS_SIZE", BodyRefs::FS_SIZE),
+            ("FS_EXISTS", BodyRefs::FS_EXISTS),
+            ("FS_STAT", BodyRefs::FS_STAT),
+            ("FS_READ", BodyRefs::FS_READ),
+            ("FS_READ_AT", BodyRefs::FS_READ_AT),
+            ("FS_ENTRIES_STREAM_CLOSE", BodyRefs::FS_ENTRIES_STREAM_CLOSE),
+            ("FS_TRUNCATE", BodyRefs::FS_TRUNCATE),
+            ("FS_CHMOD", BodyRefs::FS_CHMOD),
+            ("FS_RENAME", BodyRefs::FS_RENAME),
+            ("FS_CHOWN", BodyRefs::FS_CHOWN),
+            ("FS_REMOVE_FILE", BodyRefs::FS_REMOVE_FILE),
+            ("FS_ENTRIES_STREAM_OPEN", BodyRefs::FS_ENTRIES_STREAM_OPEN),
+            ("FS_ENTRIES_STREAM_NEXT", BodyRefs::FS_ENTRIES_STREAM_NEXT),
+            ("FS_ENTRIES", BodyRefs::FS_ENTRIES),
+            ("FS_OPEN", BodyRefs::FS_OPEN),
+            ("FS_COPY_FILE", BodyRefs::FS_COPY_FILE),
+            ("FS_LOCK_RANGE", BodyRefs::FS_LOCK_RANGE),
+            ("FS_LOCK_SEQUENTIAL", BodyRefs::FS_LOCK_SEQUENTIAL),
+            ("FS_RELEASE_LOCK", BodyRefs::FS_RELEASE_LOCK),
+            (
+                "FS_RELEASE_ALL_FOR_HOLDER",
+                BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+            ),
+            ("FS_WRITE", BodyRefs::FS_WRITE),
+            ("FS_WRITE_AT", BodyRefs::FS_WRITE_AT),
+            ("FS_REMOVE_DIR", BodyRefs::FS_REMOVE_DIR),
+        ];
+        const EXPECTED_FS_BODY_REF_COUNT: usize = 28;
+        assert_eq!(
+            ENUMERATED_FS_BODY_REFS.len(),
+            EXPECTED_FS_BODY_REF_COUNT,
+            "ENUMERATED_FS_BODY_REFS has {} entries but expected \
+             {}.  A new BodyRefs::FS_* constant was added without \
+             appending to this test's list (or an existing entry \
+             was removed).  Append the new (name, const) pair and \
+             bump EXPECTED_FS_BODY_REF_COUNT.",
+            ENUMERATED_FS_BODY_REFS.len(),
+            EXPECTED_FS_BODY_REF_COUNT,
+        );
+
+        let mut by_value = std::collections::HashMap::new();
+        for (name, value) in ENUMERATED_FS_BODY_REFS {
+            if let Some(prior) = by_value.insert(*value, *name) {
+                panic!(
+                    "BodyRefs::FS_* body_ref collision: `{name}` \
+                     and `{prior}` both = {value}.  The \
+                     dispatcher's HashMap<body_ref, handler> would \
+                     silently clobber one with the other at \
+                     registration (depending on insertion order).  \
+                     Pick an unused slot from the gaps in the FS_* \
+                     range (currently 39-68 with gaps at 41, 54).",
+                );
+            }
         }
     }
 }
