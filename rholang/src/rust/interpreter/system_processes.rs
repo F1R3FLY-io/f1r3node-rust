@@ -2702,3 +2702,90 @@ mod fs_remove_dir_stub_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod body_refs_fs_tests {
+    use super::*;
+
+    /// Every `BodyRefs::FS_*` constant catalogued here must have a
+    /// unique i64 value.  Keyed to the dispatcher's
+    /// `HashMap<body_ref, handler>` keyspace: two constants with
+    /// the same value would silently resolve to whichever handler
+    /// was registered later.  Slice 5.48's
+    /// `fs_handlers_body_refs_are_unique` catches collisions WITHIN
+    /// FS_HANDLERS; this pin catches collisions ACROSS the full
+    /// FS_* constant set (including the trait-exempt
+    /// `FS_REMOVE_DIR = 58`).
+    ///
+    /// The hardcoded (name, const) list below is the authoritative
+    /// enumeration — a new `BodyRefs::FS_*` constant must be
+    /// appended here when it lands, otherwise it's invisible to
+    /// this cross-constant pin.  Slice 5.48 catches the subset of
+    /// hazards that reach `FS_HANDLERS`; this one catches hazards
+    /// in the constant namespace alone (e.g., someone declares
+    /// `pub const FS_FOO: i64 = 42;` where 42 is already
+    /// `FS_READ` — the body_ref keyspace collides).
+    #[test]
+    fn body_refs_fs_constants_are_unique() {
+        const ENUMERATED_FS_BODY_REFS: &[(&str, i64)] = &[
+            ("FS_QUARANTINE", BodyRefs::FS_QUARANTINE),
+            ("FS_CLOSE", BodyRefs::FS_CLOSE),
+            ("FS_FLUSH", BodyRefs::FS_FLUSH),
+            ("FS_TELL", BodyRefs::FS_TELL),
+            ("FS_SEEK", BodyRefs::FS_SEEK),
+            ("FS_SIZE", BodyRefs::FS_SIZE),
+            ("FS_EXISTS", BodyRefs::FS_EXISTS),
+            ("FS_STAT", BodyRefs::FS_STAT),
+            ("FS_READ", BodyRefs::FS_READ),
+            ("FS_READ_AT", BodyRefs::FS_READ_AT),
+            ("FS_ENTRIES_STREAM_CLOSE", BodyRefs::FS_ENTRIES_STREAM_CLOSE),
+            ("FS_TRUNCATE", BodyRefs::FS_TRUNCATE),
+            ("FS_CHMOD", BodyRefs::FS_CHMOD),
+            ("FS_RENAME", BodyRefs::FS_RENAME),
+            ("FS_CHOWN", BodyRefs::FS_CHOWN),
+            ("FS_REMOVE_FILE", BodyRefs::FS_REMOVE_FILE),
+            ("FS_ENTRIES_STREAM_OPEN", BodyRefs::FS_ENTRIES_STREAM_OPEN),
+            ("FS_ENTRIES_STREAM_NEXT", BodyRefs::FS_ENTRIES_STREAM_NEXT),
+            ("FS_ENTRIES", BodyRefs::FS_ENTRIES),
+            ("FS_OPEN", BodyRefs::FS_OPEN),
+            ("FS_COPY_FILE", BodyRefs::FS_COPY_FILE),
+            ("FS_LOCK_RANGE", BodyRefs::FS_LOCK_RANGE),
+            ("FS_LOCK_SEQUENTIAL", BodyRefs::FS_LOCK_SEQUENTIAL),
+            ("FS_RELEASE_LOCK", BodyRefs::FS_RELEASE_LOCK),
+            (
+                "FS_RELEASE_ALL_FOR_HOLDER",
+                BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+            ),
+            ("FS_WRITE", BodyRefs::FS_WRITE),
+            ("FS_WRITE_AT", BodyRefs::FS_WRITE_AT),
+            ("FS_REMOVE_DIR", BodyRefs::FS_REMOVE_DIR),
+        ];
+        const EXPECTED_FS_BODY_REF_COUNT: usize = 28;
+        assert_eq!(
+            ENUMERATED_FS_BODY_REFS.len(),
+            EXPECTED_FS_BODY_REF_COUNT,
+            "ENUMERATED_FS_BODY_REFS has {} entries but expected \
+             {}.  A new BodyRefs::FS_* constant was added without \
+             appending to this test's list (or an existing entry \
+             was removed).  Append the new (name, const) pair and \
+             bump EXPECTED_FS_BODY_REF_COUNT.",
+            ENUMERATED_FS_BODY_REFS.len(),
+            EXPECTED_FS_BODY_REF_COUNT,
+        );
+
+        let mut by_value = std::collections::HashMap::new();
+        for (name, value) in ENUMERATED_FS_BODY_REFS {
+            if let Some(prior) = by_value.insert(*value, *name) {
+                panic!(
+                    "BodyRefs::FS_* body_ref collision: `{name}` \
+                     and `{prior}` both = {value}.  The \
+                     dispatcher's HashMap<body_ref, handler> would \
+                     silently clobber one with the other at \
+                     registration (depending on insertion order).  \
+                     Pick an unused slot from the gaps in the FS_* \
+                     range (currently 39-68 with gaps at 41, 54).",
+                );
+            }
+        }
+    }
+}
