@@ -152,7 +152,7 @@ behaviors:
     statement: "A block whose dependency check races with the validation of its parent never keeps a stale relation to that parent"
     priority: must
     deep_module: false
-    done: false
+    done: true
     notes: "The dependency check and the relation insert become atomic with respect to the parent's DAG insert and buffer removal."
     design_decision: "2026-10-07: the user chose the atomic commit helper. atomic_commit_dependencies in buffer_dag_transition.rs takes the DAG global_lock (read) and then the buffer write_guard, the documented A-then-B order, and links only dependencies that are not in the DAG."
     cycle_log:
@@ -165,6 +165,7 @@ behaviors:
           - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
           - block-storage/tests/atomic_buffer_dag_transition.rs
           - casper/src/rust/blocks/block_processor.rs
+        suite: "block-storage: every target passed (202 tests). casper: mod 1002 passed (11 ignored), lib 500 passed, the other targets passed, except soak_observer, which failed 3 of 53 in the full run at LMDB store setup (unwrap on BlockDagKeyValueStorage::new and create_from_kvm, before any B6 code runs). A rerun of soak_observer alone passed 53 of 53, and B4 and B5 runs passed it too, so the failure is recorded as a one-off environment failure. clippy -D warnings clean for block-storage (all targets) and for the casper lib and mod target. cargo fmt clean. Commit 4e25868ca was made while the suites still ran."
         observations:
           - "The interleaving is forced in sequence through public interfaces, with no sleeps: the dependency set is fixed before the parent transition, as the race leaves it."
           - "With both locks held, a parent transition either completes before the commit (the commit sees the parent in the DAG and links nothing) or starts after it (the parent's buffer removal releases the child). No order leaves a stale relation."
@@ -223,9 +224,21 @@ behaviors:
     statement: "The soak ISSUE24_METRICS record includes the park, release queue wait, release scan, and recovery re-request metrics"
     priority: should
     deep_module: false
-    done: false
+    done: true
     notes: "Extend scripts/bench/extend-issue24-metrics.sh and its test. Coordinate with PR #659, which changes scripts/bench/aggregate-perf-report.sh."
-    cycle_log: []
+    cycle_log:
+      - date: 2026-10-07
+        test: "scripts/bench/test-extend-issue24-metrics.sh (release-path check)"
+        red: "The test now reads CASPER_BUFFER_PARK_TIME_METRIC, RELEASE_QUEUE_WAIT_METRIC, CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC, and BLOCK_REQUESTS_RECOVERY_METRIC from their Rust sources and asserts each Prometheus name is in its scrape list. It failed with AssertionError: BLOCK_REQUESTS_RECOVERY_METRIC."
+        green: "extend-issue24-metrics.sh adds the histograms casper_buffer_park_time, block_processing_release_queue_wait_time, casper_buffer_release_scan_time and the counter block_requests_recovery. The ISSUE24_METRICS record reports them, with seconds as the unit for the _time histograms."
+        files:
+          - scripts/bench/extend-issue24-metrics.sh
+          - scripts/bench/test-extend-issue24-metrics.sh
+        suite: "scripts/bench/test-extend-issue24-metrics.sh exit 0. The three tracebacks in its output come from its negative fixtures, which must be rejected unchanged."
+        observations:
+          - "The test had failed on dev since 3d98458cc: the counter BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC matched the test rule that every BLOCK_REPLAY_RUNTIME_* constant is a histogram. The user chose to fix it in B9. The constant is now excluded from the histogram rule and checked as a counter, and block_replay_runtime_reporting_deferred is in the counters list, so the soak record reports it."
+          - "PR #659 changes only aggregate-perf-report.sh and its test. B9 does not touch those files."
+          - "Prometheus names follow the existing mapping: dots and dashes become underscores, and counters have no _total suffix, as runtime.spawn-replay.calls becomes runtime_spawn_replay_calls."
 verification:
   - "A comparison soak of this branch against the scheduled dev soak on the same base. The decision measures are sustained finalization p95, the test_load failure count, and the new park and queue-wait metrics."
   - "The PR stays a draft until the soak evidence exists and the maintainer accepts the CbC evidence for CLAIM-CASPER-BUFFER-001."
