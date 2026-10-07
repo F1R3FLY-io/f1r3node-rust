@@ -155,14 +155,22 @@ find "$SOAK_DIR" -mindepth 2 -maxdepth 2 -type f \
 	jq -s 'sort_by(.segment_index)' >"$SEGMENTS_JSON"
 [ -s "$SEGMENTS_JSON" ] || echo '[]' >"$SEGMENTS_JSON"
 
-PASSIVE_ARG='null'
+# Every JSON input is handed to jq with --slurpfile, never --argjson "$(cat)":
+# Linux caps a single argv entry at 128 KB (MAX_ARG_STRLEN) and a long soak's
+# summary.json exceeds that once per-iteration tracked metrics accumulate,
+# which made jq fail with "Argument list too long" and lost the final report.
+# A slurped file binds as a one-element array, so each program unwraps [0].
+NULL_JSON="$OUT_DIR/.null.json"
+echo 'null' >"$NULL_JSON"
+
+PASSIVE_FILE="$NULL_JSON"
 if [ -s "$SOAK_DIR/summary.json" ]; then
-	PASSIVE_ARG="$(cat "$SOAK_DIR/summary.json")"
+	PASSIVE_FILE="$SOAK_DIR/summary.json"
 fi
 
-BASELINE_ARG='null'
+BASELINE_FILE="$NULL_JSON"
 if [ -n "$BASELINE_JSON" ] && [ -s "$BASELINE_JSON" ]; then
-	BASELINE_ARG="$(cat "$BASELINE_JSON")"
+	BASELINE_FILE="$BASELINE_JSON"
 fi
 
 PROTECTION_BREACH=false
@@ -173,7 +181,7 @@ fi
 
 jq -n \
 	--slurpfile segments "$SEGMENTS_JSON" \
-	--argjson passive "$PASSIVE_ARG" \
+	--slurpfile passive_file "$PASSIVE_FILE" \
 	--arg run_id "$RUN_ID" \
 	--argjson run_attempt "$RUN_ATTEMPT" \
 	--arg kind "$SOAK_KIND" \
@@ -185,7 +193,8 @@ jq -n \
 	--arg status "$SOAK_STATUS" \
 	'
   def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
-  ($segments[0]) as $segs
+  ($passive_file[0]) as $passive
+  | ($segments[0]) as $segs
   | ($segs | map(select(.ok == true))) as $ok
   | {
       run: {
@@ -254,9 +263,9 @@ jq -n \
 ' >"$OUT_DIR/weekly-summary.json"
 
 jq -n \
-	--argjson current "$(cat "$OUT_DIR/weekly-summary.json")" \
-	--argjson baseline "$BASELINE_ARG" \
-	--argjson thresholds "$(cat "$THRESHOLDS_JSON")" \
+	--slurpfile current_file "$OUT_DIR/weekly-summary.json" \
+	--slurpfile baseline_file "$BASELINE_FILE" \
+	--slurpfile thresholds_file "$THRESHOLDS_JSON" \
 	--argjson protection_breach "$PROTECTION_BREACH" \
 	--arg status "$SOAK_STATUS" \
 	'
@@ -265,7 +274,10 @@ jq -n \
   def pct_under(cur; base; pct):
     (cur != null and base != null and base > 0 and cur < (base * (1 - pct)));
 
-  ($current.passive) as $p
+  ($current_file[0]) as $current
+  | ($baseline_file[0]) as $baseline
+  | ($thresholds_file[0]) as $thresholds
+  | ($current.passive) as $p
   | ($baseline.passive // null) as $bp
   | ($current.active) as $a
   | ($baseline.active // null) as $ba
@@ -378,9 +390,10 @@ jq \
 # brightgreen here and `regress` there, which is correct: perfect iterations
 # that got slower are still a regression.
 jq \
-	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	--slurpfile verdict_file "$OUT_DIR/verdict.json" \
 	'
-  (.passive // null) as $p
+  ($verdict_file[0]) as $verdict
+  | (.passive // null) as $p
   | ($verdict.verdict == "in_progress") as $partial
   | if $p == null or (($p.iterations // 0) == 0)
     then {schemaVersion: 1, label: "stability", message: "no data", color: "lightgrey"}
@@ -402,7 +415,7 @@ jq \
 # red would invent a standard that does not exist; the verdict badge carries the
 # pass/regress call.
 jq \
-	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	--slurpfile verdict_file "$OUT_DIR/verdict.json" \
 	'
   # One decimal, always, including the .0. jq drops a trailing zero — 2966.9ms
   # would render "p95 3s", which reads like a suspiciously round number rather
@@ -411,7 +424,8 @@ jq \
   def ms_short: if . == null then null
                 elif . >= 1000 then "\((. / 1000) | one_dp)s"
                 else "\(. | round)ms" end;
-  (.passive // null) as $p
+  ($verdict_file[0]) as $verdict
+  | (.passive // null) as $p
   | ($verdict.verdict == "in_progress") as $partial
   | if $p == null then {schemaVersion: 1, label: "perf", message: "no data", color: "lightgrey"}
     else [($p.finalization_p95_ms | ms_short | if . == null then null else "p95 \(.)" end),
@@ -428,12 +442,14 @@ jq \
 ' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/badge-perf.json"
 
 jq -r \
-	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
-	--argjson baseline "$BASELINE_ARG" \
+	--slurpfile verdict_file "$OUT_DIR/verdict.json" \
+	--slurpfile baseline_file "$BASELINE_FILE" \
 	--arg dashboard "$DASHBOARD_URL" \
 	'
   def fmt: if . == null then "-" else tostring end;
-  ($baseline.passive // {}) as $bp
+  ($verdict_file[0]) as $verdict
+  | ($baseline_file[0]) as $baseline
+  | ($baseline.passive // {}) as $bp
   | ($baseline.active // {}) as $ba
   | "# \(if .run.kind == "daily" then "Daily" elif .run.kind == "weekend" then "Weekend" else "Soak" end) Soak Benchmark Report",
   "",
@@ -484,7 +500,7 @@ jq -r \
     "| \(.segment_index) | \((.offset_seconds / 3600 * 10 | floor) / 10) | \(.latency.p50_ms // null | fmt) | \(.latency.p95_ms // null | fmt) | \(.observed_throughput // null | fmt) | \(.finalized // 0)/\(.submitted // 0) | \(.rss_peak_mb | fmt) | \(.ok) |")
 ' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/perf-report.md"
 
-rm -f "$SEGMENTS_JSON"
+rm -f "$SEGMENTS_JSON" "$NULL_JSON"
 echo "wrote weekly-summary.json, verdict.json, badge.json, badge-stability.json, badge-perf.json, perf-report.md to $OUT_DIR" >&2
 jq -r '"verdict: \(.verdict)" + (if .failures | length > 0 then " — " + (.failures | join("; ")) else "" end)' \
 	"$OUT_DIR/verdict.json" >&2

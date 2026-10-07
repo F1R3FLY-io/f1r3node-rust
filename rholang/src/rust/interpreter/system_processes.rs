@@ -432,6 +432,13 @@ impl FixedChannels {
     /// H-6 reserve-then-finalize with partial-write patch).  Added
     /// by slice 4.38.
     pub fn fs_write() -> Par { byte_name(44) }
+
+    /// `rho:io:fs:native:1.0.0/writeAt` — fd + offset + ByteArray;
+    /// libc::pwrite under spawn_blocking.  Same shape as fs_write
+    /// but with positional semantics: no shadow position advance
+    /// (POSIX pwrite doesn't move the OS-fd position).  Added by
+    /// slice 4.39.  Mutation family 8/8 complete.
+    pub fn fs_write_at() -> Par { byte_name(45) }
 }
 
 pub struct BodyRefs;
@@ -559,6 +566,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/write` body-ref (slice 4.38).
     pub const FS_WRITE: i64 = 44;
+
+    /// `rho:io:fs:native:1.0.0/writeAt` body-ref (slice 4.39).
+    pub const FS_WRITE_AT: i64 = 45;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

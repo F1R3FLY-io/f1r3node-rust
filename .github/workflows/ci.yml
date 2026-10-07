@@ -58,6 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     if: >-
@@ -86,6 +87,9 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HAS_HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         shell: bash -euo pipefail {0}
         run: |
           target="$REQUESTED_TARGET_SHA"
@@ -129,6 +133,40 @@ jobs:
               exit 1
             }
           fi
+          # A merge group may reuse the heavy result of its top pull request.
+          # The group must name one pull request, the pull request head must
+          # contain the group base, and the two trees must be equal. The newest
+          # ci.yml pull_request run for that head must also have both
+          # Integration aggregator jobs concluded success, not skipped. Any
+          # other result, including an API error, runs the heavy pipeline. The
+          # push to dev after the merge still runs it.
+          heavy_result_reusable() {
+            local number pull_head relationship group_tree head_tree run_id jobs passed
+            [[ "$MERGE_GROUP_HEAD_REF" =~ ^refs/heads/gh-readonly-queue/[^/]+/pr-([1-9][0-9]*)-[0-9a-f]{40}$ ]] || return 1
+            number="${BASH_REMATCH[1]}"
+            [[ "$MERGE_GROUP_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            pull_head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}" --jq '.head.sha')" || return 1
+            [[ "$pull_head" =~ ^[0-9a-f]{40}$ ]] || return 1
+            relationship="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${MERGE_GROUP_BASE_SHA}...${pull_head}" --jq '.status')" || return 1
+            [ "$relationship" = ahead ] || [ "$relationship" = identical ] || return 1
+            group_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${MERGE_GROUP_HEAD_SHA}" --jq '.tree.sha')" || return 1
+            head_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${pull_head}" --jq '.tree.sha')" || return 1
+            [[ "$group_tree" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [ "$group_tree" = "$head_tree" ] || return 1
+            run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${pull_head}&event=pull_request&per_page=100" \
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")] | max_by(.id) | .id // empty')" || return 1
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            jobs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[]
+                | select(.name == "Integration Tests (amd64)" or .name == "Integration Tests (arm64)")
+                | [.name, (.conclusion // "pending")] | @tsv')" || return 1
+            passed="$(printf '%s\n' "$jobs" |
+              awk -F '\t' 'NF == 2 { seen[$1]++; if ($2 == "success") ok[$1]++ } END { n = 0; for (k in seen) if (seen[k] == 1 && ok[k] == 1) n++; print n }')"
+            [ "$passed" = 2 ] || return 1
+            printf '%s %s %s\n' "$number" "$pull_head" "$run_id"
+          }
+
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
           # naming a top PR, or a PR labelled ci-heavy. A plain PR push runs the
           # GitHub-hosted checks only and reaches the heavy pipeline through the
@@ -136,6 +174,12 @@ jobs:
           run_heavy=false
           if [ "$EVENT_NAME" = merge_group ]; then
             run_heavy=true
+            if reused="$(heavy_result_reusable)"; then
+              read -r reused_pull reused_head reused_run <<<"$reused"
+              run_heavy=false
+              echo "::notice::Merge group tree equals pull request #${reused_pull} head ${reused_head}, which passed the heavy pipeline in run ${reused_run}. The heavy pipeline is skipped."
+              echo "Heavy pipeline reused from pull request #${reused_pull} at ${reused_head} (run ${reused_run})." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            fi
           elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
             run_heavy=true
           elif [ "$EVENT_NAME" = push ] && {
@@ -284,6 +328,9 @@ jobs:
     needs: build_base
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -300,6 +347,55 @@ jobs:
       - name: Verify workflow security invariants
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
+
+      - name: Verify commit trailer check
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-check-commit-trailers.sh
+
+      # Every commit author and Co-authored-by trailer in the pull request must
+      # be ratified: an email that already authored a commit in the base
+      # history, which only accepted pull requests reach (CLAUDE.md "Commit
+      # Messages"). A trailer never ratifies an identity, and a pull request
+      # cannot ratify its own identities. Commits that GitHub attributes to
+      # the pull request author skip the author check, so an outside
+      # contributor can open a pull request; maintainer review decides
+      # acceptance. The fetch takes commit objects only.
+      - name: Verify commit identities in pull request commits
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        shell: bash -euo pipefail {0}
+        run: |
+          unshallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
+          git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
+          count="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")"
+          if [ "$count" -gt 250 ]; then
+            echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"
+          fi
+          # Only a human account (type User) exempts its own commits. A bot or
+          # app account that opens a pull request gets no exemption.
+          exempt="$RUNNER_TEMP/exempt-authors.txt"
+          : > "$exempt"
+          if [ "$PR_AUTHOR_TYPE" = User ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" --paginate \
+              --jq '.[] | select(.author.login == env.PR_AUTHOR) | .sha' > "$exempt"
+          else
+            echo "Pull request author ${PR_AUTHOR} is a ${PR_AUTHOR_TYPE} account; no author exemption."
+          fi
+          # The base commit's denied list applies, so a pull request cannot
+          # remove its own block. Before the list reaches the base branch,
+          # the pull request's copy applies.
+          denied="$RUNNER_TEMP/denied-identities.txt"
+          git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied" 2>/dev/null ||
+            cp .github/denied-identities.txt "$denied"
+          .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}" \
+            --ratified-from "$BASE_SHA" --exempt-authors "$exempt" --denied "$denied"
 
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}
