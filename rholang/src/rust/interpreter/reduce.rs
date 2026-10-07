@@ -134,6 +134,20 @@ pub struct DebruijnInterpreter {
     pub(crate) single_term_evaluations: Arc<AtomicU64>,
     pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
     pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
+    /// Slice 31: phase-scoped URN visibility.  When `true` (the
+    /// default), `eval_new` refuses to resolve any URN whose
+    /// string starts with `FS_NATIVE_URN_PREFIX`
+    /// (`rho:io:fs:native:1.0.0/`).  Genesis composition needs
+    /// those URNs to bind the raw fs primitives into FsGenesis's
+    /// new-scope; user deploys must not, because that would bypass
+    /// Fs.rho's sandbox / mode-cap / bundle checks.  A yet-to-land
+    /// runtime slice will toggle the flag off before running
+    /// genesis-time deploys and back on afterwards; state-execution
+    /// deploys leave it at the default.
+    ///
+    /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
+    /// system-process closures that clone the reducer.
+    pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
 }
 
 type Application = Option<(
@@ -1322,6 +1336,29 @@ impl DebruijnInterpreter {
         env: Env<Par>,
         mut rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        // Slice 31: phase-scoped URN visibility.  Reject fs-native
+        // URNs during state-execution deploys so user code cannot
+        // bypass Fs.rho's sandbox by binding the raw primitives.
+        // Genesis composition toggles the flag off (yet-to-land
+        // runtime slice) so FsGenesis can bind `fsRead`/`fsWrite`/...
+        // directly in its outer new-scope.
+        if self
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            for urn in &new.uri {
+                if urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
+                    return Err(InterpreterError::ReduceError(format!(
+                        "urn `{urn}` is not resolvable in this phase; \
+                         rho:io:fs:native:* URNs are reserved for the \
+                         genesis-blessed FsGenesis deploy — user code \
+                         must instead go through the Fs cap published \
+                         at genesis"
+                    )));
+                }
+            }
+        }
+
         let mut alloc = |count: usize, urns: Vec<String>| {
             let simple_news =
                 (0..(count - urns.len()))
@@ -7327,6 +7364,9 @@ impl DebruijnInterpreter {
             single_term_evaluations: Arc::new(AtomicU64::new(0)),
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+            // Default: reject fs native URNs.  Genesis composition
+            // flips the flag off via a yet-to-land runtime slice.
+            filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

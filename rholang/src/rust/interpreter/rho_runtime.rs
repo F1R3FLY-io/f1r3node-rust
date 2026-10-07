@@ -1013,6 +1013,70 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 #[cfg(not(feature = "chromadb"))]
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
+/// Build `Definition` rows for every entry in the `FS_HANDLERS`
+/// distributed slice.  Each definition adapts the typed per-handler
+/// `dispatch` fn-pointer (which takes an `FsProcesses` + the triple
+/// `(args, is_replay, previous)`) into the `Definition` handler
+/// contract (which takes a `ProcessContext` and returns a per-call
+/// inner closure).
+///
+/// The adaptation strategy: construct ONE `FsProcesses` instance up
+/// front, Arc-clone it into each per-handler closure.  This gives
+/// every fs native URN access to the same `FileHandleTable` + mode
+/// + metering surface — critical for state continuity across
+/// handler invocations (fds opened by `fs_open` must be seen by
+/// `fs_read`, etc.).  Mode defaults to `Consensus` and metering to
+/// `NoopMetering` for the Wave 4 posture; later slices rewire these
+/// when the real cost-accounted-rho API lands.
+///
+/// `fs_remove_dir` is trait-exempt (DD-RemoveDirReplyShape complexity)
+/// and NOT in `FS_HANDLERS`; it gets a dedicated `Definition` row at
+/// a future call site that explicitly handles the 4 divergence reply
+/// shapes.
+///
+/// Called by `dispatch_table_creator` to register every fs native
+/// URN into the runtime's dispatch map.  Phase-scoped visibility
+/// is enforced inside the reducer by `filter_fs_native_urns`
+/// (slice 5.32): user deploys get a `ReduceError`; genesis gets
+/// unfiltered access via the toggle in `play_deploys_for_genesis`
+/// (slice 5.33).
+fn fs_handlers_to_definitions(dispatcher: RhoDispatch, space: RhoISpace) -> Vec<Definition> {
+    use super::accounting::noop::{Metering, NoopMetering};
+    use super::io::handle_table::FileHandleTable;
+    use super::io::handler_trait::fs_processes::FsProcesses;
+    use super::io::handler_trait::FS_HANDLERS;
+    use super::io::{ConsensusMode, FS_NATIVE_URN_PREFIX_VERSIONED as FS_NATIVE_URN_PREFIX};
+
+    let fs_handles = FileHandleTable::new();
+    let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
+    let fs_processes = FsProcesses::new(
+        dispatcher,
+        space,
+        fs_handles,
+        ConsensusMode::Consensus,
+        fs_metering,
+    );
+
+    FS_HANDLERS
+        .iter()
+        .map(|entry| {
+            let fs_processes = fs_processes.clone();
+            let dispatch = entry.dispatch;
+            Definition {
+                urn: format!("{FS_NATIVE_URN_PREFIX}{}", entry.urn_suffix),
+                fixed_channel: (entry.fixed_channel)(),
+                arity: entry.arity as Arity,
+                body_ref: entry.body_ref,
+                handler: Box::new(move |_ctx| {
+                    let fs_processes = fs_processes.clone();
+                    Box::new(move |args| dispatch(fs_processes.clone(), args))
+                }),
+                remainder: None,
+            }
+        })
+        .collect()
+}
+
 fn dispatch_table_creator(
     space: RhoISpace,
     dispatcher: RhoDispatch,
@@ -1035,6 +1099,50 @@ fn dispatch_table_creator(
     all_processes.extend(std_rho_crypto_processes());
     all_processes.extend(std_rho_ai_processes());
     all_processes.extend(std_rho_chroma_processes());
+
+    // File I/O native URNs — one Definition per entry in the
+    // FS_HANDLERS distributed slice.  Registration is unconditional
+    // (same posture as the stdio / crypto / ai processes); phase-
+    // scoped visibility is enforced inside the reducer by
+    // `filter_fs_native_urns` (slice 5.32).  User deploys attempting
+    // to bind these URNs via `new x(\`rho:io:fs:native:1.0.0/...\`)`
+    // get a `ReduceError`; genesis composition toggles the filter
+    // off (slice 5.33's `play_deploys_for_genesis`).
+    //
+    // The dispatcher clone threaded here is the same `RhoDispatch`
+    // instance that every other Definition's handler receives
+    // through its `ProcessContext`, so the fs native handlers see
+    // the same reducer / space / dispatcher as the rest of the
+    // system-processes layer.
+    all_processes.extend(fs_handlers_to_definitions(
+        dispatcher.clone(),
+        space.clone(),
+    ));
+
+    // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
+    // URN + fixed_channel + proc_defs so FsGenesis composition could
+    // resolve the URN at genesis-time, but there was no dispatch_table
+    // entry — a user-held Dir cap that invoked removeDir at state-
+    // execution would send to the channel, trigger the body_ref=58
+    // reader, and hit "dispatch: no function for 58".  This stub
+    // replies with [false, "FSERR_UNSUPPORTED", "..."] so the caller
+    // gets a well-formed error reply.  The real handler (DD-RemoveDir
+    // ReplyShape) lands at a future Wave 4 handler slice.  See
+    // SystemProcesses::fs_remove_dir_stub for the body.
+    all_processes.push(Definition {
+        urn: format!("{}removeDir", super::io::FS_NATIVE_URN_PREFIX_VERSIONED),
+        fixed_channel: FixedChannels::fs_remove_dir(),
+        arity: 5,
+        body_ref: BodyRefs::FS_REMOVE_DIR,
+        handler: Box::new(|ctx| {
+            let sp = ctx.system_processes.clone();
+            Box::new(move |args| {
+                let sp = sp.clone();
+                Box::pin(async move { sp.fs_remove_dir_stub(args).await })
+            })
+        }),
+        remainder: None,
+    });
 
     all_processes.append(extra_system_processes);
 
@@ -1174,6 +1282,7 @@ async fn setup_reducer(
         single_term_evaluations: Arc::new(AtomicU64::new(0)),
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+        filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -1216,10 +1325,68 @@ fn setup_maps_and_refs(
             urn_map.insert(key, value);
         });
 
-    let proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
+    let mut proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
         .iter()
         .map(|process| process.to_proc_defs())
         .collect();
+
+    // File I/O native URNs — must land in `urn_map` (so the reducer's
+    // `eval_new` can resolve `new x(`rho:io:fs:native:1.0.0/...`)` to
+    // the handler's fixed_channel bundle) AND in `proc_defs` (so
+    // `introduce_system_process` installs the per-channel reader that
+    // the dispatcher drives via `body_ref`).  Slice 5.34 wired the fs
+    // handlers into `dispatch_table_creator` but omitted this half
+    // of the registration, so genesis composition (where the filter
+    // is toggled off and FsGenesis tries to bind the raw primitives)
+    // tripped at `urn_map.contains_key(urn) == false`.
+    //
+    // Fields read from each `FsHandlerEntry`: `urn_suffix`,
+    // `fixed_channel`, `arity`, `body_ref`.  The handler closure is
+    // NOT touched here — it lives only on the Definition produced by
+    // `fs_handlers_to_definitions` for the dispatch table.
+    for entry in super::io::handler_trait::FS_HANDLERS.iter() {
+        let urn = format!(
+            "{}{}",
+            super::io::FS_NATIVE_URN_PREFIX_VERSIONED,
+            entry.urn_suffix
+        );
+        let fixed_channel: Par = (entry.fixed_channel)();
+        let bundle: Par = Par::default().with_bundles(vec![Bundle {
+            body: Some(fixed_channel.clone()),
+            write_flag: true,
+            read_flag: false,
+        }]);
+        urn_map.insert(urn, bundle);
+        proc_defs.push((fixed_channel, entry.arity as Arity, None, entry.body_ref));
+    }
+
+    // Trait-exempt FS native URN: `fs_remove_dir` is intentionally
+    // NOT in `FS_HANDLERS` (its four divergence reply shapes don't
+    // fit the `FsHandler` trait — see `handler_trait::fs_handler`
+    // docstring).  The real dispatcher wiring lands at a future
+    // Wave 4 handler slice.  Register the URN here so FsGenesis
+    // composition (slice 5.36) can bind `new fsRemoveDir(
+    // `rho:io:fs:native:1.0.0/removeDir`)` without tripping
+    // `eval_new`'s "No value set for URN" check.  Dir.rho sends to
+    // this channel inside its `removeDir` method only fire when a
+    // user-held Dir cap invokes removeDir — not during genesis
+    // composition.
+    {
+        let fixed_channel = FixedChannels::fs_remove_dir();
+        let bundle: Par = Par::default().with_bundles(vec![Bundle {
+            body: Some(fixed_channel.clone()),
+            write_flag: true,
+            read_flag: false,
+        }]);
+        urn_map.insert(
+            format!("{}removeDir", super::io::FS_NATIVE_URN_PREFIX_VERSIONED),
+            bundle,
+        );
+        // Arity 5 = (rootCanon, rel, recursive, cmode, ack); matches
+        // the Dir.rho call-site `fsRemoveDir!(canonRoot, joined, b,
+        // cmode, *retCh)`.
+        proc_defs.push((fixed_channel, 5 as Arity, None, BodyRefs::FS_REMOVE_DIR));
+    }
 
     (
         block_data_ref,
@@ -1525,4 +1692,290 @@ pub async fn create_runtime_from_kv_store(
         external_services,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+    use crate::rust::interpreter::io::handler_trait::{
+        EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS,
+    };
+    use crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX as FS_NATIVE_URN_FILTER_PREFIX;
+    use crate::rust::interpreter::matcher::r#match::Matcher;
+
+    async fn minimal_dispatch_and_space() -> (RhoDispatch, RhoISpace) {
+        let reducer_cell = Arc::new(std::sync::OnceLock::new());
+        let dispatcher: RhoDispatch = Arc::new(RholangAndScalaDispatcher {
+            _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            reducer: reducer_cell,
+        });
+
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let space = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
+            store,
+            Arc::new(Box::new(Matcher)),
+        )
+        .unwrap();
+        let rspace: RhoISpace = Arc::new(Box::new(space));
+
+        (dispatcher, rspace)
+    }
+
+    /// Registration-count regression gate: walking `FS_HANDLERS` via
+    /// `fs_handlers_to_definitions` must produce exactly
+    /// `EXPECTED_MIGRATED_HANDLER_COUNT` rows.  This is distinct from
+    /// `fs_handlers::fs_handlers_count_matches_migrated_pinned` (which
+    /// pins the slice length): it defends against a regression in
+    /// `fs_handlers_to_definitions` itself — e.g., a `.filter(...)`
+    /// chained in, a stray `.take(N)`, or a short-circuit that drops
+    /// entries after `FsProcesses` construction.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_count_matches_registry() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let defs = fs_handlers_to_definitions(dispatcher, space);
+        assert_eq!(
+            defs.len(),
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+            "fs_handlers_to_definitions produced {} definitions but \
+             EXPECTED_MIGRATED_HANDLER_COUNT is {}.  A regression in \
+             the FS_HANDLERS → Definition mapping is dropping entries \
+             — handler dispatch will silently no-op for the missing \
+             URNs.",
+            defs.len(),
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+        );
+    }
+
+    /// Every produced URN must be unique.  Two entries sharing a
+    /// `urn_suffix` would collide in `RhoDispatchMap`, clobbering one
+    /// handler at registration — a silent dispatch regression.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_urns_unique() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let mut seen = std::collections::HashSet::new();
+        for def in &defs {
+            assert!(
+                seen.insert(def.urn.clone()),
+                "duplicate FS native URN `{}` in fs_handlers_to_definitions \
+                 output — two FS_HANDLERS entries share a `urn_suffix`, \
+                 which would clobber one handler at RhoDispatchMap \
+                 registration.",
+                def.urn,
+            );
+        }
+    }
+
+    /// Every produced URN must start with the shared
+    /// `io::FS_NATIVE_URN_PREFIX` ("rho:io:fs:native:").  The reducer's
+    /// `filter_fs_native_urns` check in `eval_new` tests
+    /// `urn.starts_with(FS_NATIVE_URN_PREFIX)` — a regression where
+    /// the local versioned prefix in `fs_handlers_to_definitions`
+    /// drifts to something that no longer starts with the shared
+    /// prefix would silently bypass the filter: user deploys could
+    /// bind the FS native URNs directly, defeating the phase-scoped
+    /// visibility gate (slices 5.32/5.33/5.35).
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let defs = fs_handlers_to_definitions(dispatcher, space);
+        for def in &defs {
+            assert!(
+                def.urn.starts_with(FS_NATIVE_URN_FILTER_PREFIX),
+                "FS native URN `{}` does not start with the shared \
+                 filter prefix `{}` — the reducer's \
+                 `filter_fs_native_urns` check in `eval_new` would \
+                 fail to reject this URN in user deploys, silently \
+                 bypassing phase-scoped visibility.",
+                def.urn,
+                FS_NATIVE_URN_FILTER_PREFIX,
+            );
+        }
+    }
+
+    /// Every registered URN suffix in `FS_HANDLERS` must be reachable
+    /// from the Definition output.  Walking FS_HANDLERS and matching
+    /// against produced URNs confirms the mapping is total — no entry
+    /// is silently dropped between `FS_HANDLERS.iter()` and the
+    /// returned Vec.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_covers_every_registry_entry() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let def_urns: std::collections::HashSet<&str> =
+            defs.iter().map(|d| d.urn.as_str()).collect();
+        for entry in FS_HANDLERS.iter() {
+            let expected_urn = format!("rho:io:fs:native:1.0.0/{}", entry.urn_suffix);
+            assert!(
+                def_urns.contains(expected_urn.as_str()),
+                "FS_HANDLERS entry `{}` (urn_suffix=`{}`) is missing \
+                 from fs_handlers_to_definitions output — the \
+                 FS_HANDLERS → Definition mapping is not total.  \
+                 Expected URN: `{}`",
+                entry.name,
+                entry.urn_suffix,
+                expected_urn,
+            );
+        }
+    }
+
+    /// Trait-exempt `fs_remove_dir` URN must appear in `urn_map`
+    /// after `setup_maps_and_refs` runs.  Slice 5.43 added the
+    /// registration so FsGenesis composition can bind
+    /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)` without
+    /// tripping eval_new's "No value set for URN" check.  Pinning the
+    /// urn_map entry here catches a regression that removes the
+    /// explicit registration (which is NOT auto-generated from
+    /// FS_HANDLERS — the handler is trait-exempt).
+    #[test]
+    fn setup_maps_and_refs_registers_fs_remove_dir_urn() {
+        let (_, _, _, urn_map, _) = setup_maps_and_refs(&Vec::new());
+        let expected_urn = format!(
+            "{}removeDir",
+            crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED
+        );
+        assert!(
+            urn_map.contains_key(&expected_urn),
+            "urn_map missing `{expected_urn}`.  Trait-exempt fs_remove_dir \
+             registration (slice 5.43) was removed — FsGenesis composition \
+             will trip `BugFoundError` on `new fsRemoveDir(`...`)` at \
+             genesis-time.  See `setup_maps_and_refs` for the explicit \
+             registration site."
+        );
+    }
+
+    /// Trait-exempt `fs_remove_dir` proc_def must carry arity 5 (so
+    /// `fsRemoveDir!(rootCanon, rel, recursive, cmode, ack)` matches
+    /// the system-process reader) and `BodyRefs::FS_REMOVE_DIR` =
+    /// 58 (so the dispatcher routes to the stub handler registered
+    /// in `dispatch_table_creator`).  Slice 5.44 added the stub
+    /// handler to prevent a user-held Dir cap from hitting
+    /// "dispatch: no function for 58" when invoking `removeDir` at
+    /// state-execution; this test catches a regression that reverts
+    /// the proc_def entry or renumbers the body_ref.
+    #[test]
+    fn setup_maps_and_refs_registers_fs_remove_dir_proc_def() {
+        let (_, _, _, _, proc_defs) = setup_maps_and_refs(&Vec::new());
+        let expected_fixed_channel = FixedChannels::fs_remove_dir();
+        let found = proc_defs
+            .iter()
+            .find(|(fc, _, _, br)| *fc == expected_fixed_channel && *br == BodyRefs::FS_REMOVE_DIR);
+        let Some((_, arity, remainder, body_ref)) = found else {
+            panic!(
+                "proc_defs missing an entry with fixed_channel = \
+                 FixedChannels::fs_remove_dir() AND body_ref = \
+                 BodyRefs::FS_REMOVE_DIR ({}).  Trait-exempt \
+                 fs_remove_dir registration (slice 5.43) was removed; \
+                 Dir.rho's `fsRemoveDir!(...)` would hit \"dispatch: \
+                 no function for {}\".",
+                BodyRefs::FS_REMOVE_DIR,
+                BodyRefs::FS_REMOVE_DIR,
+            );
+        };
+        assert_eq!(
+            *arity, 5,
+            "fs_remove_dir proc_def arity must be 5 to match \
+             Dir.rho's `fsRemoveDir!(canonRoot, rel, recursive, \
+             cmode, *retCh)` call site; got {}",
+            arity
+        );
+        assert!(
+            remainder.is_none(),
+            "fs_remove_dir proc_def remainder must be None (no \
+             rest-pattern); got {remainder:?}"
+        );
+        assert_eq!(*body_ref, BodyRefs::FS_REMOVE_DIR);
+    }
+
+    /// Every `FS_HANDLERS` entry's `arity` (declared `usize`) must
+    /// fit in the `Arity` type (currently `i32`) WITHOUT truncation
+    /// on the `as Arity` cast performed by `fs_handlers_to_definitions`
+    /// (slice 5.31) and `setup_maps_and_refs` (slice 5.43).  Rust's
+    /// `as` conversion on an out-of-range `usize → i32` silently
+    /// wraps (two's-complement) rather than panicking.  Current
+    /// handler arities fall in `[1, 7]` — far from `i32::MAX` — but a
+    /// defensive pin keeps the compiler-silent wrap from surfacing as
+    /// a hard-to-diagnose "dispatcher mismatch on arity" at runtime.
+    ///
+    /// If this test fires, either the `FsHandlerEntry::arity` field
+    /// gained an entry out of `[0, i32::MAX]`, OR the `Arity` type
+    /// alias was renarrowed (e.g., `i16`).  In either case the
+    /// dispatcher's arity match would silently see the wrapped
+    /// value.  Fix: widen `Arity` to accommodate, or audit the new
+    /// entry.
+    #[test]
+    fn fs_handlers_arity_fits_in_arity_type() {
+        let max_arity: usize = Arity::MAX as usize;
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                entry.arity <= max_arity,
+                "FS_HANDLERS entry `{}` (urn_suffix = `{}`) has \
+                 arity = {}, which overflows the dispatcher's Arity \
+                 type (max = {}).  The `as Arity` cast in \
+                 fs_handlers_to_definitions + setup_maps_and_refs \
+                 would silently wrap this value, producing a \
+                 negative arity in the Definition.  Widen the Arity \
+                 type alias in system_processes.rs or correct the \
+                 entry.",
+                entry.name,
+                entry.urn_suffix,
+                entry.arity,
+                max_arity,
+            );
+        }
+    }
+
+    /// `fs_remove_dir` is trait-exempt — its four divergence reply
+    /// shapes don't fit the `FsHandler` trait (see
+    /// `handler_trait::fs_handler` docstring "Trait-exempt handler
+    /// (fs_remove_dir)").  It MUST NOT appear in `FS_HANDLERS`
+    /// because the trait-exempt stub (slice 5.44) is registered
+    /// separately in `dispatch_table_creator`.  If both were
+    /// registered, the dispatcher's `HashMap<body_ref, handler>`
+    /// insert would silently clobber one with the other — depending
+    /// on insertion order, callers might get either the stub's
+    /// FSERR_UNSUPPORTED reply or the (future) real handler's
+    /// response, with no compile-time or load-time warning.
+    ///
+    /// This test catches a regression where someone adds a
+    /// `fs_remove_dir` entry to `FS_HANDLERS` without first removing
+    /// the explicit stub registration in `dispatch_table_creator`.
+    /// Pins both axes: `urn_suffix == "removeDir"` AND `body_ref ==
+    /// BodyRefs::FS_REMOVE_DIR` — either match would collide.
+    #[test]
+    fn fs_remove_dir_stays_trait_exempt_in_fs_handlers() {
+        for entry in FS_HANDLERS.iter() {
+            assert_ne!(
+                entry.urn_suffix, "removeDir",
+                "FS_HANDLERS contains an entry with urn_suffix = \
+                 \"removeDir\" (name = `{}`).  fs_remove_dir is \
+                 trait-exempt; the explicit stub registration in \
+                 `dispatch_table_creator` would collide at the \
+                 dispatcher's body_ref HashMap, silently clobbering \
+                 one handler with the other.  Either (a) remove the \
+                 new FS_HANDLERS entry if fs_remove_dir still needs \
+                 the four divergence reply shapes, or (b) if the \
+                 real handler now fits the FsHandler trait, remove \
+                 the explicit stub registration in \
+                 `dispatch_table_creator` and this test.",
+                entry.name,
+            );
+            assert_ne!(
+                entry.body_ref,
+                BodyRefs::FS_REMOVE_DIR,
+                "FS_HANDLERS contains an entry with body_ref = \
+                 BodyRefs::FS_REMOVE_DIR ({}) (name = `{}`, \
+                 urn_suffix = `{}`).  fs_remove_dir is trait-exempt; \
+                 the body_ref slot is reserved for the explicit stub \
+                 registration (slice 5.44) and must not be reused.",
+                BodyRefs::FS_REMOVE_DIR,
+                entry.name,
+                entry.urn_suffix,
+            );
+        }
+    }
 }
