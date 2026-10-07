@@ -438,6 +438,36 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
         self.reducer.space.reset(root).await?;
+        // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
+        // state root.  Every block boundary triggers a reset via this
+        // path (see `casper::rholang::runtime::play_deploys_for_state`,
+        // `play_deploys_for_genesis`, `play_system_deploy`), and every
+        // validator resetting to the same root computes the same
+        // watermark — so fd values captured by the leader are
+        // reproducibly replayable by followers.
+        //
+        // **Consensus commitment**: fd values are consensus-observable
+        // via Rholang tuplespace state (`fdP` cells inside File
+        // agents).  This seed derivation is therefore an implicit
+        // consensus commitment — any future change to
+        // `seed_next_fd_from_state_hash`'s derivation constants or
+        // hash algorithm is a hard fork.
+        //
+        // **Aliasing prevention**: a fresh runtime spawned per block
+        // (via `RuntimeManager::spawn_runtime`) starts fd allocation
+        // from the state-hash-derived watermark, NOT from `next_fd =
+        // 1`.  Two independent runtimes at the same state hash
+        // allocate identical fd sequences (leader/follower replay).
+        self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
+        // Streaming-backing slice (2026-08-25): seed the dir-stream
+        // fd counter from the same state hash.  Same PB-M-13 aliasing
+        // threat as file fds — dir-stream fd values flow through the
+        // tuplespace as GInt, so a joining validator (or restart) that
+        // allocated fresh dir-stream fds starting from 1 could alias a
+        // stream fd a prior lifetime stashed in tuplespace state.
+        self.fs_handles
+            .dir_handles
+            .seed_next_fd_from_state_hash(&root.bytes());
         Ok(())
     }
 
