@@ -35,6 +35,10 @@ unsafe impl GlobalAlloc for LiveHeapCounter {
 static ALLOCATOR: LiveHeapCounter = LiveHeapCounter;
 
 const ITERATIONS: usize = 10_000;
+/// Transient heap is the peak above the larger of the before and after levels,
+/// so it excludes what the deploy keeps (event log, hot store). Before the fix,
+/// 10,000 iterations held ~313MB. After it, ~0. The peak counter is approximate
+/// under concurrent allocation, which the wide margin absorbs.
 const TRANSIENT_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 struct HeapProfile {
@@ -109,6 +113,4 @@ async fn tail_recursive_contract_play_and_replay_do_not_hold_per_iteration_heap(
         "replay held {} transient bytes for {ITERATIONS} iterations",
         replay.transient_bytes
     );
-
-    runtime.create_soft_checkpoint().await;
 }

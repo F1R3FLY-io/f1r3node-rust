@@ -3,6 +3,7 @@ mod accounting;
 mod cli_smoke_spec;
 mod crypto_channels_spec;
 mod demo_verification;
+mod deferred_dispatch_spec;
 mod deploy_data_spec;
 mod external_services;
 mod getsubtrie_spec;
