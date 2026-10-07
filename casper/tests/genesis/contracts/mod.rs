@@ -10,6 +10,7 @@ pub mod either_spec;
 pub mod failing_result_collector_spec;
 pub mod fileio_dir_spec;
 pub mod fileio_file_spec;
+pub mod fileio_fs_spec;
 pub mod fileio_stream_genesis_spec;
 pub mod fs_generator_spec;
 pub mod fs_genesis_spec;
