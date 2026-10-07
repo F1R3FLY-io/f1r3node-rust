@@ -11,8 +11,8 @@
 //! * `hashmap:bag`: the scan driver of A.7 (`BagDiscipline` and `disciplines::scan`).
 //! * `hashmap:cell`: the head driver with a capacity of one entry on each side
 //!   (`CellDiscipline`).
-//! * `hashmap:probeset`: the scan driver with a class key, a stand-in for the set until the SET
-//!   batch lands. Its key is the bincode of the payload, so equal payloads form one class (F5).
+//! * `hashmap:set`: the scan driver with the F5 class key of the set (`SetDiscipline` of the SET
+//!   batch), so equal payloads form one class.
 //!
 //! A script is a list of sends, receives and re-entries. A re-entry runs the oldest re-issue of
 //! an earlier operation, so other operations can run while an element is in flight. Each send
@@ -48,16 +48,20 @@ use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::spaces::agent::{
-    ConsumeOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome, SpaceReissue,
+    ConsumeOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome,
 };
+// Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
+// use rholang::rust::interpreter::spaces::agent::SpaceReissue;
 use rholang::rust::interpreter::spaces::disciplines::bag::BagDiscipline;
 use rholang::rust::interpreter::spaces::disciplines::cell::CellDiscipline;
 use rholang::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
-use rholang::rust::interpreter::spaces::disciplines::scan::{self, ScanDiscipline};
+// Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
+// use rholang::rust::interpreter::spaces::disciplines::scan::{self, ScanDiscipline};
+use rholang::rust::interpreter::spaces::disciplines::set::SetDiscipline;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
-use rholang::rust::interpreter::spaces::generic::{
-    Cx, Discipline, GenericSpace, Ordered, OuterStore, Side,
-};
+use rholang::rust::interpreter::spaces::generic::{Discipline, GenericSpace, OuterStore};
+// Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used them.
+// use rholang::rust::interpreter::spaces::generic::{Cx, Ordered, Side};
 use rholang::rust::interpreter::spaces::namespace::{Durability, NativeSpace, SID_LEN};
 use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
 use rholang::rust::interpreter::spaces::record;
@@ -71,10 +75,13 @@ use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::space_store_handle::{
-    canonical_continuation_order, canonical_data_order, metered_encode, SpaceStoreHandle,
+    canonical_continuation_order, canonical_data_order, SpaceStoreHandle,
 };
+// Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
+// use rspace_plus_plus::rspace::space_store_handle::metered_encode;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
-use serde::Serialize;
+// Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
+// use serde::Serialize;
 use support::agent::{
     any, budget, config_of, create, creation, data_channel, env_over, exactly, int, key_of,
     metered_env, named, run, string, unbounded_host_work, ParRSpace,
@@ -115,79 +122,83 @@ impl Hits {
 
 // ── The test disciplines ────────────────────────────────────────────────────────────────────
 
-/// A set stand-in for the engine properties: the scan driver of A.7 with a class key. The key
-/// is the bincode of the payload pars, so two equal payloads form one class, and the random
-/// state, the authority and the cost stack play no part (F5). The SET batch owns the real key.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct ProbeSet;
-
-impl Discipline for ProbeSet {
-    const NAME: &'static str = "probeset";
-    const USES_COUNTER: bool = false;
-    const SEND_PARAMS: &'static [&'static str] = &[];
-
-    /// The head of the bag. Only the head driver uses it, and the scan driver does not.
-    fn head_metered<T: Serialize>(
-        &self,
-        side: Side,
-        entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
-    ) -> Result<Option<usize>, SpaceError> {
-        BagDiscipline.head_metered(side, entries, meter)
-    }
-
-    /// The rule of the bag. Only the head driver uses it.
-    fn reaches_head(&self, side: Side, queued: usize) -> bool {
-        BagDiscipline.reaches_head(side, queued)
-    }
-
-    /// The rule of the bag. Only the head driver uses it.
-    fn precedes(
-        &self,
-        side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        BagDiscipline.precedes(side, ord, head, meter)
-    }
-
-    /// OFFER-SCAN.
-    fn offer(
-        &self,
-        cx: &mut Cx<'_, '_>,
-        op: ProduceOp,
-        ord: i64,
-    ) -> Result<Option<SpaceReissue>, SpaceError> {
-        scan::offer(self, cx, op, ord)
-    }
-
-    /// RECEIVE-SCAN, with RESTORE-SCAN after a peek fire.
-    fn receive(
-        &self,
-        cx: &mut Cx<'_, '_>,
-        op: ConsumeOp,
-        ord: i64,
-    ) -> Result<Option<SpaceReissue>, SpaceError> {
-        scan::receive(self, cx, op, ord)
-    }
-
-    /// RESTORE-SCAN outside a receive.
-    fn restore(
-        &self,
-        cx: &mut Cx<'_, '_>,
-        record: ListParWithRandom,
-    ) -> Result<Option<SpaceReissue>, SpaceError> {
-        scan::restore(self, cx, record)
-    }
-}
-
-impl ScanDiscipline for ProbeSet {
-    /// The metered bincode of the payload pars.
-    fn class_key(&self, payload: &[Par], meter: &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError> {
-        Ok(Some(metered_encode(payload, meter)?))
-    }
-}
+// Replaced by `SetDiscipline` of the SET batch (P5 wave W2, second wave): the set stand-in
+// below keyed a class by the bincode of the payload. The real set key is the F5 key of
+// `spaces/disciplines/set.rs`, which sorts each element and frames its length, so the engine
+// properties now run the real set discipline.
+// /// A set stand-in for the engine properties: the scan driver of A.7 with a class key. The key
+// /// is the bincode of the payload pars, so two equal payloads form one class, and the random
+// /// state, the authority and the cost stack play no part (F5). The SET batch owns the real key.
+// #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// struct ProbeSet;
+//
+// impl Discipline for ProbeSet {
+//     const NAME: &'static str = "probeset";
+//     const USES_COUNTER: bool = false;
+//     const SEND_PARAMS: &'static [&'static str] = &[];
+//
+//     /// The head of the bag. Only the head driver uses it, and the scan driver does not.
+//     fn head_metered<T: Serialize>(
+//         &self,
+//         side: Side,
+//         entries: &[Ordered<'_, T>],
+//         meter: &ScanMeter,
+//     ) -> Result<Option<usize>, SpaceError> {
+//         BagDiscipline.head_metered(side, entries, meter)
+//     }
+//
+//     /// The rule of the bag. Only the head driver uses it.
+//     fn reaches_head(&self, side: Side, queued: usize) -> bool {
+//         BagDiscipline.reaches_head(side, queued)
+//     }
+//
+//     /// The rule of the bag. Only the head driver uses it.
+//     fn precedes(
+//         &self,
+//         side: Side,
+//         ord: i64,
+//         head: i64,
+//         meter: &ScanMeter,
+//     ) -> Result<bool, SpaceError> {
+//         BagDiscipline.precedes(side, ord, head, meter)
+//     }
+//
+//     /// OFFER-SCAN.
+//     fn offer(
+//         &self,
+//         cx: &mut Cx<'_, '_>,
+//         op: ProduceOp,
+//         ord: i64,
+//     ) -> Result<Option<SpaceReissue>, SpaceError> {
+//         scan::offer(self, cx, op, ord)
+//     }
+//
+//     /// RECEIVE-SCAN, with RESTORE-SCAN after a peek fire.
+//     fn receive(
+//         &self,
+//         cx: &mut Cx<'_, '_>,
+//         op: ConsumeOp,
+//         ord: i64,
+//     ) -> Result<Option<SpaceReissue>, SpaceError> {
+//         scan::receive(self, cx, op, ord)
+//     }
+//
+//     /// RESTORE-SCAN outside a receive.
+//     fn restore(
+//         &self,
+//         cx: &mut Cx<'_, '_>,
+//         record: ListParWithRandom,
+//     ) -> Result<Option<SpaceReissue>, SpaceError> {
+//         scan::restore(self, cx, record)
+//     }
+// }
+//
+// impl ScanDiscipline for ProbeSet {
+//     /// The metered bincode of the payload pars.
+//     fn class_key(&self, payload: &[Par], meter: &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError> {
+//         Ok(Some(metered_encode(payload, meter)?))
+//     }
+// }
 
 /// A family under test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -708,7 +719,7 @@ async fn run_script(setup: Setup, script: &[Step]) -> Trace {
         Family::Queue => run_with::<QueueDiscipline>(setup, script).await,
         Family::Bag => run_with::<BagDiscipline>(setup, script).await,
         Family::Cell => run_with::<CellDiscipline>(setup, script).await,
-        Family::Set => run_with::<ProbeSet>(setup, script).await,
+        Family::Set => run_with::<SetDiscipline>(setup, script).await,
     }
 }
 
@@ -1505,7 +1516,7 @@ fn prop_engine_scan_reissue_keeps_identity() {
                 Family::Bag => {
                     reissued_order_rejected::<BagDiscipline>(&host, &env, &channel, value).await
                 }
-                _ => reissued_order_rejected::<ProbeSet>(&host, &env, &channel, value).await,
+                _ => reissued_order_rejected::<SetDiscipline>(&host, &env, &channel, value).await,
             };
             (outcome, host.take_event_log().await)
         });
@@ -1562,7 +1573,7 @@ async fn last_under(family: Family, script: &[Step], meter: Option<HostWorkBudge
         Family::Queue => last_with::<QueueDiscipline>(script, meter).await,
         Family::Bag => last_with::<BagDiscipline>(script, meter).await,
         Family::Cell => last_with::<CellDiscipline>(script, meter).await,
-        Family::Set => last_with::<ProbeSet>(script, meter).await,
+        Family::Set => last_with::<SetDiscipline>(script, meter).await,
     }
 }
 
@@ -1995,11 +2006,11 @@ fn engine_set_retirement_grows_the_staged_list_with_reserved_work() {
         let host = host_with(Injected::Real).await;
         let budget = budget();
         let env = env_over(host.clone(), &budget);
-        let agent = GenericSpace::<HashMapOuter, ProbeSet>::default();
+        let agent = GenericSpace::<HashMapOuter, SetDiscipline>::default();
         let config = config_of(
             SPACE,
             HashMapOuter::NAME,
-            ProbeSet::NAME,
+            SetDiscipline::NAME,
             SpaceQualifier::Default,
         );
         create(
@@ -2206,7 +2217,7 @@ fn engine_peek_restore_reoffers_to_a_guarded_waiter() {
     let runtime = tokio_runtime();
     for (fires, after) in [
         runtime.block_on(reoffer_witness::<BagDiscipline>()),
-        runtime.block_on(reoffer_witness::<ProbeSet>()),
+        runtime.block_on(reoffer_witness::<SetDiscipline>()),
     ] {
         assert_eq!(
             fires.len(),

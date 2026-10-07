@@ -1439,32 +1439,34 @@ RecordEnvelope.v models the record envelopes of [decision M-2](decision-register
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q12 | `datum_unwrap_wrap` (`RecordEnvelope.v:591`) | Unwrapping a wrapped datum gives the order and the payload back. | `prop_datum_envelope_roundtrip` |
-| Q13 | `datum_wrap_injective` (`RecordEnvelope.v:599`) | The datum envelope is injective in the order and the payload. | `prop_datum_envelope_injective` |
-| Q14 | `datum_unwrap_sound` (`RecordEnvelope.v:610`) | The datum decoder accepts only the image of the encoder. | `prop_datum_envelope_decoder_sound` |
-| Q15 | `continuation_unwrap_wrap` (`RecordEnvelope.v:632`) | Unwrapping a wrapped continuation gives the order and the body back. | `prop_continuation_envelope_roundtrip` |
-| Q16 | `counter_and_config_roundtrip` (`RecordEnvelope.v:994`) | The counter and config records round-trip, the config as its canonical map. | `prop_counter_and_config_records_roundtrip` |
-| Q17 | `envelope_kinds_disjoint` (`RecordEnvelope.v:1037`) | The tags of the four record kinds are pairwise distinct. | `prop_envelope_kinds_disjoint` |
-| Q18 | `no_reified_datum_is_single_number` (`RecordEnvelope.v:1161`) | No Reified datum is a single number, so the merger never treats it as a number channel. | `prop_no_reified_datum_is_single_number` |
-| Q19 | `unknown_version_rejected` (`RecordEnvelope.v:1103`) | A tag with another version or kind byte is rejected. | `prop_envelope_unknown_version_rejected` |
+| Q12 | `datum_unwrap_wrap` (`RecordEnvelope.v:639`) | Unwrapping a wrapped datum gives the order and the payload back. | `prop_datum_envelope_roundtrip` |
+| Q13 | `datum_wrap_injective` (`RecordEnvelope.v:647`) | The datum envelope is injective in the order and the payload. | `prop_datum_envelope_injective` |
+| Q14 | `datum_unwrap_sound` (`RecordEnvelope.v:658`) | The datum decoder accepts only the image of the encoder. | `prop_datum_envelope_decoder_sound` |
+| Q15 | `continuation_unwrap_wrap` (`RecordEnvelope.v:680`) | Unwrapping a wrapped continuation gives the order and the body back. | `prop_continuation_envelope_roundtrip` |
+| Q16 | `counter_and_config_roundtrip` (`RecordEnvelope.v:1042`) | The counter and config records round-trip, the config as its canonical map. | `prop_counter_and_config_records_roundtrip` |
+| Q17 | `envelope_kinds_disjoint` (`RecordEnvelope.v:1085`) | The tags of the four record kinds are pairwise distinct. | `prop_envelope_kinds_disjoint` |
+| Q18 | `no_reified_datum_is_single_number` (`RecordEnvelope.v:1209`) | No Reified datum is a single number, so the merger never treats it as a number channel. | `prop_no_reified_datum_is_single_number` |
+| Q19 | `unknown_version_rejected` (`RecordEnvelope.v:1151`) | A tag with another version or kind byte is rejected. | `prop_envelope_unknown_version_rejected` |
 
 #### 11.3.4 Headlines of CounterConflict.v
 
 CounterConflict.v restates merge check 1 of the baseline, and it proves the races and the serializability of the counter rule ([decision 31](decision-register.md#decision-31)).
 
-*Table 28. The 9 headlines of CounterConflict.v.*
+*Table 28. The P4 headlines of CounterConflict.v.*
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q20 | `check1_race_iff` (`CounterConflict.v:337`) | Check 1 reports a race exactly for a shared non-persistent event that is not mergeable in both logs. | `prop_check1_restatement_matches_merger` |
-| Q21 | `ordered_writes_race_on_counter` (`CounterConflict.v:743`) | Two branches that write one queue race on its counter. | `prop_queue_writes_race_on_counter` |
-| Q22 | `ordered_reads_race_on_counter` (`CounterConflict.v:757`) | A peek bumps the counter too, so two branches that read one queue race. | `prop_queue_reads_race_on_counter` |
-| Q23 | `first_ops_race_on_space_counter` (`CounterConflict.v:772`) | Two branches whose first operations open collections of one space race on the space counter. | `prop_first_ops_race_on_space_counter` |
-| Q24 | `crossed_collections_race` (`CounterConflict.v:786`) | Branches that use two queues in crossed orders race on both counters. | `prop_crossed_collections_race` |
-| Q25 | `same_block_ops_chain` (`CounterConflict.v:946`) | Two deploys of one block that use one queue form one chain. | `prop_same_block_queue_ops_chain` |
-| Q26 | `unordered_writes_commute` (`CounterConflict.v:1484`) | Writes to a collection without a counter never race, and the merge holds both serial orders. | `prop_counter_free_writes_commute` |
-| Q27 | `merge_without_race_is_serializable` (`CounterConflict.v:1322`) | Without a race, the merged state and the observations are those of a serial run. | `prop_nonracing_queue_branches_serializable` |
-| Q28 | `counter_free_peek_admits_write_skew` (`CounterConflict.v:1596`) | A peek without the counter admits the write skew of a peek and a dequeue, as a computed counterexample. | `prop_counter_free_peek_admits_write_skew` |
+| Q20 | `check1_race_iff` (`CounterConflict.v:373`) | Check 1 reports a race exactly for a shared non-persistent event that is not mergeable in both logs. | `prop_check1_restatement_matches_merger` |
+| Q21 | `ordered_writes_race_on_counter` (`CounterConflict.v:788`) | Two branches that write one queue race on its counter. | `prop_queue_writes_race_on_counter` |
+| Q22 | `ordered_reads_race_on_counter` (`CounterConflict.v:802`) | A peek bumps the counter too, so two branches that read one queue race. | `prop_queue_reads_race_on_counter` |
+| Q23 | `first_ops_race_on_space_counter` (`CounterConflict.v:817`) | Two branches whose first operations open collections of one space race on the space counter. | `prop_first_ops_race_on_space_counter` |
+| Q24 | `crossed_collections_race` (`CounterConflict.v:831`) | Branches that use two queues in crossed orders race on both counters. | `prop_crossed_collections_race` |
+| Q25 | `same_block_ops_chain` (`CounterConflict.v:991`) | Two deploys of one block that use one queue form one chain. | `prop_same_block_queue_ops_chain` |
+| Q26 | `unordered_writes_commute` (`CounterConflict.v:1529`) | Writes to a collection without a counter never race, and the merge holds both serial orders. | `prop_counter_free_writes_commute` |
+| Q27 | `merge_without_race_is_serializable` (`CounterConflict.v:1367`) | Without a race, the merged state and the observations are those of a serial run. | `prop_nonracing_queue_branches_serializable` |
+| Q28 | `counter_free_peek_admits_write_skew` (`CounterConflict.v:1666`) | A peek without the counter admits the write skew of a peek and a dequeue, as a computed counterexample. | `prop_counter_free_peek_admits_write_skew` |
+
+P5 adds two headlines to the module, and section [12.11](#1211-the-merge-of-the-p5-families) describes them.
 
 #### 11.3.5 Headlines of HeadOnlyDisciplines.v
 
@@ -2053,7 +2055,7 @@ The play and replay backends always call `remove_matched_datum_and_join` or `sto
 The agent then makes a [re-store](glossary.md#re-store).
 `receive_head` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:1295-1300`).
 Right after the fire, `Discipline::restore` and its default `Cx::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:316-323`, `882-897`) stage a produce of the same record bytes with the outcome Store and `persist = false`.
-`Introduction::for_record` (`rholang/src/rust/interpreter/spaces/record.rs:847-860`) gives the re-store the cost authority of the record, as `produce_peeks` does.
+`Introduction::for_record` (`rholang/src/rust/interpreter/spaces/record.rs:1240-1253`) gives the re-store the cost authority of the record, as `produce_peeks` does.
 The re-store bumps no counter, and the record keeps its envelope, its order, and its place at the head.
 
 The substrate change and the re-store land in one commit.
@@ -2340,7 +2342,7 @@ It wires no new family. The family agent has one arm, `hashmap:queue`, and the b
 
 S1 makes these changes:
 
-- `FamilyAgent` (`spaces/families.rs:195-274`) reads the config once and runs the agent of the family that the config names. The runtime installs it.
+- `FamilyAgent` (`spaces/families.rs:343-422`) reads the config once and runs the agent of the family that the config names. The runtime installs it.
 - `Discipline` holds the plans of the operations. The default plans are the head driver `offer_head` and `receive_head`, the P4 plans as free functions over the discipline.
 - `Cx` (`spaces/generic.rs:558-561`) is the only path from a plan to the transaction. It adds group fires over `[D; n]`, retirements and lifts.
   `Cx` and `AllocCx` expose no raw transaction, and the legacy chain of a plan is private to `generic.rs`. So the types keep the design rule that only `generic.rs` and `counter.rs` stage operations.
@@ -2370,8 +2372,8 @@ So the golden pins the one comparison of the family check.
 | `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:4951` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
 | `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:4995` | The family agent gives the fires, events, records, waiters and host work of the queue agent. |
 | `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:5047` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
-| `space_families_wire_exactly_the_listed_families` | `families.rs:309` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
-| `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:364` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
+| `space_families_wire_exactly_the_listed_families` | `families.rs:469` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
+| `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:584` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
 | `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3212` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
 | `harness_session_runs_a_queue_space_under_the_family_agent` | `reified_p5_harness.rs:28` | The shared session creates a space and runs deploys under the family agent. |
 | `harness_agent_env_runs_the_family_agent_in_fifo_order` | `reified_p5_harness.rs:65` | Over the shared agent environment, the family agent delivers in send order and bumps once for each operation (64 cases). |
@@ -2514,10 +2516,16 @@ Three Rust mutants of `cell.rs` make the expected tests fail, and each twin prop
 | `hashmap_iteration_permutation_invariant` | `HashMapStore.v:168` | `prop_hashmap_iteration_permutation_invariant` |
 | `hashmap_get_put_other` | `HashMapStore.v:213` | `prop_hashmap_get_put_other` |
 
-`rholang/tests/reified_array_vector.rs` holds 22 tests and 15 properties, and the allocator and the stores hold 17 unit tests.
+`rholang/tests/reified_array_vector.rs` holds 25 tests and 15 properties, and the allocator and the stores hold 17 unit tests.
 The 21 Rocq negative controls fail inside their expected headlines.
 `CounterConflict.tla` models the allocator: `MC_CounterConflict_Allocator.cfg` finds 326,700 states with no violation.
 The Unsafe control `LazyAllocatorUnsafe.cfg` creates the allocator at the first allocation, and it refutes exactly `NoDuplicateIndex`.
+
+Three tests run the Array and Vector families end to end.
+`space_array_all_disciplines_supported` runs every wired discipline through the family agent on a fixed Array, a cyclic Array and a Vector space.
+`space_array_new_in_use_allocates_indices` and `space_array_newspace_annotation_allocates` run Rholang deploys.
+In them, `gensym`, a `new` inside a `use` block and an annotated `new` take index names in allocation order.
+A forged channel inside the `use` block of an Array space fails with `NotAnIndexName`, and a `new` beyond the size fails with `OutOfNames`.
 
 ### 12.7 The PathMap layer
 
@@ -2603,7 +2611,176 @@ It covers the settle job at the cap, the settle before a plan at the cap, and th
 It checks every transaction against the bound.
 The 20 Rocq negative controls fail inside their expected lemmas. Three of them change the count of a transaction, and each fails in `stack_settle_terminates`.
 
-### 12.11 Running the P5 checks
+### 12.11 The merge of the P5 families
+
+M-1 makes merges serializable for each collection, because every operation on a collection with a counter bumps the counter.
+The second wave of W2 checks this rule for the bag, the cell, the stack, and the queues of Array and Vector spaces.
+
+*Table 77. The merge headlines of the P5 families.*
+
+| Headline | Location | Design name | Property test |
+|---|---|---|---|
+| `shared_collection_race` | `CounterConflict.v:767` | F23 `cell_ops_race_on_counter` | `prop_cell_ops_race_on_counter` |
+| `crossed_stacks_without_removal_counters_fabricate` | `CounterConflict.v:1759` | the same name | `prop_crossed_stacks_without_removal_counters_fabricate` |
+| `crossed_collections_race` (Q24 of P4) | `CounterConflict.v:831` | `crossed_stacks_race` | `prop_crossed_stacks_race` |
+| `unordered_writes_commute` (Q26 of P4) | `CounterConflict.v:1529` | the bag row | `prop_bag_writes_commute` |
+
+The plan of the model is a section variable, so the race theorems of P4 also hold for the stack and the cell.
+A cell operation that fails with `CellOccupied` fails its deploy before it stages anything.
+The block index leaves a failed deploy out of the merge (`casper/src/rust/merging/block_index.rs:127-130`).
+So `shared_collection_race` covers every pair of cell operations that a merge can see.
+
+`CounterConflict.tla` models stacks when a configuration replaces `Lifo` with `LifoOn`.
+`MC_CounterConflict_Stacks.cfg` checks `NoMergedOrderFabrication`, `SharedQueueRaces` and `FirstOpsRace` for stacks, and TLC finds 46,656 states with no violation.
+`RemovalCounterFreeUnsafe.cfg` refutes exactly `NoMergedOrderFabrication`: a pop that does not bump the counter admits a merge that no serial order gives.
+Its first counterexample needs only one stack: a pop against a peek and a push.
+The four new Rocq negative controls fail inside their expected declarations.
+
+`rholang/tests/reified_merge_p5.rs` holds 8 tests and 5 properties.
+The tests compute the merge as `dag_merger.rs` does, and each race test also strips the counter events, after which the branches merge.
+Two `new` blocks inside `use` of one Array or Vector space race on the allocator `A(sid)` (`rholang/tests/reified_merge_p5.rs:858-919`).
+The tests of items 18 and 19 of the consensus checklist are at `rholang/tests/reified_merge_p5.rs:1052-1175`.
+
+### 12.12 Determinism and the pattern-enforcement matrix
+
+These suites cover the six families that were wired when the second wave started.
+They are the bag, queue, stack and cell of `hashmap`, and the queues of `array` and `vector`.
+`rholang/tests/reified_determinism.rs` holds 6 tests and 3 properties, and `rholang/tests/reified_pattern_enforcement.rs` holds 8 tests and 1 property.
+
+**Canonical iteration.**
+The hot store puts each new entry at the front of its list.
+A checkpoint sorts each list by its encoded bytes (`rspace++/src/rspace/serializers/serializers.rs:18-26`), and the next reads load it in that order (`rspace++/src/rspace/rspace/ispace_impl.rs:60-95`).
+The tests build one entry set in three list orders (`rholang/tests/reified_determinism.rs:363-394`, `500-549`).
+The orders are the order of the agent operations, a reverse order through raw host operations, and the order of the history.
+
+One probe script gives the same results, events, legacy charges and root in the three orders.
+Each test also runs one Rholang program in two fresh runtimes and compares the root, the event log and the cost (`rholang/tests/reified_determinism.rs:765-776`).
+
+**Host work and the list order.**
+A head scan of a queue, a stack or a cell does the same work in every list order (`rholang/src/rust/interpreter/spaces/generic.rs:656-672`).
+So the host work of these disciplines does not depend on the list order.
+
+The DR-75 order of a bag charges each comparison of its heapsort (`rspace++/src/rspace/space_store_handle.rs:382-410`, `shared/src/rust/fallible_sort.rs:3-33`).
+The number of comparisons depends on the list order, so the host work of a bag selection depends on it too.
+The `MeteredOrder` of the cost-accounted-rho branch charges in the same way, so this follows [decision 40](decision-register.md#decision-40).
+The list order is a function of the pre-state root and the event sequence, so play and replay charge the same.
+The headlines Q62 and Q63 of section [11.10](#1110-metering-of-decision-42) state the permutation invariance of the head scans, not of the DR-75 order.
+
+**Serialization failure.**
+An agent serializes candidates only to order a tie.
+A bag uses the DR-75 tie digest (`rspace++/src/rspace/candidate_order.rs:122-135`, `rspace++/src/rspace/space_store_handle.rs:423-428`).
+A queue, a stack or a cell uses the tie-break encode of two entries with one order (`rholang/src/rust/interpreter/spaces/disciplines/queue.rs:88-132`, `rholang/src/rust/interpreter/spaces/disciplines/stack.rs:227-271`).
+The agent never stores two entries with one order, so the ordered tests store such entries with raw host operations.
+
+The injection is a host-work cut ([decision 42](decision-register.md#decision-42)).
+A budget that ends exactly at the first read of the step makes the selection fail with `HostWorkRejected` before it stages anything.
+The rows, the legacy charges, the events and the root stay unchanged (`rholang/tests/reified_determinism.rs:1284-1474`).
+The tests check this on a play space, on a rigged replay space and after a checkpoint reset.
+
+The search for the exact cut compares two runs that differ only in the payload length of the tie.
+For a limit $`L`$, $`r_1(L)`$ and $`r_2(L)`$ are the rejections of the two runs.
+$`u_1(L)`$ and $`u_2(L)`$ are their usages of the three agent dimensions.
+The first limit at which the two runs differ is
+
+```math
+U^{*} = \min \{\, L \mid (r_1(L), u_1(L)) \neq (r_2(L), u_2(L)) \,\}
+```
+
+The cut is $`U^{*}`$ less the scanned bytes of the reservations from the first read of the step to the payload read (`rholang/tests/reified_determinism.rs:1168-1229`).
+The rejection alone is not monotone in $`L`$, because a byte vector is encoded one byte at a time.
+So the search compares the usages too.
+
+**The pattern-enforcement matrix (N3).**
+For each wired row, a pattern for 42 never receives 43 in either order (`rholang/tests/reified_pattern_enforcement.rs:213-261`).
+A pattern for 42 receives 42 on a fresh name.
+The unsupported pairs fail at every layer: the URN, the registration, the constructor, the agent and a Rholang deploy (`rholang/tests/reified_pattern_enforcement.rs:346-471`).
+The qualifiers `temp` and `seq` give `QualifierUnavailable` until P7 (F17), and for an Array family this error comes before `MissingParam` (`rholang/tests/reified_pattern_enforcement.rs:481-526`).
+
+*Table 78. The pattern-enforcement matrix at the end of the second wave.*
+
+| Row | `default` | `temp` | `seq` |
+|---|---|---|---|
+| the six wired rows | runs: a pattern for 42 never receives 43 | `QualifierUnavailable` | `QualifierUnavailable` |
+| the HashSet families, `hashmap:vectordb`, `vector:vectordb` | no factory | no factory | no factory |
+| `pathmap:vectordb`, `array:vectordb`, `hashset:vectordb` | `UnsupportedPair` | `UnsupportedPair` | `UnsupportedPair` |
+
+### 12.13 The set
+
+`SetDiscipline.v` proves the 8 headlines of Table 79 with no axiom, and its 16 negative controls fail inside their expected lemmas.
+
+*Table 79. The headlines of the set.*
+
+| Headline | Location | Property test |
+|---|---|---|
+| `set_key_injective` | `SetDiscipline.v:297` | `prop_set_key_injective` |
+| `set_view_dedups_equal_pars` | `SetDiscipline.v:704` | `prop_set_view_dedups_equal_pars` |
+| `set_consume_retires_class` | `SetDiscipline.v:792` | `prop_set_consume_retires_class` |
+| `set_retire_comm_lines_up` | `SetDiscipline.v:872` | `prop_set_retire_comm_lines_up` |
+| `set_produce_fire_retires_stored_class` | `SetDiscipline.v:1151` | `prop_set_produce_fire_retires_stored_class` |
+| `set_peek_restores_representative_only` | `SetDiscipline.v:1205` | `prop_set_peek_restores_representative_only` |
+| `set_membership_full_compare_on_equal_hash` | `SetDiscipline.v:1274` | `prop_set_membership_full_compare_on_equal_hash` |
+| `set_key_trace_covered` | `SetDiscipline.v:1389` | `prop_set_key_trace_covered` |
+
+`rholang/tests/reified_set.rs` holds 21 tests and 10 properties, and `set.rs` holds 6 unit tests.
+The property `prop_set_class_retired_any_schedule` checks the TLA+ invariant `SetClassRetired` (V6), and `prop_set_legacy_charges_equal_host` compares the legacy charges with `ChargingRSpace`.
+A host differential runs each generated program on the host where the host can express it, and 62 of 64 programs compare fully.
+
+The membership test of the driver compares each candidate key with the class key once, so the driver keeps no ordered map of classes.
+A metered job stores only a record whose key exists under its metering.
+The test `space_set_discipline_failed_canonicalization_rejects_before_staging` shows a metered send of a payload without a key that fails before it stages anything.
+
+### 12.14 The priority queue
+
+`PriorityQueue.v` proves 20 headlines, and `RecordEnvelope.v` adds the 2 slot headlines of the priority queue (Table 80).
+The 35 negative controls of `PriorityQueue.v` and the 5 new controls of `RecordEnvelope.v` fail inside their expected lemmas.
+
+*Table 80. The headlines of the priority queue.*
+
+| Headline | Location | Property test |
+|---|---|---|
+| `pq_level_order` | `PriorityQueue.v:863` | `prop_pq_level_order` |
+| `pq_unprioritized_lowest` | `PriorityQueue.v:887` | `prop_pq_level_order` |
+| `pq_produce_preserves_inv` | `PriorityQueue.v:1390` | `prop_pq_no_pending_match_any_schedule` |
+| `pq_consume_preserves_inv` | `PriorityQueue.v:1404` | `prop_pq_no_pending_match_any_schedule` |
+| `pq_settle_oldest_first` | `PriorityQueue.v:1899` | `prop_pq_oldest_first_any_schedule` |
+| `pq_restricted_waiter_in_level_queue` | `PriorityQueue.v:1921` | `prop_pq_fifo_order_any_schedule` |
+| `pq_unrestricted_first_matching_level` | `PriorityQueue.v:1943` | `prop_pq_fifo_order_any_schedule` |
+| `pq_fifo_within_level` | `PriorityQueue.v:2151` | `prop_pq_fifo_order_any_schedule` |
+| `pq_head_blocks_within_level` | `PriorityQueue.v:2324` | `prop_pq_fifo_order_any_schedule` |
+| `pq_peek_restores_head` | `PriorityQueue.v:2486` | `prop_pq_no_pending_match_any_schedule` |
+| `pq_reissue_takes_level_fifo_place` | `PriorityQueue.v:2673` | `prop_pq_reissue_keeps_ord_any_schedule` |
+| `pq_reentered_waiter_keeps_seniority` | `PriorityQueue.v:2716` | `prop_pq_reissue_keeps_ord_any_schedule` |
+| `pq_settle_keeps_unspent_records` | `PriorityQueue.v:2864` | `prop_pq_fifo_order_any_schedule` |
+| `pq_settle_terminates` | `PriorityQueue.v:3181` | `prop_pq_settle_bounded_any_schedule` |
+| `pq_plan_permutation_invariant` | `PriorityQueue.v:3655` | `prop_pq_plan_permutation_invariant` |
+| `pq_priority_domain` | `PriorityQueue.v:3730` | `prop_pq_priority_domain` |
+| `pq_no_level_storage` | `PriorityQueue.v:3903` | `prop_pq_no_level_storage` |
+| `pq_without_settle_breaks_inv` | `PriorityQueue.v:4002` | `prop_pq_no_pending_match_any_schedule` |
+| `pq_settle_order_matters` | `PriorityQueue.v:4081` | `prop_pq_oldest_first_any_schedule` |
+| `level_scan_trace_covered` | `PriorityQueue.v:4550` | `prop_pq_reservation_cut_rejects_without_effect` |
+| `datum_priority_slot_roundtrip` | `RecordEnvelope.v:1473` | `prop_pq_record_slots_roundtrip` |
+| `continuation_policy_slot_roundtrip` | `RecordEnvelope.v:1509` | `prop_pq_record_slots_roundtrip` |
+
+`PriorityQueue.tla` checks `PqLevelOrder` (V17), `PqOldestFirst` (V18), `PqNoPendingMatch` (V19), `NoRecordLost` (V20), `ReissueKeepsOrd` (V21) and `TxnFiresBounded` (V22).
+`MC_PriorityQueue.cfg` finds 3,534,991 states at depth 23, and `MC_PriorityQueue_Deep.cfg` finds 16,580,900 states at depth 33, with no violation.
+
+*Table 81. The Unsafe controls of the priority-queue model.*
+
+| Control | What it changes | Refuted invariant |
+|---|---|---|
+| `PqNoSettleUnsafe.cfg` | the queue never settles | `PqNoPendingMatch` |
+| `PqAnyOrderUnsafe.cfg` | the settle fires any fireable lane head | `PqOldestFirst` |
+| `PqReentryAtHeadUnsafe.cfg` | a re-entry always reaches the head of its level | `PqLevelOrder` |
+| `PqPerPhaseCountUnsafe.cfg` | each phase of a transaction starts a count of its own | `TxnFiresBounded` |
+| `PqPlanOpensAtCapUnsafe.cfg` | a plan opens at the cap with no check | `TxnFiresBounded` |
+
+`PqReentryAtHeadUnsafe.cfg` uses a narrow universe with 7 operations, because the shortest violating trace has 7 rounds.
+Each complement run holds the other invariants.
+
+`rholang/tests/reified_priority_queue.rs` holds 28 tests and 12 properties, and `priority_queue.rs` and `record.rs` hold 15 unit tests of the priority queue.
+The property `prop_pq_txn_fires_bounded_at_the_cap` reaches 54 settle jobs at the cap and 96 transactions with `FIRE_ROUND_CAP` fires.
+
+### 12.15 Running the P5 checks
 
 To run the P5 checks, do these steps from the repository root, after the preparation of section [10.1](#101-preparation):
 
@@ -2614,12 +2791,12 @@ To run the P5 checks, do these steps from the repository root, after the prepara
 5. Run `python3 scripts/verify-reified/check-complete.py --phase p5` and `check-complete.py --production-scan`.
 6. Run `python3 scripts/verify-reified/check-footprint.py --policy p5`.
 7. Run `python3 scripts/verify-reified/check-consensus-checklist.py --milestone p5`.
-8. Run `cargo test -p rholang --test <suite>` for each suite of Table 77, and `cargo test -p rholang --lib`.
+8. Run `cargo test -p rholang --test <suite>` for each suite of Table 82, and `cargo test -p rholang --lib`.
 9. Run `python3 scripts/verify-reified/doc_lint.py` and `docs/rspace/reified-rspaces/diagrams/render.sh --check`.
 
 Run each cargo command under the resource limits of section [10.3](#103-rust-suites), and write its log under `target/`.
 
-*Table 77. The P5 suites.*
+*Table 82. The P5 suites.*
 
 | Suite | Tests | Section |
 |---|---|---|
@@ -2628,10 +2805,15 @@ Run each cargo command under the resource limits of section [10.3](#103-rust-sui
 | `reified_engine_props` | 20 | [12.3](#123-the-engine-models) |
 | `reified_bag` | 31 | [12.4](#124-the-bag-and-the-scan-driver) |
 | `reified_cell` | 21 | [12.5](#125-the-cell) |
-| `reified_array_vector` | 37 | [12.6](#126-the-array-and-vector-stores-and-the-allocator) |
+| `reified_array_vector` | 40 | [12.6](#126-the-array-and-vector-stores-and-the-allocator) |
 | `reified_families` | 16 | [12.8](#128-the-families) |
 | `reified_hooks_p5` | 10 | [12.9](#129-the-receive-queries-and-the-allocation-jobs) |
 | `reified_stack` | 34 | [12.10](#1210-the-stack-and-the-fire-count-of-a-transaction) |
+| `reified_merge_p5` | 13 | [12.11](#1211-the-merge-of-the-p5-families) |
+| `reified_determinism` | 9 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
+| `reified_pattern_enforcement` | 9 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
+| `reified_set` | 31 | [12.13](#1213-the-set) |
+| `reified_priority_queue` | 40 | [12.14](#1214-the-priority-queue) |
 
 The unit tests of the PathMap layer (section [12.7](#127-the-pathmap-layer)) run in `cargo test -p rholang --lib`.
 

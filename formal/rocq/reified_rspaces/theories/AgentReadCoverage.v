@@ -53,7 +53,7 @@
                             register_introduction), each self-metered
    round_after_commit       spaces/generic.rs:1444-1512 (outcome: the moves of
                             into_continuation, prepaid by
-                            spaces/record.rs:721-730)
+                            spaces/record.rs:735-744)
    operation_trace          spaces/generic.rs:1535-1557, 1784-1892
                             (begin_collection and run_with: the channels, the
                             config, the staged list, the matcher handle, the

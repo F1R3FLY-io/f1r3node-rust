@@ -39,11 +39,11 @@
    park                     space_store_handle.rs put_continuation: no
                             insert when a waiter with the same identity is
                             parked (F14)
-   fits, offer_choice       scan.rs:519-550 (first_admitting_waiter: the
+   fits, offer_choice       scan.rs:525-556 (first_admitting_waiter: the
                             pattern copy and the metered match of each
                             tested waiter, the guard of a waiter that
                             binds, and the next waiter on a refusal)
-   candidates               scan.rs:400-485 (Scan: every waiter in
+   candidates               scan.rs:400-491 (Scan: every waiter in
                             canonical order) and generic.rs offer_head
                             with Cx::head_waiter (Head: the head waiter
                             only, decision 11)

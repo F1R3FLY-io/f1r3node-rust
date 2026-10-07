@@ -1,0 +1,87 @@
+' 25 The priority queue: levels of records and lanes of waiters.
+'
+' Source of Figure N11.10 in ../design.md (section N11.10). The figure restates
+' PQ-OFFER and PQ-RECEIVE of
+' rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs
+' (decision 38). It adds no new fact.
+'
+' Reading order:
+'   1. A send with priority p goes to the level p, and a send without a
+'      priority goes to the unprioritized level, which comes last (F6).
+'   2. A record that is not at the FIFO place of the head of its level is
+'      stored (decision 43 for a re-entered record).
+'   3. Otherwise the send offers the record to the head of the lane Level(p)
+'      and to the head of the lane Any, the older head first. A refusal moves
+'      on to the other head.
+'   4. A receive with priority p waits in the lane Level(p), and a receive
+'      without a priority waits in the lane Any. It binds the first level head
+'      that its lane sees and checks its guard once, on that head.
+'   5. After each plan the queue settles: the oldest fireable lane head fires
+'      first (readiness review S4).
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 25-priority-queue-lanes.puml   Check: ./render.sh --check
+
+@startuml 25-priority-queue-lanes
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The priority queue (P5b): levels of records and lanes of waiters
+
+start
+:open_plan: the settle before the plan, on the one
+fire count of the transaction (decision 49); <<$rrs_agent>>
+split
+  partition "send (PQ-OFFER)" {
+    :ℓ ← the level of priority = p, or the unprioritized
+    level, which comes after every priority level (F6); <<$rrs_agent>>
+    if (the record is at the FIFO place of the head of level ℓ?) then (yes)
+      :offer to the heads of the lanes Level(ℓ) and Any,
+      the older head first (decision 38); <<$rrs_agent>>
+      if (a head binds and admits the datum?) then (yes)
+        :fire that head; <<$rrs_effect>>
+      else (no: each head refused)
+        :store the record in level ℓ; <<$rrs_storage>>
+      endif
+    else (no)
+      :store the record at its FIFO place in level ℓ; <<$rrs_storage>>
+    endif
+  }
+split again
+  partition "receive (PQ-RECEIVE)" {
+    :L ← the lane Level(p), or the lane Any
+    when the receive has no priority; <<$rrs_agent>>
+    if (the waiter is at the head of its lane L?) then (yes)
+      :h ← the first level head that L sees
+      whose payload the pattern binds; <<$rrs_agent>>
+      if (a head h was found and the guard admits it?) then (yes)
+        :fire on h; a peek of a non-persistent h
+        stores h again at its order (Rule E); <<$rrs_effect>>
+      else (no)
+        :park the waiter in lane L
+        (the guard is checked once); <<$rrs_storage>>
+      endif
+    else (no)
+      :park the waiter at its place in lane L; <<$rrs_storage>>
+    endif
+  }
+end split
+:the settle after the plan fires the oldest
+fireable lane head first (readiness review S4); <<$rrs_flow>>
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_agent>    | a choice of the plan |
+|<$rrs_effect>   | a staged fire |
+|<$rrs_storage>  | a stored record or a parked waiter |
+|<$rrs_flow>     | the settle of exposed pairs |
+endlegend
+@enduml

@@ -2461,7 +2461,32 @@
         "docs/rspace/reified-rspaces/diagrams/21-transaction-fire-count.svg",
         "docs/rspace/reified-rspaces/diagrams/22-allocation-job.puml",
         "docs/rspace/reified-rspaces/diagrams/22-allocation-job.svg",
-        "formal/reified-rspaces-model-map-p5.json"
+        "formal/reified-rspaces-model-map-p5.json",
+        "rholang/tests/reified_determinism.rs",
+        "rholang/tests/reified_pattern_enforcement.rs",
+        "rholang/tests/reified_merge_p5.rs",
+        "formal/tlaplus/reified_rspaces/MC_CounterConflict_Stacks.cfg",
+        "formal/tlaplus/reified_rspaces/RemovalCounterFreeUnsafe.cfg",
+        "docs/rspace/reified-rspaces/diagrams/23-crossed-stacks-merge.puml",
+        "docs/rspace/reified-rspaces/diagrams/23-crossed-stacks-merge.svg",
+        "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+        "rholang/tests/reified_set.rs",
+        "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+        "rholang/tests/reified_priority_queue.rs",
+        "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+        "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+        "formal/tlaplus/reified_rspaces/MC_PriorityQueue.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PriorityQueue_Deep.cfg",
+        "formal/tlaplus/reified_rspaces/PqNoSettleUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqAnyOrderUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqReentryAtHeadUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqPerPhaseCountUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqPlanOpensAtCapUnsafe.cfg",
+        "docs/rspace/reified-rspaces/diagrams/24-set-class-fire.puml",
+        "docs/rspace/reified-rspaces/diagrams/24-set-class-fire.svg",
+        "docs/rspace/reified-rspaces/diagrams/25-priority-queue-lanes.puml",
+        "docs/rspace/reified-rspaces/diagrams/25-priority-queue-lanes.svg"
       ]
     }
   }

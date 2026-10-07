@@ -23,6 +23,18 @@
    - a peek that does not bump the counter admits write skew (the reason
      for A2, decision 31).
 
+   P5 (wave W2) applies the module to the families with a counter: the
+   cell, the stack, and the queues of Array and Vector spaces. The plan of
+   exec is a section variable, so every theorem holds for each of them.
+   - two branches that operate on one collection race, for every pair of
+     operations (shared_collection_race, headline 10). For the cell this
+     is F23 of the P5 design. A cell operation that fails with
+     CellOccupied fails its deploy, and the block index leaves a failed
+     deploy out of the merge. So a merge sees only committed operations.
+   - a removal that does not bump the counter admits the crossed-stack
+     merge of the M-1 arbitration (headline 11, computed). The race of
+     crossed stacks with the counters is crossed_collections_race.
+
    Sources
    - Design: the P4 design report B.3 (counters), D.2 (check #1 and the
      two A2 counterexamples), D.3 (one block, one chain) and E.1 (the
@@ -31,6 +43,9 @@
    - Code: the P4 commit of this repository. The line numbers below are the
      line numbers of that commit. The merger files are HEAD files that the
      campaign does not change.
+   - P5: the P5 design v3 (A.7, A.8, A.13), v2 (F23, section 3.1) and the
+     M-1 arbitration of the plan ("Why removals must touch it"). The P5
+     rows below cite the lines of the W2 checkpoint commit bc43b8653.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -91,6 +106,20 @@
    bag_run                  HEAD's default produce: no counter
    exec_cf, run_cf          the counter-free peek that decision 31 rejects
                             (no code)
+   failed deploys (P5)      casper/src/rust/merging/block_index.rs:127-131
+                            (the block index skips a failed user deploy,
+                            so a CellOccupied abort never reaches check #1)
+   the cell abort (P5)      rholang/src/rust/interpreter/spaces/generic.rs:
+                            772-783 (Cx::check_capacity: CellOccupied
+                            before any staging), rholang/src/rust/
+                            interpreter/spaces/disciplines/cell.rs:57
+                            (CAPACITY = Some 1)
+   exec_rf, run_rf (P5)     the removal without a counter bump that the
+                            M-1 arbitration rejects (no code)
+   CrossedStacks.splan (P5) rholang/src/rust/interpreter/spaces/disciplines/
+                            stack.rs:71-93 (a counter, and the head is the
+                            entry with the greatest ord: a pop takes the
+                            last push)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -139,6 +168,13 @@
     7. unordered_writes_commute           bag stores need no counter
     8. merge_without_race_is_serializable a merged state is a serial state
     9. counter_free_peek_admits_write_skew  the reason for A2 (computed)
+   10. shared_collection_race            any two branches that operate on one
+                                          collection race (P5: F23 for the
+                                          cell)
+   11. crossed_stacks_without_removal_counters_fabricate
+                                          a removal without the counter
+                                          admits the crossed-stack merge
+                                          (P5, computed)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -717,8 +753,17 @@ Section Spaces.
     rewrite (proj2 (inp_iff _ _ _ _ _ _) Hb), !no_mergeable_produces. reflexivity.
   Qed.
 
-  (* Two deploys from one pre-state that both use the collection k race on
-     the counter of k, or on the space counter when k has no counter yet. *)
+  (* Headline 10. Two deploys from one pre-state that both use the
+     collection k race in check #1. The race is on the counter of k, or on
+     the space counter when k has no counter yet. Any operations count:
+     writes, removals, peeks and
+     parks, because each one bumps the counter (decision 31). The plan is a
+     section variable, so the lemma holds for the queue, the stack and the
+     cell. For the cell it is F23 of the P5 design
+     (cell_ops_race_on_counter). A cell operation that fails with
+     CellOccupied fails its deploy, and the block index leaves a failed
+     deploy out of the merge. So the branches of a merge hold only
+     committed cell operations, and each one is an exec step. *)
   Lemma shared_collection_race :
     forall tA tB base opsA opsB k,
       In k (map fst opsA) -> In k (map fst opsB) ->
@@ -1528,6 +1573,31 @@ Section Spaces.
         let r := run_cf tag (x_store x) rest in
         mkRun (r_store r) (x_obs x :: r_obs r) (x_log x ++ r_log r)
     end.
+
+  (* ── 9. Headline 11: a removal without the counter (crossed stacks) ── *)
+
+  (* The removal-counter-free operation that the M-1 arbitration rejects
+     ("Why removals must touch it"): a dequeue removes its record with no
+     counter bump. A dequeue stands for the pop of a stack and the take of
+     a queue or a cell. Every other operation bumps the counter as exec
+     does. *)
+  Definition exec_rf (tag : nat) (st : store) (k : Coll) (q : qop) : step_result :=
+    match q with
+    | QDequeue =>
+        let v := counter_of st k in
+        let pl := plan q v (sd st k) in
+        mkStep (mkStore (upd_c (sd st) k (fst pl)) (sc st) (ss st)) (snd pl) (plan_events tag k q v (sd st k))
+    | _ => exec tag st k q
+    end.
+
+  Fixpoint run_rf (tag : nat) (st : store) (ops : list (Coll * qop)) : run_result :=
+    match ops with
+    | [] => mkRun st [] []
+    | (k, q) :: rest =>
+        let x := exec_rf tag st k q in
+        let r := run_rf tag (x_store x) rest in
+        mkRun (r_store r) (x_obs x :: r_obs r) (x_log x ++ r_log r)
+    end.
 End Spaces.
 
 Arguments QEnqueue {D} d.
@@ -1629,6 +1699,85 @@ Module WriteSkew.
   Proof. vm_compute. reflexivity. Qed.
 End WriteSkew.
 
+(* The computed counterexample of the M-1 arbitration ("Why removals must
+   touch it"): crossed stacks. Two stacks 1 and 2 of one space hold [10]
+   and [20], and both counters are at 1. Branch A pushes 11 onto stack 1
+   and pops stack 2. Branch B pushes 21 onto stack 2 and pops stack 1. *)
+Module CrossedStacks.
+  Definition space_of (k : nat) : nat := 0.
+
+  (* The top of a stack: its last record. *)
+  Definition top (l : list nat) : option nat :=
+    match rev l with h :: _ => Some h | [] => None end.
+
+  (* A LIFO stack, as in disciplines/stack.rs: the head is the entry with
+     the greatest ord, so a pop takes the last push. A push appends, a pop
+     takes the top, and a peek reads it. The observation is the record that
+     the operation read. *)
+  Definition splan (q : qop nat) (v : nat) (l : list nat) : list nat * option nat :=
+    match q with
+    | QEnqueue d => (l ++ [d], None)
+    | QDequeue => match rev l with h :: rest => (rev rest, Some h) | [] => (l, None) end
+    | QPeek => (l, top l)
+    end.
+
+  Definition sev : Type := event (chan nat nat) (pid nat nat) (cid nat nat).
+
+  (* The events of the plan: a store, a fire without a peek (a pop), a fire
+     with a peek (a peek), or a parked receive. A pop and a peek name the
+     top as a pre-state record. The theorem reads only the logs of the
+     branches, and their pops take pre-state records. *)
+  Definition sevents (tag k : nat) (q : qop nat) (v : nat) (l : list nat) : list sev :=
+    let kc := mkConsume [ChD k] (CidData tag v) false in
+    match q, top l with
+    | QEnqueue d, _ => [EvProduce (mkProduce (ChD k) (PidData d (Made tag)) false)]
+    | QDequeue, Some h => [EvConsume kc; EvComm kc [mkProduce (ChD k) (PidData h Base) false] false]
+    | QPeek, Some h => [EvConsume kc; EvComm kc [mkProduce (ChD k) (PidData h Base) false] true]
+    | _, None => [EvConsume kc]
+    end.
+
+  Definition base : store nat nat nat :=
+    mkStore (fun k => match k with 1 => [10] | 2 => [20] | _ => [] end)
+            (fun k => match k with 1 | 2 => Some (1, Base) | _ => None end)
+            (fun _ => (2, Base)).
+
+  Definition opsA : list (nat * qop nat) := [(1, QEnqueue 11); (2, QDequeue)].
+  Definition opsB : list (nat * qop nat) := [(2, QEnqueue 21); (1, QDequeue)].
+
+  Definition run_p4 := run nat nat nat (option nat) Nat.eq_dec Nat.eq_dec space_of splan sevents.
+  Definition run_free := run_rf nat nat nat (option nat) Nat.eq_dec Nat.eq_dec space_of splan sevents.
+  Definition races := check1_spaces nat nat Nat.eq_dec Nat.eq_dec.
+  Definition comms := check2_spaces nat nat Nat.eq_dec Nat.eq_dec.
+
+  (* Headline 11. Without the counter bump of the pops, checks #1 and #2
+     find nothing. No consume of the two logs names more than one channel,
+     so check #3 has no join to see. Yet no serial order gives both
+     branches their observations. After A, B pops 11 instead of 10, and
+     after B, A pops 21 instead of 20. With the counter of every operation
+     (the code, decision 31), the same branches race on both counters (an
+     instance of crossed_collections_race). *)
+  Theorem crossed_stacks_without_removal_counters_fabricate :
+    let endA := r_store (run_free 1 base opsA) in
+    let endB := r_store (run_free 2 base opsB) in
+    races (r_log (run_free 1 base opsA)) (r_log (run_free 2 base opsB)) = [] /\
+    comms (r_log (run_free 1 base opsA)) (r_log (run_free 2 base opsB)) = [] /\
+    Forall (fun e => match e with EvConsume c | EvComm c _ _ => length (c_chs c) = 1 | _ => True end)
+      (r_log (run_free 1 base opsA) ++ r_log (run_free 2 base opsB)) /\
+    r_obs (run_free 2 endA opsB) <> r_obs (run_free 2 base opsB) /\
+    r_obs (run_free 1 endB opsA) <> r_obs (run_free 1 base opsA) /\
+    In (ChS 1) (races (r_log (run_p4 1 base opsA)) (r_log (run_p4 2 base opsB))) /\
+    In (ChS 2) (races (r_log (run_p4 1 base opsA)) (r_log (run_p4 2 base opsB))).
+  Proof.
+    cbv zeta.
+    split; [vm_compute; reflexivity |].
+    split; [vm_compute; reflexivity |].
+    split; [vm_compute; repeat constructor |].
+    split; [intros H; vm_compute in H; discriminate H |].
+    split; [intros H; vm_compute in H; discriminate H |].
+    split; vm_compute; repeat (first [left; reflexivity | right]).
+  Qed.
+End CrossedStacks.
+
 (* ── Headline assumptions ────────────────────────────────────────────── *)
 Print Assumptions check1_race_iff.
 Print Assumptions ordered_writes_race_on_counter.
@@ -1639,3 +1788,5 @@ Print Assumptions same_block_ops_chain.
 Print Assumptions unordered_writes_commute.
 Print Assumptions merge_without_race_is_serializable.
 Print Assumptions WriteSkew.counter_free_peek_admits_write_skew.
+Print Assumptions shared_collection_race.
+Print Assumptions CrossedStacks.crossed_stacks_without_removal_counters_fabricate.

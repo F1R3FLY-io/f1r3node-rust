@@ -10,12 +10,16 @@
       "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
       "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
       "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+      "formal/rocq/reified_rspaces/theories/CounterConflict.v",
       "formal/rocq/reified_rspaces/theories/DataCollection.v",
       "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
       "formal/rocq/reified_rspaces/theories/HashMapStore.v",
       "formal/rocq/reified_rspaces/theories/Match.v",
       "formal/rocq/reified_rspaces/theories/OuterStorage.v",
       "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+      "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
       "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
       "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
       "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
@@ -24,6 +28,7 @@
     "tla": [
       "formal/tlaplus/reified_rspaces/CounterConflict.tla",
       "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
       "formal/tlaplus/reified_rspaces/StackDiscipline.tla"
     ]
   },
@@ -489,6 +494,252 @@
       "name": "TxnFiresBounded",
       "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
       "statement": "No space transaction makes more than Cap fires, its settles included, on every schedule (revision I-21). The ghost txnFires counts every fire of the round, also the last fire of a round that re-issues."
+    },
+    "R63": {
+      "kind": "rocq",
+      "name": "shared_collection_race",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Two deploys from one pre-state that both use the collection k race in check #1. The race is on the counter of k, or on the space counter when k has no counter yet. Any operations count: writes, removals, peeks and parks, because each one bumps the counter (decision 31)."
+    },
+    "R64": {
+      "kind": "rocq",
+      "name": "crossed_stacks_without_removal_counters_fabricate",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Without the counter bump of the pops, checks #1 and #2 find nothing. No consume of the two logs names more than one channel, so check #3 has no join to see. Yet no serial order gives both branches their observations. After A, B pops 11 instead of 10, and after B, A pops 21 instead of 20."
+    },
+    "R65": {
+      "kind": "rocq",
+      "name": "crossed_collections_race",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Two branches that cross two collections, each writing one and removing from the other, race on both counters in check #1. The P5 property checks it for two stacks."
+    },
+    "R66": {
+      "kind": "rocq",
+      "name": "unordered_writes_commute",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Writes to collections without a counter touch no counter, never race in check #1, and merge into a state that both serial orders give. The P5 property checks it for the bag."
+    },
+    "V16": {
+      "kind": "tla",
+      "name": "NoMergedOrderFabrication",
+      "file": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+      "statement": "With stacks (MC_CounterConflict_Stacks.cfg), a merge of two branches without a check #1 race is a serial run of whole deploys. RemovalCounterFreeUnsafe.cfg, whose pops do not bump the counter, refutes it."
+    },
+    "R67": {
+      "kind": "rocq",
+      "name": "set_key_injective",
+      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+      "statement": "The set key of two payloads is equal exactly when their canonical element encodings are equal. With an injective encode of sorted terms, the key is equal exactly when the sorted elements are equal (F5, F6)."
+    },
+    "R68": {
+      "kind": "rocq",
+      "name": "set_view_dedups_equal_pars",
+      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+      "statement": "The view of a set holds one representative for each class: the first member in canonical order, independent of the list order. The first spatial match is a representative, and two records share a class exactly when their sorted payloads are equal (F7, decision 41)."
+    },
+    "R69": {
+      "kind": "rocq",
+      "name": "set_consume_retires_class",
+      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+      "statement": "A receive that does not peek binds every stored member of the class of its choice, the representative first. Every member binds the pattern and passes the guard. The fire leaves no non-persistent member and keeps the persistent members and the other classes (F3, F8)."
+    },
+    "R70": {
+      "kind": "rocq",
+      "name": "set_retire_comm_lines_up",
+      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+      "statement": "The consume over [D; n] of a class and every K_retire consume meet the staging rules of the substrate: one pattern for each channel, a canonical group, lined-up candidates, stored candidates, distinct claims. The class fire dispatches one result and a retire none (F9, F20)."
+    },
+    "R71": {
+      "kind": "rocq",
+      "name": "set_produce_fire_retires_stored_class",
+      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+      "statement": "RETIRE-CLASS stages K_retire of each stored non-persistent member of the class of the element and changes no other record. In an offer, a fire of a waiter that does not peek leaves no non-persistent stored member of the class when the plan ends. An offer whose fired waiters all peek retires nothing (F10, decision 37)."
+    },
+    "R72": {
+      "kind": "rocq",
+      "name": "set_peek_restores_representative_only",
+      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+      "statement": "A peek binds the representative alone. A persistent representative stays and nothing is sent again. Otherwise the fire removes it and RESTORE-SCAN sends it again, and when no waiter takes it the records are as before. A K_retire of the plan follows a fire of the second send on a waiter that does not peek, and then the class is cleared (decision 45, Rule E)."
+    },
+    "R73": {
+      "kind": "rocq",
+      "name": "set_membership_full_compare_on_equal_hash",
+      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+      "statement": "The membership test answers key equality for every hash function, so a hash collision never makes two classes one. It compares the full keys exactly when the hashes are equal (DR-90)."
+    },
+    "R74": {
+      "kind": "rocq",
+      "name": "set_key_trace_covered",
+      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+      "statement": "Every prefix of the trace of a set key and of a membership test reads at most what it reserved, so a cut budget rejects an operation before its commit (decision 42)."
+    },
+    "R75": {
+      "kind": "rocq",
+      "name": "pq_level_order",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "The levels form a total order in which the priority levels ascend. A receive binds the first level head, in this order, that its lane sees and whose payload matches its pattern (PqLevelOrder)."
+    },
+    "R76": {
+      "kind": "rocq",
+      "name": "pq_unprioritized_lowest",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "The unprioritized level comes after every priority level, so a receive binds an unprioritized record only when no visible head of a priority level matches its pattern (F6)."
+    },
+    "R77": {
+      "kind": "rocq",
+      "name": "pq_fifo_within_level",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "The head of each level and of each waiter queue is its entry with the least (ord, rank), and every fire of an operation, of a settle job and of a re-entry binds heads (FIFO, decision 11)."
+    },
+    "R78": {
+      "kind": "rocq",
+      "name": "pq_restricted_waiter_in_level_queue",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A receive with priority p waits in the waiter queue of the level p, joins its tail, and fires only on the head of the level p (decision 38)."
+    },
+    "R79": {
+      "kind": "rocq",
+      "name": "pq_unrestricted_first_matching_level",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "An unrestricted receive binds the first level head, in ascending level order, whose payload matches its pattern. It checks its guard once on that head, and a refusal parks it (decision 38)."
+    },
+    "R80": {
+      "kind": "rocq",
+      "name": "pq_settle_oldest_first",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "Every fire of a settle fires the oldest fireable waiter-lane head (readiness review S4). A produce plan fires the older candidate head that fits its datum, and a refusal moves on (decisions 37 and 38)."
+    },
+    "R81": {
+      "kind": "rocq",
+      "name": "pq_settle_order_matters",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "Strict confluence fails: in the example S4, two fire orders end in two different states, and the settle stages the order that fires the oldest fireable head first."
+    },
+    "R82": {
+      "kind": "rocq",
+      "name": "pq_produce_preserves_inv",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A produce, fresh or re-entered, that completes in its round leaves INV: no head of a waiter lane can fire on the level heads that it sees."
+    },
+    "R83": {
+      "kind": "rocq",
+      "name": "pq_consume_preserves_inv",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A consume, fresh or re-entered, that completes in its round leaves INV."
+    },
+    "R84": {
+      "kind": "rocq",
+      "name": "pq_head_blocks_within_level",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "For a cap above 0, a head that does not match blocks its lane: the receive parks and the send is stored, with no fire, although an entry behind a head may fit."
+    },
+    "R85": {
+      "kind": "rocq",
+      "name": "pq_settle_terminates",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A settle that starts after f fires of its transaction fires at most cap - f times and at most mu times, plus one divergent fire. Every transaction fires at most cap times, exactly cap times when it re-issues at the cap (I-21), and a settle job that completes leaves INV."
+    },
+    "R86": {
+      "kind": "rocq",
+      "name": "pq_plan_permutation_invariant",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "Two views with the same entries in other list orders stage the same operations in a produce, a consume and a settle job, take the same next round, and reach views with the same entries."
+    },
+    "R87": {
+      "kind": "rocq",
+      "name": "pq_without_settle_breaks_inv",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "Without the settle, two computed counterexamples (a fire exposes a waiter, and a fire exposes a record) break INV at the end of a completed operation. With the settle after the plan, INV holds."
+    },
+    "R88": {
+      "kind": "rocq",
+      "name": "pq_priority_domain",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A priority is admitted exactly when it is a natural number below the bound priorities of the space, when the space sets one. An admitted send runs at its level, and a send out of the domain fails before the bump and changes nothing."
+    },
+    "R89": {
+      "kind": "rocq",
+      "name": "pq_no_level_storage",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A level exists exactly when a record holds it, and an operation adds at most one entry to the view whatever its priority (I-10)."
+    },
+    "R90": {
+      "kind": "rocq",
+      "name": "pq_reissue_takes_level_fifo_place",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A re-issued persistent send keeps its first-round order and takes its FIFO place in its level: behind an older head it is stored with no fire, and ahead of the head or on an empty level it plans. Every round bumps the one counter once."
+    },
+    "R91": {
+      "kind": "rocq",
+      "name": "pq_reentered_waiter_keeps_seniority",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A re-issued persistent receive keeps its first-round order and takes its FIFO place in its waiter queue, and it parks only itself, so the oldest-first rule ranks it with its first-round order."
+    },
+    "R92": {
+      "kind": "rocq",
+      "name": "pq_peek_restores_head",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A peek of a level head that is not persistent stores the record again at its order and level, the record is the head of its level again, and the settle after the plan stages nothing (Rule E)."
+    },
+    "R93": {
+      "kind": "rocq",
+      "name": "level_scan_trace_covered",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "The level scans of a priority queue reserve their reads before they make them (decision 42, DR-88): the trace of a transaction satisfies prefix coverage, with the reads after the commit."
+    },
+    "R94": {
+      "kind": "rocq",
+      "name": "pq_settle_keeps_unspent_records",
+      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+      "statement": "A settle loses no record: a stored record leaves the store only when a fire of a waiter that does not peek spends it, and a record in flight lands before a fire of a stored record, at the end and at a re-issue."
+    },
+    "R95": {
+      "kind": "rocq",
+      "name": "datum_priority_slot_roundtrip",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "The priority slot of a datum record of a priority queue round-trips: GInt(p) for the level p >= 0 and Nil for the unprioritized level, and the decoder rejects every other slot."
+    },
+    "R96": {
+      "kind": "rocq",
+      "name": "continuation_policy_slot_roundtrip",
+      "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+      "statement": "The policy slot of a continuation of a priority queue round-trips: EMap{\"priority\": GInt(p)} for the waiter queue of the level p and Nil for the unrestricted queue, and the outcome decoder accepts both."
+    },
+    "V17": {
+      "kind": "tla",
+      "name": "PqLevelOrder",
+      "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+      "statement": "Every fire binds the head of its lane and the head of its level, a receive and a settle bind the first matching level head that the lane sees, and a send precedes the stored records of its level, on every schedule."
+    },
+    "V18": {
+      "kind": "tla",
+      "name": "PqOldestFirst",
+      "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+      "statement": "Every fire of a settle fires the oldest fireable waiter-lane head, and every fire of a send fires the oldest candidate that fits, on every schedule."
+    },
+    "V19": {
+      "kind": "tla",
+      "name": "PqNoPendingMatch",
+      "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+      "statement": "With no round in progress, no element in flight and no settle job, no waiter-lane head can fire (INV), on every schedule."
+    },
+    "V20": {
+      "kind": "tla",
+      "name": "NoRecordLost",
+      "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+      "statement": "A record that was stored is stored, or in flight in the current settle, or a fire spent it, on every schedule."
+    },
+    "V21": {
+      "kind": "tla",
+      "name": "ReissueKeepsOrd",
+      "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+      "statement": "A re-issued persistent element carries the ord of its first round, and a re-issued element that is not persistent carries none, on every schedule (decision 43)."
+    },
+    "V22": {
+      "kind": "tla",
+      "name": "TxnFiresBounded",
+      "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+      "statement": "No transaction makes more than Cap fires, its settles included (revision I-21), on every schedule."
     }
   },
   "items": [
@@ -498,7 +749,7 @@
       "file": "rholang/src/rust/interpreter/spaces/families.rs",
       "kind": "struct",
       "name": "FamilyAgent",
-      "line": 195,
+      "line": 343,
       "role": "The space agent of every wired family.",
       "rocq": [
         "receive_plan",
@@ -524,7 +775,7 @@
       "scope": "Family",
       "kind": "fn",
       "name": "of_config",
-      "line": 120,
+      "line": 218,
       "role": "The family that a config names, one reserved comparison for each arm.",
       "covers": [
         "R44",
@@ -544,19 +795,26 @@
         "operation_ord",
         "scan_round",
         "engine_staged",
-        "engine_trace"
+        "engine_trace",
+        "exec",
+        "run"
       ],
       "tla": [
         "Produce",
         "Consume",
         "ReenterData",
         "ReenterCont",
-        "Commit"
+        "Commit",
+        "QueueExec",
+        "Run"
       ],
       "covers": [
         "R48",
         "R49",
-        "V3"
+        "V3",
+        "R63",
+        "R65",
+        "V16"
       ]
     },
     {
@@ -1085,7 +1343,8 @@
       ],
       "covers": [
         "R34",
-        "R39"
+        "R39",
+        "R71"
       ]
     },
     {
@@ -1094,7 +1353,7 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
       "kind": "fn",
       "name": "first_admitting_waiter",
-      "line": 519,
+      "line": 525,
       "role": "The first waiter that binds and admits the datum.",
       "rocq": [
         "offer_choice",
@@ -1114,7 +1373,7 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
       "kind": "fn",
       "name": "first_bound_record",
-      "line": 555,
+      "line": 561,
       "role": "The first record whose payload the pattern binds.",
       "rocq": [
         "first_match",
@@ -1135,13 +1394,16 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
       "kind": "fn",
       "name": "class_of",
-      "line": 582,
+      "line": 588,
       "role": "The class of a fired record: the record alone for a bag.",
       "rocq": [
-        "on_records"
+        "on_records",
+        "class_of",
+        "set_consume_retires_class"
       ],
       "covers": [
-        "R32"
+        "R32",
+        "R69"
       ]
     },
     {
@@ -1150,17 +1412,20 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
       "kind": "fn",
       "name": "fire_class",
-      "line": 643,
+      "line": 649,
       "role": "Stages the fire of a class over [D; n].",
       "rocq": [
-        "on_records"
+        "on_records",
+        "class_fire",
+        "stages"
       ],
       "tla": [
         "FireRecv"
       ],
       "covers": [
         "R32",
-        "V5"
+        "V5",
+        "R70"
       ]
     },
     {
@@ -1169,7 +1434,7 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
       "kind": "fn",
       "name": "restore_scan",
-      "line": 715,
+      "line": 721,
       "role": "RESTORE-SCAN: the second send of a peeked record.",
       "rocq": [
         "peek_plan",
@@ -1181,7 +1446,8 @@
       ],
       "covers": [
         "R34",
-        "R47"
+        "R47",
+        "R72"
       ]
     },
     {
@@ -1190,7 +1456,7 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
       "kind": "fn",
       "name": "restored_send",
-      "line": 753,
+      "line": 759,
       "role": "The cap re-issue of a second send.",
       "rocq": [
         "restore_reissue"
@@ -1205,16 +1471,67 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
       "kind": "fn",
       "name": "retire_class",
-      "line": 781,
+      "line": 787,
       "role": "RETIRE-CLASS of the set.",
       "rocq": [
-        "retire_class"
+        "retire_class",
+        "retire_fire",
+        "class_cleared"
       ],
       "tla": [
         "RetireClassOf"
       ],
       "covers": [
-        "V6"
+        "V6",
+        "R70",
+        "R71"
+      ]
+    },
+    {
+      "item": "retire_pattern",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "retire_pattern",
+      "line": 128,
+      "role": "The pattern of a retire consume: one remainder that binds the whole payload.",
+      "rocq": [
+        "retire_fire"
+      ],
+      "covers": [
+        "R70"
+      ]
+    },
+    {
+      "item": "retire_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "retire_continuation",
+      "line": 140,
+      "role": "The continuation K_retire of one retire: its body is the source hash of the retired member.",
+      "rocq": [
+        "retire_fire"
+      ],
+      "covers": [
+        "R70"
+      ]
+    },
+    {
+      "item": "same_class",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "same_class",
+      "line": 851,
+      "role": "Compares two class keys: their metered hashes first, and the full keys only on equal hashes (DR-90).",
+      "rocq": [
+        "same_class",
+        "key_trace"
+      ],
+      "covers": [
+        "R73",
+        "R74"
       ]
     },
     {
@@ -1227,13 +1544,15 @@
       "role": "The bag: a multiset on both sides.",
       "rocq": [
         "visit",
-        "first_match"
+        "first_match",
+        "bag_run"
       ],
       "covers": [
         "R29",
         "R31",
         "R32",
-        "R33"
+        "R33",
+        "R66"
       ]
     },
     {
@@ -2502,6 +2821,51 @@
       ]
     },
     {
+      "item": "StackDiscipline::USES_COUNTER",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "StackDiscipline",
+      "kind": "const",
+      "name": "USES_COUNTER",
+      "line": 71,
+      "role": "The stack bumps its counter on every operation, a removal included (M-1).",
+      "rocq": [
+        "exec",
+        "exec_rf"
+      ],
+      "tla": [
+        "Bumps",
+        "RemovalCounters"
+      ],
+      "covers": [
+        "R63",
+        "R64",
+        "V16"
+      ]
+    },
+    {
+      "item": "bump",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/counter.rs",
+      "kind": "fn",
+      "name": "bump",
+      "line": 165,
+      "role": "Consumes the counter record of a collection and produces it again with the next value, in the transaction of the operation (M-1).",
+      "rocq": [
+        "exec",
+        "counter_produce"
+      ],
+      "tla": [
+        "CounterStep",
+        "Bumps"
+      ],
+      "covers": [
+        "R63",
+        "R64",
+        "V16"
+      ]
+    },
+    {
       "item": "lift_step",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/settle.rs",
@@ -2555,7 +2919,8 @@
         "flying",
         "flight_after",
         "land",
-        "after_fire"
+        "after_fire",
+        "lands_first"
       ],
       "tla": [
         "SettleStep",
@@ -2571,7 +2936,10 @@
         "V11",
         "V12",
         "V13",
-        "V15"
+        "V15",
+        "R80",
+        "R85",
+        "R94"
       ]
     },
     {
@@ -2591,7 +2959,9 @@
       "covers": [
         "R55",
         "R62",
-        "V13"
+        "V13",
+        "R94",
+        "V20"
       ]
     },
     {
@@ -2752,16 +3122,22 @@
       "rocq": [
         "above",
         "top_from",
-        "top"
+        "top",
+        "splan"
       ],
       "tla": [
         "TopRecords",
-        "TopWaiters"
+        "TopWaiters",
+        "TopRec",
+        "WithoutTop",
+        "Lifo"
       ],
       "covers": [
         "R50",
         "R56",
-        "R61"
+        "R61",
+        "R64",
+        "V16"
       ]
     },
     {
@@ -2953,6 +3329,852 @@
       "covers": [
         "R55",
         "V15"
+      ]
+    },
+    {
+      "item": "LENGTH_BYTES",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+      "kind": "const",
+      "name": "LENGTH_BYTES",
+      "line": 74,
+      "role": "The bytes of one length field of a set key: a big-endian u64.",
+      "rocq": [
+        "LENGTH_BYTES",
+        "U64_BOUND"
+      ],
+      "covers": [
+        "R67"
+      ]
+    },
+    {
+      "item": "SetDiscipline",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+      "kind": "struct",
+      "name": "SetDiscipline",
+      "line": 78,
+      "role": "The set: the scan driver with the F5 class key. No counter, no params, no query, no capacity.",
+      "rocq": [
+        "rkey",
+        "same",
+        "view",
+        "class_of",
+        "peek_group",
+        "offer_pass",
+        "peek_plan"
+      ],
+      "tla": [
+        "OfferScan",
+        "ReceiveScan",
+        "Restore",
+        "RetireClassOf"
+      ],
+      "covers": [
+        "R68",
+        "R69",
+        "R71",
+        "R72",
+        "V6"
+      ]
+    },
+    {
+      "item": "SetDiscipline::class_key",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+      "kind": "fn",
+      "name": "class_key",
+      "line": 150,
+      "role": "ScanDiscipline::class_key of the set: the F5 key of every payload.",
+      "rocq": [
+        "rkey",
+        "set_key"
+      ],
+      "tla": [
+        "RetireClassOf"
+      ],
+      "covers": [
+        "R67",
+        "R68",
+        "R73"
+      ],
+      "scope": "SetDiscipline"
+    },
+    {
+      "item": "set_key",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+      "kind": "fn",
+      "name": "set_key",
+      "line": 164,
+      "role": "The F5 key: the count field, then the length field and the canonical bytes of each element.",
+      "rocq": [
+        "set_key",
+        "key_of_encodings",
+        "frame",
+        "key_trace"
+      ],
+      "covers": [
+        "R67",
+        "R74"
+      ]
+    },
+    {
+      "item": "canonical_bytes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+      "kind": "fn",
+      "name": "canonical_bytes",
+      "line": 188,
+      "role": "The bincode bytes of the sorted Par of one element, metered.",
+      "rocq": [
+        "canonical_bytes",
+        "key_trace"
+      ],
+      "covers": [
+        "R67",
+        "R74"
+      ]
+    },
+    {
+      "item": "sorted_par",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+      "kind": "fn",
+      "name": "sorted_par",
+      "line": 199,
+      "role": "The sort of one element: the metered sorter in a metered job, the host sorter otherwise. The model takes the sort as a section parameter (canonical_map), and Rust tests pin the depth limit of the metered sorter.",
+      "rocq": [
+        "canonical_map"
+      ],
+      "covers": [
+        "R67",
+        "R74"
+      ]
+    },
+    {
+      "item": "u64_be",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+      "kind": "fn",
+      "name": "u64_be",
+      "line": 211,
+      "role": "The big-endian u64 bytes of a count or a length.",
+      "rocq": [
+        "be",
+        "u64_be",
+        "be_injective"
+      ],
+      "covers": [
+        "R67"
+      ]
+    },
+    {
+      "item": "Level",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "struct",
+      "name": "Level",
+      "line": 121,
+      "role": "The level of a record: Priority(p) ascending, then Unprioritized (F6).",
+      "rocq": [
+        "lvl_class",
+        "lvl_index",
+        "lvl_le"
+      ],
+      "tla": [
+        "Unp",
+        "Levels"
+      ],
+      "covers": [
+        "R75",
+        "R76",
+        "R89"
+      ]
+    },
+    {
+      "item": "Level::candidate_lanes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "Level",
+      "kind": "fn",
+      "name": "candidate_lanes",
+      "line": 149,
+      "role": "The waiter lanes whose heads a datum of the level meets: the waiter queue of a priority level and the unrestricted queue.",
+      "rocq": [
+        "cand1",
+        "cand2"
+      ],
+      "tla": [
+        "OfferStep"
+      ],
+      "covers": [
+        "R80"
+      ]
+    },
+    {
+      "item": "Lane",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "struct",
+      "name": "Lane",
+      "line": 159,
+      "role": "The lane of a waiting continuation: the waiter queue of a level, or the unrestricted queue (decision 38).",
+      "rocq": [
+        "sees"
+      ],
+      "tla": [
+        "Lanes",
+        "AnyLane"
+      ],
+      "covers": [
+        "R78",
+        "R79"
+      ]
+    },
+    {
+      "item": "Lane::sees",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "Lane",
+      "kind": "fn",
+      "name": "sees",
+      "line": 186,
+      "role": "A level lane sees its own level, and the unrestricted lane sees every level.",
+      "rocq": [
+        "sees",
+        "sees_level",
+        "sees_any"
+      ],
+      "tla": [
+        "Sees"
+      ],
+      "covers": [
+        "R78",
+        "R79"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "struct",
+      "name": "PriorityQueueDiscipline",
+      "line": 230,
+      "role": "The priority queue discipline: FIFO levels and lanes, heads with the least (ord, bincode bytes), one counter, and the settle.",
+      "rocq": [
+        "record_head",
+        "waiter_head"
+      ],
+      "tla": [
+        "LevelHeads",
+        "LaneHeads"
+      ],
+      "covers": [
+        "R75",
+        "R77",
+        "R89",
+        "V19"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::head_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "head_metered",
+      "line": 240,
+      "role": "The head of one lane: the least (ord, bincode bytes), the rule of the queue discipline.",
+      "rocq": [
+        "below",
+        "least_from",
+        "least"
+      ],
+      "tla": [
+        "LevelHeads",
+        "LaneHeads"
+      ],
+      "covers": [
+        "R77"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::reaches_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "reaches_head",
+      "line": 251,
+      "role": "A fresh element joins the tail of its lane, so it is the head only of an empty lane.",
+      "rocq": [
+        "fresh_offer",
+        "fresh_receive"
+      ],
+      "tla": [
+        "AtLaneHead"
+      ],
+      "covers": [
+        "R77",
+        "R78"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::precedes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "precedes",
+      "line": 257,
+      "role": "A re-entering element precedes the head of its lane when its order is less (decision 43).",
+      "rocq": [
+        "reenter_offer",
+        "reenter_receive"
+      ],
+      "tla": [
+        "AtLaneHead"
+      ],
+      "covers": [
+        "R90",
+        "R91"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::check_values",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "check_values",
+      "line": 272,
+      "role": "The priority param of a send and of a query: a GInt p >= 0 below the bound priorities, else InvalidParam.",
+      "rocq": [
+        "priority_admitted",
+        "produce_checked"
+      ],
+      "covers": [
+        "R88"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::settle_before",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "settle_before",
+      "line": 316,
+      "role": "The settle hook before the plan.",
+      "rocq": [
+        "with_settles",
+        "settle_of"
+      ],
+      "tla": [
+        "SettleStep"
+      ],
+      "covers": [
+        "R82",
+        "R83",
+        "V19",
+        "V22"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::settle_after",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "settle_after",
+      "line": 326,
+      "role": "The settle hook after the plan.",
+      "rocq": [
+        "with_settles",
+        "settle_at"
+      ],
+      "tla": [
+        "SettleStep"
+      ],
+      "covers": [
+        "R82",
+        "R83",
+        "R85",
+        "R87",
+        "V19",
+        "V22"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::settle_job",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "settle_job",
+      "line": 336,
+      "role": "The settle hook of a settle job.",
+      "rocq": [
+        "settle_job"
+      ],
+      "tla": [
+        "SettleJob"
+      ],
+      "covers": [
+        "R85",
+        "V19"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::lane_heads",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "lane_heads",
+      "line": 352,
+      "role": "The heads of the lanes of one side: one metered scan, the queue rule on each pair, the earlier entry on equal keys.",
+      "rocq": [
+        "least",
+        "record_head",
+        "waiter_head"
+      ],
+      "tla": [
+        "LevelHeads",
+        "LaneHeads"
+      ],
+      "covers": [
+        "R77",
+        "R86",
+        "R93",
+        "V17"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::at_lane_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "at_lane_head",
+      "line": 416,
+      "role": "The head check of an operation: a fresh element on an empty lane, a re-entry on an empty lane or ahead of the head (decision 43).",
+      "rocq": [
+        "fresh_offer",
+        "fresh_receive",
+        "reenter_offer",
+        "reenter_receive"
+      ],
+      "tla": [
+        "AtLaneHead"
+      ],
+      "covers": [
+        "R77",
+        "R90",
+        "R91"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::record_head_list",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "record_head_list",
+      "line": 443,
+      "role": "The level heads in ascending level order, with the record in flight as the head of its level when its order is the least.",
+      "rocq": [
+        "view"
+      ],
+      "tla": [
+        "SettleStep"
+      ],
+      "covers": [
+        "R80",
+        "R94",
+        "R93"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::first_match",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "first_match",
+      "line": 510,
+      "role": "The first level head, in ascending level order, that the lane sees and whose payload matches the pattern.",
+      "rocq": [
+        "first_match"
+      ],
+      "tla": [
+        "FirstMatch"
+      ],
+      "covers": [
+        "R75",
+        "R79",
+        "R84",
+        "R93",
+        "V17"
+      ]
+    },
+    {
+      "item": "PriorityQueueDiscipline::offer_target",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueDiscipline",
+      "kind": "fn",
+      "name": "offer_target",
+      "line": 542,
+      "role": "The waiter of a produce plan: the older candidate head that fits, each refusal marking its lane.",
+      "rocq": [
+        "offer_pick",
+        "cand1",
+        "cand2"
+      ],
+      "tla": [
+        "OfferStep"
+      ],
+      "covers": [
+        "R80",
+        "R84",
+        "R93",
+        "V18"
+      ]
+    },
+    {
+      "item": "offer_pq",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "fn",
+      "name": "offer_pq",
+      "line": 756,
+      "role": "PQ-OFFER: open_plan, the head check, the fire loop with the re-offer, the store, and the settle after the plan.",
+      "rocq": [
+        "offer_loop",
+        "with_settles",
+        "fresh_offer",
+        "reenter_offer"
+      ],
+      "tla": [
+        "OfferStep",
+        "PlanStart",
+        "PlanNext"
+      ],
+      "covers": [
+        "R80",
+        "R82",
+        "R85",
+        "R90",
+        "R84",
+        "V21",
+        "V22"
+      ]
+    },
+    {
+      "item": "receive_pq",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "fn",
+      "name": "receive_pq",
+      "line": 821,
+      "role": "PQ-RECEIVE: open_plan, the head check, the first match, the guard once, the fire loop, Rule E, the park, and the settle after the plan.",
+      "rocq": [
+        "receive_loop",
+        "consume_fire",
+        "fresh_receive",
+        "reenter_receive"
+      ],
+      "tla": [
+        "ReceiveStep",
+        "PlanStart",
+        "PlanNext"
+      ],
+      "covers": [
+        "R79",
+        "R83",
+        "R91",
+        "R92",
+        "R84",
+        "V21",
+        "V22"
+      ]
+    },
+    {
+      "item": "priority_queue::restore_peeked",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "fn",
+      "name": "restore_peeked",
+      "line": 929,
+      "role": "The re-store of a record that a peek fire removed (decision 45, Rule E).",
+      "rocq": [
+        "consume_fire"
+      ],
+      "tla": [
+        "ReceiveStep"
+      ],
+      "covers": [
+        "R92"
+      ]
+    },
+    {
+      "item": "PriorityQueueView",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "struct",
+      "name": "PriorityQueueView",
+      "line": 943,
+      "role": "The settle order of a priority queue: the oldest fireable waiter-lane head (readiness review S4).",
+      "rocq": [
+        "next_fire",
+        "oldest"
+      ],
+      "tla": [
+        "SettleStep",
+        "Oldest"
+      ],
+      "covers": [
+        "R80",
+        "R81"
+      ]
+    },
+    {
+      "item": "PriorityQueueView::next_fire",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "scope": "PriorityQueueView",
+      "kind": "fn",
+      "name": "next_fire",
+      "line": 969,
+      "role": "The oldest fireable waiter-lane head and the record that it fires: the first match, the guard once, the record in flight as a level head.",
+      "rocq": [
+        "next_fire",
+        "fire_candidates",
+        "oldest",
+        "fireable"
+      ],
+      "tla": [
+        "FireCandidates",
+        "Oldest",
+        "Fireable",
+        "SettleStep"
+      ],
+      "covers": [
+        "R80",
+        "R81",
+        "R94",
+        "R93",
+        "V18"
+      ]
+    },
+    {
+      "item": "send_level",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "fn",
+      "name": "send_level",
+      "line": 733,
+      "role": "The level of the datum of a send: Priority(p) for priority = p, else Unprioritized.",
+      "rocq": [
+        "produce_checked"
+      ],
+      "tla": [
+        "Produce"
+      ],
+      "covers": [
+        "R88",
+        "R76"
+      ]
+    },
+    {
+      "item": "receive_lane",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "fn",
+      "name": "receive_lane",
+      "line": 742,
+      "role": "The lane of the continuation of a receive: Level(p) for a query with priority = p, else Any.",
+      "rocq": [
+        "consume"
+      ],
+      "tla": [
+        "Consume"
+      ],
+      "covers": [
+        "R78",
+        "R79"
+      ]
+    },
+    {
+      "item": "check_priority",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "kind": "fn",
+      "name": "check_priority",
+      "line": 717,
+      "role": "The value of a priority param: a GInt p >= 0 with no connective, below the bound when the space sets one.",
+      "rocq": [
+        "priority_admitted"
+      ],
+      "covers": [
+        "R88"
+      ]
+    },
+    {
+      "item": "record::PRIORITY_KEY",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "const",
+      "name": "PRIORITY_KEY",
+      "line": 842,
+      "role": "The key of the policy slot of a waiter of a priority queue.",
+      "rocq": [
+        "key_priority"
+      ],
+      "covers": [
+        "R96"
+      ]
+    },
+    {
+      "item": "record::wrap_pq_datum",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "wrap_pq_datum",
+      "line": 877,
+      "role": "The datum envelope of a priority queue: the order and the priority slot GInt(p) or Nil.",
+      "rocq": [
+        "wrap_pq_datum",
+        "pq_datum_envelope",
+        "priority_slot"
+      ],
+      "covers": [
+        "R95",
+        "R89"
+      ]
+    },
+    {
+      "item": "record::pq_datum_slots",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "pq_datum_slots",
+      "line": 896,
+      "role": "The order and the priority slot of a datum record of a priority queue.",
+      "rocq": [
+        "pq_datum_slots",
+        "level_of_slot"
+      ],
+      "covers": [
+        "R95"
+      ]
+    },
+    {
+      "item": "record::unwrap_pq_datum",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "unwrap_pq_datum",
+      "line": 925,
+      "role": "The strict decoder of a datum record of a priority queue.",
+      "rocq": [
+        "unwrap_pq_datum"
+      ],
+      "covers": [
+        "R95"
+      ]
+    },
+    {
+      "item": "record::pq_policy",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "pq_policy",
+      "line": 947,
+      "role": "The policy slot of a waiter of a priority queue: EMap{priority: GInt(p)} or Nil.",
+      "rocq": [
+        "pq_policy"
+      ],
+      "covers": [
+        "R96"
+      ]
+    },
+    {
+      "item": "record::level_of_policy",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "level_of_policy",
+      "line": 966,
+      "role": "The lane of a policy slot: Some(p) for the waiter queue of the level p, None for the unrestricted queue.",
+      "rocq": [
+        "level_of_policy"
+      ],
+      "covers": [
+        "R96"
+      ]
+    },
+    {
+      "item": "record::wrap_pq_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "wrap_pq_continuation",
+      "line": 1009,
+      "role": "The continuation envelope of a priority queue: the order and the policy slot.",
+      "rocq": [
+        "wrap_pq_continuation",
+        "pq_continuation_envelope"
+      ],
+      "covers": [
+        "R96"
+      ]
+    },
+    {
+      "item": "record::pq_continuation_slots",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "pq_continuation_slots",
+      "line": 1056,
+      "role": "The order and the lane of a waiting continuation of a priority queue.",
+      "rocq": [
+        "pq_continuation_parts"
+      ],
+      "covers": [
+        "R96"
+      ]
+    },
+    {
+      "item": "record::unwrap_pq_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "unwrap_pq_continuation",
+      "line": 1076,
+      "role": "The decoder of a continuation of a priority queue.",
+      "rocq": [
+        "unwrap_pq_continuation"
+      ],
+      "covers": [
+        "R96"
+      ]
+    },
+    {
+      "item": "record::into_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "into_continuation",
+      "line": 752,
+      "role": "The outcome decoder of a fired continuation: the strict P4 decoder on Nil, and the policy of a waiter of a priority queue.",
+      "rocq": [
+        "into_continuation"
+      ],
+      "covers": [
+        "R96"
       ]
     }
   ]

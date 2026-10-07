@@ -409,6 +409,12 @@ fn offer_scan<D: ScanDiscipline>(
     let mut tested = 0;
     loop {
         let Some(found) = first_admitting_waiter(cx, payload, tested)? else {
+            // A metered job stores only a record whose class key exists under its metering, so
+            // a later class operation never meets a record without a class. Without a budget the
+            // host sorter keys every payload, and a fire above already computed the key.
+            if class.is_none() && meter.is_metered() {
+                discipline.class_key(&payload.pars, meter)?;
+            }
             cx.check_capacity::<D>(Side::Data)?;
             cx.store_on(data, element.record, element.persist, element.introduction)?;
             return Ok(OfferEnd::Settled);

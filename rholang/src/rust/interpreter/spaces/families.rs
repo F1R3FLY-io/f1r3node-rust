@@ -29,7 +29,9 @@ use super::agent::{
 };
 use super::disciplines::bag::BagDiscipline;
 use super::disciplines::cell::CellDiscipline;
+use super::disciplines::priority_queue::PriorityQueueDiscipline;
 use super::disciplines::queue::QueueDiscipline;
+use super::disciplines::set::SetDiscipline;
 use super::disciplines::stack::StackDiscipline;
 use super::errors::SpaceError;
 use super::generic::{
@@ -55,17 +57,65 @@ static HASHMAP_BAG: GenericSpace<HashMapOuter, BagDiscipline> =
 static HASHMAP_STACK: GenericSpace<HashMapOuter, StackDiscipline> =
     GenericSpace::new(HashMapOuter, StackDiscipline);
 
+/// The agent of the family `hashmap:set`.
+static HASHMAP_SET: GenericSpace<HashMapOuter, SetDiscipline> =
+    GenericSpace::new(HashMapOuter, SetDiscipline);
+
 /// The agent of the family `hashmap:cell`.
 static HASHMAP_CELL: GenericSpace<HashMapOuter, CellDiscipline> =
     GenericSpace::new(HashMapOuter, CellDiscipline);
+
+/// The agent of the family `hashmap:priorityqueue`.
+static HASHMAP_PRIORITY_QUEUE: GenericSpace<HashMapOuter, PriorityQueueDiscipline> =
+    GenericSpace::new(HashMapOuter, PriorityQueueDiscipline);
+
+/// The agent of the family `array:bag`.
+static ARRAY_BAG: GenericSpace<ArrayOuter, BagDiscipline> =
+    GenericSpace::new(ArrayOuter, BagDiscipline);
 
 /// The agent of the family `array:queue`.
 static ARRAY_QUEUE: GenericSpace<ArrayOuter, QueueDiscipline> =
     GenericSpace::new(ArrayOuter, QueueDiscipline);
 
+/// The agent of the family `array:stack`.
+static ARRAY_STACK: GenericSpace<ArrayOuter, StackDiscipline> =
+    GenericSpace::new(ArrayOuter, StackDiscipline);
+
+/// The agent of the family `array:set`.
+static ARRAY_SET: GenericSpace<ArrayOuter, SetDiscipline> =
+    GenericSpace::new(ArrayOuter, SetDiscipline);
+
+/// The agent of the family `array:cell`.
+static ARRAY_CELL: GenericSpace<ArrayOuter, CellDiscipline> =
+    GenericSpace::new(ArrayOuter, CellDiscipline);
+
+/// The agent of the family `array:priorityqueue`.
+static ARRAY_PRIORITY_QUEUE: GenericSpace<ArrayOuter, PriorityQueueDiscipline> =
+    GenericSpace::new(ArrayOuter, PriorityQueueDiscipline);
+
+/// The agent of the family `vector:bag`.
+static VECTOR_BAG: GenericSpace<VectorOuter, BagDiscipline> =
+    GenericSpace::new(VectorOuter, BagDiscipline);
+
 /// The agent of the family `vector:queue`.
 static VECTOR_QUEUE: GenericSpace<VectorOuter, QueueDiscipline> =
     GenericSpace::new(VectorOuter, QueueDiscipline);
+
+/// The agent of the family `vector:stack`.
+static VECTOR_STACK: GenericSpace<VectorOuter, StackDiscipline> =
+    GenericSpace::new(VectorOuter, StackDiscipline);
+
+/// The agent of the family `vector:set`.
+static VECTOR_SET: GenericSpace<VectorOuter, SetDiscipline> =
+    GenericSpace::new(VectorOuter, SetDiscipline);
+
+/// The agent of the family `vector:cell`.
+static VECTOR_CELL: GenericSpace<VectorOuter, CellDiscipline> =
+    GenericSpace::new(VectorOuter, CellDiscipline);
+
+/// The agent of the family `vector:priorityqueue`.
+static VECTOR_PRIORITY_QUEUE: GenericSpace<VectorOuter, PriorityQueueDiscipline> =
+    GenericSpace::new(VectorOuter, PriorityQueueDiscipline);
 
 /// A wired family of native spaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -76,23 +126,59 @@ pub enum Family {
     HashMapBag,
     /// `hashmap:stack` (P5b).
     HashMapStack,
+    /// `hashmap:set` (P5a).
+    HashMapSet,
     /// `hashmap:cell` (P5, F15).
     HashMapCell,
+    /// `hashmap:priorityqueue` (P5b, decision 38).
+    HashMapPriorityQueue,
+    /// `array:bag` (P5d).
+    ArrayBag,
     /// `array:queue` (P5d).
     ArrayQueue,
+    /// `array:stack` (P5d).
+    ArrayStack,
+    /// `array:set` (P5d).
+    ArraySet,
+    /// `array:cell` (P5d).
+    ArrayCell,
+    /// `array:priorityqueue` (P5d).
+    ArrayPriorityQueue,
+    /// `vector:bag` (P5d).
+    VectorBag,
     /// `vector:queue` (P5d).
     VectorQueue,
+    /// `vector:stack` (P5d).
+    VectorStack,
+    /// `vector:set` (P5d).
+    VectorSet,
+    /// `vector:cell` (P5d).
+    VectorCell,
+    /// `vector:priorityqueue` (P5d).
+    VectorPriorityQueue,
 }
 
 impl Family {
     /// The wired families, in dispatch order: `hashmap:queue` first, then ascending family index.
-    pub const WIRED: [Family; 6] = [
+    pub const WIRED: [Family; 18] = [
         Family::HashMapQueue,
         Family::HashMapBag,
         Family::HashMapStack,
+        Family::HashMapSet,
         Family::HashMapCell,
+        Family::HashMapPriorityQueue,
+        Family::ArrayBag,
         Family::ArrayQueue,
+        Family::ArrayStack,
+        Family::ArraySet,
+        Family::ArrayCell,
+        Family::ArrayPriorityQueue,
+        Family::VectorBag,
         Family::VectorQueue,
+        Family::VectorStack,
+        Family::VectorSet,
+        Family::VectorCell,
+        Family::VectorPriorityQueue,
     ];
 
     /// The family of the factory URN `urn`, or `None` when it is not wired.
@@ -101,9 +187,21 @@ impl Family {
             (SpaceOuter::HashMap, SpaceInner::Queue) => Some(Family::HashMapQueue),
             (SpaceOuter::HashMap, SpaceInner::Bag) => Some(Family::HashMapBag),
             (SpaceOuter::HashMap, SpaceInner::Stack) => Some(Family::HashMapStack),
+            (SpaceOuter::HashMap, SpaceInner::Set) => Some(Family::HashMapSet),
             (SpaceOuter::HashMap, SpaceInner::Cell) => Some(Family::HashMapCell),
+            (SpaceOuter::HashMap, SpaceInner::PriorityQueue) => Some(Family::HashMapPriorityQueue),
+            (SpaceOuter::Array, SpaceInner::Bag) => Some(Family::ArrayBag),
             (SpaceOuter::Array, SpaceInner::Queue) => Some(Family::ArrayQueue),
+            (SpaceOuter::Array, SpaceInner::Stack) => Some(Family::ArrayStack),
+            (SpaceOuter::Array, SpaceInner::Set) => Some(Family::ArraySet),
+            (SpaceOuter::Array, SpaceInner::Cell) => Some(Family::ArrayCell),
+            (SpaceOuter::Array, SpaceInner::PriorityQueue) => Some(Family::ArrayPriorityQueue),
+            (SpaceOuter::Vector, SpaceInner::Bag) => Some(Family::VectorBag),
             (SpaceOuter::Vector, SpaceInner::Queue) => Some(Family::VectorQueue),
+            (SpaceOuter::Vector, SpaceInner::Stack) => Some(Family::VectorStack),
+            (SpaceOuter::Vector, SpaceInner::Set) => Some(Family::VectorSet),
+            (SpaceOuter::Vector, SpaceInner::Cell) => Some(Family::VectorCell),
+            (SpaceOuter::Vector, SpaceInner::PriorityQueue) => Some(Family::VectorPriorityQueue),
             (
                 SpaceOuter::HashMap
                 | SpaceOuter::PathMap
@@ -135,9 +233,27 @@ impl Family {
             Family::HashMapQueue => family_matches::<HashMapOuter, QueueDiscipline>(config, meter),
             Family::HashMapBag => family_matches::<HashMapOuter, BagDiscipline>(config, meter),
             Family::HashMapStack => family_matches::<HashMapOuter, StackDiscipline>(config, meter),
+            Family::HashMapSet => family_matches::<HashMapOuter, SetDiscipline>(config, meter),
             Family::HashMapCell => family_matches::<HashMapOuter, CellDiscipline>(config, meter),
+            Family::HashMapPriorityQueue => {
+                family_matches::<HashMapOuter, PriorityQueueDiscipline>(config, meter)
+            }
+            Family::ArrayBag => family_matches::<ArrayOuter, BagDiscipline>(config, meter),
             Family::ArrayQueue => family_matches::<ArrayOuter, QueueDiscipline>(config, meter),
+            Family::ArrayStack => family_matches::<ArrayOuter, StackDiscipline>(config, meter),
+            Family::ArraySet => family_matches::<ArrayOuter, SetDiscipline>(config, meter),
+            Family::ArrayCell => family_matches::<ArrayOuter, CellDiscipline>(config, meter),
+            Family::ArrayPriorityQueue => {
+                family_matches::<ArrayOuter, PriorityQueueDiscipline>(config, meter)
+            }
+            Family::VectorBag => family_matches::<VectorOuter, BagDiscipline>(config, meter),
             Family::VectorQueue => family_matches::<VectorOuter, QueueDiscipline>(config, meter),
+            Family::VectorStack => family_matches::<VectorOuter, StackDiscipline>(config, meter),
+            Family::VectorSet => family_matches::<VectorOuter, SetDiscipline>(config, meter),
+            Family::VectorCell => family_matches::<VectorOuter, CellDiscipline>(config, meter),
+            Family::VectorPriorityQueue => {
+                family_matches::<VectorOuter, PriorityQueueDiscipline>(config, meter)
+            }
         }
     }
 
@@ -147,9 +263,21 @@ impl Family {
             Family::HashMapQueue => &HASHMAP_QUEUE,
             Family::HashMapBag => &HASHMAP_BAG,
             Family::HashMapStack => &HASHMAP_STACK,
+            Family::HashMapSet => &HASHMAP_SET,
             Family::HashMapCell => &HASHMAP_CELL,
+            Family::HashMapPriorityQueue => &HASHMAP_PRIORITY_QUEUE,
+            Family::ArrayBag => &ARRAY_BAG,
             Family::ArrayQueue => &ARRAY_QUEUE,
+            Family::ArrayStack => &ARRAY_STACK,
+            Family::ArraySet => &ARRAY_SET,
+            Family::ArrayCell => &ARRAY_CELL,
+            Family::ArrayPriorityQueue => &ARRAY_PRIORITY_QUEUE,
+            Family::VectorBag => &VECTOR_BAG,
             Family::VectorQueue => &VECTOR_QUEUE,
+            Family::VectorStack => &VECTOR_STACK,
+            Family::VectorSet => &VECTOR_SET,
+            Family::VectorCell => &VECTOR_CELL,
+            Family::VectorPriorityQueue => &VECTOR_PRIORITY_QUEUE,
         }
     }
 
@@ -159,9 +287,17 @@ impl Family {
             Family::HashMapQueue | Family::ArrayQueue | Family::VectorQueue => {
                 QueueDiscipline::SEND_PARAMS
             }
-            Family::HashMapBag => BagDiscipline::SEND_PARAMS,
-            Family::HashMapStack => StackDiscipline::SEND_PARAMS,
-            Family::HashMapCell => CellDiscipline::SEND_PARAMS,
+            Family::HashMapBag | Family::ArrayBag | Family::VectorBag => BagDiscipline::SEND_PARAMS,
+            Family::HashMapStack | Family::ArrayStack | Family::VectorStack => {
+                StackDiscipline::SEND_PARAMS
+            }
+            Family::HashMapCell | Family::ArrayCell | Family::VectorCell => {
+                CellDiscipline::SEND_PARAMS
+            }
+            Family::HashMapSet | Family::ArraySet | Family::VectorSet => SetDiscipline::SEND_PARAMS,
+            Family::HashMapPriorityQueue
+            | Family::ArrayPriorityQueue
+            | Family::VectorPriorityQueue => PriorityQueueDiscipline::SEND_PARAMS,
         }
     }
 
@@ -171,9 +307,21 @@ impl Family {
             Family::HashMapQueue | Family::ArrayQueue | Family::VectorQueue => {
                 QueueDiscipline::QUERY_PARAMS
             }
-            Family::HashMapBag => BagDiscipline::QUERY_PARAMS,
-            Family::HashMapStack => StackDiscipline::QUERY_PARAMS,
-            Family::HashMapCell => CellDiscipline::QUERY_PARAMS,
+            Family::HashMapBag | Family::ArrayBag | Family::VectorBag => {
+                BagDiscipline::QUERY_PARAMS
+            }
+            Family::HashMapStack | Family::ArrayStack | Family::VectorStack => {
+                StackDiscipline::QUERY_PARAMS
+            }
+            Family::HashMapCell | Family::ArrayCell | Family::VectorCell => {
+                CellDiscipline::QUERY_PARAMS
+            }
+            Family::HashMapSet | Family::ArraySet | Family::VectorSet => {
+                SetDiscipline::QUERY_PARAMS
+            }
+            Family::HashMapPriorityQueue
+            | Family::ArrayPriorityQueue
+            | Family::VectorPriorityQueue => PriorityQueueDiscipline::QUERY_PARAMS,
         }
     }
 }
@@ -296,13 +444,25 @@ mod tests {
     }
 
     /// The wired families in dispatch order, with the names of their configs.
-    const WIRED_NAMES: [(Family, &str, &str); 6] = [
+    const WIRED_NAMES: [(Family, &str, &str); 18] = [
         (Family::HashMapQueue, "hashmap", "queue"),
         (Family::HashMapBag, "hashmap", "bag"),
         (Family::HashMapStack, "hashmap", "stack"),
+        (Family::HashMapSet, "hashmap", "set"),
         (Family::HashMapCell, "hashmap", "cell"),
+        (Family::HashMapPriorityQueue, "hashmap", "priorityqueue"),
+        (Family::ArrayBag, "array", "bag"),
         (Family::ArrayQueue, "array", "queue"),
+        (Family::ArrayStack, "array", "stack"),
+        (Family::ArraySet, "array", "set"),
+        (Family::ArrayCell, "array", "cell"),
+        (Family::ArrayPriorityQueue, "array", "priorityqueue"),
+        (Family::VectorBag, "vector", "bag"),
         (Family::VectorQueue, "vector", "queue"),
+        (Family::VectorStack, "vector", "stack"),
+        (Family::VectorSet, "vector", "set"),
+        (Family::VectorCell, "vector", "cell"),
+        (Family::VectorPriorityQueue, "vector", "priorityqueue"),
     ];
 
     #[test]
@@ -345,14 +505,74 @@ mod tests {
                 CellDiscipline::QUERY_PARAMS,
             ),
             (
+                Family::HashMapSet,
+                SetDiscipline::SEND_PARAMS,
+                SetDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::HashMapPriorityQueue,
+                PriorityQueueDiscipline::SEND_PARAMS,
+                PriorityQueueDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::ArrayBag,
+                BagDiscipline::SEND_PARAMS,
+                BagDiscipline::QUERY_PARAMS,
+            ),
+            (
                 Family::ArrayQueue,
                 QueueDiscipline::SEND_PARAMS,
                 QueueDiscipline::QUERY_PARAMS,
             ),
             (
+                Family::ArrayStack,
+                StackDiscipline::SEND_PARAMS,
+                StackDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::ArrayCell,
+                CellDiscipline::SEND_PARAMS,
+                CellDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::ArraySet,
+                SetDiscipline::SEND_PARAMS,
+                SetDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::ArrayPriorityQueue,
+                PriorityQueueDiscipline::SEND_PARAMS,
+                PriorityQueueDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::VectorBag,
+                BagDiscipline::SEND_PARAMS,
+                BagDiscipline::QUERY_PARAMS,
+            ),
+            (
                 Family::VectorQueue,
                 QueueDiscipline::SEND_PARAMS,
                 QueueDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::VectorStack,
+                StackDiscipline::SEND_PARAMS,
+                StackDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::VectorCell,
+                CellDiscipline::SEND_PARAMS,
+                CellDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::VectorSet,
+                SetDiscipline::SEND_PARAMS,
+                SetDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::VectorPriorityQueue,
+                PriorityQueueDiscipline::SEND_PARAMS,
+                PriorityQueueDiscipline::QUERY_PARAMS,
             ),
         ] {
             assert_eq!(family.send_params(), send, "{family:?}");

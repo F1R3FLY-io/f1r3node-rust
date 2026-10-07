@@ -10,8 +10,8 @@
     "CommitOrderWitness": "When the ghost serialOk holds, the commit order itself witnesses T5. TLC checks it on every reachable state of MC_TxnLockCoverage.",
     "HeadIndInv": "The inductive strengthening of U1-U3 and U9-U12 (HeadOnlyDiscipline) for the Apalache BASE and STEP checks: the ords and the carried ords are below the counter and unique, the carried ords differ from the stored ords, the elements in flight have their shapes, and the history flags hold. TLC checks it on every reachable state of MC_HeadOnlyDiscipline and MC_HeadOnlyDiscipline_Reissue.",
     "HandleIndInv": "The inductive strengthening of U5-U8 (NativeHandles) for the Apalache BASE and STEP checks: live spaces are durable, only live spaces have collection counters, and no counter or log grows faster than the steps. TLC checks it on every reachable state of MC_NativeHandles.",
-    "SharedQueueRaces": "CounterConflict: two branches that use one queue race in check #1. It restates the Rocq headlines Q21, Q22 and Q24, which their own property tests cover. TLC checks it in MC_CounterConflict.",
-    "FirstOpsRace": "CounterConflict: two branches that open queues of one space race on S(sid). It restates the Rocq headline Q23, which its own property test covers. TLC checks it in MC_CounterConflict."
+    "SharedQueueRaces": "CounterConflict: two branches that use one queue race in check #1. It restates the Rocq headlines Q21, Q22 and Q24, which their own property tests cover. TLC checks it in MC_CounterConflict. With stacks, MC_CounterConflict_Stacks checks it too, and it restates the P5 headline shared_collection_race (R63).",
+    "FirstOpsRace": "CounterConflict: two branches that open queues of one space race on S(sid). It restates the Rocq headline Q23, which its own property test covers. TLC checks it in MC_CounterConflict. With stacks, MC_CounterConflict_Stacks checks it too, and it restates the P5 headline shared_collection_race (R63)."
   },
   "phases": {
     "P1": {
@@ -2695,12 +2695,17 @@
         "rholang/tests/reified_array_vector.rs",
         "rholang/tests/reified_bag.rs",
         "rholang/tests/reified_cell.rs",
+        "rholang/tests/reified_determinism.rs",
         "rholang/tests/reified_engine_props.rs",
         "rholang/tests/reified_families.rs",
         "rholang/tests/reified_hooks_p5.rs",
+        "rholang/tests/reified_merge_p5.rs",
+        "rholang/tests/reified_pattern_enforcement.rs",
+        "rholang/tests/reified_priority_queue.rs",
+        "rholang/tests/reified_set.rs",
         "rholang/tests/reified_stack.rs"
       ],
-      "expected_properties": 75,
+      "expected_properties": 106,
       "formal": {
         "R1": {
           "kind": "rocq",
@@ -2834,6 +2839,8 @@
           "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
           "statement": "The records of each key and every order-free iteration of the HashMap store do not depend on the order of the puts.",
           "tests": [
+            "prop_canonical_iteration_bag_any_insertion_order",
+            "prop_canonical_iteration_ordered_any_list_order",
             "prop_hashmap_iteration_permutation_invariant"
           ]
         },
@@ -2968,7 +2975,8 @@
           "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
           "statement": "The visit order of the records is sorted by source key, holds the records, and does not depend on the list order of the store.",
           "tests": [
-            "prop_bag_visit_order_canonical"
+            "prop_bag_visit_order_canonical",
+            "prop_canonical_iteration_bag_any_insertion_order"
           ]
         },
         "R30": {
@@ -3014,7 +3022,8 @@
           "statement": "A peek receive that settles stages exactly the host program: the fire, then the second send of the removed record, which is offered to the waiters first and registers the authority of the record. When no waiter takes the record, the record is stored again, so the peek leaves the multiset of records as it was.",
           "tests": [
             "prop_bag_legacy_charges_equal_host",
-            "prop_bag_restore_registers_the_record_authority"
+            "prop_bag_restore_registers_the_record_authority",
+            "prop_set_legacy_charges_equal_host"
           ]
         },
         "R35": {
@@ -3023,7 +3032,8 @@
           "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
           "statement": "Every prefix of the trace of a scan of the driver, the reads after the commit included, reads at most what it reserved (decision 42).",
           "tests": [
-            "prop_bag_reservation_cut_rejects_without_effect"
+            "prop_bag_reservation_cut_rejects_without_effect",
+            "prop_candidate_serialize_failure_cut_is_exact"
           ]
         },
         "R36": {
@@ -3059,7 +3069,8 @@
           "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
           "statement": "The waiter order is sorted by key, holds the waiters, and does not depend on the list order of the store. A send fires the first waiter in that order that fits, so every earlier waiter fails its pattern or its guard (decision 37, the produce side).",
           "tests": [
-            "prop_bag_waiter_visit_order_canonical"
+            "prop_bag_waiter_visit_order_canonical",
+            "prop_canonical_iteration_bag_any_insertion_order"
           ]
         },
         "R40": {
@@ -3095,7 +3106,8 @@
           "file": "formal/rocq/reified_rspaces/theories/Match.v",
           "statement": "The legacy WildcardMatch is the degenerate instance. A pattern for 42 receives 43 on the consume side and on the produce side, and the pattern plays no part in a choice. The real matcher parks and stores.",
           "tests": [
-            "prop_engine_wildcard_matcher_breaks_pattern_enforcement"
+            "prop_engine_wildcard_matcher_breaks_pattern_enforcement",
+            "prop_pattern_enforcement_any_wired_family"
           ]
         },
         "R44": {
@@ -3104,7 +3116,8 @@
           "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
           "statement": "Every consume plan, of the scan driver and of the cell, stages only fires whose dispatched record is a stored record that matches the pattern spatially and whose binding the guard admitted.",
           "tests": [
-            "prop_engine_consume_fires_only_matching"
+            "prop_engine_consume_fires_only_matching",
+            "prop_pattern_enforcement_any_wired_family"
           ]
         },
         "R45": {
@@ -3113,7 +3126,8 @@
           "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
           "statement": "Every produce plan, of the scan driver and of the cell, stages only fires whose waiter is stored, matches the datum spatially and admits the binding.",
           "tests": [
-            "prop_engine_produce_fires_only_matching"
+            "prop_engine_produce_fires_only_matching",
+            "prop_pattern_enforcement_any_wired_family"
           ]
         },
         "R46": {
@@ -3149,6 +3163,7 @@
           "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
           "statement": "The staging primitives of the S1 engine reserve each read, copy and growth of the staged list before they make it, reserve nothing after the commit, and fail before the commit under a cut budget (decision 42).",
           "tests": [
+            "prop_candidate_serialize_failure_cut_is_exact",
             "prop_cell_reservation_cut_rejects_without_effect",
             "prop_engine_primitives_reserve_before_they_read"
           ]
@@ -3168,7 +3183,8 @@
           "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
           "statement": "Every fire binds a record whose value the pattern of the waiter matches and whose guard admits it.",
           "tests": [
-            "prop_engine_fires_enforce_patterns"
+            "prop_engine_fires_enforce_patterns",
+            "prop_pattern_enforcement_any_wired_family"
           ]
         },
         "V3": {
@@ -3204,7 +3220,8 @@
           "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
           "statement": "After a consume or a send that fires a waiter of a set, no stored non-persistent member of the class of the fired value remains.",
           "tests": [
-            "prop_engine_set_class_retired"
+            "prop_engine_set_class_retired",
+            "prop_set_class_retired_any_schedule"
           ]
         },
         "V7": {
@@ -3250,6 +3267,7 @@
           "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
           "statement": "The top of each side is an entry of that side with the greatest (ord, rank), and a side has a top exactly when it is not empty.",
           "tests": [
+            "prop_canonical_iteration_ordered_any_list_order",
             "prop_stack_head_is_max_ord"
           ]
         },
@@ -3305,6 +3323,7 @@
           "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
           "statement": "Two views with the same entries in other list orders stage the same operations in a produce, a consume and a settle job, take the same next round, and reach views with the same entries.",
           "tests": [
+            "prop_canonical_iteration_ordered_any_list_order",
             "prop_stack_plan_permutation_invariant"
           ]
         },
@@ -3351,6 +3370,7 @@
           "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
           "statement": "A settle reserves its reads before it makes them: its trace satisfies prefix coverage, the reads of the outcome after the commit included (decision 42, DR-88).",
           "tests": [
+            "prop_candidate_serialize_failure_cut_is_exact",
             "prop_stack_reservation_cut_rejects_without_effect"
           ]
         },
@@ -3407,6 +3427,379 @@
           "tests": [
             "prop_stack_settle_bounded_any_schedule",
             "prop_stack_txn_fires_bounded_at_the_cap"
+          ]
+        },
+        "R63": {
+          "kind": "rocq",
+          "name": "shared_collection_race",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Two deploys from one pre-state that both use the collection k race in check #1. The race is on the counter of k, or on the space counter when k has no counter yet. Any operations count: writes, removals, peeks and parks, because each one bumps the counter (decision 31).",
+          "tests": [
+            "prop_cell_ops_race_on_counter"
+          ]
+        },
+        "R64": {
+          "kind": "rocq",
+          "name": "crossed_stacks_without_removal_counters_fabricate",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Without the counter bump of the pops, checks #1 and #2 find nothing. No consume of the two logs names more than one channel, so check #3 has no join to see. Yet no serial order gives both branches their observations. After A, B pops 11 instead of 10, and after B, A pops 21 instead of 20.",
+          "tests": [
+            "prop_crossed_stacks_without_removal_counters_fabricate"
+          ]
+        },
+        "R65": {
+          "kind": "rocq",
+          "name": "crossed_collections_race",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Two branches that cross two collections, each writing one and removing from the other, race on both counters in check #1. The P5 property checks it for two stacks.",
+          "tests": [
+            "prop_crossed_stacks_race"
+          ]
+        },
+        "R66": {
+          "kind": "rocq",
+          "name": "unordered_writes_commute",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Writes to collections without a counter touch no counter, never race in check #1, and merge into a state that both serial orders give. The P5 property checks it for the bag.",
+          "tests": [
+            "prop_bag_writes_commute"
+          ]
+        },
+        "V16": {
+          "kind": "tla",
+          "name": "NoMergedOrderFabrication",
+          "file": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+          "statement": "With stacks (MC_CounterConflict_Stacks.cfg), a merge of two branches without a check #1 race is a serial run of whole deploys. RemovalCounterFreeUnsafe.cfg, whose pops do not bump the counter, refutes it.",
+          "tests": [
+            "prop_merged_stack_state_is_serial"
+          ]
+        },
+        "R67": {
+          "kind": "rocq",
+          "name": "set_key_injective",
+          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+          "statement": "The set key of two payloads is equal exactly when their canonical element encodings are equal. With an injective encode of sorted terms, the key is equal exactly when the sorted elements are equal (F5, F6).",
+          "tests": [
+            "prop_set_key_injective"
+          ]
+        },
+        "R68": {
+          "kind": "rocq",
+          "name": "set_view_dedups_equal_pars",
+          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+          "statement": "The view of a set holds one representative for each class: the first member in canonical order, independent of the list order. The first spatial match is a representative, and two records share a class exactly when their sorted payloads are equal (F7, decision 41).",
+          "tests": [
+            "prop_set_view_dedups_equal_pars"
+          ]
+        },
+        "R69": {
+          "kind": "rocq",
+          "name": "set_consume_retires_class",
+          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+          "statement": "A receive that does not peek binds every stored member of the class of its choice, the representative first. Every member binds the pattern and passes the guard. The fire leaves no non-persistent member and keeps the persistent members and the other classes (F3, F8).",
+          "tests": [
+            "prop_set_class_retired_any_schedule",
+            "prop_set_consume_retires_class"
+          ]
+        },
+        "R70": {
+          "kind": "rocq",
+          "name": "set_retire_comm_lines_up",
+          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+          "statement": "The consume over [D; n] of a class and every K_retire consume meet the staging rules of the substrate: one pattern for each channel, a canonical group, lined-up candidates, stored candidates, distinct claims. The class fire dispatches one result and a retire none (F9, F20).",
+          "tests": [
+            "prop_set_legacy_charges_equal_host",
+            "prop_set_retire_comm_lines_up"
+          ]
+        },
+        "R71": {
+          "kind": "rocq",
+          "name": "set_produce_fire_retires_stored_class",
+          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+          "statement": "RETIRE-CLASS stages K_retire of each stored non-persistent member of the class of the element and changes no other record. In an offer, a fire of a waiter that does not peek leaves no non-persistent stored member of the class when the plan ends. An offer whose fired waiters all peek retires nothing (F10, decision 37).",
+          "tests": [
+            "prop_set_class_retired_any_schedule",
+            "prop_set_produce_fire_retires_stored_class"
+          ]
+        },
+        "R72": {
+          "kind": "rocq",
+          "name": "set_peek_restores_representative_only",
+          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+          "statement": "A peek binds the representative alone. A persistent representative stays and nothing is sent again. Otherwise the fire removes it and RESTORE-SCAN sends it again, and when no waiter takes it the records are as before. A K_retire of the plan follows a fire of the second send on a waiter that does not peek, and then the class is cleared (decision 45, Rule E).",
+          "tests": [
+            "prop_set_peek_restores_representative_only"
+          ]
+        },
+        "R73": {
+          "kind": "rocq",
+          "name": "set_membership_full_compare_on_equal_hash",
+          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+          "statement": "The membership test answers key equality for every hash function, so a hash collision never makes two classes one. It compares the full keys exactly when the hashes are equal (DR-90).",
+          "tests": [
+            "prop_set_membership_full_compare_on_equal_hash"
+          ]
+        },
+        "R74": {
+          "kind": "rocq",
+          "name": "set_key_trace_covered",
+          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+          "statement": "Every prefix of the trace of a set key and of a membership test reads at most what it reserved, so a cut budget rejects an operation before its commit (decision 42).",
+          "tests": [
+            "prop_set_key_trace_covered"
+          ]
+        },
+        "R75": {
+          "kind": "rocq",
+          "name": "pq_level_order",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "The levels form a total order in which the priority levels ascend. A receive binds the first level head, in this order, that its lane sees and whose payload matches its pattern (PqLevelOrder).",
+          "tests": [
+            "prop_pq_level_order"
+          ]
+        },
+        "R76": {
+          "kind": "rocq",
+          "name": "pq_unprioritized_lowest",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "The unprioritized level comes after every priority level, so a receive binds an unprioritized record only when no visible head of a priority level matches its pattern (F6).",
+          "tests": [
+            "prop_pq_level_order"
+          ]
+        },
+        "R77": {
+          "kind": "rocq",
+          "name": "pq_fifo_within_level",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "The head of each level and of each waiter queue is its entry with the least (ord, rank), and every fire of an operation, of a settle job and of a re-entry binds heads (FIFO, decision 11).",
+          "tests": [
+            "prop_pq_fifo_order_any_schedule"
+          ]
+        },
+        "R78": {
+          "kind": "rocq",
+          "name": "pq_restricted_waiter_in_level_queue",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A receive with priority p waits in the waiter queue of the level p, joins its tail, and fires only on the head of the level p (decision 38).",
+          "tests": [
+            "prop_pq_fifo_order_any_schedule"
+          ]
+        },
+        "R79": {
+          "kind": "rocq",
+          "name": "pq_unrestricted_first_matching_level",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "An unrestricted receive binds the first level head, in ascending level order, whose payload matches its pattern. It checks its guard once on that head, and a refusal parks it (decision 38).",
+          "tests": [
+            "prop_pq_fifo_order_any_schedule"
+          ]
+        },
+        "R80": {
+          "kind": "rocq",
+          "name": "pq_settle_oldest_first",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "Every fire of a settle fires the oldest fireable waiter-lane head (readiness review S4). A produce plan fires the older candidate head that fits its datum, and a refusal moves on (decisions 37 and 38).",
+          "tests": [
+            "prop_pq_oldest_first_any_schedule"
+          ]
+        },
+        "R81": {
+          "kind": "rocq",
+          "name": "pq_settle_order_matters",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "Strict confluence fails: in the example S4, two fire orders end in two different states, and the settle stages the order that fires the oldest fireable head first.",
+          "tests": [
+            "prop_pq_oldest_first_any_schedule"
+          ]
+        },
+        "R82": {
+          "kind": "rocq",
+          "name": "pq_produce_preserves_inv",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A produce, fresh or re-entered, that completes in its round leaves INV: no head of a waiter lane can fire on the level heads that it sees.",
+          "tests": [
+            "prop_pq_no_pending_match_any_schedule"
+          ]
+        },
+        "R83": {
+          "kind": "rocq",
+          "name": "pq_consume_preserves_inv",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A consume, fresh or re-entered, that completes in its round leaves INV.",
+          "tests": [
+            "prop_pq_no_pending_match_any_schedule"
+          ]
+        },
+        "R84": {
+          "kind": "rocq",
+          "name": "pq_head_blocks_within_level",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "For a cap above 0, a head that does not match blocks its lane: the receive parks and the send is stored, with no fire, although an entry behind a head may fit.",
+          "tests": [
+            "prop_pq_fifo_order_any_schedule"
+          ]
+        },
+        "R85": {
+          "kind": "rocq",
+          "name": "pq_settle_terminates",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A settle that starts after f fires of its transaction fires at most cap - f times and at most mu times, plus one divergent fire. Every transaction fires at most cap times, exactly cap times when it re-issues at the cap (I-21), and a settle job that completes leaves INV.",
+          "tests": [
+            "prop_pq_settle_bounded_any_schedule",
+            "prop_pq_txn_fires_bounded_at_the_cap"
+          ]
+        },
+        "R86": {
+          "kind": "rocq",
+          "name": "pq_plan_permutation_invariant",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "Two views with the same entries in other list orders stage the same operations in a produce, a consume and a settle job, take the same next round, and reach views with the same entries.",
+          "tests": [
+            "prop_pq_plan_permutation_invariant"
+          ]
+        },
+        "R87": {
+          "kind": "rocq",
+          "name": "pq_without_settle_breaks_inv",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "Without the settle, two computed counterexamples (a fire exposes a waiter, and a fire exposes a record) break INV at the end of a completed operation. With the settle after the plan, INV holds.",
+          "tests": [
+            "prop_pq_no_pending_match_any_schedule"
+          ]
+        },
+        "R88": {
+          "kind": "rocq",
+          "name": "pq_priority_domain",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A priority is admitted exactly when it is a natural number below the bound priorities of the space, when the space sets one. An admitted send runs at its level, and a send out of the domain fails before the bump and changes nothing.",
+          "tests": [
+            "prop_pq_priority_domain"
+          ]
+        },
+        "R89": {
+          "kind": "rocq",
+          "name": "pq_no_level_storage",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A level exists exactly when a record holds it, and an operation adds at most one entry to the view whatever its priority (I-10).",
+          "tests": [
+            "prop_pq_no_level_storage"
+          ]
+        },
+        "R90": {
+          "kind": "rocq",
+          "name": "pq_reissue_takes_level_fifo_place",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A re-issued persistent send keeps its first-round order and takes its FIFO place in its level: behind an older head it is stored with no fire, and ahead of the head or on an empty level it plans. Every round bumps the one counter once.",
+          "tests": [
+            "prop_pq_reissue_keeps_ord_any_schedule"
+          ]
+        },
+        "R91": {
+          "kind": "rocq",
+          "name": "pq_reentered_waiter_keeps_seniority",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A re-issued persistent receive keeps its first-round order and takes its FIFO place in its waiter queue, and it parks only itself, so the oldest-first rule ranks it with its first-round order.",
+          "tests": [
+            "prop_pq_reissue_keeps_ord_any_schedule"
+          ]
+        },
+        "R92": {
+          "kind": "rocq",
+          "name": "pq_peek_restores_head",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A peek of a level head that is not persistent stores the record again at its order and level, the record is the head of its level again, and the settle after the plan stages nothing (Rule E).",
+          "tests": [
+            "prop_pq_no_pending_match_any_schedule"
+          ]
+        },
+        "R93": {
+          "kind": "rocq",
+          "name": "level_scan_trace_covered",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "The level scans of a priority queue reserve their reads before they make them (decision 42, DR-88): the trace of a transaction satisfies prefix coverage, with the reads after the commit.",
+          "tests": [
+            "prop_pq_reservation_cut_rejects_without_effect"
+          ]
+        },
+        "R94": {
+          "kind": "rocq",
+          "name": "pq_settle_keeps_unspent_records",
+          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+          "statement": "A settle loses no record: a stored record leaves the store only when a fire of a waiter that does not peek spends it, and a record in flight lands before a fire of a stored record, at the end and at a re-issue.",
+          "tests": [
+            "prop_pq_fifo_order_any_schedule"
+          ]
+        },
+        "R95": {
+          "kind": "rocq",
+          "name": "datum_priority_slot_roundtrip",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "The priority slot of a datum record of a priority queue round-trips: GInt(p) for the level p >= 0 and Nil for the unprioritized level, and the decoder rejects every other slot.",
+          "tests": [
+            "prop_pq_record_slots_roundtrip"
+          ]
+        },
+        "R96": {
+          "kind": "rocq",
+          "name": "continuation_policy_slot_roundtrip",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "The policy slot of a continuation of a priority queue round-trips: EMap{\"priority\": GInt(p)} for the waiter queue of the level p and Nil for the unrestricted queue, and the outcome decoder accepts both.",
+          "tests": [
+            "prop_pq_record_slots_roundtrip"
+          ]
+        },
+        "V17": {
+          "kind": "tla",
+          "name": "PqLevelOrder",
+          "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "statement": "Every fire binds the head of its lane and the head of its level, a receive and a settle bind the first matching level head that the lane sees, and a send precedes the stored records of its level, on every schedule.",
+          "tests": [
+            "prop_pq_fifo_order_any_schedule"
+          ]
+        },
+        "V18": {
+          "kind": "tla",
+          "name": "PqOldestFirst",
+          "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "statement": "Every fire of a settle fires the oldest fireable waiter-lane head, and every fire of a send fires the oldest candidate that fits, on every schedule.",
+          "tests": [
+            "prop_pq_oldest_first_any_schedule"
+          ]
+        },
+        "V19": {
+          "kind": "tla",
+          "name": "PqNoPendingMatch",
+          "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "statement": "With no round in progress, no element in flight and no settle job, no waiter-lane head can fire (INV), on every schedule.",
+          "tests": [
+            "prop_pq_no_pending_match_any_schedule"
+          ]
+        },
+        "V20": {
+          "kind": "tla",
+          "name": "NoRecordLost",
+          "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "statement": "A record that was stored is stored, or in flight in the current settle, or a fire spent it, on every schedule.",
+          "tests": [
+            "prop_pq_fifo_order_any_schedule"
+          ]
+        },
+        "V21": {
+          "kind": "tla",
+          "name": "ReissueKeepsOrd",
+          "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "statement": "A re-issued persistent element carries the ord of its first round, and a re-issued element that is not persistent carries none, on every schedule (decision 43).",
+          "tests": [
+            "prop_pq_reissue_keeps_ord_any_schedule"
+          ]
+        },
+        "V22": {
+          "kind": "tla",
+          "name": "TxnFiresBounded",
+          "file": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "statement": "No transaction makes more than Cap fires, its settles included (revision I-21), on every schedule.",
+          "tests": [
+            "prop_pq_txn_fires_bounded_at_the_cap"
           ]
         }
       },
@@ -4026,6 +4419,283 @@
             "R55",
             "V15"
           ]
+        },
+        {
+          "number": 76,
+          "test": "prop_cell_ops_race_on_counter",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R63"
+          ]
+        },
+        {
+          "number": 77,
+          "test": "prop_crossed_stacks_without_removal_counters_fabricate",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R64"
+          ]
+        },
+        {
+          "number": 78,
+          "test": "prop_crossed_stacks_race",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R65"
+          ]
+        },
+        {
+          "number": 79,
+          "test": "prop_bag_writes_commute",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R66"
+          ]
+        },
+        {
+          "number": 80,
+          "test": "prop_merged_stack_state_is_serial",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "V16"
+          ]
+        },
+        {
+          "number": 81,
+          "test": "prop_canonical_iteration_bag_any_insertion_order",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R29",
+            "R39",
+            "R15"
+          ]
+        },
+        {
+          "number": 82,
+          "test": "prop_canonical_iteration_ordered_any_list_order",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R50",
+            "R56",
+            "R15"
+          ]
+        },
+        {
+          "number": 83,
+          "test": "prop_candidate_serialize_failure_cut_is_exact",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R35",
+            "R61",
+            "R49"
+          ]
+        },
+        {
+          "number": 84,
+          "test": "prop_pattern_enforcement_any_wired_family",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "V2",
+            "R43",
+            "R44",
+            "R45"
+          ]
+        },
+        {
+          "number": 85,
+          "test": "prop_set_key_injective",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R67"
+          ]
+        },
+        {
+          "number": 86,
+          "test": "prop_set_view_dedups_equal_pars",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R68"
+          ]
+        },
+        {
+          "number": 87,
+          "test": "prop_set_consume_retires_class",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R69"
+          ]
+        },
+        {
+          "number": 88,
+          "test": "prop_set_retire_comm_lines_up",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R70"
+          ]
+        },
+        {
+          "number": 89,
+          "test": "prop_set_produce_fire_retires_stored_class",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R71"
+          ]
+        },
+        {
+          "number": 90,
+          "test": "prop_set_peek_restores_representative_only",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R72"
+          ]
+        },
+        {
+          "number": 91,
+          "test": "prop_set_membership_full_compare_on_equal_hash",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R73"
+          ]
+        },
+        {
+          "number": 92,
+          "test": "prop_set_key_trace_covered",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R74"
+          ]
+        },
+        {
+          "number": 93,
+          "test": "prop_set_class_retired_any_schedule",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "V6",
+            "R69",
+            "R71"
+          ]
+        },
+        {
+          "number": 94,
+          "test": "prop_set_legacy_charges_equal_host",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R34",
+            "R70"
+          ]
+        },
+        {
+          "number": 95,
+          "test": "prop_pq_level_order",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R75",
+            "R76"
+          ]
+        },
+        {
+          "number": 96,
+          "test": "prop_pq_fifo_order_any_schedule",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R77",
+            "R78",
+            "R79",
+            "R84",
+            "R94",
+            "V17",
+            "V20"
+          ]
+        },
+        {
+          "number": 97,
+          "test": "prop_pq_no_pending_match_any_schedule",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R82",
+            "R83",
+            "R87",
+            "R92",
+            "V19"
+          ]
+        },
+        {
+          "number": 98,
+          "test": "prop_pq_oldest_first_any_schedule",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R80",
+            "R81",
+            "V18"
+          ]
+        },
+        {
+          "number": 99,
+          "test": "prop_pq_settle_bounded_any_schedule",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R85"
+          ]
+        },
+        {
+          "number": 100,
+          "test": "prop_pq_txn_fires_bounded_at_the_cap",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R85",
+            "V22"
+          ]
+        },
+        {
+          "number": 101,
+          "test": "prop_pq_plan_permutation_invariant",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R86"
+          ]
+        },
+        {
+          "number": 102,
+          "test": "prop_pq_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R93"
+          ]
+        },
+        {
+          "number": 103,
+          "test": "prop_pq_reissue_keeps_ord_any_schedule",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R90",
+            "R91",
+            "V21"
+          ]
+        },
+        {
+          "number": 104,
+          "test": "prop_pq_priority_domain",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R88"
+          ]
+        },
+        {
+          "number": 105,
+          "test": "prop_pq_no_level_storage",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R89"
+          ]
+        },
+        {
+          "number": 106,
+          "test": "prop_pq_record_slots_roundtrip",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R95",
+            "R96"
+          ]
         }
       ],
       "witness_tests": [
@@ -4452,6 +5122,481 @@
           "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
           "covers": [
             "R58"
+          ]
+        },
+        {
+          "test": "space_canonical_iteration_bag_views",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R29",
+            "R39",
+            "R15"
+          ]
+        },
+        {
+          "test": "space_canonical_iteration_queue_order",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R15"
+          ]
+        },
+        {
+          "test": "space_canonical_iteration_stack_order",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R50",
+            "R56",
+            "R15"
+          ]
+        },
+        {
+          "test": "space_canonical_iteration_cell_views",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R1",
+            "R15"
+          ]
+        },
+        {
+          "test": "space_candidate_serialize_failure_bag",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R35"
+          ]
+        },
+        {
+          "test": "space_candidate_serialize_failure_ordered",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R61",
+            "R49"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_hashmap_bag",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "V2",
+            "R43"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_hashmap_queue",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "V2",
+            "R43"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_hashmap_stack",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "V2",
+            "R43"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_hashmap_cell",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "V2",
+            "R43"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_array_queue",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "V2",
+            "R43"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_vector_queue",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "V2",
+            "R43"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_unsupported_pairs_reject",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "R18",
+            "R20"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_qualifiers_fail_closed",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "covers": [
+            "R20"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_cell_writes_race",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R63"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_cell_first_ops_race",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R63"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_stack_push_pop_race",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R63"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_crossed_stacks",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R64",
+            "V16"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_bag_writes_merge",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R66"
+          ]
+        },
+        {
+          "test": "space_array_merge_new_in_use",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "V9",
+            "V10"
+          ]
+        },
+        {
+          "test": "space_set_discipline_key_length_prefix_no_collision",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R67"
+          ]
+        },
+        {
+          "test": "space_set_discipline_key_ignores_random_state_and_authority",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R67",
+            "R69"
+          ]
+        },
+        {
+          "test": "space_set_discipline_duplicates_stay_distinct_records",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R68"
+          ]
+        },
+        {
+          "test": "space_set_discipline_view_dedups_equal_pars",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R68"
+          ]
+        },
+        {
+          "test": "space_set_discipline_members_in_canonical_order",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R68",
+            "R71"
+          ]
+        },
+        {
+          "test": "space_set_discipline_consume_retires_all_equal_records",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R69"
+          ]
+        },
+        {
+          "test": "space_set_discipline_persistent_member_keeps_class",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R69"
+          ]
+        },
+        {
+          "test": "space_set_discipline_distinct_classes_unaffected",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R69"
+          ]
+        },
+        {
+          "test": "space_set_discipline_retire_comm_lists_every_member",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R70"
+          ]
+        },
+        {
+          "test": "space_set_discipline_produce_fire_retire_events_shape",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R70",
+            "R71"
+          ]
+        },
+        {
+          "test": "space_set_discipline_guarded_waiter_then_equal_send_retires_class",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R71",
+            "V6"
+          ]
+        },
+        {
+          "test": "space_set_discipline_peek_restores_representative",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R72"
+          ]
+        },
+        {
+          "test": "space_set_discipline_peek_restore_reoffer_retires_class",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R72",
+            "R71"
+          ]
+        },
+        {
+          "test": "space_set_discipline_equal_receives_stay_two_waiters",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R38",
+            "R39"
+          ]
+        },
+        {
+          "test": "space_set_discipline_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R74"
+          ]
+        },
+        {
+          "test": "space_set_discipline_failed_canonicalization_rejects_before_staging",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R74"
+          ]
+        },
+        {
+          "test": "space_set_discipline_legacy_charges_equal_host",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R34",
+            "R70"
+          ]
+        },
+        {
+          "test": "space_set_discipline_persistent_reissue_keeps_identity",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R48"
+          ]
+        },
+        {
+          "test": "space_set_discipline_checkpoint_restart",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R68"
+          ]
+        },
+        {
+          "test": "space_set_discipline_replay_equal",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R70",
+            "R71",
+            "R72"
+          ]
+        },
+        {
+          "test": "space_set_discipline_rejected_replay_root_unchanged",
+          "file": "rholang/tests/reified_set.rs",
+          "covers": [
+            "R70"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_ascending_levels",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R75"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_fifo_within_level",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R77"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_head_blocks_within_level",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R84"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_lower_level_not_blocked",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R75",
+            "R84"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_restricted_waiter_waits_in_level_queue",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R78"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_unrestricted_waiter_takes_first_matching_level",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R79"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_guarded_unrestricted_receive_parks",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R79"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_older_waiter_wins",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R80"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_unprioritized_lowest",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R76"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_priorities_bound_rejects",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R88"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_priority_param_type_checked",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R88"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_one_counter_whole_pq",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R90"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_removal_exposes_next_waiter_settles",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R87",
+            "R82"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_settle_oldest_first",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R80",
+            "R81"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_settle_job_with_nothing_owed_only_bumps",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R85"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_peek_restores_head",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R92"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_produce_peek_waiter_reoffers",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R94"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_reissue_takes_level_fifo_place",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R90"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_reentered_waiter_keeps_seniority",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R91"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_round_cap_reissues_a_settle",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R85"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_settle_before_reissues_the_operation_at_the_cap",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R85"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_divergent_pairs_reissue",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R85"
+          ]
+        },
+        {
+          "test": "space_disciplines_pq_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_priority_queue.rs",
+          "covers": [
+            "R93"
           ]
         }
       ]

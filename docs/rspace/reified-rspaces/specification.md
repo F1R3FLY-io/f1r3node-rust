@@ -39,8 +39,8 @@ Each new section must state the items that its extension point lists, so that a 
 | Phase | Section | Content |
 |---|---|---|
 | P5 | [2.2](#22-array) to [2.6](#26-outer-stores-of-later-phases) | The Array and Vector outer stores with their allocator, the PathMap paths, and the PathMap and HashSet stores of later waves |
-| P5 | [3.2](#32-bag) to [3.6](#36-disciplines-of-later-phases) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and joins on ordered collections ([decision 29](decision-register.md#decision-29)) |
-| P6 | [3.6](#36-disciplines-of-later-phases) | The VectorDB discipline, its query, and its bounds |
+| P5 | [3.2](#32-bag) to [3.8](#38-disciplines-of-later-phases) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and joins on ordered collections ([decision 29](decision-register.md#decision-29)) |
+| P6 | [3.8](#38-disciplines-of-later-phases) | The VectorDB discipline, its query, and its bounds |
 | P7 | [4.2](#42-qualifiers-of-later-phases) and [5](#5-theories) | The `temp` and `seq` qualifiers, the sweep of their state, and the theories |
 | P8 | [6](#6-constructs-that-fail-closed) | Spaces that user agents implement |
 
@@ -164,7 +164,7 @@ Its factory creates the spaces of the family, and its agent runs their operation
 A registered family with the index $`i`$ binds its URN to `bundle+{[0xE0, i]}`, and it installs its factory with the body reference $`200 + i`$.
 An unregistered family has no URN binding, so a program that names it fails before any space work.
 
-**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:199-208`).
+**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:347-356`).
 The dispatch tries the arms in a fixed order: `hashmap:queue` first, then ascending family index.
 Each arm that it tries reserves one comparison of the names, so a queue operation keeps the host work of P4.
 A config that names no wired family fails with `FamilyUnavailable`.
@@ -283,6 +283,7 @@ So the identities of each job are new, also when a cyclic allocator takes a valu
 
 **Rule AL-5: races.** Two branches that allocate from one space consume one produce of $`A(\mathit{sid})`$.
 So merge check #1 sees their race, and a merge never hands one index to both branches (`NoDuplicateIndex`).
+Two `new` blocks inside `use` of one Array or Vector space race in the same way (`rholang/tests/reified_merge_p5.rs:858-919`).
 
 **Rule AL-6: other stores.** A HashMap or PathMap space has no allocator.
 Its allocation job answers `Baseline`: it reads the config, commits nothing, and charges no phlo.
@@ -384,6 +385,7 @@ A collection with two counter records, or with a persistent counter record, is `
 **Rule OC-5: races and chains.** Two branches that both operate on one collection consume one counter produce, so merge check 1 must report a race.
 Two branches whose first operations open collections of one space race on the space counter in the same way.
 Two deploys of one block that operate on one collection form one chain, so a rejection removes both.
+This holds for every family with a counter: the queue, the stack and the cell, also in Array and Vector spaces (`shared_collection_race`, `CounterConflict.v:767`).
 
 **Rule OC-6: serializable merges.** When merge check 1 finds no race, the merged state must equal the state of a serial run of the two branches.
 
@@ -392,6 +394,15 @@ Let branch A peek the queue `q1` and dequeue `q2`, while branch B peeks `q2` and
 The branches consume different records, so no check fires without the counters.
 But no serial order of the branches gives both peeks, so the merge would accept a result that no serial run gives.
 Rule OC-1 makes both branches race on the counters instead, and section [N3 of the design](design.md#n3-counters) shows the merge flow.
+
+Without the bump of a removal, two branches could merge [crossed stacks](glossary.md#crossed-stacks).
+Let the stacks `a` and `b` hold 10 and 20.
+Branch A pushes 1 onto `a` and pops `b`, and branch B pushes 2 onto `b` and pops `a`.
+The pushes bump different counters and the pops take different records, so no check fires when a pop bumps no counter.
+
+In the merge A pops 20 and B pops 10.
+But after A, B pops 1, and after B, A pops 2, so no serial order gives the merged pops.
+Rule OC-1 makes both branches race on both counters instead (`crossed_stacks_without_removal_counters_fabricate`, `CounterConflict.v:1759`).
 
 ### 3.1 Queue
 
@@ -566,11 +577,12 @@ $`\mathrm{taken}(o, R, j)`$ is 1 for a fire that binds a non-persistent record $
 
 **Rule BG-5: peeks.** A peek fire removes a non-persistent record, as the host COMM does ([decision 45](decision-register.md#decision-45), Rule E).
 The same operation sends the record again: the record is offered to the waiters first, and it is stored when no waiter takes it.
-The second send has the identity of the record and registers the cost authority of the record (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:715-747`).
+The second send has the identity of the record and registers the cost authority of the record (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:721-753`).
 
 **Rule BG-6: peek waiters.** A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
 
 **Rule BG-7: no counter.** A bag has no counter. Every record and every waiter has the order 0, so a re-issued element keeps its record and its identity ([decision 43](decision-register.md#decision-43)).
+So two branches that write one bag merge, as on a host channel (`rholang/tests/reified_merge_p5.rs:628-683`).
 
 **Rule BG-8: bounds.** One transaction makes at most `FIRE_ROUND_CAP` fires, the fires of a peek re-store included ([decision I-21](decision-register.md#i-21)).
 A divergent pair or the cap re-issues the element in flight, and every read and copy is reserved before it is made ([decision 42](decision-register.md#decision-42)).
@@ -588,6 +600,7 @@ Only an element that does not fire is stored or parked, so a receive can fire th
 
 **Rule CL-3: counter.** Every operation that commits bumps the counter of the collection once ([decision 31](decision-register.md#decision-31)).
 Two branches that operate on one cell race under merge check #1, so a merge never puts two records into one cell.
+A cell operation that fails with `CellOccupied` fails its deploy, and the merge leaves a failed deploy out (`rholang/tests/reified_merge_p5.rs:687-735`).
 
 **Rule CL-4: peeks.** A consume-side peek removes a non-persistent record, and the same transaction stores the record again with its identity (Rule E).
 The fire left the record slot empty, so the re-store is never `CellOccupied`.
@@ -623,7 +636,101 @@ The settle after the plan and a settle job re-issue a settle job, because the el
 
 **Rule SK-7: order.** Records and waiters leave in LIFO order, and no record and waiter pair matches when a transaction ends (`stack_lifo`, `stack_produce_preserves_inv`).
 
-### 3.5 Receive queries
+### 3.5 Set
+
+A set collection is a bag whose records form classes of equal payloads.
+The family `hashmap:set` runs `SetDiscipline` on the scan driver of the bag (`rholang/src/rust/interpreter/spaces/disciplines/set.rs:80-153`).
+
+**Rule ST-1: key.** The class key of a payload $`p_1 \dots p_n`$ is the F5 key
+
+```math
+\mathrm{key}(p_1 \dots p_n) = \mathrm{u64}(n) \,\Vert\, \mathrm{u64}(\ell_1) \,\Vert\, b_1 \,\Vert\, \cdots \,\Vert\, \mathrm{u64}(\ell_n) \,\Vert\, b_n
+```
+
+Here $`b_i`$ is the bincode of the sorted $`p_i`$, and $`\ell_i`$ is the length of $`b_i`$ (`rholang/src/rust/interpreter/spaces/disciplines/set.rs:164-215`).
+$`\mathrm{u64}`$ gives the 8 big-endian bytes of a length.
+The key never includes the random state, the authority or the cost stack of a record.
+
+**Rule ST-2: classes.** Two records are in one class exactly when their keys are equal.
+The keys are equal exactly when the sorted elements of the payloads are equal (`set_key_injective`).
+
+**Rule ST-3: store and view.** The store keeps every record of a set, also equal ones.
+The view of the records has one representative for each class: its first member in the canonical order of DR-75 ([decision 41](decision-register.md#decision-41)).
+
+**Rule ST-4: receive.** A receive takes the first record in canonical order whose payload its pattern binds, and that record is the representative of its class.
+The receive checks its guard once, on that record, and a refusal parks it ([decision 37](decision-register.md#decision-37)).
+
+**Rule ST-5: class fire.** A receive that does not peek fires one consume over $`[D; n]`$ on every stored member of the class, the representative first (F3, F20).
+The fire dispatches only the result of the representative, and it removes every member that is not persistent (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:588-676`).
+
+**Rule ST-6: send and retire.** A send fires the first waiter in canonical order whose pattern binds the datum and whose guard admits it.
+After each fire of a waiter that does not peek, the send retires the non-persistent stored members of the class of its datum.
+Each retire is a single-channel COMM of a `K_retire` continuation, in canonical order (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:787-846`).
+A retire is never dispatched, and it is not a fire round of the transaction.
+
+**Rule ST-7: peeks.** A peek binds only the representative, on $`[D]`$, and its fire removes a representative that is not persistent.
+The same operation sends the representative again (Rule E, [decision 45](decision-register.md#decision-45)), and a peek retires nothing.
+When the second send fires a waiter that does not peek, that fire retires the class (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:700-780`).
+
+**Rule ST-8: membership.** The driver compares the metered hashes of two keys first, and it compares the full keys only when the hashes are equal (DR-90).
+So a hash collision never joins two classes (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:851-866`).
+
+**Rule ST-9: no counter.** A set has no counter, no params, no query and no capacity.
+Two waiters are equal only when their bytes are equal (F14). Every order is 0, so a re-issued element keeps its identity ([decision 43](decision-register.md#decision-43)).
+
+**Rule ST-10: keys under a budget.** A metered job stores only a record whose key exists under its metering (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:411-421`).
+The metered sorter rejects a term deeper than its depth limit with `HostWorkRejected`, so the send of such a payload fails before it stages anything.
+Without a budget the host sorter keys every payload, so a job without a budget stores every record.
+A record that such a job stored can lack a key under a later budget.
+Then a metered class operation that reaches the record fails before it stages anything.
+
+The class law of a class fire (`set_consume_retires_class`) is
+
+```math
+\#_s(R \setminus C) = \begin{cases} 0 & \text{if } \mathrm{key}(s) = \mathrm{key}(k) \text{ and } s \text{ is not persistent} \\ \#_s(R) & \text{otherwise} \end{cases}
+```
+
+Here $`R`$ is the stored records, $`k`$ is the representative, and $`C`$ is the set of members that the fire removes.
+$`\#_s(R)`$ is the number of records with the source $`s`$ in $`R`$.
+
+### 3.6 Priority queue
+
+A priority-queue collection keeps its records in levels and its waiting continuations in lanes ([decision 38](decision-register.md#decision-38)).
+The family `hashmap:priorityqueue` runs `PriorityQueueDiscipline` on the head driver and the settle loop (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:232-343`).
+
+**Rule PQ-1: levels.** A send with `priority = p` puts its datum in the level $`p`$.
+A send without a priority puts its datum in the unprioritized level, which comes after every priority level (F6, `rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:119-155`).
+
+**Rule PQ-2: lanes.** A receive with `priority = p` waits in the lane of the level $`p`$.
+A receive without a priority waits in the unrestricted lane (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:157-193`).
+
+**Rule PQ-3: no storage for each level.** A record holds its level in the priority slot of its envelope, and a continuation holds its lane in its policy slot (`rholang/src/rust/interpreter/spaces/record.rs:842-1208`).
+So the priority queue keeps no storage for each level (I-10).
+
+**Rule PQ-4: heads.** Each level and each lane is a FIFO queue whose head has the least pair (ord, bincode bytes) (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:352-394`).
+The lane of the level $`p`$ sees the head of the level $`p`$ (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:186-192`).
+The unrestricted lane sees the heads of all levels in ascending level order (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:510-536`).
+
+**Rule PQ-5: send.** A send offers its datum to the head of the lane of its level and to the head of the unrestricted lane.
+The older head that fits fires, and a refusal moves the send on to the other head (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:542-594`, `756-815`).
+
+**Rule PQ-6: receive.** A receive binds the first matching level head that its lane sees, and it checks its guard once, on that head.
+A refusal parks the receive (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:821-924`).
+
+**Rule PQ-7: peeks.** A peek of a record that is not persistent stores the record again at once, at its order and in its level (Rule E, `rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:929-938`).
+
+**Rule PQ-8: settle.** A fire can expose a pair, so the priority queue settles before and after each plan and in a settle job (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:316-342`).
+Strict confluence fails for a priority queue (readiness review S4), so the settle fires the oldest fireable lane head first (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:969-1063`).
+When that fire binds a stored record while a record is in flight, the record in flight lands first (`rholang/src/rust/interpreter/spaces/settle.rs:425-430`).
+
+**Rule PQ-9: params.** The send param and the query param `priority` take a `GInt` of at least 0 (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:717-729`).
+When the space sets the bound `priorities`, the value must be below it, and otherwise the operation fails with `InvalidParam`.
+A positional query part fails with `PositionalParamsUnsupported`.
+
+**Rule PQ-10: fire count and re-issues.** The rules SK-5 and SK-6 of the stack hold for the priority queue.
+A re-issued element takes its FIFO place in its level, and a re-entered waiter keeps its seniority in its lane ([decision 43](decision-register.md#decision-43)).
+
+### 3.7 Receive queries
 
 **Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:736-750`).
 The inner channel takes the read rule of a receive source.
@@ -634,9 +741,9 @@ The default space fails with `QuerySpecUnsupported`, and a user agent fails clos
 
 **Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:723-725`).
 
-### 3.6 Disciplines of later phases
+### 3.8 Disciplines of later phases
 
-Wave W3 adds the set and the priority queue (P5b), the joins (P5c), and the PathMap delivery, and phase P6 adds the VectorDB discipline.
+Wave W3 adds the joins (P5c) and the PathMap delivery, and phase P6 adds the VectorDB discipline.
 The section of each discipline must state these items, which the trait `Discipline` of the design also names:
 
 - the head rule of each side, and whether an incoming entry reaches the head
@@ -693,7 +800,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | Rule | Formal evidence | Tests |
 |---|---|---|
 | SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:650`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:794`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
-| SM-2 | `counter_and_config_roundtrip` (`RecordEnvelope.v:994`), the TLA+ invariant `HandleUnique` (U5) | `prop_counter_and_config_records_roundtrip`, `space_meta_channels_config_record` |
+| SM-2 | `counter_and_config_roundtrip` (`RecordEnvelope.v:1042`), the TLA+ invariant `HandleUnique` (U5) | `prop_counter_and_config_records_roundtrip`, `space_meta_channels_config_record` |
 | SM-3 | The TLA+ invariant `DanglingIsDeterministicError` (U6) | `reified_handle_dangling_aborts`, `space_queue_dangling_name_aborts` |
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:727`), `space_and_collection_counters_distinct` (`Namespace.v:784`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
@@ -702,10 +809,10 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1035`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:995`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
-| OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:772`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
+| OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:817`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
 | OC-4 | None | `space_counter_rejects_corrupt_counters` |
-| OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:743`), `ordered_reads_race_on_counter` (`CounterConflict.v:757`), `same_block_ops_chain` (`CounterConflict.v:946`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain` |
-| OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1322`), the TLA+ invariant `NoMergedOrderFabrication` (U4) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge` |
+| OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:788`), `ordered_reads_race_on_counter` (`CounterConflict.v:802`), `same_block_ops_chain` (`CounterConflict.v:991`), `shared_collection_race` (`CounterConflict.v:767`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain`, `space_collection_conflicts_cell_writes_race`, `space_collection_conflicts_stack_push_pop_race`, `prop_cell_ops_race_on_counter` |
+| OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1367`), `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:1759`), the TLA+ invariant `NoMergedOrderFabrication` (U4, and V16 with `MC_CounterConflict_Stacks.cfg`) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge`, `prop_merged_stack_state_is_serial`, `space_collection_conflicts_crossed_stacks` |
 | QD-1 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:530`) | `prop_queue_candidates_head_only` |
 | QD-2, QD-3 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`), the TLA+ invariant `HeadBlocks` (U2) | `space_queue_head_only_data_head_blocks`, `space_queue_head_only_waiter_head_blocks` |
 | QD-4, QD-5 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1380`) | `space_queue_reissue_persistent_send`, `space_queue_reissue_peek_produce`, `space_queue_divergent_pair_exhausts_phlo` |
@@ -750,6 +857,22 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | SK-3, SK-4 | `stack_produce_preserves_inv` (`StackDiscipline.v:1043`), `stack_settle_keeps_unspent_records` (`StackDiscipline.v:2151`), `stack_peek_restore_needs_no_settle` (`StackDiscipline.v:1405`), the TLA+ invariants `StackNoPendingMatch` (V12) and `NoRecordLost` (V13) | `prop_stack_no_pending_match_any_schedule` |
 | SK-5, SK-6 | `stack_settle_terminates` (`StackDiscipline.v:1959`), the TLA+ invariant `TxnFiresBounded` (V15) | `prop_stack_txn_fires_bounded_at_the_cap`, `prop_stack_settle_bounded_any_schedule`, `space_stack_plan_after_a_full_settle_reissues_the_operation` |
 | SK-7 | `stack_lifo` (`StackDiscipline.v:1255`), the TLA+ invariant `LifoOrder` (V11) | `prop_stack_lifo_order_any_schedule` |
+| ST-1, ST-2 | `set_key_injective` (`SetDiscipline.v:297`) | `prop_set_key_injective`, `space_set_discipline_key_length_prefix_no_collision` |
+| ST-3 | `set_view_dedups_equal_pars` (`SetDiscipline.v:704`) | `prop_set_view_dedups_equal_pars`, `space_set_discipline_duplicates_stay_distinct_records` |
+| ST-4, ST-5 | `set_consume_retires_class` (`SetDiscipline.v:792`), `set_retire_comm_lines_up` (`SetDiscipline.v:872`) | `prop_set_consume_retires_class`, `prop_set_retire_comm_lines_up` |
+| ST-6 | `set_produce_fire_retires_stored_class` (`SetDiscipline.v:1151`), the TLA+ invariant `SetClassRetired` (V6) | `prop_set_produce_fire_retires_stored_class`, `prop_set_class_retired_any_schedule`, `space_set_discipline_guarded_waiter_then_equal_send_retires_class` |
+| ST-7 | `set_peek_restores_representative_only` (`SetDiscipline.v:1205`) | `prop_set_peek_restores_representative_only`, `space_set_discipline_peek_restore_reoffer_retires_class` |
+| ST-8 | `set_membership_full_compare_on_equal_hash` (`SetDiscipline.v:1274`) | `prop_set_membership_full_compare_on_equal_hash` |
+| ST-9 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`) | `space_set_discipline_persistent_reissue_keeps_identity`, `space_set_discipline_equal_receives_stay_two_waiters` |
+| ST-10 | `set_key_trace_covered` (`SetDiscipline.v:1389`) | `prop_set_key_trace_covered`, `space_set_discipline_failed_canonicalization_rejects_before_staging` |
+| PQ-1 | `pq_level_order` (`PriorityQueue.v:863`), `pq_unprioritized_lowest` (`PriorityQueue.v:887`), the TLA+ invariant `PqLevelOrder` (V17) | `prop_pq_level_order`, `space_disciplines_pq_ascending_levels`, `space_disciplines_pq_unprioritized_lowest` |
+| PQ-2, PQ-4 | `pq_restricted_waiter_in_level_queue` (`PriorityQueue.v:1921`), `pq_unrestricted_first_matching_level` (`PriorityQueue.v:1943`), `pq_fifo_within_level` (`PriorityQueue.v:2151`), `pq_head_blocks_within_level` (`PriorityQueue.v:2324`) | `prop_pq_fifo_order_any_schedule`, `space_disciplines_pq_restricted_waiter_waits_in_level_queue`, `space_disciplines_pq_head_blocks_within_level` |
+| PQ-3 | `pq_no_level_storage` (`PriorityQueue.v:3903`), `datum_priority_slot_roundtrip` (`RecordEnvelope.v:1473`), `continuation_policy_slot_roundtrip` (`RecordEnvelope.v:1509`) | `prop_pq_no_level_storage`, `prop_pq_record_slots_roundtrip` |
+| PQ-5, PQ-8 | `pq_settle_oldest_first` (`PriorityQueue.v:1899`), `pq_settle_order_matters` (`PriorityQueue.v:4081`), `pq_produce_preserves_inv` (`PriorityQueue.v:1390`), `pq_without_settle_breaks_inv` (`PriorityQueue.v:4002`), the TLA+ invariants `PqOldestFirst` (V18) and `PqNoPendingMatch` (V19) | `prop_pq_oldest_first_any_schedule`, `prop_pq_no_pending_match_any_schedule`, `space_disciplines_pq_older_waiter_wins` |
+| PQ-6 | `pq_consume_preserves_inv` (`PriorityQueue.v:1404`), `pq_unrestricted_first_matching_level` (`PriorityQueue.v:1943`) | `prop_pq_no_pending_match_any_schedule`, `space_disciplines_pq_guarded_unrestricted_receive_parks` |
+| PQ-7 | `pq_peek_restores_head` (`PriorityQueue.v:2486`), `pq_settle_keeps_unspent_records` (`PriorityQueue.v:2864`), the TLA+ invariant `NoRecordLost` (V20) | `space_disciplines_pq_peek_restores_head`, `space_disciplines_pq_produce_peek_waiter_reoffers` |
+| PQ-9 | `pq_priority_domain` (`PriorityQueue.v:3730`) | `prop_pq_priority_domain`, `space_disciplines_pq_priorities_bound_rejects`, `space_disciplines_pq_priority_param_type_checked` |
+| PQ-10 | `pq_settle_terminates` (`PriorityQueue.v:3181`), `pq_reissue_takes_level_fifo_place` (`PriorityQueue.v:2673`), `pq_reentered_waiter_keeps_seniority` (`PriorityQueue.v:2716`), the TLA+ invariants `TxnFiresBounded` (V22) and `ReissueKeepsOrd` (V21) | `prop_pq_txn_fires_bounded_at_the_cap`, `prop_pq_reissue_keeps_ord_any_schedule` |
 
 No model states the rules OC-4, QD-8, AL-6, AL-8, PP-3 and PP-4, because they are checks of limits, of input and of the fail-closed rules.
 Their tests show each abort.

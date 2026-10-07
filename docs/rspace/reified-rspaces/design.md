@@ -1599,8 +1599,8 @@ For a queue space with the default qualifier, the map is `{"spaceId": GByteArray
 The decoder `SpaceConfig::from_par` accepts only the exact image of `to_par`, and in P4 the theory must be `Nil`.
 Each read of a config record also requires that its `spaceId` is the space id of the space, otherwise the operation fails with `Inconsistent`.
 
-**Authorities.** Each operation builds one `Introduction`, which holds its introduction authority and the phlo budget of the deploy (`spaces/record.rs:820-861`).
-Each staged operation registers that authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:869-891`).
+**Authorities.** Each operation builds one `Introduction`, which holds its introduction authority and the phlo budget of the deploy (`spaces/record.rs:1213-1254`).
+Each staged operation registers that authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:1262-1284`).
 Table N2.4 gives the authorities of each record (P4 design B.7).
 
 *Table N2.4. The authorities of the records.*
@@ -1719,8 +1719,8 @@ The two consumed sets do not overlap, but no serial order of the branches gives 
 A second example uses persistent receives: each branch fires the persistent head waiter of one queue and stores a datum on the other queue.
 With a bump on every operation, both examples race on the counters.
 
-The headline `merge_without_race_is_serializable` (`CounterConflict.v:1322`) proves that a merge without a race gives the state of some serial run of whole deploys [[Pap79](#ref-pap79)].
-The headline `counter_free_peek_admits_write_skew` (`CounterConflict.v:1596`) computes the write skew of the counter-free peek.
+The headline `merge_without_race_is_serializable` (`CounterConflict.v:1367`) proves that a merge without a race gives the state of some serial run of whole deploys [[Pap79](#ref-pap79)].
+The headline `counter_free_peek_admits_write_skew` (`CounterConflict.v:1666`) computes the write skew of the counter-free peek.
 
 **Cost.** Each operation on a queue pays three extra events: the Consume and the COMM of the take, and the Produce of the put.
 The first operation on a collection pays four extra events, because it also produces the space counter.
@@ -1731,11 +1731,20 @@ Figure N3 shows the merge flow of the counter conflict.
 
 *Figure N3. Source: [diagrams/08-counter-conflict-merge.puml](diagrams/08-counter-conflict-merge.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
+A removal must bump the counter too.
+The M-1 arbitration found this with two [crossed stacks](glossary.md#crossed-stacks), and Figure N3b shows the case.
+`CounterConflict.tla` runs the same merge for stacks, and its Unsafe control `RemovalCounterFreeUnsafe.cfg` drops the bump of a pop.
+The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:1759`) computes the counterexample.
+
+![The crossed stacks, as an activity diagram. The pre-state holds the stack a with the record 10 and the stack b with the record 20, each with its counter record. Branch A pushes 1 onto a and pops b, and branch B pushes 2 onto b and pops a. In lane 1, the code, every operation bumps its counter, so both branches consume the pre-state counter produces of a and b, check 1 finds the shared produces, and the merge rejects one branch. In lane 2 a pop does not bump the counter: the branches consume different produces, checks 1, 2 and 3 find nothing, and the merge keeps both pops, A popped 20 and B popped 10. But the serial order A then B makes B pop 1, and the order B then A makes A pop 2, so no serial order gives the merged outcome.](diagrams/23-crossed-stacks-merge.svg)
+
+*Figure N3b. Source: [diagrams/23-crossed-stacks-merge.puml](diagrams/23-crossed-stacks-merge.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
 ### N4. GenericSpace and the queue discipline
 
 `GenericSpace<S, D>` (`spaces/generic.rs:392-395`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
 The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:54`).
-The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:120-130`, `195-274`).
+The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:218-228`, `343-422`).
 Two traits separate the parts of a family:
 
 - `OuterStore` (`spaces/generic.rs:129-190`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`. Its P5 hooks check a routed key, stage the records of a creation, and allocate index names. The defaults of the hooks do no work.
@@ -2598,11 +2607,11 @@ Every new family runs on the engine of S1. A discipline and an outer store plug 
 
 #### N11.1 Family dispatch and registration
 
-`Family` lists the wired families, and `FamilyAgent` runs the agent of the family that the config of the space names (`spaces/families.rs:72-85`, `spaces/families.rs:199-208`).
+`Family` lists the wired families, and `FamilyAgent` runs the agent of the family that the config of the space names (`spaces/families.rs:122-159`, `spaces/families.rs:347-356`).
 The dispatch tries the arms in the order of `Family::WIRED`: `hashmap:queue` first, then ascending family index.
-Each arm that it tries reserves one comparison of the names of the config and of the arm (`spaces/families.rs:120-130`).
+Each arm that it tries reserves one comparison of the names of the config and of the arm (`spaces/families.rs:218-228`).
 So the arm at the position $`i`$ reserves $`i + 1`$ comparisons, and a queue operation keeps the host work of P4.
-At this commit six families are wired: `hashmap:queue`, `hashmap:bag`, `hashmap:stack`, `hashmap:cell`, `array:queue` and `vector:queue`.
+At this commit eighteen families are wired: the bag, queue, stack, set, cell and priority queue families of the `hashmap`, `array` and `vector` stores.
 
 The registration reads the family dispatch (`spaces/factory/urn.rs:124`).
 A factory row is registered exactly when its family has an arm.
@@ -2790,6 +2799,78 @@ ALLOCATE-IN-SPACES(agent, new, env, rand, spaces, α):    ▷ reducer_hooks.rs, 
 
 `eval_new` in a use block and NEWSPACE both call `allocate_in_spaces` with the cost authority $`\alpha`$ of the evaluating process.
 A store without an allocator answers `Baseline`. Its job reads the config, makes no event and charges no phlo, and a `new` without plain binders in a space runs no job.
+
+#### N11.9 The set
+
+The set adds only its class key to the scan driver (`spaces/disciplines/set.rs:148-153`).
+The class fire, RETIRE-CLASS and the membership test are the one implementation in `scan.rs` (rule R-2 of the P5 design).
+
+```text
+SET-KEY(p_1 … p_n):                          ▷ set.rs:164-215; every buffer and encode reserved (decision 42)
+  E ← a reserved buffer of n encodings
+  for each p_i:
+    b_i ← bincode(sort(p_i))                  ▷ the metered sorter in a metered job, else the host sorter
+    L ← L + 8 + |b_i|                         ▷ checked: an overflow gives HostWorkRejected
+  K ← a reserved buffer of exactly L bytes
+  return u64_be(n) ‖ u64_be(|b_1|) ‖ b_1 ‖ … ‖ u64_be(|b_n|) ‖ b_n
+CLASS-KEY(payload) = Some(SET-KEY(payload))   ▷ a bag gives None and does no work
+```
+
+The driver computes class keys in three places (`spaces/disciplines/scan.rs:588-644`, `497-519`, `787-846`).
+`class_of` keys the members after the found record, `retiring_of` keys the element that fires a waiter, and `retire_class` keys each stored member.
+It compares two keys through `same_class`: their metered hashes first, and the full keys only when the hashes are equal (`spaces/disciplines/scan.rs:851-866`).
+The membership test reads each candidate once, so the driver keeps no ordered map of classes, and it reserves only the work that it does.
+
+A metered job stores only a record whose key exists under its metering (`spaces/disciplines/scan.rs:411-421`).
+The metered sorter has a depth limit, so a record without a key could otherwise enter a set.
+Every later class operation that reaches such a record would fail.
+Without a budget the host sorter keys every payload, so the check runs only in a metered job.
+The check does no work for a bag.
+
+![The set, as an activity diagram. A receive takes the first record in the order of DR-75 whose payload its pattern binds, and it checks its guard once on that record; a refusal parks the receive. A receive that peeks fires on the record alone, and RESTORE-SCAN then sends the record again. A receive that does not peek collects the record and every stored member with an equal key, fires one consume over the data channel for the whole class, dispatches only the result of the found record, and removes the members that are not persistent. A send fires the first waiter in the order of DR-75 that binds and admits its datum, and after a fire of a waiter that does not peek, RETIRE-CLASS stages one single-channel K_retire COMM for each stored non-persistent member of the class of the datum. A send without a waiter stores its datum, but in a metered job whose key computation fails it stops with HostWorkRejected before any staging.](diagrams/24-set-class-fire.svg)
+
+*Figure N11.9. Source: [diagrams/24-set-class-fire.puml](diagrams/24-set-class-fire.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+#### N11.10 The priority queue
+
+`PriorityQueueDiscipline` keeps its records in levels and its waiters in lanes ([decision 38](decision-register.md#decision-38), `spaces/disciplines/priority_queue.rs:232-343`).
+A record holds its level in the priority slot of its envelope, and a continuation holds its lane in its policy slot (`spaces/record.rs:842-1208`).
+So the queue keeps no storage for each level (I-10). `lane_heads` builds the map of the heads of the levels or of the lanes in one pass over a side (`spaces/disciplines/priority_queue.rs:352-394`).
+
+```text
+PQ-OFFER(op, ord):                                     ▷ priority_queue.rs:756-815
+  if open_plan(op) re-issues: return it                ▷ settle before the plan, one fire count (decision 49)
+  ℓ ← the level of op.params.priority, or the unprioritized level
+  if op is not at the FIFO place of the head of level ℓ: STORE; settle after; return   ▷ decision 43
+  loop
+    W ← the older of the heads of the lanes Level(ℓ) and Any that is not refused,
+        whose pattern binds the datum and whose guard admits it    ▷ a refusal moves on (decision 38)
+    if W = none: STORE; settle after; return
+    fire W; Continue → loop; Done → settle after; Reissue → re-issue op with its order
+PQ-RECEIVE(op, ord):                                   ▷ priority_queue.rs:821-924
+  if open_plan(op) re-issues: return it
+  L ← Level(p) for priority = p, else Any
+  if op is not at the head of its lane L: PARK; settle after; return
+  loop
+    h ← the first level head that L sees and whose payload the pattern binds
+    if h = none, or the guard refuses h: PARK; settle after; return   ▷ the guard is checked once (decision 38)
+    fire on h; a peek of a non-persistent h stores h again at its order (Rule E)
+    Continue → loop; Done → settle after; Reissue → re-issue op with its order
+```
+
+A fire can expose a pair, so the queue settles before and after each plan and in a settle job (`spaces/disciplines/priority_queue.rs:316-342`).
+The settle runs on the settle loop of the stack.
+Strict confluence fails for a priority queue (readiness review S4).
+So `PriorityQueueView::next_fire` plans the fireable lane head with the least order (`spaces/disciplines/priority_queue.rs:969-1063`).
+When that fire binds a stored record while a record is in flight, the settle lands the record in flight first (`spaces/settle.rs:425-430`).
+
+The fire outcome decodes a fired continuation with `into_continuation`, which accepts the PQ policy slot and is strict on `Nil` for every other discipline (`spaces/record.rs:752-789`).
+The send param and the query param `priority` take a `GInt` of at least 0, below the bound `priorities` when the space sets it.
+A positional query part fails with `PositionalParamsUnsupported`.
+
+![The priority queue, as an activity diagram. Every plan opens with open_plan, which runs the settle before the plan on the one fire count of the transaction. A send takes the level of its priority, or the unprioritized level, which comes after every priority level. A send that is not at the FIFO place of the head of its level stores its record at that place. Otherwise it offers the record to the heads of the lane of its level and of the unrestricted lane, the older head first, fires the first head that binds and admits the datum, and stores the record when each head refuses. A receive takes the lane of its priority, or the unrestricted lane, and parks at its place when it is not the head of its lane. A head waiter binds the first level head that its lane sees and whose payload its pattern binds, and a missing head or a guard refusal parks it. A fire of a peek stores a non-persistent record again at its order. After the plan the settle fires the oldest fireable lane head first.](diagrams/25-priority-queue-lanes.svg)
+
+*Figure N11.10. Source: [diagrams/25-priority-queue-lanes.puml](diagrams/25-priority-queue-lanes.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 ## References
 

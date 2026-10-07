@@ -252,7 +252,7 @@
                              persist = false right after the fire. The model
                              does not include the record authority that the
                              re-store registers (Introduction::for_record,
-                             rholang/src/rust/interpreter/spaces/record.rs:851)
+                             rholang/src/rust/interpreter/spaces/record.rs:1244)
    host_produce_peeks,       produce_peeks
      head_reproduces,        (rholang/src/rust/interpreter/reduce.rs:981-1016)
      restore_reproduces      produces the removed value of each result whose

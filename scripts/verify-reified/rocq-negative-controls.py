@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocq negative controls for the Reified RSpaces P1, P2 and P4 models.
+"""Rocq negative controls for the Reified RSpaces P1, P2, P4 and P5 models.
 
 Each control mutates one rule in a scratch copy of a module
 (formal/rocq/reified_rspaces/theories). The mutation changes one definition,
@@ -58,7 +58,10 @@ The P4 controls (batch 4E-F) revert one rule of the hashmap:queue slice:
                       the kind check of the datum envelope, natural orders
   CounterConflict     the counter COMM has no peeks (M-1), the first
                       operation consumes S(sid) (A25), reified channels are
-                      never mergeable, pre-state produces are made by Base
+                      never mergeable, pre-state produces are made by Base,
+                      every operation bumps its counter, a removal and a
+                      peek included (M-1, decision 31), and a pop takes the
+                      top of a stack
   HeadOnlyDisciplines the least (ord, rank) head, the tail join of a
                       datum, the divergent re-issue (A10), the counter bump
   SpaceRefs           the write flag of a handle, R3 and R5 routing, the
@@ -124,6 +127,33 @@ takes from H23 of EventCorrelation.v:
                              body that the observer rejects in play
                              diverges in replay: host_op_pairing, and so
                              Q80, breaks
+
+The P5 controls (wave W2) revert one rule of a discipline, an outer store or
+the engine:
+  CellDiscipline         the capacity check, the plain re-store of a peek,
+                         the re-entry as a fresh element
+  DataCollection,        the DR-75 visit order, the first spatial match, the
+  ContinuationCollection multiplicity, the second send of a peek, the order
+                         of the waiters
+  Match, GenericRSpace   the guard checked once, the wildcard matcher, the
+                         engine primitives, the restore of a peek
+  OuterStorage,          the allocation rules of fixed, cyclic and growing
+  VectorStore,           stores, the key check of an index name, the keys of
+  HashMapStore           the HashMap store
+  PathMapPrefix          the segment codec of a path, the re-rooting laws
+  SpaceFactory,          the registration that follows the dispatch arms,
+  SpaceRefs              the constructor params, the route of a receive query
+  StackDiscipline        the top, the LIFO re-entry, the settle loop and its
+                         one fire count for each transaction (decision 49)
+  CounterConflict        the bumps of removals and peeks (above)
+  SetDiscipline          the length framing and the sort of the set key, the
+                         class view, the class fire and RETIRE-CLASS, the peek
+                         of the representative, the DR-90 membership, the key
+                         metering
+  PriorityQueue,         the level order, the lanes with the older head first,
+  RecordEnvelope         the settle order, the re-entry at the FIFO place of a
+                         level, the priority domain, the slots of a record and
+                         of a continuation
 
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
@@ -486,6 +516,99 @@ CONTROLS = (
      "    | PidCounter _ _ Base | PidData _ Base => true",
      "    | PidCounter _ _ _ | PidData _ Base => true",
      ("same_block_ops_chain",)),
+    # ── P5 wave W2 (MERGE): CounterConflict.v (the M-1 arbitration, decision 31) ──
+    ("cc-removal-skips-counter", "CounterConflict",
+     "a removal (a pop or a take) makes no counter events (the M-1 arbitration)",
+     "          ([EvConsume kont; EvComm kont [counter_produce (ChS k) v cr] false;\n"
+     "            EvProduce (counter_produce (ChS k) (S v) (Made tag))] ++ plan_events tag k q v (sd st k))",
+     "          ((match q with\n"
+     "            | QDequeue => []\n"
+     "            | _ => [EvConsume kont; EvComm kont [counter_produce (ChS k) v cr] false;\n"
+     "                    EvProduce (counter_produce (ChS k) (S v) (Made tag))]\n"
+     "            end) ++ plan_events tag k q v (sd st k))",
+     ("counter_consumed",)),
+    ("cc-peek-skips-counter", "CounterConflict",
+     "a peek makes no counter events (the rule before decision 31)",
+     "          ([EvConsume kont; EvComm kont [counter_produce (ChS k) v cr] false;\n"
+     "            EvProduce (counter_produce (ChS k) (S v) (Made tag))] ++ plan_events tag k q v (sd st k))",
+     "          ((match q with\n"
+     "            | QPeek => []\n"
+     "            | _ => [EvConsume kont; EvComm kont [counter_produce (ChS k) v cr] false;\n"
+     "                    EvProduce (counter_produce (ChS k) (S v) (Made tag))]\n"
+     "            end) ++ plan_events tag k q v (sd st k))",
+     ("counter_consumed",)),
+    ("cc-crossed-lifo-pops-bottom", "CounterConflict",
+     "a pop takes the bottom record (FIFO), so a serial order gives the merged pops",
+     "    | QDequeue => match rev l with h :: rest => (rev rest, Some h) | [] => (l, None) end",
+     "    | QDequeue => match l with h :: rest => (rest, Some h) | [] => (l, None) end",
+     ("crossed_stacks_without_removal_counters_fabricate",)),
+    ("cc-rf-bumps-removal", "CounterConflict",
+     "the removal-counter-free model bumps the counter of a removal, so the crossed stacks race",
+     "  Definition exec_rf (tag : nat) (st : store) (k : Coll) (q : qop) : step_result :=\n"
+     "    match q with\n"
+     "    | QDequeue =>",
+     "  Definition exec_rf (tag : nat) (st : store) (k : Coll) (q : qop) : step_result :=\n"
+     "    match q with\n"
+     "    | QPeek =>",
+     ("crossed_stacks_without_removal_counters_fabricate",)),
+    # ── P5 wave W2 (SET): SetDiscipline.v (F5 to F10, Rule E, DR-90, decision 42) ──
+    ('sd-key-without-length-framing', 'SetDiscipline', 'the set key concatenates the element encodings without their u64 length fields, so two payloads with one concatenation collide (F5, F6)', 'Definition frame (b : list nat) : list nat := u64_be (length b) ++ b.', 'Definition frame (b : list nat) : list nat := b.', ('frames_injective',)),
+    ('sd-key-without-sort', 'SetDiscipline', 'the set key encodes each element as it is, not its sorted Par, so two equal Pars in two orders get two keys (F5)', '  Definition canonical_bytes (p : T) : list nat := enc (srt p).', '  Definition canonical_bytes (p : T) : list nat := enc p.', ('canonical_map',)),
+    ('sd-view-keeps-every-member', 'SetDiscipline', 'the view of a set keeps every member of a class, not one representative (the legacy write-time dedup removed, and nothing replaces it)', '  Definition view (rs : list nat) : list nat := dedup [] (canon rs).', '  Definition view (rs : list nat) : list nat := canon rs.', ('set_view_dedups_equal_pars',)),
+    ('sd-view-in-list-order', 'SetDiscipline', 'the representative of a class is its first member in the list order of the store, not in the canonical order of DR-75 (decision 41)', '  Definition view (rs : list nat) : list nat := dedup [] (canon rs).', '  Definition view (rs : list nat) : list nat := dedup [] rs.', ('set_view_dedups_equal_pars',)),
+    ('sd-consume-retires-representative-only', 'SetDiscipline', 'a receive that does not peek binds and removes the representative only, so the other members of its class stay (the legacy consume; F3 reverted)', '  Definition class_of (k : nat) (rs : list nat) : list nat := filter (same k) (canon rs).', '  Definition class_of (k : nat) (rs : list nat) : list nat := [k].', ('class_of_count',)),
+    ('sd-class-fire-removes-persistent-members', 'SetDiscipline', 'a class fire removes its persistent members too, where a COMM never removes a persistent record', "    | c :: C' => remove_all C' (if persistent c then rs else remove_one c rs)", "    | c :: C' => remove_all C' (remove_one c rs)", ('count_remove_all',)),
+    ('sd-class-fire-repeats-representative', 'SetDiscipline', 'the class fire lists its representative twice (the representative and then the whole class), so two candidates claim one record (claim_positions)', '    let C := class_of k rs in', '    let C := k :: class_of k rs in', ('set_retire_comm_lines_up',)),
+    ('sd-retire-dispatched', 'SetDiscipline', 'a K_retire fire dispatches its result, where a retire is never dispatched (Staged::Retire)', '    {| chans := [d]; pats := [rp]; cands := [(d, m)]; dispatched := 0 |}.', '    {| chans := [d]; pats := [rp]; cands := [(d, m)]; dispatched := 1 |}.', ('set_retire_comm_lines_up',)),
+    ('sd-class-fire-dispatches-every-member', 'SetDiscipline', 'the class fire dispatches the result of every member, not of the representative only (F3, F20: binds = 1)', '       cands := map (fun s => (d, s)) C; dispatched := 1 |}.', '       cands := map (fun s => (d, s)) C; dispatched := length C |}.', ('set_retire_comm_lines_up',)),
+    ('sd-retire-class-stages-nothing', 'SetDiscipline', 'RETIRE-CLASS stages no K_retire, so a produce-side fire leaves the stored members of the class (decision 37 reverted: the R5 S3 trace)', '    map Retire (filter (fun s => same x s && negb (persistent s)) (canon rs)).', '    map Retire [].', ('retire_class_clears',)),
+    ('sd-peek-fire-retires-class', 'SetDiscipline', 'a fire of a peek waiter retires the class of the datum, where a peek waiter takes no datum', '          let retires := if wpeek w then [] else retire_class x rs in', '          let retires := retire_class x rs in', ('offer_retire_after_fire',)),
+    ('sd-peek-binds-whole-class', 'SetDiscipline', 'a peek binds the whole class of its choice, not the representative alone', '  Definition peek_group (k : nat) (rs : list nat) : list nat := [k].', '  Definition peek_group (k : nat) (rs : list nat) : list nat := class_of k rs.', ('set_peek_restores_representative_only',)),
+    ('sd-peek-without-restore', 'SetDiscipline', 'a peek fire removes the representative and the operation never sends it again (decision 45, Rule E, reverted)', '          let (ops, e) := offer_pass (canon ws) k (remove_all (peek_group k rs) rs) rounds in\n          (FireGroup c (peek_group k rs) :: ops, e)', '          ([FireGroup c (peek_group k rs)], Settled)', ('set_peek_restores_representative_only',)),
+    ('sd-membership-compares-hashes-only', 'SetDiscipline', 'the membership test answers with the comparison of the hashes alone, so a hash collision makes two classes one', '    then ([CompareHashes; CompareKeys], keq key other)', '    then ([CompareHashes], true)', ('set_membership_full_compare_on_equal_hash',)),
+    ('sd-membership-always-compares-keys', 'SetDiscipline', 'the membership test compares the full keys also on unequal hashes, so it reserves and reads a full comparison for every candidate', '    else ([CompareHashes], false).', '    else ([CompareHashes; CompareKeys], keq key other).', ('set_membership_full_compare_on_equal_hash',)),
+    ('sd-key-buffer-filled-before-reserve', 'SetDiscipline', 'the key buffer is filled before it is reserved (decision 42)', '  ++ step (key_buffer kw)', '  ++ [Read (key_buffer kw); Reserve (key_buffer kw)]', ('set_key_trace_covered',)),
+    # ── P5 wave W2 (PQ): RecordEnvelope.v (the PQ slots) and PriorityQueue.v (decision 38) ──
+    ('re-pq-negative-level', 'RecordEnvelope', 'the priority slot decoder accepts a negative GInt as a level', '  else match natural_of p with Some z => Some (Some z) | None => None end.', '  else match p with PInt z false => Some (Some z) | _ => None end.', ('level_of_slot_sound',)),
+    ('re-pq-unprioritized-zero', 'RecordEnvelope', 'the unprioritized level is encoded as GInt(0), the encoding of the level 0', '  match priority with Some p => int_par p | None => PNil end.', '  match priority with Some p => int_par p | None => int_par 0 end.', ('level_of_slot_priority_slot',)),
+    ('re-pq-ignores-embedding', 'RecordEnvelope', 'the datum decoder of a priority queue does not check the embedding slot', '          if is_tag t RDatum && is_nil embedding then', '          if is_tag t RDatum then', ('unwrap_pq_datum_sound',)),
+    ('re-pq-policy-any-key', 'RecordEnvelope', 'the policy decoder accepts a map with any string key', '      if bytes_eqb k key_priority then', '      if true then', ('level_of_policy_sound',)),
+    ('re-pq-into-strict', 'RecordEnvelope', 'the outcome decoder decodes with the strict P4 decoder, which rejects a policy', 'Definition into_continuation (k : tagged) : option (Z * tagged) :=\n  match unwrap_pq_continuation k with\n  | Some (z, _, original) => Some (z, original)\n  | None => None\n  end.', 'Definition into_continuation (k : tagged) : option (Z * tagged) := unwrap_continuation k.', ('continuation_policy_slot_roundtrip',)),
+    ('pq-head-greatest', 'PriorityQueue', 'the lane-head scan keeps the greater order instead of the least', '  Definition below (a b : E) : bool := (k1 a <? k1 b) || ((k1 a =? k1 b) && (k2 a <? k2 b)).', '  Definition below (a b : E) : bool := (k1 b <? k1 a) || ((k1 a =? k1 b) && (k2 a <? k2 b)).', ('below_false_le',)),
+    ('pq-head-by-position', 'PriorityQueue', 'the head of a lane is its first entry in list order', '  Definition least (l : list E) : option E := least_from None l.', '  Definition least (l : list E) : option E := hd_error l.', ('least_spec',)),
+    ('pq-unprioritized-first', 'PriorityQueue', 'the unprioritized level comes before every priority level (F6 reverted)', '  Definition lvl_class (lvl : option nat) : nat := match lvl with Some _ => 0 | None => 1 end.', '  Definition lvl_class (lvl : option nat) : nat := match lvl with Some _ => 1 | None => 0 end.', ('lvl_key_le',)),
+    ('pq-first-match-by-position', 'PriorityQueue', 'a receive binds the first matching level head in list order, not in level order', '    least (fun r => lvl_class (r_lvl r)) (fun r => lvl_index (r_lvl r))', '    hd_error', ('first_match_spec',)),
+    ('pq-level-lane-sees-all', 'PriorityQueue', 'the waiter queue of a level sees every level (decision 38 reverted)', '    match lane with Some p => lvl_eqb lvl (Some p) | None => true end.', '    match lane with Some p => true | None => true end.', ('sees_level',)),
+    ('pq-fire-behind-head', 'PriorityQueue', 'a receive binds the first visible matching record in list order, also behind a level head', '        match first_match (s_records st) (w_lane k) (w_pat k) with\n        | None => mkPlanned [SPark k] PDone', '        match find (fun r => sees (w_lane k) (r_lvl r) && spatial (w_pat k) (r_val r)) (s_records st) with\n        | None => mkPlanned [SPark k] PDone', ('pq_unrestricted_first_matching_level',)),
+    ('pq-guard-every-head', 'PriorityQueue', 'a guard refusal moves on to the next level head instead of parking (decision 38 reverted)', '                  mkPlanned (fire ++ p_ops rest) (p_end rest)\n              end\n            else mkPlanned [SPark k] PDone', "                  mkPlanned (fire ++ p_ops rest) (p_end rest)\n              end\n            else receive_loop fuel' fired (mkS (drop_record h (s_records st)) (s_waiters st) (s_counter st)) k", ('pq_unrestricted_first_matching_level',)),
+    ('pq-settle-any-order', 'PriorityQueue', 'the settle fires the first fireable head in list order, not the oldest (S4 reverted)', '  Definition oldest (l : list waiter) : option waiter := least w_ord w_rank l.', '  Definition oldest (l : list waiter) : option waiter := hd_error l.', ('oldest_spec',)),
+    ('pq-offer-any-order', 'PriorityQueue', 'a produce plan tests the head of the level queue first, whatever the orders (decision 38 reverted)', '        if w_ord w2 <? w_ord w1 then', '        if false then', ('offer_pick_older_first',)),
+    ('pq-offer-refusal-stores', 'PriorityQueue', 'a refusal of the older candidate stores the datum although the other candidate fits (decision 37 reverted)', '          else if fits_datum w1 v then (Some w1, (ref1, true))', '          else if false then (Some w1, (ref1, true))', ('offer_pick_older_first',)),
+    ('pq-no-settle-after', 'PriorityQueue', 'an operation whose plan completes runs no settle after the plan', '          | PDone =>\n              let after := settle_at (f + fires (p_ops p)) (run st (z_ops before ++ p_ops p)) in\n              mkOutcome (z_ops before ++ p_ops p ++ z_ops after) (settle_next (z_end after))', '          | PDone => mkOutcome (z_ops before ++ p_ops p) None', ('with_settles_inv',)),
+    ('pq-no-lift', 'PriorityQueue', 'the settle re-offers a stored record without its lift', '    match x with Some _ => [] | None => if r_pers r then [] else [SLift r] end.', '    match x with Some _ => [] | None => if r_pers r then [] else [] end.', ('settle_step_records',)),
+    ('pq-land-drops', 'PriorityQueue', 'the record in flight does not land: the settle loses it', '    match x with None => [] | Some r => [SRestore r] end.', '    match x with None => [] | Some _ => [] end.', ('run_land_records',)),
+    ('pq-view-without-flight', 'PriorityQueue', 'the record in flight is not a level head of the view of a settle', '    match x with Some r => r :: s_records st | None => s_records st end.', '    match x with Some _ => s_records st | None => s_records st end.', ('run_land_records',)),
+    ('pq-no-land-first', 'PriorityQueue', 'a fire of a stored record while a record is in flight does not land the record in flight first', '  Definition lands_first (x : option record) (in_flight : bool) : bool := has x && negb in_flight.', '  Definition lands_first (x : option record) (in_flight : bool) : bool := false.', ('next_fire_bound',)),
+    ('pq-peek-spends-lifted', 'PriorityQueue', 'a fire of a waiter that peeks spends the lifted record (decision 30 reverted)', '    if flying x r && negb spent then Some r else None.', '    None.', ('settle_loop_keeps',)),
+    ('pq-no-cap-check', 'PriorityQueue', 'the settle loop has no cap check of the transaction at the top of a round (I-21)', '  Definition at_cap (fired : nat) : bool := cap <=? fired.', '  Definition at_cap (fired : nat) : bool := false.', ('settle_loop_bounds', 'settle_loop_cap')),
+    ('pq-no-divergent-end', 'PriorityQueue', 'a divergent pair goes on instead of ending the round (A10)', '    else if stays then FDivergent', '    else if stays then FContinue', ('settle_loop_bounds',)),
+    ('pq-peek-no-restore', 'PriorityQueue', 'a consume-side peek of a record that is not persistent stages no re-store (Rule E)', '    if w_peek k && negb (r_pers h) then [SFireConsume k h; SRestore h] else [SFireConsume k h].', '    if w_peek k && negb (r_pers h) then [SFireConsume k h] else [SFireConsume k h].', ('pq_peek_restores_head',)),
+    ('pq-fresh-jumps-queue', 'PriorityQueue', 'a fresh datum plans at the head although its level has an older head', '    match record_head (s_records s) (r_lvl x) with\n    | Some _ => mkPlanned [SStore x] PDone', '    match record_head (s_records s) (r_lvl x) with\n    | Some _ => offer_loop (S cap) f s x (false, false)', ('pq_fifo_within_level',)),
+    ('pq-reentry-at-head', 'PriorityQueue', 'a re-entered datum plans at the head whatever the order of the head (decision 43)', '    | Some h => if r_ord x <? r_ord h then offer_loop (S cap) f s x (false, false)\n                else mkPlanned [SStore x] PDone', '    | Some _ => offer_loop (S cap) f s x (false, false)', ('pq_fifo_within_level',)),
+    ('pq-reentry-empty-level-stores', 'PriorityQueue', 'a re-entered datum on an empty level is stored with no plan, so it never fires', '                else mkPlanned [SStore x] PDone\n    | None => offer_loop (S cap) f s x (false, false)', '                else mkPlanned [SStore x] PDone\n    | None => mkPlanned [SStore x] PDone', ('reentry_at_fifo_place', 'pq_reissue_takes_level_fifo_place')),
+    ('pq-reentry-waiter-at-head', 'PriorityQueue', 'a re-entered continuation plans at the head whatever the order of the head (decision 43)', '    | Some w => if w_ord k <? w_ord w then receive_loop (S cap) f s k\n                else mkPlanned [SPark k] PDone', '    | Some _ => receive_loop (S cap) f s k', ('pq_fifo_within_level',)),
+    ('pq-reentry-empty-lane-parks', 'PriorityQueue', 'a re-entered continuation on an empty lane parks with no plan, so it never fires', '                else mkPlanned [SPark k] PDone\n    | None => receive_loop (S cap) f s k', '                else mkPlanned [SPark k] PDone\n    | None => mkPlanned [SPark k] PDone', ('reentry_at_fifo_place', 'pq_reentered_waiter_keeps_seniority')),
+    ('pq-reissue-fresh-ord', 'PriorityQueue', 'a re-issued persistent operation carries no first-round order (decision 43)', '  Definition carried (pers : bool) (o : nat) : option nat := if pers then Some o else None.', '  Definition carried (pers : bool) (o : nat) : option nat := None.', ('pq_reissue_takes_level_fifo_place',)),
+    ('pq-no-bump', 'PriorityQueue', 'an operation does not advance the counter', '  Definition bump_next (c : option nat) : option nat := Some (S (bump_ord c)).', '  Definition bump_next (c : option nat) : option nat := Some (bump_ord c).', ('pq_reissue_takes_level_fifo_place',)),
+    ('pq-perm-without-distinct-ords', 'PriorityQueue', 'the permutation invariance without the wf premise of distinct orders', '  Definition dist (st : sstate) : Prop :=\n    ords_distinct r_ord (s_records st) /\\ ords_distinct w_ord (s_waiters st).', '  Definition dist (st : sstate) : Prop := True /\\ True.', ('apply_equiv',)),
+    ('pq-priority-negative', 'PriorityQueue', 'check_values admits a negative priority', '    (0 <=? p)%Z && match bound with Some n => (p <? Z.of_nat n)%Z | None => true end.', '    true && match bound with Some n => (p <? Z.of_nat n)%Z | None => true end.', ('pq_priority_domain',)),
+    ('pq-priority-bound-ignored', 'PriorityQueue', 'check_values ignores the bound priorities of the space (I-10)', '    (0 <=? p)%Z && match bound with Some n => (p <? Z.of_nat n)%Z | None => true end.', '    (0 <=? p)%Z && match bound with Some n => true | None => true end.', ('pq_priority_domain',)),
+    ('pq-level-storage', 'PriorityQueue', 'a store also keeps an entry for the level of its datum (storage for each level, I-10 reverted)', '    | SStore r => mkS (r :: s_records st) (s_waiters st) (s_counter st)', '    | SStore r => mkS (r :: r :: s_records st) (s_waiters st) (s_counter st)', ('store_after_bump',)),
+    ('pq-read-before-reserve', 'PriorityQueue', 'a metered step reads before it reserves (DR-88)', 'Definition step (units : nat) : list event := [Reserve units; Read units].', 'Definition step (units : nat) : list event := [Read units; Reserve units].', ('step_covered',)),
+    ('pq-unprepaid-unwrap', 'PriorityQueue', 'a settle round does not prepay the decode of the fired continuation (decision 42)', '    ++ flat_map step (lift r)\n    ++ [Reserve (unwrap r)]\n    ++ flat_map step (reoffer r).', '    ++ flat_map step (lift r)\n    ++ flat_map step (reoffer r).', ('round_staged_shape',)),
+    ('pq-plan-opens-at-cap', 'PriorityQueue', 'open_plan has no cap check: the plan opens after a settle that ended at the cap (I-21)', '  Definition plan_at_cap (fired : nat) : bool := cap <=? fired.', '  Definition plan_at_cap (fired : nat) : bool := false.', ('pq_settle_terminates',)),
+    ('pq-plan-restarts-count', 'PriorityQueue', 'the plan restarts the fire count at 0 instead of the count of the settle before it (I-21)', '          let p := plan f (run st (z_ops before)) in', '          let p := plan 0 (run st (z_ops before)) in', ('pq_settle_terminates',)),
+    ('pq-after-settle-restarts-count', 'PriorityQueue', 'the settle after the plan restarts the fire count at 0 (each settle call has its own count)', 'settle_at (f + fires (p_ops p))', 'settle_at 0', ('pq_settle_terminates',)),
     # ── P4: HeadOnlyDisciplines.v (decision 11, A10, decision 31) ────────
     ("ho-head-greatest-ord", "HeadOnlyDisciplines",
      "the head is the entry with the greatest ord",

@@ -24,33 +24,52 @@
      (the headlines of this module). Plan revision M-2 and its section
      "Record model". A11 (a datum may have an empty payload), A20 (tags and
      the config shape) and I-17 (the config is a canonical Par record).
-   - Code: the P4 commit of this repository. The line numbers below are the
-     line numbers of that commit.
+     Headlines 9 and 10: the P5 design v3, section A.8 (the PQ slots of
+     record.rs), and plan decision 38 (the lanes of a priority queue).
+   - Code: the P4 commit of this repository, with the PQ slots of the PQ
+     batch of wave W2 of P5. The line numbers below are the line numbers
+     after the PQ batch, which moved the P4 lines of record.rs by 14.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    record_kind, kind_byte, tag_bytes, tag
-                            spaces/record.rs:55, 58, 63-68, 80-82, 85
+                            spaces/record.rs:69, 72, 77-82, 94-96, 99
                             (RECORD_TAG_MARK, RECORD_VERSION, RecordKind,
                             tag_bytes, tag)
-   sole shapes of rpar      spaces/record.rs:107-142, 145-152 (sole_expr,
+   sole shapes of rpar      spaces/record.rs:121-156, 159-166 (sole_expr,
                             expr_par)
-   list_par                 spaces/record.rs:156-179 (the bit sets of the
+   list_par                 spaces/record.rs:170-193 (the bit sets of the
                             normalizer)
-   list_elements            spaces/record.rs:184-203 (strict flags)
+   list_elements            spaces/record.rs:198-217 (strict flags)
    is_tag, is_nil, natural_of
-                            spaces/record.rs:205-210, 212, 214-219
+                            spaces/record.rs:219-224, 226, 228-233
    datum_envelope, wrap_datum, datum_ord, unwrap_datum
-                            spaces/record.rs:224-231, 235-245, 248-258,
-                            271-286
+                            spaces/record.rs:238-245, 249-259, 262-272,
+                            285-300
    continuation_envelope, wrap_continuation, continuation_parts,
-   unwrap_continuation      spaces/record.rs:289-296, 301-321, 324-341,
-                            359-374
+   unwrap_continuation      spaces/record.rs:303-310, 315-335, 338-355,
+                            373-388
    counter_record, counter_value
-                            spaces/record.rs:383-394, 397-406
+                            spaces/record.rs:397-408, 411-420
    config_record, config_map
-                            spaces/record.rs:413-420, 423-436
+                            spaces/record.rs:427-434, 437-450
+   key_priority             spaces/record.rs:842 (PRIORITY_KEY)
+   priority_slot,           spaces/record.rs:846-851, 855-860
+   level_of_slot            (priority_slot, level_of_slot)
+   pq_datum_envelope,       spaces/record.rs:865-872, 877-891, 896-909,
+   wrap_pq_datum,           925-941 (pq_datum_envelope, wrap_pq_datum,
+   pq_datum_slots,          pq_datum_slots, unwrap_pq_datum)
+   unwrap_pq_datum
+   pq_policy,               spaces/record.rs:947-960, 966-993 (pq_policy,
+   level_of_policy          level_of_policy)
+   pq_continuation_envelope,
+   wrap_pq_continuation,    spaces/record.rs:997-1004, 1009-1030,
+   pq_continuation_parts,   1035-1052, 1076-1092
+   unwrap_pq_continuation   (pq_continuation_envelope, wrap_pq_continuation,
+                            pq_continuation_parts, unwrap_pq_continuation)
+   into_continuation        spaces/record.rs:752-789 (into_continuation, the
+                            outcome decoder of every family)
    space_config, to_par, from_par
                             spaces/types/config.rs:31-49, 53-64, 85-106,
                             112-141, 160-208 (the keys, SpaceConfig,
@@ -111,9 +130,38 @@
     7. no_reified_datum_is_single_number  the merger never reads a Reified
                                        record as a number cell
     8. unknown_version_rejected        a tag of another version or kind fails
+    9. datum_priority_slot_roundtrip   the datum record of a priority queue
+                                       decodes back with its level, the
+                                       decoder accepts only its image, the
+                                       unprioritized record is the P4
+                                       record, the strict P4 decoder rejects
+                                       a record with a level, and the level
+                                       is part of the record
+   10. continuation_policy_slot_roundtrip
+                                       the same for the policy of a waiter of
+                                       a priority queue, and the outcome
+                                       decoder (into_continuation) reads both
+                                       policy forms: it extends the strict P4
+                                       decoder and accepts only the images of
+                                       the two encoders
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. The file
    imports only the Rocq standard library.
+
+   Negative controls of headlines 9 and 10 (the CONTROLS format of
+   scripts/verify-reified/rocq-negative-controls.py). Each control changes
+   one rule in a scratch copy, and the copy must fail in a lemma whose
+   statement the change makes false:
+   re-pq-negative-level        level_of_slot accepts a negative GInt
+                               → level_of_slot_sound
+   re-pq-unprioritized-zero    the unprioritized slot is GInt(0), so it is the
+                               level 0 → level_of_slot_priority_slot
+   re-pq-ignores-embedding     pq_datum_slots skips the embedding check
+                               → unwrap_pq_datum_sound
+   re-pq-policy-any-key        level_of_policy accepts any string key
+                               → level_of_policy_sound
+   re-pq-into-strict           into_continuation decodes with the strict P4
+                               decoder → continuation_policy_slot_roundtrip
 
    Failed strategies (kept so that they are not tried again)
    - Deriving the equality of rpar with decide equality fails on the nested
@@ -1176,7 +1224,326 @@ Section MergerNumber.
   Qed.
 End MergerNumber.
 
-(* ── 11. Worked examples and negative controls ─────────────────────────── *)
+(* ── 11. Headlines 9 and 10: the slots of a priority queue (P5b) ──────── *)
+
+(* A priority queue (decision 38) fills the priority slot of a datum and the
+   policy slot of a parked continuation. Its own encoders and decoders read
+   and write these slots. The strict P4 decoders above stay as they are, so
+   they reject a datum with a level and a continuation with a policy. *)
+
+(* The ASCII bytes of the key "priority" (record.rs: PRIORITY_KEY). *)
+Definition key_priority : bytes := [112; 114; 105; 111; 114; 105; 116; 121].
+
+(* A level of a priority queue is natural: Some p is the level p ≥ 0, and None
+   is the unprioritized level. *)
+Definition natural_level (priority : option Z) : Prop :=
+  match priority with Some p => (0 <= p)%Z | None => True end.
+
+(* priority_slot: GInt(p) for the level p, Nil for the unprioritized level. *)
+Definition priority_slot (priority : option Z) : rpar :=
+  match priority with Some p => int_par p | None => PNil end.
+
+(* level_of_slot: Nil is the unprioritized level, a natural GInt without a
+   flag is a level, and every other value is malformed. *)
+Definition level_of_slot (p : rpar) : option (option Z) :=
+  if is_nil p then Some None
+  else match natural_of p with Some z => Some (Some z) | None => None end.
+
+(* The envelope of a datum of a priority queue: [tag_D, GInt(ord), slot, Nil]. *)
+Definition pq_datum_envelope (ord : Z) (priority : option Z) : rpar :=
+  list_par [tag RDatum; int_par ord; priority_slot priority; PNil].
+
+Definition wrap_pq_datum (ord : Z) (priority : option Z) (d : lpr) : lpr :=
+  mkLpr (pq_datum_envelope ord priority :: lp_pars d) (lp_random d) (lp_authority d) (lp_stack d).
+
+(* pq_datum_slots: only the envelope is decoded. The other slots are the
+   slots that datum_ord accepts. *)
+Definition pq_datum_slots (r : lpr) : option (Z * option Z) :=
+  match lp_pars r with
+  | first :: _ =>
+      match list_elements first with
+      | Some [t; o; priority; embedding] =>
+          if is_tag t RDatum && is_nil embedding then
+            match natural_of o, level_of_slot priority with
+            | Some z, Some level => Some (z, level)
+            | _, _ => None
+            end
+          else None
+      | _ => None
+      end
+  | [] => None
+  end.
+
+Definition unwrap_pq_datum (r : lpr) : option (Z * option Z * lpr) :=
+  match pq_datum_slots r with
+  | Some (ord, level) =>
+      match lp_pars r with
+      | _ :: payload => Some (ord, level, mkLpr payload (lp_random r) (lp_authority r) (lp_stack r))
+      | [] => None
+      end
+  | None => None
+  end.
+
+(* pq_policy: the map {"priority": GInt(p)} for a waiter of the level p, and
+   Nil for an unrestricted waiter. A ground key and a ground value give the
+   map and its Par the flag false. *)
+Definition pq_policy (priority : option Z) : rpar :=
+  match priority with
+  | Some p => PMap [(PStr key_priority, int_par p)] false false
+  | None => PNil
+  end.
+
+(* level_of_policy: Nil, or the exact image of pq_policy with a natural
+   level. The decoder reads the structure and builds nothing. *)
+Definition level_of_policy (p : rpar) : option (option Z) :=
+  match p with
+  | PNil => Some None
+  | PMap [(PStr k, v)] false false =>
+      if bytes_eqb k key_priority then
+        match natural_of v with Some z => Some (Some z) | None => None end
+      else None
+  | _ => None
+  end.
+
+Definition pq_continuation_envelope (ord : Z) (priority : option Z) (body : rpar) : rpar :=
+  list_par [tag RContinuation; int_par ord; pq_policy priority; body].
+
+Definition wrap_pq_continuation (ord : Z) (priority : option Z) (k : tagged) : option tagged :=
+  match t_cont k with
+  | TParBody (Some body) rnd =>
+      Some (mkTagged (TParBody (Some (pq_continuation_envelope ord priority body)) rnd)
+              (t_guard k) (t_authority k))
+  | TParBody None _ | TScala _ | TNone => None
+  end.
+
+(* pq_continuation_parts: the order, the level of the policy, the original
+   body and the random state. *)
+Definition pq_continuation_parts (k : tagged) : option (Z * option Z * rpar * bytes) :=
+  match t_cont k with
+  | TParBody (Some b) rnd =>
+      match list_elements b with
+      | Some [t; o; policy; original] =>
+          if is_tag t RContinuation then
+            match natural_of o, level_of_policy policy with
+            | Some z, Some level => Some (z, level, original, rnd)
+            | _, _ => None
+            end
+          else None
+      | _ => None
+      end
+  | TParBody None _ | TScala _ | TNone => None
+  end.
+
+Definition unwrap_pq_continuation (k : tagged) : option (Z * option Z * tagged) :=
+  match pq_continuation_parts k with
+  | Some (z, level, original, rnd) =>
+      Some (z, level, mkTagged (TParBody (Some original) rnd) (t_guard k) (t_authority k))
+  | None => None
+  end.
+
+(* into_continuation: the outcome decoder of every family (generic.rs,
+   outcome). It decodes with the parts of a priority queue, so it accepts the
+   policy Nil and the policy of a waiter of a level. *)
+Definition into_continuation (k : tagged) : option (Z * tagged) :=
+  match unwrap_pq_continuation k with
+  | Some (z, _, original) => Some (z, original)
+  | None => None
+  end.
+
+Lemma level_of_slot_priority_slot :
+  forall priority, natural_level priority -> level_of_slot (priority_slot priority) = Some priority.
+Proof.
+  intros [p |] Hp; [| reflexivity].
+  unfold level_of_slot, priority_slot.
+  unfold natural_level in Hp. rewrite ?(natural_of_int p Hp). reflexivity.
+Qed.
+
+Lemma level_of_slot_sound :
+  forall p level, level_of_slot p = Some level -> p = priority_slot level /\ natural_level level.
+Proof.
+  intros p level H. unfold level_of_slot in H.
+  destruct (is_nil p) eqn:En.
+  - injection H as <-. destruct p; try discriminate. split; [reflexivity | exact I].
+  - destruct (natural_of p) as [z |] eqn:Ez; [| discriminate].
+    injection H as <-. apply natural_of_sound in Ez as [-> Hz].
+    split; [reflexivity | exact Hz].
+Qed.
+
+Lemma pq_datum_slots_wrap :
+  forall ord priority d, (0 <= ord)%Z -> natural_level priority ->
+    pq_datum_slots (wrap_pq_datum ord priority d) = Some (ord, priority).
+Proof.
+  intros ord priority d Hord Hlevel. unfold wrap_pq_datum, pq_datum_envelope.
+  cbn [pq_datum_slots lp_pars]. rewrite list_elements_list_par.
+  cbn -[natural_of level_of_slot priority_slot].
+  rewrite (natural_of_int ord Hord), (level_of_slot_priority_slot priority Hlevel).
+  reflexivity.
+Qed.
+
+Lemma unwrap_pq_datum_wrap :
+  forall ord priority d, (0 <= ord)%Z -> natural_level priority ->
+    unwrap_pq_datum (wrap_pq_datum ord priority d) = Some (ord, priority, d).
+Proof.
+  intros ord priority [pars rnd auth stack] Hord Hlevel. unfold unwrap_pq_datum.
+  rewrite (pq_datum_slots_wrap ord priority _ Hord Hlevel). reflexivity.
+Qed.
+
+Lemma unwrap_pq_datum_sound :
+  forall r ord priority d, unwrap_pq_datum r = Some (ord, priority, d) ->
+    r = wrap_pq_datum ord priority d /\ (0 <= ord)%Z /\ natural_level priority.
+Proof.
+  intros [pars rnd auth stack] ord priority d H.
+  unfold unwrap_pq_datum, pq_datum_slots in H. cbn [lp_pars lp_random lp_authority lp_stack] in H.
+  destruct pars as [| first payload]; [discriminate |].
+  destruct (list_elements first) as [es |] eqn:Ees; [| discriminate].
+  destruct es as [| t [| o [| pr [| em [| x rest]]]]]; try discriminate.
+  destruct (is_tag t RDatum && is_nil em) eqn:Echk; [| discriminate].
+  destruct (natural_of o) as [z |] eqn:Eo; [| discriminate].
+  destruct (level_of_slot pr) as [level |] eqn:Elevel; [| discriminate].
+  injection H as <- <- <-.
+  apply andb_true_iff in Echk as [Ht Hem]. apply is_tag_iff in Ht. destruct em; try discriminate.
+  apply natural_of_sound in Eo as [-> Hz]. apply level_of_slot_sound in Elevel as [-> Hlevel].
+  subst t. apply list_elements_sound in Ees. subst first.
+  split; [reflexivity | split; [exact Hz | exact Hlevel]].
+Qed.
+
+Lemma level_of_policy_pq_policy :
+  forall priority, natural_level priority -> level_of_policy (pq_policy priority) = Some priority.
+Proof.
+  intros [p |] Hp; [| reflexivity].
+  unfold pq_policy. cbn [level_of_policy].
+  rewrite ?(proj2 (bytes_eqb_iff key_priority key_priority) eq_refl).
+  unfold natural_level in Hp. rewrite (natural_of_int p Hp). reflexivity.
+Qed.
+
+Lemma level_of_policy_sound :
+  forall p level, level_of_policy p = Some level -> p = pq_policy level /\ natural_level level.
+Proof.
+  intros p level H.
+  destruct p as [b f | z f | s | ps lf pf | kvs mf pf | | n f]; cbn in H; try discriminate.
+  - destruct kvs as [| [k v] [| kv rest]]; cbn in H; try discriminate;
+      destruct k as [kb kf | kz kf | ks | kps klf kpf | kkvs kmf kpf | | kn kf];
+      destruct mf; destruct pf; cbn in H; try discriminate.
+    destruct (bytes_eqb ks key_priority) eqn:Ek; [| discriminate].
+    destruct (natural_of v) as [z |] eqn:Ev; [| discriminate].
+    injection H as <-. apply bytes_eqb_iff in Ek. subst ks.
+    apply natural_of_sound in Ev as [-> Hz]. split; [reflexivity | exact Hz].
+  - injection H as <-. split; [reflexivity | exact I].
+Qed.
+
+Lemma unwrap_pq_continuation_wrap :
+  forall ord priority k k', (0 <= ord)%Z -> natural_level priority ->
+    wrap_pq_continuation ord priority k = Some k' ->
+    unwrap_pq_continuation k' = Some (ord, priority, k).
+Proof.
+  intros ord priority [[[body |] rnd | n |] guard auth] k' Hord Hlevel H; cbn in H;
+    try discriminate.
+  injection H as <-. unfold unwrap_pq_continuation, pq_continuation_parts, pq_continuation_envelope.
+  cbn [t_cont t_guard t_authority]. rewrite list_elements_list_par.
+  cbn -[natural_of level_of_policy pq_policy].
+  rewrite (natural_of_int ord Hord), (level_of_policy_pq_policy priority Hlevel).
+  reflexivity.
+Qed.
+
+Lemma unwrap_pq_continuation_sound :
+  forall k' ord priority k, unwrap_pq_continuation k' = Some (ord, priority, k) ->
+    wrap_pq_continuation ord priority k = Some k' /\ (0 <= ord)%Z /\ natural_level priority.
+Proof.
+  intros [[[b |] rnd | n |] guard auth] ord priority k H;
+    unfold unwrap_pq_continuation, pq_continuation_parts in H; cbn [t_cont] in H;
+    try discriminate.
+  destruct (list_elements b) as [es |] eqn:Ees; [| discriminate].
+  destruct es as [| t [| o [| policy [| original [| x rest]]]]]; try discriminate.
+  destruct (is_tag t RContinuation) eqn:Ht; [| discriminate].
+  destruct (natural_of o) as [z |] eqn:Eo; [| discriminate].
+  destruct (level_of_policy policy) as [level |] eqn:Elevel; [| discriminate].
+  injection H as <- <- <-.
+  apply is_tag_iff in Ht. apply natural_of_sound in Eo as [-> Hz].
+  apply level_of_policy_sound in Elevel as [-> Hlevel].
+  subst t. apply list_elements_sound in Ees. subst b.
+  split; [reflexivity | split; [exact Hz | exact Hlevel]].
+Qed.
+
+(* Headline 9. The datum record of a priority queue roundtrips with its
+   level: unwrap_pq_datum inverts wrap_pq_datum for a natural order and a
+   natural level, and it accepts only that image. The unprioritized record is
+   the P4 record. The strict P4 decoder rejects a record with a level, so the
+   P4 decoders stay strict for every other discipline. Two records with
+   distinct levels differ, so the level is part of the produce identity. *)
+Theorem datum_priority_slot_roundtrip :
+  (forall ord priority d, (0 <= ord)%Z -> natural_level priority ->
+     unwrap_pq_datum (wrap_pq_datum ord priority d) = Some (ord, priority, d)) /\
+  (forall r ord priority d, unwrap_pq_datum r = Some (ord, priority, d) ->
+     r = wrap_pq_datum ord priority d /\ (0 <= ord)%Z /\ natural_level priority) /\
+  (forall ord d, wrap_pq_datum ord None d = wrap_datum ord d) /\
+  (forall ord p d, datum_ord (wrap_pq_datum ord (Some p) d) = None) /\
+  (forall o1 o2 p1 p2 d1 d2,
+     wrap_pq_datum o1 p1 d1 = wrap_pq_datum o2 p2 d2 -> o1 = o2 /\ p1 = p2 /\ d1 = d2).
+Proof.
+  split; [| split; [| split; [| split]]].
+  - exact unwrap_pq_datum_wrap.
+  - exact unwrap_pq_datum_sound.
+  - intros ord [pars rnd auth stack]. reflexivity.
+  - intros ord p [pars rnd auth stack]. unfold wrap_pq_datum, pq_datum_envelope.
+    cbn [datum_ord lp_pars]. rewrite list_elements_list_par. reflexivity.
+  - intros o1 o2 p1 p2 [pars1 r1 a1 s1] [pars2 r2 a2 s2] H.
+    unfold wrap_pq_datum in H. cbn [lp_pars lp_random lp_authority lp_stack] in H.
+    assert (Hlist : list_elements (pq_datum_envelope o1 p1) =
+                    list_elements (pq_datum_envelope o2 p2)) by (f_equal; congruence).
+    unfold pq_datum_envelope in Hlist. rewrite !list_elements_list_par in Hlist.
+    assert (Ho : o1 = o2) by (unfold int_par in Hlist; congruence).
+    assert (Hslot : priority_slot p1 = priority_slot p2) by congruence.
+    assert (Hp : p1 = p2)
+      by (destruct p1 as [x1 |], p2 as [x2 |]; cbn in Hslot; unfold int_par in Hslot; congruence).
+    assert (Hd : pars1 = pars2 /\ r1 = r2 /\ a1 = a2 /\ s1 = s2) by (repeat split; congruence).
+    destruct Hd as [-> [-> [-> ->]]]. split; [exact Ho | split; [exact Hp | reflexivity]].
+Qed.
+
+(* Headline 10. The policy of a waiter of a priority queue roundtrips with
+   its level, and the outcome decoder reads it. unwrap_pq_continuation
+   inverts wrap_pq_continuation and accepts only its image. The unrestricted
+   continuation is the P4 continuation, and the strict P4 decoder rejects a
+   policy. into_continuation extends the strict P4 decoder: it decodes every
+   P4 continuation as before, and it accepts only the images of the two
+   encoders. *)
+Theorem continuation_policy_slot_roundtrip :
+  (forall ord priority k k', (0 <= ord)%Z -> natural_level priority ->
+     wrap_pq_continuation ord priority k = Some k' ->
+     unwrap_pq_continuation k' = Some (ord, priority, k) /\ into_continuation k' = Some (ord, k)) /\
+  (forall k' ord priority k, unwrap_pq_continuation k' = Some (ord, priority, k) ->
+     wrap_pq_continuation ord priority k = Some k' /\ (0 <= ord)%Z /\ natural_level priority) /\
+  (forall ord k, wrap_pq_continuation ord None k = wrap_continuation ord k) /\
+  (forall ord p k k', wrap_pq_continuation ord (Some p) k = Some k' -> continuation_parts k' = None) /\
+  (forall k' z k, unwrap_continuation k' = Some (z, k) -> into_continuation k' = Some (z, k)) /\
+  (forall k' z k, into_continuation k' = Some (z, k) ->
+     exists priority, wrap_pq_continuation z priority k = Some k' /\ (0 <= z)%Z /\
+       natural_level priority).
+Proof.
+  assert (Hnone : forall ord k, wrap_pq_continuation ord None k = wrap_continuation ord k)
+    by (intros ord [[[body |] rnd | n |] guard auth]; reflexivity).
+  assert (Hinto : forall ord priority k k', (0 <= ord)%Z -> natural_level priority ->
+            wrap_pq_continuation ord priority k = Some k' -> into_continuation k' = Some (ord, k)).
+  { intros ord priority k k' Hord Hlevel H. unfold into_continuation.
+    rewrite (unwrap_pq_continuation_wrap ord priority k k' Hord Hlevel H). reflexivity. }
+  split; [| split; [| split; [| split; [| split]]]].
+  - intros ord priority k k' Hord Hlevel H.
+    split; [exact (unwrap_pq_continuation_wrap ord priority k k' Hord Hlevel H) |].
+    exact (Hinto ord priority k k' Hord Hlevel H).
+  - exact unwrap_pq_continuation_sound.
+  - exact Hnone.
+  - intros ord p [[[body |] rnd | n |] guard auth] k' H; cbn in H; try discriminate.
+    injection H as <-. unfold continuation_parts, pq_continuation_envelope.
+    cbn [t_cont]. rewrite list_elements_list_par. cbn -[is_tag]. rewrite andb_false_r.
+    reflexivity.
+  - intros k' z k H.
+    destruct (proj1 (proj2 continuation_unwrap_wrap) k' z k H) as [Hwrap Hz].
+    rewrite <- Hnone in Hwrap. exact (Hinto z None k k' Hz I Hwrap).
+  - intros k' z k H. unfold into_continuation in H.
+    destruct (unwrap_pq_continuation k') as [[[z' level] original] |] eqn:Eu; [| discriminate].
+    injection H as <- <-. exists level. exact (unwrap_pq_continuation_sound k' z' level original Eu).
+Qed.
+
+(* ── 12. Worked examples and negative controls ─────────────────────────── *)
 
 Example datum_with_empty_payload :
   unwrap_datum (wrap_datum 5 (mkLpr [] [1; 2] None None)) = Some (5%Z, mkLpr [] [1; 2] None None).
@@ -1202,7 +1569,20 @@ Example config_with_authority_rejected :
   config_map (mkLpr [list_par [tag RConfig]; PNil] [] (Some 1) None) = None.
 Proof. reflexivity. Qed.
 
-(* ── 12. Assumption audit ──────────────────────────────────────────────── *)
+Example leveled_datum_roundtrip :
+  unwrap_pq_datum (wrap_pq_datum 5 (Some 2%Z) (mkLpr [PNil] [1] None None)) =
+    Some (5%Z, Some 2%Z, mkLpr [PNil] [1] None None).
+Proof. reflexivity. Qed.
+
+Example negative_level_rejected :
+  unwrap_pq_datum (wrap_pq_datum 5 (Some (-1)%Z) (mkLpr [PNil] [] None None)) = None.
+Proof. reflexivity. Qed.
+
+Example policy_with_another_key_rejected :
+  level_of_policy (PMap [(PStr [112], int_par 1)] false false) = None.
+Proof. reflexivity. Qed.
+
+(* ── 13. Assumption audit ──────────────────────────────────────────────── *)
 
 Print Assumptions datum_unwrap_wrap.
 Print Assumptions datum_wrap_injective.
@@ -1212,3 +1592,5 @@ Print Assumptions counter_and_config_roundtrip.
 Print Assumptions envelope_kinds_disjoint.
 Print Assumptions no_reified_datum_is_single_number.
 Print Assumptions unknown_version_rejected.
+Print Assumptions datum_priority_slot_roundtrip.
+Print Assumptions continuation_policy_slot_roundtrip.

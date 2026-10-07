@@ -16,9 +16,18 @@
 # re-issued persistent operation at its first-round ord of decision 43:
 # SHADOW in flight, INV at quiescent states, one introduction for each
 # persistent element), CounterConflict.tla (a merge without a check #1
-# race is a serial run: M-1 and A2) and NativeHandles.tla (handle
+# race is a serial run: M-1 and A2; in P5 also for stacks, where every
+# removal bumps the counter) and NativeHandles.tla (handle
 # uniqueness, dangling handles, restarts, handle calls that merge like
 # contract calls).
+# P5: GenericRSpace.tla (the engine with the bag, set and cell: no pending
+# match, pattern enforcement, conservation, no double spend, atomic
+# reservation, class retirement, capacity, the peek restore),
+# StackDiscipline.tla (LIFO order, no pending match, no lost record, the
+# re-issue order, one fire count for each transaction),
+# PriorityQueue.tla (the level order, the older head first, no pending
+# match, no lost record, the re-issue order, the transaction bound) and the
+# allocator of CounterConflict.tla.
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -88,6 +97,9 @@ SAFE_CONFIGS=(
   "HeadOnlyDiscipline MC_HeadOnlyDiscipline_Reissue.cfg"
   "CounterConflict MC_CounterConflict.cfg"
   "CounterConflict MC_CounterConflict_Allocator.cfg"
+  "CounterConflict MC_CounterConflict_Stacks.cfg"
+  "PriorityQueue MC_PriorityQueue.cfg"
+  "PriorityQueue MC_PriorityQueue_Deep.cfg"
   "NativeHandles MC_NativeHandles.cfg"
   "GenericRSpace MC_GenericRSpace_Bag.cfg"
   "GenericRSpace MC_GenericRSpace_Set.cfg"
@@ -114,6 +126,12 @@ UNSAFE_CONFIGS=(
   "CounterConflict CounterDroppedUnsafe.cfg NoMergedOrderFabrication"
   "CounterConflict PeekCounterFreeUnsafe.cfg NoMergedOrderFabrication"
   "CounterConflict LazyAllocatorUnsafe.cfg NoDuplicateIndex"
+  "CounterConflict RemovalCounterFreeUnsafe.cfg NoMergedOrderFabrication"
+  "PriorityQueue PqNoSettleUnsafe.cfg PqNoPendingMatch"
+  "PriorityQueue PqAnyOrderUnsafe.cfg PqOldestFirst"
+  "PriorityQueue PqReentryAtHeadUnsafe.cfg PqLevelOrder"
+  "PriorityQueue PqPerPhaseCountUnsafe.cfg TxnFiresBounded"
+  "PriorityQueue PqPlanOpensAtCapUnsafe.cfg TxnFiresBounded"
   "NativeHandles JoinDescriptorUnsafe.cfg HandleCallsMergeLikeContracts"
   "GenericRSpace WildcardUnsafe.cfg PatternEnforcement"
   "GenericRSpace SetRetireOneUnsafe.cfg SetClassRetired"
@@ -176,7 +194,7 @@ if [[ ! "$APALACHE_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles)"
+echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue)"
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 tools_ok=true

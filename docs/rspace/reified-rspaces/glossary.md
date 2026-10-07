@@ -15,83 +15,86 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Operation order](#operation-order) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Outcome](#outcome) | 2 |
-| [Admission verdict](#admission-verdict) | 2 | [Outer store](#outer-store) | 2 |
-| [Agent](#agent) | 1 | [Pairing](#pairing) | 2 |
-| [Allocation job](#allocation-job) | 2 | [Par](#par) | 1 |
-| [Allocator](#allocator) | 2 | [Param rule](#param-rule) | 2 |
-| [Binding](#binding) | 2 | [Path](#path) | 2 |
-| [Block](#block) | 1 | [Path marker](#path-marker) | 2 |
-| [Body channel](#body-channel) | 2 | [Pattern](#pattern) | 1 |
-| [Bundle](#bundle) | 1 | [Peek](#peek) | 1 |
-| [Canonical form](#canonical-form) | 2 | [Persistent](#persistent) | 1 |
-| [Canonical group](#canonical-group) | 2 | [pgmcp](#pgmcp) | 1 |
-| [Canonical order](#canonical-order) | 2 | [Phlo](#phlo) | 1 |
-| [Capacity](#capacity) | 2 | [Play](#play) | 1 |
-| [Cell](#cell) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Channel](#channel) | 1 | [Process](#process) | 1 |
-| [Checkpoint](#checkpoint) | 1 | [Produce counter](#produce-counter) | 2 |
-| [Class key](#class-key) | 2 | [Property-based test](#property-based-test) | 1 |
-| [Collection](#collection) | 2 | [Qualifier](#qualifier) | 2 |
-| [Collection counter](#collection-counter) | 2 | [Random state](#random-state) | 1 |
-| [Collection key](#collection-key) | 2 | [Re-issue](#re-issue) | 2 |
-| [COMM event](#comm-event) | 1 | [Re-offer](#re-offer) | 2 |
-| [Config record](#config-record) | 2 | [Re-rooting](#re-rooting) | 2 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-store](#re-store) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Receive](#receive) | 1 |
-| [Constructor schema](#constructor-schema) | 2 | [Recognized position](#recognized-position) | 2 |
-| [Continuation](#continuation) | 1 | [Record envelope](#record-envelope) | 2 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Reduction participant](#reduction-participant) | 2 |
-| [Datum](#datum) | 1 | [Registered family](#registered-family) | 2 |
-| [Deploy](#deploy) | 1 | [Regression corpus](#regression-corpus) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Reified RSpace](#reified-rspace) | 2 |
-| [Event log](#event-log) | 1 | [Replay](#replay) | 1 |
+| [Acceptance category](#acceptance-category) | 2 | [Native space](#native-space) | 2 |
+| [Accounting observer](#accounting-observer) | 1 | [Negative control](#negative-control) | 2 |
+| [Admission verdict](#admission-verdict) | 2 | [Op channel](#op-channel) | 2 |
+| [Agent](#agent) | 1 | [Operation order](#operation-order) | 2 |
+| [Allocation job](#allocation-job) | 2 | [Outcome](#outcome) | 2 |
+| [Allocator](#allocator) | 2 | [Outer store](#outer-store) | 2 |
+| [Binding](#binding) | 2 | [Pairing](#pairing) | 2 |
+| [Block](#block) | 1 | [Par](#par) | 1 |
+| [Body channel](#body-channel) | 2 | [Param rule](#param-rule) | 2 |
+| [Bundle](#bundle) | 1 | [Path](#path) | 2 |
+| [Canonical form](#canonical-form) | 2 | [Path marker](#path-marker) | 2 |
+| [Canonical group](#canonical-group) | 2 | [Pattern](#pattern) | 1 |
+| [Canonical order](#canonical-order) | 2 | [Peek](#peek) | 1 |
+| [Capacity](#capacity) | 2 | [Persistent](#persistent) | 1 |
+| [Cell](#cell) | 2 | [pgmcp](#pgmcp) | 1 |
+| [Channel](#channel) | 1 | [Phlo](#phlo) | 1 |
+| [Checkpoint](#checkpoint) | 1 | [Play](#play) | 1 |
+| [Class fire](#class-fire) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [Class key](#class-key) | 2 | [Process](#process) | 1 |
+| [Collection](#collection) | 2 | [Produce counter](#produce-counter) | 2 |
+| [Collection counter](#collection-counter) | 2 | [Property-based test](#property-based-test) | 1 |
+| [Collection key](#collection-key) | 2 | [Qualifier](#qualifier) | 2 |
+| [COMM event](#comm-event) | 1 | [Random state](#random-state) | 1 |
+| [Config record](#config-record) | 2 | [Re-issue](#re-issue) | 2 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-offer](#re-offer) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Re-rooting](#re-rooting) | 2 |
+| [Constructor schema](#constructor-schema) | 2 | [Re-store](#re-store) | 2 |
+| [Continuation](#continuation) | 1 | [Receive](#receive) | 1 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Recognized position](#recognized-position) | 2 |
+| [Crossed stacks](#crossed-stacks) | 2 | [Record envelope](#record-envelope) | 2 |
+| [Datum](#datum) | 1 | [Reduction participant](#reduction-participant) | 2 |
+| [Deploy](#deploy) | 1 | [Registered family](#registered-family) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Regression corpus](#regression-corpus) | 2 |
+| [Event log](#event-log) | 1 | [Reified RSpace](#reified-rspace) | 2 |
+| [Exact cut](#exact-cut) | 2 | [Replay](#replay) | 1 |
 | [F1r3lang](#f1r3lang) | 1 | [Reporting](#reporting) | 1 |
-| [Factory](#factory) | 2 | [Retention](#retention) | 2 |
-| [Factory capability](#factory-capability) | 2 | [Rholang](#rholang) | 1 |
-| [Factory row](#factory-row) | 2 | [Rocq](#rocq) | 1 |
-| [FIPS](#fips) | 1 | [Routing class](#routing-class) | 2 |
-| [Fire count](#fire-count) | 2 | [RSpace](#rspace) | 1 |
-| [Fire round](#fire-round) | 2 | [Scan discipline](#scan-discipline) | 2 |
-| [First admitting waiter](#first-admitting-waiter) | 2 | [Scan driver](#scan-driver) | 2 |
-| [Footprint policy](#footprint-policy) | 2 | [Second send](#second-send) | 2 |
-| [Frontend](#frontend) | 1 | [Send](#send) | 1 |
-| [Gate](#gate) | 2 | [Settle](#settle) | 2 |
-| [getSpaceAgent](#getspaceagent) | 2 | [Space](#space) | 2 |
-| [Handle](#handle) | 2 | [Space agent](#space-agent) | 2 |
-| [Handle capability](#handle-capability) | 2 | [Space counter](#space-counter) | 2 |
-| [Head record](#head-record) | 2 | [Space family](#space-family) | 2 |
-| [Head waiter](#head-waiter) | 2 | [Space id](#space-id) | 2 |
-| [Head-only matching](#head-only-matching) | 2 | [Space intent](#space-intent) | 2 |
-| [Headline](#headline) | 2 | [Space name](#space-name) | 2 |
-| [History trie](#history-trie) | 1 | [Space reference](#space-reference) | 2 |
-| [Host operation](#host-operation) | 2 | [Space transaction](#space-transaction) | 2 |
-| [Host work](#host-work) | 1 | [Staged view](#staged-view) | 2 |
-| [Hot store](#hot-store) | 1 | [Storage channel](#storage-channel) | 2 |
-| [Index name](#index-name) | 2 | [Store identity](#store-identity) | 2 |
-| [Inductive invariant](#inductive-invariant) | 1 | [Sub-order](#sub-order) | 2 |
-| [Inert](#inert) | 2 | [Sweep](#sweep) | 2 |
-| [Inner collection](#inner-collection) | 2 | [System process](#system-process) | 1 |
-| [Internal operation](#internal-operation) | 2 | [Tested prefix](#tested-prefix) | 2 |
-| [Invariant map](#invariant-map) | 2 | [Theory](#theory) | 2 |
-| [Join](#join) | 1 | [Theory identity](#theory-identity) | 2 |
-| [KIND](#kind) | 2 | [Times-repeated](#times-repeated) | 2 |
+| [Factory](#factory) | 2 | [Representative](#representative) | 2 |
+| [Factory capability](#factory-capability) | 2 | [Retention](#retention) | 2 |
+| [Factory row](#factory-row) | 2 | [Rholang](#rholang) | 1 |
+| [FIPS](#fips) | 1 | [Rocq](#rocq) | 1 |
+| [Fire count](#fire-count) | 2 | [Routing class](#routing-class) | 2 |
+| [Fire round](#fire-round) | 2 | [RSpace](#rspace) | 1 |
+| [First admitting waiter](#first-admitting-waiter) | 2 | [Scan discipline](#scan-discipline) | 2 |
+| [Footprint policy](#footprint-policy) | 2 | [Scan driver](#scan-driver) | 2 |
+| [Frontend](#frontend) | 1 | [Second send](#second-send) | 2 |
+| [Gate](#gate) | 2 | [Send](#send) | 1 |
+| [getSpaceAgent](#getspaceagent) | 2 | [Settle](#settle) | 2 |
+| [Handle](#handle) | 2 | [Space](#space) | 2 |
+| [Handle capability](#handle-capability) | 2 | [Space agent](#space-agent) | 2 |
+| [Head record](#head-record) | 2 | [Space counter](#space-counter) | 2 |
+| [Head waiter](#head-waiter) | 2 | [Space family](#space-family) | 2 |
+| [Head-only matching](#head-only-matching) | 2 | [Space id](#space-id) | 2 |
+| [Headline](#headline) | 2 | [Space intent](#space-intent) | 2 |
+| [History trie](#history-trie) | 1 | [Space name](#space-name) | 2 |
+| [Host operation](#host-operation) | 2 | [Space reference](#space-reference) | 2 |
+| [Host work](#host-work) | 1 | [Space transaction](#space-transaction) | 2 |
+| [Hot store](#hot-store) | 1 | [Staged view](#staged-view) | 2 |
+| [Index name](#index-name) | 2 | [Storage channel](#storage-channel) | 2 |
+| [Inductive invariant](#inductive-invariant) | 1 | [Store identity](#store-identity) | 2 |
+| [Inert](#inert) | 2 | [Sub-order](#sub-order) | 2 |
+| [Inner collection](#inner-collection) | 2 | [Sweep](#sweep) | 2 |
+| [Internal operation](#internal-operation) | 2 | [System process](#system-process) | 1 |
+| [Invariant map](#invariant-map) | 2 | [Tested prefix](#tested-prefix) | 2 |
+| [Join](#join) | 1 | [Theory](#theory) | 2 |
+| [KIND](#kind) | 2 | [Theory identity](#theory-identity) | 2 |
+| [Lane](#lane) | 2 | [Times-repeated](#times-repeated) | 2 |
 | [Legacy charge](#legacy-charge) | 2 | [TLA+](#tla) | 1 |
-| [LFS](#lfs) | 2 | [Trigger event](#trigger-event) | 2 |
-| [Lift](#lift) | 2 | [Tuple space](#tuple-space) | 1 |
-| [Lock coverage](#lock-coverage) | 2 | [Typed reply](#typed-reply) | 2 |
-| [Lock stripe](#lock-stripe) | 1 | [Unforgeable name](#unforgeable-name) | 1 |
-| [Marker](#marker) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
-| [Marker tuple](#marker-tuple) | 2 | [URN](#urn) | 1 |
-| [Matcher](#matcher) | 2 | [Use context](#use-context) | 2 |
-| [Merge](#merge) | 1 | [User agent-backed space](#user-agent-backed-space) | 2 |
-| [Model map](#model-map) | 2 | [Verification recipe](#verification-recipe) | 2 |
-| [Name](#name) | 1 | [Volatile channel](#volatile-channel) | 2 |
-| [Namespace tag](#namespace-tag) | 2 | [Waiter](#waiter) | 2 |
-| [Native space](#native-space) | 2 | [Witness test](#witness-test) | 2 |
-| [Negative control](#negative-control) | 2 | [Write skew](#write-skew) | 2 |
-| [Op channel](#op-channel) | 2 |  |  |
+| [Level](#level) | 2 | [Trigger event](#trigger-event) | 2 |
+| [LFS](#lfs) | 2 | [Tuple space](#tuple-space) | 1 |
+| [Lift](#lift) | 2 | [Typed reply](#typed-reply) | 2 |
+| [List order](#list-order) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [Lock coverage](#lock-coverage) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
+| [Lock stripe](#lock-stripe) | 1 | [URN](#urn) | 1 |
+| [Marker](#marker) | 2 | [Use context](#use-context) | 2 |
+| [Marker tuple](#marker-tuple) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Matcher](#matcher) | 2 | [Verification recipe](#verification-recipe) | 2 |
+| [Merge](#merge) | 1 | [Volatile channel](#volatile-channel) | 2 |
+| [Model map](#model-map) | 2 | [Waiter](#waiter) | 2 |
+| [Name](#name) | 1 | [Witness test](#witness-test) | 2 |
+| [Namespace tag](#namespace-tag) | 2 | [Write skew](#write-skew) | 2 |
 
 ## Part 1: background terms
 
@@ -820,6 +823,13 @@ A check that compares only the changed data then finds no conflict, but no seria
 Two branches can make a write skew on two queues: each branch peeks one queue and dequeues the other queue.
 Every operation on a queue therefore bumps its counter, and merge check #1 sees the race ([decision 31](decision-register.md#decision-31)).
 
+### Crossed stacks
+
+Crossed stacks are two branches that each push onto one stack and pop the other stack.
+Without a counter bump on the pops, merge check #1 sees no race, but no serial order of the two branches gives both pops.
+So every removal bumps the counter of its collection, as every other operation does ([decision 31](decision-register.md#decision-31)).
+The Rocq headline `crossed_stacks_without_removal_counters_fabricate` computes the counterexample, and [section 12.11 of the dossier](verification.md#1211-the-merge-of-the-p5-families) describes it.
+
 ### Head-only matching
 
 Head-only matching is the matching rule of queues, stacks, and priority queues ([decision 11](decision-register.md#decision-11)).
@@ -1124,6 +1134,12 @@ The checker `check-invariant-map.py` fails on an invariant without a test, and o
 A witness test is a deterministic test that shows one case of a headline or of a fix rule.
 The invariant map lists the witness tests of a phase beside its property-based tests.
 
+### Exact cut
+
+An exact cut is a [host work](#host-work) budget that ends exactly at the first read of one step of an operation.
+The determinism tests use exact cuts to make an operation fail at a chosen step.
+They then check that the failed operation changes no row, no event, no charge and no root.
+
 ### Consensus-preservation checklist
 
 The consensus-preservation checklist is the list of 22 properties of ordinary execution that each phase of the campaign must keep.
@@ -1178,6 +1194,13 @@ The canonical order is the order of DR-75 over the entries of a side of a [colle
 It sorts the entries by the hash of their source operation, then by digest inside a run of equal hashes, then by index.
 The order depends on the entry set only.
 
+### List order
+
+The list order is the order in which the [hot store](#hot-store) lists the entries of one channel.
+A new entry goes to the front of the list, and a checkpoint sorts the list by the encoded bytes of its entries.
+No choice of a space agent depends on the list order, because the agents use the [canonical order](#canonical-order).
+The host work of a canonical order still depends on the list order, because its sort charges each comparison that it makes.
+
 ### Capacity
 
 The capacity of a side of a [collection](#collection) is the most entries that the side holds (`Discipline::CAPACITY`).
@@ -1192,6 +1215,16 @@ A send and a receive always meet the other side, and only an element that does n
 
 The class key of a payload groups equal payloads of a set (`ScanDiscipline::class_key`).
 Records with equal keys form one class, and a consume of a member retires the class. A bag has no class key.
+
+### Representative
+
+The representative of a class of a set is its first member in [canonical order](#canonical-order).
+A receive binds the representative first, and a peek binds only the representative ([specification ST-4](specification.md#35-set)).
+
+### Class fire
+
+A class fire is the consume over $`[D; n]`$ that a receive of a set makes on every stored member of a class ([specification ST-5](specification.md#35-set)).
+It dispatches only the result of the [representative](#representative), and it removes every member that is not persistent.
 
 ### Constructor schema
 
@@ -1244,10 +1277,21 @@ The scan driver holds the plans OFFER-SCAN, RECEIVE-SCAN, RESTORE-SCAN and RETIR
 The second send of a peek sends the peeked non-persistent record again, as the reducer of the host does ([decision 45](decision-register.md#decision-45), Rule E).
 It has the identity and the cost authority of the record, and it is offered to the waiters before it is stored.
 
+### Level
+
+A level of a priority queue is the FIFO queue of the records with one priority ([decision 38](decision-register.md#decision-38)).
+The levels ascend by priority, and the unprioritized level comes last. A record holds its level in the priority slot of its envelope.
+
+### Lane
+
+A lane of a priority queue is the FIFO queue of the waiters with one priority.
+The waiters without a priority wait in the unrestricted lane.
+The lane of a priority sees the head of its [level](#level), and the unrestricted lane sees the heads of all levels.
+
 ### Settle
 
-A settle fires the pairs of entries that a fire exposes below the heads of a stack ([specification SK-3](specification.md#34-stack)).
-A stack settles before and after each plan, and in a settle job, which is a space operation of its own.
+A settle fires the pairs of entries that a fire exposes below the heads of a stack or a priority queue ([specification SK-3](specification.md#34-stack), [PQ-8](specification.md#36-priority-queue)).
+A collection settles before and after each plan, and in a settle job, which is a space operation of its own.
 
 ### Tested prefix
 

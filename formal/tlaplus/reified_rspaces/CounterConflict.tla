@@ -59,10 +59,35 @@
 (*                            first allocation of a space both hand out    *)
 (*                            the index 0, and check #1 sees no race.      *)
 (*                                                                         *)
+(* Stacks (P5b, the crossed stacks of the M-1 arbitration, when Lifo =     *)
+(* TRUE). The collections are stacks: a push appends, and a pop and a peek *)
+(* meet the youngest record (the greatest ord). A pop is a removal, and it *)
+(* bumps the counter (RemovalCounters). MC_CounterConflict_Stacks.cfg      *)
+(* checks NoMergedOrderFabrication, SharedQueueRaces and FirstOpsRace for  *)
+(* stacks.                                                                 *)
+(* Unsafe control (it refutes exactly NoMergedOrderFabrication):           *)
+(*   RemovalCounterFreeUnsafe stacks with RemovalCounters = FALSE: a pop   *)
+(*                            does not bump the counter (the claim that    *)
+(*                            the M-1 arbitration refuted). Branch A       *)
+(*                            pushes onto q1 and pops q2, and branch B     *)
+(*                            pushes onto q2 and pops q1. Check #1 sees no *)
+(*                            race, and no serial order gives both pops.   *)
+(*                            TLC reports the first violation that it      *)
+(*                            meets: a pop of q2 against a peek and a push *)
+(*                            of q2.                                       *)
+(* Lifo and RemovalCounters are definitions, not constants. The P4 and the *)
+(* allocator configurations keep their defaults (queues, and a removal     *)
+(* bumps as a write does), so they need no new constant. A stack           *)
+(* configuration replaces the definitions with a TLC override: Lifo <-     *)
+(* LifoOn, and RemovalCounters <- RemovalCountersOff.                      *)
+(*                                                                         *)
 (* Code (the P4 commit, with the paths without a prefix under              *)
 (* rholang/src/rust/interpreter, rs = rspace++/src/rspace):                *)
 (*   the counter bump     spaces/counter.rs:165-245, 251-309 (the          *)
 (*                        counter COMM has no peeks)                       *)
+(*   the stack            spaces/disciplines/stack.rs:71-93 (a counter,    *)
+(*                        and the head is the greatest ord), at the W2     *)
+(*                        checkpoint commit bc43b8653                      *)
 (*   the allocator        spaces/allocator.rs (creation_records,           *)
 (*                        allocate), spaces/generic.rs (run_allocate,      *)
 (*                        AllocCx::take, AllocCx::put)                     *)
@@ -110,6 +135,20 @@ ASSUME WriteCounters \in BOOLEAN
 ASSUME ReadCounters \in BOOLEAN
 ASSUME Allocations \in BOOLEAN
 ASSUME EagerAllocator \in BOOLEAN
+
+\* The discipline of the collections. FALSE: queues (FIFO), so a dequeue and
+\* a peek meet the oldest record. TRUE: stacks (LIFO), so they meet the
+\* youngest record. A stack configuration replaces Lifo with LifoOn
+\* (Lifo <- LifoOn), so the P4 and allocator configurations need no new
+\* constant.
+Lifo == FALSE
+LifoOn == TRUE
+
+\* TRUE: a dequeue (a removal: the take of a queue, the pop of a stack)
+\* bumps the counter. By default a removal follows WriteCounters, as in P4.
+\* The Unsafe control RemovalCounterFree replaces it with RemovalCountersOff.
+RemovalCounters == WriteCounters
+RemovalCountersOff == FALSE
 
 VARIABLES
     \* The pre-state of the space.
@@ -171,7 +210,9 @@ StartState(p, a) ==
      idx |-> {}]
 
 \* Does the operation bump a counter?
-Bumps(op) == IF op.kind = "peek" THEN ReadCounters ELSE WriteCounters
+Bumps(op) == CASE op.kind = "peek" -> ReadCounters
+               [] op.kind = "deq" -> RemovalCounters
+               [] OTHER -> WriteCounters
 
 \* The counter COMM of an operation of branch b on queue q: the consumed
 \* counter produce and the state after the bump.
@@ -189,6 +230,14 @@ EnqOrd(st, q) ==
     IF WriteCounters
     THEN IF st.qs[q].open THEN st.qs[q].ctr ELSE 0
     ELSE IF st.qs[q].recs = <<>> THEN 0 ELSE st.qs[q].recs[Len(st.qs[q].recs)].ord + 1
+
+\* The record that a dequeue or a peek meets in the non-empty records recs.
+\* For a queue it is the oldest record (the least ord). For a stack it is the
+\* youngest record (the greatest ord).
+TopRec(recs) == IF Lifo THEN recs[Len(recs)] ELSE recs[1]
+
+\* The records recs without the record that a dequeue takes.
+WithoutTop(recs) == IF Lifo THEN SubSeq(recs, 1, Len(recs) - 1) ELSE Tail(recs)
 
 \* The indices n..n+k-1 of an allocation of k names from the value n.
 Indices(n, k) == {n + i : i \in 0..(k - 1)}
@@ -219,11 +268,11 @@ QueueExec(st, op, b) ==
          [] op.kind = "deq" /\ recs = <<>> ->
               [st |-> s1, obs |-> "none", ev |-> bump.ev]
          [] op.kind = "deq" ->
-              [st |-> [s1 EXCEPT !.qs[q].recs = Tail(recs)], obs |-> recs[1].val,
-               ev |-> bump.ev \cup {<<"D", q, recs[1].ord, recs[1].mk>>}]
+              [st |-> [s1 EXCEPT !.qs[q].recs = WithoutTop(recs)], obs |-> TopRec(recs).val,
+               ev |-> bump.ev \cup {<<"D", q, TopRec(recs).ord, TopRec(recs).mk>>}]
          [] OTHER ->
               \* a peek: a COMM with peeks, filed under produces_peeked
-              [st |-> s1, obs |-> IF recs = <<>> THEN "none" ELSE recs[1].val, ev |-> bump.ev]
+              [st |-> s1, obs |-> IF recs = <<>> THEN "none" ELSE TopRec(recs).val, ev |-> bump.ev]
 
 \* One operation of branch b.
 Exec(st, op, b) == IF op.kind = "alloc" THEN AllocExec(st, op, b) ELSE QueueExec(st, op, b)

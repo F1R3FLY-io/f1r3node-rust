@@ -1,21 +1,24 @@
 //! P5d integration tests of the Array and Vector outer stores and of their allocator (P5 design
 //! v3 A.10, P5 design v2 section 3.3, F7, F8 and F11).
 //!
-//! The tests run the agents of the families `array:queue` and `vector:queue` directly
+//! Most tests run the agents of the families `array:queue` and `vector:queue` directly
 //! (`GenericSpace<ArrayOuter, QueueDiscipline>` and `GenericSpace<VectorOuter, QueueDiscipline>`)
 //! over an in-memory RSpace with the shared harness of P5 (`support::agent`). The creation of a
 //! space stages the allocator `A(sid) = 0`, and each allocation job takes it and puts its next
 //! value. A collection of either store lives on the channels of the HashMap store (A5), and only
-//! the index names of the space below its size reach it (F8).
+//! the index names of the space below its size reach it (F8). The test
+//! `space_array_all_disciplines_supported` runs the family agent instead, so it covers the
+//! dispatch arm of every wired Array and Vector family.
 //!
 //! The property tests restate the headlines of the Rocq modules `OuterStorage.v`,
 //! `VectorStore.v` and `HashMapStore.v` and the invariant `NoDuplicateIndex` of
 //! `CounterConflict.tla`, one property for each. A model of the allocator is the oracle: the
 //! rules of `ALLOC` in P5 design v3 A.10, computed in `u128` so that the oracle cannot overflow.
 //!
-//! The tests that evaluate Rholang deploys wait for the allocation job of a `new` inside a `use`
-//! block (the HOOKS batch), for the factories of the Array and Vector families (the FACTORY batch)
-//! and for the family arms of the ENGINE owner. The report of the ARRAY batch lists them.
+//! The Rholang deploys that allocate index names run in `reified_hooks_p5.rs`: a `new` inside a
+//! `use` block, a `NEWSPACE` annotation, `gensym` through a handle, and the fail-closed rule of
+//! native execution. The factories of the Array and Vector families run in
+//! `reified_families.rs`.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -58,7 +61,12 @@ use rholang::rust::interpreter::spaces::agent::{
 };
 use rholang::rust::interpreter::spaces::allocator::{self, AllocationRule};
 use rholang::rust::interpreter::spaces::counter::{counter_continuation, counter_pattern};
+use rholang::rust::interpreter::spaces::disciplines::bag::BagDiscipline;
+use rholang::rust::interpreter::spaces::disciplines::cell::CellDiscipline;
+use rholang::rust::interpreter::spaces::disciplines::priority_queue::PriorityQueueDiscipline;
 use rholang::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
+use rholang::rust::interpreter::spaces::disciplines::set::SetDiscipline;
+use rholang::rust::interpreter::spaces::disciplines::stack::StackDiscipline;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::families::FamilyAgent;
 use rholang::rust::interpreter::spaces::generic::{
@@ -692,6 +700,252 @@ async fn space_array_queue_operations_on_index_names() {
         vec![4],
         "every operation on a bumps its counter"
     );
+}
+
+/// What one discipline does with the sends of 1 and then 2 on one index name, followed by a
+/// receive of any value.
+struct DisciplineCase {
+    /// The name of the discipline.
+    inner: &'static str,
+    /// The value that the receive fires, or `None` when the DR-75 order of the bag chooses.
+    fires: Option<i64>,
+    /// The error of the second send, or `None` when the collection stores it.
+    second_send: Option<SpaceError>,
+}
+
+/// Every discipline that the family dispatch wires runs on the index names of a fixed Array, a
+/// cyclic Array and a Vector space. The family agent creates each space, allocates two of its
+/// names and runs the discipline on the first one, so the test covers the dispatch arms of the
+/// Array and Vector families, not only their agents. The queue fires the oldest record, the stack
+/// the youngest, the bag and the set one record in their DR-75 order, the priority queue the
+/// oldest record of its unprioritized level, and the cell refuses a second record. A name of
+/// another space fails with `NotAnIndexName` before any staging (F8).
+#[tokio::test]
+async fn space_array_all_disciplines_supported() {
+    let cases = [
+        DisciplineCase {
+            inner: BagDiscipline::NAME,
+            fires: None,
+            second_send: None,
+        },
+        DisciplineCase {
+            inner: QueueDiscipline::NAME,
+            fires: Some(1),
+            second_send: None,
+        },
+        DisciplineCase {
+            inner: StackDiscipline::NAME,
+            fires: Some(2),
+            second_send: None,
+        },
+        DisciplineCase {
+            inner: SetDiscipline::NAME,
+            fires: None,
+            second_send: None,
+        },
+        DisciplineCase {
+            inner: CellDiscipline::NAME,
+            fires: Some(1),
+            second_send: Some(SpaceError::CellOccupied),
+        },
+        DisciplineCase {
+            inner: PriorityQueueDiscipline::NAME,
+            fires: Some(1),
+            second_send: None,
+        },
+    ];
+    for store in [Store::Fixed(4), Store::Cyclic(4), Store::Vector] {
+        for case in &cases {
+            let label = format!("{store:?} {}", case.inner);
+            let space = play().await;
+            let env = env_over(space.clone(), &budget());
+            let mut config = store.space_config(SPACE);
+            config.inner = case.inner.to_string();
+            let family = SpaceFactoryUrn {
+                outer: store.family().outer,
+                inner: SpaceInner::parse(case.inner).expect("a wired inner collection"),
+            };
+            create(&FamilyAgent, &env, creation(SPACE, config.to_par(), family)).await;
+            let indices = allocate_with(&FamilyAgent, &env, alloc_op(1, 2))
+                .await
+                .expect("the family agent allocates two names");
+            assert_eq!(indices, vec![0, 1], "{label}");
+            let channel = name(indices[0]);
+            run(
+                &FamilyAgent,
+                &env,
+                SpaceOp::Produce(send_on(SPACE, &channel, 1, false)),
+            )
+            .await
+            .expect("the first send commits");
+            let second = run(
+                &FamilyAgent,
+                &env,
+                SpaceOp::Produce(send_on(SPACE, &channel, 2, false)),
+            )
+            .await;
+            assert_eq!(second.err(), case.second_send, "{label}");
+            let outcome = run(
+                &FamilyAgent,
+                &env,
+                SpaceOp::Consume(receive_on(SPACE, &channel, "any", any())),
+            )
+            .await
+            .expect("the receive commits");
+            let [(body, values)] = fired(&outcome).try_into().expect("one fire");
+            assert_eq!(body, "any", "{label}");
+            let [value] = values.as_slice() else {
+                panic!("{label}: the receive binds {} values", values.len());
+            };
+            let fired_value = value_of(std::slice::from_ref(value));
+            let stored: Vec<i64> = records_on(&space, &data_channel(SPACE, &channel))
+                .await
+                .into_iter()
+                .map(|(_, pars, _)| value_of(&pars))
+                .collect();
+            match (case.fires, &case.second_send) {
+                (Some(expected), Some(_)) => {
+                    assert_eq!(fired_value, expected, "{label}");
+                    assert!(stored.is_empty(), "{label}: the cell is empty");
+                }
+                (Some(expected), None) => {
+                    assert_eq!(fired_value, expected, "{label}");
+                    assert_eq!(
+                        stored,
+                        vec![3 - expected],
+                        "{label}: the other record stays"
+                    );
+                }
+                (None, _) => {
+                    assert!([1, 2].contains(&fired_value), "{label}");
+                    assert_eq!(
+                        stored,
+                        vec![3 - fired_value],
+                        "{label}: the other record stays"
+                    );
+                }
+            }
+            for op in [
+                SpaceOp::Produce(send_on(SPACE, &allocator::index_name(OTHER, 0), 1, false)),
+                SpaceOp::Consume(receive_on(
+                    SPACE,
+                    &allocator::index_name(OTHER, 0),
+                    "w",
+                    any(),
+                )),
+            ] {
+                assert_eq!(
+                    run(&FamilyAgent, &env, op).await.err(),
+                    Some(SpaceError::NotAnIndexName),
+                    "{label}"
+                );
+            }
+        }
+    }
+}
+
+// ── The allocation jobs of Rholang deploys (F11) ─────────────────────────────────────────────
+
+/// The elements of a list `Par`.
+fn list_elements(list: &Par) -> Vec<Par> {
+    match list.exprs.as_slice() {
+        [Expr {
+            expr_instance: Some(ExprInstance::EListBody(elements)),
+        }] => elements.ps.clone(),
+        other => panic!("a list: {other:?}"),
+    }
+}
+
+/// A fixed Array space hands out its index names in allocation order until its size. The setup
+/// deploy takes the names 0 and 1 with the handle method `gensym`, and a `new` of two binders in
+/// a `use` block of the space takes the names 2 and 3 in one allocation job. A send on such a
+/// name reaches the collection of its index. A forged channel in the `use` block routes to the
+/// space (R5), so it fails with `NotAnIndexName` (F8). A `new` that needs more names than the
+/// space has left fails with `OutOfNames`. Neither failure leaves space data. A Vector space
+/// keeps allocating.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_array_new_in_use_allocates_indices() {
+    let mut session = support::session::Session::new().await;
+    let space = session
+        .setup("rho:space:array:queue", "\"default\"; size=5")
+        .await;
+    assert_eq!(space.a, allocator::index_name(space.space, 0));
+    assert_eq!(space.b, allocator::index_name(space.space, 1));
+    session
+        .run(
+            &support::session::with_space(
+                r#"new out in { use space { new x, y in { out!([*x, *y]) | x!(7) } } | for (@names <- out) { @"rrs-indices"!(names) } }"#,
+            ),
+            "rrs-p5-array-use-new",
+        )
+        .await;
+    let indices = list_elements(&session.sole("rrs-indices").await);
+    assert_eq!(indices, vec![
+        allocator::index_name(space.space, 2),
+        allocator::index_name(space.space, 3)
+    ]);
+    assert_eq!(session.records(space.space, &indices[0]).await, vec![(
+        0,
+        vec![int(7)],
+        false
+    )]);
+    session
+        .fail_with(
+            &support::session::with_space(r#"use space { @"rrs-forged"!(1) }"#),
+            "rrs-p5-array-use-forged",
+            &support::session::Injections::new(),
+            &["NotAnIndexName"],
+        )
+        .await;
+    session
+        .fail_with(
+            &support::session::with_space(r#"use space { new u, v in { Nil } }"#),
+            "rrs-p5-array-use-new-full",
+            &support::session::Injections::new(),
+            &["OutOfNames"],
+        )
+        .await;
+
+    let mut session = support::session::Session::new().await;
+    let space = session.setup("rho:space:vector:queue", "\"default\"").await;
+    session
+        .run(
+            &support::session::with_space(
+                r#"new out in { use space { new x, y, z in { out!([*x, *y, *z]) } } | for (@names <- out) { @"rrs-indices"!(names) } }"#,
+            ),
+            "rrs-p5-vector-use-new",
+        )
+        .await;
+    assert_eq!(
+        list_elements(&session.sole("rrs-indices").await),
+        (2..5)
+            .map(|index| allocator::index_name(space.space, index))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A `new` with space annotations allocates the binders that name an Array or a Vector space from
+/// that space, in binder order, in one allocation job for the space. A binder without an
+/// annotation keeps its plain unforgeable name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_array_newspace_annotation_allocates() {
+    let mut session = support::session::Session::new().await;
+    let space = session
+        .setup("rho:space:array:queue", "\"default\"; size=8")
+        .await;
+    session
+        .run(
+            &support::session::with_space(
+                r#"new out in { new x : space, y, z : space in { out!([*x, *y, *z]) } | for (@names <- out) { @"rrs-annotated"!(names) } }"#,
+            ),
+            "rrs-p5-array-newspace",
+        )
+        .await;
+    let names = list_elements(&session.sole("rrs-annotated").await);
+    assert_eq!(names.len(), 3);
+    assert_eq!(names[0], allocator::index_name(space.space, 2));
+    assert_eq!(classify_channel(&names[1]), ChannelClass::Unforgeable);
+    assert_eq!(names[2], allocator::index_name(space.space, 3));
 }
 
 #[tokio::test]

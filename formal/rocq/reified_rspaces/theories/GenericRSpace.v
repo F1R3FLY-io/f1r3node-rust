@@ -68,7 +68,7 @@
                             persistence and the introduction that its
                             staged operations register (ProduceOp,
                             spaces/agent.rs; Introduction, spaces/record.rs:
-                            817-861)
+                            1210-1254)
    staged, apply            the staging primitives of Cx and their effect
                             on the view (spaces/generic.rs:807-1078):
                             store_on (SStore), park_on (SPark),
@@ -97,7 +97,7 @@
      receive_loop
    restore_elem,            RESTORE-SCAN (A.7, decision 45): the record r,
      restore_scan           persist = false, Introduction::for_record
-                            (spaces/record.rs:847-860), through the produce
+                            (spaces/record.rs:1240-1253), through the produce
                             plan
    host_resend, second_send the host's second send: produce_peeks
                             (reduce.rs:981-1016) produces the removed datum

@@ -1,0 +1,90 @@
+' 23 The crossed stacks of the M-1 arbitration: why a pop must bump the
+' collection counter of a stack.
+'
+' Source of a figure for the P5 merge section of ../verification.md (and of
+' design.md section N3). The figure restates the headline
+' crossed_stacks_without_removal_counters_fabricate of
+' formal/rocq/reified_rspaces/theories/CounterConflict.v, the Unsafe control
+' RemovalCounterFreeUnsafe.cfg of CounterConflict.tla, and the test
+' space_collection_conflicts_crossed_stacks of
+' rholang/tests/reified_merge_p5.rs. It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. The pre-state: the stack a holds 10 and the stack b holds 20. Each
+'      stack has a counter record.
+'   2. Branch A pushes 1 onto a and pops b. Branch B pushes 2 onto b and
+'      pops a.
+'   3. Lane 1 (the code): every operation bumps its counter, so the branches
+'      consume the same counter produces of a and b. Check #1 reports a
+'      race, and the merge rejects one branch.
+'   4. Lane 2 (a pop without a counter bump): the branches consume
+'      different produces, so no check fires. The merge keeps both pops, but
+'      each serial order gives another pop.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 23-crossed-stacks-merge.puml   Check: ./render.sh --check
+
+@startuml 23-crossed-stacks-merge
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The crossed stacks: a pop must bump the counter (plan revision M-1)
+
+start
+:pre-state of two stack collections:
+the stack a holds 10 and the stack b holds 20,
+with the counter records <latex>S(\mathit{sid}, a)</latex> and <latex>S(\mathit{sid}, b)</latex>; <<$rrs_storage>>
+split
+  :branch A, one deploy:
+  push 1 onto a, pop b (the top record 20); <<$rrs_agent>>
+split again
+  :branch B, one deploy:
+  push 2 onto b, pop a (the top record 10); <<$rrs_agent>>
+end split
+split
+  partition "Lane 1: the code" {
+    :every operation bumps its counter (decision 31):
+    A and B both consume the pre-state counter
+    produces of a and of b, in COMMs without peeks; <<$rrs_agent>>
+    :check #1: the consumed sets share
+    both counter produces; <<$rrs_host>>
+    :race on both counters: the merge rejects one branch
+    (crossed_collections_race); <<$rrs_reject>>
+  }
+split again
+  partition "Lane 2: no pop bump" {
+    :a pop does not bump the counter (RemovalCounterFree):
+    A consumes the counter produce of a and the record 20.
+    B consumes the counter produce of b and the record 10; <<$rrs_agent>>
+    :checks #1, #2 and #3 find nothing; <<$rrs_host>>
+    :the merge keeps both pops:
+    A popped 20 and B popped 10; <<$rrs_storage>>
+    split
+      :serial order A, then B:
+      B pops 1, the push of A; <<$rrs_reject>>
+    split again
+      :serial order B, then A:
+      A pops 2, the push of B; <<$rrs_reject>>
+    end split
+    :no serial order gives the merged outcome
+    (crossed_stacks_without_removal_counters_fabricate); <<$rrs_reject>>
+  }
+end split
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_storage>    | stored state: the records and the merged outcome |
+|<$rrs_agent>      | space operation of a deploy, with its counter bumps |
+|<$rrs_host>       | merger of the baseline, unchanged |
+|<$rrs_reject>     | a rejected branch, or an outcome that no serial order gives |
+endlegend
+@enduml

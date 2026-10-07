@@ -90,7 +90,7 @@ The URN map binds each URN to the write bundle of its op channel. So a program c
 | `rho:space:HashMapBagSpace` | `[0xE0, 0x00]` | 2 | 200 | none: the alias of `hashmap:bag` |
 
 A row of Table 2a is active only when its family is registered, which is exactly when the family dispatch has its arm ([specification FA-1](specification.md#15-families)).
-At this commit the active rows are `hashmap:bag`, `hashmap:stack`, `hashmap:cell`, `array:queue`, `vector:queue` and the alias.
+At this commit every row of Table 2a is active. The PathMap families join the table in wave W4 of P5.
 
 Three rules hold for every process of Table 2 and Table 2a:
 

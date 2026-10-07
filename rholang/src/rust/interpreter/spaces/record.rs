@@ -18,6 +18,19 @@
 //! authority and the cost stack of the user datum. A parked continuation keeps its random state,
 //! guard and cost authority outside the envelope.
 //!
+//! A priority queue (P5b, decision 38) fills two of these slots. Its own encoders and decoders
+//! read and write them, and the strict P4 decoders stay as they are for every other discipline:
+//!
+//! | Slot                         | Value of a priority queue                                   |
+//! |------------------------------|-------------------------------------------------------------|
+//! | priority of a datum          | `GInt(p)` for the level `p ≥ 0`, `Nil` for the unprioritized level |
+//! | policy of a continuation     | `EMap{"priority": GInt(p)}` for the waiter queue of the level `p`, `Nil` for the unrestricted queue |
+//!
+//! An unprioritized datum record and an unrestricted continuation of a priority queue are
+//! byte-identical to the P4 records. The outcome of a collection operation decodes every fired
+//! continuation with [`into_continuation`], which knows no discipline, so that decoder accepts
+//! both policy forms.
+//!
 //! The bit sets of an envelope are the union of the bit sets of its elements. They belong to no
 //! identity. The decoders are strict: a record that is not the exact image of its encoder is a
 //! [`MalformedRecord`], and the operation aborts with `Inconsistent`.
@@ -34,7 +47,8 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
-    CostAuthority, EList, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
+    CostAuthority, EList, EMap, Expr, KeyValuePair, ListParWithRandom, Par, ParWithRandom,
+    TaggedContinuation,
 };
 use models::rust::utils::union;
 use rspace_plus_plus::rspace::errors::RSpaceError;
@@ -729,14 +743,21 @@ pub fn prepay_continuation_unwrap(
     Ok(())
 }
 
-/// Decodes an owned parked continuation (the inverse of [`wrap_continuation`]). It moves the
-/// original body, the random state, the guard and the cost authority out of the record, so it
-/// copies nothing. [`prepay_continuation_unwrap`] reserves its work.
+/// Decodes an owned parked continuation (the inverse of [`wrap_continuation`] and of
+/// [`wrap_pq_continuation`]). It moves the original body, the random state, the guard and the
+/// cost authority out of the record, so it copies nothing. [`prepay_continuation_unwrap`]
+/// reserves its work. The outcome of every family decodes its fired continuations here, and
+/// the fired waiter of a priority queue carries its policy (P5b), so this decoder accepts the
+/// policy slot `Nil` and the policy of a priority queue.
 pub fn into_continuation(
     continuation: TaggedContinuation,
 ) -> Result<ContinuationRecord, MalformedRecord> {
     let malformed = MalformedRecord(RecordKind::Continuation);
-    let ord = continuation_ord(&continuation)?;
+    // Replaced by P5b (decision 38): the strict decoder rejects the policy of a waiter of a
+    // priority queue, so a fire of such a waiter would fail after its commit. The decoder of the
+    // priority queue accepts `Nil` and that policy, and it is the strict decoder on `Nil`.
+    // let ord = continuation_ord(&continuation)?;
+    let (ord, _) = pq_continuation_slots(&continuation)?;
     let TaggedContinuation {
         tagged_cont,
         guard,
@@ -812,6 +833,378 @@ pub fn config_map_metered<'a>(
         meter.inspect(envelope)?;
     }
     Ok(config_map(record)?)
+}
+
+// ── The slots of a priority queue (P5b, decision 38) ──────────────────────────────────────
+
+/// The key of the policy of a waiter of a priority queue. It is also the name of the send param
+/// and of the query param of a priority queue.
+pub const PRIORITY_KEY: &str = "priority";
+
+/// The priority slot of a datum envelope: `GInt(p)` for the level `p`, and `Nil` for the
+/// unprioritized level.
+fn priority_slot(priority: Option<i64>) -> Par {
+    match priority {
+        Some(level) => int_par(level),
+        None => Par::default(),
+    }
+}
+
+/// The level of a priority slot: `Some(None)` for `Nil`, `Some(Some(p))` for `GInt(p)` with
+/// `p ≥ 0` and no connective flag, and `None` for every other value.
+fn level_of_slot(slot: &Par) -> Option<Option<i64>> {
+    match is_nil(slot) {
+        true => Some(None),
+        false => natural_of(slot).map(Some),
+    }
+}
+
+/// The envelope of a datum record of a priority queue with the order `ord` and the level
+/// `priority`: `Some(p)` for the level `p` and `None` for the unprioritized level. The envelope of
+/// the unprioritized level is [`datum_envelope`].
+pub fn pq_datum_envelope(ord: i64, priority: Option<i64>) -> Par {
+    list_par(vec![
+        RecordKind::Datum.tag(),
+        int_par(ord),
+        priority_slot(priority),
+        Par::default(),
+    ])
+}
+
+/// The datum record of `datum` in a priority queue, with the order `ord` and the level
+/// `priority`: the envelope, then the payload. The random state, the cost authority and the cost
+/// stack of `datum` stay as they are.
+pub fn wrap_pq_datum(
+    ord: i64,
+    priority: Option<i64>,
+    datum: &ListParWithRandom,
+) -> ListParWithRandom {
+    let mut pars = Vec::with_capacity(datum.pars.len() + 1);
+    pars.push(pq_datum_envelope(ord, priority));
+    pars.extend(datum.pars.iter().cloned());
+    ListParWithRandom {
+        pars,
+        random_state: datum.random_state.clone(),
+        cost_authority: datum.cost_authority.clone(),
+        cost_stack: datum.cost_stack.clone(),
+    }
+}
+
+/// The order and the level of a datum record of a priority queue. Only the envelope is decoded.
+/// The priority slot holds `GInt(p)` with `p ≥ 0` or `Nil`, and the other slots are the slots
+/// that [`datum_ord`] accepts.
+pub fn pq_datum_slots(record: &ListParWithRandom) -> Result<(i64, Option<i64>), MalformedRecord> {
+    let malformed = MalformedRecord(RecordKind::Datum);
+    match record.pars.first().and_then(list_elements) {
+        Some([tag, ord, priority, embedding])
+            if is_tag(tag, RecordKind::Datum) && is_nil(embedding) =>
+        {
+            match (natural_of(ord), level_of_slot(priority)) {
+                (Some(ord), Some(level)) => Ok((ord, level)),
+                (None, _) | (_, None) => Err(malformed),
+            }
+        }
+        _ => Err(malformed),
+    }
+}
+
+/// A decoded datum record of a priority queue.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PqDatumRecord {
+    /// The order of the record in its collection.
+    pub ord: i64,
+    /// The level of the record: `Some(p)` for the level `p`, and `None` for the unprioritized
+    /// level.
+    pub priority: Option<i64>,
+    /// The datum as the program sent it: the payload, its random state, its cost authority and
+    /// its cost stack.
+    pub datum: ListParWithRandom,
+}
+
+/// Decodes a datum record of a priority queue (the inverse of [`wrap_pq_datum`]).
+pub fn unwrap_pq_datum(record: &ListParWithRandom) -> Result<PqDatumRecord, MalformedRecord> {
+    let (ord, priority) = pq_datum_slots(record)?;
+    let payload = record
+        .pars
+        .get(1..)
+        .ok_or(MalformedRecord(RecordKind::Datum))?;
+    Ok(PqDatumRecord {
+        ord,
+        priority,
+        datum: ListParWithRandom {
+            pars: payload.to_vec(),
+            random_state: record.random_state.clone(),
+            cost_authority: record.cost_authority.clone(),
+            cost_stack: record.cost_stack.clone(),
+        },
+    })
+}
+
+/// The policy of a parked continuation of a priority queue: `EMap{"priority": GInt(p)}` for a
+/// receive that waits in the waiter queue of the level `p`, and `Nil` for an unrestricted
+/// receive. The map is the canonical map of one entry: a ground key and a ground value give it
+/// empty bit sets, as `ParMap::create_from_vec` makes them.
+pub fn pq_policy(priority: Option<i64>) -> Par {
+    match priority {
+        Some(level) => expr_par(ExprInstance::EMapBody(EMap {
+            kvs: vec![KeyValuePair {
+                key: Some(expr_par(ExprInstance::GString(PRIORITY_KEY.to_owned()))),
+                value: Some(int_par(level)),
+            }],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+        None => Par::default(),
+    }
+}
+
+/// The level of a policy slot: `Some(None)` for `Nil`, `Some(Some(p))` for the exact image of
+/// [`pq_policy`] with `p ≥ 0`, and `None` for every other value. The decoder reads the structure
+/// and builds nothing: one entry, the key `"priority"` without a flag, a natural value, and no
+/// remainder and no flag on the map or on its `Par`.
+fn level_of_policy(policy: &Par) -> Option<Option<i64>> {
+    match is_nil(policy) {
+        true => Some(None),
+        false => match (sole_expr(policy), policy.connective_used) {
+            (
+                Some(ExprInstance::EMapBody(EMap {
+                    kvs,
+                    connective_used: false,
+                    remainder: None,
+                    ..
+                })),
+                false,
+            ) => match kvs.as_slice() {
+                [KeyValuePair {
+                    key: Some(key),
+                    value: Some(value),
+                }] => match (sole_expr(key), key.connective_used) {
+                    (Some(ExprInstance::GString(name)), false) if name == PRIORITY_KEY => {
+                        natural_of(value).map(Some)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        },
+    }
+}
+
+/// The envelope of a parked continuation of a priority queue with the order `ord` and the
+/// policy of `priority` around `body`.
+pub fn pq_continuation_envelope(ord: i64, priority: Option<i64>, body: Par) -> Par {
+    list_par(vec![
+        RecordKind::Continuation.tag(),
+        int_par(ord),
+        pq_policy(priority),
+        body,
+    ])
+}
+
+/// The parked continuation of `continuation` in a priority queue, with the order `ord` and the
+/// policy of `priority`: its body inside the envelope. The random state, the guard and the cost
+/// authority stay as they are. Only a `ParBody` with a body has a continuation record.
+pub fn wrap_pq_continuation(
+    ord: i64,
+    priority: Option<i64>,
+    continuation: &TaggedContinuation,
+) -> Result<TaggedContinuation, MalformedRecord> {
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body),
+            random_state,
+        })) => Ok(TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(pq_continuation_envelope(ord, priority, body.clone())),
+                random_state: random_state.clone(),
+            })),
+            guard: continuation.guard.clone(),
+            cost_authority: continuation.cost_authority.clone(),
+        }),
+        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
+        | Some(TaggedCont::ScalaBodyRef(_))
+        | None => Err(MalformedRecord(RecordKind::Continuation)),
+    }
+}
+
+/// The order, the level of the policy and the original body of a parked continuation of a
+/// priority queue. The policy slot holds the policy of [`pq_policy`] or `Nil`, and the other
+/// slots are the slots that [`continuation_ord`] accepts.
+fn pq_continuation_parts(
+    continuation: &TaggedContinuation,
+) -> Result<(i64, Option<i64>, &Par, &ParWithRandom), MalformedRecord> {
+    let malformed = MalformedRecord(RecordKind::Continuation);
+    let body = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => body,
+        Some(TaggedCont::ScalaBodyRef(_)) | None => return Err(malformed),
+    };
+    match body.body.as_ref().and_then(list_elements) {
+        Some([tag, ord, policy, original]) if is_tag(tag, RecordKind::Continuation) => {
+            match (natural_of(ord), level_of_policy(policy)) {
+                (Some(ord), Some(level)) => Ok((ord, level, original, body)),
+                (None, _) | (_, None) => Err(malformed),
+            }
+        }
+        _ => Err(malformed),
+    }
+}
+
+/// The order and the level of the policy of a parked continuation of a priority queue. Only the
+/// envelope is decoded.
+pub fn pq_continuation_slots(
+    continuation: &TaggedContinuation,
+) -> Result<(i64, Option<i64>), MalformedRecord> {
+    pq_continuation_parts(continuation).map(|(ord, level, _, _)| (ord, level))
+}
+
+/// A decoded continuation record of a priority queue.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PqContinuationRecord {
+    /// The order of the continuation in its collection.
+    pub ord: i64,
+    /// The level of its waiter queue: `Some(p)` for the level `p`, and `None` for the
+    /// unrestricted queue.
+    pub priority: Option<i64>,
+    /// The continuation as the program parked it: the original body, its random state, its
+    /// guard and its cost authority.
+    pub continuation: TaggedContinuation,
+}
+
+/// Decodes a parked continuation of a priority queue (the inverse of [`wrap_pq_continuation`]).
+pub fn unwrap_pq_continuation(
+    continuation: &TaggedContinuation,
+) -> Result<PqContinuationRecord, MalformedRecord> {
+    let (ord, priority, original, body) = pq_continuation_parts(continuation)?;
+    Ok(PqContinuationRecord {
+        ord,
+        priority,
+        continuation: TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(original.clone()),
+                random_state: body.random_state.clone(),
+            })),
+            guard: continuation.guard.clone(),
+            cost_authority: continuation.cost_authority.clone(),
+        },
+    })
+}
+
+/// The template of a datum envelope of a priority queue with a level: the order and the level
+/// are inline integers, so a reserved copy of it reserves the allocations of such an envelope.
+static PQ_DATUM_ENVELOPE: LazyLock<Par> = LazyLock::new(|| pq_datum_envelope(0, Some(0)));
+
+/// The template of the policy of a waiter of a level: one entry with an inline integer.
+static PQ_POLICY: LazyLock<Par> = LazyLock::new(|| pq_policy(Some(0)));
+
+/// [`wrap_pq_datum`] with its copies reserved: the envelope (the template of its shape), the
+/// buffer of the envelope and the payload, each payload par, the random state, the cost
+/// authority and the cost stack of `datum`.
+pub fn wrap_pq_datum_metered(
+    ord: i64,
+    priority: Option<i64>,
+    datum: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<ListParWithRandom, RSpaceError> {
+    let length = datum
+        .pars
+        .len()
+        .checked_add(1)
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    let template = match priority {
+        Some(_) => &*PQ_DATUM_ENVELOPE,
+        None => &*DATUM_ENVELOPE,
+    };
+    meter.reserve_copy(template)?;
+    meter.reserve_buffer::<Par>(length)?;
+    for par in &datum.pars {
+        meter.reserve_copy(par)?;
+    }
+    meter.reserve_copy(&datum.random_state)?;
+    meter.reserve_copy(&datum.cost_authority)?;
+    meter.reserve_copy(&datum.cost_stack)?;
+    Ok(wrap_pq_datum(ord, priority, datum))
+}
+
+/// [`pq_datum_slots`] with its read reserved: the envelope, which is small for every record that
+/// an agent wrote.
+pub fn pq_datum_slots_metered(
+    record: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<(i64, Option<i64>), SpaceError> {
+    if let Some(envelope) = record.pars.first() {
+        meter.inspect(envelope)?;
+    }
+    Ok(pq_datum_slots(record)?)
+}
+
+/// [`unwrap_pq_datum`] with its reads and copies reserved: the envelope, the payload, the random
+/// state, the cost authority and the cost stack.
+pub fn unwrap_pq_datum_metered(
+    record: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<PqDatumRecord, SpaceError> {
+    if let Some(envelope) = record.pars.first() {
+        meter.inspect(envelope)?;
+    }
+    if let Some(payload) = record.pars.get(1..) {
+        meter.reserve_copy_slice(payload)?;
+    }
+    meter.reserve_copy(&record.random_state)?;
+    meter.reserve_copy(&record.cost_authority)?;
+    meter.reserve_copy(&record.cost_stack)?;
+    Ok(unwrap_pq_datum(record)?)
+}
+
+/// The parked continuation of a receive of a priority queue with the order `ord` and the policy
+/// of `priority`, built from its parts with one copy of each part. It equals
+/// [`wrap_pq_continuation`] of the continuation with these parts.
+///
+/// The reservations are those of [`wrap_continuation_metered`], and for a waiter of a level the
+/// policy (the template of its shape).
+pub fn wrap_pq_continuation_metered(
+    ord: i64,
+    priority: Option<i64>,
+    body: &ParWithRandom,
+    guard: &Option<Par>,
+    cost_authority: Option<&CostAuthority>,
+    meter: &ScanMeter,
+) -> Result<TaggedContinuation, SpaceError> {
+    let Some(original) = &body.body else {
+        return Err(MalformedRecord(RecordKind::Continuation).into());
+    };
+    meter.reserve_copy(&*CONTINUATION_ENVELOPE)?;
+    if priority.is_some() {
+        meter.reserve_copy(&*PQ_POLICY)?;
+    }
+    meter.reserve_copy(original)?;
+    meter.reserve_copy(&original.locally_free)?;
+    meter.reserve_buffer::<u8>(original.locally_free.len())?;
+    meter.reserve_copy(&original.locally_free)?;
+    meter.reserve_copy(&body.random_state)?;
+    meter.reserve_copy(guard)?;
+    let cost_authority = cost_authority
+        .map(|authority| meter.copy(authority))
+        .transpose()?;
+    Ok(TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(pq_continuation_envelope(ord, priority, original.clone())),
+            random_state: body.random_state.clone(),
+        })),
+        guard: guard.clone(),
+        cost_authority,
+    })
+}
+
+/// [`pq_continuation_slots`] with its read reserved: the spine and the small slots of the
+/// envelope, the policy included, never the body.
+pub fn pq_continuation_slots_metered(
+    continuation: &TaggedContinuation,
+    meter: &ScanMeter,
+) -> Result<(i64, Option<i64>), SpaceError> {
+    reserve_continuation_envelope(continuation, meter)?;
+    Ok(pq_continuation_slots(continuation)?)
 }
 
 /// The introduction authority of one operation and the phlo budget of its deploy. The staged
@@ -1407,5 +1800,334 @@ mod tests {
             ),
             Ok(region(9))
         );
+    }
+
+    // ── The slots of a priority queue (P5b, decision 38) ──────────────────────────────────
+
+    /// The levels of the slot tests: the unprioritized level and some priority levels.
+    const PRIORITIES: [Option<i64>; 4] = [None, Some(0), Some(3), Some(i64::MAX)];
+
+    #[test]
+    fn space_record_pq_datum_priority_slot_roundtrips() {
+        for priority in PRIORITIES {
+            for payload in [Vec::new(), vec![int(1)], vec![string("a"), int(2)]] {
+                let original = datum(payload.clone());
+                let record = wrap_pq_datum(7, priority, &original);
+                assert_eq!(record.pars[0], pq_datum_envelope(7, priority));
+                assert_eq!(&record.pars[1..], payload.as_slice());
+                assert_eq!(pq_datum_slots(&record), Ok((7, priority)));
+                assert_eq!(
+                    unwrap_pq_datum(&record),
+                    Ok(PqDatumRecord {
+                        ord: 7,
+                        priority,
+                        datum: original.clone(),
+                    })
+                );
+            }
+        }
+        let original = datum(vec![int(1)]);
+        // The unprioritized record is the P4 record, so the strict decoders read it as well.
+        assert_eq!(wrap_pq_datum(4, None, &original), wrap_datum(4, &original));
+        assert_eq!(datum_ord(&wrap_pq_datum(4, None, &original)), Ok(4));
+        // The strict P4 decoders reject a record with a level: they stay strict for every other
+        // discipline.
+        let leveled = wrap_pq_datum(4, Some(2), &original);
+        let malformed = MalformedRecord(RecordKind::Datum);
+        assert_eq!(datum_ord(&leveled), Err(malformed));
+        assert_eq!(unwrap_datum(&leveled).err(), Some(malformed));
+        // The level is part of the record, so records of two levels differ.
+        assert_ne!(
+            wrap_pq_datum(4, Some(1), &original),
+            wrap_pq_datum(4, Some(2), &original)
+        );
+        assert_ne!(
+            wrap_pq_datum(4, Some(0), &original),
+            wrap_pq_datum(4, None, &original)
+        );
+    }
+
+    #[test]
+    fn space_record_pq_datum_decoder_rejects_malformed_slots() {
+        let malformed = Some(MalformedRecord(RecordKind::Datum));
+        let mut flagged_level = int(2);
+        flagged_level.connective_used = true;
+        for bad in [
+            list_par(vec![
+                RecordKind::Datum.tag(),
+                int(1),
+                int(-1),
+                Par::default(),
+            ]),
+            list_par(vec![
+                RecordKind::Datum.tag(),
+                int(1),
+                string("1"),
+                Par::default(),
+            ]),
+            list_par(vec![
+                RecordKind::Datum.tag(),
+                int(1),
+                flagged_level,
+                Par::default(),
+            ]),
+            list_par(vec![
+                RecordKind::Datum.tag(),
+                int(1),
+                list_par(vec![int(1)]),
+                Par::default(),
+            ]),
+            list_par(vec![RecordKind::Datum.tag(), int(1), int(1), int(0)]),
+            list_par(vec![
+                RecordKind::Datum.tag(),
+                int(-1),
+                int(1),
+                Par::default(),
+            ]),
+            list_par(vec![
+                tag_with([REIFIED_TAG, RECORD_TAG_MARK, b'D', 2]),
+                int(1),
+                int(1),
+                Par::default(),
+            ]),
+            list_par(vec![RecordKind::Datum.tag(), int(1), int(1)]),
+            continuation_envelope(1, int(1)),
+            int(1),
+        ] {
+            assert_eq!(
+                pq_datum_slots(&malformed_datum(bad.clone())).err(),
+                malformed,
+                "{bad:?}"
+            );
+            assert_eq!(unwrap_pq_datum(&malformed_datum(bad)).err(), malformed);
+        }
+        assert_eq!(
+            pq_datum_slots(&ListParWithRandom::default()).err(),
+            malformed
+        );
+    }
+
+    /// The canonical map `{"priority": level}` as the normalizer builds it.
+    fn canonical_policy(level: i64) -> Par {
+        use models::rust::par_map::ParMap;
+        use models::rust::par_map_type_mapper::ParMapTypeMapper;
+        let map = ParMapTypeMapper::par_map_to_emap(ParMap::create_from_vec(vec![(
+            string(PRIORITY_KEY),
+            int(level),
+        )]));
+        Par {
+            locally_free: map.locally_free.clone(),
+            connective_used: map.connective_used,
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EMapBody(map)),
+            }],
+            ..Par::default()
+        }
+    }
+
+    #[test]
+    fn space_record_pq_policy_slot_roundtrips() {
+        assert_eq!(pq_policy(None), Par::default());
+        for level in [0, 1, 9, i64::MAX] {
+            assert_eq!(pq_policy(Some(level)), canonical_policy(level));
+            assert_eq!(level_of_policy(&pq_policy(Some(level))), Some(Some(level)));
+        }
+        let original = parked(int(9));
+        for priority in PRIORITIES {
+            let wrapped =
+                wrap_pq_continuation(5, priority, &original).expect("a body has a record");
+            assert_eq!(pq_continuation_slots(&wrapped), Ok((5, priority)));
+            assert_eq!(
+                unwrap_pq_continuation(&wrapped),
+                Ok(PqContinuationRecord {
+                    ord: 5,
+                    priority,
+                    continuation: original.clone(),
+                })
+            );
+            // The outcome decodes the fired waiter of every lane.
+            assert_eq!(
+                into_continuation(wrapped),
+                Ok(ContinuationRecord {
+                    ord: 5,
+                    continuation: original.clone(),
+                })
+            );
+        }
+        // The unrestricted continuation is the P4 continuation.
+        assert_eq!(
+            wrap_pq_continuation(5, None, &original),
+            wrap_continuation(5, &original)
+        );
+        // The strict P4 decoders reject a policy: they stay strict for every other discipline.
+        let leveled = wrap_pq_continuation(5, Some(1), &original).expect("a body has a record");
+        let malformed = MalformedRecord(RecordKind::Continuation);
+        assert_eq!(continuation_ord(&leveled), Err(malformed));
+        assert_eq!(unwrap_continuation(&leveled).err(), Some(malformed));
+        // The waiters of two lanes differ.
+        assert_ne!(
+            wrap_pq_continuation(5, Some(1), &original),
+            wrap_pq_continuation(5, Some(2), &original)
+        );
+        assert_ne!(
+            wrap_pq_continuation(5, Some(0), &original),
+            wrap_pq_continuation(5, None, &original)
+        );
+        // A ScalaBodyRef or a missing body has no record.
+        for continuation in [
+            TaggedContinuation {
+                tagged_cont: Some(TaggedCont::ScalaBodyRef(201)),
+                ..original.clone()
+            },
+            TaggedContinuation::default(),
+        ] {
+            assert_eq!(
+                wrap_pq_continuation(0, Some(1), &continuation).err(),
+                Some(malformed)
+            );
+        }
+    }
+
+    /// A map `Par` with the entries `kvs` and the flags `map_flag` and `par_flag`.
+    fn policy_map(kvs: Vec<(Par, Par)>, map_flag: bool, par_flag: bool) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EMapBody(EMap {
+                    kvs: kvs
+                        .into_iter()
+                        .map(|(key, value)| KeyValuePair {
+                            key: Some(key),
+                            value: Some(value),
+                        })
+                        .collect(),
+                    locally_free: Vec::new(),
+                    connective_used: map_flag,
+                    remainder: None,
+                })),
+            }],
+            connective_used: par_flag,
+            ..Par::default()
+        }
+    }
+
+    #[test]
+    fn space_record_pq_policy_decoder_rejects_malformed_policies() {
+        let key = || string(PRIORITY_KEY);
+        let mut flagged_key = key();
+        flagged_key.connective_used = true;
+        let mut remainder = pq_policy(Some(1));
+        if let Some(Expr {
+            expr_instance: Some(ExprInstance::EMapBody(map)),
+        }) = remainder.exprs.first_mut()
+        {
+            map.remainder = Some(Var {
+                var_instance: Some(models::rhoapi::var::VarInstance::FreeVar(0)),
+            });
+        }
+        let malformed = Err(MalformedRecord(RecordKind::Continuation));
+        for bad in [
+            policy_map(Vec::new(), false, false),
+            policy_map(vec![(key(), int(1)), (string("w"), int(1))], false, false),
+            policy_map(vec![(string("prio"), int(1))], false, false),
+            policy_map(vec![(flagged_key, int(1))], false, false),
+            policy_map(vec![(key(), int(-1))], false, false),
+            policy_map(vec![(key(), string("1"))], false, false),
+            policy_map(vec![(key(), int(1))], true, false),
+            policy_map(vec![(key(), int(1))], false, true),
+            remainder,
+            list_par(vec![key(), int(1)]),
+            int(1),
+        ] {
+            assert_eq!(level_of_policy(&bad), None, "{bad:?}");
+            let continuation = parked(list_par(vec![
+                RecordKind::Continuation.tag(),
+                int(1),
+                bad,
+                int(9),
+            ]));
+            assert_eq!(pq_continuation_slots(&continuation), malformed);
+            assert_eq!(
+                into_continuation(continuation).err(),
+                Some(MalformedRecord(RecordKind::Continuation))
+            );
+        }
+    }
+
+    #[test]
+    fn space_record_pq_metered_forms_equal_the_plain_forms_and_reserve_first() {
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+        use crate::rust::interpreter::host_work::HostWorkBudget;
+
+        let unbounded =
+            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let operations = HostWorkDimension::VerificationOperations;
+        let original = datum(vec![string("payload"), int(3)]);
+        let body = ParWithRandom {
+            body: Some(int(9)),
+            random_state: vec![5, 6],
+        };
+        for priority in PRIORITIES {
+            let budget = unbounded();
+            let meter = ScanMeter::new(Some(budget.clone()));
+            let record = wrap_pq_datum_metered(2, priority, &original, &meter).expect("a record");
+            assert_eq!(record, wrap_pq_datum(2, priority, &original));
+            assert_eq!(pq_datum_slots_metered(&record, &meter), Ok((2, priority)));
+            assert_eq!(
+                unwrap_pq_datum_metered(&record, &meter).map(|decoded| decoded.datum),
+                Ok(original.clone())
+            );
+            let continuation = wrap_pq_continuation_metered(
+                3,
+                priority,
+                &body,
+                &Some(int(1)),
+                Some(&region(7)),
+                &meter,
+            )
+            .expect("a continuation");
+            assert_eq!(
+                continuation,
+                wrap_pq_continuation(3, priority, &parked(int(9))).expect("a body")
+            );
+            assert_eq!(
+                pq_continuation_slots_metered(&continuation, &meter),
+                Ok((3, priority))
+            );
+            let usage = budget.usage(operations).get();
+            assert!(usage > 0, "the forms reserve their work");
+            // A budget one unit short rejects the forms before they return a value.
+            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            limits.set(operations, HostWorkLimit::new(usage - 1));
+            let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
+            let outcome = wrap_pq_datum_metered(2, priority, &original, &cut)
+                .map_err(SpaceError::from)
+                .and_then(|record| {
+                    pq_datum_slots_metered(&record, &cut)?;
+                    unwrap_pq_datum_metered(&record, &cut)?;
+                    let continuation = wrap_pq_continuation_metered(
+                        3,
+                        priority,
+                        &body,
+                        &Some(int(1)),
+                        Some(&region(7)),
+                        &cut,
+                    )?;
+                    pq_continuation_slots_metered(&continuation, &cut)
+                });
+            assert_eq!(
+                outcome,
+                Err(SpaceError::Host(RSpaceError::HostWorkRejected))
+            );
+        }
+        // A waiter of a level reserves its policy, so it reserves more than an unrestricted one.
+        let usage_of = |priority: Option<i64>| {
+            let budget = unbounded();
+            let meter = ScanMeter::new(Some(budget.clone()));
+            wrap_pq_continuation_metered(3, priority, &body, &None, None, &meter)
+                .expect("a continuation");
+            budget.usage(operations).get()
+        };
+        assert!(usage_of(Some(1)) > usage_of(None));
     }
 }

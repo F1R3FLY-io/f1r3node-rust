@@ -1133,7 +1133,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "const",
       "name": "RECORD_TAG_MARK",
-      "line": 55,
+      "line": 69,
       "role": "The R of a record tag.",
       "rocq": [
         "record_tag_mark"
@@ -1149,7 +1149,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "const",
       "name": "RECORD_VERSION",
-      "line": 58,
+      "line": 72,
       "role": "Version 1 of the envelope.",
       "rocq": [
         "record_version"
@@ -1164,7 +1164,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "struct",
       "name": "RecordKind",
-      "line": 63,
+      "line": 77,
       "role": "D, K, S and C.",
       "rocq": [
         "record_kind",
@@ -1181,7 +1181,7 @@
       "scope": "RecordKind",
       "kind": "fn",
       "name": "tag_bytes",
-      "line": 80,
+      "line": 94,
       "role": "[E0, R, kind, version].",
       "rocq": [
         "tag_bytes"
@@ -1198,7 +1198,7 @@
       "scope": "RecordKind",
       "kind": "fn",
       "name": "tag",
-      "line": 85,
+      "line": 99,
       "role": "The GByteArray tag.",
       "rocq": [
         "tag"
@@ -1213,7 +1213,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "list_par",
-      "line": 156,
+      "line": 170,
       "role": "A list with the derived bit sets.",
       "rocq": [
         "list_par"
@@ -1229,7 +1229,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "list_elements",
-      "line": 184,
+      "line": 198,
       "role": "The strict list reader: the flags must be the derived ones.",
       "rocq": [
         "list_elements"
@@ -1244,7 +1244,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "is_tag",
-      "line": 205,
+      "line": 219,
       "role": "Exactly the tag of a kind.",
       "rocq": [
         "is_tag"
@@ -1260,7 +1260,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "natural_of",
-      "line": 214,
+      "line": 228,
       "role": "A GInt of at least 0.",
       "rocq": [
         "natural_of"
@@ -1275,7 +1275,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "datum_envelope",
-      "line": 224,
+      "line": 238,
       "role": "[tag D, ord, Nil, Nil].",
       "rocq": [
         "datum_envelope"
@@ -1290,7 +1290,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "wrap_datum",
-      "line": 235,
+      "line": 249,
       "role": "The envelope in front of the payload.",
       "rocq": [
         "wrap_datum"
@@ -1307,7 +1307,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "datum_ord",
-      "line": 248,
+      "line": 262,
       "role": "The order of a datum record.",
       "rocq": [
         "datum_ord"
@@ -1323,7 +1323,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "unwrap_datum",
-      "line": 271,
+      "line": 285,
       "role": "The order and the datum as the program sent it.",
       "rocq": [
         "unwrap_datum"
@@ -1339,7 +1339,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "continuation_envelope",
-      "line": 289,
+      "line": 303,
       "role": "[tag K, ord, Nil, body].",
       "rocq": [
         "continuation_envelope"
@@ -1354,7 +1354,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "wrap_continuation",
-      "line": 301,
+      "line": 315,
       "role": "The envelope around a body.",
       "rocq": [
         "wrap_continuation"
@@ -1369,7 +1369,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "continuation_parts",
-      "line": 324,
+      "line": 338,
       "role": "The order, the body and the random state.",
       "rocq": [
         "continuation_parts"
@@ -1384,7 +1384,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "unwrap_continuation",
-      "line": 359,
+      "line": 373,
       "role": "The continuation as the program parked it.",
       "rocq": [
         "unwrap_continuation"
@@ -1399,7 +1399,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "counter_record",
-      "line": 383,
+      "line": 397,
       "role": "[[tag S], value].",
       "rocq": [
         "counter_record"
@@ -1414,7 +1414,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "counter_value",
-      "line": 397,
+      "line": 411,
       "role": "The value of a counter record.",
       "rocq": [
         "counter_value"
@@ -1429,7 +1429,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "config_record",
-      "line": 413,
+      "line": 427,
       "role": "The config map behind the C tag.",
       "rocq": [
         "config_record"
@@ -1444,7 +1444,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "config_map",
-      "line": 423,
+      "line": 437,
       "role": "The config map of a config record.",
       "rocq": [
         "config_map"
@@ -3501,7 +3501,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "wrap_datum_metered",
-      "line": 599,
+      "line": 613,
       "role": "The datum record, with its copies reserved first.",
       "rocq": [
         "step"
@@ -3516,7 +3516,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "datum_ord_metered",
-      "line": 622,
+      "line": 636,
       "role": "The order of a record: a reserved read of the envelope only.",
       "rocq": [
         "scan"
@@ -3531,7 +3531,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "unwrap_datum_metered",
-      "line": 631,
+      "line": 645,
       "role": "The payload of the head record of a receive, with its copies reserved first.",
       "rocq": [
         "round_staged"
@@ -3546,7 +3546,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "wrap_continuation_metered",
-      "line": 654,
+      "line": 668,
       "role": "The parked continuation of a receive, built once, with its copies reserved first.",
       "rocq": [
         "step"
@@ -3561,7 +3561,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "continuation_ord_metered",
-      "line": 709,
+      "line": 723,
       "role": "The order of a waiter: a reserved read of the spine and the small slots, never of the body.",
       "rocq": [
         "scan"
@@ -3576,7 +3576,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "prepay_continuation_unwrap",
-      "line": 721,
+      "line": 735,
       "role": "Prepays at staging the decode that the outcome makes after the commit.",
       "rocq": [
         "round_staged",
@@ -3593,7 +3593,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "into_continuation",
-      "line": 735,
+      "line": 752,
       "role": "The outcome decode: it moves the slots out of the receipt and copies nothing.",
       "rocq": [
         "round_after_commit"
@@ -3609,7 +3609,7 @@
       "scope": "Introduction",
       "kind": "fn",
       "name": "new",
-      "line": 828,
+      "line": 1221,
       "role": "One introduction for each operation: the authority and the phlo budget, with their copies reserved.",
       "rocq": [
         "step"
@@ -3624,7 +3624,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "register_introduction",
-      "line": 869,
+      "line": 1262,
       "role": "The callback of a staged operation: one reserved copy of a shared pointer.",
       "rocq": [
         "step"
@@ -3761,7 +3761,7 @@
       "scope": "Introduction",
       "kind": "fn",
       "name": "for_record",
-      "line": 851,
+      "line": 1244,
       "role": "Decision 45 (Rule E): the introduction of a re-stored record: the budget of the operation and the record's own cost authority, or the empty authority, as produce_peeks registers it. The copies are reserved as in Introduction::new.",
       "rocq": [
         "step"

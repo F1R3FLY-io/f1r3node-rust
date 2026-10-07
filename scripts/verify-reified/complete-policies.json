@@ -16,7 +16,8 @@
     {"pattern": "remove_all_continuations", "reason": "do-not-use: leaves join entries behind"},
     {"pattern": "Uuid", "reason": "P4 design B.8: space ids and names derive from the call random, never from a UUID"},
     {"pattern": "WildcardMatch", "reason": "P4 design B.5: spaces use the injected matcher, never a hard-wired matcher"},
-    {"pattern": "Produce::default()", "reason": "P4 design B.8: every Produce identity comes from Produce::create"}
+    {"pattern": "Produce::default()", "reason": "P4 design B.8: every Produce identity comes from Produce::create"},
+    {"pattern": "ensure_capacity", "reason": "I-10: a priority queue keeps no storage for each level (the legacy ensure_capacity DoS)"}
   ],
   "forbidden_anywhere": [
     {"pattern": "datum_index_key", "reason": "consensus checklist: no arity index"},
@@ -323,6 +324,9 @@
         "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+        "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/outer/array.rs",
         "rholang/src/rust/interpreter/spaces/outer/vector.rs",
         "rholang/src/rust/interpreter/spaces/pathmap/mod.rs",
@@ -370,6 +374,13 @@
         {"file": "rholang/src/rust/interpreter/spaces/disciplines/bag.rs", "pattern": "pub struct BagDiscipline;"},
         {"file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs", "pattern": "pub struct CellDiscipline;"},
         {"file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs", "pattern": "pub struct StackDiscipline;"},
+        {"file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs", "pattern": "pub struct SetDiscipline;"},
+        {"file": "rholang/src/rust/interpreter/spaces/disciplines/set.rs", "pattern": "pub fn set_key("},
+        {"file": "rholang/src/rust/interpreter/spaces/disciplines/mod.rs", "pattern": "pub mod set;"},
+        {"file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs", "pattern": "pub struct PriorityQueueDiscipline;"},
+        {"file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs", "pattern": "impl SettleView for PriorityQueueView<'_> {"},
+        {"file": "rholang/src/rust/interpreter/spaces/record.rs", "pattern": "pub const PRIORITY_KEY: &str = \"priority\";"},
+        {"file": "rholang/src/rust/interpreter/spaces/record.rs", "pattern": "pub fn unwrap_pq_continuation("},
         {"file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs", "pattern": "pub fn offer<D: ScanDiscipline>("},
         {"file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs", "pattern": "pub fn receive<D: ScanDiscipline>("},
         {"file": "rholang/src/rust/interpreter/spaces/settle.rs", "pattern": "pub fn settle<V: SettleView>("},
@@ -388,7 +399,12 @@
         {"file": "rholang/src/rust/interpreter/spaces/factory/urn.rs", "pattern": "pub fn registered_families() -> impl Iterator<Item = (SpaceFactoryUrn, SystemChannel)>"},
         {"file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs", "pattern": "pub fn required_params(family: SpaceFactoryUrn) -> &'static [&'static str]"},
         {"file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs", "pattern": "pub enum ParamRule {"},
-        {"file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs", "pattern": "fn canonical_params("}
+        {"file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs", "pattern": "fn canonical_params("},
+        {"file": "rholang/tests/reified_determinism.rs", "pattern": "async fn space_canonical_iteration_bag_views() {"},
+        {"file": "rholang/tests/reified_determinism.rs", "pattern": "async fn space_candidate_serialize_failure_ordered() {"},
+        {"file": "rholang/tests/reified_pattern_enforcement.rs", "pattern": "async fn pattern_enforcement_unsupported_pairs_reject() {"},
+        {"file": "rholang/tests/reified_pattern_enforcement.rs", "pattern": "async fn pattern_enforcement_qualifiers_fail_closed() {"},
+        {"file": "rholang/tests/reified_merge_p5.rs", "pattern": "async fn reified_p5_synthesizes_no_join() {"}
       ],
       "tests": [
         "rholang/tests/reified_queue_parity.rs",
@@ -403,7 +419,12 @@
         "rholang/tests/reified_array_vector.rs",
         "rholang/tests/reified_families.rs",
         "rholang/tests/reified_hooks_p5.rs",
-        "rholang/tests/reified_engine_props.rs"
+        "rholang/tests/reified_engine_props.rs",
+        "rholang/tests/reified_determinism.rs",
+        "rholang/tests/reified_pattern_enforcement.rs",
+        "rholang/tests/reified_merge_p5.rs",
+        "rholang/tests/reified_set.rs",
+        "rholang/tests/reified_priority_queue.rs"
       ],
       "property_files": [
         "rholang/tests/support/props.rs"

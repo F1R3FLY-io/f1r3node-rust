@@ -102,6 +102,23 @@
 #                     head blocking, the settle loop and its termination,
 #                     re-entry at the LIFO place, and one fire count for
 #                     each transaction (decision 49).
+#   SetDiscipline     P5a (8 headlines): the F5 set key is injective, the
+#                     view keeps one representative per class, a consume
+#                     retires its class over [D; n], the retire COMMs meet
+#                     the staging rules, a produce-side fire retires the
+#                     stored class (decision 37), a peek restores only the
+#                     representative (Rule E), membership compares full keys
+#                     on equal hashes (DR-90), and the key metering is
+#                     covered (decision 42).
+#   PriorityQueue     P5b (20 headlines): the level order with the
+#                     unprioritized level last, FIFO levels and lanes, the
+#                     older head first (decision 38), the settle with the
+#                     oldest fireable head first and its one fire count, the
+#                     re-entry at the FIFO place of a level (decision 43),
+#                     the peek restore (Rule E), the priority domain, no
+#                     storage for each level (I-10), and the level-scan
+#                     metering (decision 42). RecordEnvelope.v adds the
+#                     priority and policy slots (2 headlines).
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -135,3 +152,5 @@ theories/VectorStore.v
 theories/HashMapStore.v
 theories/PathMapPrefix.v
 theories/StackDiscipline.v
+theories/SetDiscipline.v
+theories/PriorityQueue.v

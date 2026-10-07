@@ -8,7 +8,7 @@
 # the round-3 rule FR-10 (prompts/p1-fix-rules.md), Rule E of decision 45
 # (H11) and decision 36 (replay reproduces play: H4 and H23). P2 adds
 # Encoding.v (12 headlines, and 3 more for plan revision I-20). P4 adds
-# Namespace.v (11), RecordEnvelope.v (8), CounterConflict.v (9),
+# Namespace.v (11), RecordEnvelope.v (8, 10 in P5), CounterConflict.v (9, 11 in P5),
 # HeadOnlyDisciplines.v (9, 10 of decision 43 and 1 of decision 45),
 # SpaceRefs.v (10, and 1 of decision 46) and SpaceFactory.v (8). Decision 42
 # adds AgentReadCoverage.v (8). Option P of decision 45 adds
@@ -46,7 +46,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 177: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 209: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -61,7 +61,11 @@
 #                        ContinuationCollection (5), Match (3),
 #                        GenericRSpace (5), OuterStorage (8), VectorStore
 #                        (3), HashMapStore (2), PathMapPrefix (6) and
-#                        StackDiscipline (13))
+#                        StackDiscipline (13), and 32 for the second wave
+#                        of W2: the F23 headline and the crossed stacks
+#                        of CounterConflict.v, SetDiscipline (8),
+#                        PriorityQueue (20) and the 2 PQ slot headlines
+#                        of RecordEnvelope.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -80,7 +84,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-177}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-209}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -91,8 +95,8 @@ declare -A EXPECTED_PER_MODULE=(
   [VolatileSweep]=6
   [Encoding]=15
   [Namespace]=11
-  [RecordEnvelope]=8
-  [CounterConflict]=9
+  [RecordEnvelope]=10
+  [CounterConflict]=11
   [HeadOnlyDisciplines]=20
   [SpaceRefs]=12
   [SpaceFactory]=13
@@ -108,6 +112,8 @@ declare -A EXPECTED_PER_MODULE=(
   [HashMapStore]=2
   [PathMapPrefix]=6
   [StackDiscipline]=13
+  [SetDiscipline]=8
+  [PriorityQueue]=20
 )
 
 PASS=0
