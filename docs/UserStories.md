@@ -68,14 +68,14 @@ This document captures user stories that drive feature development. User stories
 
 **User Flow:** FLOW-002
 
-**Status:** In Progress
+**Status:** Complete
 
 **Acceptance Criteria:**
 - [x] TASK-020-1 bounds accept-error retries and log output while preserving error delivery and connection recovery.
 - [x] TASK-020-1 applies no error backoff after a successful accept and releases listener resources when the consumer closes.
 - [x] TASK-020-2 enforces byte limits for each log file and the complete log directory.
 - [x] TASK-020-3 uses one deployment sink and verifies container log caps, including the coordinated system-integration change.
-- [ ] TASK-020-4 stops the soak workload when node or container logs exceed their budgets.
+- [x] TASK-020-4 stops the soak workload when node or container logs exceed their budgets.
 
 **Verification Boundary:**
 
@@ -84,12 +84,12 @@ The [evidence report](work-logs/evidence/task-020-1-hosted-20260930-01/report.js
 These controlled tests do not verify complete deployment storage limits, the descriptor-exhaustion cause, or a live soak campaign.
 
 TASK-020-2 adds 100 MiB per-file and 2 GiB directory limits for the file sink.
-[Local verification](work-logs/task-020-2-byte-bounded-logging-20260930.md) passed 781 tests across shared, node, and comm, with zero skips.
-TASK-020-3 now has [local deployment verification](work-logs/task-020-3-deployment-log-caps-20260930.md) for explicit single sinks and configured container caps.
+[Local verification](work-logs/archived/EPIC-020/task-020-2-byte-bounded-logging-20260930.md) passed 781 tests across shared, node, and comm, with zero skips.
+TASK-020-3 now has [local deployment verification](work-logs/archived/EPIC-020/task-020-3-deployment-log-caps-20260930.md) for explicit single sinks and configured container caps.
 The system-integration single-sink change merged into its `dev` branch through PR #146 at `ccd717195`.
 The [external handoff](handoffs/task-020-3-system-integration-20260930.md) records the contract review and the sink contract for each deployment.
-Guardian enforcement and a live deployment exercise remain separate obligations.
-The story remains open until all applicable tasks and deployment checks pass.
+TASK-020-4 added guardian enforcement of the log budgets in PR #622, accepted on 2026-10-05. A live deployment exercise remains a separate obligation.
+EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 
 ---
 

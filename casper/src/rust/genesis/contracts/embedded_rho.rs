@@ -22,3 +22,13 @@ pub const MULTI_SIG_SYSTEM_VAULT: &str =
 pub const STACK: &str = include_str!("../../../main/resources/Stack.rho");
 pub const TOKEN_METADATA: &str = include_str!("../../../main/resources/TokenMetadata.rhox");
 pub const POS: &str = include_str!("../../../main/resources/PoS.rhox");
+
+// File I/O FIP library agents (slice 19 genesis wiring — File I/O FIP
+// §The Fs agent; composed into a single deploy via fs_genesis module).
+pub const FILE: &str = include_str!("../../../main/resources/File.rho");
+pub const DIR: &str = include_str!("../../../main/resources/Dir.rho");
+pub const STREAM: &str = include_str!("../../../main/resources/Stream.rho");
+pub const BUFFER: &str = include_str!("../../../main/resources/Buffer.rho");
+pub const STDIN: &str = include_str!("../../../main/resources/Stdin.rho");
+pub const STDOUT: &str = include_str!("../../../main/resources/Stdout.rho");
+pub const FS: &str = include_str!("../../../main/resources/Fs.rho");

@@ -22,6 +22,7 @@ pub const BLOCK_INFLIGHT_CAP_DROP_METRIC: &str = "block.inflight-cap.drops";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
+pub const BLOCK_REQUESTS_RECOVERY_METRIC: &str = "block.requests.recovery";
 pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
 pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
 pub const BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC: &str =
@@ -59,6 +60,12 @@ pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
 pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
+pub const CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC: &str = "casper.buffer.release-scan.time";
+pub const CASPER_BUFFER_RELEASE_SCAN_CANDIDATES_METRIC: &str =
+    "casper.buffer.release-scan.candidates";
+pub const BLOCK_PROCESSING_IN_FLIGHT_METRIC: &str = "block-processing.in-flight";
+pub const BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC: &str =
+    "block-processing.in-flight.oldest-age-seconds";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
 // pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";
@@ -86,6 +93,8 @@ pub const DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC: &str = "dag.merge.state-ap
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
 pub const BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC: &str = "block.replay.runtime.lock-wait.time";
+pub const BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC: &str =
+    "block.replay.runtime.reporting-deferred";
 pub const BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC: &str = "block.replay.runtime.execute.time";
 pub const BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC: &str =
     "block.replay.runtime.save-mergeable.time";
