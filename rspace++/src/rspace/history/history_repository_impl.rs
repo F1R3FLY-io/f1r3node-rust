@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::mem::{align_of, size_of};
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -12,29 +14,37 @@ use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use super::history_reader::HistoryReader;
 use super::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
-use crate::rspace::errors::HistoryError;
+use super::native_reader::NativeHistoryReader;
+use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
+use crate::rspace::history::native_checkpoint::{NativeCheckpoint, NativeCheckpointBacking};
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::hot_store_action::DeleteAction::{DeleteContinuations, DeleteData, DeleteJoins};
-use crate::rspace::hot_store_action::HotStoreAction;
 use crate::rspace::hot_store_action::InsertAction::{InsertContinuations, InsertData, InsertJoins};
+use crate::rspace::hot_store_action::{HotStoreAction, NativeExportAction};
 use crate::rspace::hot_store_trie_action::{
     HotStoreTrieAction, TrieDeleteAction, TrieDeleteConsume, TrieDeleteJoins, TrieDeleteProduce,
     TrieInsertAction, TrieInsertConsume, TrieInsertJoins, TrieInsertProduce,
 };
+use crate::rspace::internal::WaitingContinuation;
 use crate::rspace::metrics_constants::{
     HISTORY_CHECKPOINT_ACTIONS_METRIC, HISTORY_CHECKPOINT_HISTORY_LOCK_WAIT_TIME_METRIC,
     HISTORY_CHECKPOINT_HISTORY_PROCESS_TIME_METRIC, HISTORY_CHECKPOINT_LEAF_WRITE_TIME_METRIC,
     HISTORY_CHECKPOINT_PARTITION_TIME_METRIC, HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC,
     HISTORY_CHECKPOINT_ROOTS_LOCK_WAIT_TIME_METRIC, HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC,
     HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC, HISTORY_CHECKPOINT_STORAGE_ACTIONS_TIME_METRIC,
-    HISTORY_CHECKPOINT_TIME_METRIC, HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
+    HISTORY_CHECKPOINT_TIME_METRIC, HISTORY_LOCK_CHECKPOINT_SITE, HISTORY_LOCK_READER_SITE,
+    HISTORY_LOCK_RESET_SITE, HISTORY_LOCK_ROOT_SITE,
+    HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
     HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC, HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC,
-    HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC, HISTORY_RSPACE_METRICS_SOURCE,
+    HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC, HISTORY_RSPACE_METRICS_SOURCE, LockSiteMetrics,
+    ROOTS_LOCK_CHECKPOINT_SITE, ROOTS_LOCK_CONTAINS_ROOT_SITE, ROOTS_LOCK_RECORD_ROOT_SITE,
+    ROOTS_LOCK_RESET_SITE,
 };
 use crate::rspace::serializers::serializers::{encode_continuations, encode_datums, encode_joins};
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
@@ -46,6 +56,7 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
     pub current_history: Arc<Mutex<Box<dyn History>>>,
     pub roots_repository: Arc<Mutex<RootRepository>>,
     pub leaf_store: Arc<dyn KeyValueStore>,
+    pub node_store: Arc<dyn KeyValueStore>,
     pub rspace_exporter: Arc<dyn RSpaceExporter>,
     pub rspace_importer: Arc<dyn RSpaceImporter>,
     pub _marker: PhantomData<(C, P, A, K)>,
@@ -58,30 +69,77 @@ const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 // `std::sync::Mutex`es serialize concurrent PRECHARGE/REFUND system-deploy
 // execution the way the now-removed LmdbKeyValueStore mutex used to
 // serialize history reads).
-fn lock_current_history(
-    m: &Mutex<Box<dyn History>>,
-) -> std::sync::MutexGuard<'_, Box<dyn History>> {
-    let start = Instant::now();
-    let guard = m
-        .lock()
-        .expect("History Repository Impl: Unable to acquire history lock");
-    metrics::counter!(HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-        .increment(start.elapsed().as_nanos() as u64);
-    metrics::counter!(HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-        .increment(1);
-    guard
+struct TimedGuard<'a, T: ?Sized> {
+    guard: Option<MutexGuard<'a, T>>,
+    acquired: Instant,
+    site: &'static LockSiteMetrics,
 }
 
-fn lock_roots_repository(m: &Mutex<RootRepository>) -> std::sync::MutexGuard<'_, RootRepository> {
+impl<T: ?Sized> Deref for TimedGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.guard
+            .as_deref()
+            .expect("TimedGuard holds its lock until drop")
+    }
+}
+
+impl<T: ?Sized> Drop for TimedGuard<'_, T> {
+    fn drop(&mut self) {
+        let held = self.acquired.elapsed();
+        drop(self.guard.take());
+        metrics::counter!(self.site.hold_ns, "source" => HISTORY_RSPACE_METRICS_SOURCE)
+            .increment(held.as_nanos() as u64);
+    }
+}
+
+fn timed_lock<'a, T: ?Sized>(
+    m: &'a Mutex<T>,
+    wait_metric: &'static str,
+    calls_metric: &'static str,
+    site: &'static LockSiteMetrics,
+    message: &str,
+) -> TimedGuard<'a, T> {
     let start = Instant::now();
-    let guard = m
-        .lock()
-        .expect("History Repository Impl: Unable to acquire roots repository lock");
-    metrics::counter!(HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-        .increment(start.elapsed().as_nanos() as u64);
-    metrics::counter!(HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-        .increment(1);
-    guard
+    let guard = m.lock().expect(message);
+    let acquired = Instant::now();
+    let wait_ns = acquired.duration_since(start).as_nanos() as u64;
+    metrics::counter!(wait_metric, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(wait_ns);
+    metrics::counter!(calls_metric, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(1);
+    metrics::counter!(site.wait_ns, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(wait_ns);
+    metrics::counter!(site.calls, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(1);
+    TimedGuard {
+        guard: Some(guard),
+        acquired,
+        site,
+    }
+}
+
+fn lock_current_history<'a>(
+    m: &'a Mutex<Box<dyn History>>,
+    site: &'static LockSiteMetrics,
+) -> TimedGuard<'a, Box<dyn History>> {
+    timed_lock(
+        m,
+        HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC,
+        HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
+        site,
+        "History Repository Impl: Unable to acquire history lock",
+    )
+}
+
+fn lock_roots_repository<'a>(
+    m: &'a Mutex<RootRepository>,
+    site: &'static LockSiteMetrics,
+) -> TimedGuard<'a, RootRepository> {
+    timed_lock(
+        m,
+        HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC,
+        HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC,
+        site,
+        "History Repository Impl: Unable to acquire roots repository lock",
+    )
 }
 
 impl<C, P, A, K> HistoryRepositoryImpl<C, P, A, K>
@@ -91,6 +149,62 @@ where
     A: Clone + Send + Sync + Serialize,
     K: Clone + Send + Sync + Serialize,
 {
+    /// D-C3 (D-S3, DR-97): stages a native checkpoint whose cold and history
+    /// actions `prepare` builds: the atomic-root check, the radix
+    /// preparation, the root reservation and the backing, in the order of
+    /// the owned checkpoint.
+    fn stage_native_checkpoint(
+        &self,
+        prepare: impl FnOnce() -> Result<NativeCheckpoint, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError> {
+        meter.reserve(1, 0, 0)?;
+        if !self
+            .roots_repository
+            .lock()
+            .expect("root lock")
+            .supports_atomic_record()
+        {
+            return Err(RSpaceError::InterpreterError(
+                "native checkpoint requires atomic root recording".to_owned(),
+            ));
+        }
+        let mut prepared = prepare()?;
+        meter.reserve(8, 0, 0)?;
+        if !prepared.history_actions.is_empty() {
+            let history = self.current_history.lock().expect("history lock");
+            prepared.prepared_history =
+                Some(history.prepare_native(std::mem::take(&mut prepared.history_actions), meter)?);
+        }
+        if let Some(staged) = &prepared.prepared_history {
+            let root = staged.next.root_ref();
+            self.roots_repository
+                .lock()
+                .expect("root lock")
+                .reserve_native_commit(root, meter)?;
+            meter.reserve(1, root.0.len(), root.0.len())?;
+            prepared.root = Some(root.clone());
+        }
+        let result_backing = size_of::<HistoryRepositoryImpl<C, P, A, K>>()
+            .checked_add(if prepared.prepared_history.is_some() {
+                size_of::<Mutex<Box<dyn History>>>()
+                    .checked_add(2 * size_of::<usize>())
+                    .and_then(|bytes| bytes.checked_add(align_of::<Mutex<Box<dyn History>>>() * 2))
+                    .ok_or(RSpaceError::HostWorkRejected)?
+            } else {
+                0
+            })
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(2, 0, result_backing)?;
+        prepared.backing = Some(NativeCheckpointBacking {
+            history: self.current_history.clone(),
+            roots: self.roots_repository.clone(),
+            leaves: self.leaf_store.clone(),
+            nodes: self.node_store.clone(),
+        });
+        Ok(prepared)
+    }
+
     fn checkpoint_noop_clone(
         &self,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>
@@ -104,6 +218,7 @@ where
             current_history: self.current_history.clone(),
             roots_repository: self.roots_repository.clone(),
             leaf_store: self.leaf_store.clone(),
+            node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -354,6 +469,133 @@ where
     A: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     K: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
 {
+    // Changed by D-C3 (D-S3, DR-97): the owned and the borrowed checkpoints
+    // share the staging in `stage_native_checkpoint`; the body below moved
+    // there unchanged, with the preparation as its closure.
+    // fn prepare_native_checkpoint(
+    //     &self,
+    //     actions: Vec<HotStoreAction<C, P, A, K>>,
+    //     meter: &dyn SourceMeter,
+    // ) -> Result<NativeCheckpoint, RSpaceError> {
+    //     meter.reserve(1, 0, 0)?;
+    //     if !self
+    //         .roots_repository
+    //         .lock()
+    //         .expect("root lock")
+    //         .supports_atomic_record()
+    //     {
+    //         return Err(RSpaceError::InterpreterError(
+    //             "native checkpoint requires atomic root recording".to_owned(),
+    //         ));
+    //     }
+    //     let mut prepared = NativeCheckpoint::prepare(actions, meter)?;
+    //     meter.reserve(8, 0, 0)?;
+    //     if !prepared.history_actions.is_empty() {
+    //         let history = self.current_history.lock().expect("history lock");
+    //         prepared.prepared_history =
+    //             Some(history.prepare_native(std::mem::take(&mut
+    // prepared.history_actions), meter)?);     }
+    //     if let Some(staged) = &prepared.prepared_history {
+    //         let root = staged.next.root_ref();
+    //         self.roots_repository
+    //             .lock()
+    //             .expect("root lock")
+    //             .reserve_native_commit(root, meter)?;
+    //         meter.reserve(1, root.0.len(), root.0.len())?;
+    //         prepared.root = Some(root.clone());
+    //     }
+    //     let result_backing = size_of::<HistoryRepositoryImpl<C, P, A, K>>()
+    //         .checked_add(if prepared.prepared_history.is_some() {
+    //             size_of::<Mutex<Box<dyn History>>>()
+    //                 .checked_add(2 * size_of::<usize>())
+    //                 .and_then(|bytes| bytes.checked_add(align_of::<Mutex<Box<dyn
+    // History>>>() * 2))                 .ok_or(RSpaceError::HostWorkRejected)?
+    //         } else {
+    //             0
+    //         })
+    //         .ok_or(RSpaceError::HostWorkRejected)?;
+    //     meter.reserve(2, 0, result_backing)?;
+    //     prepared.backing = Some(NativeCheckpointBacking {
+    //         history: self.current_history.clone(),
+    //         roots: self.roots_repository.clone(),
+    //         leaves: self.leaf_store.clone(),
+    //         nodes: self.node_store.clone(),
+    //     });
+    //     Ok(prepared)
+    // }
+    fn prepare_native_checkpoint(
+        &self,
+        actions: Vec<HotStoreAction<C, P, A, K>>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError> {
+        self.stage_native_checkpoint(|| NativeCheckpoint::prepare(actions, meter), meter)
+    }
+
+    fn prepare_native_checkpoint_borrowed(
+        &self,
+        actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError> {
+        self.stage_native_checkpoint(|| NativeCheckpoint::prepare_borrowed(actions, meter), meter)
+    }
+
+    fn commit_native_checkpoint(
+        &self,
+        prepared: NativeCheckpoint,
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, RSpaceError> {
+        let backing = prepared.backing.as_ref().ok_or_else(|| {
+            RSpaceError::InterpreterError("native checkpoint has no history backing".to_owned())
+        })?;
+        if !Arc::ptr_eq(&backing.history, &self.current_history) ||
+            !Arc::ptr_eq(&backing.roots, &self.roots_repository) ||
+            !Arc::ptr_eq(&backing.leaves, &self.leaf_store) ||
+            !Arc::ptr_eq(&backing.nodes, &self.node_store)
+        {
+            return Err(RSpaceError::InterpreterError(
+                "native checkpoint belongs to another history repository".to_owned(),
+            ));
+        }
+        let Some(staged_history) = prepared.prepared_history else {
+            if !prepared.history_actions.is_empty() {
+                return Err(RSpaceError::InterpreterError(
+                    "native checkpoint has no prepared history".to_owned(),
+                ));
+            }
+            return Ok(self.checkpoint_noop_clone());
+        };
+        let new_root = prepared.root.ok_or_else(|| {
+            RSpaceError::InterpreterError("native checkpoint has no prepared root".to_owned())
+        })?;
+        if staged_history.next.root_ref() != &new_root {
+            return Err(RSpaceError::InterpreterError(
+                "native checkpoint root differs from prepared history".to_owned(),
+            ));
+        }
+        let new_repository: Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static> =
+            Box::new(HistoryRepositoryImpl {
+                current_history: Arc::new(Mutex::new(staged_history.next)),
+                roots_repository: self.roots_repository.clone(),
+                leaf_store: self.leaf_store.clone(),
+                node_store: self.node_store.clone(),
+                rspace_exporter: self.rspace_exporter.clone(),
+                rspace_importer: self.rspace_importer.clone(),
+                _marker: PhantomData,
+            });
+        self.leaf_store.put_if_absent(prepared.cold_actions)?;
+        if !staged_history.writes.is_empty() {
+            staged_history
+                .store
+                .put(staged_history.writes)
+                .map_err(HistoryError::from)?;
+        }
+        self.roots_repository
+            .lock()
+            .expect("root lock")
+            .commit_native(&new_root)
+            .map_err(HistoryError::from)?;
+        Ok(new_repository)
+    }
+
     fn checkpoint(
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
@@ -425,7 +667,8 @@ where
         let store_root = |root| {
             let (result, lock_wait, commit_time) = {
                 let lock_start = Instant::now();
-                let roots_repo_lock = lock_roots_repository(&self.roots_repository);
+                let roots_repo_lock =
+                    lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_CHECKPOINT_SITE);
                 let lock_wait = lock_start.elapsed();
                 let commit_start = Instant::now();
                 let result = roots_repo_lock.commit(root);
@@ -472,7 +715,8 @@ where
         // cache for new root)
         let (new_history, lock_wait, process_time) = {
             let lock_start = Instant::now();
-            let history_lock = lock_current_history(&self.current_history);
+            let history_lock =
+                lock_current_history(&self.current_history, &HISTORY_LOCK_CHECKPOINT_SITE);
             let lock_wait = lock_start.elapsed();
             let process_start = Instant::now();
             let new_history = history_lock.process(history_actions).unwrap();
@@ -492,6 +736,7 @@ where
             current_history: Arc::new(Mutex::new(new_history)),
             roots_repository: self.roots_repository.clone(),
             leaf_store: self.leaf_store.clone(),
+            node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -507,16 +752,20 @@ where
     ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
         debug!("[HistoryRepositoryImpl] reset to {}", root);
 
-        let roots_lock = lock_roots_repository(&self.roots_repository);
-        roots_lock.validate_and_set_current_root(root.clone())?;
+        // The roots lock is released before the history lock is taken. This is
+        // safe because roots are only added, never removed, so a root that
+        // passes validate_root stays valid until history.reset uses it.
+        lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_RESET_SITE)
+            .validate_root(root)?;
 
-        let history_lock = lock_current_history(&self.current_history);
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_RESET_SITE);
         let next = history_lock.reset(root)?;
 
         Ok(Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(next)),
             roots_repository: self.roots_repository.clone(),
             leaf_store: self.leaf_store.clone(),
+            node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -533,32 +782,52 @@ where
         &self,
         state_hash: &Blake2b256Hash,
     ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, HistoryError> {
-        let history_lock = lock_current_history(&self.current_history);
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_READER_SITE);
         let history_repo = history_lock.reset(state_hash)?;
         Ok(Box::new(RSpaceHistoryReaderImpl::new(history_repo, self.leaf_store.clone())))
+    }
+
+    fn get_current_history_reader_native(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, RSpaceError> {
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_READER_SITE);
+        let history = history_lock.snapshot_native(meter)?;
+        let bytes = std::mem::size_of::<RSpaceHistoryReaderImpl<C, P, A, K>>()
+            .checked_add(std::mem::size_of::<Box<dyn History>>())
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(3, 0, bytes)?;
+        Ok(Box::new(RSpaceHistoryReaderImpl::new(history, self.leaf_store.clone())))
     }
 
     fn get_history_reader_struct(
         &self,
         state_hash: &Blake2b256Hash,
     ) -> Result<RSpaceHistoryReaderImpl<C, P, A, K>, HistoryError> {
-        let history_lock = lock_current_history(&self.current_history);
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_READER_SITE);
         let history_repo = history_lock.reset(state_hash)?;
         Ok(RSpaceHistoryReaderImpl::new(history_repo, self.leaf_store.clone()))
     }
 
     fn root(&self) -> Blake2b256Hash {
-        let history_lock = lock_current_history(&self.current_history);
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_ROOT_SITE);
         history_lock.root()
     }
 
+    fn native_history_reader(&self, state_hash: [u8; 32]) -> NativeHistoryReader<'_> {
+        NativeHistoryReader::new(state_hash, self.node_store.as_ref(), self.leaf_store.as_ref())
+    }
+
     fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError> {
-        let roots_repo = lock_roots_repository(&self.roots_repository);
+        let roots_repo =
+            lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_RECORD_ROOT_SITE);
         roots_repo.commit(root).map_err(HistoryError::from)
     }
 
     fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError> {
-        let roots_repo = lock_roots_repository(&self.roots_repository);
+        let roots_repo =
+            lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_CONTAINS_ROOT_SITE);
         roots_repo.contains_root(root).map_err(HistoryError::from)
     }
 }

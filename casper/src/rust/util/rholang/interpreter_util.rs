@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
@@ -10,8 +11,8 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    SystemDeployData,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy,
+    RejectedDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -46,6 +47,7 @@ use crate::rust::metrics_constants::{
     PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC, PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC,
 };
 use crate::rust::util::proto_util;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::BlockProcessing;
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
@@ -362,6 +364,29 @@ pub async fn validate_block_checkpoint(
     // (observers, exploratory contexts) buffers nothing.
     local_validator: Option<&Validator>,
 ) -> Result<BlockProcessing<Option<StateHash>>, CasperError> {
+    validate_block_checkpoint_with_policy(
+        block,
+        block_store,
+        s,
+        runtime_manager,
+        rejected_deploy_buffer,
+        floor_ctx,
+        local_validator,
+        None,
+    )
+    .await
+}
+
+pub async fn validate_block_checkpoint_with_policy(
+    block: &BlockMessage,
+    block_store: &KeyValueBlockStore,
+    s: &mut CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+    local_validator: Option<&Validator>,
+    adopted: Option<&AdoptedResourcePolicy>,
+) -> Result<BlockProcessing<Option<StateHash>>, CasperError> {
     tracing::trace!(target: "f1r3fly.casper.block_validation", "before-unsafe-get-parents");
     let incoming_pre_state_hash = proto_util::pre_state_hash(block);
     let parents = proto_util::get_parents(block_store, block);
@@ -447,7 +472,9 @@ pub async fn validate_block_checkpoint(
                 // Find duplicates across all deploy sigs in the block
                 let mut sig_counts: HashMap<Bytes, usize> = HashMap::new();
                 for pd in &block.body.deploys {
-                    *sig_counts.entry(pd.deploy.sig.clone()).or_insert(0) += 1;
+                    *sig_counts
+                        .entry(Bytes::copy_from_slice(pd.identity_bytes()))
+                        .or_insert(0) += 1;
                 }
                 for rd in &block.body.rejected_deploys {
                     *sig_counts.entry(rd.sig.clone()).or_insert(0) += 1;
@@ -488,9 +515,14 @@ pub async fn validate_block_checkpoint(
                 // Using tracing events for async - Span[F] equivalent from Scala
                 tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-started");
                 let replay_start = std::time::Instant::now();
-                let replay_result =
-                    replay_block(incoming_pre_state_hash, block, &mut s.dag, runtime_manager)
-                        .await?;
+                let replay_result = replay_block(
+                    incoming_pre_state_hash,
+                    block,
+                    &mut s.dag,
+                    runtime_manager,
+                    adopted,
+                )
+                .await?;
                 metrics::histogram!(BLOCK_PROCESSING_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(replay_start.elapsed().as_secs_f64());
                 tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-finished");
@@ -507,6 +539,7 @@ async fn replay_block(
     block: &BlockMessage,
     dag: &mut KeyValueDagRepresentation,
     runtime_manager: &RuntimeManager,
+    adopted: Option<&AdoptedResourcePolicy>,
 ) -> Result<Either<ReplayFailure, StateHash>, CasperError> {
     // Extract deploys and system deploys from the block
     let internal_deploys = proto_util::deploys(block);
@@ -515,7 +548,7 @@ async fn replay_block(
     // Check for duplicate deploys in the block before replay
     let mut all_deploy_sigs: Vec<Bytes> = internal_deploys
         .iter()
-        .map(|pd| pd.deploy.sig.clone())
+        .map(|pd| Bytes::copy_from_slice(pd.identity_bytes()))
         .collect();
     all_deploy_sigs.extend(block.body.rejected_deploys.iter().map(|rd| rd.sig.clone()));
 
@@ -598,13 +631,15 @@ async fn replay_block(
     loop {
         // Call the async replay_compute_state method
         let replay_result = runtime_manager
-            .replay_compute_state(
+            .replay_compute_state_envelopes_with_policy(
                 &initial_state_hash,
                 internal_deploys.clone(),
                 internal_system_deploys.clone(),
                 &block_data,
                 Some(invalid_blocks.clone()),
                 is_genesis,
+                adopted,
+                Some(&block.body.state.post_state_hash),
             )
             .await;
 
@@ -771,6 +806,17 @@ pub struct DeploysCheckpoint {
     pub merge_base: Option<BlockHash>,
 }
 
+pub struct DeploysEnvelopeCheckpoint {
+    pub pre_state_hash: StateHash,
+    pub post_state_hash: StateHash,
+    pub deploys: Vec<ProcessedUserDeploy>,
+    pub rejected_deploys: Vec<RejectedDeploy>,
+    pub system_deploys: Vec<ProcessedSystemDeploy>,
+    pub bonds: Vec<Bond>,
+    pub applied_from_scope: Vec<Bytes>,
+    pub merge_base: Option<BlockHash>,
+}
+
 pub async fn compute_deploys_checkpoint(
     block_store: &mut KeyValueBlockStore,
     parents: Vec<BlockMessage>,
@@ -784,6 +830,62 @@ pub async fn compute_deploys_checkpoint(
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     local_validator: Option<&Validator>,
 ) -> Result<DeploysCheckpoint, CasperError> {
+    let checkpoint = compute_deploys_checkpoint_envelopes(
+        block_store,
+        parents,
+        deploys
+            .into_iter()
+            .map(PendingDeployCandidate::Legacy)
+            .collect(),
+        system_deploys,
+        s,
+        runtime_manager,
+        None,
+        block_data,
+        invalid_blocks,
+        rejected_deploy_buffer,
+        floor_ctx,
+        local_validator,
+    )
+    .await?;
+    let deploys = checkpoint
+        .deploys
+        .into_iter()
+        .map(|deploy| match deploy {
+            ProcessedUserDeploy::Legacy(legacy) => Ok(legacy),
+            ProcessedUserDeploy::Offered(_) => Err(CasperError::RuntimeError(
+                "legacy checkpoint returned an offered-funded deploy".to_string(),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(DeploysCheckpoint {
+        pre_state_hash: checkpoint.pre_state_hash,
+        post_state_hash: checkpoint.post_state_hash,
+        deploys,
+        rejected_deploys: checkpoint.rejected_deploys,
+        system_deploys: checkpoint.system_deploys,
+        bonds: checkpoint.bonds,
+        applied_from_scope: checkpoint.applied_from_scope,
+        merge_base: checkpoint.merge_base,
+    })
+}
+
+pub async fn compute_deploys_checkpoint_envelopes(
+    block_store: &mut KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    deploys: Vec<PendingDeployCandidate>,
+    system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+    s: &CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    // Changed by DR-99: the policy adopted at start replaces the approved genesis.
+    // approved_genesis: Option<&BlockMessage>,
+    adopted_policy: Option<&AdoptedResourcePolicy>,
+    block_data: BlockData,
+    invalid_blocks: HashMap<BlockHash, Validator>,
+    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+    local_validator: Option<&Validator>,
+) -> Result<DeploysEnvelopeCheckpoint, CasperError> {
     let checkpoint_started = std::time::Instant::now();
     // Using tracing events for async - Span[F] equivalent from Scala
     tracing::debug!(target: "f1r3fly.casper.compute_deploys_checkpoint", "compute-deploys-checkpoint-started");
@@ -818,6 +920,40 @@ pub async fn compute_deploys_checkpoint(
     .await?;
     let parents_ms = parents_started.elapsed().as_millis();
     let pre_state_hash = computed_parents_info.state.clone();
+    let adopted = if deploys
+        .iter()
+        .any(|candidate| matches!(candidate, PendingDeployCandidate::Envelope(_)))
+    {
+        // Changed by DR-99 (joined-node policy adoption): the proposal takes
+        // the policy adopted at start and checks it against the snapshot's
+        // shard configuration, without new exploratory evaluations.
+        // let approved_genesis = approved_genesis.ok_or_else(|| {
+        //     CasperError::RuntimeError(
+        //         "offered proposal requires its authenticated approved genesis".to_string(),
+        //     )
+        // })?;
+        // Some(
+        //     AdoptedResourcePolicy::load(
+        //         runtime_manager,
+        //         approved_genesis,
+        //         &s.on_chain_state.shard_conf,
+        //     )
+        //     .await?,
+        // )
+        let adopted_policy = adopted_policy.ok_or_else(|| {
+            CasperError::RuntimeError(
+                "offered proposal requires the adopted genesis resource policy".to_string(),
+            )
+        })?;
+        Some(
+            adopted_policy
+                .genesis()
+                .clone()
+                .adopt(&s.on_chain_state.shard_conf)?,
+        )
+    } else {
+        None
+    };
     let rejected_deploys: Vec<RejectedDeploy> = computed_parents_info.rejected_user.clone();
     // Sorted so the packaged field is deterministic — the equality check at
     // validation compares recomputed sets, but the block bytes must not
@@ -837,13 +973,14 @@ pub async fn compute_deploys_checkpoint(
     let compute_state_started = std::time::Instant::now();
     let play_budget = s.on_chain_state.shard_conf.deploy_play_budget;
     let result = runtime_manager
-        .compute_state_with_bonds(
+        .compute_state_with_bonds_envelopes(
             &pre_state_hash,
             deploys,
             system_deploys,
             block_data,
             Some(invalid_blocks),
             play_budget,
+            adopted.as_ref(),
         )
         .await?;
     let compute_state_ms = compute_state_started.elapsed().as_millis();
@@ -860,7 +997,7 @@ pub async fn compute_deploys_checkpoint(
         rejected_deploys.len()
     );
 
-    Ok(DeploysCheckpoint {
+    Ok(DeploysEnvelopeCheckpoint {
         pre_state_hash,
         post_state_hash,
         deploys: processed_deploys,
@@ -1990,19 +2127,25 @@ pub async fn compute_parents_post_state(
                                     continue;
                                 }
                                 for pd in &block.body.deploys {
-                                    if sig_set.contains(&pd.deploy.sig) {
+                                    let id = Bytes::copy_from_slice(pd.identity_bytes());
+                                    if sig_set.contains(&id) {
                                         tracing::info!(
                                             target: "f1r3fly.casper.deploy_lifecycle",
                                             event = "buffer_candidate",
-                                            deploy_sig = %hex::encode(&pd.deploy.sig),
+                                            deploy_sig = %hex::encode(pd.identity_bytes()),
                                             carrier = %hex::encode(&src_block),
                                             carrier_block = block.body.state.block_number,
-                                            valid_after_block =
-                                                pd.deploy.data.valid_after_block_number,
+                                            valid_after_block = pd.valid_after_block_number(),
                                             floor_block = floor_block_number,
                                             "deploy lifecycle"
                                         );
-                                        deploys_to_buffer.push(pd.deploy.clone());
+                                        let legacy = pd.as_legacy().ok_or_else(|| {
+                                            CasperError::RuntimeError(
+                                                "offered-funded recovery requires an envelope buffer"
+                                                    .to_string(),
+                                            )
+                                        })?;
+                                        deploys_to_buffer.push(legacy.deploy.clone());
                                     }
                                 }
                             }
@@ -2479,7 +2622,7 @@ mod backstop_tests {
                 for pd in &block.body.deploys {
                     super::note_inclusion(
                         &mut dispositions,
-                        pd.deploy.sig.clone(),
+                        Bytes::copy_from_slice(pd.identity_bytes()),
                         bn,
                         &hash,
                         &block.sender,
@@ -2534,7 +2677,7 @@ mod backstop_tests {
                 let block = block_store.get(hash).expect("read").expect("held");
                 let bn = block.body.state.block_number;
                 for pd in &block.body.deploys {
-                    if pd.deploy.sig == *sig {
+                    if pd.identity_bytes() == sig.as_ref() {
                         super::record_disposition(&mut disposition, sig.clone(), bn, true);
                     }
                 }

@@ -33,6 +33,7 @@ use models::casper::{
     PendingDeployInfo, PendingDeploysQuery, PendingDeploysResponsePayload, PrivateNamePreviewQuery,
     ReportQuery, Status, VersionInfo, VisualizeDagQuery,
 };
+use models::rust::signed_phlo_deploy::OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION;
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
 use tracing::error;
@@ -154,11 +155,11 @@ impl DeployGrpcServiceV1Impl {
         };
 
         // Cached when available, replayed only when the reporter is idle:
-        // block_report refuses rather than queues, so this never adds to the
-        // load it would be competing with.
+        // block_report_if_idle refuses rather than queues, so this never adds
+        // to the load it would be competing with.
         match self
             .block_report_api
-            .block_report(block_hash_bytes, false)
+            .block_report_if_idle(block_hash_bytes)
             .await
         {
             Ok(report) => {
@@ -255,27 +256,43 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<DeployDataProto>,
     ) -> Result<tonic::Response<DeployResponse>, tonic::Status> {
-        // Convert DeployDataProto to Signed<DeployData>
-        let signed_deploy =
-            match models::rust::casper::protocol::casper_message::DeployData::from_proto(
-                request.into_inner(),
-            ) {
-                Ok(signed) => signed,
-                Err(err_msg) => {
-                    let error = Self::create_service_error(err_msg);
-                    return Self::create_error_deploy_response(error);
-                }
-            };
+        let proto = request.into_inner();
+        let is_offered = proto
+            .authorization_v61
+            .as_ref()
+            .is_some_and(|authorization| {
+                authorization.format_version == OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION
+            });
+        let result = if is_offered {
+            BlockAPI::deploy_offered(
+                &self.engine_cell,
+                proto,
+                &self.trigger_propose_f,
+                self.is_node_read_only,
+                &self.shard_id,
+            )
+            .await
+        } else {
+            let signed_deploy =
+                match models::rust::casper::protocol::casper_message::DeployData::from_proto(proto)
+                {
+                    Ok(signed) => signed,
+                    Err(err_msg) => {
+                        let error = Self::create_service_error(err_msg);
+                        return Self::create_error_deploy_response(error);
+                    }
+                };
+            BlockAPI::deploy(
+                &self.engine_cell,
+                signed_deploy,
+                &self.trigger_propose_f,
+                self.is_node_read_only,
+                &self.shard_id,
+            )
+            .await
+        };
 
-        match BlockAPI::deploy(
-            &self.engine_cell,
-            signed_deploy,
-            &self.trigger_propose_f,
-            self.is_node_read_only,
-            &self.shard_id,
-        )
-        .await
-        {
+        match result {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
                 let is_duplicate = e.chain().any(|cause| {
@@ -1263,6 +1280,29 @@ mod tests {
             response.into_inner().message.unwrap(),
             models::casper::v1::deploy_response::Message::Error(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn offered_submission_rejects_malformed_envelope_without_body_projection() {
+        let mut service = service();
+        service.is_node_read_only = false;
+        let proto = DeployDataProto {
+            authorization_v61: Some(models::casper::DeployAuthorizationV61 {
+                format_version: OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION,
+                ..Default::default()
+            }),
+            funding_intent: Some(vec![1, 2, 3].into()),
+            phlo_limit: 7,
+            phlo_price: 11,
+            ..Default::default()
+        };
+        let response = service.do_deploy(tonic::Request::new(proto)).await.unwrap();
+        match response.into_inner().message.unwrap() {
+            models::casper::v1::deploy_response::Message::Error(error) => {
+                assert!(error.messages[0].contains("protocol-v6 deploy identity must be 32 bytes"));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

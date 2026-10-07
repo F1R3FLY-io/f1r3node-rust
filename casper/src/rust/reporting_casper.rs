@@ -78,6 +78,17 @@ impl ReportingCasper for RhoReporterCasper {
         use crate::rust::genesis::genesis::Genesis;
         use crate::rust::util::proto_util;
 
+        let legacy_deploys = block
+            .body
+            .deploys
+            .iter()
+            .map(|deploy| {
+                deploy.as_legacy().cloned().ok_or_else(|| {
+                    "offered-funded reporting requires independent native replay".to_string()
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         let _replay_permit = self
             .replay_lock
             .acquire_reporting()
@@ -130,7 +141,7 @@ impl ReportingCasper for RhoReporterCasper {
         Self::replay_deploys(
             &mut reporting_runtime,
             &pre_state_hash,
-            &block.body.deploys,
+            &legacy_deploys,
             &block.body.system_deploys,
             with_cost_accounting(&block.header.parents_hash_list),
             &block_data,

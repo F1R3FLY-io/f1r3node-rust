@@ -1,6 +1,5 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/ChargingRSpace.scala
-
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -8,19 +7,22 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
-    ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
+    ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceAccountingObserver,
+    RSpaceResult,
 };
 use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
 
-use crate::rust::interpreter::accounting::_cost;
 use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
 };
+use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::rho_runtime::RhoISpace;
 
 pub struct ChargingRSpace;
 
@@ -38,7 +40,6 @@ pub enum TriggeredBy {
     },
 }
 
-//TODO: Make ScalaBodyRef-s have their own random state and merge it during its COMMs - OLD
 fn consume_id_bytes(continuation: &TaggedContinuation) -> Result<Vec<u8>, InterpreterError> {
     match continuation.tagged_cont.as_ref().unwrap() {
         TaggedCont::ParBody(par_with_random) => Ok(par_with_random.random_state.clone()),
@@ -47,23 +48,34 @@ fn consume_id_bytes(continuation: &TaggedContinuation) -> Result<Vec<u8>, Interp
 }
 
 impl ChargingRSpace {
-    pub fn charging_rspace<T>(
-        space: T,
-        cost: _cost,
-    ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Clone
-    where
-        T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Clone,
-    {
+    pub fn charging_rspace(
+        space: RhoISpace,
+        cost: RuntimeBudget,
+    ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Clone {
         #[derive(Clone)]
-        struct ChargingRSpace<T> {
-            space: T,
-            cost: _cost,
+        struct ChargingRSpace {
+            space: RhoISpace,
+            cost: RuntimeBudget,
         }
 
         #[async_trait]
-        impl<T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>
-            ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for ChargingRSpace<T>
-        {
+        impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for ChargingRSpace {
+            fn set_accounting_observer(
+                &self,
+                observer: Option<
+                    Arc<
+                        dyn RSpaceAccountingObserver<
+                            Par,
+                            BindPattern,
+                            ListParWithRandom,
+                            TaggedContinuation,
+                        >,
+                    >,
+                >,
+            ) {
+                self.space.set_accounting_observer(observer);
+            }
+
             async fn consume(
                 &self,
                 channels: Vec<Par>,
@@ -75,8 +87,17 @@ impl ChargingRSpace {
                 MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
-                self.cost
-                    .charge(storage_cost_consume(&channels, &patterns, &continuation))?;
+                if !self.cost.is_legacy() {
+                    return self
+                        .space
+                        .consume(channels, patterns, continuation, persist, peeks)
+                        .await;
+                }
+                self.cost.charge_legacy(storage_cost_consume(
+                    &channels,
+                    &patterns,
+                    &continuation,
+                ))?;
 
                 let id = consume_id_bytes(&continuation)?;
                 let channels_count = channels.len() as i64;
@@ -106,7 +127,11 @@ impl ChargingRSpace {
                 MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
-                self.cost.charge(storage_cost_produce(&channel, &data))?;
+                if !self.cost.is_legacy() {
+                    return self.space.produce(channel, data, persist).await;
+                }
+                self.cost
+                    .charge_legacy(storage_cost_produce(&channel, &data))?;
 
                 let id = data.random_state.clone();
                 let produce_res = self.space.produce(channel, data, persist).await?;
@@ -143,6 +168,14 @@ impl ChargingRSpace {
                 self.space.get_data(channel).await
             }
 
+            async fn get_data_metered(
+                &self,
+                channel: &Par,
+                meter: &(dyn SourceMeter + Sync),
+            ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
+                self.space.get_data_metered(channel, meter).await
+            }
+
             async fn get_waiting_continuations(
                 &self,
                 channels: Vec<Par>,
@@ -152,6 +185,32 @@ impl ChargingRSpace {
 
             async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> {
                 self.space.get_joins(channel).await
+            }
+
+            async fn remove_all_data(&self, channel: &Par) -> Result<(), RSpaceError> {
+                self.space.remove_all_data(channel).await
+            }
+
+            async fn remove_data_at(&self, channel: &Par, index: i32) -> Result<(), RSpaceError> {
+                self.space.remove_data_at(channel, index).await
+            }
+
+            async fn remove_data_at_recorded(
+                &self,
+                channel: &Par,
+                index: i32,
+                operation_id: &[u8],
+            ) -> Result<(), RSpaceError> {
+                self.space
+                    .remove_data_at_recorded(channel, index, operation_id)
+                    .await
+            }
+
+            async fn remove_all_continuations(
+                &self,
+                channels: Vec<Par>,
+            ) -> Result<(), RSpaceError> {
+                self.space.remove_all_continuations(channels).await
             }
 
             async fn clear(&self) -> Result<(), RSpaceError> { self.space.clear().await }
@@ -239,7 +298,7 @@ impl ChargingRSpace {
 fn handle_result(
     result: MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     triggered_by: TriggeredBy,
-    cost: _cost,
+    cost: RuntimeBudget,
 ) -> Result<(), InterpreterError> {
     let triggered_by_id_bytes = match triggered_by.clone() {
         TriggeredBy::Consume { id, .. } => id,
@@ -258,8 +317,6 @@ fn handle_result(
         Some((cont, data_list)) => {
             let consume_id_bytes = consume_id_bytes(&cont.continuation)?;
 
-            // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
-            // That persistent continuation is going to be charged for (without refund) once it has no matches in TS.
             let refund_for_consume =
                 if !cont.persistent || consume_id_bytes == triggered_by_id_bytes {
                     storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation)
@@ -270,11 +327,11 @@ fn handle_result(
             let refund_for_produces =
                 refund_for_removing_produces(data_list, cont.clone(), triggered_by);
 
-            cost.charge(Cost::create(
+            cost.charge_legacy(Cost::create(
                 -refund_for_consume.value,
                 "consume storage refund",
             ))?;
-            cost.charge(Cost::create(
+            cost.charge_legacy(Cost::create(
                 -refund_for_produces.value,
                 "produces storage refund",
             ))?;
@@ -282,12 +339,12 @@ fn handle_result(
             let last_iteration = !triggered_by_persistent;
 
             if last_iteration {
-                cost.charge(event_storage_cost(triggered_by_channels_count))?;
+                cost.charge_legacy(event_storage_cost(triggered_by_channels_count))?;
             }
 
-            cost.charge(comm_event_storage_cost(cont.channels.len() as i64))
+            cost.charge_legacy(comm_event_storage_cost(cont.channels.len() as i64))
         }
-        None => cost.charge(event_storage_cost(triggered_by_channels_count)),
+        None => cost.charge_legacy(event_storage_cost(triggered_by_channels_count)),
     }
 }
 
@@ -304,9 +361,6 @@ fn refund_for_removing_produces(
     let removed_data: Vec<(RSpaceResult<Par, ListParWithRandom>, Par)> = data_list
         .into_iter()
         .zip(cont.channels.into_iter())
-        // A persistent produce is charged for upfront before reaching the TS, and needs to be refunded
-        // after each iteration it matches an existing consume. We treat it as 'removed' on each such iteration.
-        // It is going to be 'not removed' and charged for on the last iteration, where it doesn't match anything.
         .filter(|(data, _)| {
             !data.persistent || data.removed_datum.random_state == triggered_id_bytes
         })

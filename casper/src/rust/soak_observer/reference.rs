@@ -358,9 +358,10 @@ impl<'a> Reference<'a> {
             let mut signatures = BTreeSet::new();
             for deploy in &block.body.deploys {
                 self.meter.step(WorkKind::Signature)?;
-                if !deploy.is_failed {
-                    self.meter.allocate(2, deploy.deploy.sig.len() + 128)?;
-                    signatures.insert(deploy.deploy.sig.clone());
+                if !deploy.is_failed() {
+                    self.meter
+                        .allocate(2, deploy.identity_bytes().len() + 128)?;
+                    signatures.insert(Bytes::copy_from_slice(deploy.identity_bytes()));
                 }
             }
             for signature in &block.body.applied_from_scope {

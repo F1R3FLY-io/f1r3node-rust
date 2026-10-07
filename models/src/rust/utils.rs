@@ -207,6 +207,8 @@ impl Par {
             bundles: [self.bundles.clone(), other.bundles].concat(),
             connectives: [self.connectives.clone(), other.connectives].concat(),
             conditionals: [self.conditionals.clone(), other.conditionals].concat(),
+            cost_signed_terms: [self.cost_signed_terms.clone(), other.cost_signed_terms].concat(),
+            cost_stacks: [self.cost_stacks.clone(), other.cost_stacks].concat(),
             locally_free: union(self.locally_free.clone(), other.locally_free),
             connective_used: self.connective_used || other.connective_used,
         }
@@ -519,6 +521,36 @@ pub fn new_guri_par(value: String, _locally_free_par: Vec<u8>, _connective_used_
 pub fn new_guri_expr(value: String) -> Expr {
     Expr {
         expr_instance: Some(GUri(value)),
+    }
+}
+
+pub fn new_guint64_expr(value: u64) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint64(value)),
+    }
+}
+
+pub fn new_gint32_expr(value: i32) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GInt32(value)),
+    }
+}
+
+pub fn new_guint32_expr(value: u32) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint32(value)),
+    }
+}
+
+pub fn new_guint16_expr(value: u16) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint16(value.into())),
+    }
+}
+
+pub fn new_guint8_expr(value: u8) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint8(value.into())),
     }
 }
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use heed::types::{Bytes, SerdeBincode};
 use heed::{Database, Env, EnvOpenOptions};
-use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
+use shared::rust::store::key_value_store::{EntryReader, KeyValueStore, KvStoreError, ValueReader};
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 use shared::rust::store::soak_snapshot::{
     decode_length_prefixed, encode_length_prefixed, BoundedLmdbReader, ReadLimits, SnapshotError,
@@ -80,6 +80,23 @@ impl KeyValueStore for MemoryStore {
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
         let map = self.map.lock().unwrap();
         Ok(keys.iter().map(|k| map.get(k).cloned()).collect())
+    }
+
+    fn with_value(
+        &self,
+        key: &ByteBuffer,
+        reader: &mut ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        let map = self.map.lock().unwrap();
+        reader(map.get(key).map(Vec::as_slice))
+    }
+
+    fn visit_entries(&self, reader: &mut EntryReader<'_>) -> Result<(), KvStoreError> {
+        let map = self.map.lock().unwrap();
+        for (key, value) in map.iter() {
+            reader(key, value)?;
+        }
+        Ok(())
     }
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {

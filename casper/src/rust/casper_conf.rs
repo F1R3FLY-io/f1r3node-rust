@@ -178,6 +178,8 @@ pub struct RoundRobinDispatcher {
 /// Genesis block data configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisBlockData {
+    #[serde(rename = "resource-policy", default)]
+    pub resource_policy: Option<String>,
     #[serde(rename = "genesis-data-dir")]
     pub genesis_data_dir: String,
     #[serde(rename = "bonds-file")]
@@ -236,6 +238,23 @@ pub struct GenesisBlockData {
 pub const MAX_NATIVE_TOKEN_DECIMALS: u32 = 18;
 
 impl GenesisBlockData {
+    pub fn lowered_resource_policy(
+        &self,
+    ) -> Result<Option<models::rust::phlo_schedule::PhloGenesisPolicy>, String> {
+        use models::rust::phlo_schedule::PhloGenesisPolicy;
+        self.resource_policy
+            .as_ref()
+            .map(|encoded| {
+                if encoded.len() > PhloGenesisPolicy::LIMITS.wire.total_bytes * 2 {
+                    return Err("genesis resource policy exceeds its byte limit".to_string());
+                }
+                let bytes = hex::decode(encoded)
+                    .map_err(|error| format!("invalid genesis resource policy hex: {error}"))?;
+                PhloGenesisPolicy::decode(&bytes).map_err(|error| error.to_string())
+            })
+            .transpose()
+    }
+
     /// Validates native-token-* fields. Called during config load so a
     /// misconfigured node fails startup loudly rather than baking bad
     /// values into genesis or serving misleading metadata via `/api/status`.
@@ -493,8 +512,29 @@ where D: serde::Deserializer<'de> {
 mod native_token_validation_tests {
     use super::*;
 
+    #[test]
+    fn genesis_resource_policy_config_rejects_invalid_or_oversized_records() {
+        let mut genesis = valid_genesis();
+        assert_eq!(genesis.lowered_resource_policy().unwrap(), None);
+        for bytes in ["", "00", "not-hex"] {
+            genesis.resource_policy = Some(bytes.to_string());
+            assert!(genesis.lowered_resource_policy().is_err());
+        }
+        genesis.resource_policy = Some(
+            "0".repeat(
+                models::rust::phlo_schedule::PhloGenesisPolicy::LIMITS
+                    .wire
+                    .total_bytes
+                    * 2
+                    + 1,
+            ),
+        );
+        assert!(genesis.lowered_resource_policy().is_err());
+    }
+
     fn valid_genesis() -> GenesisBlockData {
         GenesisBlockData {
+            resource_policy: None,
             genesis_data_dir: String::new(),
             bonds_file: String::new(),
             wallets_file: String::new(),

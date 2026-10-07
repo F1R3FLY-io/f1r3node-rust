@@ -1,0 +1,33 @@
+---
+config:
+  sankey:
+    showValues: true
+    nodeAlignment: justify
+    linkColor: gradient
+---
+%% Conservation snapshot for examples/cost_accounting_demo.rho. The MONEY column
+%% sums the nine opening cash cells to the conserved total 410 (payments only
+%% relocate money between cells; the SWAP guard keeps the sum invariant). The
+%% WIDGET column sums the opening inventory (67) and the factory production (+16)
+%% to the conserved total 83. Widths are the exact opening balances; no path-
+%% dependent per-cell closing balance is asserted. (Node labels are ASCII because
+%% mermaid sankey-beta cannot tokenize Unicode; the Σ⟦·⟧ reading is in the prose.)
+%% Source of truth: cost-accounting-use-cases.md (demo acceptance test).
+%% Render: mmdc -i demo-conservation-sankey.mmd -o demo-conservation-sankey.svg
+sankey-beta
+
+Ada_cash,"MONEY conserved 410",100
+Ben_cash,"MONEY conserved 410",60
+Cy_cash,"MONEY conserved 410",50
+Di_cash,"MONEY conserved 410",40
+Sue_cash,"MONEY conserved 410",50
+Sam_cash,"MONEY conserved 410",50
+Whse_cash,"MONEY conserved 410",0
+Fae_cash,"MONEY conserved 410",30
+Gus_cash,"MONEY conserved 410",30
+"Whse_stk open","WIDGET conserved 83",24
+"Sue_stk open","WIDGET conserved 83",20
+"Sam_stk open","WIDGET conserved 83",20
+"Flash_stk open","WIDGET conserved 83",1
+"Ada_home open","WIDGET conserved 83",2
+"Factory production 16","WIDGET conserved 83",16

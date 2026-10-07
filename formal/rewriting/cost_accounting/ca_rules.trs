@@ -1,0 +1,27 @@
+(COMMENT
+  Cost-Accounted Rho gated-reduction rewrite skeleton. A first-order PROJECTION of
+  CAReduction: the five binary gated COMM rules and the two N-ary join rules J1/J2
+  as term-rewrite rules over configuration terms. The projection abstracts the de
+  Bruijn substitution arithmetic away into opaque constructors sub/subm and retains
+  the GATED-CONSUMPTION skeleton: every rule consumes one token gate gt, so the
+  gate-symbol count strictly decreases -- the first-order image of funded strong
+  normalization. The redex shapes are pairwise non-overlapping, hence orthogonal --
+  the first-order image of local confluence. TTT2 witnesses termination, CSI
+  witnesses confluence. Both are faithful projections of the rewrite skeleton, not
+  the full operational semantics. Constructors: sg signed, pp par, st stack, gt
+  gate, inp receiver, out sender, joinr join receiver, snds whole-join bundle,
+  ssnds separately-signed bundle, an compound signature, key fused key, sub and
+  subm opaque substitutions.
+)
+(VAR x T U s s1 s2 t t1 t2 ts)
+(RULES
+  pp(sg(pp(inp(x,T),out(x,U)),s), st(gt(s,t))) -> pp(sub(T,U), st(t))
+  pp(pp(sg(pp(inp(x,T),out(x,U)),an(s1,s2)), st(gt(s1,t1))), st(gt(s2,t2)))
+    -> pp(pp(sub(T,U), st(t1)), st(t2))
+  pp(sg(pp(inp(x,T),out(x,U)),an(s1,s2)), st(gt(an(s1,s2),t))) -> pp(sub(T,U), st(t))
+  pp(pp(sg(inp(x,T),s1), sg(out(x,U),s2)), st(gt(an(s1,s2),t))) -> pp(sub(T,U), st(t))
+  pp(pp(pp(sg(inp(x,T),s1), sg(out(x,U),s2)), st(gt(s1,t1))), st(gt(s2,t2)))
+    -> pp(pp(sub(T,U), st(t1)), st(t2))
+  pp(sg(pp(joinr(T),snds(U)),s), st(gt(s,t))) -> pp(subm(T,U), st(t))
+  pp(pp(sg(joinr(T),s), ssnds(U)), st(gt(key(s,ts),t))) -> pp(subm(T,U), st(t))
+)

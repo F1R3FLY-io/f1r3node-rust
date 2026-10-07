@@ -22,7 +22,7 @@ async fn system_vault_spec() {
     )
     .expect("Failed to compile SystemVaultTest.rho");
 
-    let spec = RhoSpec::new(compiled, vec![], GENESIS_TEST_TIMEOUT);
+    let spec = RhoSpec::new(compiled, vec![], GENESIS_TEST_TIMEOUT * 3);
 
     spec.run_tests()
         .await

@@ -28,7 +28,9 @@ snapshot() {
         printf '%s\t%s\n' "$file" "$digest"
     done <<<"$inventory" | jq -Rn '[inputs | split("\t") | {path:.[0],sha256:.[1]}] | sort_by(.path)') || fail 'Cannot construct source inventory.'
     jq -e 'length > 0' <<<"$sources" >/dev/null || fail 'Empty source inventory.'
-    jq -Sn --arg job "$job" --arg repository "$GITHUB_REPOSITORY" --arg event "$GITHUB_EVENT_NAME" --arg run_id "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg tested_sha "$GITHUB_SHA" --arg workflow_sha "$GITHUB_WORKFLOW_SHA" --arg workflow_ref "$GITHUB_WORKFLOW_REF" --arg workflow_control_sha256 "$workflow_digest" --argjson sources "$sources" '{schema_version:1,job:$job,repository:$repository,event:$event,run_id:$run_id,attempt:$attempt,tested_sha:$tested_sha,workflow_sha:$workflow_sha,workflow_ref:$workflow_ref,workflow_control_sha256:$workflow_control_sha256,sources:$sources}'
+    # The source inventory goes to jq on stdin: as one argument it can exceed
+    # the 128 KiB that Linux allows for a single argument (E2BIG, exit 126).
+    jq -S --arg job "$job" --arg repository "$GITHUB_REPOSITORY" --arg event "$GITHUB_EVENT_NAME" --arg run_id "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg tested_sha "$GITHUB_SHA" --arg workflow_sha "$GITHUB_WORKFLOW_SHA" --arg workflow_ref "$GITHUB_WORKFLOW_REF" --arg workflow_control_sha256 "$workflow_digest" '{schema_version:1,job:$job,repository:$repository,event:$event,run_id:$run_id,attempt:$attempt,tested_sha:$tested_sha,workflow_sha:$workflow_sha,workflow_ref:$workflow_ref,workflow_control_sha256:$workflow_control_sha256,sources:.}' <<<"$sources"
 }
 
 case "${1:-}" in

@@ -1,0 +1,61 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-05T23:54:28Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/622#issuecomment-6005866151",
+  "revision": "1a04095dacf1112821eefbe51e1a74732deee115",
+  "note": "Every accepted value in the comment matches the review package: the revision, the package sha256, and both accepted artifact digests."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+  "docs/claims/soak-disk-protection.md": "6fd5f24de61adef63bc88e37c5e04abcd34db28330180627e7ff9625309d64b0"
+ },
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "hosted_runs": {
+  "tested_sha": "82fe22a0acf74034c87b66af5a9d8f0be0ef7207",
+  "full_suite": {
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37339963097,
+   "conclusion": "success"
+  },
+  "claims_and_bindings": {
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37339962372,
+   "conclusion": "success"
+  }
+ },
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "previous_acceptance": {
+  "scripts/run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261004-01/report.json",
+   "sha256": "20eca5b86c1c399ddec8670c2675e470d644fb64b6c9e520c3d28675df3bbffa"
+  },
+  "scripts/bench/test-soak-disk-admission.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261004-01/report.json",
+   "sha256": "20eca5b86c1c399ddec8670c2675e470d644fb64b6c9e520c3d28675df3bbffa"
+  }
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-20261005-01/report.json",
+  "sha256": "64d53e7bfd4abce6899e6ee186b5cfad566c74aecacb82de6a193cb8d542f6e0"
+ },
+ "schema_version": 1,
+ "scope": "bounded-harness-node-log-budgets",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-soak-disk-admission.sh": "beb5576761f8ad614f9aa6f5d2d2e16514fe3e0b98a38241eb860a26f02b8123",
+  "scripts/run-merge-recovery-soak.sh": "4bc134545eea9a2f355ea3e018d8024400d8691ca22047402a20b7bc16e6008a"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-05",
+ "waiver": null
+}

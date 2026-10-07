@@ -1172,6 +1172,7 @@ dependencies = [
  "models",
  "parking_lot",
  "prost",
+ "rholang",
  "rspace_plus_plus",
  "shared",
 ]
@@ -2195,6 +2196,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
+ "thiserror 2.0.21",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -3087,7 +3089,9 @@ dependencies = [
  "bincode",
  "clap",
  "console",
+ "crossbeam-queue",
  "crypto",
+ "dashmap",
  "dotenv",
  "futures",
  "hex",
@@ -3133,7 +3137,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -3148,7 +3152,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -3157,7 +3161,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5"
 dependencies = [
  "anyhow",
  "quote",

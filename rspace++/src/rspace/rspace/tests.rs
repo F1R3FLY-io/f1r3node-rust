@@ -6,10 +6,13 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::rspace::r#match::Match;
+use crate::rspace::operation_context::{self, OperationOrder};
 use crate::rspace::rspace_interface::ISpace;
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::trace::event::{Event, IOEvent};
+
+mod checkpoint_failure_tests;
 
 // ── minimal types ─────────────────────────────────────────────────────────
 
@@ -29,6 +32,98 @@ async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     RSpace::create(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+fn order(step: u64) -> OperationOrder {
+    OperationOrder {
+        session: [9; 32],
+        path: vec![(step, 0)].into(),
+    }
+}
+
+#[tokio::test]
+async fn ordered_event_log_uses_causal_order_instead_of_arrival_order() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(2),
+        rspace.produce("later".to_string(), "two".to_string(), false),
+    )
+    .await
+    .unwrap();
+    operation_context::scope(
+        order(1),
+        rspace.produce("earlier".to_string(), "one".to_string(), false),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rspace.take_event_log().await, vec![
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"earlier".to_string(),
+            &"one".to_string(),
+            false,
+        ))),
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"later".to_string(),
+            &"two".to_string(),
+            false,
+        ))),
+    ]);
+}
+
+#[tokio::test]
+async fn soft_checkpoint_preserves_and_reverts_canonical_event_order() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(3),
+        rspace.produce("third".to_string(), "three".to_string(), false),
+    )
+    .await
+    .unwrap();
+    operation_context::scope(
+        order(1),
+        rspace.produce("first".to_string(), "one".to_string(), false),
+    )
+    .await
+    .unwrap();
+
+    let checkpoint = rspace.create_soft_checkpoint().await;
+    let expected = checkpoint.log.clone();
+    assert_eq!(expected, vec![
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"first".to_string(),
+            &"one".to_string(),
+            false,
+        ))),
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"third".to_string(),
+            &"three".to_string(),
+            false,
+        ))),
+    ]);
+    rspace.revert_to_soft_checkpoint(checkpoint).await.unwrap();
+    assert_eq!(rspace.take_event_log().await, expected);
+}
+
+#[tokio::test]
+async fn produce_metadata_updates_reach_causally_ordered_events() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(1),
+        rspace.produce("service".to_string(), "request".to_string(), false),
+    )
+    .await
+    .unwrap();
+    let updated = Produce::create(&"service".to_string(), &"request".to_string(), false)
+        .mark_as_non_deterministic(vec![b"response".to_vec()]);
+    rspace.update_produce(updated).await;
+
+    let log = rspace.take_event_log().await;
+    let Event::IoEvent(IOEvent::Produce(produce)) = &log[0] else {
+        panic!("expected produce event")
+    };
+    assert!(!produce.is_deterministic);
+    assert_eq!(produce.output_value, vec![b"response".to_vec()]);
 }
 
 // Measures contention on the event_log mutex while N concurrent tasks call
@@ -473,4 +568,264 @@ async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
          ({seq_ms}ms) at {PAR_BRANCHES} branches x {OPS_PER_BRANCH} ops x2 calls/op — see issue \
          #50"
     );
+}
+
+// ── D-S2 (DR-95): metered cold data reads in History mode ────────────────
+
+/// A meter that counts the reservations and rejects the reservation at index
+/// `reject_at`.
+struct CutMeter {
+    calls: AtomicU64,
+    reject_at: u64,
+}
+
+impl CutMeter {
+    fn new(reject_at: u64) -> Self {
+        Self {
+            calls: AtomicU64::new(0),
+            reject_at,
+        }
+    }
+}
+
+impl crate::rspace::hashing::native_source::SourceMeter for CutMeter {
+    fn reserve(
+        &self,
+        _operations: usize,
+        _scanned: usize,
+        _backing: usize,
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == self.reject_at {
+            return Err(crate::rspace::errors::RSpaceError::HostWorkRejected);
+        }
+        Ok(())
+    }
+}
+
+/// From a cold hot store at `root`, the metered data read of `channel`
+/// returns the data that the unmetered read returns. Every rejected
+/// reservation returns the host error and leaves the read retryable with the
+/// same data.
+async fn assert_metered_cold_read<S: ISpace<String, Wildcard, String, Cont>>(
+    space: &S,
+    root: &crate::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+    channel: &String,
+) {
+    space.reset(root).await.unwrap();
+    let expected = space.get_data(channel).await;
+    assert_eq!(expected.len(), 5);
+    space.reset(root).await.unwrap();
+    let meter = CutMeter::new(u64::MAX);
+    let metered = space.get_data_metered(channel, &meter).await.unwrap();
+    assert_eq!(metered, expected);
+    let total = meter.calls.load(Ordering::SeqCst);
+    assert!(total > 0);
+    for cut in 0..total {
+        space.reset(root).await.unwrap();
+        let rejected = space.get_data_metered(channel, &CutMeter::new(cut)).await;
+        assert!(
+            matches!(rejected, Err(crate::rspace::errors::RSpaceError::HostWorkRejected)),
+            "cut {cut}"
+        );
+        let retried = space
+            .get_data_metered(channel, &CutMeter::new(u64::MAX))
+            .await
+            .unwrap();
+        assert_eq!(retried, expected, "cut {cut}");
+    }
+}
+
+/// D-S2 (DR-95): the play and replay spaces decode their cold data rows in
+/// History mode, with the values of the unmetered read at every reservation
+/// cut.
+#[tokio::test]
+async fn metered_cold_data_reads_match_unmetered_reads_at_every_cut() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (play, replay) =
+        RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch))).unwrap();
+    let channel = "history-data".to_string();
+    for index in 0..5 {
+        play.produce(channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .unwrap();
+    }
+    let root = play.create_checkpoint().await.unwrap().root;
+    assert_metered_cold_read(&play, &root, &channel).await;
+    assert_metered_cold_read(&replay, &root, &channel).await;
+}
+
+// ── D-C4 (D-S5, DR-98): metered data reads without the cold fill ─────────
+
+type TestStore = Arc<Box<dyn HotStore<String, Wildcard, String, Cont>>>;
+type TestDatum = crate::rspace::internal::Datum<String>;
+type RootHash = crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+/// A meter that sums the reserved operations, scanned bytes and backing.
+#[derive(Default)]
+struct SumMeter {
+    operations: AtomicU64,
+    scanned: AtomicU64,
+    backing: AtomicU64,
+}
+
+impl SumMeter {
+    fn totals(&self) -> (u64, u64, u64) {
+        (
+            self.operations.load(Ordering::SeqCst),
+            self.scanned.load(Ordering::SeqCst),
+            self.backing.load(Ordering::SeqCst),
+        )
+    }
+}
+
+impl crate::rspace::hashing::native_source::SourceMeter for SumMeter {
+    fn reserve(
+        &self,
+        operations: usize,
+        scanned: usize,
+        backing: usize,
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        self.operations
+            .fetch_add(operations as u64, Ordering::SeqCst);
+        self.scanned.fetch_add(scanned as u64, Ordering::SeqCst);
+        self.backing.fetch_add(backing as u64, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+async fn summed_read<S: ISpace<String, Wildcard, String, Cont>>(
+    space: &S,
+    channel: &String,
+) -> (Vec<TestDatum>, (u64, u64, u64)) {
+    let meter = SumMeter::default();
+    let data = space
+        .get_data_metered(channel, &meter)
+        .await
+        .expect("the metered read succeeds");
+    (data, meter.totals())
+}
+
+/// A play or replay space at `root`: a metered read returns the history
+/// values, leaves no entry in the store, and is charged the same on a second
+/// read. After a write, the metered read returns the resident values and
+/// leaves the store unchanged.
+async fn assert_uncached_metered_reads<S: ISpace<String, Wildcard, String, Cont>>(
+    space: &S,
+    store: impl Fn() -> TestStore,
+    root: &RootHash,
+    data_channel: &String,
+    empty_channel: &String,
+) {
+    space.reset(root).await.expect("reset to the root");
+    let expected = space.get_data(data_channel).await;
+    assert_eq!(expected.len(), 5);
+    space.reset(root).await.expect("reset to the root");
+    let (first, first_totals) = summed_read(space, data_channel).await;
+    assert_eq!(first, expected);
+    let (empty, empty_totals) = summed_read(space, empty_channel).await;
+    assert!(empty.is_empty());
+    let resident = store().snapshot().data_flat();
+    assert!(!resident.contains_key(data_channel), "a metered read filled the store");
+    assert!(!resident.contains_key(empty_channel), "a metered read filled the store");
+    let (second, second_totals) = summed_read(space, data_channel).await;
+    assert_eq!(second, expected);
+    assert_eq!(second_totals, first_totals, "the first read changed the charge");
+    let (empty_again, empty_again_totals) = summed_read(space, empty_channel).await;
+    assert!(empty_again.is_empty());
+    assert_eq!(empty_again_totals, empty_totals, "the first read changed the charge");
+
+    let written = TestDatum::create(data_channel, "written".to_string(), false);
+    store().put_datum(data_channel, written.clone());
+    let before = store().snapshot().data_flat();
+    let (resident_values, _) = summed_read(space, data_channel).await;
+    assert_eq!(resident_values.len(), expected.len() + 1);
+    assert_eq!(resident_values[0], written);
+    assert_eq!(resident_values, store().get_data(data_channel));
+    assert_eq!(store().snapshot().data_flat(), before, "a resident read changed the store");
+}
+
+/// D-C4 (D-S5, DR-98; `NativeSharedReads.uncached_cold_read_equals_read`):
+/// the play and replay spaces read metered data without the cold fill.
+#[tokio::test]
+async fn metered_play_read_returns_history_values_without_fill() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.expect("in-memory stores");
+    let (play, replay) = RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch)))
+        .expect("play and replay spaces");
+    let data_channel = "history-data".to_string();
+    let empty_channel = "history-empty".to_string();
+    for index in 0..5 {
+        play.produce(data_channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .expect("produce");
+    }
+    let root = play.create_checkpoint().await.expect("checkpoint").root;
+    assert_uncached_metered_reads(&play, || play.get_store(), &root, &data_channel, &empty_channel)
+        .await;
+    assert_uncached_metered_reads(
+        &replay,
+        || replay.get_store(),
+        &root,
+        &data_channel,
+        &empty_channel,
+    )
+    .await;
+}
+
+/// D-C4 (D-S5, DR-98; `NativeSharedReads.uncached_reads_leave_writes_only`):
+/// metered reads export no change, so a checkpoint keeps the root. The
+/// legacy filling read exports its fills, with the same root. After a write,
+/// the reads do not change the root of the write.
+#[tokio::test]
+async fn checkpoint_root_unchanged_by_uncached_read() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.expect("in-memory stores");
+    let (play, replay) = RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch)))
+        .expect("play and replay spaces");
+    let data_channel = "history-data".to_string();
+    let empty_channel = "history-empty".to_string();
+    for index in 0..5 {
+        play.produce(data_channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .expect("produce");
+    }
+    let root = play.create_checkpoint().await.expect("checkpoint").root;
+
+    play.reset(&root).await.expect("reset to the root");
+    for channel in [&data_channel, &empty_channel, &data_channel, &empty_channel] {
+        summed_read(&play, channel).await;
+    }
+    assert!(play.get_store().changes().is_empty(), "a metered read exported a change");
+    let checkpoint = play.create_checkpoint().await.expect("checkpoint");
+    assert_eq!(checkpoint.root, root);
+    assert!(checkpoint.log.is_empty());
+
+    play.reset(&root).await.expect("reset to the root");
+    play.get_data(&data_channel).await;
+    play.get_data(&empty_channel).await;
+    assert!(!play.get_store().changes().is_empty(), "the legacy read fills the store");
+    assert_eq!(play.create_checkpoint().await.expect("checkpoint").root, root);
+
+    play.reset(&root).await.expect("reset to the root");
+    play.produce(data_channel.clone(), "z".to_string(), false)
+        .await
+        .expect("produce");
+    let written_root = play.create_checkpoint().await.expect("checkpoint").root;
+    assert_ne!(written_root, root);
+    play.reset(&root).await.expect("reset to the root");
+    play.produce(data_channel.clone(), "z".to_string(), false)
+        .await
+        .expect("produce");
+    for channel in [&data_channel, &empty_channel] {
+        summed_read(&play, channel).await;
+    }
+    assert_eq!(play.create_checkpoint().await.expect("checkpoint").root, written_root);
+
+    replay.reset(&root).await.expect("reset to the root");
+    for channel in [&data_channel, &empty_channel, &data_channel] {
+        summed_read(&replay, channel).await;
+    }
+    assert!(replay.get_store().changes().is_empty(), "a metered read exported a change");
+    assert_eq!(replay.create_checkpoint().await.expect("checkpoint").root, root);
 }

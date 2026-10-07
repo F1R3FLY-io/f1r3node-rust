@@ -16,7 +16,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHashSerde;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedUserDeploy};
 use models::rust::equivocation_record::EquivocationRecord;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -39,7 +39,9 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::proto_util;
-use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
+// Unused since DR-99: validation reads the policy adopted at start.
+// use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint_with_policy;
 use crate::rust::validate::Validate;
 
 async fn timed_step<A, Fut>(
@@ -71,6 +73,14 @@ where
 ///
 /// Returns the outcome of `check_equivocations`. A `Left` from any
 /// intermediate validator short-circuits and is returned directly.
+fn violates_offered_only_activation<D>(
+    active: bool,
+    deploys: &[D],
+    is_offered: impl Fn(&D) -> bool,
+) -> bool {
+    active && deploys.iter().any(|deploy| !is_offered(deploy))
+}
+
 async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
@@ -111,6 +121,14 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
+    if violates_offered_only_activation(this.offered_funded_active, &block.body.deploys, |deploy| {
+        matches!(deploy, ProcessedUserDeploy::Offered(_))
+    }) {
+        return Ok(Either::Left(BlockError::Invalid(
+            InvalidBlock::InvalidTransaction,
+        )));
+    }
+
     let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds {
         // Reuse the floor derived by block_summary's fill; a deploy-less
         // block never filled it, so derive here — same frozen inputs, same
@@ -139,10 +157,44 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }
         }
+        // Changed by DR-99 (joined-node policy adoption): validation uses the
+        // policy adopted at start, because an LFS-joined node's approved block
+        // is its restore anchor, not genesis.
+        // let offered_policy = if block
+        //     .body
+        //     .deploys
+        //     .iter()
+        //     .any(|term| matches!(term, ProcessedUserDeploy::Offered(_)))
+        // {
+        //     Some(
+        //         AdoptedResourcePolicy::load(
+        //             &this.runtime_manager,
+        //             &this.approved_block,
+        //             &this.casper_shard_conf,
+        //         )
+        //         .await?,
+        //     )
+        // } else {
+        //     None
+        // };
+        let offered_policy = if block
+            .body
+            .deploys
+            .iter()
+            .any(|term| matches!(term, ProcessedUserDeploy::Offered(_)))
+        {
+            Some(this.adopted_resource_policy.as_ref().ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "offered block on a chain without a genesis resource policy".to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
         let (validate_block_checkpoint_result, t2) = timed_step(
             "checkpoint",
             BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-            validate_block_checkpoint(
+            validate_block_checkpoint_with_policy(
                 block,
                 &this.block_store,
                 snapshot,
@@ -150,6 +202,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 Some(&this.rejected_deploy_buffer),
                 floor_ctx.as_ref(),
                 local_validator.as_ref(),
+                offered_policy,
             ),
         )
         .await?;
@@ -600,6 +653,38 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                 status
             );
             Ok(dag.clone())
+        }
+    }
+}
+
+#[cfg(test)]
+mod offered_only_activation_tests {
+    use super::violates_offered_only_activation;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// Extracted from `OfferedOnlyActivation.v`: `active_validation_rejects_body_only`
+        /// (an active block with any body-only deploy is invalid), and the `validate`
+        /// definition (inactive validation imposes no format rule; an active block of
+        /// offered deploys only is valid).
+        #[test]
+        fn active_validation_rejects_exactly_blocks_with_a_body_only_deploy(
+            before in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..8),
+            after in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..8),
+            offered_only in proptest::collection::vec(proptest::strategy::Just(true), 0..8),
+        ) {
+            let mut with_body_only = before.clone();
+            with_body_only.push(false);
+            with_body_only.extend(after.iter().copied());
+            let is_offered = |offered: &bool| *offered;
+            proptest::prop_assert!(violates_offered_only_activation(true, &with_body_only, is_offered));
+            proptest::prop_assert!(!violates_offered_only_activation(false, &with_body_only, is_offered));
+            proptest::prop_assert!(!violates_offered_only_activation(true, &offered_only, is_offered));
+            proptest::prop_assert_eq!(
+                violates_offered_only_activation(true, &before, is_offered),
+                before.iter().any(|offered| !offered)
+            );
         }
     }
 }

@@ -1,0 +1,19 @@
+{
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "sans-serif",
+    "fontSize": "14px",
+    "primaryColor": "#C8E6C9",
+    "primaryBorderColor": "#333333",
+    "primaryTextColor": "#000000",
+    "lineColor": "#444444",
+    "tertiaryColor": "#FFECB3"
+  },
+  "sankey": {
+    "showValues": true,
+    "linkColor": "gradient",
+    "nodeAlignment": "justify",
+    "width": 900,
+    "height": 480
+  }
+}

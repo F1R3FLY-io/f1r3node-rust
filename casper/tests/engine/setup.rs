@@ -13,6 +13,7 @@ use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerSto
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use casper::rust::engine::block_retriever;
@@ -30,7 +31,6 @@ use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
@@ -70,13 +70,8 @@ pub struct TestFixture {
     pub engine: Running<TransportLayerStub>,
     // Scala: implicit val blockProcessingQueue = Queue.unbounded[Task, (Casper[Task], BlockMessage)]
     // Refactored to use mpsc channel - both sender and receiver kept for test inspection
-    pub block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-    pub block_processing_queue_rx: Arc<
-        tokio::sync::Mutex<
-            mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-        >,
-    >,
+    pub block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    pub block_processing_queue_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<BlockQueueItem>>>,
     // Test-only: Track blocks enqueued for processing (updated lazily on first check)
     blocks_enqueued_for_processing: Arc<Mutex<HashSet<BlockHash>>>,
     // Scala Step 4: implicit val rspaceStateManager = RSpacePlusPlusStateManagerImpl(exporter, importer)
@@ -111,7 +106,7 @@ pub struct TestFixture {
     // Scala: val bap = BlockApproverProtocol.of[Task](validatorId, deployTimestamp, ...)
     pub bap: BlockApproverProtocol<TransportLayerStub>,
     // Scala: implicit val blockProcessingState = Ref.of[Task, Set[BlockHash]](Set.empty)
-    pub blocks_in_processing: Arc<DashSet<BlockHash>>,
+    pub blocks_in_processing: Arc<InFlightBlocks>,
     // Scala: implicit val rpConf = createRPConfAsk[Task](local)
     pub rp_conf_ask: RPConf,
     // Scala: implicit val connectionsCell: ConnectionsCell[Task] = Cell.unsafe[Task, Connections](List(local))
@@ -297,6 +292,10 @@ impl TestFixture {
             KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(deploy_storage_store);
         let deploy_storage = KeyValueDeployStorage {
             store: deploy_storage_typed_store,
+            envelope_store: KeyValueTypedStoreImpl::new(Arc::new(MockKeyValueStore::new())),
+            envelope_rejections:
+                block_storage::rust::deploy::key_value_deploy_storage::EnvelopeRejectionLog::default(
+                ),
         };
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
@@ -453,7 +452,7 @@ impl TestFixture {
         };
 
         // Scala: implicit val blockProcessingState = Ref.of[Task, Set[BlockHash]](Set.empty)
-        let blocks_in_processing: Arc<DashSet<BlockHash>> = Arc::new(DashSet::new());
+        let blocks_in_processing: Arc<InFlightBlocks> = Arc::new(InFlightBlocks::new());
 
         // NOT in Scala Setup - created locally in each test as: implicit val eventBus = EventPublisher.noop[Task]
         // Rust: Create F1r3flyEvents with default capacity (equivalent to noop for tests)
@@ -477,7 +476,7 @@ impl TestFixture {
 
         let engine = Running::new(
             block_processing_queue_tx.clone(),
-            Arc::new(DashSet::new()),
+            blocks_in_processing.clone(),
             casper_trait_object,
             approved_block,
             Arc::new(|| {
@@ -554,15 +553,15 @@ impl TestFixture {
         let mut blocks = Vec::new();
 
         // Drain the queue and update tracking set
-        while let Ok((casper, block)) = rx.try_recv() {
+        while let Ok((casper, block, guard)) = rx.try_recv() {
             tracking_set.insert(block.block_hash.clone());
-            blocks.push((casper, block));
+            blocks.push((casper, block, guard));
         }
 
         // Re-enqueue all blocks to maintain queue state
-        for (casper, block) in blocks {
+        for item in blocks {
             // Safe to ignore send errors in tests - if channel is closed, test is ending anyway
-            let _ = self.block_processing_queue_tx.send((casper, block)).await;
+            let _ = self.block_processing_queue_tx.send(item).await;
         }
     }
 }

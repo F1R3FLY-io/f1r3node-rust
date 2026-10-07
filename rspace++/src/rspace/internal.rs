@@ -35,6 +35,9 @@ pub struct WaitingContinuation<P: Clone, K: Clone> {
     pub patterns: Vec<P>,
     pub continuation: K,
     pub persist: bool,
+    // D-S2 (DR-95): the tree-set tag lets the metered history decoder charge
+    // the set's node allocations; bincode ignores it on the wire.
+    #[serde(deserialize_with = "crate::rspace::history::native_reader::tree_set")]
     pub peeks: BTreeSet<i32>,
     pub source: Consume,
 }
@@ -104,6 +107,12 @@ where
     pub fn empty() -> Self {
         MultisetMultiMap {
             map: DashMap::new(),
+        }
+    }
+
+    pub(crate) fn empty_with_shard_amount(shards: usize) -> Self {
+        MultisetMultiMap {
+            map: DashMap::with_shard_amount(shards),
         }
     }
 

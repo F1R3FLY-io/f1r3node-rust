@@ -1913,7 +1913,7 @@ async fn used_deploy_with_insufficient_phlos_should_be_added_to_a_block_with_all
         "Block should have exactly 1 deploy"
     );
 
-    let deploy_cost = b.body.deploys[0].cost.cost;
+    let deploy_cost = b.body.deploys[0].cost().cost;
     assert_eq!(deploy_cost, 3000, "Deploy should consume all phlos (3000)");
 }
 
@@ -1968,7 +1968,7 @@ async fn replay_should_match_in_case_of_out_of_phlo_error() {
         "Block should have exactly 1 deploy"
     );
 
-    let deploy_cost = b.body.deploys[0].cost.cost;
+    let deploy_cost = b.body.deploys[0].cost().cost;
     assert_eq!(
         deploy_cost, 20000,
         "Deploy should consume all phlos (20000)"
@@ -2010,7 +2010,7 @@ async fn replay_should_match_in_case_of_user_execution_error() {
         "Block should have exactly 1 deploy"
     );
 
-    let deploy_cost = b.body.deploys[0].cost.cost;
+    let deploy_cost = b.body.deploys[0].cost().cost;
     assert_eq!(
         deploy_cost, 300000,
         "Deploy should consume all phlos (300000)"

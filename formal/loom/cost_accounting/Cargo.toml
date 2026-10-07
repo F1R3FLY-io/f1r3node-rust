@@ -1,0 +1,19 @@
+[package]
+name = "cost-accounting-loom-models"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+indexmap = { workspace = true }
+imbl = { workspace = true }
+loom = "=0.7.2"
+
+[lints.rust]
+# loom-gated code reads `cfg(loom)`; silence the unexpected-cfg lint here.
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(loom)'] }

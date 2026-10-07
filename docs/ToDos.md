@@ -83,10 +83,11 @@ user_story: null
 issues: [24]
 blocked_by: []
 created_at: 2026-10-03
-updated_at: 2026-10-03
+updated_at: 2026-10-05
 claimed_by: claude-session-aa467dea
 claimed_at: 2026-10-03T21:10:00Z
 branch: fix/issue-24
+follow_on_branch: "fix/issue-24-root-cause-fix (draft PR #620). Since 2026-10-05 its base is chore/finish-TASK-020-4-log-growth (PR #622), so that one soak tests both PRs. The Slashing suite and the heavy CI suite do not run on PR #620 until PR #622 merges and the base returns to dev."
 pr_base_branch: dev
 origin: "The weekend-60h soak 37090117438 on master fce422a7d stopped after about 8 hours. Eight passive iterations failed first, then the disk guardian stopped all nodes in iteration 26 at 3,683 MB free against a 4,096 MB floor. The verdict was regress, with finalization p95 50.7 s against a baseline of 40.9 s plus 20 percent. Issue #24 records the same sustained-phase finalization failure since 2026-09."
 execution_contract:
@@ -101,6 +102,8 @@ evidence:
   new_run: 37153082817
   new_run_target: f93b72699565e45097b37a99b0413cef16bacd00
   issue_comments: ["2026-09-16 nightly soak evidence for 2026-09-12 to 2026-09-15", "2026-09-25 submit-to-finalization breakdown on dev 6d6d4fed6"]
+  baseline_run: "37224478325 on master 95be0d450, cancelled by the user on 2026-10-05 in segment 3. Segment 2 had 19 failures in 91 iterations, all test_load 'N deploy(s) not finalized within 45s'."
+  fix_run: "37343966570, daily-24h, dispatched on 2026-10-05 for fix/issue-24-root-cause-fix at 0a0713663 (dev b5cbb51d1, PR #622 at 82fe22a0a, and PR #620)."
 tasks:
   - id: TASK-021-1
     title: "Attribute the failure of soak 37090117438 with the existing evidence"
@@ -147,6 +150,7 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: [TASK-021-3, TASK-021-4, TASK-021-8]
+    candidate_fix: "0ef0966c6 on fix/issue-24-root-cause-fix (PR #620): reset() validates the root with a read and no longer writes current-root, the roots lock is released before the history lock, and record_root writes in one LMDB transaction. 2cd9790f9 removes the unused validate_and_set_current_root path. The code review of 2026-10-05 found no correctness defect. After a restart, history opens at the last checkpointed root, not at the last reset root. Soak 37343966570 tests the candidate. The acceptance items still apply: the maintainer chooses the fix, and the TASK-021-8 findings do not yet show that the roots lock is the root cause."
     acceptance:
       - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
       - "The maintainer chooses the fix before implementation."
@@ -185,9 +189,84 @@ tasks:
       - "A later epic decides which parts move into the Rust casper-soak runtime."
   - id: TASK-021-8
     title: "Measure history repository lock hold times by call site"
-    status: pending
+    status: in_progress
     claimed_by: null
     blocked_by: []
+    implementation_status: "Implemented in 05c78088e on fix/issue-24-root-cause-fix. The call-site counters are in the ISSUE24_METRICS records through scripts/bench/extend-issue24-metrics.sh. Acceptance items 3 and 4 wait for soak 37343966570."
+    findings_2026_10_05:
+      source: "Baseline soak 37224478325 (master 95be0d450, without the call-site counters): 98 test_load sessions, 76 passed and 22 failed. The analysis used the aggregate lock counters of master in the ISSUE24_METRICS records of validators 1 to 3."
+      results:
+        - "The unfinalized deploys are in the sustained phase (482 deploys in 17 sessions) and in the high phase (26 deploys in 8 sessions). The failures spread evenly over the run."
+        - "The failures are a latency tail, not a discrete stall. In the sustained phase the finalization p95 median is 46.9 s for passing sessions and 58.7 s for failing sessions, against the 45 s gate. The LFB rate median is 20.6 blocks per minute for passing sessions and 17.9 for failing sessions."
+        - "The roots lock wait is high in every sustained phase: a median of 7.1 s for passing and 9.1 s for failing sessions, for each validator, over about 2,900 calls. Other phases stay below 15 ms."
+        - "No validator metric separates failing from passing sessions well. The AUC is 0.62 for the roots lock wait, 0.67 for the checkpoint time, 0.66 for the replay runtime lock wait, and at most 0.70 for any metric."
+        - "test_load judges finalization on validator1 only. The boot and readonly nodes lag the validators by 12 to 20 blocks at drain and use about three times the memory of a validator, but the harness collects no ISSUE24_METRICS records for them."
+      interpretation: "The roots lock contention is a constant cost of the sustained phase, not the trigger of a failure. The reset fix can still move the latency tail below the gate if the lock is on the critical path."
+      baseline_metric_auc: "Sustained phase, validators 1 to 3, mean of the three. AUC is the probability that a failing session has the higher value. Roots lock wait 0.62, roots lock calls 0.61, current-history lock wait 0.62, checkpoint roots lock wait mean 0.57, checkpoint time mean 0.65, root commit time 0.59, replay reset time 0.53, replay runtime lock wait 0.65, replay user deploys time 0.64, apply trie actions time 0.61, blocks replayed 0.62. Test side: inclusion p95 0.70, finalization p95 0.69, LFB rate 0.31."
+    soak_decision_metrics:
+      run: "37343966570. Compare the sustained phase with baseline run 37224478325. Medians are for passing and failing sessions, for each validator unless stated."
+      metrics:
+        - role: outcome
+          measure: "test_load failure rate (sessions summary: 'N deploy(s) not finalized within 45s')"
+          baseline: "22 of 98 sessions (22 percent)"
+          expected_if_root_cause: "At most 5 failures in about 100 sessions"
+          reasoning: "This is the gate of issue #24. At the baseline rate, 100 sessions give about 22 failures, so 5 or fewer is a real change and not chance."
+        - role: outcome
+          measure: "Sustained finalization p95 (log line 'Phase sustained: ... finalization p95')"
+          baseline: "Median 46.9 s for passing and 58.7 s for failing sessions, gate 45 s"
+          expected_if_root_cause: "The median of all sessions falls clearly below 45 s"
+          reasoning: "The failures are the tail of this distribution. The gate is marginal, so the pass count alone can change by chance. The distribution shows a real shift."
+        - role: outcome
+          measure: "Sustained LFB rate in blocks per minute (same log line)"
+          baseline: "Median 20.6 for passing and 17.9 for failing sessions"
+          expected_if_root_cause: "Higher than the baseline median"
+          reasoning: "The rate measures finalization throughput directly. Slow sessions finalize fewer blocks per minute."
+        - role: mechanism
+          measure: "history_repository_roots_repository_lock_wait_ns (aggregate, present in both runs)"
+          baseline: "7.1 s for passing and 9.1 s for failing sessions, over about 2,900 calls"
+          expected_if_root_cause: "Close to 0, below 0.1 s"
+          reasoning: "This shows whether the fix removed the contention. The local probe reduced the checkpoint roots wait from 295 ms to 0.19 ms."
+        - role: mechanism
+          measure: "history_repository_roots_repository_reset_hold_ns divided by _reset_calls, and _checkpoint_wait_ns"
+          baseline: "Not measured in the baseline. The local probe gave 4.5 ms of hold time for each reset before the fix."
+          expected_if_root_cause: "A few microseconds of hold time for each reset, and a checkpoint wait close to 0"
+          reasoning: "These call-site counters answer TASK-021-8 acceptance items 3 and 4. They show which call site held the lock."
+        - role: mechanism
+          measure: "history_roots_store_writes against _record_root_calls plus _checkpoint_calls"
+          baseline: "Not measured. Before the fix, each reset also wrote current-root."
+          expected_if_root_cause: "Writes equal record_root calls plus checkpoint calls, with no writes from reset"
+          reasoning: "This proves that reset makes no durable write. The roots and history stores share one LMDB environment with a single writer."
+        - role: next_candidate
+          measure: "history_checkpoint_time mean"
+          baseline: "79 ms for passing and 116 ms for failing sessions, AUC 0.65"
+          expected_if_root_cause: "Lower, because reset no longer competes for the LMDB writer"
+          reasoning: "This is the next suspect if the outcome does not change. It is the strongest node-side separator in the baseline."
+        - role: next_candidate
+          measure: "block_replay_runtime_lock_wait_time mean"
+          baseline: "140 ms for passing and 215 ms for failing sessions, AUC 0.65"
+          expected_if_root_cause: "Lower or unchanged"
+          reasoning: "The runtime lock serializes replay. If this stays high while the roots wait falls, replay serialization is the next cause to examine."
+        - role: control
+          measure: "history_repository_current_history_lock_wait_ns (aggregate)"
+          baseline: "12 ms for passing and 13 ms for failing sessions"
+          expected_if_root_cause: "About the same"
+          reasoning: "The fix does not change this lock. A large change points to a different effect or a different workload."
+        - role: control
+          measure: "Blocks replayed (block_replay_phase_reset_time samples) and roots lock calls"
+          baseline: "233 and 238 blocks, about 2,900 calls"
+          expected_if_root_cause: "Within 10 percent of the baseline"
+          reasoning: "The comparison is valid only for the same workload. A lighter workload can pass without any fix."
+      decision_rules:
+        - "Root cause confirmed: the roots lock wait falls close to 0, the controls stay within 10 percent, and the failure rate and the sustained finalization p95 both fall as expected."
+        - "Mechanism works but is not on the critical path: the roots lock wait falls close to 0, but the finalization p95 and the LFB rate stay inside the baseline spread. Examine the checkpoint time and the replay runtime lock wait next."
+        - "Fix not effective: the roots lock wait does not fall. Use the call-site counters to find the call site that holds the lock."
+      confounders:
+        - "The soak runs dev at b5cbb51d1, not master 95be0d450. dev adds the rholang file I/O handlers of PRs #613 to #617, which deploys of test_load do not use."
+        - "The soak includes the PR #622 log guardian. It runs on the host and adds a Docker probe every 15 seconds, but no node code."
+        - "The harness collects no ISSUE24_METRICS records for the boot and readonly nodes, so their lag stays unexplained."
+        - "PR #523 (issue-468) merged to dev at 6ae47b00c on 2026-10-05, after soak 37343966570 started. It prevents in-flight marker leaks in the block processor and evicts stale markers. A leaked marker can hold a block back from processing, so this change can affect finalization latency by itself. Soak 37343966570 tests b5cbb51d1 and does not include it. A soak of fix/issue-24-root-cause-fix at f66861983 or later includes it."
+        - "PR #480 (issue-18) merged to dev at 8940ca90d on 2026-10-05 (23:51Z). It excludes silent bonded validators from the clique oracle finality weight and the synchrony weight (casper/src/rust/safety/clique_oracle.rs, synchrony_constraint_checker.rs). This changes the finality rule that test_load measures, so it can change the finalization latency and the failure rate by itself. Every dev soak from 1c787b752 includes it."
+        - "Rule for the next soak: compare it with this soak only for the metrics that PR #523 and PR #480 cannot change. These are the roots and checkpoint lock counters and the checkpoint time. Read the failure rate and the finalization p95 as the combined effect of all changes in the tested SHA."
     origin: "In soak 37153082817, history_repository_roots_repository_lock_wait_ns reached 2 to 21 seconds for each validator in test_deploy_throughput_and_finalization, and no other test exceeded 1 second. The checkpoint's own roots lock wait stayed near zero. The metrics record wait times only, so they cannot show which call site holds the lock. The candidate cause is reset() in rspace++/src/rspace/history/history_repository_impl.rs, which holds the roots lock while it waits for the current-history lock."
     files:
       - rspace++/src/rspace/history/history_repository_impl.rs
@@ -198,6 +277,23 @@ tasks:
       - "The new metrics appear in the ISSUE24_METRICS records, and the metrics extension test covers them."
       - "A soak run or a local throughput run attributes the roots lock wait to the call sites that hold the lock, and the result is recorded on issue #24."
       - "The analysis confirms or rejects the nested-lock hypothesis in reset() before TASK-021-5 proposes a fix."
+  - id: TASK-021-9
+    title: "Gate master on a SHA-bound soak verdict check"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-5]
+    origin: "On 2026-10-04 the masterProtect ruleset required deployments to casper-campaign, ephemeral-launch, and protected-branch-image-publish. A deployment proves that a job started, not that a verdict passed. casper-campaign is created by the campaign launch job and allows only formal/soak-casper-consensus, and ephemeral-launch is created only by the gated fork path, so no promotion PR could satisfy them. The user wants merges to master to accept only soaked and verified artifacts after the issue #24 root-cause fix lands."
+    files:
+      - .github/workflows/merge-recovery-soak.yml
+      - docs/release-process.md
+      - docs/claims/casper-campaign-execution.md
+    acceptance:
+      - "The soak workflow publishes a check run, for example 'Soak verdict (campaign-stability-60h)', on the tested SHA only after the full soak passes, including the issue #24 finalization claims and a clean disk guardian."
+      - "masterProtect requires that check from the GitHub Actions integration, and requires Integration Tests (amd64) and (arm64)."
+      - "The promotion PR runs the heavy pipeline, or the gate reads the dev push run of the same SHA, so a summary check that passed without running does not satisfy the gate."
+      - "masterProtect keeps protected-branch-image-publish and drops casper-campaign and ephemeral-launch from required deployments."
+      - "The release process documents that a promotion PR carries the exact soaked SHA, and that a later dev commit voids the verdict."
+      - "The changed workflow and claim artifacts have a review package and maintainer acceptance under their claims."
 ---
 ```
 
@@ -352,11 +448,17 @@ tasks:
       - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
-    status: in_progress
-    claimed_by: claude-session-f3cbc961
-    claimed_at: 2026-10-02T15:30:00Z
+    status: done
+    completed_at: 2026-10-05
+    reopened_at: 2026-10-05
+    reopened_reason: "The PR #622 review of 2026-10-05 found two probe defects. A container that stopped during a sample caused a false breach. An unreadable rotated container log was skipped without a report. The fix changes the driver and the disk fixture, so the acceptance of 2026-10-04 does not cover the new bytes."
+    resolution: "First version implemented in 83a41b564 (PR #622). Review package casper-soak-log-budget-guardian-20261004-01 at 6ea45dc8f, accepted by jltatbeach in PR #622 comment 5983133741. The acceptance package casper-soak-log-budget-guardian-acceptance-20261004-01 and the ledger records of the driver and the disk fixture carry the new digests. The probe fix 82fe22a0a has review package casper-soak-log-budget-guardian-20261005-01 at 1a04095da, accepted by jltatbeach in PR #622 comment 6005866151. The acceptance package casper-soak-log-budget-guardian-acceptance-20261005-01 and the two ledger records carry the new digests."
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T14:36:28Z
+    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
     mirrored_as: TASK-017-17
     design: docs/casper/design/soak-log-budget-guardian.md
+    implementation_status: "Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04. The driver samples the container json-file log and the node log directory of each owned container, refuses admission on an unreadable probe, and breaches on 3 strikes or one sample at two times the budget. Ten log scenarios in scripts/bench/test-soak-disk-admission.sh pass in the disposable container, and the breach and refusal scenarios fail against the previous driver. CLAIM-SOAK-001 records the log caps as enforced. The 2026-10-05 fix skips a container that stops during a sample and fails the probe on a rotated log that exists but cannot be read. Scenarios log-probe-vanished and log-rotated-unreadable pass, and both fail against the driver at 514eb3026. All 12 log scenarios pass. The maintainer accepted the fix on 2026-10-05."
     owner_branch: formal/soak-casper-consensus
     blocked_by: []
     blockers_cleared: "TASK-020-1 and TASK-020-2 are complete. The implementation runs as TASK-017-17 on the soak branch."
@@ -369,7 +471,7 @@ tasks:
 ---
 ```
 
-**Current state:** Created on 2026-09-23 after the disk incident. No branch exists yet. The fix branch is created from dev in the single checkout when the observation branch has no uncommitted work.
+**Current state:** TASK-020-1, TASK-020-2, and TASK-020-3 merged to dev through PR #451 on 2026-10-03 and reached master with the soak stack. TASK-020-4 is implemented on PR #622: the soak guardian samples the node log directory and the container json-file size, and CLAIM-SOAK-001 records the log caps as enforced. The maintainer accepted the first version on 2026-10-04 and the probe fix on 2026-10-05. Soak 37343966570 runs the guardian for the first time. Also open: the TASK-020-1 verification status and the system-integration main promotion revision of TASK-020-3.
 
 ---
 
@@ -1895,11 +1997,16 @@ tasks:
 
   - id: TASK-017-17
     title: "Enforce the node log budgets in the soak guardian"
-    status: in_progress
-    claimed_by: claude-session-f3cbc961
-    claimed_at: 2026-10-02T15:30:00Z
+    status: done
+    completed_at: 2026-10-05
+    reopened_at: 2026-10-05
+    resolution: "See TASK-020-4. Accepted in PR #622 comment 5983133741, and the probe fix in comment 6005866151."
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T14:36:28Z
+    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
     created_at: 2026-10-02
     mirror_of: TASK-020-4
+    implementation_status: "See TASK-020-4. Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04 and accepted. The probe fix of 2026-10-05 was accepted in PR #622 comment 6005866151."
     branch: formal/soak-casper-consensus
     design: docs/casper/design/soak-log-budget-guardian.md
     placement_note: "Recorded before TASK-017-15 so that the TASK-017-16 record of branch 4 merges without a conflict."

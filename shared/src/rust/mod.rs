@@ -1,4 +1,8 @@
+pub mod clone_backing;
+pub mod closed_decode;
+pub mod collection_backing;
 pub mod dag;
+pub mod fallible_sort;
 pub mod grpc;
 pub mod hashable_set;
 pub mod metrics_constants;

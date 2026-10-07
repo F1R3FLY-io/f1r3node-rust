@@ -127,8 +127,8 @@ fn lookup(block_store: &KeyValueBlockStore, block_hash: &BlockHash) -> Result<Lo
         .body
         .deploys
         .iter()
-        .filter(|pd| !pd.is_failed)
-        .map(|pd| pd.deploy.sig.clone())
+        .filter(|pd| !pd.is_failed())
+        .map(|pd| Bytes::copy_from_slice(pd.identity_bytes()))
         .collect();
     applied_sigs.extend(block.body.applied_from_scope.iter().cloned());
     let facts = Arc::new(BlockFacts {
@@ -138,7 +138,7 @@ fn lookup(block_store: &KeyValueBlockStore, block_hash: &BlockHash) -> Result<Lo
             .body
             .deploys
             .iter()
-            .map(|pd| pd.deploy.sig.clone())
+            .map(|pd| Bytes::copy_from_slice(pd.identity_bytes()))
             .collect(),
         parents: block.header.parents_hash_list,
         lineage_next,

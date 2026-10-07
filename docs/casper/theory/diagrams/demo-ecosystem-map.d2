@@ -1,0 +1,54 @@
+# Cost-accounted buyer–seller ecosystem (examples/cost_accounting_demo.rho) — the
+# headline acceptance test. The supply chain spine flows factories → warehouse →
+# stores → buyers' homes; every operation is a token-gated atomic SWAP (money ↔
+# goods) or MOVE (goods only) whose guard conserves both resources all-or-nothing.
+# Funded actors are green; the flash-sale contenders are amber (exactly one wins);
+# unfunded actors are red — natively their deploys are rejected at the acceptance
+# gate (admission-rejection replaces in-program PARK). Invariants every run:
+# MONEY Σ = 410, WIDGET Σ = 67 opening + 16 produced = 83, no cell negative.
+#
+# Source of truth for the demo acceptance test in cost-accounting-use-cases.md.
+# Render:  d2 --layout elk demo-ecosystem-map.d2 demo-ecosystem-map.svg
+#          (or: ./render.sh demo-ecosystem-map.d2)
+...@palette
+direction: down
+
+inv: "INVARIANTS (hold in every interleaving): MONEY Σ = 410 · WIDGET Σ = 67 + 16 = 83 · no cell negative · exactly one flash-sale winner" { class: control }
+
+factories: "Factories — R4 production (MINT +16 widgets)" {
+  fab1: "Fab1_out (signs as #P)" { class: pool }
+  fab2: "Fab2_out (signs as #P)" { class: pool }
+}
+
+whse: "Warehouse — Whse_stk 24 · Whse_cash 0" { class: supply }
+
+stores: "Stores" {
+  sue: "Sue — stk 20 · cash 50  (R3 combined-token wholesale; funded order desk)" { class: supply }
+  sam: "Sam — stk 20 · cash 50" { class: supply }
+  flash: "Flash_stk = 1  (scarce — the last unit)" { class: control }
+}
+
+buyers: "Buyers — R1 retail [s]" {
+  ada: "Ada — cash 100 · home 2  (:: budget 2 buys)" { class: gate }
+  ben: "Ben — cash 60  (:: budget 2 → 3rd buy meters out)" { class: gate }
+  cy: "Cy — ⊸ lollipop: principal funds order, agent settles" { class: gate }
+  di: "Di — new-bound ring-fenced wallet" { class: gate }
+  fae: "Fae — cash 30" { class: control }
+  gus: "Gus — cash 30" { class: control }
+}
+
+rejected: "Unfunded → deploy-level admission-rejection (native: no in-program PARK)" {
+  eve: "eve — free-diSig thief" { class: reject }
+  zed: "Zed — unfunded order desk" { class: reject }
+}
+
+factories -> whse: "ship  (R2 fab1 ∘ carrier — compound gate, MOVE)" { class: credit }
+whse -> stores: "wholesale  (R3 combined token + auto-splitter, SWAP)" { class: credit }
+stores -> buyers: "retail  (R1 [s], atomic 4-cell SWAP: money ↔ goods)" { class: credit }
+buyers -> stores: "return for resale (SWAP)" { style.stroke-dash: 4 }
+stores.flash -> buyers.fae: "flash sale — last unit" { class: debit }
+stores.flash -> buyers.gus: "flash sale — last unit" { class: debit }
+eco_note: "Flash sale: Fae & Gus race for the 1 unit → EXACTLY ONE wins; the other is told 'out of stock' (no double-spend)." { class: control }
+stores.flash -> eco_note: { style.stroke-dash: 2 }
+
+rejected.eve -> buyers.di: "thief attempt on Di's ring-fenced wallet — BLOCKED (⊥)" { class: debit }

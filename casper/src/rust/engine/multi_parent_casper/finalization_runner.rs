@@ -439,11 +439,11 @@ pub(crate) async fn compute_last_finalized_block(
                                 tracing::info!(
                                     target: "f1r3fly.casper.deploy_lifecycle",
                                     event = "finalized_inclusion",
-                                    deploy_sig = %hex::encode(&processed.deploy.sig),
+                                    deploy_sig = %hex::encode(processed.identity_bytes()),
                                     block_hash = %hex::encode(&block.block_hash),
                                     block_number = block.body.state.block_number,
                                     sender = %hex::encode(&block.sender),
-                                    failed = processed.is_failed,
+                                    failed = processed.is_failed(),
                                     directly_finalized = block_hash == &directly_finalized_hash,
                                     "deploy lifecycle"
                                 );

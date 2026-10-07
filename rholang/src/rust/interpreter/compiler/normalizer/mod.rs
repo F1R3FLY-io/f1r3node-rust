@@ -1,4 +1,5 @@
 pub mod collection_normalize_matcher;
+pub mod cost_accounting;
 pub mod ground_normalize_matcher;
 pub mod name_normalize_matcher;
 pub mod processes;

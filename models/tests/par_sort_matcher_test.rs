@@ -20,8 +20,9 @@ use models::rust::utils::{
     new_egt_expr_gbool, new_egte_expr_gbool, new_elt_expr_gint, new_elte_expr_gint, new_emap_par,
     new_emethod_expr, new_eminus_expr_gint, new_emult_expr_gint, new_eneq_expr_gint, new_eor_expr,
     new_eplus_expr_gint, new_eplus_par, new_eplus_par_gint, new_eset_par, new_freevar_expr,
-    new_freevar_par, new_gbool_expr, new_gbool_par, new_gint_expr, new_gint_par, new_gstring_expr,
-    new_guri_expr, new_key_value_pair, new_new_par, new_send_par, new_wildcard_par,
+    new_freevar_par, new_gbool_expr, new_gbool_par, new_gint32_expr, new_gint_expr, new_gint_par,
+    new_gstring_expr, new_guint64_expr, new_guint8_expr, new_guri_expr, new_key_value_pair,
+    new_new_par, new_send_par, new_wildcard_par,
 };
 
 #[test]
@@ -40,6 +41,38 @@ fn par_should_sort_so_that_smaller_integers_come_first() {
         new_gint_expr(0),
         new_gint_expr(1),
         new_gint_expr(2),
+    ]);
+
+    assert_eq!(
+        ParSortMatcher::sort_match(&par_ground).term,
+        sorted_par_ground
+    );
+}
+
+#[test]
+fn par_should_sort_sized_integers_in_numeric_order() {
+    let par_ground = Par::default().with_exprs(vec![
+        new_guint64_expr(u64::MAX),
+        new_guint64_expr(1),
+        new_guint64_expr(i64::MAX as u64 + 1),
+        new_guint64_expr(0),
+        new_gint32_expr(1),
+        new_gint32_expr(i32::MIN),
+        new_gint32_expr(-1),
+        new_guint8_expr(255),
+        new_guint8_expr(0),
+    ]);
+
+    let sorted_par_ground = Par::default().with_exprs(vec![
+        new_guint64_expr(0),
+        new_guint64_expr(1),
+        new_guint64_expr(i64::MAX as u64 + 1),
+        new_guint64_expr(u64::MAX),
+        new_gint32_expr(i32::MIN),
+        new_gint32_expr(-1),
+        new_gint32_expr(1),
+        new_guint8_expr(0),
+        new_guint8_expr(255),
     ]);
 
     assert_eq!(
@@ -537,6 +570,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -552,6 +586,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(new_boundvar_par(0, Vec::new(), false)),
                 persistent: false,
@@ -567,6 +602,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -582,6 +618,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: true,
@@ -597,6 +634,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: true,
@@ -612,6 +650,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(2, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -633,6 +672,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(2, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -648,6 +688,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -663,6 +704,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(new_boundvar_par(0, Vec::new(), false)),
                 persistent: false,
@@ -678,6 +720,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -693,6 +736,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: true,
@@ -708,6 +752,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: true,

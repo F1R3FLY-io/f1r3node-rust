@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    EnvelopeRejection, KeyValueDeployStorage, PendingDeployCandidate,
+};
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::private_key::PrivateKey;
@@ -17,10 +19,14 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer;
+#[cfg(test)]
+use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification,
+    ProcessedSystemDeploy, ProcessedUserDeploy, RejectedDeploy,
 };
+use models::rust::cost_protocol_limits::OfferedFundedProtocolLimits;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use prost::Message;
@@ -34,6 +40,7 @@ use crate::rust::errors::CasperError;
 use crate::rust::finality::floor_context::{FloorContext, RetryGateBasis};
 use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -55,6 +62,11 @@ use crate::rust::validator_identity::ValidatorIdentity;
  */
 pub struct PreparedUserDeploys {
     pub deploys: HashSet<Signed<DeployData>>,
+    pub selected_candidates: Vec<PendingDeployCandidate>,
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). An offered
+    // proposal no longer falls back to legacy body-only deploys.
+    // pub offered_legacy_fallback: Vec<PendingDeployCandidate>,
+    pub offered_alternates: Vec<DeployEnvelope>,
     pub effective_cap: usize,
     pub cap_hit: bool,
     pub selected_retry_count: usize,
@@ -210,6 +222,59 @@ fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<Dep
             .then_with(|| a.sig.cmp(&b.sig))
     });
     ordered
+}
+
+fn candidate_identity(candidate: &PendingDeployCandidate) -> Bytes {
+    match candidate {
+        PendingDeployCandidate::Legacy(deploy) => deploy.sig.clone(),
+        PendingDeployCandidate::Envelope(envelope) => {
+            envelope.identity().as_bytes().to_vec().into()
+        }
+    }
+}
+
+fn candidate_valid_after(candidate: &PendingDeployCandidate) -> i64 {
+    match candidate {
+        PendingDeployCandidate::Legacy(deploy) => deploy.data.valid_after_block_number,
+        PendingDeployCandidate::Envelope(envelope) => envelope.body().valid_after_block_number,
+    }
+}
+
+fn candidate_timestamp(candidate: &PendingDeployCandidate) -> i64 {
+    match candidate {
+        PendingDeployCandidate::Legacy(deploy) => deploy.data.time_stamp,
+        PendingDeployCandidate::Envelope(envelope) => envelope.body().time_stamp,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OfferedAttempt<T> {
+    Candidate(T),
+    NoUserDeploys,
+    NoNewDeploys,
+}
+
+fn next_offered_attempt<T>(
+    alternates: &mut impl Iterator<Item = T>,
+    other_work: bool,
+) -> OfferedAttempt<T> {
+    match alternates.next() {
+        Some(candidate) => OfferedAttempt::Candidate(candidate),
+        None if other_work => OfferedAttempt::NoUserDeploys,
+        None => OfferedAttempt::NoNewDeploys,
+    }
+}
+
+fn ordered_user_candidates(
+    mut candidates: Vec<PendingDeployCandidate>,
+) -> Vec<PendingDeployCandidate> {
+    candidates.sort_by(|left, right| {
+        candidate_valid_after(left)
+            .cmp(&candidate_valid_after(right))
+            .then_with(|| candidate_timestamp(left).cmp(&candidate_timestamp(right)))
+            .then_with(|| candidate_identity(left).cmp(&candidate_identity(right)))
+    });
+    candidates
 }
 
 #[cfg(test)]
@@ -458,6 +523,39 @@ async fn prepare_user_deploys_with_policy(
     admission_policy: DeployAdmissionPolicy,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<PreparedUserDeploys, CasperError> {
+    prepare_user_deploys_with_policy_and_limits(
+        casper_snapshot,
+        block_number,
+        current_time_millis,
+        deploy_storage,
+        rejected_deploy_buffer,
+        block_store,
+        allow_recovered_deploys,
+        admission_policy,
+        floor_ctx,
+        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). Offered
+        // limits come from the adopted genesis policy through `create_inner`.
+        // crate::rust::util::rholang::costacc::genesis_resource_policy::OFFERED_PRODUCTION_READY
+        //     .then(models::rust::cost_protocol_limits::offered_funded_v6_limits),
+        None,
+    )
+    .await
+}
+
+async fn prepare_user_deploys_with_policy_and_limits(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+    >,
+    block_store: &KeyValueBlockStore,
+    allow_recovered_deploys: bool,
+    admission_policy: DeployAdmissionPolicy,
+    floor_ctx: Option<&FloorContext>,
+    offered_limits: Option<OfferedFundedProtocolLimits>,
+) -> Result<PreparedUserDeploys, CasperError> {
     let max_user_deploys = normal_ordinary_deploy_cap(casper_snapshot);
     let ordinary_cap = admission_policy.ordinary_cap.min(max_user_deploys);
     let in_scope_recovery_cap = admission_policy.in_scope_recovery_cap.min(max_user_deploys);
@@ -466,20 +564,83 @@ async fn prepare_user_deploys_with_policy(
         admission_policy.allow_in_scope_recovery && in_scope_recovery_cap > 0;
     let mut deploy_storage_guard = deploy_storage.lock();
 
-    let stored_unfinalized: HashSet<Signed<DeployData>> =
-        if allow_ordinary_deploys || allow_in_scope_recovery {
-            deploy_storage_guard.read_all()?
-        } else {
-            HashSet::new()
-        };
+    let mut stored_offered = Vec::new();
+    let stored_unfinalized: HashSet<Signed<DeployData>> = if allow_ordinary_deploys
+        || allow_in_scope_recovery
+    {
+        match offered_limits {
+            None => deploy_storage_guard.read_all()?,
+            Some(limits) => {
+                // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). Legacy
+                // pending deploys are no longer collected under offered activation.
+                // let mut legacy = HashSet::new();
+                let legacy = HashSet::new();
+                for candidate in deploy_storage_guard.read_all_envelopes(limits.envelope)? {
+                    match candidate {
+                        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+                        // PendingDeployCandidate::Legacy(deploy) => {
+                        //     legacy.insert(deploy);
+                        // }
+                        PendingDeployCandidate::Legacy(_) => {}
+                        PendingDeployCandidate::Envelope(envelope)
+                            if envelope.format() == DeployEnvelopeFormat::OfferedFunded =>
+                        {
+                            stored_offered.push(envelope);
+                        }
+                        // Disabled: one inactive pending envelope stopped all offered block
+                        // production. It is now quarantined instead (epic 8946, I4).
+                        // PendingDeployCandidate::Envelope(_) => {
+                        //     return Err(CasperError::RuntimeError(
+                        //         "pending envelope has an inactive authorization format".to_string(),
+                        //     ));
+                        // }
+                        PendingDeployCandidate::Envelope(envelope) => {
+                            if let models::rust::deploy_id::DeployLookupId::V6(deploy_id) =
+                                envelope.identity()
+                            {
+                                deploy_storage_guard.quarantine_envelope(EnvelopeRejection {
+                                    deploy_id: *deploy_id,
+                                    pre_state_root: None,
+                                    block_number,
+                                    reason: "pending envelope has an inactive authorization format"
+                                        .to_string(),
+                                })?;
+                                tracing::warn!(
+                                    target: "f1r3fly.casper.deploy_lifecycle",
+                                    event = "rejected",
+                                    reason = "inactive_envelope_format",
+                                    deploy_id = %hex::encode(deploy_id.as_array()),
+                                    next_block = block_number,
+                                    "deploy lifecycle"
+                                );
+                            }
+                        }
+                    }
+                }
+                legacy
+            }
+        }
+    } else {
+        HashSet::new()
+    };
 
-    let mut buffered_deploys: HashSet<Signed<DeployData>> =
-        if allow_ordinary_deploys || allow_in_scope_recovery || allow_recovered_deploys {
-            let buffer_guard = rejected_deploy_buffer.lock()?;
-            buffer_guard.read_all()?
-        } else {
-            HashSet::new()
-        };
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). The rejected-deploy
+    // buffer holds legacy deploys only, so an offered proposal does not read it.
+    // let mut buffered_deploys: HashSet<Signed<DeployData>> =
+    //     if allow_ordinary_deploys || allow_in_scope_recovery || allow_recovered_deploys {
+    //         let buffer_guard = rejected_deploy_buffer.lock()?;
+    //         buffer_guard.read_all()?
+    //     } else {
+    //         HashSet::new()
+    //     };
+    let mut buffered_deploys: HashSet<Signed<DeployData>> = if offered_limits.is_none()
+        && (allow_ordinary_deploys || allow_in_scope_recovery || allow_recovered_deploys)
+    {
+        let buffer_guard = rejected_deploy_buffer.lock()?;
+        buffer_guard.read_all()?
+    } else {
+        HashSet::new()
+    };
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
@@ -1071,16 +1232,70 @@ async fn prepare_user_deploys_with_policy(
     let in_scope_recovery_capped =
         in_scope_recovery_selection.count_capped || in_scope_recovery_selection.byte_capped;
     let selected_in_scope_recovery = in_scope_recovery_selection.deploys;
-    let selected_in_scope_recovery_sigs: HashSet<Bytes> = selected_in_scope_recovery
+    let mut selected_in_scope_recovery_sigs: HashSet<Bytes> = selected_in_scope_recovery
         .iter()
         .map(|deploy| deploy.sig.clone())
         .collect();
-    let selected: HashSet<Signed<DeployData>> = retry_selection
-        .deploys
-        .into_iter()
-        .chain(ordinary_selection.deploys.into_iter())
-        .chain(selected_in_scope_recovery.into_iter())
-        .collect();
+    let eligible_offered = offered_limits.is_some()
+        && allow_ordinary_deploys
+        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). Offered
+        // deploys no longer alternate block turns with legacy deploys.
+        // && block_number.rem_euclid(2) == 0
+        && stored_offered.iter().any(|envelope| {
+            let body = envelope.body();
+            let identity: Bytes = envelope.identity().as_bytes().to_vec().into();
+            !body.is_expired_at(current_time_millis)
+                && body.valid_after_block_number > earliest_block_number
+                && body.valid_after_block_number < block_number
+                && !canonical_won.contains(&identity)
+                && !casper_snapshot.deploys_in_scope.contains(&identity)
+        });
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). An offered
+    // proposal no longer keeps the selected legacy deploys as a fallback.
+    // let offered_fallback_count = retry_selection
+    //     .deploys
+    //     .len()
+    //     .checked_add(ordinary_selection.deploys.len())
+    //     .and_then(|count| count.checked_add(selected_in_scope_recovery.len()))
+    //     .ok_or_else(|| CasperError::RuntimeError("offered fallback size overflows".to_string()))?;
+    // let mut offered_legacy_fallback = Vec::new();
+    // if offered_turn {
+    //     let mut unique_fallback = HashSet::new();
+    //     unique_fallback
+    //         .try_reserve(offered_fallback_count)
+    //         .map_err(|_| {
+    //             CasperError::RuntimeError("offered fallback allocation failed".to_string())
+    //         })?;
+    //     unique_fallback.extend(
+    //         retry_selection
+    //             .deploys
+    //             .iter()
+    //             .chain(ordinary_selection.deploys.iter())
+    //             .chain(selected_in_scope_recovery.iter())
+    //             .cloned(),
+    //     );
+    //     offered_legacy_fallback
+    //         .try_reserve_exact(unique_fallback.len())
+    //         .map_err(|_| {
+    //             CasperError::RuntimeError("offered fallback allocation failed".to_string())
+    //         })?;
+    //     offered_legacy_fallback.extend(
+    //         unique_fallback
+    //             .into_iter()
+    //             .map(PendingDeployCandidate::Legacy),
+    //     );
+    // }
+    let selected: HashSet<Signed<DeployData>> = if offered_limits.is_some() {
+        selected_in_scope_recovery_sigs.clear();
+        HashSet::new()
+    } else {
+        retry_selection
+            .deploys
+            .into_iter()
+            .chain(ordinary_selection.deploys.into_iter())
+            .chain(selected_in_scope_recovery.into_iter())
+            .collect()
+    };
     for deploy in &selected {
         tracing::info!(
             target: "f1r3fly.casper.deploy_lifecycle",
@@ -1093,14 +1308,24 @@ async fn prepare_user_deploys_with_policy(
             "deploy lifecycle"
         );
     }
-    let selected_user_deploy_bytes = retry_selection
+    let would_select_legacy_bytes = retry_selection
         .selected_bytes
         .saturating_add(ordinary_selection.selected_bytes)
         .saturating_add(in_scope_recovery_selection.selected_bytes);
+    let selected_user_deploy_bytes = if eligible_offered {
+        0
+    } else {
+        would_select_legacy_bytes
+    };
     let deferred_user_deploy_bytes = retry_selection
         .deferred_bytes
         .saturating_add(ordinary_selection.deferred_bytes)
-        .saturating_add(in_scope_recovery_selection.deferred_bytes);
+        .saturating_add(in_scope_recovery_selection.deferred_bytes)
+        .saturating_add(if eligible_offered {
+            would_select_legacy_bytes
+        } else {
+            0
+        });
     let byte_cap_hit = retry_selection.byte_capped
         || ordinary_selection.byte_capped
         || in_scope_recovery_selection.byte_capped;
@@ -1125,7 +1350,7 @@ async fn prepare_user_deploys_with_policy(
         + in_scope_recovery_candidates
             .len()
             .saturating_sub(selected_in_scope_recovery_count);
-    let cap_hit = retry_capped || ordinary_capped || in_scope_recovery_capped;
+    let cap_hit = eligible_offered || retry_capped || ordinary_capped || in_scope_recovery_capped;
     if ordinary_capped {
         tracing::info!(
             "Ordinary deploy selection capped for block #{}: selected={}, deferred={}, cap={}, strategy={}, selected_bytes={}, deferred_bytes={}, remaining_byte_budget={}",
@@ -1347,8 +1572,85 @@ async fn prepare_user_deploys_with_policy(
         );
     }
 
+    let mut selected_candidates: Vec<PendingDeployCandidate> = selected
+        .iter()
+        .cloned()
+        .map(PendingDeployCandidate::Legacy)
+        .collect();
+    let mut selected_ordinary_count = selected_ordinary_count;
+    let mut selected_user_deploy_bytes = selected_user_deploy_bytes;
+    let mut deferred_user_deploy_bytes = deferred_user_deploy_bytes;
+    let mut cap_hit = cap_hit;
+    let mut byte_cap_hit = byte_cap_hit;
+    let mut offered_alternates = Vec::new();
+    if !eligible_offered {
+        stored_offered.clear();
+    }
+    stored_offered.sort_by(|left, right| {
+        left.body()
+            .valid_after_block_number
+            .cmp(&right.body().valid_after_block_number)
+            .then_with(|| left.body().time_stamp.cmp(&right.body().time_stamp))
+            .then_with(|| left.identity().as_bytes().cmp(right.identity().as_bytes()))
+    });
+    for envelope in stored_offered {
+        let identity: Bytes = envelope.identity().as_bytes().to_vec().into();
+        let body = envelope.body();
+        if body.is_expired_at(current_time_millis)
+            || body.valid_after_block_number <= earliest_block_number
+        {
+            if let models::rust::deploy_id::DeployLookupId::V6(deploy_id) = envelope.identity() {
+                deploy_storage_guard.remove_envelope_by_id(deploy_id)?;
+            }
+            continue;
+        }
+        if !allow_ordinary_deploys
+            || body.valid_after_block_number >= block_number
+            || canonical_won.contains(&identity)
+            || casper_snapshot.deploys_in_scope.contains(&identity)
+        {
+            continue;
+        }
+        let encoded_bytes = envelope
+            .to_proto()
+            .map_err(CasperError::RuntimeError)?
+            .encoded_len();
+        if !selected_candidates.is_empty() {
+            deferred_user_deploy_bytes = deferred_user_deploy_bytes.saturating_add(encoded_bytes);
+            if offered_alternates.len() < ordinary_cap.saturating_sub(1) {
+                offered_alternates.push(envelope);
+            }
+            continue;
+        }
+        if selected_ordinary_count >= ordinary_cap || selected_candidates.len() >= max_user_deploys
+        {
+            cap_hit = true;
+            deferred_user_deploy_bytes = deferred_user_deploy_bytes.saturating_add(encoded_bytes);
+            continue;
+        }
+        let exceeds_byte_budget =
+            selected_user_deploy_bytes.saturating_add(encoded_bytes) > total_byte_budget;
+        if exceeds_byte_budget && !selected_candidates.is_empty() {
+            byte_cap_hit = true;
+            cap_hit = true;
+            deferred_user_deploy_bytes = deferred_user_deploy_bytes.saturating_add(encoded_bytes);
+            continue;
+        }
+        if exceeds_byte_budget {
+            byte_cap_hit = true;
+            cap_hit = true;
+        }
+        selected_user_deploy_bytes = selected_user_deploy_bytes.saturating_add(encoded_bytes);
+        selected_ordinary_count += 1;
+        selected_candidates.push(PendingDeployCandidate::Envelope(envelope));
+    }
+
     Ok(PreparedUserDeploys {
         deploys: selected,
+        selected_candidates,
+        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+        // offered_legacy_fallback,
+        offered_alternates,
         effective_cap: ordinary_cap,
         cap_hit,
         selected_retry_count,
@@ -1472,7 +1774,7 @@ fn collect_branch_user_deploy_sigs(
             .unwrap_or(false);
         if !excluded {
             for deploy in &block.body.deploys {
-                sigs.insert(deploy.deploy.sig.clone());
+                sigs.insert(deploy.identity_bytes().to_vec().into());
             }
         }
 
@@ -1496,7 +1798,7 @@ fn classify_branch_deploy_info(
         .body
         .deploys
         .iter()
-        .map(|deploy| deploy.deploy.sig.clone())
+        .map(|deploy| deploy.identity_bytes().to_vec().into())
         .collect();
     let parent_frontier: Vec<BlockHash> = casper_snapshot
         .parents
@@ -2597,6 +2899,94 @@ pub async fn create(
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,
 ) -> Result<BlockCreatorResult, CasperError> {
+    create_inner(
+        None,
+        false,
+        casper_snapshot,
+        validator_identity,
+        dummy_deploy_opt,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        selection,
+    )
+    .await
+}
+
+// Replaced by DR-99 (joined-node policy adoption): a proposal takes the
+// policy that the Casper instance adopted at start, because an LFS-joined
+// node's approved block is its restore anchor, not genesis.
+// pub async fn create_with_approved_genesis(
+//     approved_genesis: &BlockMessage,
+//     offered_funded_active: bool,
+//     casper_snapshot: &CasperSnapshot,
+//     validator_identity: &ValidatorIdentity,
+//     dummy_deploy_opt: Option<(PrivateKey, String)>,
+//     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+//     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+//     runtime_manager: &RuntimeManager,
+//     block_store: &mut KeyValueBlockStore,
+//     selection: super::proposer::DeploySelection,
+// ) -> Result<BlockCreatorResult, CasperError> {
+//     create_inner(
+//         Some(approved_genesis),
+//         offered_funded_active,
+//         casper_snapshot,
+//         validator_identity,
+//         dummy_deploy_opt,
+//         deploy_storage,
+//         rejected_deploy_buffer,
+//         runtime_manager,
+//         block_store,
+//         selection,
+//     )
+//     .await
+// }
+
+/// A proposal on a chain whose genesis resource policy the Casper instance
+/// adopted at start (DR-99).
+pub async fn create_with_adopted_policy(
+    adopted_policy: Option<&AdoptedResourcePolicy>,
+    offered_funded_active: bool,
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    dummy_deploy_opt: Option<(PrivateKey, String)>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    selection: super::proposer::DeploySelection,
+) -> Result<BlockCreatorResult, CasperError> {
+    create_inner(
+        adopted_policy,
+        offered_funded_active,
+        casper_snapshot,
+        validator_identity,
+        dummy_deploy_opt,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        selection,
+    )
+    .await
+}
+
+async fn create_inner(
+    // Changed by DR-99: the adopted policy replaces the approved genesis.
+    // approved_genesis: Option<&BlockMessage>,
+    adopted_policy: Option<&AdoptedResourcePolicy>,
+    offered_funded_active: bool,
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    dummy_deploy_opt: Option<(PrivateKey, String)>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    selection: super::proposer::DeploySelection,
+) -> Result<BlockCreatorResult, CasperError> {
     let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
@@ -2673,8 +3063,26 @@ pub async fn create(
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
-    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
-        (HashSet::new(), 0usize, false)
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). The prepared
+    // deploys no longer carry an offered legacy fallback.
+    // let (user_deploys, offered_legacy_fallback, _, _) = if selection
+    //     == super::proposer::DeploySelection::RecoveryEmpty
+    // {
+    //     (
+    //         Vec::<PendingDeployCandidate>::new(),
+    //         Vec::<PendingDeployCandidate>::new(),
+    //         0usize,
+    //         false,
+    //     )
+    let (user_deploys, offered_alternates, _, _) = if selection
+        == super::proposer::DeploySelection::RecoveryEmpty
+    {
+        (
+            Vec::<PendingDeployCandidate>::new(),
+            Vec::<DeployEnvelope>::new(),
+            0usize,
+            false,
+        )
     } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
@@ -2814,7 +3222,7 @@ pub async fn create(
                 storage_deploys_in_scope
             );
         }
-        let prepared = prepare_user_deploys_with_policy(
+        let prepared = prepare_user_deploys_with_policy_and_limits(
             casper_snapshot,
             next_block_num,
             now_millis,
@@ -2824,6 +3232,8 @@ pub async fn create(
             allow_recovered_deploys,
             admission_policy,
             floor_ctx.as_ref(),
+            offered_funded_active
+                .then(models::rust::cost_protocol_limits::offered_funded_v6_limits),
         )
         .await?;
         record_deploy_admission_metrics(
@@ -2841,7 +3251,10 @@ pub async fn create(
         // re-inclusion now — the in-scope filter suppresses genuine
         // duplicates, and the merge's keep-one dedup reconciles the
         // transient two-copy window on-record.
-        let v = prepared.deploys;
+        let v = prepared.selected_candidates;
+        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+        // let fallback = prepared.offered_legacy_fallback;
+        let alternates = prepared.offered_alternates;
         tracing::debug!(
             target: "f1r3fly.block_creator.timing",
             "prepare_user_deploys_ms={}, user_deploys_count={}, user_deploy_cap={}, user_deploy_cap_hit={}",
@@ -2852,9 +3265,13 @@ pub async fn create(
         );
         metrics::histogram!(BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(t.elapsed().as_secs_f64());
-        (v, prepared.effective_cap, prepared.cap_hit)
+        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+        // (v, fallback, prepared.effective_cap, prepared.cap_hit)
+        (v, alternates, prepared.effective_cap, prepared.cap_hit)
     };
-    let dummy_deploys = {
+    let dummy_deploys = if offered_funded_active {
+        Vec::new()
+    } else {
         let t = std::time::Instant::now();
         let v = prepare_dummy_deploy(next_block_num, shard_id.clone(), dummy_deploy_opt)?;
         tracing::debug!(
@@ -2943,25 +3360,26 @@ pub async fn create(
     // Only the FRESH copy is dropped, never the merge's, so reinstatement
     // stays intact. A false positive costs a round — the deploy stays in
     // storage and in the buffer — so this is delay, never loss.
-    let user_deploys: HashSet<Signed<DeployData>> = {
+    let user_deploys: Vec<PendingDeployCandidate> = {
         let base_lineage_root: BlockHash = merge_pre_info
             .merge_base
             .clone()
             .unwrap_or_else(|| parents[0].block_hash.clone());
-        let mut kept: HashSet<Signed<DeployData>> = HashSet::with_capacity(user_deploys.len());
+        let mut kept = Vec::with_capacity(user_deploys.len());
         let mut dropped: Vec<String> = Vec::new();
         for deploy in user_deploys {
-            let already_applied = merge_pre_info.applied_from_scope.contains(&deploy.sig)
+            let identity = candidate_identity(&deploy);
+            let already_applied = merge_pre_info.applied_from_scope.contains(&identity)
                 || crate::rust::finality::deploy_lifecycle::effect_in_state_of(
                     block_store,
                     &base_lineage_root,
-                    &deploy.sig,
-                    deploy.data.valid_after_block_number,
+                    &identity,
+                    candidate_valid_after(&deploy),
                 )?;
             if already_applied {
-                dropped.push(hex::encode(&deploy.sig[..deploy.sig.len().min(8)]));
+                dropped.push(hex::encode(&identity[..identity.len().min(8)]));
             } else {
-                kept.insert(deploy);
+                kept.push(deploy);
             }
         }
         if !dropped.is_empty() {
@@ -3130,27 +3548,47 @@ pub async fn create(
 
     // Compute checkpoint data
     let checkpoint_started = std::time::Instant::now();
-    let ordered_user_deploys = ordered_user_deploys(&user_deploys);
-    let original_user_deploys = ordered_user_deploys.len();
+    let mut ordered_user_deploys = ordered_user_candidates(user_deploys);
+    let mut original_user_deploys = ordered_user_deploys.len();
     let mut user_deploy_limit = original_user_deploys;
     let mut retry_count = 0usize;
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+    // let mut offered_fallback = Some(offered_legacy_fallback);
+    let mut offered_alternates = offered_alternates.into_iter();
     let checkpoint_data = loop {
-        let mut deploys: Vec<Signed<DeployData>> = ordered_user_deploys
+        let mut deploys: Vec<PendingDeployCandidate> = ordered_user_deploys
             .iter()
             .take(user_deploy_limit)
             .cloned()
             .collect();
-        deploys.extend(dummy_deploys.iter().cloned());
+        if !matches!(deploys.as_slice(), [PendingDeployCandidate::Envelope(_)]) {
+            deploys.extend(
+                dummy_deploys
+                    .iter()
+                    .cloned()
+                    .map(PendingDeployCandidate::Legacy),
+            );
+        }
         let attempted_user_deploys = user_deploy_limit;
         let attempted_total_deploys = deploys.len();
+        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+        // let attempted_offered = matches!(deploys.as_slice(), [PendingDeployCandidate::Envelope(_)]);
+        let attempted_offered_id = match deploys.as_slice() {
+            [PendingDeployCandidate::Envelope(envelope)] => match envelope.identity() {
+                models::rust::deploy_id::DeployLookupId::V6(deploy_id) => Some(*deploy_id),
+                _ => None,
+            },
+            _ => None,
+        };
 
-        match interpreter_util::compute_deploys_checkpoint(
+        match interpreter_util::compute_deploys_checkpoint_envelopes(
             block_store,
             parents.clone(),
             deploys,
             system_deploys_converted.clone(),
             casper_snapshot,
             runtime_manager,
+            adopted_policy,
             block_data.clone(),
             invalid_blocks.clone(),
             Some(&rejected_deploy_buffer),
@@ -3171,6 +3609,72 @@ pub async fn create(
                     );
                 }
                 break data;
+            }
+            // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). A failed offered
+            // candidate is quarantined and the next offered candidate is tried instead.
+            // Err(error) if attempted_offered && offered_fallback.is_some() => {
+            //     retry_count += 1;
+            //     tracing::warn!(
+            //         "Offered checkpoint candidate failed; retrying selected legacy fallback for block #{}: error={}",
+            //         next_block_num,
+            //         error
+            //     );
+            //     ordered_user_deploys = ordered_user_candidates(
+            //         offered_fallback.take().expect("fallback checked above"),
+            //     );
+            //     for candidate in &ordered_user_deploys {
+            //         if let PendingDeployCandidate::Legacy(deploy) = candidate {
+            //             tracing::info!(
+            //                 target: "f1r3fly.casper.deploy_lifecycle",
+            //                 event = "selected",
+            //                 reason = "offered_checkpoint_fallback",
+            //                 deploy_sig = %hex::encode(&deploy.sig),
+            //                 next_block = next_block_num,
+            //                 valid_after_block = deploy.data.valid_after_block_number,
+            //                 "deploy lifecycle"
+            //             );
+            //         }
+            //     }
+            //     original_user_deploys = ordered_user_deploys.len();
+            //     user_deploy_limit = original_user_deploys;
+            //     continue;
+            // }
+            Err(CasperError::OfferedCandidateRejected(rejection))
+                if attempted_offered_id == Some(rejection.deploy_id) =>
+            {
+                let removed = deploy_storage
+                    .lock()
+                    .quarantine_envelope(EnvelopeRejection {
+                        deploy_id: rejection.deploy_id,
+                        pre_state_root: Some(rejection.pre_state_root.to_vec()),
+                        block_number: next_block_num,
+                        reason: rejection.reason.clone(),
+                    })?;
+                tracing::warn!(
+                    target: "f1r3fly.casper.deploy_lifecycle",
+                    event = "rejected",
+                    reason = "offered_candidate_rejected",
+                    deploy_id = %hex::encode(rejection.deploy_id.as_array()),
+                    pre_state_root = %hex::encode(&rejection.pre_state_root),
+                    removed_from_deploy_storage = removed,
+                    next_block = next_block_num,
+                    error = %rejection.reason,
+                    "deploy lifecycle"
+                );
+                retry_count += 1;
+                ordered_user_deploys = match next_offered_attempt(
+                    &mut offered_alternates,
+                    has_slashing_deploys || has_recovered_rejected_slashes || allow_empty_blocks,
+                ) {
+                    OfferedAttempt::Candidate(envelope) => {
+                        vec![PendingDeployCandidate::Envelope(envelope)]
+                    }
+                    OfferedAttempt::NoUserDeploys => Vec::new(),
+                    OfferedAttempt::NoNewDeploys => return Ok(BlockCreatorResult::NoNewDeploys),
+                };
+                original_user_deploys = ordered_user_deploys.len();
+                user_deploy_limit = original_user_deploys;
+                continue;
             }
             Err(CasperError::SystemRuntimeError(
                 SystemDeployPlatformFailure::GasPaymentFailure(msg)
@@ -3236,7 +3740,7 @@ pub async fn create(
     )
     .record(checkpoint_started.elapsed().as_secs_f64());
 
-    let interpreter_util::DeploysCheckpoint {
+    let interpreter_util::DeploysEnvelopeCheckpoint {
         pre_state_hash,
         post_state_hash,
         deploys: processed_deploys,
@@ -3285,7 +3789,7 @@ pub async fn create(
     let package_started = std::time::Instant::now();
     let pre_state_hash_for_result = pre_state_hash.clone();
     let post_state_hash_for_result = post_state_hash.clone();
-    let unsigned_block = package_block(
+    let unsigned_block = package_block_envelopes(
         &block_data,
         parents.iter().map(|p| p.block_hash.clone()).collect(),
         justifications.iter().cloned().collect(),
@@ -3320,11 +3824,11 @@ pub async fn create(
         tracing::info!(
             target: "f1r3fly.casper.deploy_lifecycle",
             event = "carrier_created",
-            deploy_sig = %hex::encode(&processed.deploy.sig),
+            deploy_sig = %hex::encode(processed.identity_bytes()),
             block_hash = %hex::encode(&signed_block.block_hash),
             block_number = signed_block.body.state.block_number,
             sender = %hex::encode(&signed_block.sender),
-            failed = processed.is_failed,
+            failed = processed.is_failed(),
             parents = ?signed_block.header.parents_hash_list.iter().map(hex::encode).collect::<Vec<_>>(),
             "deploy lifecycle"
         );
@@ -3345,7 +3849,10 @@ pub async fn create(
     let selected_user_deploys_for_buffer_drain: Vec<Signed<DeployData>> = ordered_user_deploys
         .iter()
         .take(user_deploy_limit)
-        .cloned()
+        .filter_map(|candidate| match candidate {
+            PendingDeployCandidate::Legacy(deploy) => Some(deploy.clone()),
+            PendingDeployCandidate::Envelope(_) => None,
+        })
         .collect();
     let removed_recovered_from_storage = drain_selected_recovered_deploys_from_deploy_storage(
         &deploy_storage,
@@ -3390,6 +3897,7 @@ pub async fn create(
     ))
 }
 
+#[cfg(test)]
 fn package_block(
     block_data: &BlockData,
     parents: Vec<Bytes>,
@@ -3397,6 +3905,38 @@ fn package_block(
     pre_state_hash: Bytes,
     post_state_hash: Bytes,
     deploys: Vec<ProcessedDeploy>,
+    rejected_deploys: Vec<RejectedDeploy>,
+    system_deploys: Vec<ProcessedSystemDeploy>,
+    bonds_map: Vec<Bond>,
+    applied_from_scope: Vec<Bytes>,
+    merge_base: Option<BlockHash>,
+    shard_id: String,
+    version: i64,
+) -> BlockMessage {
+    package_block_envelopes(
+        block_data,
+        parents,
+        justifications,
+        pre_state_hash,
+        post_state_hash,
+        deploys.into_iter().map(Into::into).collect(),
+        rejected_deploys,
+        system_deploys,
+        bonds_map,
+        applied_from_scope,
+        merge_base,
+        shard_id,
+        version,
+    )
+}
+
+fn package_block_envelopes(
+    block_data: &BlockData,
+    parents: Vec<Bytes>,
+    justifications: Vec<Justification>,
+    pre_state_hash: Bytes,
+    post_state_hash: Bytes,
+    deploys: Vec<ProcessedUserDeploy>,
     rejected_deploys: Vec<RejectedDeploy>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
@@ -3450,9 +3990,529 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 
 #[cfg(test)]
 mod tests {
+    use proptest::strategy::Strategy as _;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
+
+    fn offered_pending_envelope() -> DeployEnvelope { offered_pending_envelope_at(1) }
+
+    fn offered_pending_envelope_at(time_stamp: i64) -> DeployEnvelope {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signed::Cosigned;
+        use models::rust::cost_deploy_data::DeployData as CostDeployData;
+        use models::rust::phlo_controls::PhloControlsV1;
+        use models::rust::phlo_intent::PhloFundingIntentV1;
+        use models::rust::phlo_schedule::{PhloResourceClassV1, PhloScheduleV1};
+        use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
+        use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
+
+        let limits = models::rust::cost_protocol_limits::offered_funded_v6_limits();
+        let schedule = PhloScheduleV1 {
+            protocol_version: 6,
+            network: b"test",
+            shard: b"test",
+            settlement_asset: b"REV",
+            settlement_unit: b"atomic-REV",
+            decimal_scale: 8,
+            classes: vec![PhloResourceClassV1 {
+                identity: b"compute",
+                measurement_unit: b"phlo",
+                measurement_rule: [1; 32],
+                valuation_rule: [2; 32],
+                weight: 1,
+            }],
+            actual_price: 2,
+            compatibility_rule: [3; 32],
+        };
+        let digest = schedule
+            .digest(limits.envelope.payload.funding.controls().schedule(1))
+            .unwrap();
+        let intent = PhloFundingIntentV1 {
+            controls: PhloControlsV1 {
+                limit: 10,
+                price_ceiling: 3,
+                required_owner_ceilings: vec![3],
+                permitted_schedules: vec![schedule],
+            },
+            schedule_commitment: digest,
+            total_exposure: 30,
+            sources: vec![PhloSourcePolicyV1::new(
+                b"custody",
+                100,
+                100,
+                true,
+                Vec::new(),
+                PhloSourceLimits {
+                    wire: limits.envelope.payload.funding.wire,
+                    resource_permissions: 0,
+                    authority_nodes: 0,
+                },
+            )
+            .unwrap()],
+        }
+        .encode(limits.envelope.payload.funding)
+        .unwrap();
+        let body = CostDeployData {
+            term: "Nil".to_owned(),
+            language: "rholang".to_owned(),
+            time_stamp,
+            valid_after_block_number: 0,
+            shard_id: "test".to_owned(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let offer = OfferedFundedDeploy::new(body, intent, 10, 2, limits.envelope.payload).unwrap();
+        let signed = Cosigned::create_single_envelope(
+            offer,
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[9; 32]),
+        )
+        .unwrap();
+        DeployEnvelope::from_proto(
+            OfferedFundedDeploy::to_proto(&signed).unwrap(),
+            limits.envelope,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn offered_pending_candidate_retains_full_signed_format_under_typed_selection() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm).await.unwrap(),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap(),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let offered = offered_pending_envelope();
+        deploy_storage
+            .lock()
+            .add_envelope_if_absent(&offered)
+            .unwrap();
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 8;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let prepared = prepare_user_deploys_with_policy_and_limits(
+            &snapshot,
+            20,
+            100,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: true,
+                ordinary_cap: 8,
+                allow_in_scope_recovery: false,
+                in_scope_recovery_cap: 0,
+                reserve_tail: false,
+                fallback: false,
+                backpressure: false,
+            },
+            None,
+            Some(models::rust::cost_protocol_limits::offered_funded_v6_limits()),
+        )
+        .await
+        .unwrap();
+        assert!(prepared.deploys.is_empty());
+        assert_eq!(prepared.selected_candidates.len(), 1);
+        assert!(matches!(
+            prepared.selected_candidates.as_slice(),
+            [PendingDeployCandidate::Envelope(candidate)] if candidate == &offered
+        ));
+        assert_eq!(prepared.selected_ordinary_count, 1);
+    }
+
+    #[tokio::test]
+    async fn active_funding_selects_offered_on_every_block_and_ignores_legacy_pending() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm).await.unwrap(),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap(),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let offered = offered_pending_envelope();
+        let legacy =
+            construct_deploy::basic_deploy_data(73, None, Some("test".to_string())).unwrap();
+        deploy_storage.lock().add(vec![legacy.clone()]).unwrap();
+        deploy_storage
+            .lock()
+            .add_envelope_if_absent(&offered)
+            .unwrap();
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 8;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let policy = DeployAdmissionPolicy {
+            allow_ordinary: true,
+            ordinary_cap: 8,
+            allow_in_scope_recovery: false,
+            in_scope_recovery_cap: 0,
+            reserve_tail: false,
+            fallback: false,
+            backpressure: false,
+        };
+        let limits = Some(models::rust::cost_protocol_limits::offered_funded_v6_limits());
+        let current_time = legacy.data.time_stamp + 1;
+        let even = prepare_user_deploys_with_policy_and_limits(
+            &snapshot,
+            20,
+            current_time,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            false,
+            policy,
+            None,
+            limits,
+        )
+        .await
+        .unwrap();
+        assert!(even.deploys.is_empty());
+        assert!(matches!(
+            even.selected_candidates.as_slice(),
+            [PendingDeployCandidate::Envelope(candidate)] if candidate == &offered
+        ));
+        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+        // assert!(matches!(
+        //     even.offered_legacy_fallback.as_slice(),
+        //     [PendingDeployCandidate::Legacy(candidate)] if candidate == &legacy
+        // ));
+        let odd = prepare_user_deploys_with_policy_and_limits(
+            &snapshot,
+            21,
+            current_time,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            policy,
+            None,
+            limits,
+        )
+        .await
+        .unwrap();
+        // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). Odd blocks no
+        // longer select legacy deploys.
+        // assert!(odd.deploys.contains(&legacy));
+        // assert!(odd.offered_legacy_fallback.is_empty());
+        // assert!(odd
+        //     .selected_candidates
+        //     .iter()
+        //     .all(|candidate| matches!(candidate, PendingDeployCandidate::Legacy(_))));
+        assert!(odd.deploys.is_empty());
+        assert!(matches!(
+            odd.selected_candidates.as_slice(),
+            [PendingDeployCandidate::Envelope(candidate)] if candidate == &offered
+        ));
+    }
+
+    fn offered_selection_policy(ordinary_cap: usize) -> DeployAdmissionPolicy {
+        DeployAdmissionPolicy {
+            allow_ordinary: true,
+            ordinary_cap,
+            allow_in_scope_recovery: false,
+            in_scope_recovery_cap: 0,
+            reserve_tail: false,
+            fallback: false,
+            backpressure: false,
+        }
+    }
+
+    async fn prepare_offered_selection(
+        envelopes: &[DeployEnvelope],
+        ordinary_cap: usize,
+    ) -> (
+        Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        PreparedUserDeploys,
+    ) {
+        prepare_offered_selection_at(envelopes, ordinary_cap, 20).await
+    }
+
+    async fn prepare_offered_selection_at(
+        envelopes: &[DeployEnvelope],
+        ordinary_cap: usize,
+        block_number: i64,
+    ) -> (
+        Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        PreparedUserDeploys,
+    ) {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("in-memory deploy storage opens"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("in-memory rejected buffer opens"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("in-memory block store opens");
+        for envelope in envelopes {
+            assert!(deploy_storage
+                .lock()
+                .add_envelope_if_absent(envelope)
+                .expect("pending envelope insert succeeds"));
+        }
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 8;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let prepared = prepare_user_deploys_with_policy_and_limits(
+            &snapshot,
+            block_number,
+            100,
+            deploy_storage.clone(),
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            offered_selection_policy(ordinary_cap),
+            None,
+            Some(models::rust::cost_protocol_limits::offered_funded_v6_limits()),
+        )
+        .await
+        .expect("offered selection succeeds");
+        (deploy_storage, prepared)
+    }
+
+    #[tokio::test]
+    async fn deferred_offered_envelopes_become_bounded_canonical_alternates() {
+        let envelopes = [
+            offered_pending_envelope_at(3),
+            offered_pending_envelope_at(1),
+            offered_pending_envelope_at(2),
+        ];
+        let (_, wide) = prepare_offered_selection(&envelopes, 8).await;
+        assert!(matches!(
+            wide.selected_candidates.as_slice(),
+            [PendingDeployCandidate::Envelope(candidate)] if candidate == &envelopes[1]
+        ));
+        assert_eq!(wide.offered_alternates, vec![
+            envelopes[2].clone(),
+            envelopes[0].clone()
+        ]);
+
+        let (_, narrow) = prepare_offered_selection(&envelopes, 2).await;
+        assert!(matches!(
+            narrow.selected_candidates.as_slice(),
+            [PendingDeployCandidate::Envelope(candidate)] if candidate == &envelopes[1]
+        ));
+        assert_eq!(narrow.offered_alternates, vec![envelopes[2].clone()]);
+    }
+
+    fn inactive_pending_envelope(seed: u8) -> DeployEnvelope {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signed::Cosigned;
+        use models::rust::cost_deploy_data::DeployData as CostDeployData;
+
+        DeployEnvelope::from_body_envelope(
+            Cosigned::create_single_envelope(
+                CostDeployData {
+                    term: "Nil".to_owned(),
+                    language: "rholang".to_owned(),
+                    time_stamp: i64::from(seed) + 1,
+                    valid_after_block_number: 0,
+                    shard_id: "test".to_owned(),
+                    expiration_timestamp: None,
+                    authority_presentations: Vec::new(),
+                },
+                Box::new(Secp256k1),
+                PrivateKey::from_bytes(&[seed.wrapping_add(4); 32]),
+            )
+            .expect("body envelope signs"),
+        )
+        .expect("body envelope builds")
+    }
+
+    fn v6_identity(envelope: &DeployEnvelope) -> models::rust::deploy_id::DeployIdV6 {
+        let models::rust::deploy_id::DeployLookupId::V6(deploy_id) = envelope.identity() else {
+            panic!("expected a v6 identity")
+        };
+        *deploy_id
+    }
+
+    #[tokio::test]
+    async fn inactive_pending_envelope_is_quarantined_without_stopping_selection() {
+        let inactive = inactive_pending_envelope(0);
+        assert_ne!(inactive.format(), DeployEnvelopeFormat::OfferedFunded);
+        let models::rust::deploy_id::DeployLookupId::V6(inactive_id) = inactive.identity() else {
+            panic!("expected a v6 identity")
+        };
+        let inactive_id = *inactive_id;
+        let offered = offered_pending_envelope();
+        let (deploy_storage, prepared) =
+            prepare_offered_selection(&[inactive, offered.clone()], 8).await;
+        assert!(matches!(
+            prepared.selected_candidates.as_slice(),
+            [PendingDeployCandidate::Envelope(candidate)] if candidate == &offered
+        ));
+        let storage = deploy_storage.lock();
+        assert!(!storage
+            .contains_envelope_id(&inactive_id)
+            .expect("envelope lookup succeeds"));
+        assert_eq!(
+            storage.envelope_rejection(&inactive_id),
+            Some(EnvelopeRejection {
+                deploy_id: inactive_id,
+                pre_state_root: None,
+                block_number: 20,
+                reason: "pending envelope has an inactive authorization format".to_string(),
+            })
+        );
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum ModelOutcome {
+        Created,
+        NoNewDeploys,
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// Extracted from `OfferedCandidateQuarantine.tla`: one proposal driven through
+        /// `next_offered_attempt` exactly as `create_inner` drives it satisfies
+        /// `NoCandidateErrorEscapes`, `FirstFundableIncluded`,
+        /// `RemovedOnlyByInclusionOrQuarantine`, `QuarantinedNeverIncluded`, and
+        /// `AttemptsBounded`.
+        #[test]
+        fn offered_attempt_loop_matches_quarantine_model(
+            fundable in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..8),
+            cap in 1usize..6,
+            other_work in proptest::prelude::any::<bool>(),
+        ) {
+            let window: Vec<usize> = (0..fundable.len().min(cap)).collect();
+            let mut candidates = window.clone().into_iter();
+            let mut attempt = next_offered_attempt(&mut candidates, other_work);
+            let mut attempts = 0usize;
+            let mut quarantined = Vec::with_capacity(window.len());
+            let mut included = None;
+            let outcome = loop {
+                match attempt {
+                    OfferedAttempt::NoNewDeploys => break ModelOutcome::NoNewDeploys,
+                    OfferedAttempt::NoUserDeploys => {
+                        attempts += 1;
+                        break ModelOutcome::Created;
+                    }
+                    OfferedAttempt::Candidate(candidate) => {
+                        attempts += 1;
+                        if fundable[candidate] {
+                            included = Some(candidate);
+                            break ModelOutcome::Created;
+                        }
+                        quarantined.push(candidate);
+                        attempt = next_offered_attempt(&mut candidates, other_work);
+                    }
+                }
+            };
+            let first_fundable = window.iter().copied().find(|candidate| fundable[*candidate]);
+            proptest::prop_assert_eq!(included, first_fundable);
+            match first_fundable {
+                Some(chosen) => {
+                    proptest::prop_assert_eq!(outcome, ModelOutcome::Created);
+                    proptest::prop_assert_eq!(&quarantined, &window[..chosen].to_vec());
+                }
+                None => {
+                    proptest::prop_assert_eq!(&quarantined, &window);
+                    proptest::prop_assert_eq!(outcome == ModelOutcome::Created, other_work);
+                }
+            }
+            proptest::prop_assert!(quarantined.iter().all(|candidate| !fundable[*candidate]));
+            proptest::prop_assert!(attempts <= cap + 1);
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
+
+        /// Extracted from `OfferedCandidateQuarantine.tla` (`AttemptsBounded`: at most
+        /// `ordinary_cap - 1` alternates in canonical order) and from
+        /// `OfferedOnlyActivation.v` (`active_selection_is_height_independent`,
+        /// `active_selection_contains_only_offered`, and quarantine of inactive formats).
+        #[test]
+        fn offered_selection_window_is_canonical_bounded_and_height_independent(
+            stamps in proptest::collection::btree_set(1i64..1_000, 1..6)
+                .prop_flat_map(|stamps| {
+                    let ordered: Vec<i64> = stamps.into_iter().collect();
+                    proptest::strategy::Just(ordered).prop_shuffle()
+                }),
+            inactive in 0u8..3,
+            cap in 1usize..6,
+            first_height in 20i64..40,
+            second_height in 20i64..40,
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime builds");
+            let offered: Vec<DeployEnvelope> =
+                stamps.iter().map(|stamp| offered_pending_envelope_at(*stamp)).collect();
+            let inactive: Vec<DeployEnvelope> = (0..inactive).map(inactive_pending_envelope).collect();
+            let mut pending = Vec::with_capacity(offered.len() + inactive.len());
+            pending.extend(offered.iter().cloned());
+            pending.extend(inactive.iter().cloned());
+            let mut canonical = offered.clone();
+            canonical.sort_by(|left, right| {
+                left.body()
+                    .time_stamp
+                    .cmp(&right.body().time_stamp)
+                    .then_with(|| left.identity().as_bytes().cmp(right.identity().as_bytes()))
+            });
+            let mut selections = Vec::with_capacity(2);
+            for height in [first_height, second_height] {
+                let (storage, prepared) =
+                    runtime.block_on(prepare_offered_selection_at(&pending, cap, height));
+                proptest::prop_assert!(prepared.deploys.is_empty());
+                proptest::prop_assert!(prepared.offered_alternates.len() < cap);
+                let selected: Vec<DeployEnvelope> = prepared
+                    .selected_candidates
+                    .iter()
+                    .map(|candidate| match candidate {
+                        PendingDeployCandidate::Envelope(envelope) => envelope.clone(),
+                        PendingDeployCandidate::Legacy(_) => {
+                            panic!("active selection admitted a body-only deploy")
+                        }
+                    })
+                    .collect();
+                proptest::prop_assert_eq!(&selected, &canonical[..1].to_vec());
+                let expected_alternates = canonical.len().min(cap) - 1;
+                proptest::prop_assert_eq!(
+                    &prepared.offered_alternates,
+                    &canonical[1..=expected_alternates].to_vec()
+                );
+                let storage = storage.lock();
+                for envelope in &inactive {
+                    let deploy_id = v6_identity(envelope);
+                    proptest::prop_assert!(!storage
+                        .contains_envelope_id(&deploy_id)
+                        .expect("envelope lookup succeeds"));
+                    proptest::prop_assert_eq!(
+                        storage.envelope_rejection(&deploy_id).map(|rejection| rejection.pre_state_root),
+                        Some(None)
+                    );
+                }
+                selections.push((selected, prepared.offered_alternates));
+            }
+            proptest::prop_assert_eq!(&selections[0], &selections[1]);
+        }
+    }
 
     fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
 

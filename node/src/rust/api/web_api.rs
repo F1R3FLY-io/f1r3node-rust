@@ -5,8 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
+    OfferedSettlementReceipt,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -22,8 +25,9 @@ use crypto::rust::signatures::{
 };
 use eyre::{eyre, Result};
 use hex;
-use models::casper::LightBlockInfo;
+use models::casper::{DeployDataProto, LightBlockInfo};
 use models::rust::casper::protocol::casper_message::DeployData;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -57,6 +61,21 @@ pub trait WebApi {
 
     /// Deploy a contract
     async fn deploy(&self, request: DeployRequest) -> Result<String>;
+
+    async fn deploy_offered(&self, _request: OfferedDeployRequest) -> Result<String> {
+        Err(eyre!(
+            "offered-funded deploy admission is not active under the current genesis policy"
+        ))
+    }
+
+    async fn offered_settlement_receipt(
+        &self,
+        _deploy_id: String,
+    ) -> Result<Option<OfferedReceiptResponse>> {
+        Err(eyre!(
+            "offered-funded settlement receipt lookup is unavailable"
+        ))
+    }
 
     /// Get data at a par (parallel expression)
     async fn get_data_at_par(
@@ -325,13 +344,13 @@ impl WebApiImpl {
             }
         };
         // Serves the cached report when there is one and replays only when the
-        // reporter is idle: block_report refuses rather than queues, so a read
-        // arriving during catch-up returns without waiting instead of adding to
-        // the load. A replay that does happen also caches, so ordinary reads
-        // repopulate what pre-caching missed.
+        // reporter is idle: block_report_if_idle refuses rather than queues, so
+        // a read arriving during catch-up returns without waiting instead of
+        // adding to the load. A replay that does happen also caches, so ordinary
+        // reads repopulate what pre-caching missed.
         match self
             .block_report_api
-            .block_report(block_hash_bytes, false)
+            .block_report_if_idle(block_hash_bytes)
             .await
         {
             Ok(report) => {
@@ -497,6 +516,32 @@ impl WebApi for WebApiImpl {
             &self.shard_id,
         )
         .await
+    }
+
+    async fn deploy_offered(&self, request: OfferedDeployRequest) -> Result<String> {
+        let proto = decode_offered_deploy_proto(&request)?;
+        BlockAPI::deploy_offered(
+            &self.engine_cell,
+            proto,
+            &self.trigger_propose_f,
+            self.is_node_read_only,
+            &self.shard_id,
+        )
+        .await
+    }
+
+    async fn offered_settlement_receipt(
+        &self,
+        deploy_id: String,
+    ) -> Result<Option<OfferedReceiptResponse>> {
+        let deploy_id_bytes = hex::decode(deploy_id.trim_start_matches("0x"))
+            .map_err(|_| eyre::Report::new(InvalidHashError(deploy_id.clone())))?;
+        if deploy_id_bytes.len() != 32 {
+            return Err(eyre::Report::new(InvalidHashError(deploy_id)));
+        }
+        BlockAPI::find_offered_settlement_receipt(&self.engine_cell, &deploy_id_bytes.into())
+            .await
+            .map(|receipt| receipt.map(OfferedReceiptResponse::from))
     }
 
     async fn get_data_at_par(
@@ -1126,6 +1171,21 @@ pub enum RhoExpr {
     ExprInt {
         data: i64,
     },
+    ExprUint64 {
+        data: u64,
+    },
+    ExprInt32 {
+        data: i32,
+    },
+    ExprUint32 {
+        data: u32,
+    },
+    ExprUint16 {
+        data: u32,
+    },
+    ExprUint8 {
+        data: u32,
+    },
     ExprString {
         data: String,
     },
@@ -1280,6 +1340,8 @@ pub enum RhoUnforg {
     UnforgPrivate { data: String },
     UnforgDeploy { data: String },
     UnforgDeployer { data: String },
+    UnforgAuthority { data: String },
+    UnforgPrincipal { key_family: u32, public_key: String },
     UnforgSysAuthToken,
 }
 
@@ -1291,6 +1353,38 @@ pub struct DeployRequest {
     pub signature: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedDeployRequest {
+    #[serde(rename = "deployDataProtoBase64")]
+    pub deploy_data_proto_base64: String,
+}
+
+fn decode_offered_deploy_proto(request: &OfferedDeployRequest) -> Result<DeployDataProto> {
+    let wire = STANDARD
+        .decode(&request.deploy_data_proto_base64)
+        .map_err(|error| {
+            eyre::Report::new(DeployValidationError {
+                message: format!("Invalid offered-funded base64: {}", error),
+            })
+        })?;
+    if STANDARD.encode(&wire) != request.deploy_data_proto_base64 {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: "Offered-funded base64 is not canonical".to_string(),
+        }));
+    }
+    let proto = DeployDataProto::decode(wire.as_slice()).map_err(|error| {
+        eyre::Report::new(DeployValidationError {
+            message: format!("Invalid offered-funded protobuf: {}", error),
+        })
+    })?;
+    if proto.encode_to_vec() != wire {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: "Offered-funded protobuf is not canonical".to_string(),
+        }));
+    }
+    Ok(proto)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1450,6 +1544,69 @@ pub struct VersionInfo {
 
 /// Unified deploy response. Default (full) includes all fields.
 /// Summary view (`?view=summary`) omits Optional fields for lightweight polling.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedPurseSettlementResponse {
+    pub address: String,
+    #[serde(rename = "resourceRev")]
+    pub resource_rev: String,
+    #[serde(rename = "feeRev")]
+    pub fee_rev: String,
+    #[serde(rename = "postBalance")]
+    pub post_balance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedReceiptResponse {
+    #[serde(rename = "deployId")]
+    pub deploy_id: String,
+    #[serde(rename = "blockHash")]
+    pub block_hash: String,
+    #[serde(rename = "phloUsed")]
+    pub phlo_used: u64,
+    #[serde(rename = "freshPhlo")]
+    pub fresh_phlo: u64,
+    #[serde(rename = "retainedPhlo")]
+    pub retained_phlo: u64,
+    #[serde(rename = "phloLimit")]
+    pub phlo_limit: u64,
+    #[serde(rename = "phloPrice")]
+    pub phlo_price: u64,
+    #[serde(rename = "feeRev")]
+    pub fee_rev: String,
+    #[serde(rename = "revSpent")]
+    pub rev_spent: String,
+    #[serde(rename = "revCeiling")]
+    pub rev_ceiling: String,
+    pub purses: Vec<OfferedPurseSettlementResponse>,
+}
+
+impl From<OfferedSettlementReceipt> for OfferedReceiptResponse {
+    fn from(receipt: OfferedSettlementReceipt) -> Self {
+        Self {
+            deploy_id: hex::encode(receipt.deploy_id),
+            block_hash: hex::encode(receipt.block_hash),
+            phlo_used: receipt.phlo_used,
+            fresh_phlo: receipt.fresh_phlo,
+            retained_phlo: receipt.retained_phlo,
+            phlo_limit: receipt.phlo_limit,
+            phlo_price: receipt.phlo_price,
+            fee_rev: receipt.fee_rev.to_string(),
+            rev_spent: receipt.rev_spent.to_string(),
+            rev_ceiling: receipt.rev_ceiling.to_string(),
+            purses: receipt
+                .purses
+                .into_iter()
+                .map(|purse| OfferedPurseSettlementResponse {
+                    address: hex::encode(purse.address),
+                    resource_rev: purse.resource_rev.to_string(),
+                    fee_rev: purse.fee_rev.to_string(),
+                    post_balance: purse.post_balance.to_string(),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployResponse {
     // === Always present (summary + full) ===
@@ -1692,7 +1849,9 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+use models::rhoapi::{
+    Bundle, Expr, GAuthorityId, GDeployId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable, Par,
+};
 
 /// Convert RhoUnforg to protobuf GUnforgeable.
 /// Hex decode errors produce empty bytes with a warning log.
@@ -1710,6 +1869,16 @@ fn unforg_to_unforg_proto(unforg: RhoUnforg) -> eyre::Result<UnfInstance> {
         }),
         RhoUnforg::UnforgDeployer { data } => UnfInstance::GDeployerIdBody(GDeployerId {
             public_key: decode_hex(&data)?.into(),
+        }),
+        RhoUnforg::UnforgAuthority { data } => UnfInstance::GAuthorityIdBody(GAuthorityId {
+            id: decode_hex(&data)?.into(),
+        }),
+        RhoUnforg::UnforgPrincipal {
+            key_family,
+            public_key,
+        } => UnfInstance::GPrincipalIdBody(GPrincipalId {
+            key_family,
+            public_key: decode_hex(&public_key)?.into(),
         }),
         RhoUnforg::UnforgSysAuthToken => {
             use models::rhoapi::GSysAuthToken;
@@ -1768,6 +1937,11 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
         // Primitives
         ExprInstance::GBool(v) => RhoExpr::ExprBool { data: v },
         ExprInstance::GInt(v) => RhoExpr::ExprInt { data: v },
+        ExprInstance::GUint64(v) => RhoExpr::ExprUint64 { data: v },
+        ExprInstance::GInt32(v) => RhoExpr::ExprInt32 { data: v },
+        ExprInstance::GUint32(v) => RhoExpr::ExprUint32 { data: v },
+        ExprInstance::GUint16(v) => RhoExpr::ExprUint16 { data: v },
+        ExprInstance::GUint8(v) => RhoExpr::ExprUint8 { data: v },
         ExprInstance::GString(v) => RhoExpr::ExprString { data: v },
         ExprInstance::GUri(v) => RhoExpr::ExprUri { data: v },
         ExprInstance::GByteArray(bytes) => RhoExpr::ExprBytes {
@@ -1999,6 +2173,17 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
                 data: hex::encode(&deployer_id.public_key),
             },
         },
+        UnfInstance::GAuthorityIdBody(authority_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgAuthority {
+                data: hex::encode(&authority_id.id),
+            },
+        },
+        UnfInstance::GPrincipalIdBody(principal_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgPrincipal {
+                key_family: principal_id.key_family,
+                public_key: hex::encode(&principal_id.public_key),
+            },
+        },
         UnfInstance::GSysAuthTokenBody(_) => RhoExpr::ExprUnforg {
             data: RhoUnforg::UnforgSysAuthToken,
         },
@@ -2026,6 +2211,11 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
     match expr {
         RhoExpr::ExprString { data } => data.clone(),
         RhoExpr::ExprInt { data } => data.to_string(),
+        RhoExpr::ExprUint64 { data } => format!("{}u64", data),
+        RhoExpr::ExprInt32 { data } => format!("{}i32", data),
+        RhoExpr::ExprUint32 { data } => format!("{}u32", data),
+        RhoExpr::ExprUint16 { data } => format!("{}u16", data),
+        RhoExpr::ExprUint8 { data } => format!("{}u8", data),
         RhoExpr::ExprBool { data } => data.to_string(),
         RhoExpr::ExprFloat { data } => data.to_string(),
         RhoExpr::ExprFloat32 { data } => data.to_string(),
@@ -2036,6 +2226,13 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
             RhoUnforg::UnforgPrivate { data } => data.clone(),
             RhoUnforg::UnforgDeploy { data } => data.clone(),
             RhoUnforg::UnforgDeployer { data } => data.clone(),
+            RhoUnforg::UnforgAuthority { data } => data.clone(),
+            RhoUnforg::UnforgPrincipal {
+                key_family,
+                public_key,
+            } => {
+                format!("{key_family}:{public_key}")
+            }
             RhoUnforg::UnforgSysAuthToken => "SysAuthToken".to_string(),
         },
         // Complex types: serialize to JSON string
@@ -2062,6 +2259,7 @@ fn to_rho_data_response(
 
 #[cfg(test)]
 mod tests {
+    use casper::rust::api::block_api::OfferedPurseSettlement;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{
@@ -2069,6 +2267,39 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn offered_receipt_json_preserves_rev_amounts_and_post_balance() {
+        let response = OfferedReceiptResponse::from(OfferedSettlementReceipt {
+            deploy_id: vec![1; 32],
+            block_hash: vec![2; 32].into(),
+            phlo_used: 7,
+            fresh_phlo: 5,
+            retained_phlo: 2,
+            phlo_limit: 10,
+            phlo_price: 2,
+            fee_rev: 1,
+            rev_spent: 15,
+            rev_ceiling: 21,
+            purses: vec![OfferedPurseSettlement {
+                address: vec![3; 32],
+                resource_rev: 14,
+                fee_rev: 1,
+                post_balance: 100,
+            }],
+        });
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["phloUsed"], 7);
+        assert_eq!(json["freshPhlo"], 5);
+        assert_eq!(json["retainedPhlo"], 2);
+        assert_eq!(json["phloLimit"], 10);
+        assert_eq!(json["phloPrice"], 2);
+        assert_eq!(json["feeRev"], "1");
+        assert_eq!(json["revSpent"], "15");
+        assert_eq!(json["revCeiling"], "21");
+        assert_eq!(json["purses"][0]["resourceRev"], "14");
+        assert_eq!(json["purses"][0]["postBalance"], "100");
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {
@@ -2148,6 +2379,38 @@ mod tests {
         assert!(json.get("sigAlgorithm").is_none());
         assert!(json.get("validAfterBlockNumber").is_none());
         assert!(json.get("transfers").is_none());
+    }
+
+    #[test]
+    fn offered_http_wire_decoding_preserves_full_proto_and_rejects_noncanonical_data() {
+        let proto = DeployDataProto {
+            authorization_v61: Some(models::casper::DeployAuthorizationV61 {
+                format_version:
+                    models::rust::signed_phlo_deploy::OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION,
+                ..Default::default()
+            }),
+            funding_intent: Some(vec![1, 2, 3].into()),
+            phlo_limit: 7,
+            phlo_price: 11,
+            ..Default::default()
+        };
+        let wire = proto.encode_to_vec();
+        let request = OfferedDeployRequest {
+            deploy_data_proto_base64: STANDARD.encode(&wire),
+        };
+        assert_eq!(decode_offered_deploy_proto(&request).unwrap(), proto);
+
+        let padded_variant = OfferedDeployRequest {
+            deploy_data_proto_base64: format!("{}=", request.deploy_data_proto_base64),
+        };
+        assert!(decode_offered_deploy_proto(&padded_variant).is_err());
+
+        let mut noncanonical = wire;
+        noncanonical.extend_from_slice(&[0x38, 0x00]);
+        let noncanonical = OfferedDeployRequest {
+            deploy_data_proto_base64: STANDARD.encode(noncanonical),
+        };
+        assert!(decode_offered_deploy_proto(&noncanonical).is_err());
     }
 
     #[test]
@@ -2371,6 +2634,45 @@ mod tests {
     }
 
     #[test]
+    fn test_expr_from_expr_proto_map_keeps_int_and_sized_int_keys_apart() {
+        let entry = |key: ExprInstance, value: &str| KeyValuePair {
+            key: Some(Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(key),
+                }],
+                ..Default::default()
+            }),
+            value: Some(Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(ExprInstance::GString(value.to_string())),
+                }],
+                ..Default::default()
+            }),
+        };
+        let map = EMap {
+            kvs: vec![
+                entry(ExprInstance::GInt(5), "int"),
+                entry(ExprInstance::GUint64(5), "u64"),
+                entry(ExprInstance::GInt32(5), "i32"),
+                entry(ExprInstance::GUint8(5), "u8"),
+            ],
+            ..Default::default()
+        };
+        match expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EMapBody(map)),
+        }) {
+            Some(RhoExpr::ExprMap { data }) => {
+                assert_eq!(data.len(), 4);
+                assert!(matches!(data["5"], RhoExpr::ExprString { data: ref d } if d == "int"));
+                assert!(matches!(data["5u64"], RhoExpr::ExprString { data: ref d } if d == "u64"));
+                assert!(matches!(data["5i32"], RhoExpr::ExprString { data: ref d } if d == "i32"));
+                assert!(matches!(data["5u8"], RhoExpr::ExprString { data: ref d } if d == "u8"));
+            }
+            _ => panic!("Expected ExprMap"),
+        }
+    }
+
+    #[test]
     fn test_expr_from_expr_proto_map() {
         let map = EMap {
             kvs: vec![
@@ -2523,6 +2825,27 @@ mod tests {
         let expr = RhoExpr::ExprInt { data: 42 };
         assert_eq!(extract_key_from_expr(&expr), "42");
 
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint64 { data: 42 }),
+            "42u64"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprInt32 { data: -42 }),
+            "-42i32"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint32 { data: 42 }),
+            "42u32"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint16 { data: 42 }),
+            "42u16"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint8 { data: 42 }),
+            "42u8"
+        );
+
         // Test bool key
         let expr = RhoExpr::ExprBool { data: true };
         assert_eq!(extract_key_from_expr(&expr), "true");
@@ -2574,6 +2897,26 @@ mod tests {
         });
         assert!(matches!(double, Some(RhoExpr::ExprFloat { data }) if data == 2.5));
 
+        let sized = |instance| {
+            expr_from_expr_proto(Expr {
+                expr_instance: Some(instance),
+            })
+        };
+        assert!(
+            matches!(sized(ExprInstance::GUint64(u64::MAX)), Some(RhoExpr::ExprUint64 { data }) if data == u64::MAX)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GInt32(-7)), Some(RhoExpr::ExprInt32 { data }) if data == -7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint32(7)), Some(RhoExpr::ExprUint32 { data }) if data == 7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint16(7)), Some(RhoExpr::ExprUint16 { data }) if data == 7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint8(7)), Some(RhoExpr::ExprUint8 { data }) if data == 7)
+        );
         let float32 = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::GFloat32(2.5f32.to_bits())),
         });

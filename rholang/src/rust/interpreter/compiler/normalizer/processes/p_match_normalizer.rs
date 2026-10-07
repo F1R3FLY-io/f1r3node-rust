@@ -6,6 +6,7 @@ use rholang_parser::ast::{AnnProc, Case};
 
 use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_pattern;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
@@ -34,6 +35,12 @@ pub fn normalize_p_match<'ast>(
             guard,
             proc: case_body,
         } = case;
+
+        // Cost syntax (`{% P %}[s]`, `s :: S`) is a process form (recognized +
+        // metered), not a match pattern — reject it in pattern position (W1
+        // §1.5). f1r3node's normalizer does not run rholang-lib's resolver, so
+        // the guard is applied here at the pattern entry point.
+        reject_cost_syntax_in_pattern(pattern)?;
 
         let pattern_result = normalize_ann_proc(
             pattern,
@@ -379,6 +386,7 @@ mod tests {
                     source: Some(Par::default()),
                     remainder: None,
                     free_count: 1,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default().prepend_match(Match {
                     target: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
@@ -499,6 +507,7 @@ mod tests {
                 }],
                 source: Some(Par::default()),
                 remainder: None,
+                cost_signature: None,
                 free_count: 2,
             }],
             body: Some(Par::default()),

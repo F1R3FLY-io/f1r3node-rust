@@ -1,0 +1,37 @@
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam activity {
+  BackgroundColor #E8F3FF
+  BorderColor #24527A
+  DiamondBackgroundColor #FFF4CC
+  DiamondBorderColor #8A6D1D
+  StartColor #237A57
+  EndColor #8B1E3F
+}
+
+title Deterministic host-work boundary for play and replay
+
+start
+:Load one protocol limit schedule;
+:Create one budget for one deployment;
+fork
+  :Play structural admission;
+  :Play reduction and substitution;
+  :Play authority and settlement work;
+fork again
+  :Replay witness decoding;
+  :Replay witness verification;
+  :Replay reduction, authority, and settlement work;
+end fork
+if (Any dimension exceeds its limit?) then (yes)
+  :Set sticky rejection;
+  :Restore the authenticated pre-state;
+  :Publish no partial state;
+else (no)
+  :Require equal canonical result and post-state;
+  :Publish the accepted transition;
+endif
+stop
+@enduml

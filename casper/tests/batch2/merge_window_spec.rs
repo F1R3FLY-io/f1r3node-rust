@@ -92,7 +92,7 @@ async fn late_carrier_past_window_is_rejected_with_record_and_without_effect() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == late_sig && !pd.is_failed),
+            .any(|pd| pd.identity_bytes() == late_sig.as_ref() && !pd.is_failed()),
         "carrier must execute the deploy cleanly at height {}",
         carrier.body.state.block_number
     );

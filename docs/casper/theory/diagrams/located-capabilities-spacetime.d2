@@ -1,0 +1,31 @@
+# Located capabilities in space–time. Phlogiston capability is SPATIALLY located
+# on disjoint signature surfaces (one capability pool per surface) and consumed
+# in TEMPORAL order along the free token-stack monoid (never commutative). Local
+# sufficiency (demand ≤ supply) at every surface composes to global executability
+# because the lanes are disjoint — no surface can rob another.
+#
+# Source of truth for the located-purses figure (CALocatedPurses.v / ChannelSeparation.v;
+# TLA+ LocatedPurse.tla).
+# Render:  d2 --layout elk located-capabilities-spacetime.d2 located-capabilities-spacetime.svg
+#          (or: ./render.sh located-capabilities-spacetime.d2)
+...@palette
+direction: right
+
+space: "SPACE — signature surfaces (disjoint capability pools)" {
+  s1: "surface s₁   supply 5 ≥ demand 2  ✓" { class: pool }
+  s2: "surface s₂   supply 4 ≥ demand 3  ✓" { class: pool }
+  s3: "surface s₃   supply 6 ≥ demand 1  ✓" { class: pool }
+}
+
+time: "TIME — token stack (free monoid; consumed in order, NOT commutative)" {
+  direction: right
+  ta: "s_a" { class: gate }
+  tb: "s_b" { class: gate }
+  tc: "s_c : ()" { class: gate }
+  ta -> tb -> tc: "consume L→R (order preserved)"
+}
+
+comp: "COMPOSITION   Σ demand ≤ Σ supply\nlocal sufficiency at every surface ⇒ global executability\n(TLA+ Inv_LocalSufficiencyComposes; Rocq per-surface)" { class: supply }
+
+space -> time: "draw_disjoint — a draw on s₁ leaves s₂, s₃ UNTOUCHED\n(ChannelSeparation.lane_pool_disjoint)" { class: instantiate }
+time -> comp: "local_sufficiency_composes" { class: credit }

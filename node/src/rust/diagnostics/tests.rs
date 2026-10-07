@@ -44,6 +44,7 @@ mod tests {
                 drop_peer_after_retries: 5,
             },
             genesis_block_data: GenesisBlockData {
+                resource_policy: None,
                 genesis_data_dir: "/tmp/genesis".to_string(),
                 bonds_file: "bonds.txt".to_string(),
                 wallets_file: "wallets.txt".to_string(),

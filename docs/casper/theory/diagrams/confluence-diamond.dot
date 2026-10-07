@@ -1,0 +1,42 @@
+// Local confluence (the diamond) ⇒ cost determinism. Any two one-step
+// divergences ca_step from a system S can be rejoined in one step each
+// (ca_local_confluence); with strong normalization, Newman's lemma lifts this
+// to full confluence (ca_confluent); confluence + SN give a unique normal form
+// (ca_normal_form_unique), hence a schedule-independent total cost
+// (ca_cost_deterministic).
+//
+// Source of truth for Figure 6.x in cost-accounted-rho-verification.md
+// (§6 headline theorems / §9 confluence).
+// Render:  tred confluence-diamond.dot | dot -Tsvg -o confluence-diamond.svg
+//          (or: ./render.sh confluence-diamond.dot)
+digraph confluence_diamond {
+  rankdir=TB;
+  bgcolor="transparent";
+  fontname="sans-serif";
+  labelloc="t";
+  label=<<b>Local confluence (the diamond) ⇒ cost determinism</b>>;
+  nodesep=0.6; ranksep=0.5;
+  node [shape=box, style="rounded,filled", fontname="sans-serif", fontsize=12,
+        color="#333333", penwidth=1.1];
+  edge [fontname="sans-serif", fontsize=10, arrowsize=0.8];
+
+  S  [label="S", fillcolor="#FFECB3"];
+  S1 [label="S₁", fillcolor="#E3F2FD"];
+  S2 [label="S₂", fillcolor="#E3F2FD"];
+  J  [label="S′  (joined)", fillcolor="#C8E6C9"];
+
+  S  -> S1 [label="ca_step ", color="#444444"];
+  S  -> S2 [label=" ca_step", color="#444444"];
+  S1 -> J  [label="ca_step ", color="#2E7D32", penwidth=1.6];
+  S2 -> J  [label=" ca_step", color="#2E7D32", penwidth=1.6];
+  { rank=same; S1; S2; }
+
+  newman [shape=note, fillcolor="#E8F5E9", fontsize=10, label=<
+    <b>Newman's lemma</b> (Confluence.v:364)<br/>
+    strong normalization (StrongNormalization.v)<br/>
+    + local confluence (ca_local_confluence)<br/>
+    ⇒ full confluence (ca_confluent)<br/>
+    ⇒ unique normal form (ca_normal_form_unique)<br/>
+    ⇒ <b>ca_cost_deterministic</b> (Confluence.v:474)>];
+  J -> newman [style=dashed, color="#1565C0", arrowhead=none];
+}

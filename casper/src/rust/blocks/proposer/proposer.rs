@@ -103,6 +103,23 @@ pub trait BlockCreator {
         dummy_deploy_opt: Option<(PrivateKey, String)>,
         selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError>;
+
+    async fn create_block_with_casper(
+        &mut self,
+        _casper: &(dyn Casper + Send + Sync),
+        casper_snapshot: &CasperSnapshot,
+        validator_identity: &ValidatorIdentity,
+        dummy_deploy_opt: Option<(PrivateKey, String)>,
+        selection: DeploySelection,
+    ) -> Result<BlockCreatorResult, CasperError> {
+        self.create_block(
+            casper_snapshot,
+            validator_identity,
+            dummy_deploy_opt,
+            selection,
+        )
+        .await
+    }
 }
 
 #[allow(async_fn_in_trait)]
@@ -247,7 +264,8 @@ where
 
         let block_result = self
             .block_creator
-            .create_block(
+            .create_block_with_casper(
+                casper.as_ref(),
                 casper_snapshot,
                 &self.validator,
                 self.dummy_deploy_opt.clone(),
@@ -728,6 +746,32 @@ impl BlockCreator for ProductionBlockCreator {
         selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError> {
         block_creator::create(
+            casper_snapshot,
+            validator_identity,
+            dummy_deploy_opt,
+            self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
+            &self.runtime_manager,
+            &mut self.block_store,
+            selection,
+        )
+        .await
+    }
+
+    async fn create_block_with_casper(
+        &mut self,
+        casper: &(dyn Casper + Send + Sync),
+        casper_snapshot: &CasperSnapshot,
+        validator_identity: &ValidatorIdentity,
+        dummy_deploy_opt: Option<(PrivateKey, String)>,
+        selection: DeploySelection,
+    ) -> Result<BlockCreatorResult, CasperError> {
+        // Changed by DR-99: a proposal takes the policy adopted at start.
+        // block_creator::create_with_approved_genesis(
+        //     casper.get_approved_block()?,
+        block_creator::create_with_adopted_policy(
+            casper.adopted_resource_policy(),
+            casper.offered_funded_active(),
             casper_snapshot,
             validator_identity,
             dummy_deploy_opt,

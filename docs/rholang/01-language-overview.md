@@ -92,7 +92,8 @@ Rholang executes on a tuple space called RSpace. The runtime:
 1. **Parses** source code into an AST
 2. **Normalizes** the AST into a canonical form (De Bruijn indices, sorted terms)
 3. **Reduces** by matching sends against receives in the tuple space
-4. Charges **phlogiston** (gas) for each operation
+4. Charges authenticated authority for each committed communication and
+   canonical RSpace byte accounting before state mutation
 
 Reduction is non-deterministic when multiple matches are possible. The runtime picks one. Programs that depend on a specific reduction order are not portable.
 

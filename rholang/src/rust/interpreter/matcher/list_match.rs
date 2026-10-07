@@ -1,7 +1,10 @@
-use std::collections::HashSet;
-
 use models::rhoapi::Par;
 use models::rust::utils::FreeMap;
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use shared::rust::clone_backing::{BackingError, CloneBacking, Walker};
+use shared::rust::collection_backing::tree_backing;
+
+use super::spatial_matcher::MatcherWork;
 
 #[derive(Clone, Debug)]
 pub enum Pattern<T: Clone> {
@@ -9,7 +12,16 @@ pub enum Pattern<T: Clone> {
     Remainder(i32),
 }
 
-pub trait ListMatch<T: Clone> {
+impl<T: Clone + CloneBacking> CloneBacking for Pattern<T> {
+    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
+        match self {
+            Self::Term(value) => walker.push(value),
+            Self::Remainder(level) => walker.push(level),
+        }
+    }
+}
+
+pub(super) trait ListMatch<T: Clone> {
     // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - listMatchSingle
     fn list_match_single(&mut self, tlist: Vec<T>, plist: Vec<T>) -> Option<()>;
 
@@ -18,7 +30,7 @@ pub trait ListMatch<T: Clone> {
         &mut self,
         tlist: Vec<T>,
         plist: Vec<T>,
-        merger: &dyn Fn(Par, Vec<T>) -> Par,
+        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
         remainder: Option<i32>,
         wildcard: bool,
     ) -> Option<()>;
@@ -28,7 +40,7 @@ pub trait ListMatch<T: Clone> {
         &mut self,
         targets: Vec<T>,
         patterns: Vec<T>,
-        merger: &dyn Fn(Par, Vec<T>) -> Par,
+        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
         remainder: Option<i32>,
         wildcard: bool,
     ) -> Option<()>;
@@ -38,7 +50,7 @@ pub trait ListMatch<T: Clone> {
         &mut self,
         remainder_targets: Vec<T>,
         level: i32,
-        merger: &dyn Fn(Par, Vec<T>) -> Par,
+        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
     ) -> Option<()>;
 
     fn match_function(&mut self, pattern: Pattern<T>, t: T) -> Option<FreeMap>;
@@ -49,10 +61,10 @@ pub trait ListMatch<T: Clone> {
 macro_rules! list_match {
   ($($type:ty),*) => {
       $(
-          impl ListMatch<$type> for SpatialMatcherContext {
+          impl<'a> ListMatch<$type> for SpatialMatcherContext<'a> {
               // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - listMatchSingle
               fn list_match_single(&mut self, tlist: Vec<$type>, plist: Vec<$type>) -> Option<()> {
-                let _merger: &dyn Fn(Par, Vec<$type>) -> Par = &|p, _| p;
+                let _merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par> = &|p, _, _| Some(p);
 
                 self.list_match_single_(tlist, plist, _merger, None, false)
               }
@@ -62,7 +74,7 @@ macro_rules! list_match {
                   &mut self,
                   tlist: Vec<$type>,
                   plist: Vec<$type>,
-                  merger: &dyn Fn(Par, Vec<$type>) -> Par,
+                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
                   remainder: Option<i32>,
                   wildcard: bool,
               ) -> Option<()> {
@@ -77,14 +89,13 @@ macro_rules! list_match {
                 } else if plen == 0 && tlen == 0 && remainder.is_none() {
                     Some(())
                 } else if plen == 0 && remainder.is_some() {
-                    if tlist
-                        .iter()
-                        .all(|t| self.locally_free(t.to_owned(), 0).is_empty())
-                    {
-                        self.handle_remainder(tlist, remainder.unwrap(), merger)
-                    } else {
-                        None
+                    for target in &tlist {
+                        self.reserve_clone(target)?;
+                        if !self.locally_free(target.to_owned(), 0).is_empty() {
+                            return None;
+                        }
                     }
+                    self.handle_remainder(tlist, remainder.unwrap(), merger)
                 } else {
                     self.list_match(tlist, plist, merger, remainder, wildcard)
                 }
@@ -95,44 +106,60 @@ macro_rules! list_match {
                   &mut self,
                   targets: Vec<$type>,
                   patterns: Vec<$type>,
-                  merger: &dyn Fn(Par, Vec<$type>) -> Par,
+                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
                   remainder: Option<i32>,
                   wildcard: bool,
               ) -> Option<()> {
-                let remainder_patterns: Vec<Pattern<$type>> = remainder
-                    .map(|level| vec![Pattern::Remainder(level); targets.len() - patterns.len()])
-                    .unwrap_or(Vec::new());
-                let mut all_patterns: Vec<Pattern<$type>> = remainder_patterns;
-                all_patterns.extend(patterns.clone().into_iter().map(Pattern::Term));
+                let remainder_count = targets.len().checked_sub(patterns.len())?;
+                let mut all_patterns: Vec<Pattern<$type>> = Vec::new();
+                self.reserve_vec(&mut all_patterns, targets.len())?;
+                if let Some(level) = remainder {
+                    for _ in 0..remainder_count {
+                        all_patterns.push(Pattern::Remainder(level));
+                    }
+                }
+                all_patterns.extend(patterns.into_iter().map(Pattern::Term));
 
+                self.reserve_clone(&self.free_map)?;
                 let mut cloned_self = self.clone();
+                self.reserve(1, 0, std::mem::size_of::<SpatialMatcherContext<'a>>() + std::mem::size_of::<usize>() * 2)?;
                 let _match_function = Box::new(move |pattern, t| cloned_self.match_function(pattern, t));
                 // NOTE: Bypassing 'memoizeInHashMap' here
-                let mut maximum_bipartite_match: MaximumBipartiteMatch<Pattern<$type>, $type, FreeMap> = MaximumBipartiteMatch::new(_match_function);
+                let mut maximum_bipartite_match: MaximumBipartiteMatch<'_, Pattern<$type>, $type, FreeMap> = MaximumBipartiteMatch::new(_match_function, self.work()?);
 
+                self.reserve_clone(&targets)?;
                 let matches = maximum_bipartite_match.find_matches(all_patterns, targets.clone())?;
 
-                let free_maps: Vec<FreeMap> = matches
-                    .iter()
-                    .map(|(_, _, free_map)| free_map.clone())
-                    .collect();
+                let mut free_maps = Vec::new();
+                for (_, _, free_map) in &matches {
+                    self.reserve_clone(free_map)?;
+                    self.reserve_vec(&mut free_maps, 1)?;
+                    free_maps.push(free_map.clone());
+                }
 
-                let updated_free_map = aggregate_updates(self.free_map.clone(), free_maps)?;
+                self.reserve_clone(&self.free_map)?;
+                let updated_free_map = aggregate_updates(self.free_map.clone(), free_maps, &self.work()?)?;
                 self.free_map = updated_free_map;
 
-                let remainder_targets: Vec<$type> = matches
-                    .iter()
-                    .filter_map(|(target, pattern, _)| match pattern {
-                        Pattern::Remainder(_) => Some(target.clone()),
-                        _ => None,
-                    })
-                    .collect();
+                let mut remainder_targets = Vec::new();
+                for (target, pattern, _) in &matches {
+                    if matches!(pattern, Pattern::Remainder(_)) {
+                        self.reserve_clone(target)?;
+                        self.reserve_vec(&mut remainder_targets, 1)?;
+                        remainder_targets.push(target.clone());
+                    }
+                }
 
-                let remainder_targets_sorted: Vec<$type> = targets
-                    .iter()
-                    .filter(|target| remainder_targets.contains(target))
-                    .cloned()
-                    .collect();
+                let mut remainder_targets_sorted = Vec::new();
+                for target in &targets {
+                    self.reserve_inspect(target)?;
+                    self.reserve_inspect(&remainder_targets)?;
+                    if remainder_targets.contains(target) {
+                        self.reserve_clone(target)?;
+                        self.reserve_vec(&mut remainder_targets_sorted, 1)?;
+                        remainder_targets_sorted.push(target.clone());
+                    }
+                }
 
                 match remainder {
                     None => {
@@ -151,17 +178,27 @@ macro_rules! list_match {
                   &mut self,
                   remainder_targets: Vec<$type>,
                   level: i32,
-                  merger: &dyn Fn(Par, Vec<$type>) -> Par,
+                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
               ) -> Option<()> {
-                let remainder_par = self
-                .free_map
-                .clone()
-                .get(&level)
-                .cloned()
-                .unwrap_or(vector_par(Vec::new(), false));
+                self.reserve_inspect(&self.free_map)?;
+                let remainder_par = match self.free_map.get(&level) {
+                    Some(par) => {
+                        self.reserve_clone(par)?;
+                        par.clone()
+                    }
+                    None => vector_par(Vec::new(), false),
+                };
 
-                let remainder_par_updated = merger(remainder_par, remainder_targets);
+                let work = self.work()?;
+                let remainder_par_updated = merger(remainder_par, remainder_targets, &work)?;
 
+                let Some(entries) = self.free_map.len().checked_add(1) else {
+                    return self.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
+                };
+                let Some((operations, bytes)) = shared::rust::collection_backing::tree_backing::<i32, Par>(entries) else {
+                    return self.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
+                };
+                self.reserve(operations, bytes, bytes)?;
                 self.free_map.insert(level, remainder_par_updated);
 
                 Some(())
@@ -175,18 +212,25 @@ macro_rules! list_match {
               fn match_function(&mut self, pattern: Pattern<$type>, t: $type) -> Option<FreeMap> {
                 let match_effect: Option<()> = match pattern {
                   Pattern::Term(p) => {
+                     self.reserve_clone(&p)?;
                      if !self.connective_used(p.clone()) {
+                         self.reserve_inspect(&t)?;
+                         self.reserve_inspect(&p)?;
                          guard(t == p)
                       } else {
                          self.spatial_match(t, p)
                       }
                   }
-                  Pattern::Remainder(_) => guard(self.locally_free(t, 0).is_empty()),
+                  Pattern::Remainder(_) => {
+                      self.reserve_inspect(&t)?;
+                      guard(self.locally_free(t, 0).is_empty())
+                  }
                 };
 
                 match match_effect {
                   Some(_) => {
                     let free_map = &self.free_map;
+                    self.reserve_clone(free_map)?;
                     Some(free_map.clone())},
                   None => None,
                 }
@@ -196,31 +240,122 @@ macro_rules! list_match {
   };
 }
 
-pub fn aggregate_updates(current_free_map: FreeMap, free_maps: Vec<FreeMap>) -> Option<FreeMap> {
-    let current_vars: HashSet<_> = current_free_map.keys().cloned().collect();
-    let added_vars: HashSet<_> = free_maps
-        .iter()
-        .flat_map(|m| m.keys())
-        .filter(|k| !current_vars.contains(*k))
-        .cloned()
-        .collect();
+pub(super) fn aggregate_updates(
+    mut current_free_map: FreeMap,
+    free_maps: Vec<FreeMap>,
+    work: &MatcherWork<'_>,
+) -> Option<FreeMap> {
+    for free_map in free_maps {
+        for (level, value) in free_map {
+            work.reserve_inspect(&current_free_map)?;
+            let Some(entries) = current_free_map.len().checked_add(1) else {
+                return work.reject(RSpaceError::HostWorkRejected);
+            };
+            let Some((operations, bytes)) = tree_backing::<i32, Par>(entries) else {
+                return work.reject(RSpaceError::HostWorkRejected);
+            };
+            work.reserve(operations, bytes, bytes)?;
+            current_free_map.insert(level, value);
+        }
+    }
+    Some(current_free_map)
+}
 
-    // The correctness of isolating MBM from changing FreeMap relies
-    // on our ability to aggregate the var assignments from subsequent matches.
-    // This means all the variables populated by MBM must not duplicate each other.
-    if added_vars.len() != added_vars.iter().collect::<HashSet<_>>().len() {
-        panic!(
-            "RUST ERROR: Aggregated updates conflicted with each other: {:?}",
-            free_maps
+#[cfg(test)]
+mod metered_tests {
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    use super::super::spatial_matcher::SpatialMatcherContext;
+    use super::*;
+
+    fn run(context: &mut SpatialMatcherContext<'_>) -> Option<()> {
+        context.list_match_single_(
+            vec![Par::default(); 2],
+            vec![Par::default()],
+            &|par, _, _| Some(par),
+            Some(0),
+            false,
         )
     }
 
-    let updated_free_map = free_maps
-        .into_iter()
-        .fold(current_free_map.clone(), |mut acc, fm| {
-            acc.extend(fm);
-            acc
-        });
+    #[test]
+    fn remainder_assignment_preserves_free_map_and_rejects_short_credit() {
+        let mut ordinary = SpatialMatcherContext::new();
+        assert!(run(&mut ordinary).is_some());
+        let expected = ordinary.free_map;
+        let used = Mutex::new([0usize; 3]);
+        let unlimited = |operations: usize, scanned: usize, backing: usize| {
+            let mut totals = used.lock().unwrap();
+            for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&unlimited).unwrap();
+        assert!(run(&mut context).is_some());
+        assert_eq!(context.free_map, expected);
+        assert!(context.take_error().is_none());
+        let required = *used.lock().unwrap();
+        assert!(required.iter().all(|value| *value > 0));
+        for dimension in 0..3 {
+            let mut limit = required;
+            limit[dimension] -= 1;
+            let spent = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut next = spent.lock().unwrap();
+                let amounts = [operations, scanned, backing];
+                if next
+                    .iter()
+                    .zip(amounts)
+                    .zip(limit)
+                    .any(|((used, add), max)| *used + add > max)
+                {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                for (used, add) in next.iter_mut().zip(amounts) {
+                    *used += add;
+                }
+                Ok(())
+            };
+            match SpatialMatcherContext::with_meter(&meter) {
+                Ok(mut context) => {
+                    assert!(run(&mut context).is_none());
+                    assert!(matches!(
+                        context.take_error(),
+                        Some(RSpaceError::HostWorkRejected)
+                    ));
+                }
+                Err(RSpaceError::HostWorkRejected) => {}
+                Err(error) => panic!("unexpected matcher error: {error}"),
+            }
+        }
+    }
 
-    Some(updated_free_map)
+    #[test]
+    fn remainder_merger_rejects_before_payload_materialization_or_publication() {
+        let meter = |_: usize, _: usize, backing: usize| {
+            if backing >= 4096 {
+                Err(RSpaceError::HostWorkRejected)
+            } else {
+                Ok(())
+            }
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).unwrap();
+        let materialized = Cell::new(false);
+        let merger = |par: Par, _: Vec<Par>, work: &MatcherWork<'_>| {
+            work.reserve(1, 0, 4096)?;
+            materialized.set(true);
+            Some(par)
+        };
+        assert!(context
+            .handle_remainder(vec![Par::default()], 0, &merger)
+            .is_none());
+        assert!(!materialized.get());
+        assert!(context.free_map.is_empty());
+        assert!(matches!(
+            context.take_error(),
+            Some(RSpaceError::HostWorkRejected)
+        ));
+    }
 }

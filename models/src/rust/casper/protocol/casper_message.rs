@@ -12,6 +12,10 @@ use crate::casper::system_deploy_data_proto::SystemDeploy;
 use crate::casper::*;
 use crate::rhoapi::PCost;
 use crate::rust::casper::pretty_printer::PrettyPrinter;
+use crate::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
+use crate::rust::cost_protocol_limits::offered_funded_v6_limits;
+use crate::rust::deploy_envelope::{DeployEnvelopeFormat, DeployEnvelopeLimits};
+use crate::rust::phlo_wire::PhloWireLimits;
 
 // TODO: Use type ByteString from models crate
 type ByteString = prost::bytes::Bytes;
@@ -796,6 +800,23 @@ pub struct BlockMessage {
 
 impl BlockMessage {
     pub fn from_proto(proto: BlockMessageProto) -> Result<Self, String> {
+        Self::from_proto_using(proto, Body::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: BlockMessageProto,
+        envelope_limits: DeployEnvelopeLimits,
+        evidence_limits: PhloWireLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_using(proto, |body| {
+            Body::from_proto_with_limits(body, envelope_limits, evidence_limits)
+        })
+    }
+
+    fn from_proto_using(
+        proto: BlockMessageProto,
+        decode_body: impl FnOnce(BodyProto) -> Result<Body, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
             block_hash: proto.block_hash,
             header: Header::from_proto(
@@ -803,7 +824,7 @@ impl BlockMessage {
                     .header
                     .ok_or_else(|| "Missing header field".to_string())?,
             ),
-            body: Body::from_proto(proto.body.ok_or_else(|| "Missing body field".to_string())?)?,
+            body: decode_body(proto.body.ok_or_else(|| "Missing body field".to_string())?)?,
             justifications: proto
                 .justifications
                 .into_iter()
@@ -905,7 +926,7 @@ impl RejectedDeploy {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Body {
     pub state: F1r3flyState,
-    pub deploys: Vec<ProcessedDeploy>,
+    pub deploys: Vec<ProcessedUserDeploy>,
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub extra_bytes: ByteString,
@@ -915,6 +936,23 @@ pub struct Body {
 
 impl Body {
     pub fn from_proto(proto: BodyProto) -> Result<Self, String> {
+        Self::from_proto_using(proto, ProcessedUserDeploy::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: BodyProto,
+        envelope_limits: DeployEnvelopeLimits,
+        evidence_limits: PhloWireLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_using(proto, |deploy| {
+            ProcessedUserDeploy::from_proto_with_limits(deploy, envelope_limits, evidence_limits)
+        })
+    }
+
+    fn from_proto_using(
+        proto: BodyProto,
+        decode: impl FnMut(ProcessedDeployProto) -> Result<ProcessedUserDeploy, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
             state: F1r3flyState::from_proto(
                 proto
@@ -924,8 +962,8 @@ impl Body {
             deploys: proto
                 .deploys
                 .into_iter()
-                .map(|d| ProcessedDeploy::from_proto(d))
-                .collect::<Result<Vec<ProcessedDeploy>, String>>()?,
+                .map(decode)
+                .collect::<Result<Vec<_>, String>>()?,
             rejected_deploys: proto
                 .rejected_deploys
                 .into_iter()
@@ -1082,6 +1120,11 @@ impl ProcessedDeploy {
     }
 
     pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
+        if proto.native_cost_evidence.is_some() {
+            return Err(
+                "native cost evidence requires the funded processed-deploy decoder".to_string(),
+            );
+        }
         Ok(Self {
             deploy: DeployData::from_proto(
                 proto
@@ -1112,8 +1155,201 @@ impl ProcessedDeploy {
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
+            native_cost_evidence: None,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcessedUserDeploy {
+    Legacy(ProcessedDeploy),
+    Offered(OfferedProcessedDeploy),
+}
+
+impl ProcessedUserDeploy {
+    pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
+        let version = proto
+            .deploy
+            .as_ref()
+            .and_then(|deploy| deploy.authorization_v61.as_ref())
+            .map(|authorization| authorization.format_version);
+        match DeployEnvelopeFormat::from_authorization_version(version)? {
+            DeployEnvelopeFormat::Legacy => ProcessedDeploy::from_proto(proto).map(Self::Legacy),
+            DeployEnvelopeFormat::OfferedFunded => {
+                let limits = offered_funded_v6_limits();
+                OfferedProcessedDeploy::from_proto(proto, limits.envelope, limits.evidence)
+                    .map(Self::Offered)
+            }
+            _ => Err("processed deploy authorization format is not active".to_string()),
+        }
+    }
+
+    pub fn from_proto_with_limits(
+        proto: ProcessedDeployProto,
+        envelope_limits: DeployEnvelopeLimits,
+        evidence_limits: PhloWireLimits,
+    ) -> Result<Self, String> {
+        let version = proto
+            .deploy
+            .as_ref()
+            .and_then(|deploy| deploy.authorization_v61.as_ref())
+            .map(|authorization| authorization.format_version);
+        match DeployEnvelopeFormat::from_authorization_version(version)? {
+            DeployEnvelopeFormat::Legacy => ProcessedDeploy::from_proto(proto).map(Self::Legacy),
+            DeployEnvelopeFormat::OfferedFunded => {
+                OfferedProcessedDeploy::from_proto(proto, envelope_limits, evidence_limits)
+                    .map(Self::Offered)
+            }
+            _ => Err("processed deploy authorization format is not active".to_string()),
+        }
+    }
+
+    pub fn to_proto(&self) -> ProcessedDeployProto {
+        match self {
+            Self::Legacy(deploy) => deploy.clone().to_proto(),
+            Self::Offered(deploy) => deploy.to_proto_verified(),
+        }
+    }
+
+    pub fn identity_bytes(&self) -> &[u8] {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy.sig,
+            Self::Offered(deploy) => deploy.identity_bytes(),
+        }
+    }
+
+    pub fn valid_after_block_number(&self) -> i64 {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.valid_after_block_number,
+            Self::Offered(deploy) => deploy.envelope().body().valid_after_block_number,
+        }
+    }
+
+    pub fn shard_id(&self) -> &str {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy.data.shard_id,
+            Self::Offered(deploy) => &deploy.envelope().body().shard_id,
+        }
+    }
+
+    pub fn phlo_price(&self) -> i64 {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.phlo_price,
+            Self::Offered(deploy) => {
+                let crate::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
+                    deploy.envelope().view()
+                else {
+                    unreachable!("verified offered processed deploy")
+                };
+                signed.data.phlo_price()
+            }
+        }
+    }
+
+    pub fn phlo_limit(&self) -> i64 {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.phlo_limit,
+            Self::Offered(deploy) => {
+                let crate::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
+                    deploy.envelope().view()
+                else {
+                    unreachable!("verified offered processed deploy")
+                };
+                signed.data.phlo_limit()
+            }
+        }
+    }
+
+    pub fn term(&self) -> &str {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy.data.term,
+            Self::Offered(deploy) => &deploy.envelope().body().term,
+        }
+    }
+
+    pub fn expiration_timestamp(&self) -> Option<i64> {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.expiration_timestamp,
+            Self::Offered(deploy) => deploy.envelope().body().expiration_timestamp,
+        }
+    }
+
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.time_stamp,
+            Self::Offered(deploy) => deploy.envelope().body().time_stamp,
+        }
+    }
+
+    pub fn deployer_bytes(&self) -> &[u8] {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy.pk.bytes,
+            Self::Offered(deploy) => &deploy.envelope().primary().pk.bytes,
+        }
+    }
+
+    pub fn to_deploy_info(&self) -> DeployInfo {
+        match self {
+            Self::Legacy(deploy) => deploy.clone().to_deploy_info(),
+            Self::Offered(deploy) => {
+                let body = deploy.envelope().body();
+                DeployInfo {
+                    deployer: PrettyPrinter::build_string_no_limit(self.deployer_bytes()),
+                    term: body.term.clone(),
+                    timestamp: body.time_stamp,
+                    sig: PrettyPrinter::build_string_no_limit(self.identity_bytes()),
+                    sig_algorithm: deploy.envelope().primary().sig_algorithm.name(),
+                    phlo_price: self.phlo_price(),
+                    phlo_limit: self.phlo_limit(),
+                    valid_after_block_number: body.valid_after_block_number,
+                    cost: deploy.cost().cost,
+                    errored: deploy.is_failed(),
+                    system_deploy_error: String::new(),
+                    transfers: Vec::new(),
+                    transfers_available: false,
+                }
+            }
+        }
+    }
+
+    pub fn deploy_log(&self) -> &[Event] {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy_log,
+            Self::Offered(deploy) => deploy.deploy_log(),
+        }
+    }
+
+    pub fn cost(&self) -> &PCost {
+        match self {
+            Self::Legacy(deploy) => &deploy.cost,
+            Self::Offered(deploy) => deploy.cost(),
+        }
+    }
+
+    pub fn is_failed(&self) -> bool {
+        match self {
+            Self::Legacy(deploy) => deploy.is_failed,
+            Self::Offered(deploy) => deploy.is_failed(),
+        }
+    }
+
+    pub fn as_legacy(&self) -> Option<&ProcessedDeploy> {
+        match self {
+            Self::Legacy(deploy) => Some(deploy),
+            Self::Offered(_) => None,
+        }
+    }
+
+    pub fn as_offered(&self) -> Option<&OfferedProcessedDeploy> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Offered(deploy) => Some(deploy),
+        }
+    }
+}
+
+impl From<ProcessedDeploy> for ProcessedUserDeploy {
+    fn from(value: ProcessedDeploy) -> Self { Self::Legacy(value) }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1300,6 +1536,9 @@ pub struct DeployData {
 impl ToMessage for DeployData {
     type Type = DeployDataProto;
     fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
+    fn envelope_intent_v61(&self) -> Result<Vec<u8>, String> {
+        Err("legacy Casper deploys do not support protocol-v6 envelopes".to_string())
+    }
 }
 
 impl DeployData {
@@ -1324,7 +1563,24 @@ impl DeployData {
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
             .map_err(|e| format!("Failed to decode DeployData: {}", e))?;
+        Self::reject_nonlegacy_fields(&proto)?;
         Ok(DeployData::_from_proto(proto))
+    }
+
+    fn reject_nonlegacy_fields(proto: &DeployDataProto) -> Result<(), String> {
+        if !proto.cosigners.is_empty()
+            || proto.cosigner_threshold != 0
+            || proto.sig_algebra.is_some()
+            || !proto.authority_presentations.is_empty()
+            || !proto.deploy_id.is_empty()
+            || proto.authorization_v61.is_some()
+            || proto.funding_intent.is_some()
+        {
+            return Err(
+                "legacy Casper cannot decode cost-accounted deploy authorization".to_string(),
+            );
+        }
+        Ok(())
     }
 
     fn _from_proto(proto: DeployDataProto) -> Self {
@@ -1345,6 +1601,7 @@ impl DeployData {
     }
 
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
+        Self::reject_nonlegacy_fields(&proto)?;
         let algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
             .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
 
@@ -1914,6 +2171,23 @@ mod tests {
             .current()
     }
 
+    #[test]
+    fn processed_user_deploy_keeps_legacy_wire_and_rejects_malformed_offered_decode() {
+        let legacy = ProcessedDeploy::empty(signed_deploy());
+        let legacy_wire = legacy.clone().to_proto();
+        let decoded = ProcessedUserDeploy::from_proto(legacy_wire.clone()).unwrap();
+        assert_eq!(decoded.to_proto(), legacy_wire);
+        assert_eq!(decoded.as_legacy(), Some(&legacy));
+
+        let mut offered_wire = legacy_wire;
+        offered_wire.deploy.as_mut().unwrap().authorization_v61 = Some(DeployAuthorizationV61 {
+            format_version:
+                crate::rust::signed_phlo_deploy::OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION,
+            ..Default::default()
+        });
+        assert!(ProcessedUserDeploy::from_proto(offered_wire).is_err());
+    }
+
     fn produce_event() -> ProduceEvent {
         ProduceEvent {
             channels_hash: Bytes::from_static(b"chan"),
@@ -2147,6 +2421,10 @@ mod tests {
             ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap(),
             processed
         );
+
+        let mut unsupported = processed.clone().to_proto();
+        unsupported.native_cost_evidence = Some(vec![1, 2, 3].into());
+        assert!(ProcessedDeploy::from_proto(unsupported).is_err());
 
         let empty = ProcessedDeploy::empty(deploy.clone());
         assert_eq!(empty.cost, PCost { cost: 0 });

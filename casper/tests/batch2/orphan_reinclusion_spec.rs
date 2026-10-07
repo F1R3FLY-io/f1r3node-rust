@@ -94,7 +94,7 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == orphan_sig && !pd.is_failed),
+            .any(|pd| pd.identity_bytes() == orphan_sig.as_ref() && !pd.is_failed()),
         "X must carry d cleanly"
     );
 
@@ -235,7 +235,7 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == orphan_sig),
+            .any(|pd| pd.identity_bytes() == orphan_sig.as_ref()),
         "with X merged, d is already in the parents' ancestry, so the \
          ordinary in-scope filter must suppress a second copy — \
          re-proposing it here would duplicate work the merge already \
@@ -244,7 +244,7 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
             .body
             .deploys
             .iter()
-            .map(|pd| hex::encode(&pd.deploy.sig[..8.min(pd.deploy.sig.len())]))
+            .map(|pd| hex::encode(&pd.identity_bytes()[..8.min(pd.identity_bytes().len())]))
             .collect::<Vec<_>>()
     );
 }
@@ -389,7 +389,7 @@ async fn foreign_orphaned_work_returns_by_owner_pool_reproposal() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == orphan_sig && !pd.is_failed),
+            .any(|pd| pd.identity_bytes() == orphan_sig.as_ref() && !pd.is_failed()),
         "the owner must re-propose d from its pool: the carrier left every \
          cone, so the pool copy is the last route back for the work \
          (body sigs: {:?})",
@@ -397,7 +397,7 @@ async fn foreign_orphaned_work_returns_by_owner_pool_reproposal() {
             .body
             .deploys
             .iter()
-            .map(|pd| hex::encode(&pd.deploy.sig[..8.min(pd.deploy.sig.len())]))
+            .map(|pd| hex::encode(&pd.identity_bytes()[..8.min(pd.identity_bytes().len())]))
             .collect::<Vec<_>>()
     );
 

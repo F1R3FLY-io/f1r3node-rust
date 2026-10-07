@@ -14,35 +14,42 @@ use crypto::rust::signatures::signed::Signed;
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, ETuple, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rhoapi::g_unforgeable::UnfInstance::{
+    GAuthorityIdBody, GDeployerIdBody, GPrincipalIdBody, GPrivateBody,
+};
+use models::rhoapi::{
+    Bundle, ETuple, Expr, GAuthorityId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable,
+    ListParWithRandom, Par, Var,
+};
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::rholang::implicits::single_expr;
 use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+use super::accounting::RuntimeBudget;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
+use super::execution_space::ExecutionSpace;
 use super::grpc_client_service::GrpcClientService;
 use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
-use super::rho_runtime::RhoISpace;
 use super::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
-    RhoSysAuthToken, RhoUri,
+    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber,
+    RhoSingleCustodyId, RhoString, RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::chromadb_service::{CollectionEntries, Metadata};
 #[cfg(feature = "chromadb")]
-use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
+use crate::rust::interpreter::rho_type::{Extractor, RhoNil};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
 // NOTE: Not implementing Logger
@@ -309,6 +316,129 @@ impl FixedChannels {
     /// (`lseek(off, whence)`).  Verifying observation; advances
     /// shadow position via the `journal` hook (slice 4.16).
     pub fn fs_seek() -> Par { byte_name(46) }
+
+    /// `rho:io:fs:native:1.0.0/size` — fd-based size via
+    /// `fstat`.  Verifying observation (slice 4.17).
+    pub fn fs_size() -> Par { byte_name(48) }
+
+    /// `rho:io:fs:native:1.0.0/exists` — path-based existence check
+    /// via `openat(O_NOFOLLOW)` + metadata.  Verifying observation
+    /// (slice 4.18).
+    pub fn fs_exists() -> Par { byte_name(52) }
+
+    /// `rho:io:fs:native:1.0.0/stat` — path-based file/dir metadata
+    /// via `openat(O_NOFOLLOW)` + metadata.  Returns a stat record
+    /// with cmode-gated host-transient field stripping.  Verifying
+    /// observation (slice 4.19).
+    pub fn fs_stat() -> Par { byte_name(51) }
+
+    /// `rho:io:fs:native:1.0.0/read` — sequential fd-based read via
+    /// `libc::read`.  Verifying observation with
+    /// length-parameterized cost; advances shadow position by
+    /// bytes returned on all paths (slice 4.20).
+    pub fn fs_read() -> Par { byte_name(42) }
+
+    /// `rho:io:fs:native:1.0.0/readAt` — positional fd-based read
+    /// via `libc::pread`.  Verifying observation with
+    /// length-parameterized cost; does NOT advance shadow
+    /// position per POSIX pread semantics (slice 4.21).
+    pub fn fs_read_at() -> Par { byte_name(43) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` — release a
+    /// directory-entries stream fd + Phase-2 shadow-remove on
+    /// replay.  Non-verifying stream lifecycle (slice 4.22).
+    pub fn fs_entries_stream_close() -> Par { byte_name(68) }
+
+    /// `rho:io:fs:native:1.0.0/truncate` — fd-based truncate via
+    /// `libc::ftruncate`.  Verifying mutation; constant cost.
+    /// First Mutation-family handler on dev (slice 4.24).
+    pub fn fs_truncate() -> Par { byte_name(49) }
+
+    /// `rho:io:fs:native:1.0.0/chmod` — path-based chmod via
+    /// `safe_descend_verified` + `fchmodat` (AT_SYMLINK_NOFOLLOW).
+    /// Verifying mutation; constant cost.  First path-mutation
+    /// handler on dev (slice 4.25).
+    pub fn fs_chmod() -> Par { byte_name(59) }
+
+    /// `rho:io:fs:native:1.0.0/rename` — two-endpoint path rename
+    /// via `safe_descend_verified` × 2 + `renameat`.  Verifying
+    /// mutation; cross-device moves surface as FSERR_CROSS_DEVICE.
+    /// First two-endpoint mutation handler on dev (slice 4.26).
+    pub fn fs_rename() -> Par { byte_name(55) }
+
+    /// `rho:io:fs:native:1.0.0/chown` — path-based chown via
+    /// `safe_descend_verified` + `fchownat` (AT_SYMLINK_NOFOLLOW).
+    /// NON-verifying mutation; Consensus caps rejected at
+    /// parse_content (NSS mapping host-local).  Added by slice 4.27.
+    pub fn fs_chown() -> Par { byte_name(60) }
+
+    /// `rho:io:fs:native:1.0.0/removeFile` — path-based unlink via
+    /// `safe_descend_verified` + `unlinkat` under the LockRegistry
+    /// unlink gate.  Verifying mutation; Consensus + locked
+    /// returns `FSERR_BUSY`.  Added by slice 4.28.
+    pub fn fs_remove_file() -> Par { byte_name(57) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamOpen` — allocate a
+    /// stream fd, `openat` + `fdopendir` under
+    /// `safe_descend_verified`.  Non-verifying stream lifecycle;
+    /// Consensus caps rejected at parse_content (Phase-2 ban:
+    /// readdir order fs-dependent).  Added by slice 4.29.
+    pub fn fs_entries_stream_open() -> Par { byte_name(66) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamNext` — advance a
+    /// stream fd one entry via `readdir`; two-event cost (setup
+    /// + per-entry supplement).  First handler on dev to
+    /// activate `post_reply_supplement`.  Added by slice 4.30.
+    pub fn fs_entries_stream_next() -> Par { byte_name(67) }
+
+    /// `rho:io:fs:native:1.0.0/entries` — bulk directory
+    /// enumeration (sorted, deterministic).  Verifying
+    /// observation with two-event cost (setup + per-entry).
+    /// Added by slice 4.31.
+    pub fn fs_entries() -> Par { byte_name(53) }
+
+    /// `rho:io:fs:native:1.0.0/open` — allocate a FileHandle via
+    /// `safe_open_verified` + Phase-2 real-open on Consensus
+    /// caps.  Non-verifying lifecycle.  Shadow-insert on replay
+    /// at leader's cached fd (load-bearing for Phase-2 fd-based
+    /// re-execute ops).  Added by slice 4.32.
+    pub fn fs_open() -> Par { byte_name(40) }
+
+    /// `rho:io:fs:native:1.0.0/copyFile` — two-endpoint byte-count
+    /// copy via `safe_open_verified` + `std::io::copy`.  Verifying
+    /// mutation; reply carries bytes-copied via `ok_u64`.  Added
+    /// by slice 4.33.
+    pub fn fs_copy_file() -> Par { byte_name(56) }
+
+    /// `rho:io:fs:native:1.0.0/lockRange` — range-based advisory
+    /// lock acquire via `LockRegistry::try_acquire_range_wait`.
+    /// Non-verifying lock lifecycle; minted LockId is consensus-
+    /// observable.  First Lock-family handler on dev (slice 4.34).
+    pub fn fs_lock_range() -> Par { byte_name(62) }
+
+    /// `rho:io:fs:native:1.0.0/lockSequential` — whole-file
+    /// sequential (exclusive) lock acquire via
+    /// `LockRegistry::try_acquire_sequential_wait`.  Non-verifying;
+    /// LockId consensus-observable.  Added by slice 4.35.
+    pub fn fs_lock_sequential() -> Par { byte_name(63) }
+
+    /// `rho:io:fs:native:1.0.0/releaseLock` — release a held
+    /// lock by `LockId` with holder-identity check.  Non-
+    /// verifying; pure LockRegistry op.  Added by slice 4.36.
+    pub fn fs_release_lock() -> Par { byte_name(64) }
+
+    /// `rho:io:fs:native:1.0.0/releaseAllForHolder` — deploy-end
+    /// sweep: cancel all parked waiters for this holder, then
+    /// release all held locks.  Non-verifying.  Added by slice
+    /// 4.37.
+    pub fn fs_release_all_for_holder() -> Par { byte_name(65) }
+
+    /// `rho:io:fs:native:1.0.0/write` — fd + ByteArray; libc::write
+    /// to the shadow fd under spawn_blocking.  Verifying length-
+    /// parameterized mutation (single-event incremental cost +
+    /// H-6 reserve-then-finalize with partial-write patch).  Added
+    /// by slice 4.38.
+    pub fn fs_write() -> Par { byte_name(44) }
 }
 
 pub struct BodyRefs;
@@ -367,6 +497,75 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/seek` body-ref (slice 4.16).
     pub const FS_SEEK: i64 = 46;
+
+    /// `rho:io:fs:native:1.0.0/size` body-ref (slice 4.17).
+    pub const FS_SIZE: i64 = 48;
+
+    /// `rho:io:fs:native:1.0.0/exists` body-ref (slice 4.18).
+    pub const FS_EXISTS: i64 = 52;
+
+    /// `rho:io:fs:native:1.0.0/stat` body-ref (slice 4.19).
+    pub const FS_STAT: i64 = 51;
+
+    /// `rho:io:fs:native:1.0.0/read` body-ref (slice 4.20).
+    pub const FS_READ: i64 = 42;
+
+    /// `rho:io:fs:native:1.0.0/readAt` body-ref (slice 4.21).
+    pub const FS_READ_AT: i64 = 43;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` body-ref
+    /// (slice 4.22).
+    pub const FS_ENTRIES_STREAM_CLOSE: i64 = 68;
+
+    /// `rho:io:fs:native:1.0.0/truncate` body-ref (slice 4.24).
+    pub const FS_TRUNCATE: i64 = 49;
+
+    /// `rho:io:fs:native:1.0.0/chmod` body-ref (slice 4.25).
+    pub const FS_CHMOD: i64 = 59;
+
+    /// `rho:io:fs:native:1.0.0/rename` body-ref (slice 4.26).
+    pub const FS_RENAME: i64 = 55;
+
+    /// `rho:io:fs:native:1.0.0/chown` body-ref (slice 4.27).
+    pub const FS_CHOWN: i64 = 60;
+
+    /// `rho:io:fs:native:1.0.0/removeFile` body-ref (slice 4.28).
+    pub const FS_REMOVE_FILE: i64 = 57;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamOpen` body-ref
+    /// (slice 4.29).
+    pub const FS_ENTRIES_STREAM_OPEN: i64 = 66;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamNext` body-ref
+    /// (slice 4.30).
+    pub const FS_ENTRIES_STREAM_NEXT: i64 = 67;
+
+    /// `rho:io:fs:native:1.0.0/entries` body-ref (slice 4.31).
+    pub const FS_ENTRIES: i64 = 53;
+
+    /// `rho:io:fs:native:1.0.0/open` body-ref (slice 4.32).
+    pub const FS_OPEN: i64 = 40;
+
+    /// `rho:io:fs:native:1.0.0/copyFile` body-ref (slice 4.33).
+    pub const FS_COPY_FILE: i64 = 56;
+
+    /// `rho:io:fs:native:1.0.0/lockRange` body-ref (slice 4.34).
+    pub const FS_LOCK_RANGE: i64 = 62;
+
+    /// `rho:io:fs:native:1.0.0/lockSequential` body-ref
+    /// (slice 4.35).
+    pub const FS_LOCK_SEQUENTIAL: i64 = 63;
+
+    /// `rho:io:fs:native:1.0.0/releaseLock` body-ref
+    /// (slice 4.36).
+    pub const FS_RELEASE_LOCK: i64 = 64;
+
+    /// `rho:io:fs:native:1.0.0/releaseAllForHolder` body-ref
+    /// (slice 4.37).
+    pub const FS_RELEASE_ALL_FOR_HOLDER: i64 = 65;
+
+    /// `rho:io:fs:native:1.0.0/write` body-ref (slice 4.38).
+    pub const FS_WRITE: i64 = 44;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -384,7 +583,7 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
 
 #[derive(Clone)]
 pub struct ProcessContext {
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub dispatcher: RhoDispatch,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
@@ -395,11 +594,12 @@ pub struct ProcessContext {
     /// consulting it directly instead of duplicating the table.
     pub urn_map: Arc<HashMap<String, Par>>,
     pub system_processes: SystemProcesses,
+    pub cost: RuntimeBudget,
 }
 
 impl ProcessContext {
     pub fn create(
-        space: RhoISpace,
+        space: ExecutionSpace,
         dispatcher: RhoDispatch,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
@@ -409,6 +609,7 @@ impl ProcessContext {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        cost: RuntimeBudget,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -428,6 +629,7 @@ impl ProcessContext {
                 grpc_client_service,
                 chromadb_service,
             ),
+            cost,
         }
     }
 }
@@ -496,7 +698,41 @@ impl Definition {
                 + Sync,
         >,
     ) {
-        (self.body_ref, (self.handler)(context))
+        let forbidden = matches!(
+            self.body_ref,
+            BodyRefs::STDOUT
+                | BodyRefs::STDOUT_ACK
+                | BodyRefs::STDERR
+                | BodyRefs::STDERR_ACK
+                | BodyRefs::GPT4
+                | BodyRefs::DALLE3
+                | BodyRefs::TEXT_TO_AUDIO
+                | BodyRefs::GRPC_TELL
+                | BodyRefs::OLLAMA_CHAT
+                | BodyRefs::OLLAMA_GENERATE
+                | BodyRefs::OLLAMA_MODELS
+                | BodyRefs::CHROMA_CREATE_COLLECTION
+                | BodyRefs::CHROMA_GET_COLLECTION_META
+                | BodyRefs::CHROMA_UPSERT_ENTRIES
+                | BodyRefs::CHROMA_QUERY
+                | BodyRefs::CHROMA_DELETE_DOCUMENTS
+        );
+        let cost = context.cost.clone();
+        let handler = (self.handler)(context);
+        (
+            self.body_ref,
+            Box::new(move |args| {
+                if forbidden && cost.native_execution_active() {
+                    Box::pin(async {
+                        Err(InterpreterError::ReduceError(
+                            "native funded execution forbids external service calls".to_string(),
+                        ))
+                    })
+                } else {
+                    handler(args)
+                }
+            }),
+        )
     }
 
     pub fn to_urn_map(&self) -> (String, Par) {
@@ -548,9 +784,16 @@ impl BlockData {
 }
 
 #[derive(Clone)]
+pub enum DeployAuthority {
+    Legacy(PublicKey),
+    Principal(GPrincipalId),
+    Compound(GAuthorityId),
+}
+
+#[derive(Clone)]
 pub struct DeployData {
     pub timestamp: i64,
-    pub deployer_id: PublicKey,
+    pub authority: DeployAuthority,
     pub deploy_id: Vec<u8>,
 }
 
@@ -558,7 +801,7 @@ impl DeployData {
     pub fn empty() -> Self {
         DeployData {
             timestamp: 0,
-            deployer_id: PublicKey::from_bytes(&[0]),
+            authority: DeployAuthority::Legacy(PublicKey::from_bytes(&[0])),
             deploy_id: vec![0],
         }
     }
@@ -566,8 +809,72 @@ impl DeployData {
     pub fn from_deploy(template: &Signed<casper_message::DeployData>) -> Self {
         DeployData {
             timestamp: template.data.time_stamp,
-            deployer_id: template.pk.clone(),
+            authority: DeployAuthority::Legacy(template.pk.clone()),
             deploy_id: template.sig.to_vec(),
+        }
+    }
+
+    pub fn from_cosigned(
+        template: &crypto::rust::signatures::signed::Cosigned<
+            models::rust::cost_deploy_data::DeployData,
+        >,
+    ) -> Self {
+        if template.is_envelope_bound() {
+            let identity = template
+                .envelope_commitment()
+                .expect("validated protocol-v6 envelope identity");
+            return Self::from_bound(template, template.data.time_stamp, &identity);
+        }
+        let primary = template.primary();
+        DeployData {
+            timestamp: template.data.time_stamp,
+            authority: DeployAuthority::Legacy(primary.pk.clone()),
+            deploy_id: primary.sig.to_vec(),
+        }
+    }
+
+    pub fn from_envelope(template: &DeployEnvelope) -> Self {
+        let timestamp = template.body().time_stamp;
+        let identity = template.identity().as_bytes();
+        match template.view() {
+            DeployEnvelopeRef::Legacy(_) => Self {
+                timestamp,
+                authority: DeployAuthority::Legacy(template.primary().pk.clone()),
+                deploy_id: template.identity().as_bytes().to_vec(),
+            },
+            DeployEnvelopeRef::BodyV61(template) => Self::from_bound(template, timestamp, identity),
+            DeployEnvelopeRef::Funded(template) => Self::from_bound(template, timestamp, identity),
+            DeployEnvelopeRef::OfferedFunded(template) => {
+                Self::from_bound(template, timestamp, identity)
+            }
+        }
+    }
+
+    fn from_bound<A>(
+        template: &crypto::rust::signatures::signed::Cosigned<A>,
+        timestamp: i64,
+        identity: &[u8],
+    ) -> Self
+    where
+        A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage,
+    {
+        let selected = template
+            .selected_signers_v61()
+            .expect("validated protocol-v6 selected signers");
+        let authority = if let [signer] = selected.as_slice() {
+            DeployAuthority::Principal(GPrincipalId {
+                key_family: 1,
+                public_key: signer.pk.bytes.to_vec(),
+            })
+        } else {
+            DeployAuthority::Compound(GAuthorityId {
+                id: models::rust::normalizer_env::authority_id_v61(&selected),
+            })
+        };
+        Self {
+            timestamp,
+            authority,
+            deploy_id: identity.to_vec(),
         }
     }
 }
@@ -576,7 +883,7 @@ impl DeployData {
 #[derive(Clone)]
 pub struct SystemProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
@@ -594,7 +901,7 @@ pub struct SystemProcesses {
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
+        space: ExecutionSpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,
@@ -798,7 +1105,7 @@ impl SystemProcesses {
             },
 
             "fromDeployerId" => {
-                match RhoDeployerId::unapply(second_par).map(VaultAddress::from_deployer_id) {
+                match RhoSingleCustodyId::unapply(second_par).map(VaultAddress::from_deployer_id) {
                     Some(Some(ra)) => RhoString::create_par(ra.to_base58()),
                     _ => Par::default(),
                 }
@@ -835,7 +1142,7 @@ impl SystemProcesses {
             return Err(illegal_argument_error("deployer_id_ops"));
         };
 
-        let response = RhoDeployerId::unapply(second_par)
+        let response = RhoSingleCustodyId::unapply(second_par)
             .map(RhoByteArray::create_par)
             .unwrap_or_default();
 
@@ -1071,12 +1378,14 @@ impl SystemProcesses {
             return Err(illegal_argument_error("get_block_data"));
         };
 
-        let data = block_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
-            RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
-        ];
+        let output = {
+            let data = block_data.read().await;
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
+                RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -1099,12 +1408,27 @@ impl SystemProcesses {
             ));
         };
 
-        let data = deploy_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            RhoDeployerId::create_par(data.deployer_id.bytes.as_ref().to_vec()),
-            RhoDeployId::create_par(data.deploy_id.clone()),
-        ];
+        let output = {
+            let data = deploy_data.read().await;
+            let authority = match &data.authority {
+                DeployAuthority::Legacy(public_key) => GUnforgeable {
+                    unf_instance: Some(GDeployerIdBody(GDeployerId {
+                        public_key: public_key.bytes.to_vec(),
+                    })),
+                },
+                DeployAuthority::Principal(principal) => GUnforgeable {
+                    unf_instance: Some(GPrincipalIdBody(principal.clone())),
+                },
+                DeployAuthority::Compound(authority) => GUnforgeable {
+                    unf_instance: Some(GAuthorityIdBody(authority.clone())),
+                },
+            };
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
+                Par::default().with_unforgeables(vec![authority]),
+                RhoDeployId::create_par(data.deploy_id.clone()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -1957,7 +2281,7 @@ impl SystemProcesses {
         };
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 
@@ -2029,7 +2353,7 @@ impl SystemProcesses {
         let result_par = RhoList::create_par(result_par_vec);
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 

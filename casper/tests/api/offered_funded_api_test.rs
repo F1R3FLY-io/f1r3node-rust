@@ -1,0 +1,1441 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::api::block_api::BlockAPI;
+use casper::rust::api::block_report_api::BlockReportAPI;
+use casper::rust::block_status::BlockError;
+use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::report_store::ReportStore;
+use casper::rust::safety_oracle::CliqueOracleImpl;
+use casper::rust::util::rholang::costacc::direct_wallet_funding::{
+    authorize_offered_direct_wallet_funding, DirectWalletFundingLimits,
+};
+use casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+use casper::rust::util::rholang::costacc::vault_payer::{balance_query_source, vault_payer};
+use comm::rust::discovery::node_discovery::NodeDiscovery;
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::rp_conf::RPConfCell;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
+use models::casper::v1::deploy_response::Message as DeployResponseMessage;
+use models::casper::v1::deploy_service_server::DeployService;
+use models::rhoapi::cost_signature::Value;
+use models::rhoapi::CostSignature;
+use models::rust::casper::protocol::casper_message::ProcessedUserDeploy;
+use models::rust::cost_deploy_data::DeployData;
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+use models::rust::native_wallet_receipt::{NativeWalletReceiptLimits, NativeWalletReceiptV1};
+use models::rust::phlo_controls::PhloControlsV1;
+use models::rust::phlo_intent::{
+    PhloConversionCompositionV2, PhloFundingIntentV1, PhloFundingIntentV2,
+    PhloFundingIntentV2Limits,
+};
+use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
+use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
+use models::rust::phlo_wire::PhloWireLimits;
+use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
+use node::rust::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
+use node::rust::api::web_api::{WebApi, WebApiImpl};
+use prost::Message;
+use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
+use rholang::rust::interpreter::accounting::native_phlo_rules::{
+    native_resource_compatibility_rule, NativePhloDimension,
+};
+use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
+use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
+use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+use crate::helper::block_util::resign_block;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
+
+struct EmptyDiscovery;
+
+#[async_trait::async_trait]
+impl NodeDiscovery for EmptyDiscovery {
+    async fn discover(&self) -> Result<(), CommError> { Ok(()) }
+
+    fn peers(&self) -> Result<Vec<PeerNode>, CommError> { Ok(Vec::new()) }
+
+    fn remove_peer(&self, _peer: &PeerNode) -> Result<(), CommError> { Ok(()) }
+}
+
+fn report_api(node: &TestNode) -> BlockReportAPI {
+    let block_store = || {
+        KeyValueBlockStore::new(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+    };
+    BlockReportAPI::new(
+        casper::rust::reporting_casper::noop(),
+        ReportStore::new(Arc::new(InMemoryKeyValueStore::new())),
+        node.engine_cell.clone(),
+        block_store(),
+        CliqueOracleImpl,
+        false,
+    )
+}
+
+fn offered_grpc_service(node: &TestNode) -> DeployGrpcServiceV1Impl {
+    DeployGrpcServiceV1Impl::new(
+        10,
+        None,
+        false,
+        "test".to_string(),
+        "root".to_string(),
+        1,
+        "F1R3".to_string(),
+        "F1R3".to_string(),
+        8,
+        false,
+        node.engine_cell.clone(),
+        report_api(node),
+        models::rhoapi::Par::default(),
+        KeyValueBlockStore::new(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        ),
+        RPConfCell::new(node.rp_conf.clone()),
+        node.connections_cell.clone(),
+        Arc::new(EmptyDiscovery),
+        100,
+        Arc::new(AtomicBool::new(true)),
+    )
+}
+
+fn offered_web_api(node: &TestNode) -> WebApiImpl {
+    WebApiImpl::new(
+        10,
+        false,
+        "test".to_string(),
+        "root".to_string(),
+        1,
+        "F1R3".to_string(),
+        "F1R3".to_string(),
+        8,
+        false,
+        report_api(node),
+        models::rhoapi::Par::default(),
+        Arc::new(node.engine_cell.clone()),
+        RPConfCell::new(node.rp_conf.clone()),
+        node.connections_cell.clone(),
+        Arc::new(EmptyDiscovery),
+        None,
+        100,
+        0,
+        Arc::new(AtomicBool::new(true)),
+    )
+}
+
+fn selected_schedule() -> PhloScheduleV1<'static> {
+    let identities: [&[u8]; 4] = [b"compute", b"introduction", b"transfer", b"trace"];
+    PhloScheduleV1 {
+        protocol_version: 6,
+        network: b"test",
+        shard: b"root",
+        settlement_asset: b"REV",
+        settlement_unit: b"atomic-REV",
+        decimal_scale: 8,
+        classes: NativePhloDimension::ALL
+            .into_iter()
+            .zip(identities)
+            .map(|(dimension, identity)| dimension.resource_class(identity, 1))
+            .collect(),
+        actual_price: 2,
+        compatibility_rule: native_resource_compatibility_rule(),
+    }
+}
+
+fn signed_offer(
+    owner_secret: crypto::rust::private_key::PrivateKey,
+    owner_public: &crypto::rust::public_key::PublicKey,
+) -> models::casper::DeployDataProto {
+    signed_offer_at(owner_secret, owner_public, 1)
+}
+
+fn signed_offer_at(
+    owner_secret: crypto::rust::private_key::PrivateKey,
+    owner_public: &crypto::rust::public_key::PublicKey,
+    time_stamp: i64,
+) -> models::casper::DeployDataProto {
+    let limits = offered_funded_v6_limits().envelope.payload;
+    let signature = CostSignature {
+        value: Some(Value::Ground(principal_ground_v61(&owner_public.bytes))),
+    };
+    let payer = vault_payer(&signature).unwrap();
+    let schedule = selected_schedule();
+    let acquisition_terms = schedule.encode(PhloGenesisPolicy::LIMITS).unwrap();
+    let authority = cost_signature_to_sig(&signature).unwrap();
+    let location = SignatureChannel::from_sig(&authority).par.encode_to_vec();
+    let permissions = (0..schedule.classes.len())
+        .map(|class| {
+            PhloResource {
+                location: &location,
+                class,
+                acquisition_terms: &acquisition_terms,
+                authority: &authority,
+            }
+            .wire_key(PhloExecutionLimits {
+                resource_entries: 1,
+                authority_nodes: limits.funding.authority_nodes,
+                key_bytes: limits.funding.wire.field_bytes,
+            })
+            .unwrap()
+        })
+        .collect();
+    let source = PhloSourcePolicyV1::new(
+        &payer.custody_key,
+        5_000_000,
+        5_000_000,
+        true,
+        permissions,
+        PhloSourceLimits {
+            wire: limits.funding.wire,
+            resource_permissions: schedule.classes.len(),
+            authority_nodes: limits.funding.authority_nodes,
+        },
+    )
+    .unwrap();
+    let funding = PhloFundingIntentV2 {
+        base: PhloFundingIntentV1 {
+            controls: PhloControlsV1 {
+                limit: 2_000_000,
+                price_ceiling: 2,
+                required_owner_ceilings: vec![2],
+                permitted_schedules: vec![schedule.clone()],
+            },
+            schedule_commitment: schedule.digest(PhloGenesisPolicy::LIMITS).unwrap(),
+            total_exposure: 5_000_000,
+            sources: vec![source],
+        },
+        grant_uses: Vec::new(),
+        conversion: PhloConversionCompositionV2::NoConversion,
+    }
+    .encode(PhloFundingIntentV2Limits {
+        wire: limits.funding.wire,
+        base: limits.funding,
+        grant_uses: limits.funding.wire.total_bytes / 8,
+        grant_id_bytes: limits.funding.wire.field_bytes,
+        quote_evidence_bytes: limits.funding.wire.field_bytes,
+    })
+    .unwrap();
+    let body = DeployData {
+        term: "new x in { x!(0) }".to_string(),
+        language: "rholang".to_string(),
+        time_stamp,
+        valid_after_block_number: 0,
+        shard_id: "root".to_string(),
+        expiration_timestamp: None,
+        authority_presentations: Vec::new(),
+    };
+    let payload = OfferedFundedDeploy::new(body, funding, 2_000_000, 2, limits).unwrap();
+    let signed =
+        Cosigned::create_single_envelope(payload, Box::new(Secp256k1), owner_secret).unwrap();
+    OfferedFundedDeploy::to_proto(&signed).unwrap()
+}
+
+async fn offered_v6_genesis(validators: usize) -> crate::util::genesis_builder::GenesisContext {
+    let mut parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators));
+    parameters.2.version = 6;
+    parameters.2.proof_of_stake.min_phlo_price = 1;
+    let policy = PhloGenesisPolicy::from_schedule(&selected_schedule())
+        .expect("selected schedule forms a genesis policy")
+        .with_offered_funded_v6_active();
+    GenesisBuilder::new()
+        .with_resource_policy(policy)
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("offered v6 genesis builds")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unfundable_offer_at_queue_head_is_quarantined_and_next_offer_is_included() {
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    let genesis = offered_v6_genesis(1).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 1, None, None, None, None)
+        .await
+        .expect("single-node network starts");
+    let unfunded_secret = crypto::rust::private_key::PrivateKey::from_bytes(&[0x5a; 32]);
+    let unfunded_public = Secp256k1.to_public(&unfunded_secret);
+    assert!(genesis
+        .genesis_vaults
+        .iter()
+        .all(|(_, public)| public.bytes != unfunded_public.bytes));
+    let unfundable = signed_offer_at(unfunded_secret, &unfunded_public, 1);
+    let fundable = signed_offer_at(
+        genesis.genesis_vaults[0].0.clone(),
+        &genesis.genesis_vaults[0].1,
+        2,
+    );
+    for offer in [&unfundable, &fundable] {
+        BlockAPI::deploy_offered(&nodes[0].engine_cell, offer.clone(), &None, false, "root")
+            .await
+            .expect("well-formed offer is admitted");
+    }
+    let unfundable_id =
+        models::rust::deploy_id::DeployIdV6::try_from(unfundable.deploy_id.to_vec())
+            .expect("offered deploy id has 32 bytes");
+
+    let block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("the proposer skips the unfundable head offer");
+    assert_eq!(block.body.deploys.len(), 1);
+    assert_eq!(
+        block.body.deploys[0].identity_bytes(),
+        fundable.deploy_id.as_ref()
+    );
+    let storage = nodes[0].deploy_storage.lock();
+    assert!(!storage
+        .contains_envelope_id(&unfundable_id)
+        .expect("pending envelope lookup succeeds"));
+    let rejection = storage
+        .envelope_rejection(&unfundable_id)
+        .expect("the rejected offer has a status entry");
+    assert_eq!(rejection.block_number, block.body.state.block_number);
+    assert_eq!(
+        rejection.pre_state_root.as_deref(),
+        Some(block.body.state.pre_state_hash.as_ref())
+    );
+    assert!(!rejection.reason.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn active_validator_rejects_a_block_with_a_body_only_deploy() {
+    let genesis = offered_v6_genesis(2).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .expect("two-node network starts");
+    let offer = signed_offer(
+        genesis.genesis_vaults[0].0.clone(),
+        &genesis.genesis_vaults[0].1,
+    );
+    BlockAPI::deploy_offered(&nodes[0].engine_cell, offer, &None, false, "root")
+        .await
+        .expect("well-formed offer is admitted");
+    let block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("the offered block is created");
+    let mut forged = block.clone();
+    forged.body.deploys.push(ProcessedUserDeploy::Legacy(
+        casper::rust::util::construct_deploy::basic_processed_deploy(0, Some("root".to_string()))
+            .expect("body-only deploy builds"),
+    ));
+    let forged = resign_block(
+        &forged,
+        &nodes[0]
+            .validator_id_opt
+            .as_ref()
+            .expect("node 0 is a validator")
+            .private_key,
+    );
+    let status = nodes[1]
+        .process_block(forged.clone())
+        .await
+        .expect("validation completes");
+    assert!(
+        matches!(
+            status,
+            Either::Left(BlockError::Invalid(
+                casper::rust::block_status::InvalidBlock::InvalidTransaction
+            ))
+        ),
+        "unexpected status {status:?}"
+    );
+    assert!(!nodes[1].casper.dag_contains(&forged.block_hash));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let adopted = AdoptedResourcePolicy::load(
+        &nodes[0].runtime_manager,
+        &genesis.genesis_block,
+        nodes[0].casper.casper_shard_conf(),
+    )
+    .await
+    .unwrap();
+    assert!(adopted.offered_funded_v6_active());
+    let selected = selected_schedule()
+        .encode(PhloGenesisPolicy::LIMITS)
+        .unwrap();
+    adopted.check_acquisition_terms(&selected).unwrap();
+    let offer = signed_offer(
+        genesis.genesis_vaults[0].0.clone(),
+        &genesis.genesis_vaults[0].1,
+    );
+    let limits = offered_funded_v6_limits().envelope;
+    let checked = OfferedFundedDeploy::from_proto(offer.clone(), limits.payload).unwrap();
+    assert_eq!(checked.data.phlo_limit(), 2_000_000);
+    assert_eq!(checked.data.phlo_price(), 2);
+    let body_only = Signed::create(
+        models::rust::casper::protocol::casper_message::DeployData {
+            term: checked.data.body().term.clone(),
+            time_stamp: checked.data.body().time_stamp,
+            phlo_price: 2,
+            phlo_limit: 2_000_000,
+            valid_after_block_number: checked.data.body().valid_after_block_number,
+            shard_id: checked.data.body().shard_id.clone(),
+            expiration_timestamp: checked.data.body().expiration_timestamp,
+        },
+        Box::new(Secp256k1),
+        genesis.genesis_vaults[0].0.clone(),
+    )
+    .unwrap();
+    assert!(BlockAPI::deploy(
+        &nodes[0].engine_cell,
+        body_only.clone(),
+        &None,
+        false,
+        "root",
+    )
+    .await
+    .is_err());
+    assert!(nodes[0].casper.deploy(body_only).is_err());
+    let wallet = authorize_offered_direct_wallet_funding(&checked, DirectWalletFundingLimits {
+        members: limits.members,
+        funding: limits.payload.funding,
+    })
+    .unwrap();
+    assert_eq!(wallet.payers().len(), 1);
+    let service = offered_grpc_service(&nodes[0]);
+    let mut changed_price = offer.clone();
+    changed_price.phlo_price = 3;
+    assert!(OfferedFundedDeploy::from_proto(changed_price.clone(), limits.payload).is_err());
+    let changed_price_result = service
+        .do_deploy(tonic::Request::new(changed_price))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(matches!(
+        changed_price_result.message,
+        Some(DeployResponseMessage::Error(_))
+    ));
+    let mut changed_limit = offer.clone();
+    changed_limit.phlo_limit = 2_000_001;
+    assert!(OfferedFundedDeploy::from_proto(changed_limit.clone(), limits.payload).is_err());
+    let changed_limit_result = service
+        .do_deploy(tonic::Request::new(changed_limit))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(matches!(
+        changed_limit_result.message,
+        Some(DeployResponseMessage::Error(_))
+    ));
+    let deploy_id: block_storage::rust::dag::block_dag_key_value_storage::DeployId =
+        offer.deploy_id.to_vec();
+    let wire_offer =
+        models::casper::DeployDataProto::decode(offer.encode_to_vec().as_slice()).unwrap();
+    let accepted = service
+        .do_deploy(tonic::Request::new(wire_offer))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        matches!(accepted.message, Some(DeployResponseMessage::Result(result)) if result.contains("DeployId is:"))
+    );
+    let v1_funding =
+        PhloFundingIntentV2::decode(checked.data.funding_intent(), PhloFundingIntentV2Limits {
+            wire: limits.payload.funding.wire,
+            base: limits.payload.funding,
+            grant_uses: limits.payload.funding.wire.total_bytes / 8,
+            grant_id_bytes: limits.payload.funding.wire.field_bytes,
+            quote_evidence_bytes: limits.payload.funding.wire.field_bytes,
+        })
+        .unwrap()
+        .base
+        .encode(limits.payload.funding)
+        .unwrap();
+    let v1_offer = OfferedFundedDeploy::new(
+        checked.data.body().clone(),
+        v1_funding,
+        2_000_000,
+        2,
+        limits.payload,
+    )
+    .unwrap();
+    let v1_offer = Cosigned::create_single_envelope(
+        v1_offer,
+        Box::new(Secp256k1),
+        genesis.genesis_vaults[0].0.clone(),
+    )
+    .unwrap();
+    assert!(BlockAPI::deploy_offered(
+        &nodes[0].engine_cell,
+        OfferedFundedDeploy::to_proto(&v1_offer).unwrap(),
+        &None,
+        false,
+        "root",
+    )
+    .await
+    .is_err());
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). Offered deploys no
+    // longer alternate block turns with legacy deploys, so block 1 carries the offer.
+    // nodes[0].allow_empty_blocks = true;
+    // let legacy_turn = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
+    //     .await
+    //     .unwrap();
+    // assert_eq!(legacy_turn.body.state.block_number, 1);
+    // assert!(legacy_turn.body.deploys.is_empty());
+    let block = nodes[0].create_block_unsafe(&[]).await.unwrap();
+    // Disabled: see the legacy-turn note above (epic 8946, D3).
+    // assert_eq!(block.body.state.block_number, 2);
+    assert_eq!(block.body.state.block_number, 1);
+    assert_eq!(block.body.deploys.len(), 1);
+    assert_eq!(block.body.deploys[0].identity_bytes(), deploy_id.as_slice());
+    let protocol = offered_funded_v6_limits();
+    let offered = block.body.deploys[0].as_offered().unwrap();
+    let evidence = offered.evidence(protocol.evidence).unwrap();
+    let receipt_limits = NativeWalletReceiptLimits {
+        wire: PhloWireLimits {
+            total_bytes: protocol.evidence.field_bytes,
+            field_bytes: protocol.evidence.field_bytes,
+        },
+        payers: protocol.envelope.members.get(),
+    };
+    let mut altered_receipt =
+        NativeWalletReceiptV1::decode(evidence.wallet_settlement, receipt_limits).unwrap();
+    altered_receipt.rows[0].post_balance += 1;
+    let altered_receipt = altered_receipt.encode(receipt_limits).unwrap();
+    let mut altered_evidence = evidence.clone();
+    altered_evidence.wallet_settlement = &altered_receipt;
+    let mut altered_proto = offered.to_proto(protocol.evidence).unwrap();
+    altered_proto.native_cost_evidence =
+        Some(altered_evidence.encode(protocol.evidence).unwrap().into());
+    let mut altered_block = block.clone();
+    altered_block.body.deploys[0] = ProcessedUserDeploy::from_proto(altered_proto).unwrap();
+    let altered_block = resign_block(
+        &altered_block,
+        &nodes[0].validator_id_opt.as_ref().unwrap().private_key,
+    );
+    assert_ne!(altered_block.block_hash, block.block_hash);
+    let original_heads = nodes[2]
+        .casper
+        .block_dag()
+        .await
+        .unwrap()
+        .latest_message_hashes();
+    let altered_status = nodes[2].process_block(altered_block.clone()).await.unwrap();
+    assert!(matches!(
+        altered_status,
+        Either::Left(BlockError::BlockException(error))
+            if error.to_string().contains("independent wallet receipt differs from committed cost evidence")
+    ));
+    assert!(!nodes[2].casper.dag_contains(&altered_block.block_hash));
+    assert_eq!(
+        nodes[2]
+            .casper
+            .block_dag()
+            .await
+            .unwrap()
+            .latest_message_hashes(),
+        original_heads
+    );
+    assert!(
+        BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &deploy_id)
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        nodes[0].process_block(block.clone()).await.unwrap(),
+        Either::Right(_)
+    ));
+    assert!(matches!(
+        nodes[1].process_block(block.clone()).await.unwrap(),
+        Either::Right(_)
+    ));
+    let producer_receipt =
+        BlockAPI::find_offered_settlement_receipt(&nodes[0].engine_cell, &deploy_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let validator_receipt =
+        BlockAPI::find_offered_settlement_receipt(&nodes[1].engine_cell, &deploy_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(producer_receipt, validator_receipt);
+    let public_receipt = offered_web_api(&nodes[1])
+        .offered_settlement_receipt(hex::encode(&deploy_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        public_receipt.rev_spent,
+        validator_receipt.rev_spent.to_string()
+    );
+    assert_eq!(
+        public_receipt.rev_ceiling,
+        validator_receipt.rev_ceiling.to_string()
+    );
+    assert_eq!(public_receipt.phlo_limit, validator_receipt.phlo_limit);
+    assert_eq!(public_receipt.phlo_price, validator_receipt.phlo_price);
+    assert_eq!(
+        public_receipt.purses[0].post_balance,
+        validator_receipt.purses[0].post_balance.to_string()
+    );
+    let public_json = serde_json::to_value(&public_receipt).unwrap();
+    assert_eq!(
+        public_json["revSpent"],
+        validator_receipt.rev_spent.to_string()
+    );
+    assert_eq!(public_json["phloLimit"], validator_receipt.phlo_limit);
+    assert_eq!(
+        public_json["purses"][0]["postBalance"],
+        validator_receipt.purses[0].post_balance.to_string()
+    );
+    assert_eq!(
+        producer_receipt.block_hash.as_ref(),
+        block.block_hash.as_ref()
+    );
+    assert_eq!(producer_receipt.phlo_limit, 2_000_000);
+    assert_eq!(producer_receipt.phlo_price, 2);
+    assert!(producer_receipt.phlo_used <= producer_receipt.phlo_limit);
+    assert_eq!(
+        producer_receipt.rev_spent,
+        u128::from(producer_receipt.phlo_used) * 2 + producer_receipt.fee_rev
+    );
+    assert!(producer_receipt.rev_spent <= producer_receipt.rev_ceiling);
+    let payer_address = VaultAddress::from_public_key(&genesis.genesis_vaults[0].1).unwrap();
+    assert_eq!(producer_receipt.purses.len(), 1);
+    assert_eq!(
+        producer_receipt.purses[0].address,
+        payer_address.to_base58().as_bytes()
+    );
+    let (observed, _) = nodes[1]
+        .runtime_manager
+        .play_exploratory_deploy(
+            balance_query_source(&payer_address),
+            &block.body.state.post_state_hash,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(observed.len(), 1);
+    assert_eq!(
+        u64::try_from(RhoNumber::unapply(&observed[0]).unwrap()).unwrap(),
+        producer_receipt.purses[0].post_balance
+    );
+}
+
+/// DR-99 (bug 9954): a node that joins a policy chain after genesis restores
+/// from a post-genesis anchor. Its approved block is the anchor, it holds the
+/// anchor state and a copy of genesis, and it must adopt the genesis resource
+/// policy. Before DR-99 the node did not start, because the policy load took
+/// the approved block as the genesis block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_restored_from_a_post_genesis_anchor_adopts_the_genesis_resource_policy() {
+    use casper::rust::casper::hash_set_casper;
+    use casper::rust::util::rholang::costacc::genesis_resource_policy::GenesisResourcePolicy;
+    use models::rust::deploy_envelope::DeployEnvelope;
+
+    let genesis = offered_v6_genesis(1).await;
+    let genesis_block = genesis.genesis_block.clone();
+    let mut nodes = TestNode::create_network(genesis.clone(), 1, None, None, None, None)
+        .await
+        .expect("single-node network starts");
+    // The anchor carries an offer, so its post-state differs from the
+    // genesis post-state (an empty block keeps the genesis post-state).
+    BlockAPI::deploy_offered(
+        &nodes[0].engine_cell,
+        signed_offer(
+            genesis.genesis_vaults[0].0.clone(),
+            &genesis.genesis_vaults[0].1,
+        ),
+        &None,
+        false,
+        "root",
+    )
+    .await
+    .expect("well-formed offer is admitted");
+    let anchor = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("an offered block extends the policy chain");
+    assert_eq!(anchor.body.deploys.len(), 1);
+    assert_eq!(anchor.header.parents_hash_list, vec![genesis_block
+        .block_hash
+        .clone()]);
+    assert_ne!(
+        anchor.body.state.post_state_hash,
+        genesis_block.body.state.post_state_hash
+    );
+    let runtime_manager = nodes[0].runtime_manager.clone();
+    let shard_conf = nodes[0].casper.casper_shard_conf.clone();
+
+    // Regression witness: the load before DR-99 takes the approved block as
+    // the genesis block, so it refuses the anchor.
+    let refused = AdoptedResourcePolicy::load(&runtime_manager, &anchor, &shard_conf)
+        .await
+        .expect_err("the anchor is not a genesis block");
+    assert!(refused
+        .to_string()
+        .contains("requires the approved genesis block"));
+
+    // The sealed constants read at the anchor equal the genesis values, and
+    // the reads use the given state: an unknown state fails.
+    let at_genesis = GenesisResourcePolicy::load(&runtime_manager, &genesis_block)
+        .await
+        .expect("the genesis policy loads at the genesis state");
+    let at_anchor = GenesisResourcePolicy::load_at(
+        &runtime_manager,
+        &genesis_block,
+        &anchor.body.state.post_state_hash,
+    )
+    .await
+    .expect("the genesis policy loads at the anchor state");
+    assert_eq!(
+        at_anchor.genesis_root(),
+        &genesis_block.body.state.post_state_hash
+    );
+    assert_eq!(at_anchor.genesis_root(), at_genesis.genesis_root());
+    assert_eq!(
+        at_anchor.record().encode().expect("the record encodes"),
+        at_genesis.record().encode().expect("the record encodes")
+    );
+    assert_eq!(at_anchor.minimum_price(), at_genesis.minimum_price());
+    assert!(GenesisResourcePolicy::load_at(
+        &runtime_manager,
+        &genesis_block,
+        &vec![0x5c; 32].into(),
+    )
+    .await
+    .is_err());
+
+    let deploy_storage = nodes[0].deploy_storage.lock().clone();
+    let joined = hash_set_casper(
+        nodes[0].casper.block_retriever.clone(),
+        nodes[0].casper.event_publisher.clone(),
+        Arc::new(runtime_manager.clone()),
+        nodes[0].casper.estimator.clone(),
+        nodes[0].block_store.clone(),
+        nodes[0].block_dag_storage.clone(),
+        deploy_storage,
+        nodes[0].rejected_deploy_buffer.clone(),
+        nodes[0].casper.casper_buffer_storage.clone(),
+        None,
+        shard_conf.clone(),
+        anchor.clone(),
+        casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+    )
+    .await
+    .expect("a node restored from a post-genesis anchor starts");
+    assert_eq!(
+        joined
+            .get_approved_block()
+            .expect("the joined node has an approved block")
+            .block_hash,
+        anchor.block_hash
+    );
+    let adopted = joined
+        .adopted_resource_policy()
+        .expect("the joined node adopts the genesis policy");
+    assert_eq!(
+        adopted.genesis().genesis_root(),
+        &genesis_block.body.state.post_state_hash
+    );
+    assert!(adopted.offered_funded_v6_active());
+    assert!(joined.offered_funded_active());
+    assert_eq!(joined.get_version(), 6);
+
+    // Admission: the joined node admits an offer under its adopted policy and
+    // refuses a policy with another genesis identity.
+    let limits = offered_funded_v6_limits().envelope;
+    let offer = DeployEnvelope::from_proto(
+        signed_offer_at(
+            genesis.genesis_vaults[0].0.clone(),
+            &genesis.genesis_vaults[0].1,
+            11,
+        ),
+        limits,
+    )
+    .expect("the offer is a canonical envelope");
+    assert!(matches!(
+        joined.deploy_envelope(offer, adopted),
+        Ok(Either::Right(_))
+    ));
+    let mut foreign_genesis = genesis_block.clone();
+    foreign_genesis.body.state.post_state_hash = anchor.body.state.post_state_hash.clone();
+    let foreign = AdoptedResourcePolicy::load_at(
+        &runtime_manager,
+        &foreign_genesis,
+        &anchor.body.state.post_state_hash,
+        &shard_conf,
+    )
+    .await
+    .expect("a policy with another identity loads");
+    assert_ne!(
+        foreign.genesis().genesis_root(),
+        adopted.genesis().genesis_root()
+    );
+    let second_offer = DeployEnvelope::from_proto(
+        signed_offer_at(
+            genesis.genesis_vaults[0].0.clone(),
+            &genesis.genesis_vaults[0].1,
+            12,
+        ),
+        limits,
+    )
+    .expect("the offer is a canonical envelope");
+    assert!(joined.deploy_envelope(second_offer, &foreign).is_err());
+}
+
+// DR-101 (bug 10056): system residue in shared registry state is not charged
+// to the deployment that last wrote it.
+
+/// The Embers testnet log initializer: registry lookups, a TreeHashMap,
+/// contracts on a compound channel and an insertSigned of its environment.
+const REGISTRY_ENVIRONMENT_INITIALIZER: &str = r#"new rl(`rho:registry:lookup`),
+    rs(`rho:registry:insertSigned:secp256k1`),
+    abort(`rho:execution:abort`),
+    prevEnvCh,
+    initEnv,
+    contractDeployer(`rho:rchain:deployerId`),
+    log,
+    uriCh
+in {
+    rl!(ENV_URI, *prevEnvCh) |
+    for(@Nil <- prevEnvCh) { initEnv!() } |
+    for(@(version, _) <- prevEnvCh) {
+        if (version < VERSION) { initEnv!() }
+    } |
+    for(<- initEnv) {
+        new rl(`rho:registry:lookup`),
+            devNull(`rho:io:devNull`),
+            treeHashMapCh,
+            treeHashMapLookupCh,
+            treeHashMapInitCh,
+            stackCh,
+            stackLookupCh,
+            private
+        in {
+            rl!(`rho:lang:treeHashMap`, *treeHashMapLookupCh) |
+            for(treeHashMap <- treeHashMapLookupCh) {
+                treeHashMap!("init", 3, *treeHashMapInitCh) |
+                for(@map <- treeHashMapInitCh) { treeHashMapCh!(*treeHashMap, map) }
+            } |
+            rl!(`rho:lang:stack`, *stackLookupCh) |
+            for(@(_, stack) <- stackLookupCh) { stackCh!(stack) } |
+            contract @(*log, *private)(@level, @message) = {
+                new deployData(`rho:deploy:data`), deployDataCh, valueCh, nilCh, logsCh in {
+                    deployData!(*deployDataCh) |
+                    for(_, _, @deployId <- deployDataCh; treeHashMap, @map <<- treeHashMapCh; stack <<- stackCh) {
+                        treeHashMap!("getOrElse", map, deployId.toString(), *valueCh, *nilCh) |
+                        for(@logs <- valueCh) {
+                            stack!("push", logs, {"level": level, "message": message}, *devNull)
+                        } |
+                        for(<- nilCh) {
+                            stack!("init", *logsCh) |
+                            for(@logs <- logsCh) {
+                                stack!("push", logs, {"level": level, "message": message}, *devNull) |
+                                treeHashMap!("set", map, deployId.toString(), logs, *devNull)
+                            }
+                        }
+                    }
+                }
+            } |
+            contract log(@"info", @message) = { @(*log, *private)!("info", message) } |
+            contract log(@"get", @deployId, ret) = {
+                new valueCh, nilCh in {
+                    for(treeHashMap, @map <<- treeHashMapCh) {
+                        treeHashMap!("getOrElse", map, deployId, *valueCh, *nilCh)
+                    } |
+                    for(@logs <- valueCh; stack <<- stackCh) { stack!("toList", logs, *ret) } |
+                    for(<- nilCh) { ret!(Nil) }
+                }
+            }
+        } |
+        rs!(PUBLIC_KEY, (VERSION, bundle+{*log}), SIG, *uriCh) |
+        for(@Nil <- uriCh) { abort!("failed to insert env") }
+    }
+}"#;
+
+const REGISTRY_LOOKUP: &str =
+    "new rl(`rho:registry:lookup`), ret in { rl!(`rho:lang:treeHashMap`, *ret) }";
+
+/// The insertSigned signature over `(timestamp, deployer, version)` that the
+/// registry checks against the inserting deployment.
+fn registry_insert_signature(
+    environment_secret: &[u8; 32],
+    deployer_public: &[u8],
+    time_stamp: i64,
+) -> (Vec<u8>, Vec<u8>) {
+    use crypto::rust::hash::blake2b256::Blake2b256;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{ETuple, Expr, Par};
+
+    let ground = |instance: ExprInstance| Par {
+        exprs: vec![Expr {
+            expr_instance: Some(instance),
+        }],
+        ..Default::default()
+    };
+    let signed = ground(ExprInstance::ETupleBody(ETuple {
+        ps: vec![
+            ground(ExprInstance::GInt(time_stamp)),
+            ground(ExprInstance::GByteArray(deployer_public.to_vec())),
+            ground(ExprInstance::GInt(0)),
+        ],
+        ..Default::default()
+    }));
+    let environment_public = Secp256k1.to_public(
+        &crypto::rust::private_key::PrivateKey::from_bytes(environment_secret),
+    );
+    (
+        environment_public.bytes.to_vec(),
+        Secp256k1.sign(
+            &Blake2b256::hash(signed.encode_to_vec()),
+            environment_secret,
+        ),
+    )
+}
+
+fn registry_environment_initializer(deployer_public: &[u8], time_stamp: i64) -> String {
+    use crypto::rust::hash::blake2b256::Blake2b256;
+
+    let (environment_public, signature) =
+        registry_insert_signature(&[0x42; 32], deployer_public, time_stamp);
+    let uri = rholang::rust::interpreter::registry::registry::Registry::build_uri(
+        &Blake2b256::hash(environment_public.clone()),
+    );
+    REGISTRY_ENVIRONMENT_INITIALIZER
+        .replace("ENV_URI", &format!("`{uri}`"))
+        .replace("VERSION", "0")
+        .replace(
+            "PUBLIC_KEY",
+            &format!("\"{}\".hexToBytes()", hex::encode(&environment_public)),
+        )
+        .replace(
+            "SIG",
+            &format!("\"{}\".hexToBytes()", hex::encode(&signature)),
+        )
+}
+
+fn registry_insert(
+    deployer_public: &[u8],
+    time_stamp: i64,
+    environment_secret: [u8; 32],
+) -> String {
+    let (environment_public, signature) =
+        registry_insert_signature(&environment_secret, deployer_public, time_stamp);
+    format!(
+        "new rs(`rho:registry:insertSigned:secp256k1`), uriCh, value in {{ \
+         rs!(\"{}\".hexToBytes(), (0, bundle+{{*value}}), \"{}\".hexToBytes(), *uriCh) }}",
+        hex::encode(&environment_public),
+        hex::encode(&signature)
+    )
+}
+
+/// An owner-direct offer that funds only its signer's own principal resources.
+fn owner_direct_offer(
+    owner: &(
+        crypto::rust::private_key::PrivateKey,
+        crypto::rust::public_key::PublicKey,
+    ),
+    time_stamp: i64,
+    term: String,
+) -> models::casper::DeployDataProto {
+    let (owner_secret, owner_public) = owner;
+    let limits = offered_funded_v6_limits().envelope.payload;
+    let signature = CostSignature {
+        value: Some(Value::Ground(principal_ground_v61(&owner_public.bytes))),
+    };
+    let payer = vault_payer(&signature).unwrap();
+    let schedule = selected_schedule();
+    let acquisition_terms = schedule.encode(PhloGenesisPolicy::LIMITS).unwrap();
+    let authority = cost_signature_to_sig(&signature).unwrap();
+    let location = SignatureChannel::from_sig(&authority).par.encode_to_vec();
+    let permissions = (0..schedule.classes.len())
+        .map(|class| {
+            PhloResource {
+                location: &location,
+                class,
+                acquisition_terms: &acquisition_terms,
+                authority: &authority,
+            }
+            .wire_key(PhloExecutionLimits {
+                resource_entries: 1,
+                authority_nodes: limits.funding.authority_nodes,
+                key_bytes: limits.funding.wire.field_bytes,
+            })
+            .unwrap()
+        })
+        .collect();
+    let cap = 400_000_000;
+    let source = PhloSourcePolicyV1::new(
+        &payer.custody_key,
+        cap,
+        cap,
+        true,
+        permissions,
+        PhloSourceLimits {
+            wire: limits.funding.wire,
+            resource_permissions: schedule.classes.len(),
+            authority_nodes: limits.funding.authority_nodes,
+        },
+    )
+    .unwrap();
+    let funding = PhloFundingIntentV2 {
+        base: PhloFundingIntentV1 {
+            controls: PhloControlsV1 {
+                limit: 100_000_000,
+                price_ceiling: 2,
+                required_owner_ceilings: vec![2],
+                permitted_schedules: vec![schedule.clone()],
+            },
+            schedule_commitment: schedule.digest(PhloGenesisPolicy::LIMITS).unwrap(),
+            total_exposure: u128::from(cap),
+            sources: vec![source],
+        },
+        grant_uses: Vec::new(),
+        conversion: PhloConversionCompositionV2::NoConversion,
+    }
+    .encode(PhloFundingIntentV2Limits {
+        wire: limits.funding.wire,
+        base: limits.funding,
+        grant_uses: limits.funding.wire.total_bytes / 8,
+        grant_id_bytes: limits.funding.wire.field_bytes,
+        quote_evidence_bytes: limits.funding.wire.field_bytes,
+    })
+    .unwrap();
+    let body = DeployData {
+        term,
+        language: "rholang".to_string(),
+        time_stamp,
+        valid_after_block_number: 0,
+        shard_id: "root".to_string(),
+        expiration_timestamp: None,
+        authority_presentations: Vec::new(),
+    };
+    let payload = OfferedFundedDeploy::new(body, funding, 100_000_000, 2, limits).unwrap();
+    let signed =
+        Cosigned::create_single_envelope(payload, Box::new(Secp256k1), owner_secret.clone())
+            .unwrap();
+    OfferedFundedDeploy::to_proto(&signed).unwrap()
+}
+
+/// Proposes one owner-direct offer on node 0. Every other node replays the
+/// block, and all settlement receipts agree.
+async fn propose_offer(
+    nodes: &mut [TestNode],
+    offer: models::casper::DeployDataProto,
+) -> Result<
+    (
+        models::rust::casper::protocol::casper_message::BlockMessage,
+        casper::rust::api::block_api::OfferedSettlementReceipt,
+    ),
+    String,
+> {
+    BlockAPI::deploy_offered(&nodes[0].engine_cell, offer.clone(), &None, false, "root")
+        .await
+        .expect("a well-formed offer is admitted");
+    let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
+        .expect("an offered deploy id has 32 bytes");
+    let Ok(block) = nodes[0].create_block_unsafe(&[]).await else {
+        let storage = nodes[0].deploy_storage.lock();
+        return Err(storage
+            .envelope_rejection(&id)
+            .map(|rejection| rejection.reason)
+            .unwrap_or_else(|| "no block and no recorded rejection".to_string()));
+    };
+    assert_eq!(block.body.deploys.len(), 1);
+    assert!(!block.body.deploys[0].is_failed());
+    for node in nodes.iter_mut() {
+        assert!(matches!(
+            node.process_block(block.clone()).await.unwrap(),
+            Either::Right(_)
+        ));
+    }
+    let deploy_id = offer.deploy_id.to_vec();
+    let receipts = futures::future::join_all(
+        nodes
+            .iter()
+            .map(|node| BlockAPI::find_offered_settlement_receipt(&node.engine_cell, &deploy_id)),
+    )
+    .await;
+    let receipts = receipts
+        .into_iter()
+        .map(|receipt| receipt.unwrap().expect("every node holds the receipt"))
+        .collect::<Vec<_>>();
+    assert!(receipts.windows(2).all(|pair| pair[0] == pair[1]));
+    assert_eq!(receipts[0].purses.len(), 1);
+    Ok((block, receipts[0].clone()))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn registry_initializer_is_funded_on_a_fresh_genesis() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let signer = genesis.genesis_vaults[0].clone();
+    let term = registry_environment_initializer(&signer.1.bytes, 1);
+    propose_offer(&mut nodes, owner_direct_offer(&signer, 1, term))
+        .await
+        .expect("the initializer is funded by its own signer");
+}
+
+/// The registry work of signer B after signer A wrote the registry.
+async fn after_another_signers_registry_insert(
+    second_term: impl Fn(&[u8], i64) -> String,
+) -> Result<casper::rust::api::block_api::OfferedSettlementReceipt, String> {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let writer = genesis.genesis_vaults[2].clone();
+    let reader = genesis.genesis_vaults[0].clone();
+    assert_ne!(writer.1.bytes, reader.1.bytes);
+    propose_offer(
+        &mut nodes,
+        owner_direct_offer(&writer, 1, registry_insert(&writer.1.bytes, 1, [0x30; 32])),
+    )
+    .await
+    .expect("the writer's insert is funded");
+    propose_offer(
+        &mut nodes,
+        owner_direct_offer(&reader, 2, second_term(&reader.1.bytes, 2)),
+    )
+    .await
+    .map(|(_, receipt)| receipt)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_signer_initializes_a_registry_environment_after_a_registry_insert() {
+    after_another_signers_registry_insert(registry_environment_initializer)
+        .await
+        .expect("registry residue of another signer costs this signer nothing");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_signer_looks_up_the_registry_after_a_registry_insert() {
+    after_another_signers_registry_insert(|_, _| REGISTRY_LOOKUP.to_string())
+        .await
+        .expect("a registry lookup is funded by its own signer");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_signer_inserts_into_the_registry_after_a_registry_insert() {
+    after_another_signers_registry_insert(|public, time_stamp| {
+        registry_insert(public, time_stamp, [0x31; 32])
+    })
+    .await
+    .expect("a registry insert is funded by its own signer");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_registry_lookup_costs_the_same_whoever_wrote_the_registry_last() {
+    let genesis = offered_v6_genesis(3).await;
+    let writer = genesis.genesis_vaults[2].clone();
+    let reader = genesis.genesis_vaults[0].clone();
+    let mut spent = Vec::new();
+    for looker in [&writer, &reader] {
+        let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+            .await
+            .unwrap();
+        propose_offer(
+            &mut nodes,
+            owner_direct_offer(&writer, 1, registry_insert(&writer.1.bytes, 1, [0x30; 32])),
+        )
+        .await
+        .expect("the writer's insert is funded");
+        let (_, receipt) = propose_offer(
+            &mut nodes,
+            owner_direct_offer(looker, 2, REGISTRY_LOOKUP.to_string()),
+        )
+        .await
+        .expect("the lookup is funded");
+        spent.push(receipt.rev_spent);
+    }
+    assert_eq!(spent[0], spent[1]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn user_written_data_still_needs_its_writers_token() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let writer = genesis.genesis_vaults[2].clone();
+    let reader = genesis.genesis_vaults[0].clone();
+    propose_offer(
+        &mut nodes,
+        owner_direct_offer(&writer, 1, "@\"user-written-channel\"!(1)".to_string()),
+    )
+    .await
+    .expect("the writer's datum is funded");
+    let rejection = propose_offer(
+        &mut nodes,
+        owner_direct_offer(
+            &reader,
+            2,
+            "for(_ <- @\"user-written-channel\") { Nil }".to_string(),
+        ),
+    )
+    .await
+    .expect_err("consuming a user-signed datum needs the writer's token (DR-68/D5)");
+    assert!(
+        rejection.contains("no feasible signed assignment"),
+        "{rejection}"
+    );
+}
+
+/// DR-101 (P1 rem:signed-subst): `Either.map2` runs the caller's function
+/// inside a genesis body. The function keeps its caller's seal, so what it
+/// leaves behind is user-written data that still needs the caller's token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_process_that_a_system_contract_runs_keeps_its_callers_seal() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let caller = genesis.genesis_vaults[2].clone();
+    let other = genesis.genesis_vaults[0].clone();
+    let map2 = r#"new rl(`rho:registry:lookup`), eitherCh, ret, f in {
+        rl!(`rho:lang:either`, *eitherCh) |
+        for(@(_, either) <- eitherCh) {
+            @either!("map2", (true, 1), (true, 2),
+                for (@x, @y, r <- f) { r!(x + y) | for(_ <- @"either-leftover") { Nil } },
+                *ret)
+        }
+    }"#;
+    propose_offer(&mut nodes, owner_direct_offer(&caller, 1, map2.to_string()))
+        .await
+        .expect("the caller's map2 is funded");
+    let rejection = propose_offer(
+        &mut nodes,
+        owner_direct_offer(&other, 2, "@\"either-leftover\"!(1)".to_string()),
+    )
+    .await
+    .expect_err("the leftover receive keeps the caller's seal");
+    assert!(
+        rejection.contains("no feasible signed assignment"),
+        "{rejection}"
+    );
+}
+
+/// A term that moves `amount` from the signer's vault at `from` to the vault at
+/// `to`, and publishes the transfer result.
+fn vault_transfer(from: &VaultAddress, to: &VaultAddress, amount: u64) -> String {
+    format!(
+        r#"new rl(`rho:registry:lookup`), systemVaultCh, vaultCh, authKeyCh, resultCh,
+          deployerId(`rho:system:deployerId`) in {{
+          rl!(`rho:vault:system`, *systemVaultCh) |
+          for (@(_, systemVault) <- systemVaultCh) {{
+            @systemVault!("find", "{}", *vaultCh) |
+            @systemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+            for (@(true, vault) <- vaultCh & key <- authKeyCh) {{
+              @vault!("transfer", "{}", {amount}, *key, *resultCh) |
+              for (@result <- resultCh) {{ @"vault-transfer-result"!(result) }}
+            }}
+          }}
+        }}"#,
+        from.to_base58(),
+        to.to_base58(),
+    )
+}
+
+async fn vault_balance(
+    nodes: &[TestNode],
+    root: &models::rust::block::state_hash::StateHash,
+    address: &VaultAddress,
+) -> u64 {
+    let (observed, _) = nodes[0]
+        .runtime_manager
+        .play_exploratory_deploy(balance_query_source(address), root, None)
+        .await
+        .unwrap();
+    assert_eq!(observed.len(), 1);
+    u64::try_from(RhoNumber::unapply(&observed[0]).unwrap()).unwrap()
+}
+
+/// DR-101: a deposit into a vault is system residue of the deployment that
+/// made it, so the owner of the vault spends it with its own token alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signer_spends_a_deposit_that_another_signer_made() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let owner = genesis.genesis_vaults[2].clone();
+    let depositor = genesis.genesis_vaults[0].clone();
+    let owner_vault = VaultAddress::from_public_key(&owner.1).unwrap();
+    let depositor_vault = VaultAddress::from_public_key(&depositor.1).unwrap();
+    let initial = vault_balance(
+        &nodes,
+        &genesis.genesis_block.body.state.post_state_hash,
+        &owner_vault,
+    )
+    .await;
+    let (deposit, _) = propose_offer(
+        &mut nodes,
+        owner_direct_offer(
+            &depositor,
+            1,
+            vault_transfer(&depositor_vault, &owner_vault, 1_000),
+        ),
+    )
+    .await
+    .expect("the depositor's transfer is funded");
+    let deposited = vault_balance(&nodes, &deposit.body.state.post_state_hash, &owner_vault).await;
+    assert_eq!(deposited, initial + 1_000);
+    let (spend, receipt) = propose_offer(
+        &mut nodes,
+        owner_direct_offer(
+            &owner,
+            2,
+            vault_transfer(&owner_vault, &depositor_vault, 500),
+        ),
+    )
+    .await
+    .expect("the owner spends the deposit with its own token");
+    let remaining = vault_balance(&nodes, &spend.body.state.post_state_hash, &owner_vault).await;
+    assert_eq!(
+        u128::from(remaining) + 500 + receipt.rev_spent,
+        u128::from(deposited)
+    );
+}
+
+/// A term that inserts version 1.0.0 of `project` through the public
+/// `rho:registry:1.0.0` entry point, and publishes the result.
+fn version_insert(project: &str) -> String {
+    format!(
+        r#"new getReg(`rho:registry:1.0.0`), notify, regCh, ret in {{
+          getReg!(*regCh, *notify) |
+          for (@reg <- regCh) {{
+            @reg!("insertVersion", "serve", "{project}", "1.0.0", "code", *ret) |
+            for (@inserted <- ret) {{ @"version-inserted-{project}"!(inserted) }}
+          }}
+        }}"#
+    )
+}
+
+/// DR-101: the versioned registry keeps every entry in one store datum. After
+/// one signer inserts a version, another signer inserts a version with its own
+/// token alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_signer_inserts_a_version_after_a_version_insert() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let writer = genesis.genesis_vaults[2].clone();
+    let reader = genesis.genesis_vaults[0].clone();
+    propose_offer(
+        &mut nodes,
+        owner_direct_offer(&writer, 1, version_insert("first")),
+    )
+    .await
+    .expect("the first insert is funded");
+    let (block, _) = propose_offer(
+        &mut nodes,
+        owner_direct_offer(&reader, 2, version_insert("second")),
+    )
+    .await
+    .expect("the second insert is funded by its own signer");
+    let published = nodes[0]
+        .runtime_manager
+        .get_data(
+            block.body.state.post_state_hash.clone(),
+            &models::rust::utils::new_gstring_par(
+                "version-inserted-second".to_owned(),
+                Vec::new(),
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(published.len(), 1);
+    assert_eq!(
+        rholang::rust::interpreter::rho_type::RhoBoolean::unapply(&published[0]),
+        Some(true)
+    );
+}
+
+/// DR-101: one signer writes the versioned registry in a block, and another
+/// signer writes a user datum in a sibling block. A third signer inserts a
+/// version in the block that merges both branches, with its own token alone.
+///
+/// Disabled until gap G6 of the Phase D plan lands: on this branch, the
+/// proposer of a block with two offered parents fails with "offered-funded
+/// recovery requires an envelope buffer", before funding runs. The test
+/// fails for that reason with and without DR-101.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs gap G6 (offered recovery for a multi-parent merge); see DR-101"]
+async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() {
+    let genesis = offered_v6_genesis(4).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let first = genesis.genesis_vaults[2].clone();
+    let second = genesis.genesis_vaults[3].clone();
+    let third = genesis.genesis_vaults[0].clone();
+    let mut siblings = Vec::with_capacity(2);
+    for (index, (writer, term)) in [
+        (&first, version_insert("first")),
+        (&second, "@\"sibling-datum\"!(1)".to_string()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let offer = owner_direct_offer(writer, index as i64 + 1, term);
+        BlockAPI::deploy_offered(&nodes[index].engine_cell, offer, &None, false, "root")
+            .await
+            .expect("a well-formed offer is admitted");
+        let block = nodes[index]
+            .create_block_unsafe(&[])
+            .await
+            .expect("each sibling deploy is funded");
+        assert_eq!(block.header.parents_hash_list, vec![genesis
+            .genesis_block
+            .block_hash
+            .clone()]);
+        siblings.push(block);
+    }
+    for node in nodes.iter_mut() {
+        for block in &siblings {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+    let (merged, _) = propose_offer(
+        &mut nodes,
+        owner_direct_offer(&third, 3, version_insert("third")),
+    )
+    .await
+    .expect("the third insert is funded by its own signer");
+    assert_eq!(merged.header.parents_hash_list.len(), 2);
+    let published = nodes[0]
+        .runtime_manager
+        .get_data(
+            merged.body.state.post_state_hash.clone(),
+            &models::rust::utils::new_gstring_par(
+                "version-inserted-third".to_owned(),
+                Vec::new(),
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(published.len(), 1);
+    assert_eq!(
+        rholang::rust::interpreter::rho_type::RhoBoolean::unapply(&published[0]),
+        Some(true)
+    );
+}

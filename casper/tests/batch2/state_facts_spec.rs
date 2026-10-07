@@ -101,7 +101,7 @@ async fn checkpoint_block_with(
             bonds: checkpoint.bonds,
             block_number: next_block_num,
         },
-        deploys: checkpoint.deploys,
+        deploys: checkpoint.deploys.into_iter().map(Into::into).collect(),
         rejected_deploys: checkpoint.rejected_deploys,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),

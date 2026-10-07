@@ -1,0 +1,706 @@
+(* ═══════════════════════════════════════════════════════════════════════════
+   SlashingComposition.v — Cost Accounting and Slashing Boundary
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The slashing protocol is verified in the f1r3node-rust
+   analysis/slashing branch. This module does not duplicate those proofs.
+   Instead it adopts the small interface that the cost-accounting model
+   needs: slash system deploys may change PoS slashing state, but they do
+   not change a user deploy's evaluated fuel, settlement inputs, or
+   post-evaluation settlement arithmetic.
+
+   The model is intentionally shallow. Slashing authorization, two-level
+   closure, validator lifetime, and Rust/Scala slashing bisimilarity remain
+   obligations of the slashing proof suite. The cost-accounting proof suite
+   only needs the composition fact that a slash effect is a system effect
+   over PoS state, not an in-flight mutation of user-evaluation fuel.
+   ═══════════════════════════════════════════════════════════════════════════ *)
+
+From Stdlib Require Import Arith.PeanoNat Bool.Bool Lia.
+
+From CostAccountedRho Require Import CostAccountedSyntax.
+From CostAccountedRho Require Import CostAccountedReduction.
+From CostAccountedRho Require Import Settlement.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 1: Boundary State
+   ═══════════════════════════════════════════════════════════════════════════ *)
+
+Record cost_boundary := {
+  boundary_settlement : fee_settlement;
+  boundary_user_system : system
+}.
+
+Record slashing_ledger := {
+  slashing_bonded_stake : nat;
+  slashing_coop_vault_balance : nat;
+  slashing_active_validator_count : nat;
+  slashing_slashed_validator_count : nat;
+  (* Cost-Accounted Rho Stage-C two-effect slash + redemption (DR-3/DR-7;
+     workstream-c-economic.md "Stage C", stageb-minting-halt-interface.md
+     Decision 4). The legacy slash "transferred forfeited stake to the coop
+     vault"; the LANDED two-effect slash instead EARMARKS the bond on a
+     per-offender quarantine (coop UNCHANGED at slash time) and HALTS minting
+     across epochs. These ledger fields expose those two new quantities at the
+     cost-accounting boundary so the conservation/unmetered facts can be stated. *)
+  slashing_quarantined_stake : nat;
+  slashing_minting_halted_count : nat
+}.
+
+Record composed_state := {
+  composed_cost_boundary : cost_boundary;
+  composed_slashing_ledger : slashing_ledger
+}.
+
+Record slash_system_effect := {
+  slash_effect_before : slashing_ledger;
+  slash_effect_after : slashing_ledger;
+  slash_effect_evidence_epoch : nat
+}.
+
+Record slash_authorization_view := {
+  slash_view_current_epoch : nat;
+  slash_view_evidence_present : bool;
+  slash_view_evidence_epoch : nat;
+  slash_view_target_activation_epoch : nat;
+  slash_view_parent_pre_state_bond : nat;
+  slash_view_ambient_bond : nat;
+  slash_view_execution_bond : nat
+}.
+
+Definition apply_slash_system_effect
+  (C : composed_state)
+  (E : slash_system_effect)
+  : composed_state :=
+  {|
+    composed_cost_boundary := composed_cost_boundary C;
+    composed_slashing_ledger := slash_effect_after E
+  |}.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 2: Cost-Invalid Evidence as Slashing Input
+   ═══════════════════════════════════════════════════════════════════════════ *)
+
+Inductive cost_invalid_block_evidence : Type :=
+  | EvidenceReplayCostMismatch : nat -> nat -> cost_invalid_block_evidence
+  | EvidenceLowDeployPrice : nat -> nat -> cost_invalid_block_evidence
+  | EvidenceUnauthorizedFeeSettlement : cost_invalid_block_evidence
+  | EvidenceUnauthorizedBudgetMutation : cost_invalid_block_evidence.
+
+Record cost_invalid_block := {
+  cost_invalid_evidence : cost_invalid_block_evidence;
+  cost_invalid_boundary : cost_boundary
+}.
+
+Definition record_cost_invalid_block
+  (evidence : cost_invalid_block_evidence)
+  (boundary : cost_boundary)
+  : cost_invalid_block :=
+  {|
+    cost_invalid_evidence := evidence;
+    cost_invalid_boundary := boundary
+  |}.
+
+Definition replay_cost_mismatch
+  (recorded observed : nat)
+  : bool :=
+  negb (Nat.eqb recorded observed).
+
+Definition low_deploy_price_violation
+  (offered minimum : nat)
+  : bool :=
+  offered <? minimum.
+
+Inductive settlement_actor : Type :=
+  | UserDeployActor
+  | SystemDeployActor.
+
+Definition fee_settlement_authorized
+  (actor : settlement_actor)
+  : bool :=
+  match actor with
+  | UserDeployActor => false
+  | SystemDeployActor => true
+  end.
+
+Definition unauthorized_fee_settlement
+  (actor : settlement_actor)
+  : bool :=
+  negb (fee_settlement_authorized actor).
+
+Inductive budget_mutation_phase : Type :=
+  | DuringUserEvaluation
+  | PostEvaluationSettlement.
+
+Definition budget_mutation_authorized
+  (phase : budget_mutation_phase)
+  (actor : settlement_actor)
+  : bool :=
+  match phase, actor with
+  | PostEvaluationSettlement, SystemDeployActor => true
+  | _, _ => false
+  end.
+
+Definition unauthorized_budget_mutation
+  (phase : budget_mutation_phase)
+  (actor : settlement_actor)
+  : bool :=
+  negb (budget_mutation_authorized phase actor).
+
+Definition stale_cost_evidence
+  (current_epoch evidence_epoch horizon : nat)
+  : bool :=
+  negb (current_epoch <=? evidence_epoch + horizon).
+
+Definition slash_evidence_epoch_current
+  (view : slash_authorization_view)
+  : bool :=
+  Nat.eqb
+    (slash_view_evidence_epoch view)
+    (slash_view_current_epoch view) &&
+  Nat.eqb
+    (slash_view_target_activation_epoch view)
+    (slash_view_current_epoch view).
+
+Definition slash_authorized_by_parent_pre_state
+  (view : slash_authorization_view)
+  : bool :=
+  slash_view_evidence_present view &&
+  slash_evidence_epoch_current view &&
+  (0 <? slash_view_parent_pre_state_bond view).
+
+Definition canonical_slash_candidate_selected
+  (view : slash_authorization_view)
+  : bool :=
+  slash_authorized_by_parent_pre_state view.
+
+Definition slash_execution_bond_zero
+  (view : slash_authorization_view)
+  : bool :=
+  Nat.eqb (slash_view_execution_bond view) 0.
+
+Definition slash_effect_for_authorization
+  (C : composed_state)
+  (view : slash_authorization_view)
+  (E : slash_system_effect)
+  : composed_state :=
+  if slash_authorized_by_parent_pre_state view then
+    apply_slash_system_effect C E
+  else
+    C.
+
+Theorem replay_cost_mismatch_sound_for_evidence : forall recorded observed,
+  recorded <> observed ->
+  replay_cost_mismatch recorded observed = true.
+Proof.
+  intros recorded observed Hneq.
+  unfold replay_cost_mismatch.
+  destruct (Nat.eqb_spec recorded observed) as [Heq | Hneq'].
+  - contradiction.
+  - reflexivity.
+Qed.
+
+Theorem replay_cost_mismatch_complete_for_evidence : forall recorded observed,
+  replay_cost_mismatch recorded observed = true ->
+  recorded <> observed.
+Proof.
+  intros recorded observed Hmismatch.
+  unfold replay_cost_mismatch in Hmismatch.
+  destruct (Nat.eqb_spec recorded observed) as [Heq | Hneq].
+  - discriminate.
+  - exact Hneq.
+Qed.
+
+Theorem low_deploy_price_violation_sound : forall offered minimum,
+  offered < minimum ->
+  low_deploy_price_violation offered minimum = true.
+Proof.
+  intros offered minimum Hlt.
+  unfold low_deploy_price_violation.
+  apply Nat.ltb_lt. exact Hlt.
+Qed.
+
+Theorem low_deploy_price_violation_complete : forall offered minimum,
+  low_deploy_price_violation offered minimum = true ->
+  offered < minimum.
+Proof.
+  intros offered minimum Hviolation.
+  unfold low_deploy_price_violation in Hviolation.
+  apply Nat.ltb_lt. exact Hviolation.
+Qed.
+
+Theorem unauthorized_fee_settlement_sound : forall actor,
+  unauthorized_fee_settlement actor = true ->
+  actor = UserDeployActor.
+Proof.
+  intros actor Hunauthorized.
+  destruct actor; reflexivity || discriminate.
+Qed.
+
+Theorem unauthorized_fee_settlement_complete :
+  unauthorized_fee_settlement UserDeployActor = true.
+Proof.
+  reflexivity.
+Qed.
+
+Theorem unauthorized_budget_mutation_sound : forall phase actor,
+  unauthorized_budget_mutation phase actor = true ->
+  phase <> PostEvaluationSettlement \/ actor <> SystemDeployActor.
+Proof.
+  intros phase actor Hunauthorized.
+  destruct phase, actor; simpl in Hunauthorized; try discriminate.
+  - left. discriminate.
+  - left. discriminate.
+  - right. discriminate.
+Qed.
+
+Theorem unauthorized_runtime_budget_mutation_during_evaluation : forall actor,
+  unauthorized_budget_mutation DuringUserEvaluation actor = true.
+Proof.
+  intros actor. destruct actor; reflexivity.
+Qed.
+
+Theorem authorized_system_settlement_budget_mutation :
+  unauthorized_budget_mutation PostEvaluationSettlement SystemDeployActor =
+  false.
+Proof.
+  reflexivity.
+Qed.
+
+Theorem stale_cost_evidence_sound : forall current evidence_epoch horizon,
+  stale_cost_evidence current evidence_epoch horizon = true ->
+  evidence_epoch + horizon < current.
+Proof.
+  intros current evidence_epoch horizon Hstale.
+  unfold stale_cost_evidence in Hstale.
+  destruct (current <=? evidence_epoch + horizon) eqn:Hfresh.
+  - discriminate.
+  - apply Nat.leb_gt in Hfresh. exact Hfresh.
+Qed.
+
+Theorem stale_cost_evidence_complete : forall current evidence_epoch horizon,
+  evidence_epoch + horizon < current ->
+  stale_cost_evidence current evidence_epoch horizon = true.
+Proof.
+  intros current evidence_epoch horizon Hstale.
+  unfold stale_cost_evidence.
+  apply Nat.leb_gt in Hstale.
+  rewrite Hstale. reflexivity.
+Qed.
+
+Theorem current_cost_evidence_epoch_sound :
+  forall view,
+    slash_evidence_epoch_current view = true ->
+    slash_view_evidence_epoch view = slash_view_current_epoch view /\
+    slash_view_target_activation_epoch view = slash_view_current_epoch view.
+Proof.
+  intros view Hcurrent.
+  unfold slash_evidence_epoch_current in Hcurrent.
+  apply andb_true_iff in Hcurrent as [Hevidence Htarget].
+  apply Nat.eqb_eq in Hevidence.
+  apply Nat.eqb_eq in Htarget.
+  split; assumption.
+Qed.
+
+Theorem current_cost_evidence_epoch_complete :
+  forall view,
+    slash_view_evidence_epoch view = slash_view_current_epoch view ->
+    slash_view_target_activation_epoch view = slash_view_current_epoch view ->
+    slash_evidence_epoch_current view = true.
+Proof.
+  intros view Hevidence Htarget.
+  unfold slash_evidence_epoch_current.
+  rewrite Hevidence, Htarget.
+  repeat rewrite Nat.eqb_refl.
+  reflexivity.
+Qed.
+
+Theorem parent_pre_state_authorizes_current_cost_evidence :
+  forall view,
+    slash_view_evidence_present view = true ->
+    slash_evidence_epoch_current view = true ->
+    0 < slash_view_parent_pre_state_bond view ->
+    slash_authorized_by_parent_pre_state view = true.
+Proof.
+  intros view Hpresent Hcurrent Hbond.
+  unfold slash_authorized_by_parent_pre_state.
+  rewrite Hpresent, Hcurrent.
+  apply Nat.ltb_lt in Hbond.
+  rewrite Hbond.
+  reflexivity.
+Qed.
+
+Theorem parent_pre_state_authorization_requires_parent_bond :
+  forall view,
+    slash_authorized_by_parent_pre_state view = true ->
+    0 < slash_view_parent_pre_state_bond view.
+Proof.
+  intros view Hauthorized.
+  unfold slash_authorized_by_parent_pre_state in Hauthorized.
+  apply andb_true_iff in Hauthorized as [_ Hbond].
+  apply Nat.ltb_lt in Hbond.
+  exact Hbond.
+Qed.
+
+Theorem ambient_bond_does_not_authorize_without_parent_pre_state :
+  forall view,
+    slash_view_parent_pre_state_bond view = 0 ->
+    0 < slash_view_ambient_bond view ->
+    slash_authorized_by_parent_pre_state view = false.
+Proof.
+  intros view Hparent _.
+  unfold slash_authorized_by_parent_pre_state.
+  rewrite Hparent.
+  destruct (slash_view_evidence_present view),
+    (slash_evidence_epoch_current view); reflexivity.
+Qed.
+
+Theorem canonical_slash_candidate_requires_current_cost_evidence :
+  forall view,
+    canonical_slash_candidate_selected view = true ->
+    slash_view_evidence_present view = true /\
+    slash_evidence_epoch_current view = true.
+Proof.
+  intros view Hselected.
+  unfold canonical_slash_candidate_selected,
+    slash_authorized_by_parent_pre_state in Hselected.
+  apply andb_true_iff in Hselected as [HpresentAndCurrent _].
+  apply andb_true_iff in HpresentAndCurrent as [Hpresent Hcurrent].
+  split; assumption.
+Qed.
+
+Theorem stale_canonical_slash_candidate_not_authorized :
+  forall view,
+    slash_view_evidence_epoch view <> slash_view_current_epoch view \/
+    slash_view_target_activation_epoch view <> slash_view_current_epoch view ->
+    slash_authorized_by_parent_pre_state view = false.
+Proof.
+  intros view Hnoncurrent.
+  destruct (slash_authorized_by_parent_pre_state view) eqn:Hauthorized.
+  - unfold slash_authorized_by_parent_pre_state in Hauthorized.
+    apply andb_true_iff in Hauthorized as [HpresentAndCurrent _].
+    apply andb_true_iff in HpresentAndCurrent as [_ Hcurrent].
+    destruct Hnoncurrent as [Hevidence | Htarget].
+    + apply current_cost_evidence_epoch_sound in Hcurrent as [Heq _].
+      contradiction.
+    + apply current_cost_evidence_epoch_sound in Hcurrent as [_ Heq].
+      contradiction.
+  - reflexivity.
+Qed.
+
+Theorem missing_evidence_cannot_select_canonical_slash_candidate :
+  forall view,
+    slash_view_evidence_present view = false ->
+    canonical_slash_candidate_selected view = false.
+Proof.
+  intros view Hmissing.
+  unfold canonical_slash_candidate_selected,
+    slash_authorized_by_parent_pre_state.
+  rewrite Hmissing.
+  reflexivity.
+Qed.
+
+Theorem cost_invalid_block_evidence_does_not_change_user_cost :
+  forall evidence boundary,
+    burned_amount
+      (boundary_settlement
+        (cost_invalid_boundary
+          (record_cost_invalid_block evidence boundary))) =
+    burned_amount (boundary_settlement boundary).
+Proof.
+  reflexivity.
+Qed.
+
+Theorem cost_invalid_block_evidence_preserves_settlement_inputs :
+  forall evidence boundary,
+    let recorded := record_cost_invalid_block evidence boundary in
+    boundary_settlement (cost_invalid_boundary recorded) =
+      boundary_settlement boundary.
+Proof.
+  intros evidence boundary.
+  reflexivity.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 3: Slash Effects Preserve Cost-Accounting Observables
+   ═══════════════════════════════════════════════════════════════════════════ *)
+
+Theorem slash_preserves_fee_settlement_inputs :
+  forall C E,
+    let C' := apply_slash_system_effect C E in
+    boundary_settlement (composed_cost_boundary C') =
+      boundary_settlement (composed_cost_boundary C).
+Proof.
+  intros C E.
+  reflexivity.
+Qed.
+
+Theorem slash_preserves_settled_amount :
+  forall C E,
+    let C' := apply_slash_system_effect C E in
+    settled_amount
+      (boundary_settlement (composed_cost_boundary C')) =
+    settled_amount
+      (boundary_settlement (composed_cost_boundary C)).
+Proof.
+  reflexivity.
+Qed.
+
+Theorem slash_preserves_settlement_accounting :
+  forall C E,
+    let C' := apply_slash_system_effect C E in
+    reserved_amount
+      (boundary_settlement (composed_cost_boundary C')) =
+      reserved_amount
+        (boundary_settlement (composed_cost_boundary C)) /\
+    debited_amount
+      (boundary_settlement (composed_cost_boundary C')) =
+      debited_amount
+        (boundary_settlement (composed_cost_boundary C)) /\
+    burned_amount
+      (boundary_settlement (composed_cost_boundary C')) =
+      burned_amount
+        (boundary_settlement (composed_cost_boundary C)) /\
+    refund_amount
+      (boundary_settlement (composed_cost_boundary C')) =
+      refund_amount
+        (boundary_settlement (composed_cost_boundary C)) /\
+    settled_amount
+      (boundary_settlement (composed_cost_boundary C')) =
+      settled_amount
+        (boundary_settlement (composed_cost_boundary C)).
+Proof.
+  intros C E.
+  repeat split; reflexivity.
+Qed.
+
+Theorem slash_system_effect_is_unmetered_for_user_budget :
+  forall C E,
+    system_token_count
+      (boundary_user_system
+        (composed_cost_boundary
+          (apply_slash_system_effect C E))) =
+    system_token_count
+      (boundary_user_system (composed_cost_boundary C)).
+Proof.
+  reflexivity.
+Qed.
+
+Theorem slash_after_evaluation_preserves_final_fuel :
+  forall C E,
+    boundary_user_system
+      (composed_cost_boundary
+        (apply_slash_system_effect C E)) =
+    boundary_user_system (composed_cost_boundary C).
+Proof.
+  reflexivity.
+Qed.
+
+Theorem slash_after_evaluation_cannot_add_fuel :
+  forall S S' C E,
+    ca_reachable S S' ->
+    boundary_user_system (composed_cost_boundary C) = S' ->
+    system_token_count
+      (boundary_user_system
+        (composed_cost_boundary
+          (apply_slash_system_effect C E))) <=
+    system_token_count S.
+Proof.
+  intros S S' C E Hreach Hboundary.
+  rewrite slash_after_evaluation_preserves_final_fuel.
+  rewrite Hboundary.
+  exact (evaluation_cannot_receive_refund_fuel S S' Hreach).
+Qed.
+
+Theorem slash_after_evaluation_preserves_settlement_conservation :
+  forall C E,
+    settlement_physical_cost
+      (boundary_settlement (composed_cost_boundary C)) <=
+    settlement_physical_bound
+      (boundary_settlement (composed_cost_boundary C)) ->
+    settlement_byte_cost
+      (boundary_settlement (composed_cost_boundary C)) <=
+    settlement_byte_bound
+      (boundary_settlement (composed_cost_boundary C)) ->
+    settled_amount
+      (boundary_settlement
+        (composed_cost_boundary
+          (apply_slash_system_effect C E))) =
+    reserved_amount
+      (boundary_settlement
+        (composed_cost_boundary
+          (apply_slash_system_effect C E))).
+Proof.
+  intros C E Hphysical Hbyte.
+  rewrite slash_preserves_settled_amount.
+  replace
+    (reserved_amount
+      (boundary_settlement
+        (composed_cost_boundary
+          (apply_slash_system_effect C E))))
+    with
+      (reserved_amount
+        (boundary_settlement (composed_cost_boundary C)))
+    by reflexivity.
+  exact (debit_plus_refund_eq_reservation
+    (boundary_settlement (composed_cost_boundary C))
+    Hphysical Hbyte).
+Qed.
+
+Theorem parent_pre_state_authorized_slash_preserves_cost_boundary :
+  forall C view E,
+    slash_authorized_by_parent_pre_state view = true ->
+    composed_cost_boundary (slash_effect_for_authorization C view E) =
+    composed_cost_boundary C.
+Proof.
+  intros C view E Hauthorized.
+  unfold slash_effect_for_authorization.
+  rewrite Hauthorized.
+  reflexivity.
+Qed.
+
+Theorem zero_bond_slash_noop_preserves_cost_boundary :
+  forall C view E,
+    slash_execution_bond_zero view = true ->
+    slash_effect_after E = slash_effect_before E ->
+    composed_cost_boundary (slash_effect_for_authorization C view E) =
+    composed_cost_boundary C.
+Proof.
+  intros C view E _ _.
+  unfold slash_effect_for_authorization.
+  destruct (slash_authorized_by_parent_pre_state view); reflexivity.
+Qed.
+
+Theorem zero_bond_slash_noop_preserves_composed_state :
+  forall C view E,
+    slash_execution_bond_zero view = true ->
+    slash_effect_after E = slash_effect_before E ->
+    composed_slashing_ledger C = slash_effect_before E ->
+    slash_effect_for_authorization C view E = C.
+Proof.
+  intros C view E _ Hnoop Hbefore.
+  unfold slash_effect_for_authorization.
+  destruct (slash_authorized_by_parent_pre_state view) eqn:Hauthorized.
+  - destruct C as [boundary ledger].
+    destruct E as [before after epoch].
+    simpl in *.
+    subst after.
+    subst ledger.
+    reflexivity.
+  - reflexivity.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 4: Stage-C two-effect slash + redemption at the cost boundary
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Cost-Accounted Rho Stage C (DR-3/DR-7; workstream-c-economic.md "Stage C",
+   stageb-minting-halt-interface.md Decision 4). The two-effect slash earmarks
+   the offender's stake on a per-offender quarantine (the legacy coop transfer
+   is gone — coop grows ONLY in the Guilty redemption branch) and halts minting.
+   Redemption (governance-triggered, PoS-multisig-quorum gated — DR-12) adjud: a
+   Vindicated/Guilty redeem un-halts and restores; a Burned redeem keeps the
+   validator halted and destroys the quarantined stake. As with the slash
+   effect, NONE of these touch a user deploy's evaluated fuel or settlement
+   arithmetic — they are system effects over the PoS ledger. This section
+   adopts the SHALLOW interface (the deep transition is verified in the slashing
+   tree: PoSContract.v `slashC` / ValidatorRedemption.v `redeem`). *)
+
+(* The Stage-C ledger conservation measure at the cost boundary: the funds the
+   ledger tracks across the slash/quarantine/redeem lifecycle — bonded stake +
+   coop vault + quarantined stake. Mirrors the slashing-tree
+   ValidatorRedemption.v `total_funds`. *)
+Definition ledger_tracked_funds (L : slashing_ledger) : nat :=
+  slashing_bonded_stake L
+  + slashing_coop_vault_balance L
+  + slashing_quarantined_stake L.
+
+(* A redemption system effect over the PoS ledger, the analog of
+   [slash_system_effect]: a before/after ledger pair carrying the adjudication. *)
+Record redeem_system_effect := {
+  redeem_effect_before : slashing_ledger;
+  redeem_effect_after : slashing_ledger
+}.
+
+Definition apply_redeem_system_effect
+  (C : composed_state)
+  (R : redeem_system_effect)
+  : composed_state :=
+  {|
+    composed_cost_boundary := composed_cost_boundary C;
+    composed_slashing_ledger := redeem_effect_after R
+  |}.
+
+(* The two-effect slash is unmetered for the user budget — the quarantine /
+   minting-halt fields (and every other ledger field) are carried entirely on
+   the slashing ledger; the user-evaluation system fuel is untouched. This is
+   the Stage-C-strengthened companion to
+   [slash_system_effect_is_unmetered_for_user_budget]. *)
+Theorem slash_two_effect_is_unmetered_for_user_budget :
+  forall C E,
+    system_token_count
+      (boundary_user_system
+        (composed_cost_boundary (apply_slash_system_effect C E))) =
+    system_token_count
+      (boundary_user_system (composed_cost_boundary C)).
+Proof.
+  reflexivity.
+Qed.
+
+(* The redemption system effect is likewise unmetered for the user budget. *)
+Theorem redeem_system_effect_is_unmetered_for_user_budget :
+  forall C R,
+    system_token_count
+      (boundary_user_system
+        (composed_cost_boundary (apply_redeem_system_effect C R))) =
+    system_token_count
+      (boundary_user_system (composed_cost_boundary C)).
+Proof.
+  reflexivity.
+Qed.
+
+(* The redemption effect preserves the user deploy's settlement inputs. *)
+Theorem redeem_preserves_fee_settlement_inputs :
+  forall C R,
+    let C' := apply_redeem_system_effect C R in
+    boundary_settlement (composed_cost_boundary C') =
+      boundary_settlement (composed_cost_boundary C).
+Proof.
+  intros C R. reflexivity.
+Qed.
+
+(* Ledger-level conservation: a system effect (slash or redeem) that is
+   tracked-funds preserving on its before/after ledgers preserves the boundary's
+   tracked funds. The before/after relation is supplied as a hypothesis — the
+   DEEP per-outcome conservation (Vindicated/Guilty preserve, Burned reduces by
+   the burned bond) is proved structurally in the slashing tree
+   (ValidatorRedemption.v `slash_then_redeem_conserves_total` /
+   `slash_then_redeem_burned_reduces_total_by_bond`). Here we record that a
+   conserving effect's ledger arithmetic threads through `apply_*`. *)
+Theorem redeem_conserving_effect_preserves_tracked_funds :
+  forall C R,
+    ledger_tracked_funds (redeem_effect_after R)
+      = ledger_tracked_funds (composed_slashing_ledger C) ->
+    ledger_tracked_funds (composed_slashing_ledger (apply_redeem_system_effect C R))
+      = ledger_tracked_funds (composed_slashing_ledger C).
+Proof.
+  intros C R Hcons. unfold apply_redeem_system_effect. simpl. exact Hcons.
+Qed.
+
+(* The slash effect's quarantine/halt fields do not change the user budget OR
+   the settlement accounting — a single statement pinning the Stage-C two-effect
+   slash as cost-observationally inert for the user. *)
+Theorem slash_two_effect_preserves_user_cost_observables :
+  forall C E,
+    let C' := apply_slash_system_effect C E in
+    system_token_count
+      (boundary_user_system (composed_cost_boundary C')) =
+      system_token_count
+        (boundary_user_system (composed_cost_boundary C))
+    /\ settled_amount
+         (boundary_settlement (composed_cost_boundary C')) =
+       settled_amount
+         (boundary_settlement (composed_cost_boundary C)).
+Proof.
+  intros C E. split; reflexivity.
+Qed.

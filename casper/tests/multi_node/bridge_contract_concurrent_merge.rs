@@ -153,13 +153,15 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
 
     for block in [&block1, &block2] {
         assert!(
-            block.body.deploys.iter().all(|deploy| !deploy.is_failed),
+            block.body.deploys.iter().all(|deploy| !deploy.is_failed()),
             "a bridge deploy failed: {:?}",
             block
                 .body
                 .deploys
                 .iter()
-                .map(|deploy| deploy.system_deploy_error.clone())
+                .map(|deploy| deploy
+                    .as_legacy()
+                    .and_then(|legacy| legacy.system_deploy_error.clone()))
                 .collect::<Vec<_>>()
         );
     }

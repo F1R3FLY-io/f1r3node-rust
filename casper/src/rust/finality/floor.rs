@@ -228,8 +228,8 @@ fn introduced_sigs_metered<'m, W: WorkMeter>(
             meter.step(WorkKind::Signature)?;
             meter.step(WorkKind::Traversal)?;
             meter.allocate(4, 256)?;
-            if !pd.is_failed {
-                sigs.insert(pd.deploy.sig.clone());
+            if !pd.is_failed() {
+                sigs.insert(pd.identity_bytes().to_vec().into());
             }
         }
         for sig in &block.body.applied_from_scope {
@@ -2221,7 +2221,7 @@ mod frontier_determinism_tests {
                     bonds: Vec::new(),
                     block_number: num,
                 },
-                deploys,
+                deploys: deploys.into_iter().map(Into::into).collect(),
                 rejected_deploys: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),

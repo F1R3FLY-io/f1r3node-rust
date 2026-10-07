@@ -13,8 +13,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy,
+    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedSystemDeploy,
+    ProcessedUserDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
@@ -336,7 +336,7 @@ pub fn parent_metadatas_above_block_number(
     Ok(result)
 }
 
-pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
+pub fn deploys(block: &BlockMessage) -> Vec<ProcessedUserDeploy> { block.body.deploys.clone() }
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()

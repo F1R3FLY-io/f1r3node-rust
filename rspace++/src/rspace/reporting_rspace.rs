@@ -6,11 +6,15 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::{Checkpoint, SoftCheckpoint};
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::hashing::native_source::SourceMeter;
 use super::history::history_repository::HistoryRepository;
 use super::hot_store::HotStore;
 use super::internal::{ConsumeCandidate, Datum, Row, WaitingContinuation};
@@ -19,7 +23,9 @@ use super::replay_rspace::ReplayRSpace;
 use super::rspace::RSpace;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
-use crate::rspace::rspace_interface::{ISpace, MaybeConsumeResult, MaybeProduceResult};
+use crate::rspace::rspace_interface::{
+    ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceAccountingObserver,
+};
 
 /// ReportingRspace works exactly like how ReplayRspace works. It can replay the
 /// deploy and try to find if the deploy can be replayed well. But instead of
@@ -316,6 +322,13 @@ where
     A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
 {
+    fn set_accounting_observer(
+        &self,
+        observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    ) {
+        self.replay_rspace.set_accounting_observer(observer);
+    }
+
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         ReportingRspace::create_checkpoint(self).await
     }
@@ -324,12 +337,47 @@ where
         self.replay_rspace.get_data(channel).await
     }
 
+    async fn get_data_metered(
+        &self,
+        channel: &C,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned + ClosedDecode,
+    {
+        self.replay_rspace.get_data_metered(channel, meter).await
+    }
+
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.replay_rspace.get_waiting_continuations(channels).await
     }
 
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>> {
         self.replay_rspace.get_joins(channel).await
+    }
+
+    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        self.replay_rspace.remove_all_data(channel).await
+    }
+
+    async fn remove_data_at(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
+        self.replay_rspace.remove_data_at(channel, index).await
+    }
+
+    async fn remove_data_at_recorded(
+        &self,
+        channel: &C,
+        index: i32,
+        operation_id: &[u8],
+    ) -> Result<(), RSpaceError> {
+        self.replay_rspace
+            .remove_data_at_recorded(channel, index, operation_id)
+            .await
+    }
+
+    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        self.replay_rspace.remove_all_continuations(channels).await
     }
 
     async fn clear(&self) -> Result<(), RSpaceError> { self.replay_rspace.clear().await }

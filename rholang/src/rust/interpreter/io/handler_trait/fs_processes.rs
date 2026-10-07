@@ -91,7 +91,7 @@ impl FsProcesses {
     /// field-wise.
     pub fn is_contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
+            space: self.space.clone().into(),
             dispatcher: self.dispatcher.clone(),
         }
     }

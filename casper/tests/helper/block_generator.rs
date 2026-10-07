@@ -60,7 +60,7 @@ async fn compute_block_checkpoint(
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
-        .map(|d| d.deploy)
+        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
         .collect();
 
     let checkpoint = compute_deploys_checkpoint(
@@ -90,7 +90,7 @@ fn inject_post_state_hash(
 ) -> Result<(), CasperError> {
     let mut updated_block = block.clone();
     updated_block.body.state.post_state_hash = post_state_hash;
-    updated_block.body.deploys = processed_deploys;
+    updated_block.body.deploys = processed_deploys.into_iter().map(Into::into).collect();
     block_store.put(block.block_hash.clone(), &updated_block)?;
     block_dag_storage.insert(
         &updated_block,

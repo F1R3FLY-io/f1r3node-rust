@@ -1,0 +1,51 @@
+' ============================================================================
+' Cost-Accounted Rho — shared PlantUML palette  (one concept = one colour)
+' ----------------------------------------------------------------------------
+' Include from any .puml in this directory:
+'     !include palette.iuml
+' then reference the preprocessor variables below, e.g.
+'     component "Σ⟦s⟧" as P $ca_pool
+'     A -[$ca_credit]-> B : conserving transfer
+'
+' These hex values are the canonical, byte-identical palette shared with
+' palette.d2, palette.mermaid.json, and palette.tex. Change a colour HERE and
+' re-render; never hand-edit a hex code in an individual diagram.
+' ============================================================================
+
+' — component / node fills ---------------------------------------------------
+!$ca_control     = "#FFECB3"
+!$ca_supply      = "#BBDEFB"
+!$ca_pool        = "#C8E6C9"
+!$ca_capability  = "#C5CAE9"
+!$ca_surface     = "#F8C3B8"
+!$ca_process     = "#D4C4E8"
+!$ca_gate        = "#B2DFDB"
+!$ca_delta       = "#FFE0B2"
+!$ca_rejectfill  = "#EF9A9A"
+
+' — arrow / stroke colours ---------------------------------------------------
+!$ca_credit      = "#2E7D32"
+!$ca_debit       = "#C62828"
+!$ca_instantiate = "#1565C0"
+!$ca_neutral     = "#444444"
+
+' — note backgrounds ---------------------------------------------------------
+!$ca_note_amber  = "#FFF8E1"
+!$ca_note_red    = "#FFEBEE"
+!$ca_note_green  = "#E8F5E9"
+!$ca_note_indigo = "#E8EAF6"
+!$ca_note_grey   = "#ECEFF1"
+
+' — package tints ------------------------------------------------------------
+!$ca_pkg_green   = "#E8F5E9"
+!$ca_pkg_indigo  = "#E8EAF6"
+!$ca_pkg_amber   = "#FFF7EE"
+
+' Shared look-and-feel (callers may still override). ------------------------
+!procedure $ca_base_skin()
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam NoteBackgroundColor $ca_note_amber
+skinparam NoteBorderColor #666666
+!endprocedure

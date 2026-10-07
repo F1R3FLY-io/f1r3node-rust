@@ -12,23 +12,33 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::RSpace;
 use super::locks::LOCK_SEQUENCE;
 use crate::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::{SourceMeter, hash};
 use crate::rspace::history::instances::radix_history::RadixHistory;
+use crate::rspace::history::native_reader::{
+    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
+    decode_history_record,
+};
 use crate::rspace::hot_store::HotStoreInstances;
 use crate::rspace::internal::*;
 use crate::rspace::metrics_constants::{
     CHANGES_SPAN, CREATE_CHECKPOINT_SPAN, HISTORY_CHECKPOINT_SPAN, RESET_SPAN,
     REVERT_SOFT_CHECKPOINT_SPAN, RSPACE_METRICS_SOURCE,
 };
-use crate::rspace::rspace_interface::{ISpace, MaybeConsumeResult, MaybeProduceResult};
+use crate::rspace::rspace_interface::{
+    ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceAccountingObserver,
+};
 use crate::rspace::striped_locks;
 use crate::rspace::trace::Log;
-use crate::rspace::trace::event::{Consume, Event, IOEvent, Produce};
+use crate::rspace::trace::event::{Consume, Event, IOEvent, Produce, recorded_removal};
 
 #[async_trait]
 impl<C, P, A, K> ISpace<C, P, A, K> for RSpace<C, P, A, K>
@@ -38,6 +48,16 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    fn set_accounting_observer(
+        &self,
+        observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    ) {
+        *self
+            .accounting_observer
+            .write()
+            .expect("accounting observer write lock") = observer;
+    }
+
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
@@ -57,13 +77,11 @@ where
                 tracing::info_span!(target: "f1r3fly.rspace", HISTORY_CHECKPOINT_SPAN).entered();
             self.get_history_repository().checkpoint(changes)
         };
+        let history_reader = next_history.get_history_reader(&next_history.root())?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
-        let log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        let log = self.take_ordered_event_log();
         self.reset_produce_counter();
-
-        let history_repo = self.get_history_repository();
-        let history_reader = history_repo.get_history_reader(&history_repo.root())?;
 
         self.create_new_hot_store(history_reader);
         self.restore_installs();
@@ -83,6 +101,7 @@ where
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         *self.event_log.lock().expect("event log lock") = Vec::new();
+        self.clear_ordered_event_log();
         self.reset_produce_counter();
 
         // Striped locks are fixed-size and stateless (Mutex<()>); nothing to
@@ -97,19 +116,169 @@ where
 
     async fn consume_result(
         &self,
-        _channel: Vec<C>,
-        _pattern: Vec<P>,
+        channel: Vec<C>,
+        pattern: Vec<P>,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        panic!("\nERROR: RSpace consume_result should not be called here");
+        let consume_result = self
+            .consume(channel, pattern, K::default(), false, BTreeSet::new())
+            .await?;
+        Ok(consume_result.map(|(continuation, data)| {
+            (
+                continuation.continuation,
+                data.into_iter()
+                    .map(|result| result.matched_datum)
+                    .collect(),
+            )
+        }))
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
+
+    async fn get_data_metered(
+        &self,
+        channel: &C,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned + ClosedDecode,
+    {
+        struct ReadMeter<'a>(&'a dyn SourceMeter);
+
+        impl NativeReadMeter for ReadMeter<'_> {
+            type Error = RSpaceError;
+
+            fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
+                self.0
+                    .reserve(charge.operations, charge.scanned_bytes, charge.backing_bytes)
+            }
+        }
+
+        fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
+            match error {
+                NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+                NativeReadError::Store(error) => error.into(),
+                NativeReadError::Invalid(
+                    NativeReadFault::Depth |
+                    NativeReadFault::Allocation |
+                    NativeReadFault::Overflow,
+                ) => RSpaceError::HostWorkRejected,
+                NativeReadError::Invalid(error) => {
+                    RSpaceError::InterpreterError(format!("native history: {error:?}"))
+                }
+            }
+        }
+
+        let history = self.get_history_repository();
+        let root: [u8; 32] = history
+            .root()
+            .0
+            .as_slice()
+            .try_into()
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        // Changed by D-C4 (D-S5, DR-98): the metered read no longer fills the
+        // store. The cold fill inserted the decoded values with
+        // native_insert_new, whose charges read the whole shard, and grew the
+        // shard that every later lookup charges. A read now copies an entry
+        // only for an installed channel or a channel that the runtime wrote
+        // since its last reset or checkpoint.
+        // self.get_store().get_data_with_reader(
+        self.get_store().get_data_uncached_with_reader(
+            channel,
+            &|| {
+                let projection = hash(channel, &|operations, scanned, backing| {
+                    meter.reserve(operations, scanned, backing)
+                })?;
+                let projection: [u8; 32] = projection
+                    .0
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| RSpaceError::HostWorkRejected)?;
+                let reader = history.native_history_reader(root);
+                let read_meter = ReadMeter(meter);
+                reader
+                    .with_records(NativeLeafKind::Data, &projection, &read_meter, |rows| {
+                        meter.reserve(
+                            rows.len()
+                                .checked_mul(2)
+                                .and_then(|n| n.checked_add(1))
+                                .ok_or(RSpaceError::HostWorkRejected)?,
+                            0,
+                            rows.len()
+                                .checked_mul(std::mem::size_of::<Datum<A>>())
+                                .ok_or(RSpaceError::HostWorkRejected)?,
+                        )?;
+                        let mut values = Vec::new();
+                        values
+                            .try_reserve_exact(rows.len())
+                            .map_err(|_| RSpaceError::HostWorkRejected)?;
+                        for row in rows.iter() {
+                            // Changed by D-S2 (DR-95): the rows decode in History mode,
+                            // which charges each node once and reserves only real
+                            // allocations.
+                            // values.push(decode_record(row, &read_meter).map_err(read_error)?);
+                            values
+                                .push(decode_history_record(row, &read_meter).map_err(read_error)?);
+                        }
+                        Ok(values)
+                    })
+                    .map_err(read_error)
+                    .map(Option::unwrap_or_default)
+            },
+            meter,
+        )
+    }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)
     }
 
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
+
+    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_data(channel).len();
+        for index in (0..len).rev() {
+            self.get_store().remove_datum(channel, index as i32)?;
+        }
+        Ok(())
+    }
+
+    async fn remove_data_at(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
+        self.get_store().remove_datum(channel, index)
+    }
+
+    async fn remove_data_at_recorded(
+        &self,
+        channel: &C,
+        index: i32,
+        operation_id: &[u8],
+    ) -> Result<(), RSpaceError> {
+        let channel_hash = striped_locks::channel_hash(channel);
+        let _guard = self.consume_lock(&[channel_hash]).await;
+        let datum = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.get_store().get_data(channel).get(index).cloned())
+            .ok_or_else(|| {
+                RSpaceError::BugFoundError(
+                    "recorded removal references a missing datum".to_string(),
+                )
+            })?;
+        let (consume, comm) = recorded_removal(channel, &datum.source, operation_id);
+        self.get_store().remove_datum(channel, index)?;
+        self.push_event(Event::IoEvent(IOEvent::Consume(consume)));
+        self.push_event(Event::Comm(comm));
+        Ok(())
+    }
+
+    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_continuations(&channels).len();
+        for index in (0..len).rev() {
+            let _ = self
+                .get_store()
+                .remove_continuation(&channels, index as i32);
+        }
+        Ok(())
+    }
 
     async fn clear(&self) -> Result<(), RSpaceError> {
         self.reset(&RadixHistory::empty_root_node_hash()).await
@@ -121,7 +290,7 @@ where
 
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
         let cache_snapshot = self.get_store().snapshot();
-        let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        let curr_event_log = self.take_ordered_event_log();
         let curr_produce_counter = self.take_produce_counter();
 
         SoftCheckpoint {
@@ -132,7 +301,7 @@ where
     }
 
     async fn take_event_log(&self) -> Log {
-        let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        let curr_event_log = self.take_ordered_event_log();
         self.reset_produce_counter();
         curr_event_log
     }
@@ -157,6 +326,7 @@ where
         // running against the old store either way.
         self.store.store(Arc::new(hot_store));
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
+        self.clear_ordered_event_log();
         self.restore_produce_counter(checkpoint.produce_counter);
 
         Ok(())
@@ -294,6 +464,46 @@ where
                 }
 
                 _ => continue,
+            }
+        }
+        for events in self
+            .ordered_event_log
+            .lock()
+            .expect("ordered event log lock")
+            .values_mut()
+        {
+            for event in events {
+                match event {
+                    Event::IoEvent(IOEvent::Produce(produce)) => {
+                        if produce.hash == produce_ref.hash {
+                            *produce = produce_ref.clone();
+                        }
+                    }
+                    Event::Comm(comm) => {
+                        for produce in &mut comm.produces {
+                            if produce.hash == produce_ref.hash {
+                                *produce = produce_ref.clone();
+                            }
+                        }
+                        if comm
+                            .times_repeated
+                            .keys()
+                            .any(|produce| produce.hash == produce_ref.hash)
+                        {
+                            comm.times_repeated = std::mem::take(&mut comm.times_repeated)
+                                .into_iter()
+                                .map(|(produce, count)| {
+                                    if produce.hash == produce_ref.hash {
+                                        (produce_ref.clone(), count)
+                                    } else {
+                                        (produce, count)
+                                    }
+                                })
+                                .collect();
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }

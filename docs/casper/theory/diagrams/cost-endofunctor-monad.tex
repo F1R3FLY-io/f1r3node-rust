@@ -1,0 +1,43 @@
+% The cost endofunctor 𝔠 = (· × grade) and its monad structure: naturality of
+% the unit η, the unit laws (μ ∘ η = id), and associativity (μ ∘ μ𝔠 = μ ∘ 𝔠μ).
+% η arrows are green (the cost-free embedding); μ arrows are blue (the grade
+% combination). The laws descend from the two source monoids.
+%
+% Source of truth for the cost-monad figure (CostMonad.v / ContinuedGSLTCapstone.v).
+% Render:  lualatex --output-format=dvi cost-endofunctor-monad.tex && dvisvgm ...
+%          (or: ./render.sh cost-endofunctor-monad.tex)
+\documentclass[border=8pt]{standalone}
+\usepackage{amsmath,amssymb}
+\input{palette.tex}
+\usepackage{tikz-cd}
+\usetikzlibrary{arrows.meta,positioning}
+\newcommand{\C}{\mathfrak{c}}
+\begin{document}
+\begin{tikzpicture}
+  \node[font=\sffamily\bfseries] (title) {Cost endofunctor $\C=(\,\cdot\,\times grade)$ --- naturality of $\eta$, and the monad laws};
+  \node[below=4mm of title] (nat) {%
+    \begin{tikzcd}[ampersand replacement=\&, row sep=large, column sep=huge]
+      X \ar[r, "\eta_X", caCredit] \ar[d, "f"'] \& \C X \ar[d, "\C f"] \\
+      Y \ar[r, "\eta_Y"', caCredit] \& \C Y
+    \end{tikzcd}};
+  \node[right=2.4cm of nat] (unit) {%
+    \begin{tikzcd}[ampersand replacement=\&, row sep=large, column sep=large]
+      \C X \ar[r, "\eta_{\C X}", caCredit] \ar[dr, "\mathrm{id}"'] \& \C^2 X \ar[d, "\mu", caInstantiate] \& \C X \ar[l, "\C\eta_X"', caCredit] \ar[dl, "\mathrm{id}"] \\
+      \& \C X \&
+    \end{tikzcd}};
+  \node[below=1.4cm of nat.south west, anchor=north west] (assoc) {%
+    \begin{tikzcd}[ampersand replacement=\&, row sep=large, column sep=huge]
+      \C^3 X \ar[r, "\mu_{\C X}", caInstantiate] \ar[d, "\C\mu"', caInstantiate] \& \C^2 X \ar[d, "\mu", caInstantiate] \\
+      \C^2 X \ar[r, "\mu"', caInstantiate] \& \C X
+    \end{tikzcd}};
+  \node[right=1.4cm of assoc, anchor=west, align=left, font=\sffamily\small,
+        fill=caNoteGreen, draw=caCredit, rounded corners, inner sep=6pt] (txt) {%
+    $\C X = X\times grade$,\quad $grade=(sig,token)$ = authority $\times$ temporal stack\\[3pt]
+    laws (up to \texttt{cost\_equiv}; pointwise, \emph{no} funext):\\
+    \quad \texttt{cost\_left\_unit}, \texttt{cost\_right\_unit}, \texttt{cost\_assoc}\\[3pt]
+    descend from two monoids:\\
+    \quad signature \emph{commutative} monoid $(sig,\mathrm{SAnd},\mathrm{SUnit})$ up to $\equiv_{sig}$\\
+    \quad token-stack \emph{free} monoid $(token,{+}{+},\mathrm{TUnit})$ --- \textbf{never} commutative\\[3pt]
+    \textbf{NON-IDEMPOTENT}: metering twice $\neq$ once (\texttt{cost\_monad\_not\_idempotent})};
+\end{tikzpicture}
+\end{document}

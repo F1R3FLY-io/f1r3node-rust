@@ -76,12 +76,21 @@ impl Cost {
 
     pub fn unsafe_max() -> Self { Cost::create(i64::MAX, "unsafe_max creation") }
 
-    // TODO: Fix to remove conversion to u64
     pub fn to_proto(cost: Cost) -> PCost {
+        // PCost is a wire-compatibility type whose field remains unsigned.
+        // Runtime accounting keeps signed admission values internally, but
+        // only non-negative consumed token counts are serialized.
         PCost {
-            cost: cost.value as u64,
+            cost: u64::try_from(cost.value).unwrap_or(0),
         }
     }
+}
+
+fn positive_billable_value(value: i64) -> i64 { value.max(1) }
+
+fn non_negative_work(value: i64) -> i64 {
+    debug_assert!(value >= 0, "measured work must not be negative");
+    value.max(0)
 }
 
 pub fn sum_cost() -> Cost { Cost::create(3, "sum") }
@@ -96,9 +105,16 @@ pub fn equality_check_cost<T: prost::Message, P: prost::Message>(x: &T, y: &P) -
     let min_size = std::cmp::min(size_x, size_y);
 
     Cost {
-        value: min_size as i64,
+        value: positive_billable_value(min_size as i64),
         operation: Cow::Borrowed("equality check"),
     }
+}
+
+pub fn equality_check_cost_legacy<T: prost::Message, P: prost::Message>(x: &T, y: &P) -> Cost {
+    Cost::create(
+        std::cmp::min(x.encoded_len(), y.encoded_len()) as i64,
+        "equality check",
+    )
 }
 
 pub fn boolean_and_cost() -> Cost { Cost::create(2, "boolean and") }
@@ -226,15 +242,18 @@ pub fn remove_cost() -> Cost { Cost::create(3, "remove") }
 pub fn add_cost() -> Cost { Cost::create(3, "addition") }
 
 // decoding to bytes is linear with respect to the length of the string
-pub fn hex_to_bytes_cost(str: &String) -> Cost { Cost::create(str.len() as i64, "hex to bytes") }
+pub fn hex_to_bytes_cost(str: &String) -> Cost {
+    Cost::create(non_negative_work(str.len() as i64), "hex to bytes")
+}
 
 // encoding to hex is linear with respect to the length of the byte array
 pub fn bytes_to_hex_cost(bytes: &Vec<u8>) -> Cost {
-    Cost::create(bytes.len() as i64, "bytes to hex")
+    Cost::create(non_negative_work(bytes.len() as i64), "bytes to hex")
 }
 
 // Both Set#remove and Map#remove have complexity of eC
 pub fn diff_cost(num_elements: i64) -> Cost {
+    let num_elements = non_negative_work(num_elements);
     Cost::create(
         remove_cost().value * num_elements,
         format!("{} elements diff cost", num_elements),
@@ -243,6 +262,7 @@ pub fn diff_cost(num_elements: i64) -> Cost {
 
 // Both Set#add and Map#add have complexity of eC
 pub fn union_cost(num_elements: i64) -> Cost {
+    let num_elements = non_negative_work(num_elements);
     Cost::create(
         add_cost().value * num_elements,
         format!("{} union cost", num_elements),
@@ -256,41 +276,52 @@ pub fn byte_array_append_cost(left: ByteString) -> Cost {
         Cost::create(0, "byte array append")
     } else {
         let size = left.len() as f64;
-        Cost::create(size.log(10.0) as i64, "byte array append")
+        Cost::create(
+            non_negative_work(size.log(10.0) as i64),
+            "byte array append",
+        )
     }
 }
 
 // According to scala doc Vector#append is eC so it's n*eC.
-pub fn list_append_cost(right: Vec<Par>) -> Cost { Cost::create(right.len() as i64, "list append") }
+pub fn list_append_cost(right: Vec<Par>) -> Cost {
+    Cost::create(non_negative_work(right.len() as i64), "list append")
+}
 
 // String append creates a char[] of size n + m and then copies all elements to it.
-pub fn string_append_cost(n: i64, m: i64) -> Cost { Cost::create(n + m, "string append") }
+pub fn string_append_cost(n: i64, m: i64) -> Cost {
+    Cost::create(non_negative_work(n) + non_negative_work(m), "string append")
+}
 
 // To interpolate we traverse whole base string and for each placeholder
 // we look for matching key in the interpolation map
 pub fn interpolate_cost(str_length: i64, map_size: i64) -> Cost {
-    Cost::create(str_length * map_size, "interpolate")
+    Cost::create(
+        non_negative_work(str_length) * non_negative_work(map_size),
+        "interpolate",
+    )
 }
 
 // serializing any Par into a Array[Byte]:
 // + allocates byte array of the same size as `serializedSize`
 // + then it copies all elements of the Par
 pub fn to_byte_array_cost(message: &impl prost::Message) -> Cost {
-    Cost::create(message.encoded_len() as i64, "to byte array")
+    Cost::create(
+        non_negative_work(message.encoded_len() as i64),
+        "to byte array",
+    )
 }
 
-pub fn size_method_cost(size: i64) -> Cost { Cost::create(size, "size") }
+pub fn size_method_cost(size: i64) -> Cost { Cost::create(non_negative_work(size), "size") }
 
 // slice(from, to) needs to drop `from` elements and then append `to - from` elements
 // we charge proportionally to `to` and fail if the method call is incorrect, for example
 // if underlying string is shorter then the `to` value.
-pub fn slice_cost(to: i64) -> Cost { Cost::create(to, "slice") }
+pub fn slice_cost(to: i64) -> Cost { Cost::create(non_negative_work(to), "slice") }
 
-pub fn take_cost(to: i64) -> Cost { Cost::create(to, "take") }
+pub fn take_cost(to: i64) -> Cost { Cost::create(non_negative_work(to), "take") }
 
-pub fn to_list_cost(size: i64) -> Cost { Cost::create(size, "to_list") }
-
-pub fn parsing_cost(term: &str) -> Cost { Cost::create(term.len() as i64, "parsing") }
+pub fn to_list_cost(size: i64) -> Cost { Cost::create(non_negative_work(size), "to_list") }
 
 pub fn nth_method_call_cost() -> Cost { Cost::create(10, "nth method call") }
 
@@ -336,10 +367,10 @@ pub fn storage_cost_consume(
         })) => body.encoded_len() as i64,
         _ => 0,
     };
-
-    let total_cost = storage_cost(channels).value + storage_cost(patterns).value + body_cost;
-
-    Cost::create(total_cost, "consume storage")
+    Cost::create(
+        storage_cost(channels).value + storage_cost(patterns).value + body_cost,
+        "consume storage",
+    )
 }
 
 pub fn storage_cost_produce(channel: &Par, data: &ListParWithRandom) -> Cost {
@@ -364,7 +395,20 @@ pub fn event_storage_cost(channels_involved: i64) -> Cost {
     )
 }
 
-fn storage_cost<A: prost::Message>(as_: &[A]) -> Cost {
-    let total_size: usize = as_.iter().map(|a| a.encoded_len()).sum();
+fn storage_cost<A: prost::Message>(items: &[A]) -> Cost {
+    let total_size: usize = items.iter().map(|item| item.encoded_len()).sum();
     Cost::create(total_size as i64, "storage cost")
+}
+
+#[cfg(test)]
+mod legacy_compat_tests {
+    use super::*;
+
+    #[test]
+    fn empty_operand_keeps_dev_zero_equality_charge() {
+        let empty = Par::default();
+        let nonempty = models::rust::utils::new_gint_par(1, Vec::new(), false);
+        assert_eq!(equality_check_cost_legacy(&empty, &nonempty).value, 0);
+        assert_eq!(equality_check_cost(&empty, &nonempty).value, 1);
+    }
 }

@@ -983,6 +983,20 @@ fn store_reason(error: KvStoreError) -> String {
         KvStoreError::SerializationError(_) => "production_error:serialization".to_string(),
         KvStoreError::InvalidArgument(_) => "production_error:invalid_argument".to_string(),
         KvStoreError::LockError(_) => "production_error:lock".to_string(),
+        KvStoreError::AtomicityUnavailable(_) => {
+            "production_error:atomicity_unavailable".to_string()
+        }
+        KvStoreError::TransactionConflict(_) => "production_error:transaction_conflict".to_string(),
+        KvStoreError::StaleFinalization { .. } => "production_error:stale_finalization".to_string(),
+        KvStoreError::FinalizationProjectionPending { .. } => {
+            "production_error:finalization_projection_pending".to_string()
+        }
+        KvStoreError::FinalizationCertificateCarrierPending { .. } => {
+            "production_error:finalization_certificate_carrier_pending".to_string()
+        }
+        KvStoreError::RecoveryBudgetExhausted { .. } => {
+            "production_error:recovery_budget_exhausted".to_string()
+        }
         KvStoreError::LastFinalizedBlockUninitialized => {
             "production_error:last_finalized_block_uninitialized".to_string()
         }

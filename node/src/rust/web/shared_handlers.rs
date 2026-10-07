@@ -30,8 +30,8 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
-    WebApi,
+    DeployRequest, ExploreDeployRequest, OfferedDeployRequest, OfferedReceiptResponse,
+    RhoDataResponse, SimpleExploreDeployRequest, ViewMode, WebApi,
 };
 
 #[derive(Clone)]
@@ -338,6 +338,12 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         // retry; the 500 class would say the node is broken.
         BlockNotHeld(..) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
 
+        OfferedCandidateRejected(_) => (
+            S::UNPROCESSABLE_ENTITY,
+            "offered_candidate_rejected",
+            err.to_string(),
+        ),
+
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
         HistoryError(_) => internal("history_error"),
@@ -382,6 +388,11 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         OutOfPhlogistonsError => (
             S::UNPROCESSABLE_ENTITY,
             "out_of_phlogistons",
+            ie.to_string(),
+        ),
+        HostWorkRejected => (
+            S::UNPROCESSABLE_ENTITY,
+            "host_work_rejected",
             ie.to_string(),
         ),
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
@@ -484,6 +495,51 @@ pub async fn deploy_handler(
     match offload(move || async move { web_api.deploy(request).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/deploy/offered",
+    request_body = OfferedDeployRequest,
+    responses(
+        (status = 200, description = "Offered-funded deploy accepted", body = String),
+        (status = 400, description = "Invalid offered-funded deploy or inactive genesis policy", body = ApiErrorResponse),
+    ),
+    tag = "Deployment"
+)]
+pub async fn deploy_offered_handler(
+    State(app_state): State<AppState>,
+    AppJson(request): AppJson<OfferedDeployRequest>,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.deploy_offered(request).await }).await {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => AppError(error).into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/deploy/offered/{deploy_id}/receipt",
+    params(("deploy_id" = String, Path, description = "Hex-encoded v6 deploy ID")),
+    responses(
+        (status = 200, description = "Verified offered-funded settlement receipt, or null when absent", body = Option<OfferedReceiptResponse>),
+        (status = 400, description = "Invalid deploy ID", body = ApiErrorResponse),
+        (status = 404, description = "Deploy not found", body = ApiErrorResponse),
+        (status = 500, description = "Stored receipt failed verification", body = ApiErrorResponse),
+    ),
+    tag = "Deployment"
+)]
+pub async fn offered_settlement_receipt_handler(
+    State(app_state): State<AppState>,
+    AppPath(deploy_id): AppPath<String>,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.offered_settlement_receipt(deploy_id).await }).await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => AppError(error).into_response(),
     }
 }
 

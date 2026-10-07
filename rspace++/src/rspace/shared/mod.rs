@@ -7,3 +7,4 @@ mod env_cache;
 mod lmdb_store_manager;
 pub mod in_mem_key_value_store;
 pub mod in_mem_store_manager;
+mod sparse_transaction;

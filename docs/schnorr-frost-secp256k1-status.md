@@ -37,5 +37,5 @@
 5. Perform consensus-level rollout planning before enabling network-wide use.
 
 ## Compatibility notes
-- Existing `secp256k1` and `secp256k1-eth` paths remain unchanged.
+- Existing `secp256k1` and `secp256k1:eth` paths remain unchanged.
 - No silent algorithm replacement; new algorithms are additive and explicit.

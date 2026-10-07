@@ -1,6 +1,12 @@
+use std::mem::{align_of, size_of};
+
+use shared::rust::collection_backing::tree_backing;
+use shared::rust::store::key_value_store::AtomicStoreMutation;
+
 use super::instances::radix_history::RadixHistory;
-use crate::rspace::errors::RootError;
+use crate::rspace::errors::{RSpaceError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::history::roots_store::RootsStore;
 
 // See rspace/src/main/scala/coop/rchain/rspace/history/RootRepository.scala
@@ -13,6 +19,44 @@ impl RootRepository {
         tracing::debug!("[RootRepository] commit {}", root);
         self.roots_store.record_root(root)
     }
+
+    pub fn commit_native(&self, root: &Blake2b256Hash) -> Result<(), RootError> {
+        self.roots_store.record_root_atomic(root)
+    }
+
+    pub(crate) fn reserve_native_commit(
+        &self,
+        root: &Blake2b256Hash,
+        meter: &dyn SourceMeter,
+    ) -> Result<(), RSpaceError> {
+        let root_bytes = root.0.len();
+        let (tree_operations, tree_bytes) =
+            tree_backing::<Vec<u8>, Option<Vec<u8>>>(2).ok_or(RSpaceError::HostWorkRejected)?;
+        let staging_bytes = size_of::<AtomicStoreMutation<'_>>()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(size_of::<(usize, usize)>() * 4))
+            .and_then(|bytes| bytes.checked_add(align_of::<AtomicStoreMutation<'_>>() * 2))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let mutation_bytes = size_of::<AtomicStoreMutation<'_>>()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(size_of::<(usize, usize)>() * 4))
+            .and_then(|bytes| bytes.checked_add(tree_bytes))
+            .and_then(|bytes| bytes.checked_add(staging_bytes))
+            .and_then(|bytes| bytes.checked_add(root_bytes.checked_mul(8)?))
+            .and_then(|bytes| bytes.checked_add(b"current-root".len() * 3 + b"tag".len() * 3))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(
+            tree_operations
+                .checked_add(16)
+                .ok_or(RSpaceError::HostWorkRejected)?,
+            root_bytes
+                .checked_mul(8)
+                .ok_or(RSpaceError::HostWorkRejected)?,
+            mutation_bytes,
+        )
+    }
+
+    pub fn supports_atomic_record(&self) -> bool { self.roots_store.supports_atomic_record() }
 
     pub fn current_root(&self) -> Result<Blake2b256Hash, RootError> {
         match self.roots_store.current_root()? {
@@ -32,25 +76,17 @@ impl RootRepository {
         }
     }
 
-    pub fn validate_and_set_current_root(&self, root: Blake2b256Hash) -> Result<(), RootError> {
-        match self
-            .roots_store
-            .validate_and_set_current_root(root.clone())?
-        {
-            Some(_) => {
-                tracing::debug!("[RootRepository] validateAndSetCurrentRoot OK: {}", root);
-                Ok(())
-            }
-            None => {
-                tracing::error!(root = %root, "root not found in store: cannot set current root");
-                Err(RootError::RootNotFound(root))
-            }
+    pub fn validate_root(&self, root: &Blake2b256Hash) -> Result<(), RootError> {
+        if self.roots_store.contains_root(root)? {
+            Ok(())
+        } else {
+            tracing::error!(root = %root, "root not found in store: cannot reset");
+            Err(RootError::RootNotFound(root.clone()))
         }
     }
 
-    /// Pure lookup: returns true if the root is recorded in the store.
-    /// Companion to `validate_and_set_current_root` without the side-effect
-    /// of updating the current-root pointer.
+    /// Pure lookup: returns true if the root is recorded in the store. It
+    /// never updates the current-root pointer.
     pub fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, RootError> {
         self.roots_store.contains_root(root)
     }
@@ -58,10 +94,16 @@ impl RootRepository {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::HashSet;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+
+    use shared::rust::store::key_value_store::KeyValueStore;
 
     use super::*;
+    use crate::rspace::history::native_reader::measure_allocations;
+    use crate::rspace::history::roots_store::RootsStoreInstances;
+    use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 
     /// Minimal in-memory RootsStore for testing the lookup-vs-set distinction.
     /// Tracks recorded roots and the current-root pointer separately so tests
@@ -74,18 +116,6 @@ mod tests {
     impl RootsStore for InmemRootsStore {
         fn current_root(&self) -> Result<Option<Blake2b256Hash>, RootError> {
             Ok(self.current.lock().unwrap().clone())
-        }
-
-        fn validate_and_set_current_root(
-            &self,
-            key: Blake2b256Hash,
-        ) -> Result<Option<Blake2b256Hash>, RootError> {
-            if self.roots.lock().unwrap().contains(&key) {
-                *self.current.lock().unwrap() = Some(key.clone());
-                Ok(Some(key))
-            } else {
-                Ok(None)
-            }
         }
 
         fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError> {
@@ -128,8 +158,7 @@ mod tests {
         assert!(!repo.contains_root(&hash_for(42)).unwrap());
     }
 
-    /// The contract that distinguishes contains_root from
-    /// validate_and_set_current_root: a positive lookup must NOT mutate the
+    /// The contract of contains_root: a positive lookup must NOT mutate the
     /// current-root pointer. This is the explicit reason the API was added —
     /// LFS forward-horizon sync calls contains_root in a hot loop and any
     /// pointer churn would interfere with concurrent reset/checkpoint flows.
@@ -153,5 +182,35 @@ mod tests {
             Some(b),
             "contains_root must not move the current-root pointer"
         );
+    }
+
+    #[test]
+    fn native_root_record_prepays_transaction_before_publication() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let repository = RootRepository {
+            roots_store: Box::new(RootsStoreInstances::roots_store(store.clone())),
+        };
+        let root = Blake2b256Hash::new(b"metered root");
+        assert_eq!(
+            repository.reserve_native_commit(&root, &|_, _, _| Err(RSpaceError::HostWorkRejected)),
+            Err(RSpaceError::HostWorkRejected)
+        );
+        assert_eq!(store.get_one(&b"current-root".to_vec()).unwrap(), None);
+        let paid = Cell::new(0usize);
+        let ((), allocated) = measure_allocations(|| {
+            repository
+                .reserve_native_commit(&root, &|_, _, backing| {
+                    paid.set(
+                        paid.get()
+                            .checked_add(backing)
+                            .ok_or(RSpaceError::HostWorkRejected)?,
+                    );
+                    Ok(())
+                })
+                .unwrap();
+            repository.commit_native(&root).unwrap();
+        });
+        assert!(allocated <= paid.get(), "allocated={allocated}, paid={}", paid.get());
+        assert_eq!(store.get_one(&b"current-root".to_vec()).unwrap(), Some(root.bytes()));
     }
 }

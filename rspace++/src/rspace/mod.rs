@@ -1,7 +1,10 @@
 pub mod hashing;
+pub(crate) mod candidate_order;
+pub mod closed_decode;
 pub mod history;
 pub mod hot_store;
 pub mod internal;
+pub(crate) mod native_backing;
 pub mod logging;
 pub mod rspace;
 mod space_matcher;
@@ -24,3 +27,4 @@ pub mod merger;
 pub mod reporting_rspace;
 pub mod reporting_transformer;
 pub mod metrics_constants;
+pub mod operation_context;

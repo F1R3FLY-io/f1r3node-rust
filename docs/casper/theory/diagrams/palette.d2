@@ -1,0 +1,43 @@
+# ============================================================================
+# Cost-Accounted Rho — shared D2 palette  (one concept = one colour)
+# ----------------------------------------------------------------------------
+# Spread into any .d2 in this directory with the first line:
+#     ...@palette
+# then apply a class:
+#     wallet: Σ⟦Ground(pk)⟧ { class: supply }
+#     a -> b: { class: credit }
+#
+# Hex values are byte-identical to palette.iuml / palette.mermaid.json /
+# palette.tex. Edit a colour HERE and re-render; never inline a hex in a diagram.
+# ============================================================================
+
+vars: {
+  ca-control: "#FFECB3"
+  ca-supply: "#BBDEFB"
+  ca-pool: "#C8E6C9"
+  ca-capability: "#C5CAE9"
+  ca-surface: "#F8C3B8"
+  ca-process: "#D4C4E8"
+  ca-gate: "#B2DFDB"
+  ca-delta: "#FFE0B2"
+  ca-reject-fill: "#EF9A9A"
+  ca-credit: "#2E7D32"
+  ca-debit: "#C62828"
+  ca-instantiate: "#1565C0"
+}
+
+classes: {
+  control:    { style: { fill: "#FFECB3"; stroke: "#333333" } }
+  supply:     { style: { fill: "#BBDEFB"; stroke: "#333333" } }
+  pool:       { style: { fill: "#C8E6C9"; stroke: "#333333" } }
+  capability: { style: { fill: "#C5CAE9"; stroke: "#333333" } }
+  surface:    { style: { fill: "#F8C3B8"; stroke: "#333333" } }
+  process:    { style: { fill: "#D4C4E8"; stroke: "#333333" } }
+  gate:       { style: { fill: "#B2DFDB"; stroke: "#333333" } }
+  delta:      { style: { fill: "#FFE0B2"; stroke: "#333333" } }
+  reject:     { style: { fill: "#EF9A9A"; stroke: "#C62828"; stroke-dash: 4 } }
+
+  credit:      { style: { stroke: "#2E7D32"; stroke-width: 2 } }
+  debit:       { style: { stroke: "#C62828"; stroke-width: 2 } }
+  instantiate: { style: { stroke: "#1565C0"; stroke-width: 2; stroke-dash: 3 } }
+}

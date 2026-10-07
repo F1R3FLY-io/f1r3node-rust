@@ -2,7 +2,7 @@
 
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    Event, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy, SystemDeployData,
 };
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -20,6 +20,32 @@ use crate::rust::util::event_converter;
 pub struct BlockIndex {
     pub block_hash: BlockHash,
     pub deploy_chains: Vec<DeployChainIndex>,
+}
+
+pub trait ProcessedIndexDeploy {
+    fn identity_bytes(&self) -> &[u8];
+    fn valid_after_block_number(&self) -> i64;
+    fn deploy_log(&self) -> &[Event];
+    fn cost(&self) -> u64;
+    fn is_failed(&self) -> bool;
+}
+
+impl ProcessedIndexDeploy for ProcessedDeploy {
+    fn identity_bytes(&self) -> &[u8] { &self.deploy.sig }
+    fn valid_after_block_number(&self) -> i64 { self.deploy.data.valid_after_block_number }
+    fn deploy_log(&self) -> &[Event] { &self.deploy_log }
+    fn cost(&self) -> u64 { self.cost.cost }
+    fn is_failed(&self) -> bool { self.is_failed }
+}
+
+impl ProcessedIndexDeploy for ProcessedUserDeploy {
+    fn identity_bytes(&self) -> &[u8] { ProcessedUserDeploy::identity_bytes(self) }
+    fn valid_after_block_number(&self) -> i64 {
+        ProcessedUserDeploy::valid_after_block_number(self)
+    }
+    fn deploy_log(&self) -> &[Event] { ProcessedUserDeploy::deploy_log(self) }
+    fn cost(&self) -> u64 { ProcessedUserDeploy::cost(self).cost }
+    fn is_failed(&self) -> bool { ProcessedUserDeploy::is_failed(self) }
 }
 
 pub fn create_event_log_index(
@@ -55,10 +81,10 @@ pub fn create_event_log_index(
     )
 }
 
-pub fn new(
+pub fn new<D: ProcessedIndexDeploy>(
     block_hash: &BlockHash,
     block_number: i64,
-    usr_processed_deploys: &Vec<ProcessedDeploy>,
+    usr_processed_deploys: &[D],
     sys_processed_deploys: &Vec<ProcessedSystemDeploy>,
     pre_state_hash: &Blake2b256Hash,
     post_state_hash: &Blake2b256Hash,
@@ -101,17 +127,17 @@ pub fn new(
     // Create user deploy indices - filter out failed deploys
     let mut usr_deploy_indices = Vec::new();
     for (deploy, merge_chs) in usr_deploys_with_mergeable {
-        if !deploy.is_failed {
+        if !deploy.is_failed() {
             let event_log_index = create_event_log_index(
-                &deploy.deploy_log,
+                deploy.deploy_log(),
                 history_repository.clone(),
                 pre_state_hash,
                 merge_chs.clone(),
             );
 
             let deploy_index = DeployIndex {
-                deploy_id: deploy.deploy.sig.clone(),
-                cost: deploy.cost.cost,
+                deploy_id: deploy.identity_bytes().to_vec().into(),
+                cost: deploy.cost(),
                 event_log_index,
             };
 
@@ -184,7 +210,12 @@ pub fn new(
     // System deploys carry no window and are absent by construction.
     let deploy_windows: std::collections::HashMap<prost::bytes::Bytes, i64> = usr_processed_deploys
         .iter()
-        .map(|d| (d.deploy.sig.clone(), d.deploy.data.valid_after_block_number))
+        .map(|d| {
+            (
+                d.identity_bytes().to_vec().into(),
+                d.valid_after_block_number(),
+            )
+        })
         .collect();
 
     // Convert deploy chains to DeployChainIndex

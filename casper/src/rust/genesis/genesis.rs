@@ -65,6 +65,30 @@ impl Genesis {
         native_token_symbol: &str,
         native_token_decimals: u32,
     ) -> Vec<Signed<DeployData>> {
+        Self::default_blessed_terms_with_timestamp_policy(
+            timestamp,
+            pos_params,
+            vaults,
+            supply,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            None,
+        )
+    }
+
+    pub fn default_blessed_terms_with_timestamp_policy(
+        timestamp: i64,
+        pos_params: &ProofOfStake,
+        vaults: &Vec<Vault>,
+        supply: i64,
+        shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
+    ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
 
@@ -104,11 +128,12 @@ impl Genesis {
         let system_vault = standard_deploys::system_vault(shard_id);
         let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
         let stack = standard_deploys::stack(shard_id);
-        let token_metadata = standard_deploys::token_metadata(
+        let token_metadata = standard_deploys::token_metadata_with_policy(
             native_token_name,
             native_token_symbol,
             native_token_decimals,
             shard_id,
+            resource_policy,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
 
@@ -139,9 +164,31 @@ impl Genesis {
         native_token_symbol: &str,
         native_token_decimals: u32,
     ) -> Vec<Signed<DeployData>> {
+        Self::default_blessed_terms_with_policy(
+            pos_params,
+            vaults,
+            supply,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            None,
+        )
+    }
+
+    pub fn default_blessed_terms_with_policy(
+        pos_params: &ProofOfStake,
+        vaults: &Vec<Vault>,
+        supply: i64,
+        shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
+    ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
-        Self::default_blessed_terms_with_timestamp(
+        Self::default_blessed_terms_with_timestamp_policy(
             BASE_TIMESTAMP,
             pos_params,
             vaults,
@@ -150,6 +197,7 @@ impl Genesis {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            resource_policy,
         )
     }
 
@@ -157,7 +205,24 @@ impl Genesis {
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
-        let blessed_terms = Self::default_blessed_terms(
+        Self::create_genesis_block_with_policy(runtime_manager, genesis, None).await
+    }
+
+    pub async fn create_genesis_block_with_policy(
+        runtime_manager: &RuntimeManager,
+        genesis: &Genesis,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
+    ) -> Result<BlockMessage, CasperError> {
+        if let Some(policy) = resource_policy {
+            policy
+                .validate_context(
+                    genesis.version,
+                    &genesis.shard_id,
+                    genesis.native_token_decimals,
+                )
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        }
+        let blessed_terms = Self::default_blessed_terms_with_policy(
             &genesis.proof_of_stake,
             &genesis.vaults,
             genesis.supply,
@@ -165,6 +230,7 @@ impl Genesis {
             &genesis.native_token_name,
             &genesis.native_token_symbol,
             genesis.native_token_decimals,
+            resource_policy,
         );
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager
@@ -197,7 +263,7 @@ impl Genesis {
 
         assert!(failed_deploys.is_empty(), "Failed deploys found");
 
-        let sorted_deploys = processed_deploys
+        let sorted_deploys: Vec<_> = processed_deploys
             .into_iter()
             .filter(|deploy| !deploy.is_failed)
             .map(|mut deploy| {
@@ -213,7 +279,7 @@ impl Genesis {
 
         let body = Body {
             state,
-            deploys: sorted_deploys,
+            deploys: sorted_deploys.into_iter().map(Into::into).collect(),
             rejected_deploys: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),

@@ -36,14 +36,16 @@ new rl(`rho:registry:lookup`), thmCh, ack in {{
 
 fn assert_no_failed_deploys(block: &BlockMessage) {
     assert!(
-        block.body.deploys.iter().all(|deploy| !deploy.is_failed),
+        block.body.deploys.iter().all(|deploy| !deploy.is_failed()),
         "a deploy failed in block {}: {:?}",
         hex::encode(&block.block_hash[..block.block_hash.len().min(8)]),
         block
             .body
             .deploys
             .iter()
-            .map(|deploy| deploy.system_deploy_error.clone())
+            .map(|deploy| deploy
+                .as_legacy()
+                .and_then(|legacy| legacy.system_deploy_error.clone()))
             .collect::<Vec<_>>()
     );
 }

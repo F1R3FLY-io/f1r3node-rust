@@ -765,7 +765,7 @@ fn deploy_appearance_resolves_valid_bodies_and_ignores_invalid_ones() {
 
           for block in &block_elements {
               for deploy in &block.body.deploys {
-                  deploy_sigs.push(deploy.deploy.sig.clone());
+                  deploy_sigs.push(deploy.identity_bytes().to_vec());
                   block_hashes.push(block.block_hash.clone());
               }
           }

@@ -258,9 +258,10 @@ async fn multi_parent_casper_should_fail_when_deploying_with_insufficient_phlos(
         "Block should have at least one deploy"
     );
     assert!(
-        block.body.deploys[0].is_failed,
+        block.body.deploys[0].is_failed(),
         "Deploy should be marked as failed due to insufficient phlos"
     );
+    assert_eq!(block.body.deploys[0].cost().cost, 1);
 }
 
 #[tokio::test]
@@ -295,9 +296,35 @@ async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
         "Block should have at least one deploy"
     );
     assert!(
-        !block.body.deploys[0].is_failed,
+        !block.body.deploys[0].is_failed(),
         "Deploy should succeed with sufficient phlos"
     );
+    assert_eq!(block.body.deploys[0].cost().cost, 3);
+}
+
+#[tokio::test]
+async fn legacy_matched_comm_keeps_exact_historical_cost() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy = construct_deploy::source_deploy_now_full(
+        "new x in { x!(1) | for (@n <- x) { Nil } }".to_string(),
+        Some(1_000_000),
+        None,
+        None,
+        None,
+        Some(genesis.genesis_block.shard_id.clone()),
+    )
+    .unwrap();
+
+    let block = node.add_block_from_deploys(&[deploy]).await.unwrap();
+
+    assert_eq!(block.body.deploys.len(), 1);
+    assert!(!block.body.deploys[0].is_failed());
+    assert_eq!(block.body.deploys[0].cost().cost, 443);
 }
 
 #[tokio::test]

@@ -1,0 +1,24 @@
+@startuml
+skinparam backgroundColor transparent
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+
+rectangle "Parallel Rholang branches" as branches
+rectangle "Complete reduction frontier\n(all live participants waiting or complete)" as frontier
+rectangle "Exact footprint\nchannels + pre-state joins + authority regions" as footprint
+rectangle "Transitive conflict components" as components
+rectangle "Canonical causal order\ninside each component" as ordered
+rectangle "Concurrent execution\nof disjoint components" as concurrent
+rectangle "Causally ordered RSpace log" as log
+rectangle "Quiescent checkpoint boundary" as checkpoint
+
+branches --> frontier
+frontier --> footprint
+footprint --> components
+components --> ordered
+components --> concurrent
+ordered --> log
+concurrent --> log
+log --> checkpoint
+@enduml

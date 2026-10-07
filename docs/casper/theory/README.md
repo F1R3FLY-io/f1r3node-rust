@@ -26,4 +26,7 @@ The formal artifacts these dossiers cite live under `formal/**` and stay
 platform-owned. [docs/formal-verification.md](../../formal-verification.md)
 is their umbrella index.
 
+The [deterministic host-work specification](./host-work-budget.md) defines
+the node-work limits that protect cost-accounted play and replay.
+
 [← Back to the Casper documentation map](../README.md)

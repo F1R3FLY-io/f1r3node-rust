@@ -5,15 +5,19 @@ use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
 
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
-use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
+use super::native_checkpoint::NativeCheckpoint;
+use crate::rspace::errors::{HistoryError, HistoryRepositoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
+use crate::rspace::history::native_reader::NativeHistoryReader;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
-use crate::rspace::hot_store_action::HotStoreAction;
+use crate::rspace::hot_store_action::{HotStoreAction, NativeExportAction};
 use crate::rspace::hot_store_trie_action::HotStoreTrieAction;
+use crate::rspace::internal::WaitingContinuation;
 use crate::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use crate::rspace::state::instances::rspace_importer_store::RSpaceImporterStore;
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
@@ -31,6 +35,25 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         actions: Vec<HotStoreTrieAction<C, P, A, K>>,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>;
 
+    fn prepare_native_checkpoint(
+        &self,
+        actions: Vec<HotStoreAction<C, P, A, K>>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError>;
+
+    /// D-C3 (D-S3, DR-97): the checkpoint of the native export's changes,
+    /// borrowed from the native store.
+    fn prepare_native_checkpoint_borrowed(
+        &self,
+        actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError>;
+
+    fn commit_native_checkpoint(
+        &self,
+        prepared: NativeCheckpoint,
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, RSpaceError>;
+
     fn reset(
         &self,
         root: &Blake2b256Hash,
@@ -47,6 +70,11 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         state_hash: &Blake2b256Hash,
     ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, HistoryError>;
 
+    fn get_current_history_reader_native(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, RSpaceError>;
+
     fn get_history_reader_struct(
         &self,
         state_hash: &Blake2b256Hash,
@@ -54,8 +82,10 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
 
     fn root(&self) -> Blake2b256Hash;
 
+    fn native_history_reader(&self, state_hash: [u8; 32]) -> NativeHistoryReader<'_>;
+
     /// Record a root hash in the roots store so that subsequent `reset` calls
-    /// can find it via `validate_and_set_current_root`. This is needed during
+    /// can find it via `validate_root`. This is needed during
     /// LFS bootstrap to register `emptyStateHashFixed` before genesis replay.
     fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError>;
 
@@ -114,7 +144,7 @@ where
             roots_key_value_store.clone(),
         );
         let importer = RSpaceImporterStore::create(
-            history_key_value_store,
+            history_key_value_store.clone(),
             cold_key_value_store.clone(),
             roots_key_value_store,
         );
@@ -123,6 +153,7 @@ where
             current_history: Arc::new(Mutex::new(Box::new(history))),
             roots_repository: Arc::new(Mutex::new(roots_repository)),
             leaf_store: cold_key_value_store,
+            node_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
             _marker: PhantomData,

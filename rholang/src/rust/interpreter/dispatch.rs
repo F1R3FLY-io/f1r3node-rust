@@ -7,7 +7,7 @@ use prost::Message;
 
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::reduce::DebruijnInterpreter;
+use super::reduce::ReducerCore;
 use super::system_processes::{non_deterministic_ops, RhoDispatchMap};
 use super::unwrap_option_safe;
 
@@ -25,7 +25,7 @@ pub fn build_env(data_list: Vec<ListParWithRandom>) -> Env<Par> {
 #[derive(Clone)]
 pub struct RholangAndScalaDispatcher {
     pub _dispatch_table: RhoDispatchMap,
-    pub reducer: Arc<OnceLock<Weak<DebruijnInterpreter>>>,
+    pub reducer: Arc<OnceLock<Weak<ReducerCore>>>,
 }
 
 pub type RhoDispatch = Arc<RholangAndScalaDispatcher>;
@@ -47,6 +47,11 @@ impl RholangAndScalaDispatcher {
         is_replay: bool,
         previous_output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        // DR-101: a continuation sealed by system authority alone runs a system body.
+        let system_body = continuation
+            .cost_authority
+            .as_ref()
+            .is_some_and(crate::rust::interpreter::accounting::authority::is_system_seal);
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -68,7 +73,9 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    reducer.eval(body, &env, merged_rand).await?;
+                    reducer
+                        .eval_continuation(body, env, merged_rand, system_body)
+                        .await?;
 
                     Ok(DispatchType::DeterministicCall)
                 }

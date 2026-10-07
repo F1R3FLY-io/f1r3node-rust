@@ -1,0 +1,72 @@
+' Same-block funding decision for offered-funded deploys (DR-65, decision D2).
+' Deploys that compete for one physical purse form one funding decision, as P1's
+' "simultaneous arrival" paragraph requires: if their combined holds exceed the
+' purse supply at the original root R0, every member of the group is rejected.
+' Accepted members execute in canonical order; the held-capacity guard keeps the
+' holds of later members available.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-65);
+'                  publications/cost-accounting/cost-accounted-rho.tex (sec:deploy-boundaries).
+' Palette:  candidates = supply blue · DR-64 check = gate teal · grouping = process lilac
+'           execution = pool green · settlement = note green · user failure = note amber
+'           reject = red · decisions = control amber
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/offered-same-block-funding-groups.puml
+'          (or: ./render.sh offered-same-block-funding-groups.puml)
+
+@startuml offered-same-block-funding-groups
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+skinparam PartitionBackgroundColor #FAFAFA
+title Same-block funding groups and the held-capacity guard (DR-65)
+
+start
+partition "Proposer and every validator" {
+  :pending offered candidates\nin canonical order; <<$ca_supply>>
+  :DR-64 check of each candidate\non its own signed sources at <latex>R_0</latex>; <<$ca_gate>>
+  if (candidate fundable alone?) then (no)
+    :reject that candidate alone\n(it cannot sink other candidates); <<$ca_rejectfill>>
+    detach
+  else (yes)
+  endif
+  :union-find over canonical physical custody keys\nmembers that share a purse form one group <latex>G</latex>; <<$ca_process>>
+  if (<latex>\exists p:\ \sum_{m \in G} \mathrm{hold}_m(p) > \mathrm{supply}_{R_0}(p)</latex>) then (yes)
+    :reject every member of <latex>G</latex>\nno effect · no charge; <<$ca_rejectfill>>
+    note right $ca_note_red
+      P1 simultaneous arrival:
+      not enough resources for all
+      members, so none of them begins.
+    end note
+    detach
+  else (no · group accepted)
+  endif
+}
+partition "Execution of accepted members" {
+  repeat :member <latex>i</latex> funds from <latex>R_0</latex>\nand executes from <latex>R_{i-1}</latex>\nin a fresh offered runtime; <<$ca_pool>>
+    if (<latex>\mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \geq \sum_{j > i} \mathrm{hold}_j(p)</latex>) then (holds for every purse)
+      :settle member <latex>i</latex>\ncharge use · refund unused hold; <<$ca_note_green>>
+    else (guard fails)
+      :member <latex>i</latex> is a classified user failure\nroll back · pay billable work and fee\nfrom the restored balance; <<$ca_note_amber>>
+    endif
+  repeat while (more accepted members?) is (yes)
+  ->no;
+  :publish the block\nvalidators recompute groups, holds, and guards; <<$ca_note_green>>
+}
+stop
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| pending candidates |
+  |<$ca_gate>| DR-64 individual funding check |
+  |<$ca_process>| grouping by shared physical purse |
+  |<$ca_pool>| execution with committed holds |
+  |<$ca_note_green>| settlement and publication |
+  |<$ca_note_amber>| classified user failure (held-capacity guard) |
+  |<$ca_rejectfill>| rejection with no effect |
+  |<$ca_control>| decision |
+endlegend
+
+@enduml

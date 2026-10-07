@@ -35,3 +35,36 @@ async fn recursive_single_term_evaluation_has_bounded_task_and_yield_work() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unmetered_deep_recursion_has_bounded_identity_state() {
+    const ITERATIONS: u64 = 32_768;
+
+    with_runtime("unmetered-deep-recursion-", |runtime| async move {
+        let term = format!(
+            "new loop in {{ contract loop(@n) = {{ match n {{ 0 => Nil _ => loop!(n - 1) }} }} | loop!({ITERATIONS}) }}"
+        );
+        let _unmetered = runtime.cost.enter_unmetered_scope();
+        runtime.reducer.reset_eval_work_stats();
+
+        let result = runtime
+            .evaluate(
+                &term,
+                Cost::create(i64::MAX, "unmetered deep recursion".to_string()),
+                HashMap::new(),
+                Blake2b512Random::create_from_bytes(&[]),
+            )
+            .await
+            .expect("recursive evaluation failed");
+
+        assert!(
+            result.errors.is_empty(),
+            "recursive evaluation returned errors: {:?}",
+            result.errors
+        );
+        let stats = runtime.reducer.eval_work_stats();
+        assert!(stats.single_term_evaluations >= ITERATIONS);
+        assert!(stats.spawned_eval_tasks <= 4);
+    })
+    .await;
+}
