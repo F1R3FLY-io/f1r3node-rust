@@ -36,6 +36,8 @@ step_0:
   acceptance:
     - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 with status pending. The claim states three properties. Release liveness: a buffered block whose dependencies are all validated is released for processing. No stale hold: a released block is not dropped as already processed. Release order: a released block is processed before a gossip block that entered the queue after the release, and gossip still progresses."
     - "/cbc identify classifies the touched files. Each one is cbc=mandatory, or a maintainer decision records why it stays untagged."
+cycle_order: [B1, B7, B2, B10, B3, B4, B5, B6, B8, B9]
+cycle_order_decision: "2026-10-07: the user chose to build the B7 release queue before B2. The node block queue has no test seam, so B2's release-wait metric becomes a behavior of the standalone queue module. Wiring the queue into BlockProcessorInstance follows as its own step."
 behaviors:
   - id: B1
     statement: "Releasing a parked block records the time that the block was parked"
@@ -64,7 +66,11 @@ behaviors:
     deep_module: false
     done: false
     notes: "Histogram block-processing.release.queue-wait.time. This measures the queue position cost that the trace ranks first."
-    cycle_log: []
+    cycle_log:
+      - date: 2026-10-07
+        blocked: true
+        reason: "The wait lives in the BlockProcessorInstance queue (node). The instance is built only in node_runtime.rs from a real BlockProcessor, and each queue item carries a live Arc<dyn Casper>. No node test builds one, and the casper BlockProcessor fixture is in casper/tests, out of reach of node. A pipeline test for this metric would need a full Casper engine."
+        proposal: "Do B7 first as a standalone two-lane release queue module in node. The queue records the release wait when it hands out a released block, so B2 becomes a queue behavior with a direct test. Wiring the queue into BlockProcessorInstance is a separate step, covered by the casper suites and the soak."
   - id: B3
     statement: "The release scan records its duration"
     priority: should
@@ -97,8 +103,27 @@ behaviors:
     statement: "A released block is processed before gossip blocks that entered the queue after its release, and gossip blocks still progress"
     priority: must
     deep_module: true
-    done: false
     notes: "A two-lane release queue: released blocks first, with a bounded share for gossip so that gossip cannot starve. The node pipeline uses the queue in place of the single FIFO."
+    done: true
+    cycle_log:
+      - date: 2026-10-07
+        test: "node --test release_queue::a_released_block_is_processed_before_later_gossip_and_gossip_still_progresses"
+        red: "With one FIFO lane (the current mpsc behavior), gossip-1 came out first, ahead of every released block."
+        green: "node/src/rust/instances/release_queue.rs: ReleaseQueue with a released lane and a bounded gossip lane. pop takes released blocks first. After gossip_share_after released blocks in a row it takes one waiting gossip block, so gossip cannot starve."
+        files:
+          - node/src/rust/instances/release_queue.rs
+          - node/src/rust/instances/mod.rs
+          - node/tests/release_queue.rs
+        suite: "node --test release_queue passed. clippy -D warnings clean for node, all targets. cargo fmt clean. The module is not wired into the pipeline yet, so no other test can regress."
+        observations:
+          - "The pipeline wiring is a separate behavior (B10), as the cycle_order decision records."
+          - "B2 (release queue wait) is now a queue behavior: pop can record the wait of a released item."
+  - id: B10
+    statement: "The node block pipeline takes blocks from the release queue, with released blocks pushed to the released lane and gossip blocks to the gossip lane"
+    priority: must
+    deep_module: false
+    done: false
+    notes: "Wiring of the B7 queue into BlockProcessorInstance in place of the single mpsc FIFO. Added 2026-10-07 after B7. The user ratifies it at the next /tdd."
     cycle_log: []
   - id: B8
     statement: "After a block is processed, only its buffered descendants are considered for release, and the processing permit is free during that work"
