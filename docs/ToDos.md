@@ -297,13 +297,16 @@ tasks:
       - "The changed workflow and claim artifacts have a review package and maintainer acceptance under their claims."
   - id: TASK-021-10
     title: "Write the checkpoint nodes and root in one LMDB transaction (contention reduction)"
-    status: pending
+    status: review
     priority: p0
     claimed_by: null
     blocked_by: []
     branch: fix/issue-24-deepening-resolution
     pr: 653
-    merge_hold: "Draft PR #653 with label awaiting-soak-evidence. Do not merge it until a soak of dev after PR #622 and PR #620 merge, and a soak of this branch, are compared. TASK-021-11 must also discharge CLAIM-RSPACE-002."
+    merged: "PR #653 merged to dev on 2026-10-07 (31b228604) and reached master through PR #632 (e6564599c). The merge did not wait for the soak comparison or for CLAIM-RSPACE-002."
+    post_merge_obligations:
+      - "Compare a soak of master e6564599c or later with the dev soak 37469364217. The soak must show lower root commit and roots lock times and a sustained finalization p95 that is not worse."
+      - "TASK-021-11 registers and discharges CLAIM-RSPACE-002."
     pr_base_branch: dev
     discovered_in: docs/discoveries/architecture-review-2026-10-06T114619Z.md
     design: docs/casper/design/history-checkpoint-commit.md
@@ -345,7 +348,7 @@ tasks:
     blocked_by: []
     branch: fix/issue-24-deepening-resolution
     pr: 653
-    origin: "On 2026-10-06 the user asked for a /cbc task for the checkpoint commit enhancements. The EPIC-021 cbc_policy requires a pending claim before any code change. The step-1 code of TASK-021-10 (74ab85dd2) was written without a claim, so this task closes that gap before PR #653 leaves draft."
+    origin: "On 2026-10-06 the user asked for a /cbc task for the checkpoint commit enhancements. The EPIC-021 cbc_policy requires a pending claim before any code change. The step-1 code of TASK-021-10 (74ab85dd2) was written without a claim. PR #653 merged on 2026-10-07 before the claim existed, so this task closes that gap after the merge."
     method: "/cbc identify, then /cbc verify, then /cbc discharge. Follow the pattern of CLAIM-FINALITY-001 (docs/claims/settled-effect-probe-equivalence.md): specification first, a mechanized model, and a property test against the previous code path as the oracle."
     files:
       - docs/claims/rspace-history-checkpoint-commit.md
@@ -362,10 +365,10 @@ tasks:
       - "A bounded model checks atomicity over every crash point of the write sequence, both for one shared environment and for the fallback with separate stores. A negative control shows that root-before-nodes ordering violates atomicity."
       - "A property test checks state equivalence on random action batches, with the previous process and record_root path as the oracle. The state root is consensus data, so any difference fails the test."
       - "/cbc verify writes an evidence record for CLAIM-RSPACE-002, and /cbc discharge passes for the step-1 diff. The claims audit of CLAIM-CASPER-SOAK-001 to -008 still exits 0."
-      - "The maintainer accepts the evidence before PR #653 leaves draft."
+      - "The maintainer accepts the evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
   - id: TASK-021-12
     title: "Release parked blocks without queue, scan, and stale-link delays (issue #24)"
-    status: in_progress
+    status: review
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-07T00:40:00Z
@@ -373,21 +376,37 @@ tasks:
     branch: fix/issue-24-deepening-resolution
     pr: 653
     tdd_plan: docs/tdd-plans/issue-24-parked-block-release-2026-10-07.md
+    merged: "PR #653 merged to dev on 2026-10-07 (31b228604) and reached master through PR #632 (e6564599c). All plan behaviors B1 to B11 are done."
+    evidence:
+      - "Soak 37579803394 on master e6564599c failed in the integration preflight: test_load had 7 deploys not finalized within 45s in the high phase, with inclusion p95 21.9 s. The sustained phase passed with 0 unfinalized. The 24-hour soak did not start."
+      - "On the test_load shard, each node parked 0 to 5 of 271 to 364 processed blocks, and each park had one release. The 2026-09-25 breakdown measured 56% on a saturated local host, so the values do not compare directly."
+      - "Issue #24 comment 6040401089 records the phase table, the park counts, and the attribution limits."
+    open:
+      - "A soak that passes the preflight and gives the 24-hour test_load failure rate on master e6564599c or later."
+      - "CLAIM-CASPER-BUFFER-001 discharge items 2 to 7, and maintainer acceptance of the soak and CbC evidence."
+      - "Follow-up outside this task: deploy inclusion latency in the test_load high phase."
     origin: "On 2026-10-07 the user chose to fix issue #24 on the #653 branch. Soak 37469364217 on dev 778cc6754 failed 8 of 49 iterations with test_load 'N deploy(s) not finalized within 45s'. The 2026-09-25 issue breakdown shows that 56% of blocks park on missing parents, 7.1 s median and 39.6 s p90. A code trace found three release-path causes."
     scope: "Release priority, the stale-link defect, and an incremental release scan, plus the round-length metrics. The recovery re-request for parents that the node already holds is out of scope."
     files:
       - docs/claims/casper-buffer-release.md
       - casper/src/rust/blocks/block_processor.rs
       - casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs
+      - casper/src/rust/engine/multi_parent_casper/block_admission.rs
+      - casper/src/rust/engine/multi_parent_casper/dispatch.rs
+      - casper/src/rust/engine/block_retriever.rs
+      - casper/src/rust/casper.rs
+      - casper/src/rust/metrics_constants.rs
       - node/src/rust/instances/block_processor_instance.rs
+      - node/src/rust/instances/release_queue.rs
       - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
+      - block-storage/src/rust/dag/buffer_dag_transition.rs
       - scripts/bench/extend-issue24-metrics.sh
     acceptance:
       - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 as pending before any code change (EPIC-021 cbc_policy)."
       - "Each plan behavior has a test that fails before its change and passes after it. B5 reproduces the stale-link hold on the current code."
       - "The soak records park time, release queue wait, release scan duration, and recovery re-requests."
       - "A comparison soak against the scheduled dev soak on the same base reports sustained finalization p95, the test_load failure count, and the new metrics."
-      - "The maintainer accepts the soak and CbC evidence before PR #653 leaves draft."
+      - "The maintainer accepts the soak and CbC evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
 ---
 ```
 
