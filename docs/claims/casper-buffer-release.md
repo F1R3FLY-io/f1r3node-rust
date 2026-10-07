@@ -52,7 +52,7 @@ TASK-021-12 changes the release path. This claim states the properties that the 
 
 The status of each item is recorded here as the TDD cycles complete.
 
-1. `/cbc identify` classifies the four artifacts. Each one is `cbc=mandatory`, or a maintainer decision records why it stays untagged. **Open.**
+1. `/cbc identify` classifies the four artifacts. Each one is `cbc=mandatory`, or a maintainer decision records why it stays untagged. **Done 2026-10-07.** The scanner proposed none of the four, so the maintainer tagged all four in `.gitattributes`. `block_processor.rs`, `buffer_resolver.rs`, and `casper_buffer_key_value_storage.rs` are `cbc-weight=high`. `block_processor_instance.rs` is `cbc-weight=medium`.
 2. C2: a test reproduces the stale-link hold on the current code and passes after the fix (plan B5). A test forces the race between a dependency check and the dependency's validation through the public interfaces and shows that no stale link remains (plan B6). **Open.**
 3. C1: a test shows that the validation of the last missing dependency releases its waiting children. A second test shows that a chain of missing ancestors releases level by level without a timer (plans B5 and B8). **Open.**
 4. C3: the two-lane release queue has tests for release-first order and for the bounded gossip share (plan B7). A pipeline test asserts processing order through the block processing result channel. **Open.**

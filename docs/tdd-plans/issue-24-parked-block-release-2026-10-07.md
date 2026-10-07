@@ -30,8 +30,9 @@ evidence:
     - "The resolver returns children that still have child_to_parent links, but check_if_of_interest drops a block that buffer_contains reports as AlreadyProcessed (casper/src/rust/blocks/block_processor.rs). A stale link can then hold a child until the 180 s stale prune."
 step_0:
   title: "Register the pending CbC claim and classify the files"
-  done: false
-  claim_registered: "2026-10-07: docs/claims/casper-buffer-release.md, CLAIM-CASPER-BUFFER-001, status pending. /cbc identify is still open."
+  done: true
+  claim_registered: "2026-10-07: docs/claims/casper-buffer-release.md, CLAIM-CASPER-BUFFER-001, status pending."
+  cbc_identify: "2026-10-07: all four artifacts tagged cbc=mandatory in .gitattributes (three high, block_processor_instance.rs medium). The scanner proposed none of them."
   acceptance:
     - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 with status pending. The claim states three properties. Release liveness: a buffered block whose dependencies are all validated is released for processing. No stale hold: a released block is not dropped as already processed. Release order: a released block is processed before a gossip block that entered the queue after the release, and gossip still progresses."
     - "/cbc identify classifies the touched files. Each one is cbc=mandatory, or a maintainer decision records why it stays untagged."

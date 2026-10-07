@@ -147,3 +147,7 @@ casper/src/rust/safety/initial_fault.rs cbc=mandatory cbc-weight=high
 casper/src/rust/soak_observer/display.rs cbc=mandatory cbc-weight=high
 casper/src/rust/engine/multi_parent_casper/dispatch.rs cbc=mandatory cbc-weight=high
 casper/src/rust/api/block_api.rs cbc=mandatory cbc-weight=high
+casper/src/rust/blocks/block_processor.rs cbc=mandatory cbc-weight=high
+casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs cbc=mandatory cbc-weight=high
+block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs cbc=mandatory cbc-weight=high
+node/src/rust/instances/block_processor_instance.rs cbc=mandatory cbc-weight=medium
