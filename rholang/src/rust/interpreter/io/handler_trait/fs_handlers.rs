@@ -419,6 +419,41 @@ mod tests {
         }
     }
 
+    /// Every entry's `fixed_channel` fn-pointer must produce a
+    /// unique `Par` across FS_HANDLERS.  Two entries pointing at
+    /// the same `FixedChannels::fs_x` fn (a copy-paste bug in
+    /// registration) would produce identical byte-names, colliding
+    /// at both `urn_map` (the versioned-URN → Bundle(fixed_channel)
+    /// insert overwrites) AND `proc_defs` (two
+    /// `introduce_system_process` entries with the same channel —
+    /// second clobbers the first).  Complementary to
+    /// `fs_handlers_body_refs_are_unique`: the body_ref keys the
+    /// dispatch HashMap; the fixed_channel keys the URN map AND
+    /// the rendezvous channel registration.
+    #[test]
+    fn fs_handlers_fixed_channels_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            let ch = (entry.fixed_channel)();
+            assert!(
+                seen.insert(ch.clone()),
+                "duplicate FS_HANDLERS fixed_channel Par (entry \
+                 name `{}` / urn_suffix `{}` / body_ref {}).  Two \
+                 entries point at the same `FixedChannels::fs_x` \
+                 fn — their `(fixed_channel)()` returns the same \
+                 byte-name.  Both urn_map and proc_defs would \
+                 register at the same channel; the second \
+                 overwrites the first silently.  Pick an unused \
+                 FixedChannels slot (see the gaps between \
+                 `fs_quarantine` byte 61, `fs_lock_range` byte 62, \
+                 etc. in `system_processes.rs`).",
+                entry.name,
+                entry.urn_suffix,
+                entry.body_ref,
+            );
+        }
+    }
+
     /// Every entry's `body_ref` must be unique across FS_HANDLERS.
     /// Two entries sharing a `body_ref` would collide in the
     /// dispatcher's `HashMap<body_ref, handler>`, silently clobbering
