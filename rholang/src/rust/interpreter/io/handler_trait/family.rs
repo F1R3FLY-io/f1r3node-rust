@@ -50,7 +50,7 @@
 ///
 /// Total at migration-complete: `8 + 9 + 3 + 4 + 3 = 27` migrated
 /// handlers + 1 trait-exempt (`fs_remove_dir`) = 28 fs_* natives.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum HandlerFamily {
     Mutation,
     Observation,

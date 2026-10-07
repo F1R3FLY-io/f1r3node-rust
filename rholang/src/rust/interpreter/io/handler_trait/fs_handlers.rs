@@ -224,6 +224,39 @@ pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
 /// (see `handler_trait::fs_handler` module docstring).
 pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 14;
 
+/// Expected count of trait-registered handlers per
+/// [`HandlerFamily`](super::family::HandlerFamily).  Variant order
+/// matches `HandlerFamily`'s declaration order (pinned by
+/// `family::tests::variants_match_declaration_order`) so the array
+/// doubles as a documentation surface.
+///
+/// Current (slice 5.44, migration-complete):
+///   - Mutation = 8 (fs_truncate, fs_chmod, fs_rename, fs_remove_file,
+///     fs_chown, fs_write, fs_write_at, fs_copy_file; plus the
+///     trait-exempt fs_remove_dir, NOT in FS_HANDLERS).
+///   - Observation = 9 (fs_read, fs_read_at, fs_stat, fs_entries,
+///     fs_size, fs_seek, fs_exists, fs_flush, fs_tell).
+///   - Stream = 3 (fs_entries_stream_open / _next / _close).
+///   - Lock = 4 (fs_lock_range, fs_lock_sequential, fs_release_lock,
+///     fs_release_all_for_holder).
+///   - Lifecycle = 3 (fs_open, fs_close, fs_quarantine).
+///
+/// Sum = 27 = [`EXPECTED_MIGRATED_HANDLER_COUNT`].
+///
+/// Pin addresses the hazard flagged in `handler_trait::family`'s
+/// own module-doc: "A regression that mis-labeled a handler would
+/// re-order journaling vs. side-effect timing on replay — consensus
+/// observable."  Catches a copy-paste miscategorization where a
+/// handler's `family: HandlerFamily::...` field was set wrong at
+/// registration time.
+pub const EXPECTED_PER_FAMILY_HANDLER_COUNTS: [(super::family::HandlerFamily, usize); 5] = [
+    (super::family::HandlerFamily::Mutation, 8),
+    (super::family::HandlerFamily::Observation, 9),
+    (super::family::HandlerFamily::Stream, 3),
+    (super::family::HandlerFamily::Lock, 4),
+    (super::family::HandlerFamily::Lifecycle, 3),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +544,71 @@ mod tests {
              aren't: {missing:?}.  Either add `const VERIFYING: \
              bool = true;` to the handler's `impl FsHandler` block, \
              or remove the name from EXPECTED_VERIFYING_NAMES."
+        );
+    }
+
+    /// Per-family count pin.  Walks FS_HANDLERS, buckets by
+    /// `entry.family`, asserts each family's size matches
+    /// `EXPECTED_PER_FAMILY_HANDLER_COUNTS` AND that the sum
+    /// matches `EXPECTED_MIGRATED_HANDLER_COUNT`.
+    ///
+    /// Catches two hazard classes:
+    ///   1. A new handler registered without setting `family:
+    ///      HandlerFamily::...` to the correct variant (copy-paste
+    ///      miscategorization).  The family docstring warns that
+    ///      this re-orders journaling vs. side-effect timing on
+    ///      replay — consensus-observable.
+    ///   2. A per-family file split (handlers/mutation/*,
+    ///      handlers/observation/*, …) drifts: a mutation handler
+    ///      moved to the observation/ directory with its `family`
+    ///      field also flipped.  The pin surfaces at test time.
+    #[test]
+    fn fs_handlers_per_family_counts_match_pinned() {
+        use std::collections::HashMap;
+
+        let mut actual: HashMap<super::super::family::HandlerFamily, usize> = HashMap::new();
+        for entry in FS_HANDLERS.iter() {
+            *actual.entry(entry.family).or_insert(0) += 1;
+        }
+
+        let mut expected_total = 0usize;
+        for (family, expected_n) in EXPECTED_PER_FAMILY_HANDLER_COUNTS.iter() {
+            let actual_n = actual.remove(family).unwrap_or(0);
+            assert_eq!(
+                actual_n, *expected_n,
+                "FS_HANDLERS has {actual_n} entries with family = \
+                 {family:?} but expected {expected_n}.  Either (a) \
+                 a new handler was added without updating \
+                 EXPECTED_PER_FAMILY_HANDLER_COUNTS, (b) an \
+                 existing handler's `family:` field was flipped to \
+                 the wrong variant (a copy-paste miscategorization \
+                 — the handler_trait::family docstring warns this \
+                 re-orders journaling vs. side-effect timing on \
+                 replay, consensus-observable), or (c) a per-\
+                 family file split drifted (e.g., a mutation handler \
+                 moved to `handlers/observation/` with its field \
+                 flipped).  Audit the per-handler `family:` \
+                 declarations under `rholang/src/rust/interpreter/io/\
+                 handlers/<family>/*.rs` and reconcile."
+            );
+            expected_total += *expected_n;
+        }
+
+        assert!(
+            actual.is_empty(),
+            "FS_HANDLERS contains entries with family variants not \
+             present in EXPECTED_PER_FAMILY_HANDLER_COUNTS: {:?}.  A \
+             new HandlerFamily variant was added without updating \
+             the pin.",
+            actual
+        );
+
+        assert_eq!(
+            expected_total, EXPECTED_MIGRATED_HANDLER_COUNT,
+            "EXPECTED_PER_FAMILY_HANDLER_COUNTS sums to {expected_total} \
+             but EXPECTED_MIGRATED_HANDLER_COUNT is \
+             {EXPECTED_MIGRATED_HANDLER_COUNT}.  The two must agree: \
+             bump both when a new handler lands."
         );
     }
 }
