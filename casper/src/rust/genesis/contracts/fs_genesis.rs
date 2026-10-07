@@ -1356,9 +1356,9 @@ mod tests {
     /// truth for which native URNs the composed FsGenesis source
     /// binds into the top-level `new` scope.  A new native URN
     /// requires updating this list AND the composed source's `new`
-    /// clause (yet to land, slice 5.14+); the drift tests will
-    /// enforce correspondence once compose_fs_genesis_source
-    /// lands.  This pin asserts the current content.
+    /// clause (slice 5.15 landed `compose_fs_genesis_source`); the
+    /// bidirectional drift tests (slice 5.19) enforce the
+    /// correspondence.  This pin asserts the current content.
     #[test]
     fn fs_native_urn_suffixes_pinned() {
         // Current migration-complete set: 27 suffixes (fs_remove_dir
@@ -1397,8 +1397,9 @@ mod tests {
             FS_NATIVE_URN_SUFFIXES, expected,
             "FS_NATIVE_URN_SUFFIXES drifted — a native URN was added \
              or removed.  Update this pin AND the composed FsGenesis \
-             `new` clause (yet to land) + the arity golden table + \
-             the all_fs_native_suffixes_are_rejected list in \
+             `new` clause (slice 5.15's compose_fs_genesis_source) + \
+             the arity golden table + the \
+             all_fs_native_suffixes_are_rejected list in \
              rholang/tests/fs_native_urn_filter_spec.rs."
         );
     }
