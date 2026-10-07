@@ -74,7 +74,7 @@ impl CasperBufferKeyValueStorage {
         self.state_lock.write().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn add_relation_unlocked(
+    pub(crate) fn add_relation_unlocked(
         &self,
         parent: BlockHashSerde,
         child: BlockHashSerde,
@@ -164,6 +164,10 @@ impl CasperBufferKeyValueStorage {
 
     pub fn put_pendant(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
+        self.put_pendant_unlocked(block)
+    }
+
+    pub(crate) fn put_pendant_unlocked(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let temp_block = BlockHashSerde(prost::bytes::Bytes::from_static(b"tempblock"));
         self.add_relation_unlocked(temp_block.clone(), block)?;
         self.remove_unlocked_recording(temp_block, false)?;

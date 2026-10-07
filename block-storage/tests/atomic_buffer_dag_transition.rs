@@ -18,7 +18,8 @@ use std::collections::HashSet;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::dag::buffer_dag_transition::{
-    atomic_insert_then_buffer, reconcile_buffer_against_dag, BufferTransition,
+    atomic_commit_dependencies, atomic_insert_then_buffer, reconcile_buffer_against_dag,
+    BufferTransition,
 };
 use models::rust::block_hash::BlockHashSerde;
 use models::rust::block_implicits::get_random_block;
@@ -347,4 +348,41 @@ async fn releasing_a_parked_block_records_its_park_time() {
         "removing the last missing parent releases the child and records its park time once"
     );
     assert!(buffer.is_pendant(&child));
+}
+
+#[tokio::test]
+async fn a_child_committed_after_its_parent_enters_the_dag_keeps_no_stale_relation() {
+    let (dag, buffer) = setup_stores().await;
+    let parent = make_block();
+    let parent_hash = BlockHashSerde(parent.block_hash.clone());
+    let child_hash = buffer_hash(b"child-of-the-racing-parent");
+
+    let dependencies_seen_missing = vec![parent_hash.clone()];
+
+    atomic_insert_then_buffer(
+        &dag,
+        &parent,
+        InsertMode::Normal,
+        &buffer,
+        BufferTransition::RemoveFromBuffer(parent_hash.clone()),
+    )
+    .unwrap();
+
+    atomic_commit_dependencies(
+        &dag,
+        &buffer,
+        child_hash.clone(),
+        &dependencies_seen_missing,
+    )
+    .unwrap();
+
+    assert_eq!(
+        buffer.get_parents(&child_hash),
+        None,
+        "the parent is in the DAG when the child commits, so no relation to it may remain"
+    );
+    assert!(
+        buffer.is_pendant(&child_hash),
+        "with no unmet dependency left, the child waits as a pendant for the next release scan"
+    );
 }

@@ -154,7 +154,22 @@ behaviors:
     deep_module: false
     done: false
     notes: "The dependency check and the relation insert become atomic with respect to the parent's DAG insert and buffer removal."
-    cycle_log: []
+    design_decision: "2026-10-07: the user chose the atomic commit helper. atomic_commit_dependencies in buffer_dag_transition.rs takes the DAG global_lock (read) and then the buffer write_guard, the documented A-then-B order, and links only dependencies that are not in the DAG."
+    cycle_log:
+      - date: 2026-10-07
+        test: "block-storage --test atomic_buffer_dag_transition::a_child_committed_after_its_parent_enters_the_dag_keeps_no_stale_relation"
+        red: "The helper was first written with the current behavior (add_relation for every dependency). The test computes the child's dependencies {P}, runs P's atomic_insert_then_buffer, and then commits the child. get_parents(child) returned Some({P}), a stale relation, where None was expected."
+        green: "atomic_commit_dependencies holds lock A (DAG read) and lock B (buffer write), reads the DAG with get_representation_internal (no relock), and adds relations only to dependencies that are not in the DAG. With no unmet dependency it records the child as a pendant, so the next release scan offers it. commit_to_buffer calls it for Some(deps). CasperBufferKeyValueStorage exposes add_relation_unlocked and the new put_pendant_unlocked at pub(crate)."
+        files:
+          - block-storage/src/rust/dag/buffer_dag_transition.rs
+          - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
+          - block-storage/tests/atomic_buffer_dag_transition.rs
+          - casper/src/rust/blocks/block_processor.rs
+        observations:
+          - "The interleaving is forced in sequence through public interfaces, with no sleeps: the dependency set is fixed before the parent transition, as the race leaves it."
+          - "With both locks held, a parent transition either completes before the commit (the commit sees the parent in the DAG and links nothing) or starts after it (the parent's buffer removal releases the child). No order leaves a stale relation."
+          - "In steady state commit_to_buffer receives only non-validated dependencies, so the result differs from before only inside the race window."
+          - "get_representation_internal reads the latest-message and invalid-block indexes from the key-value store. The existing admit_dag_contains already builds one representation per call, and B5's buffer_waits_on_dependency calls it per parent. A cheap DAG membership read would help all three. Candidate for B8."
   - id: B7
     statement: "A released block is processed before gossip blocks that entered the queue after its release, and gossip blocks still progress"
     priority: must
