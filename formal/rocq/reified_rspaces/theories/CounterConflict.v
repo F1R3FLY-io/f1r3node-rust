@@ -98,7 +98,7 @@
                             165-245, 251-309 (bump, and take: the COMM has
                             no peeks)
    exec (the plan)          rholang/src/rust/interpreter/spaces/generic.rs:
-                            2172-2304 (run_with: bump, then plan)
+                            2211-2343 (run_with: bump, then plan)
    list_diff                rspace++/src/rspace/merger/channel_change.rs:
                             74-82 (vec_diff), rspace++/src/rspace/merger/
                             state_change.rs:318-357 (multiset_diff gives
@@ -131,7 +131,7 @@
                             (the block index skips a failed user deploy,
                             so a CellOccupied abort never reaches check #1)
    the cell abort (P5)      rholang/src/rust/interpreter/spaces/generic.rs:
-                            853-864 (Cx::check_capacity: CellOccupied
+                            888-899 (Cx::check_capacity: CellOccupied
                             before any staging), rholang/src/rust/
                             interpreter/spaces/disciplines/cell.rs:57
                             (CAPACITY = Some 1)
@@ -144,9 +144,9 @@
    bump, bump_all (P5c)     rholang/src/rust/interpreter/spaces/counter.rs:
                             165-245 (bump, as in exec), one for each
                             collection of the group: Engine::touch and
-                            Engine::touch_all of spaces/join.rs:1895-1929
+                            Engine::touch_all of spaces/join.rs:2458-2502
                             (TOUCH, joins plan 4.3)
-   jstep, exec_join,        the join step: spaces/join.rs:1951-2037
+   jstep, exec_join,        the join step: spaces/join.rs:2518-2605
    run_jsteps, join_bumps   (Engine::run: TOUCH of each own collection,
    (P5c)                    then the settle before the plan and the plan),
                             1913-1925 (touch_all of the distinct
@@ -160,7 +160,7 @@
                             K_retire COMMs of RETIRE-CLASS (scan.rs:785-800,
                             810-870) and of RETIRE-SET-BINDS in a join
                             (rholang/src/rust/interpreter/spaces/join.rs:
-                            2621-2654)
+                            2108-2142)
    set_view (W3)            the class view of a set: one representative of
                             each class in the canonical order of DR-75
                             (decision 41), a parameter of headline 14

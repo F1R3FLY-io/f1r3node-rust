@@ -2523,6 +2523,7 @@
         "test-vectors/ordinary-source-normalization-v1.json",
         "test-vectors/protobuf-schema-head-4d67b5ccc.json",
         "test-vectors/protobuf-schema-head-6f7a80da3.json",
+        "test-vectors/reified-join-seams-v1.json",
         "test-vectors/reified-queue-parity-v1.json",
         "test-vectors/reified-syntax-corpus-v1.json"
       ]

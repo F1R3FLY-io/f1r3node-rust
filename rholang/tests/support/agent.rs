@@ -21,7 +21,7 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
     BindPattern, CostAuthority, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
 };
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsages};
 use models::rust::space_factory_urn::SpaceFactoryUrn;
 use models::rust::utils::{new_freevar_par, new_freevar_var, new_gint_par, new_gstring_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
@@ -540,6 +540,17 @@ impl StagedCopy {
     }
 }
 
+/// A point of the timeline of a metered [`RecordingHost`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordPoint {
+    /// The begin of the transaction with this index.
+    Begin(usize),
+    /// The staged operation with this index in [`HostRecord::staged`], before the host stages it.
+    Staged(usize),
+    /// The commit of the transaction with this index, before the host commits it.
+    Commit(usize),
+}
+
 /// What a [`RecordingHost`] saw, in order.
 #[derive(Default)]
 pub struct HostRecord {
@@ -549,6 +560,9 @@ pub struct HostRecord {
     pub staged: Vec<(usize, StagedCopy)>,
     /// The index of each transaction that committed, in commit order.
     pub commits: Vec<usize>,
+    /// The host-work usage of the agent at each begin, staged operation and commit, in order.
+    /// Only a metered host ([`RecordingHost::metered`]) fills it.
+    pub usages: Vec<(RecordPoint, HostWorkUsages)>,
 }
 
 /// The shared record of a [`RecordingHost`].
@@ -560,6 +574,7 @@ pub type SharedRecord = Arc<Mutex<HostRecord>>;
 pub struct RecordingHost<H> {
     inner: H,
     record: SharedRecord,
+    host_work: Option<HostWorkBudget>,
 }
 
 impl<H> RecordingHost<H> {
@@ -570,9 +585,30 @@ impl<H> RecordingHost<H> {
             Self {
                 inner,
                 record: Arc::clone(&record),
+                host_work: None,
             },
             record,
         )
+    }
+
+    /// A recording host over `inner` that also records the usage of `host_work`, the host-work
+    /// budget of the agent, at each begin, staged operation and commit.
+    pub fn metered(inner: H, host_work: &HostWorkBudget) -> (Self, SharedRecord) {
+        let (host, record) = Self::new(inner);
+        (
+            Self {
+                host_work: Some(host_work.clone()),
+                ..host
+            },
+            record,
+        )
+    }
+}
+
+/// Records the usage of `host_work` at `point`, when the host is metered.
+fn note_usage(record: &mut HostRecord, host_work: Option<&HostWorkBudget>, point: RecordPoint) {
+    if let Some(host_work) = host_work {
+        record.usages.push((point, host_work.usages()));
     }
 }
 
@@ -620,12 +656,19 @@ where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         let index = {
             let mut record = self.record.lock().expect("the record lock");
             record.begins.push(lock_keys.to_vec());
-            record.begins.len() - 1
+            let index = record.begins.len() - 1;
+            note_usage(
+                &mut record,
+                self.host_work.as_ref(),
+                RecordPoint::Begin(index),
+            );
+            index
         };
         Ok(Box::new(RecordingTxn {
             inner,
             record: Arc::clone(&self.record),
             index,
+            host_work: self.host_work.clone(),
         }))
     }
 
@@ -648,6 +691,25 @@ struct RecordingTxn {
     inner: BoxedSpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     record: SharedRecord,
     index: usize,
+    host_work: Option<HostWorkBudget>,
+}
+
+impl RecordingTxn {
+    /// The usage of the agent before the host stages an operation, when the host is metered.
+    fn usage(&self) -> Option<HostWorkUsages> {
+        self.host_work.as_ref().map(HostWorkBudget::usages)
+    }
+
+    /// Records the copy `copy` of a staged operation, with the usage `usage` that the agent had
+    /// before the host staged it.
+    fn note_staged(&self, copy: StagedCopy, usage: Option<HostWorkUsages>) {
+        let mut record = self.record.lock().expect("the record lock");
+        let position = record.staged.len();
+        if let Some(usage) = usage {
+            record.usages.push((RecordPoint::Staged(position), usage));
+        }
+        record.staged.push((self.index, copy));
+    }
 }
 
 #[async_trait]
@@ -694,12 +756,9 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
         op: SpaceProduce<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     ) -> Result<StagedOp, SpaceTxnError> {
         let copy = copy_produce(&op);
+        let usage = self.usage();
         let staged = self.inner.produce(op)?;
-        self.record
-            .lock()
-            .expect("the record lock")
-            .staged
-            .push((self.index, StagedCopy::Produce(Box::new(copy))));
+        self.note_staged(StagedCopy::Produce(Box::new(copy)), usage);
         Ok(staged)
     }
 
@@ -708,12 +767,9 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
         op: SpaceConsume<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     ) -> Result<StagedOp, SpaceTxnError> {
         let copy = copy_consume(&op);
+        let usage = self.usage();
         let staged = self.inner.consume(op)?;
-        self.record
-            .lock()
-            .expect("the record lock")
-            .staged
-            .push((self.index, StagedCopy::Consume(Box::new(copy))));
+        self.note_staged(StagedCopy::Consume(Box::new(copy)), usage);
         Ok(staged)
     }
 
@@ -723,6 +779,14 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
         SpaceTxnReceipt<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         SpaceTxnError,
     > {
+        {
+            let mut record = self.record.lock().expect("the record lock");
+            note_usage(
+                &mut record,
+                self.host_work.as_ref(),
+                RecordPoint::Commit(self.index),
+            );
+        }
         let receipt = self.inner.commit().await?;
         self.record
             .lock()

@@ -119,6 +119,7 @@
 //! staged operation. The outcome after the commit only moves values out of its receipt, and the
 //! engine prepays that work at staging.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::sync::{Arc, LazyLock};
@@ -196,9 +197,38 @@ pub struct JoinScope {
     /// `[C(sid), S(sid)]`, then `[S(sid,k), D(sid,k)]` for each collection in ascending key
     /// order.
     lock_keys: Vec<Par>,
+    /// True for the scope of a PathMap operation: its collections are the prefixes `q`, keyed
+    /// `[0x49] ‖ prefix_key(q)`, whose index channels `I(q)` hold the waiters and the join
+    /// groups.
+    prefixes: bool,
 }
 
 impl JoinScope {
+    /// The scope of an operation of a store with a source of its own (joins plan section 9): the
+    /// collections of the closure in ascending key order, the own collections, the bind positions
+    /// in canonical group order, the space counter and the lock keys. The caller reserves the
+    /// buffers and the copies, as `join_scope` reserves them.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        space: NativeSpace,
+        collections: Vec<ScopedCollection>,
+        own: Vec<CollectionKey>,
+        group: Vec<usize>,
+        space_counter: Par,
+        lock_keys: Vec<Par>,
+        prefixes: bool,
+    ) -> JoinScope {
+        JoinScope {
+            space,
+            collections,
+            own,
+            group,
+            space_counter,
+            lock_keys,
+            prefixes,
+        }
+    }
+
     /// The lock keys of the transaction that runs the operation.
     pub fn lock_keys(&self) -> &[Par] { &self.lock_keys }
 
@@ -233,13 +263,32 @@ impl JoinScope {
             .map_err(|_| SpaceError::Inconsistent("a collection is outside its join scope"))
     }
 
-    /// The index of the collection whose data channel is `channel`, a data channel of the space.
-    /// The read of the channel and the lookup are reserved first. Another channel is
-    /// `Inconsistent`.
+    /// The index of the collection whose data channel is `channel`: a data channel of the space,
+    /// or in the scope of a PathMap operation an index channel `I(q)` of the space, whose key is
+    /// `[0x49] ‖ prefix_key(q)`. The read of the channel and the lookup are reserved first.
+    /// Another channel is `Inconsistent`.
     fn index_of_channel(&self, channel: &Par, meter: &ScanMeter) -> Result<usize, SpaceError> {
         meter.inspect(channel)?;
         match namespace::reified_id_of(channel) {
-            Some(ReifiedId::Data(owner, tail)) if owner == self.space => {
+            Some(ReifiedId::PathIndex(owner, tail)) if self.prefixes && owner == self.space => {
+                let length = tail
+                    .len()
+                    .checked_add(1)
+                    .ok_or(RSpaceError::HostWorkRejected)?;
+                meter.ordered_lookup(self.collections.len(), length)?;
+                self.collections
+                    .binary_search_by(|collection| match collection.key.as_bytes().split_first() {
+                        Some((&PREFIX_KEY_TAG, rest)) => rest.cmp(tail),
+                        Some((&first, _)) => first.cmp(&PREFIX_KEY_TAG),
+                        None => std::cmp::Ordering::Less,
+                    })
+                    .map_err(|_| {
+                        SpaceError::Inconsistent(
+                            "a join group holds a collection outside its scope",
+                        )
+                    })
+            }
+            Some(ReifiedId::Data(owner, tail)) if !self.prefixes && owner == self.space => {
                 meter.ordered_lookup(self.collections.len(), tail.len())?;
                 self.collections
                     .binary_search_by(|collection| collection.key.as_bytes().cmp(tail))
@@ -255,6 +304,10 @@ impl JoinScope {
         }
     }
 }
+
+/// The first byte of the scope key of a PathMap prefix: `[0x49] ‖ prefix_key(q)`, so the key of
+/// the prefix `ε` is not empty (joins plan section 9).
+pub(crate) const PREFIX_KEY_TAG: u8 = 0x49;
 
 /// The channels of the collection `key` of `space` in the outer store `outer`: the counter and
 /// the data channel, with their names reserved before they are made (decision 42).
@@ -573,14 +626,16 @@ fn join_scope<S: OuterStore, D: Discipline>(
         lock_keys.push(meter.copy(&collection.data)?);
         collections.push(collection);
     }
-    Ok(JoinScope {
+    let space_counter = meter.copy(opened.channels.space_counter())?;
+    Ok(JoinScope::new(
         space,
         collections,
         own,
         group,
-        space_counter: meter.copy(opened.channels.space_counter())?,
+        space_counter,
         lock_keys,
-    })
+        false,
+    ))
 }
 
 /// The introduction authority of the operation `op`.
@@ -602,13 +657,26 @@ pub(crate) fn run_join<S: OuterStore, D: Discipline>(
     scope: JoinScope,
     op: SpaceOp,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
-    let meter = &env.meter;
-    let CollectionTxn { txn, .. } = opened;
-    let authority = meter.copy(introduction_authority(&op))?;
     let source: KeyedSource<'_, S, D> = KeyedSource {
         outer: std::marker::PhantomData,
         discipline: agent.discipline(),
     };
+    run_join_with(env, opened, scope, op, &source)
+}
+
+/// RUN-JOIN with the store seam `source` (joins plan section 9): the transaction of the join
+/// engine for `op` over the closure `scope`, in the open transaction `opened`, whose lock keys
+/// cover the closure. The keyed stores run it with a `KeyedSource`.
+pub(crate) fn run_join_with<Src: JoinSource>(
+    env: &SpaceEnv,
+    opened: CollectionTxn,
+    scope: JoinScope,
+    op: SpaceOp,
+    source: &Src,
+) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+    let meter = &env.meter;
+    let CollectionTxn { txn, .. } = opened;
+    let authority = meter.copy(introduction_authority(&op))?;
     let first = scope.own.first().ok_or(SpaceError::Inconsistent(
         "a join scope has no own collection",
     ))?;
@@ -621,7 +689,7 @@ pub(crate) fn run_join<S: OuterStore, D: Discipline>(
         ))?
         .data;
     generic::run_plan(env, txn, data, &authority, |cx| {
-        let engine = Engine::new(&source, &scope, &op, cx.meter())?;
+        let engine = Engine::new(source, &scope, &op, cx.meter())?;
         engine.run(cx, op)
     })
 }
@@ -685,6 +753,10 @@ pub(crate) struct Incoming {
     /// flight. A persistent record that the cascade re-offers stays stored, so it is not in
     /// flight.
     pub in_flight: bool,
+    /// The depth of the marker that a peek COMM removed, for a second send of a PathMap datum
+    /// (joins plan section 9): a store of the element restores that marker instead. A keyed
+    /// store always carries `None`.
+    pub restore: Option<u8>,
 }
 
 /// What a bound entry claims, so that no other bind of the fire binds it (decision 28): one
@@ -713,10 +785,42 @@ pub(crate) struct WaiterRef {
     pub source: Blake2b256Hash,
 }
 
+/// A stored entry of a window as a bind sees it (joins plan section 9).
+pub(crate) struct StoredEntry {
+    /// The payload of the entry, for matching.
+    pub(crate) payload: ListParWithRandom,
+    /// True for a persistent entry.
+    pub(crate) persist: bool,
+    /// What the entry claims (decision 28).
+    pub(crate) claim: Claim,
+}
+
+/// The fire sites of the engine that spend stored entries (joins plan section 9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FireSite {
+    /// A produce-side fire of the element in flight (OFFER).
+    Offer,
+    /// A consume-side fire of a join waiter of the operation (RECEIVE).
+    Join,
+    /// A consume-side fire of a single-bind waiter of the operation (RECEIVE, F3 and F20).
+    Single,
+    /// A fire of a stored pair by the cascade (LIFT-AND-REOFFER).
+    Cascade,
+}
+
+/// Marks every collection of `colls` dirty in `dirty`.
+pub(crate) fn mark(dirty: &mut [bool], colls: &[usize]) {
+    for &coll in colls {
+        if let Some(entry) = dirty.get_mut(coll) {
+            *entry = true;
+        }
+    }
+}
+
 /// The access of the join engine to a store and its discipline (joins plan section 9). The
 /// engine core (the searches, the fires, Rule E, the cascade, the stop and the re-issue) is the
 /// same for every store. A source gives the windows, the heads, the waiters and the counters of
-/// its collections.
+/// its collections, and the entries, the elements and the second sends of its records.
 pub(crate) trait JoinSource {
     /// The window shape of the discipline.
     fn shape(&self) -> JoinWindow;
@@ -769,7 +873,9 @@ pub(crate) trait JoinSource {
     ) -> Result<Vec<JoinSlot>, SpaceError>;
 
     /// The window of `need` binds on the collection `coll` (joins plan section 3.2), with the
-    /// element in flight `incoming` at its place when it belongs to `coll`.
+    /// element in flight `incoming` at its place when it belongs to `coll`. `pending` are the
+    /// second sends that the transaction still owes: a source whose records stay stored while
+    /// they are in flight leaves them out of every window (the PathMap source).
     fn window(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -777,6 +883,7 @@ pub(crate) trait JoinSource {
         coll: usize,
         need: usize,
         incoming: Option<&Incoming>,
+        pending: &[Work],
     ) -> Result<Vec<Entry>, SpaceError>;
 
     /// The claim of the entry `at` of `coll` with the payload `payload`.
@@ -844,6 +951,168 @@ pub(crate) trait JoinSource {
     /// The class of the payload `payload` in a join window, or `None` when every record is a
     /// class of its own.
     fn class_key(&self, payload: &[Par], meter: &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError>;
+
+    /// The stored entry `index` of the window of `coll` as a bind sees it: its payload, its
+    /// persistence and its claim. `missing` is the error of an index outside the staged view.
+    fn stored_entry(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        missing: &'static str,
+    ) -> Result<StoredEntry, SpaceError>;
+
+    /// The stored entries of `coll` that a single-bind class fire visits, in canonical order
+    /// (F3, F20).
+    fn members(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+    ) -> Result<Vec<usize>, SpaceError>;
+
+    /// The channel of the produce identity of an element of `coll`.
+    fn home<'a>(&'a self, scope: &'a JoinScope, coll: usize) -> Result<&'a Par, SpaceError>;
+
+    /// The element of the stored entry `index` of `coll` that a cascade lifts or re-offers, and
+    /// the stored record that the lift removes. `in_flight` is true when the lift removes the
+    /// record, so the element is stored nowhere.
+    fn stored_element(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        in_flight: bool,
+    ) -> Result<(Incoming, ParDatum), SpaceError>;
+
+    /// The second send of Rule E (decision 45) of the stored entry `index` of `coll` that a peek
+    /// fire binds as `entry`, or `None` when the entry is persistent.
+    fn second_send(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        entry: &Bound,
+    ) -> Result<Option<Work>, SpaceError>;
+
+    /// The identity of the incoming side of a fire of the element `x` at a position on `coll`:
+    /// the produce that the fire stages there. The copy is reserved first.
+    fn incoming_source(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        x: &Incoming,
+        coll: usize,
+    ) -> Result<Produce, SpaceError>;
+
+    /// The data of the incoming side of a fire of the element `x` at a position on `coll`. The
+    /// copy is reserved first.
+    fn incoming_record(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        x: &Incoming,
+        coll: usize,
+    ) -> Result<ListParWithRandom, SpaceError>;
+
+    /// True when the element `x` enters the window of `coll`: its own collection, or on a
+    /// PathMap space every prefix of its path. A check that reads keys reserves its work.
+    fn enters(
+        &self,
+        scope: &JoinScope,
+        x: &Incoming,
+        coll: usize,
+        meter: &ScanMeter,
+    ) -> Result<bool, SpaceError>;
+
+    /// The payload of the element `x` as a bind on `coll` sees it: its own payload, or on a
+    /// PathMap space the payload re-rooted under the suffix of its path below the prefix `coll`.
+    fn incoming_payload<'x>(
+        &self,
+        scope: &JoinScope,
+        x: &'x Incoming,
+        coll: usize,
+        meter: &ScanMeter,
+    ) -> Result<Cow<'x, ListParWithRandom>, SpaceError>;
+
+    /// True when a refusal by a waiter of the offer order stores the element: the head of a
+    /// head-only collection blocks (decision 11). A source whose offer order lists one head for
+    /// each of several collections moves on to the next head (the PathMap source).
+    fn refusal_blocks(&self) -> bool;
+
+    /// True when every collection of the scope bumps one counter, so a transaction bumps it once
+    /// (the token of a PathMap space).
+    fn shares_counter(&self) -> bool;
+
+    /// FINISH: the last staging of a transaction before its commit. `changed` is true when the
+    /// engine staged a change of state: a store that is not a restore, a park, or the removal of
+    /// a stored waiter or of a stored datum that is not persistent. A source adds the changes
+    /// that only it stages. A keyed source stages nothing. The PathMap source bumps the token of a
+    /// bag or a set space when the transaction changed the state (decision 51).
+    fn finish(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        changed: bool,
+        random: &Blake2b512Random,
+        authority: OperationAuthority<'_>,
+    ) -> Result<(), SpaceError>;
+
+    /// What a fire spends, as `before_fire` records it before the fire moves the bound entries.
+    type Spent;
+
+    /// The entries that the side of the element `x` holds, for the capacity check (F15).
+    fn held(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        x: &Incoming,
+    ) -> Result<usize, SpaceError>;
+
+    /// STORE (joins plan section 4.5): stages the store of the element `x`, and marks in `dirty`
+    /// the collections that the store changes. The engine checks the capacity and touches the
+    /// collection first.
+    fn land(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        x: Incoming,
+        dirty: &mut [bool],
+    ) -> Result<(), SpaceError>;
+
+    /// What a fire at `site` spends, recorded before the fire moves its bound entries `bound` on
+    /// the positions `colls`. `members` are the candidates of a single-bind class fire, and `x` is
+    /// the element in flight of a produce-side fire.
+    #[allow(clippy::too_many_arguments)]
+    fn before_fire(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        site: FireSite,
+        colls: &[usize],
+        bound: &[Bound],
+        members: &[ParCandidate],
+        x: Option<&Incoming>,
+    ) -> Result<Self::Spent, SpaceError>;
+
+    /// Retires after a fire that does not peek what the fire spent, with the random state
+    /// `random` and the authority `authority` of its retire continuations, and marks in `dirty`
+    /// the collections that the retirement changes. A keyed set retires its bound classes
+    /// (RETIRE-SET-BINDS, joins plan section 4.7).
+    #[allow(clippy::too_many_arguments)]
+    fn retire_spent(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        spent: Self::Spent,
+        colls: &[usize],
+        random: &Blake2b512Random,
+        authority: Option<&CostAuthority>,
+        dirty: &mut [bool],
+    ) -> Result<(), SpaceError>;
 }
 
 /// The source of the keyed stores (HashMap, Array, Vector) with the discipline `D` (P5c). The
@@ -1306,6 +1575,7 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         coll: usize,
         need: usize,
         incoming: Option<&Incoming>,
+        _pending: &[Work],
     ) -> Result<Vec<Entry>, SpaceError> {
         let meter = cx.meter();
         let channel = &collection(scope, coll)?.data;
@@ -1612,9 +1882,283 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
     fn class_key(&self, payload: &[Par], meter: &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError> {
         self.discipline.join_class_key(payload, meter)
     }
+
+    fn stored_entry(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        missing: &'static str,
+    ) -> Result<StoredEntry, SpaceError> {
+        let meter = cx.meter();
+        let (payload, persist) = {
+            let records = cx.data_on(&collection(scope, coll)?.data)?;
+            let datum = records
+                .get(index)
+                .ok_or(SpaceError::Inconsistent(missing))?;
+            (self.payload_of(&datum.a, meter)?, datum.persist)
+        };
+        let claim = self.claim(coll, EntryAt::Stored(index), &payload, meter)?;
+        Ok(StoredEntry {
+            payload,
+            persist,
+            claim,
+        })
+    }
+
+    fn members(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+    ) -> Result<Vec<usize>, SpaceError> {
+        cx.canonical_data_order(&collection(scope, coll)?.data)
+    }
+
+    fn home<'a>(&'a self, scope: &'a JoinScope, coll: usize) -> Result<&'a Par, SpaceError> {
+        Ok(&collection(scope, coll)?.data)
+    }
+
+    fn stored_element(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        in_flight: bool,
+    ) -> Result<(Incoming, ParDatum), SpaceError> {
+        let meter = cx.meter();
+        let datum = {
+            let records = cx.data_on(&collection(scope, coll)?.data)?;
+            let datum = records.get(index).ok_or(SpaceError::Inconsistent(
+                "a bound index is outside the staged view",
+            ))?;
+            meter.copy(datum)?
+        };
+        let (ord, level) = self.record_slots(&datum.a, meter)?;
+        let payload = self.payload_of(&datum.a, meter)?;
+        let introduction = cx.introduction().for_record(&datum.a, meter)?;
+        let x = Incoming {
+            coll,
+            record: meter.copy(&datum.a)?,
+            payload,
+            source: meter.copy(&datum.source)?,
+            persist: datum.persist,
+            ord,
+            level,
+            placement: Placement::Carried,
+            introduction,
+            own: false,
+            in_flight,
+            restore: None,
+        };
+        Ok((x, datum))
+    }
+
+    fn second_send(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        entry: &Bound,
+    ) -> Result<Option<Work>, SpaceError> {
+        if entry.persist {
+            return Ok(None);
+        }
+        let meter = cx.meter();
+        let record = {
+            let records = cx.data_on(&collection(scope, coll)?.data)?;
+            let datum = records.get(index).ok_or(SpaceError::Inconsistent(
+                "a bound index is outside the staged view",
+            ))?;
+            meter.copy(&datum.a)?
+        };
+        Ok(Some(Work {
+            coll,
+            record,
+            persist: false,
+            own: false,
+            restore: None,
+        }))
+    }
+
+    fn incoming_source(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        _scope: &JoinScope,
+        x: &Incoming,
+        _coll: usize,
+    ) -> Result<Produce, SpaceError> {
+        Ok(cx.meter().copy(&x.source)?)
+    }
+
+    fn incoming_record(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        _scope: &JoinScope,
+        x: &Incoming,
+        _coll: usize,
+    ) -> Result<ListParWithRandom, SpaceError> {
+        Ok(cx.meter().copy(&x.record)?)
+    }
+
+    fn enters(
+        &self,
+        _scope: &JoinScope,
+        x: &Incoming,
+        coll: usize,
+        _meter: &ScanMeter,
+    ) -> Result<bool, SpaceError> {
+        Ok(coll == x.coll)
+    }
+
+    fn incoming_payload<'x>(
+        &self,
+        _scope: &JoinScope,
+        x: &'x Incoming,
+        _coll: usize,
+        _meter: &ScanMeter,
+    ) -> Result<Cow<'x, ListParWithRandom>, SpaceError> {
+        Ok(Cow::Borrowed(&x.payload))
+    }
+
+    fn refusal_blocks(&self) -> bool { D::JOIN_WINDOW == JoinWindow::Head }
+
+    fn shares_counter(&self) -> bool { false }
+
+    fn finish(
+        &self,
+        _cx: &mut Cx<'_, '_>,
+        _scope: &JoinScope,
+        _changed: bool,
+        _random: &Blake2b512Random,
+        _authority: OperationAuthority<'_>,
+    ) -> Result<(), SpaceError> {
+        Ok(())
+    }
+
+    type Spent = Vec<Claim>;
+
+    fn held(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        x: &Incoming,
+    ) -> Result<usize, SpaceError> {
+        Ok(cx.data_on(&collection(scope, x.coll)?.data)?.len())
+    }
+
+    fn land(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        x: Incoming,
+        dirty: &mut [bool],
+    ) -> Result<(), SpaceError> {
+        let channel = &collection(scope, x.coll)?.data;
+        cx.store_on(channel, x.record, x.persist, &x.introduction)?;
+        mark(dirty, &[x.coll]);
+        Ok(())
+    }
+
+    fn before_fire(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        _scope: &JoinScope,
+        site: FireSite,
+        _colls: &[usize],
+        bound: &[Bound],
+        _members: &[ParCandidate],
+        _x: Option<&Incoming>,
+    ) -> Result<Vec<Claim>, SpaceError> {
+        match site {
+            // A single-bind class fire removes the whole class over [D; n], so it retires
+            // nothing afterwards (F3, F20).
+            FireSite::Single => Ok(Vec::new()),
+            FireSite::Offer | FireSite::Join | FireSite::Cascade => {
+                self.class_claims(bound, cx.meter())
+            }
+        }
+    }
+
+    fn retire_spent(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        spent: Vec<Claim>,
+        colls: &[usize],
+        random: &Blake2b512Random,
+        authority: Option<&CostAuthority>,
+        _dirty: &mut [bool],
+    ) -> Result<(), SpaceError> {
+        if spent.is_empty() {
+            return Ok(());
+        }
+        self.retire_classes(cx, scope, colls, &spent, random, authority)
+    }
 }
 
 impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
+    /// RETIRE-SET-BINDS (joins plan section 4.7): after a fire of a waiter that does not peek, the
+    /// other stored members of each bound set class that are not persistent leave with
+    /// single-channel `K_retire` COMMs, in canonical order. `random` and `authority` are those of
+    /// the element whose fire retires the classes. A discipline without classes retires nothing.
+    fn retire_classes(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        colls: &[usize],
+        claims: &[Claim],
+        random: &Blake2b512Random,
+        authority: Option<&CostAuthority>,
+    ) -> Result<(), SpaceError> {
+        if D::JOIN_WINDOW != JoinWindow::Classes {
+            return Ok(());
+        }
+        let meter = cx.meter();
+        let retire_random = RandomPurpose::Retire.derive(random);
+        let mut retired: Vec<Claim> = Vec::new();
+        for (claim, &coll) in claims.iter().zip(colls) {
+            let Claim::Class { key, hash, .. } = claim else {
+                continue;
+            };
+            if is_claimed(&retired, claim, meter)? {
+                continue;
+            }
+            generic::push_reserved(&mut retired, claim.clone(), meter)?;
+            retire_class_on(
+                cx,
+                &collection(scope, coll)?.data,
+                key,
+                hash,
+                &retire_random,
+                authority,
+                |payload, meter| self.class_key(payload, meter),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The claims of the bound entries `bound`, for RETIRE-SET-BINDS after the fire moved the
+    /// entries into its candidates. Only a discipline with classes retires, so the other
+    /// disciplines copy nothing. The copy of each class key and hash is reserved.
+    fn class_claims(&self, bound: &[Bound], meter: &ScanMeter) -> Result<Vec<Claim>, SpaceError> {
+        if D::JOIN_WINDOW != JoinWindow::Classes {
+            return Ok(Vec::new());
+        }
+        let mut claims = meter.buffer::<Claim>(bound.len())?;
+        for entry in bound {
+            if let Claim::Class { key, hash, .. } = &entry.claim {
+                meter.reserve_copy_slice(key)?;
+                meter.reserve_copy(hash)?;
+            }
+            claims.push(entry.claim.clone());
+        }
+        Ok(claims)
+    }
+
     /// Every waiter of the collection `coll`, in the canonical order of DR-75 of the union of its
     /// join groups: a merge of the canonical orders of the groups by the source hash of each
     /// consume (decision 41). Two waiters of distinct groups have distinct consumes, so a tie
@@ -1759,19 +2303,31 @@ struct NewWaiter {
 
 /// A bound entry of a search.
 #[derive(Clone, Debug)]
-struct Bound {
-    at: EntryAt,
-    matched: ListParWithRandom,
-    persist: bool,
-    claim: Claim,
+pub(crate) struct Bound {
+    /// Where the entry is.
+    pub(crate) at: EntryAt,
+    /// The values that the pattern of its position binds.
+    pub(crate) matched: ListParWithRandom,
+    /// True for a persistent entry.
+    pub(crate) persist: bool,
+    /// What the entry claims.
+    pub(crate) claim: Claim,
 }
 
 /// A second send of Rule E, or the element of the operation, that the transaction still owes.
-struct Work {
-    coll: usize,
-    record: ListParWithRandom,
-    persist: bool,
-    own: bool,
+pub(crate) struct Work {
+    /// The index of its collection in the scope.
+    pub(crate) coll: usize,
+    /// The record: the envelope, then the payload.
+    pub(crate) record: ListParWithRandom,
+    /// True for a persistent element.
+    pub(crate) persist: bool,
+    /// True for the element of the operation.
+    pub(crate) own: bool,
+    /// The depth of the marker that a peek COMM removed, for a second send of a PathMap datum
+    /// (joins plan section 9): a store of the element restores that marker instead. A keyed
+    /// store always carries `None`.
+    pub(crate) restore: Option<u8>,
 }
 
 /// The state of the element of the operation.
@@ -1813,6 +2369,11 @@ struct Engine<'r, Src> {
     /// The bump of each collection of the scope in this transaction: `None` when it is not
     /// touched, `Some(value)` with the value before the bump (or `None` without a counter).
     bumps: Vec<Option<Option<i64>>>,
+    /// The bump of the counter that every collection shares, when the source shares one
+    /// (`JoinSource::shares_counter`): the transaction bumps it once.
+    shared_bump: Option<Option<i64>>,
+    /// True when the transaction staged a change of state that the engine sees (`finish`).
+    changed: bool,
     /// The collections that the transaction staged on.
     dirty: Vec<bool>,
     /// The second sends that the transaction owes (a stack: the last pushed runs first).
@@ -1863,6 +2424,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 .transpose()?,
             lift_random: None,
             bumps,
+            shared_bump: None,
+            changed: false,
             dirty,
             work: Vec::new(),
             own: Own::NotStarted,
@@ -1899,6 +2462,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         if slot.is_some() {
             return Ok(());
         }
+        let shares = self.source.shares_counter();
+        if let (true, Some(bumped)) = (shares, self.shared_bump) {
+            if let Some(slot) = self.bumps.get_mut(coll) {
+                *slot = Some(bumped);
+            }
+            return Ok(());
+        }
         let introduction = cx.introduction();
         let authority = OperationAuthority {
             continuation: self.authority.as_ref(),
@@ -1909,6 +2479,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             .touch(cx, self.scope, coll, &self.random, authority)?;
         if let Some(slot) = self.bumps.get_mut(coll) {
             *slot = Some(bumped);
+        }
+        if shares {
+            self.shared_bump = Some(bumped);
         }
         Ok(())
     }
@@ -1929,13 +2502,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     }
 
     /// Marks every collection of `colls` dirty.
-    fn mark_dirty(&mut self, colls: &[usize]) {
-        for &coll in colls {
-            if let Some(mark) = self.dirty.get_mut(coll) {
-                *mark = true;
-            }
-        }
-    }
+    fn mark_dirty(&mut self, colls: &[usize]) { mark(&mut self.dirty, colls) }
 
     /// The bump value of the collection `coll` in this transaction.
     fn bumped(&self, coll: usize) -> Result<Option<i64>, SpaceError> {
@@ -1981,6 +2548,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         record: pending.record,
                         persist: pending.persist,
                         own: false,
+                        restore: pending.restore,
                     });
                 }
                 self.work = work;
@@ -2101,7 +2669,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
         };
         let record = self.source.wrap_record(ord, level, &op.data, meter)?;
-        let source = Produce::create_metered(self.channel(coll)?, &record, op.persistent, meter)?;
+        let source = Produce::create_metered(
+            self.source.home(self.scope, coll)?,
+            &record,
+            op.persistent,
+            meter,
+        )?;
         meter.shared(1)?;
         Ok(Incoming {
             coll,
@@ -2115,6 +2688,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             introduction: Arc::clone(cx.introduction()),
             own: true,
             in_flight: true,
+            restore: None,
         })
     }
 
@@ -2353,7 +2927,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             meter.ordered_lookup(windows.len(), size_of::<usize>())?;
             if !windows.contains_key(&coll) {
                 let need = colls.iter().filter(|&&other| other == coll).count();
-                let window = self.source.window(cx, self.scope, coll, need, incoming)?;
+                let window = self
+                    .source
+                    .window(cx, self.scope, coll, need, incoming, &self.work)?;
                 meter.tree_growth::<usize, Vec<Entry>>(windows.len(), 1)?;
                 windows.insert(coll, window);
             }
@@ -2374,23 +2950,22 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 if !visible(lane, entry.level)? {
                     continue;
                 }
-                let (payload, persist) = {
-                    let records = cx.data_on(self.channel(coll)?)?;
-                    let datum = records.get(index).ok_or(SpaceError::Inconsistent(
-                        "a window index is outside the staged view",
-                    ))?;
-                    (self.source.payload_of(&datum.a, meter)?, datum.persist)
-                };
-                let claim = self.source.claim(coll, entry.at, &payload, meter)?;
-                if is_claimed(&claimed, &claim, meter)? {
+                let stored = self.source.stored_entry(
+                    cx,
+                    self.scope,
+                    coll,
+                    index,
+                    "a window index is outside the staged view",
+                )?;
+                if is_claimed(&claimed, &stored.claim, meter)? {
                     continue;
                 }
-                if let Some(matched) = cx.bind(pattern, &payload)? {
+                if let Some(matched) = cx.bind(pattern, &stored.payload)? {
                     found = Some(Bound {
                         at: entry.at,
                         matched,
-                        persist,
-                        claim,
+                        persist: stored.persist,
+                        claim: stored.claim,
                     });
                     break;
                 }
@@ -2447,18 +3022,53 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         if !self.all_at_head(cx, waiter)? {
             return Ok(None);
         }
-        let lanes = self.lanes(&waiter.slots, cx.meter())?;
-        let need = waiter.colls.iter().filter(|&&coll| coll == x.coll).count();
-        if need == 0 {
-            return Ok(None);
-        }
-        let window = self.source.window(cx, self.scope, x.coll, need, Some(x))?;
-        let in_window = window.iter().any(|entry| entry.at == EntryAt::Incoming);
-        if !in_window {
-            return Ok(None);
-        }
+        let meter = cx.meter();
+        let lanes = self.lanes(&waiter.slots, meter)?;
+        // Whether `x` lies in the window of each collection that it enters, computed at the first
+        // position on the collection. A keyed element enters its own collection only, so it
+        // asks for one window, as the search of P5c always did. The list of the other
+        // collections is reserved when a second collection is entered.
+        let mut first: Option<(usize, bool)> = None;
+        let mut others: Vec<(usize, bool)> = Vec::new();
         for position in 0..waiter.colls.len() {
-            if waiter.colls.get(position) != Some(&x.coll) {
+            let coll = *waiter
+                .colls
+                .get(position)
+                .ok_or(SpaceError::Inconsistent("a position has no collection"))?;
+            if !self.source.enters(self.scope, x, coll, meter)? {
+                continue;
+            }
+            let known = match first {
+                Some((seen, in_window)) if seen == coll => Some(in_window),
+                Some(_) => {
+                    let mut known = None;
+                    for &(seen, in_window) in &others {
+                        meter.compare(size_of::<usize>(), size_of::<usize>())?;
+                        if seen == coll {
+                            known = Some(in_window);
+                            break;
+                        }
+                    }
+                    known
+                }
+                None => None,
+            };
+            let in_window = match known {
+                Some(in_window) => in_window,
+                None => {
+                    let need = waiter.colls.iter().filter(|&&other| other == coll).count();
+                    let window =
+                        self.source
+                            .window(cx, self.scope, coll, need, Some(x), &self.work)?;
+                    let in_window = window.iter().any(|entry| entry.at == EntryAt::Incoming);
+                    match first {
+                        None => first = Some((coll, in_window)),
+                        Some(_) => generic::push_reserved(&mut others, (coll, in_window), meter)?,
+                    }
+                    in_window
+                }
+            };
+            if !in_window {
                 continue;
             }
             let lane = *lanes
@@ -2472,7 +3082,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 .patterns
                 .get(position)
                 .ok_or(SpaceError::Inconsistent("a position has no pattern"))?;
-            let Some(matched) = cx.bind(pattern, &x.payload)? else {
+            let payload = self.source.incoming_payload(self.scope, x, coll, meter)?;
+            let Some(matched) = cx.bind(pattern, &payload)? else {
                 continue;
             };
             if let Some(bound) = self.search(
@@ -2510,10 +3121,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     let x = x.ok_or(SpaceError::Inconsistent(
                         "a fire binds an element in flight, but none is in flight",
                     ))?;
+                    let source = self.source.incoming_source(cx, self.scope, x, coll)?;
+                    let record = self.source.incoming_record(cx, self.scope, x, coll)?;
                     candidates.push(incoming_candidate(
                         channel,
-                        meter.copy(&x.source)?,
-                        meter.copy(&x.record)?,
+                        source,
+                        record,
                         x.persist,
                         entry.matched,
                     ));
@@ -2580,26 +3193,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                             record: meter.copy(&x.record)?,
                             persist: x.persist,
                             own: x.own,
+                            restore: x.restore,
                         });
                     }
                 }
                 EntryAt::Stored(index) => {
-                    if entry.persist {
-                        continue;
+                    if let Some(send) = self
+                        .source
+                        .second_send(cx, self.scope, coll, index, entry)?
+                    {
+                        sends.push(send);
                     }
-                    let record = {
-                        let records = cx.data_on(self.channel(coll)?)?;
-                        let datum = records.get(index).ok_or(SpaceError::Inconsistent(
-                            "a bound index is outside the staged view",
-                        ))?;
-                        meter.copy(&datum.a)?
-                    };
-                    sends.push(Work {
-                        coll,
-                        record,
-                        persist: false,
-                        own: false,
-                    });
                 }
             }
         }
@@ -2614,63 +3218,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         Ok(())
     }
 
-    /// RETIRE-SET-BINDS (joins plan section 4.7): after a fire of a waiter that does not peek, the
-    /// other stored members of each bound set class that are not persistent leave with
-    /// single-channel `K_retire` COMMs, in canonical order. `random` and `authority` are those of
-    /// the element whose fire retires the classes. A discipline without classes retires nothing.
-    fn retire_classes(
-        &self,
-        cx: &mut Cx<'_, '_>,
-        colls: &[usize],
-        claims: &[Claim],
-        random: &Blake2b512Random,
-        authority: Option<&CostAuthority>,
-    ) -> Result<(), SpaceError> {
-        if self.source.shape() != JoinWindow::Classes {
-            return Ok(());
-        }
-        let meter = cx.meter();
-        let retire_random = RandomPurpose::Retire.derive(random);
-        let mut retired: Vec<Claim> = Vec::new();
-        for (claim, &coll) in claims.iter().zip(colls) {
-            let Claim::Class { key, hash, .. } = claim else {
-                continue;
-            };
-            if is_claimed(&retired, claim, meter)? {
-                continue;
-            }
-            generic::push_reserved(&mut retired, claim.clone(), meter)?;
-            retire_class_on(
-                cx,
-                self.channel(coll)?,
-                key,
-                hash,
-                &retire_random,
-                authority,
-                |payload, meter| self.source.class_key(payload, meter),
-            )?;
-        }
-        Ok(())
-    }
-
-    /// The claims of the bound entries `bound`, for RETIRE-SET-BINDS after the fire moved the
-    /// entries into its candidates. Only a discipline with classes retires, so the other
-    /// disciplines copy nothing. The copy of each class key and hash is reserved.
-    fn class_claims(&self, bound: &[Bound], meter: &ScanMeter) -> Result<Vec<Claim>, SpaceError> {
-        if self.source.shape() != JoinWindow::Classes {
-            return Ok(Vec::new());
-        }
-        let mut claims = meter.buffer::<Claim>(bound.len())?;
-        for entry in bound {
-            if let Claim::Class { key, hash, .. } = &entry.claim {
-                meter.reserve_copy_slice(key)?;
-                meter.reserve_copy(hash)?;
-            }
-            claims.push(entry.claim.clone());
-        }
-        Ok(claims)
-    }
-
     /// The element of the work item `work` in flight: its slots, its payload, its identity, and
     /// its introduction. The element of the operation keeps the introduction and the placement of
     /// the operation. A second send registers the record's own authority
@@ -2679,8 +3226,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let meter = cx.meter();
         let (ord, level) = self.source.record_slots(&work.record, meter)?;
         let payload = self.source.payload_of(&work.record, meter)?;
-        let source =
-            Produce::create_metered(self.channel(work.coll)?, &work.record, work.persist, meter)?;
+        let source = Produce::create_metered(
+            self.source.home(self.scope, work.coll)?,
+            &work.record,
+            work.persist,
+            meter,
+        )?;
         let (introduction, placement) = match work.own {
             true => {
                 meter.shared(1)?;
@@ -2703,6 +3254,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             introduction,
             own: work.own,
             in_flight: true,
+            restore: work.restore,
         })
     }
 
@@ -2710,17 +3262,19 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// after the capacity check (F15) and its touch.
     fn store(&mut self, cx: &mut Cx<'_, '_>, x: Incoming) -> Result<(), SpaceError> {
         if let Some(capacity) = self.source.capacity() {
-            let held = cx.data_on(self.channel(x.coll)?)?.len();
+            let held = self.source.held(cx, self.scope, &x)?;
             cx.meter().compare(size_of::<usize>(), size_of::<usize>())?;
             if held >= capacity {
                 return Err(SpaceError::CellOccupied);
             }
         }
         self.touch(cx, x.coll)?;
-        let channel = self.channel(x.coll)?;
-        cx.store_on(channel, x.record, x.persist, &x.introduction)?;
-        self.mark_dirty(&[x.coll]);
-        if x.own {
+        let own = x.own;
+        if x.restore.is_none() {
+            self.changed = true;
+        }
+        self.source.land(cx, self.scope, x, &mut self.dirty)?;
+        if own {
             self.own = Own::Settled;
         }
         Ok(())
@@ -2756,33 +3310,59 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         fire = Some((waiter, position, bound));
                         break;
                     }
-                    None => match self.source.shape() {
-                        JoinWindow::Head => break,
-                        JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => continue,
+                    None => match self.source.refusal_blocks() {
+                        true => break,
+                        false => continue,
                     },
                 }
             }
-            let Some((waiter, _position, bound)) = fire else {
+            let Some((waiter, position, bound)) = fire else {
                 return self.store(cx, x);
             };
+            let fired_coll = *waiter
+                .colls
+                .get(position)
+                .ok_or(SpaceError::Inconsistent("a position has no collection"))?;
             self.touch_all(cx, &waiter.colls)?;
             let peeks = !waiter.waiting.peeks.is_empty();
             let spent = !x.persist && !peeks;
             let stays = waiter.waiting.persist;
+            // A stored waiter that is not persistent leaves. Without a peek, the fire spends the
+            // stored entries that are not persistent, and an element that is still stored (a
+            // second send or a lifted element of a PathMap space).
+            if !stays
+                || (!peeks
+                    && ((spent && x.restore.is_some())
+                        || bound
+                            .iter()
+                            .any(|entry| matches!(entry.at, EntryAt::Stored(_)) && !entry.persist)))
+            {
+                self.changed = true;
+            }
             let sends = match peeks {
                 true => self.second_sends(cx, &waiter.colls, &bound, Some(&x), None)?,
                 false => Vec::new(),
             };
-            let claims = match peeks {
-                true => Vec::new(),
-                false => self.class_claims(&bound, meter)?,
+            let fired = match peeks {
+                true => None,
+                false => Some(self.source.before_fire(
+                    cx,
+                    self.scope,
+                    FireSite::Offer,
+                    &waiter.colls,
+                    &bound,
+                    &[],
+                    Some(&x),
+                )?),
             };
             let colls = meter.copy_slice(&waiter.colls)?;
-            let channel = self.channel(x.coll)?;
+            let channel = self.channel(fired_coll)?;
             let step = cx.rounds().after_fire(spent, stays);
             let candidates = self.candidates(cx, &waiter.colls, bound, Some(&x), None)?;
             let group = meter.copy(&waiter.at.group)?;
-            let data = meter.copy(&x.record)?;
+            let data = self
+                .source
+                .incoming_record(cx, self.scope, &x, fired_coll)?;
             cx.fire_offer_group(
                 channel,
                 data,
@@ -2797,14 +3377,18 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 self.push_work(sends, meter)?;
                 return Ok(());
             }
-            let element_random = Blake2b512Random::from_bytes(&x.record.random_state);
-            self.retire_classes(
-                cx,
-                &colls,
-                &claims,
-                &element_random,
-                x.record.cost_authority.as_ref(),
-            )?;
+            if let Some(fired) = fired {
+                let element_random = Blake2b512Random::from_bytes(&x.record.random_state);
+                self.source.retire_spent(
+                    cx,
+                    self.scope,
+                    fired,
+                    &colls,
+                    &element_random,
+                    x.record.cost_authority.as_ref(),
+                    &mut self.dirty,
+                )?;
+            }
             match step {
                 FireStep::Done => {
                     if x.own {
@@ -2830,6 +3414,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                                 record: std::mem::take(&mut x.record),
                                 persist: x.persist,
                                 own: false,
+                                restore: x.restore,
                             };
                             generic::push_reserved(&mut self.work, send, meter)?;
                             self.stop = Some(cause);
@@ -2852,7 +3437,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         representative: Bound,
     ) -> Result<(Vec<ParCandidate>, bool), SpaceError> {
         let meter = cx.meter();
-        let channel = self.channel(coll)?;
         let EntryAt::Stored(rep_index) = representative.at else {
             return Err(SpaceError::Inconsistent(
                 "a consume binds an element in flight",
@@ -2868,37 +3452,36 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         if !matches!(class, Claim::Class { .. }) {
             return Ok((candidates, persistent));
         }
-        let order = cx.canonical_data_order(channel)?;
+        let order = self.source.members(cx, self.scope, coll)?;
         for index in order {
             meter.compare(size_of::<usize>(), size_of::<usize>())?;
             if index == rep_index {
                 continue;
             }
-            let (payload, persist) = {
-                let records = cx.data_on(channel)?;
-                let datum = records.get(index).ok_or(SpaceError::Inconsistent(
-                    "a canonical index is outside the staged view",
-                ))?;
-                (self.source.payload_of(&datum.a, meter)?, datum.persist)
-            };
-            let claim = self
-                .source
-                .claim(coll, EntryAt::Stored(index), &payload, meter)?;
-            if !is_claimed(std::slice::from_ref(&class), &claim, meter)? {
+            let stored = self.source.stored_entry(
+                cx,
+                self.scope,
+                coll,
+                index,
+                "a canonical index is outside the staged view",
+            )?;
+            if !is_claimed(std::slice::from_ref(&class), &stored.claim, meter)? {
                 continue;
             }
-            let matched = cx.bind(pattern, &payload)?.ok_or(SpaceError::Inconsistent(
-                "a member of a class does not bind the pattern of its representative",
-            ))?;
-            persistent = persistent || persist;
+            let matched = cx
+                .bind(pattern, &stored.payload)?
+                .ok_or(SpaceError::Inconsistent(
+                    "a member of a class does not bind the pattern of its representative",
+                ))?;
+            persistent = persistent || stored.persist;
             let member = self.candidates(
                 cx,
                 &[coll],
                 vec![Bound {
                     at: EntryAt::Stored(index),
                     matched,
-                    persist,
-                    claim,
+                    persist: stored.persist,
+                    claim: stored.claim,
                 }],
                 None,
                 None,
@@ -2995,6 +3578,21 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         ),
                         false => (meter.copy(&w.continuation)?, meter.copy(&w.peeks)?),
                     };
+                    if !peek && candidates.iter().any(|candidate| !candidate.datum.persist) {
+                        self.changed = true;
+                    }
+                    let fired = match peek {
+                        true => None,
+                        false => Some(self.source.before_fire(
+                            cx,
+                            self.scope,
+                            FireSite::Single,
+                            &w.colls,
+                            &[],
+                            &candidates,
+                            None,
+                        )?),
+                    };
                     cx.fire_receive_group(
                         channels,
                         patterns,
@@ -3008,16 +3606,38 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     if peek {
                         self.push_work(sends, meter)?;
                     }
+                    if let Some(fired) = fired {
+                        self.source.retire_spent(
+                            cx,
+                            self.scope,
+                            fired,
+                            &w.colls,
+                            &self.random,
+                            self.authority.as_ref(),
+                            &mut self.dirty,
+                        )?;
+                    }
                     if !self.after_receive(step) {
                         return Ok(());
                     }
                 }
                 _ => {
                     let stays = peek || bound.iter().all(|entry| entry.persist);
+                    if !stays {
+                        self.changed = true;
+                    }
                     let step = cx.rounds().after_fire(spent, stays);
                     let retire = match peek {
                         true => None,
-                        false => Some(self.class_claims(&bound, meter)?),
+                        false => Some(self.source.before_fire(
+                            cx,
+                            self.scope,
+                            FireSite::Join,
+                            &w.colls,
+                            &bound,
+                            &[],
+                            None,
+                        )?),
                     };
                     let candidates = self.candidates(cx, &w.colls, bound, None, None)?;
                     let ends = !matches!(step, FireStep::Continue);
@@ -3046,15 +3666,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     self.mark_dirty(&w.colls);
                     match retire {
                         None => self.push_work(sends, meter)?,
-                        Some(claims) => {
+                        Some(fired) => {
                             let random = self.random.clone();
                             let authority = self.authority.clone();
-                            self.retire_classes(
+                            self.source.retire_spent(
                                 cx,
+                                self.scope,
+                                fired,
                                 &w.colls,
-                                &claims,
                                 &random,
                                 authority.as_ref(),
+                                &mut self.dirty,
                             )?;
                         }
                     }
@@ -3114,6 +3736,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             ..
         } = w;
         cx.park_on(group, patterns, continuation, persist, peeks)?;
+        self.changed = true;
         self.own = Own::Settled;
         Ok(())
     }
@@ -3204,36 +3827,29 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             .ok_or(SpaceError::Inconsistent("a position has no collection"))?;
         self.touch_all(cx, &waiter.colls)?;
         let peeks = !waiter.waiting.peeks.is_empty();
-        let datum = {
-            let records = cx.data_on(self.channel(coll)?)?;
-            let datum = records.get(index).ok_or(SpaceError::Inconsistent(
-                "a bound index is outside the staged view",
-            ))?;
-            meter.copy(datum)?
-        };
-        let (ord, level) = self.source.record_slots(&datum.a, meter)?;
-        let payload = self.source.payload_of(&datum.a, meter)?;
-        let introduction = cx.introduction().for_record(&datum.a, meter)?;
-        let x = Incoming {
-            coll,
-            record: meter.copy(&datum.a)?,
-            payload,
-            source: meter.copy(&datum.source)?,
-            persist: datum.persist,
-            ord,
-            level,
-            placement: Placement::Carried,
-            introduction,
-            own: false,
-            in_flight: lifted.is_some(),
-        };
+        // A stored pair fires: a waiter that is not persistent leaves, and without a peek the
+        // fire spends the bound entries that are not persistent.
+        if !waiter.waiting.persist || (!peeks && bound.iter().any(|entry| !entry.persist)) {
+            self.changed = true;
+        }
+        let (x, datum) =
+            self.source
+                .stored_element(cx, self.scope, coll, index, lifted.is_some())?;
         let sends = match peeks {
             true => self.second_sends(cx, &waiter.colls, &bound, Some(&x), Some(position))?,
             false => Vec::new(),
         };
-        let claims = match peeks {
-            true => Vec::new(),
-            false => self.class_claims(&bound, meter)?,
+        let retiring = match peeks {
+            true => None,
+            false => Some(self.source.before_fire(
+                cx,
+                self.scope,
+                FireSite::Cascade,
+                &waiter.colls,
+                &bound,
+                &[],
+                Some(&x),
+            )?),
         };
         let shift = match lifted {
             Some(_) => {
@@ -3256,7 +3872,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let colls = meter.copy_slice(&waiter.colls)?;
         let group = meter.copy(&waiter.at.group)?;
         let channel = self.channel(coll)?;
-        let data = meter.copy(&x.record)?;
+        let data = self.source.incoming_record(cx, self.scope, &x, coll)?;
         cx.fire_offer_group(
             channel,
             data,
@@ -3267,18 +3883,20 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             &x.introduction,
         )?;
         self.mark_dirty(&colls);
-        match peeks {
-            true => self.push_work(sends, meter)?,
-            false => {
+        match retiring {
+            None => self.push_work(sends, meter)?,
+            Some(retiring) => {
                 // The re-offered record is the element whose fire retires the bound set classes,
                 // as the datum of a produce-side fire is (decision 50).
                 let element_random = Blake2b512Random::from_bytes(&x.record.random_state);
-                self.retire_classes(
+                self.source.retire_spent(
                     cx,
+                    self.scope,
+                    retiring,
                     &colls,
-                    &claims,
                     &element_random,
                     x.record.cost_authority.as_ref(),
+                    &mut self.dirty,
                 )?;
             }
         }
@@ -3357,6 +3975,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         cx: &mut Cx<'_, '_>,
         op: SpaceOp,
     ) -> Result<Option<SpaceReissue>, SpaceError> {
+        let authority = OperationAuthority {
+            continuation: self.authority.as_ref(),
+            introduction: cx.introduction(),
+        };
+        self.source
+            .finish(cx, self.scope, self.changed, &self.random, authority)?;
         let meter = cx.meter();
         let pending: Vec<Work> = {
             let mut pending = Vec::new();
@@ -3397,6 +4021,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         key: copy_key(&collection(self.scope, work.coll)?.key, meter)?,
                         record: work.record,
                         persist: work.persist,
+                        restore: work.restore,
                     });
                 }
                 settle.cascade = Some(Box::new(CascadeState {
@@ -4088,6 +4713,7 @@ mod tests {
             .expect("an unmetered introduction"),
             own: true,
             in_flight: true,
+            restore: None,
         };
         // A fresh element of a queue is at the tail: it is in a window of four entries only.
         assert_eq!(
@@ -4329,5 +4955,29 @@ mod tests {
             .get_waiting_continuations(vec![data_of(&s), data_of(&s)])
             .await
             .is_empty());
+    }
+
+    /// The types that the engine reserves by size keep their sizes. `ScanMeter::buffer::<T>(n)`
+    /// reserves `n * size_of::<T>()` bytes, and `is_claimed` reserves comparisons of
+    /// `size_of::<Claim>()` bytes. So a field that grows one of these types changes the host work
+    /// of every keyed join, also when the field is never used there. The store seams of the
+    /// PathMap engine (joins plan section 9) must keep these values.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn space_join_engine_reserved_types_keep_their_sizes() {
+        use std::mem::size_of;
+
+        use crate::rust::interpreter::spaces::agent::PendingProduce;
+
+        assert_eq!(size_of::<Work>(), 112, "Work");
+        assert_eq!(size_of::<Incoming>(), 320, "Incoming");
+        assert_eq!(size_of::<Bound>(), 176, "Bound");
+        assert_eq!(size_of::<Option<Bound>>(), 176, "Option<Bound>");
+        assert_eq!(size_of::<Claim>(), 56, "Claim");
+        assert_eq!(size_of::<Entry>(), 32, "Entry");
+        assert_eq!(size_of::<WaiterRef>(), 56, "WaiterRef");
+        assert_eq!(size_of::<ScopedCollection>(), 616, "ScopedCollection");
+        assert_eq!(size_of::<Seat>(), 72, "Seat");
+        assert_eq!(size_of::<PendingProduce>(), 128, "PendingProduce");
     }
 }

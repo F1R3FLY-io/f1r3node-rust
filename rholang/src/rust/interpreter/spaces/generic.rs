@@ -135,6 +135,37 @@ pub trait OuterStore: Default + Send + Sync + 'static {
     /// The `outer` name of the family in the config record.
     const NAME: &'static str;
 
+    /// True when a `Join` operation of the store always runs in a new transaction over the lock
+    /// keys of its scope. The first transaction of an operation locks the channels of its routed
+    /// key. A store whose scope never holds these channels (the PathMap store) escalates every
+    /// join operation (joins plan section 9).
+    const ALWAYS_ESCALATES: bool = false;
+
+    /// CLASSIFY of a collection operation of the store (joins plan section 4.1). The keyed stores
+    /// use the keyed classification. A store with a join source of its own routes its operations
+    /// to the join engine over its own scope (joins plan section 9).
+    fn classify<D: Discipline>(
+        agent: &GenericSpace<Self, D>,
+        env: &SpaceEnv,
+        opened: &mut CollectionTxn,
+        op: &SpaceOp,
+    ) -> Result<JoinRoute, SpaceError> {
+        join::classify(agent, env, opened, op)
+    }
+
+    /// RUN-JOIN of a collection operation of the store (joins plan section 4.2). The keyed stores
+    /// run the engine with the keyed source. A store with a join source of its own runs the
+    /// engine with that source (joins plan section 9).
+    fn run_join<D: Discipline>(
+        agent: &GenericSpace<Self, D>,
+        env: &SpaceEnv,
+        opened: CollectionTxn,
+        scope: JoinScope,
+        op: SpaceOp,
+    ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+        join::run_join(agent, env, opened, scope, op)
+    }
+
     /// True when the store allocates index names (P5d, F11). A store without an allocator
     /// answers every allocation with [`Allocation::Baseline`] and does no work for it.
     const ALLOCATOR: bool = false;
@@ -446,6 +477,10 @@ pub trait FamilySpace: SpaceAgent {
         opened: AllocationTxn,
         op: &AllocOp,
     ) -> Result<Allocation, SpaceError>;
+
+    /// True when a `Join` operation of the family always runs in a new transaction over the
+    /// lock keys of its scope (`OuterStore::ALWAYS_ESCALATES`).
+    fn always_escalates(&self) -> bool;
 }
 
 /// The native space agent of the family `S:D`.
@@ -1833,9 +1868,11 @@ pub async fn prepare_collection_op(
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
     match agent.classify(env, &mut opened, &op)? {
         JoinRoute::Single => agent.run_with(env, opened, op),
-        JoinRoute::Join(scope) => match scope.covers(&scope.own, &env.meter)? {
-            true => agent.run_join(env, opened, scope, op),
-            false => {
+        JoinRoute::Join(scope) => match agent.always_escalates() {
+            false if scope.covers(&scope.own, &env.meter)? => {
+                agent.run_join(env, opened, scope, op)
+            }
+            _ => {
                 let CollectionTxn {
                     txn,
                     channels,
@@ -2157,13 +2194,15 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
 }
 
 impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
+    fn always_escalates(&self) -> bool { S::ALWAYS_ESCALATES }
+
     fn classify(
         &self,
         env: &SpaceEnv,
         opened: &mut CollectionTxn,
         op: &SpaceOp,
     ) -> Result<JoinRoute, SpaceError> {
-        join::classify(self, env, opened, op)
+        S::classify(self, env, opened, op)
     }
 
     /// Every check happens before the bump, so a rejected operation leaves the counter
@@ -2300,7 +2339,7 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
         scope: JoinScope,
         op: SpaceOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
-        join::run_join(self, env, opened, scope, op)
+        S::run_join(self, env, opened, scope, op)
     }
 
     /// A store without an allocator answers `Baseline` with no further work, and the dropped

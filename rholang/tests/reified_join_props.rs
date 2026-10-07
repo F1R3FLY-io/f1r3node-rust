@@ -37,11 +37,19 @@
 //! | `prop_quiescent_no_pending_match_any_schedule` | TLA `QuiescentNoPendingMatch` |
 //! | `prop_cascade_measure_decreases` | TLA `CascadeMeasureDecreases` |
 //! | `prop_join_engine_agrees_with_drivers_without_joins` | the engine anchor (joins plan 7.3) |
+//! | `join_seams_keyed_differential` | the keyed engine is unchanged by the store seams (joins plan 9) |
+//!
+//! The keyed differential is not a property. It runs a fixed corpus of generated programs over a
+//! metered recording host and compares the digest of each run with the golden
+//! `test-vectors/reified-join-seams-v1.json`. To capture the golden, set
+//! `RRS_CAPTURE_JOIN_SEAMS_OUT` to an absolute directory under `target/` and copy the file that
+//! the run writes there.
 
 #[path = "support/mod.rs"]
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -50,7 +58,11 @@ use models::rhoapi::{BindPattern, EEq, EGt, Expr, ListParWithRandom, Par};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::new_boundvar_par;
 use proptest::prelude::*;
-use proptest::test_runner::TestCaseError;
+use proptest::strategy::ValueTree;
+use proptest::test_runner::{TestCaseError, TestRunner};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::RuntimeBudget;
+use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::spaces::agent::{
     CascadeState, ConsumeOp, JoinOp, ProduceOp, QueryParams, SettleOp, SpaceEnv, SpaceOp,
@@ -84,8 +96,8 @@ use rspace_plus_plus::rspace::space_store_handle::{ConsumeOutcome, ProduceOutcom
 use rspace_plus_plus::rspace::trace::event::{Event, Produce};
 use support::agent::{
     body_name, budget, config_of, counter_channel, create, creation, data_channel, env_over, int,
-    join_on, play, receive_on, run, send_on, string, HostRecord, ParRSpace, RecordingHost,
-    SharedRecord, StagedCopy,
+    join_on, metered_env, play, receive_on, run, send_on, string, unbounded_host_work, HostRecord,
+    ParRSpace, RecordingHost, SharedRecord, StagedCopy,
 };
 use support::props::{check, pure_config, tokio_runtime};
 
@@ -220,6 +232,27 @@ impl Rig {
         let host = play().await;
         let (recording, record) = RecordingHost::new(host.clone());
         let env = env_over(recording, &budget());
+        Rig::recorded(host, env, record, kind).await
+    }
+
+    /// A rig of `hashmap:<kind>` whose agent works over a metered recording host: the meter of
+    /// the agent charges `host_work`, and the record holds the usage of the agent at each begin,
+    /// staged operation and commit. The record starts after the creation of the space.
+    async fn recording_metered(kind: Kind, host_work: &HostWorkBudget) -> (Rig, SharedRecord) {
+        let host = play().await;
+        let (recording, record) = RecordingHost::metered(host.clone(), host_work);
+        let env = metered_env(recording, &budget(), host_work);
+        Rig::recorded(host, env, record, kind).await
+    }
+
+    /// Creates the space of `hashmap:<kind>` in `env` over the play space `host`, and clears the
+    /// event log and the record `record` after the creation.
+    async fn recorded(
+        host: ParRSpace,
+        env: SpaceEnv,
+        record: SharedRecord,
+        kind: Kind,
+    ) -> (Rig, SharedRecord) {
         let config = config_of(
             SPACE,
             SpaceOuter::HashMap.as_str(),
@@ -4407,4 +4440,222 @@ async fn reference_model_reports_owed_pairs() {
             "{kind:?}: the model reports the owed pair"
         );
     }
+}
+
+// ─── The keyed differential of the store seams (joins plan section 9) ────────────────────────
+
+/// The golden of the keyed differential, relative to the workspace root.
+const SEAMS_GOLDEN: &str = "test-vectors/reified-join-seams-v1.json";
+
+/// The environment variable that switches the differential to capture mode. Its value is an
+/// absolute directory under `target/`.
+const SEAMS_CAPTURE: &str = "RRS_CAPTURE_JOIN_SEAMS_OUT";
+
+/// The general programs of the corpus.
+const SEAMS_PROGRAMS: usize = 64;
+
+/// The programs of the corpus that may be heavy: a send past the fire cap.
+const SEAMS_HEAVY: usize = 16;
+
+/// The phlo of the legacy budget of one job of the differential.
+const SEAMS_PHLO: i64 = 100_000_000;
+
+/// The corpus of the differential, drawn with the fixed seed of the P5 properties: 64 general
+/// programs of every discipline, then 16 programs that may be heavy.
+fn seams_corpus() -> Vec<Program> {
+    let mut runner = TestRunner::new(pure_config());
+    let general = arb_program(&Kind::ALL, 1..9, COLLS, 3, true);
+    let heavy = arb_maybe_heavy_program();
+    let mut programs = Vec::with_capacity(SEAMS_PROGRAMS + SEAMS_HEAVY);
+    for _ in 0..SEAMS_PROGRAMS {
+        let tree = general
+            .new_tree(&mut runner)
+            .expect("draw a general program");
+        programs.push(tree.current());
+    }
+    for _ in 0..SEAMS_HEAVY {
+        let tree = heavy
+            .new_tree(&mut runner)
+            .expect("draw a program that may be heavy");
+        programs.push(tree.current());
+    }
+    programs
+}
+
+/// The text of the staged operation `staged`: its channels, its data or its continuation, and its
+/// outcome.
+fn staged_text(staged: &StagedCopy) -> String {
+    match staged {
+        StagedCopy::Produce(op) => format!(
+            "produce on {:?} data {:?} persist {} outcome {:?}",
+            op.channel, op.data, op.persist, op.outcome
+        ),
+        StagedCopy::Consume(op) => format!(
+            "consume on {:?} patterns {:?} continuation {:?} persist {} peeks {:?} outcome {:?}",
+            op.channels, op.patterns, op.continuation, op.persist, op.peeks, op.outcome
+        ),
+    }
+}
+
+/// Runs `program` over a metered recording host, each step with every re-issue that follows it,
+/// and returns the text of the run. For each job, the text holds its result, its legacy log, its
+/// phlo and its events. Then it holds each begin, each staged operation and each commit, the
+/// host-work usage of the agent at each of these points, and the root at the end.
+async fn seams_text(program: &Program) -> String {
+    let host_work = unbounded_host_work();
+    let (rig, record) = Rig::recording_metered(program.kind, &host_work).await;
+    let mut text = format!("{program:?}\n");
+    for (index, step) in program.steps.iter().enumerate() {
+        let mut next = Some(space_op(step, index));
+        let mut jobs = 0;
+        while let Some(op) = next.take() {
+            assert!(
+                jobs < MAX_CHAIN,
+                "a chain of the differential runs past {MAX_CHAIN} jobs"
+            );
+            jobs += 1;
+            let legacy = RuntimeBudget::new(Cost::create(SEAMS_PHLO, "rrs join seams job"));
+            let _scope = legacy.enter_legacy_scope();
+            let env = SpaceEnv {
+                budget: legacy.clone(),
+                ..rig.env.clone()
+            };
+            let before = legacy.get().value;
+            let result = run(&FamilyAgent, &env, op).await;
+            next = result
+                .as_ref()
+                .ok()
+                .and_then(|outcome| outcome.reissue.as_ref())
+                .map(|reissue| reissue.op.clone());
+            text.push_str(&format!("step {index} job {jobs}: {result:?}\n"));
+            text.push_str(&format!(
+                "  legacy {:?} phlo {}\n",
+                legacy.get_log(),
+                before - legacy.get().value
+            ));
+            for event in rig.log().await {
+                text.push_str(&format!("  event {event:?}\n"));
+            }
+        }
+    }
+    {
+        let seen = record.lock().expect("the record lock");
+        for (txn, keys) in seen.begins.iter().enumerate() {
+            text.push_str(&format!("begin {txn} {keys:?}\n"));
+        }
+        for (position, (txn, staged)) in seen.staged.iter().enumerate() {
+            text.push_str(&format!(
+                "staged {position} txn {txn}: {}\n",
+                staged_text(staged)
+            ));
+        }
+        text.push_str(&format!("commits {:?}\n", seen.commits));
+        for (point, usage) in &seen.usages {
+            text.push_str(&format!("usage {point:?} {usage:?}\n"));
+        }
+    }
+    text.push_str(&format!("root {:?}\n", rig.root().await));
+    text
+}
+
+/// The root of the workspace.
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the rholang crate lives inside the workspace")
+        .to_path_buf()
+}
+
+/// The capture directory of the differential, when the run captures the golden. It must be an
+/// absolute directory under `target/`, so a capture never writes to the source tree.
+fn seams_capture_directory() -> Option<PathBuf> {
+    let directory = PathBuf::from(std::env::var_os(SEAMS_CAPTURE)?);
+    let target = workspace_root().join("target");
+    let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
+    let inside_target = directory.is_absolute()
+        && directory
+            .components()
+            .all(|component| !matches!(component, Component::ParentDir))
+        && (directory.starts_with(&target) || directory.starts_with(&canonical_target));
+    assert!(
+        inside_target,
+        "{SEAMS_CAPTURE} must be an absolute path under {}, got {}",
+        target.display(),
+        directory.display()
+    );
+    Some(directory)
+}
+
+/// The keyed differential of the store seams (joins plan section 9). The store seams of the
+/// PathMap source must leave the join engine of the keyed stores unchanged. For every program of
+/// a fixed corpus, the engine must stage the same operations in the same order, with the same
+/// results, legacy charges, phlo, events, lock keys and root, and with the same host-work usage
+/// at every begin, staged operation and commit. The golden holds the digest of the text of each
+/// run (`seams_text`), captured at the commit `930b1d64c`, before the seams.
+#[test]
+fn join_seams_keyed_differential() {
+    let runtime = tokio_runtime();
+    let capture = seams_capture_directory();
+    if let Some(directory) = &capture {
+        std::fs::create_dir_all(directory.join("programs")).expect("create the capture directory");
+    }
+    let programs = seams_corpus();
+    let mut actual = Vec::with_capacity(programs.len());
+    for (index, program) in programs.iter().enumerate() {
+        let text = runtime.block_on(seams_text(program));
+        let digest = hex::encode(Blake2b256Hash::new(text.as_bytes()).bytes());
+        if let Some(directory) = &capture {
+            std::fs::write(directory.join(format!("programs/{index:03}.txt")), &text)
+                .expect("write the text of a program");
+        }
+        actual.push(serde_json::json!({
+            "index": index,
+            "kind": format!("{:?}", program.kind),
+            "steps": program.steps.len(),
+            "digest": digest,
+        }));
+    }
+    let document = serde_json::json!({
+        "schema": "reified-join-seams-v1",
+        "captured_at": "930b1d64c",
+        "seed": format!("{:#018x}", support::props::PROPERTY_SEED),
+        "programs": actual,
+    });
+    if let Some(directory) = &capture {
+        let mut text =
+            serde_json::to_string_pretty(&document).expect("serialize the golden of the seams");
+        text.push('\n');
+        std::fs::write(directory.join("reified-join-seams-v1.json"), text)
+            .expect("write the golden of the seams");
+        return;
+    }
+    let path = workspace_root().join(SEAMS_GOLDEN);
+    let golden: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "read {}: {error}; capture the golden with {SEAMS_CAPTURE}",
+                path.display()
+            )
+        }))
+        .expect("parse the golden of the seams");
+    let expected = golden["programs"]
+        .as_array()
+        .expect("the golden lists its programs");
+    assert_eq!(
+        expected.len(),
+        actual.len(),
+        "the corpus has the size of the golden"
+    );
+    let differing: Vec<String> = expected
+        .iter()
+        .zip(&actual)
+        .filter(|(left, right)| left != right)
+        .map(|(left, right)| format!("golden {left}, run {right}"))
+        .collect();
+    assert!(
+        differing.is_empty(),
+        "the keyed engine differs from {SEAMS_GOLDEN} on {} programs:\n{}",
+        differing.len(),
+        differing.join("\n")
+    );
 }

@@ -242,13 +242,13 @@
                              with the same Produce::create identity
                              (decision 30)
    restore_of,               decision 45: receive_head
-     restores_after          (rholang/src/rust/interpreter/spaces/generic.rs:1497)
+     restores_after          (rholang/src/rust/interpreter/spaces/generic.rs:1532)
                              copies the head record when a peek fires on a
                              non-persistent record
-                             (rholang/src/rust/interpreter/spaces/generic.rs:1541).
+                             (rholang/src/rust/interpreter/spaces/generic.rs:1576).
                              restore_peeked and Cx::restore
-                             (rholang/src/rust/interpreter/spaces/generic.rs:1584
-                             and 963) stage a Store of that record with
+                             (rholang/src/rust/interpreter/spaces/generic.rs:1619
+                             and 998) stage a Store of that record with
                              persist = false right after the fire. The model
                              does not include the record authority that the
                              re-store registers (Introduction::for_record,

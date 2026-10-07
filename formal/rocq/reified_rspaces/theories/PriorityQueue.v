@@ -119,25 +119,25 @@
    offer_pick                spaces/disciplines/priority_queue.rs:545-597
                              (offer_target: the older head first, and each
                              refusal marks its lane)
-   fits_datum                spaces/generic.rs:726-733 (Cx::matches)
+   fits_datum                spaces/generic.rs:761-768 (Cx::matches)
    offer_loop                spaces/disciplines/priority_queue.rs:765-824
                              (offer_pq)
    receive_loop,             spaces/disciplines/priority_queue.rs:830-933 and
    consume_fire              929-938 (receive_pq and restore_peeked) and
-                             spaces/generic.rs:342-349 (Discipline::restore)
+                             spaces/generic.rs:373-380 (Discipline::restore)
    fresh_offer,              spaces/disciplines/priority_queue.rs:254-268 and
    fresh_receive,            416-437 (reaches_head, precedes and
    reenter_offer,            at_lane_head: a fresh element joins the tail of
    reenter_receive           its lane, and a re-entry precedes with <)
-   with_settles,             spaces/generic.rs:1400-1413 (open_plan) and
+   with_settles,             spaces/generic.rs:1435-1448 (open_plan) and
    plan_at_cap               spaces/disciplines/priority_queue.rs:319-345
                              (the settle hooks)
    carried, next_round       spaces/settle.rs:643-675 and 681-705, and
                              spaces/disciplines/priority_queue.rs:816 and 925
                              (reissued_ord: persistent.then_some(ord))
-   produce, consume,         spaces/generic.rs:2172-2304 (run_with) and
+   produce, consume,         spaces/generic.rs:2211-2343 (run_with) and
    bumped, bump_ord          spaces/counter.rs:165-245 (bump)
-   fires (the fire count)    spaces/generic.rs:601, 654 and 2227 (Plan.rounds,
+   fires (the fire count)    spaces/generic.rs:636, 689 and 2266 (Plan.rounds,
                              Cx::rounds, and the FireRounds of a transaction)
    apply, run, drop_key      the staged view of the substrate
                              (space_store_handle.rs, stage_produce and

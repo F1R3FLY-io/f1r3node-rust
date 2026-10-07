@@ -3000,6 +3000,7 @@ fn pending_of(op: &ProduceOp) -> PendingProduce {
         key: key(&op.channel),
         record: record::wrap_datum(0, &op.data),
         persist: op.persistent,
+        restore: None,
     }
 }
 

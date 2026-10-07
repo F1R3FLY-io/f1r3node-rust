@@ -1,0 +1,487 @@
+{
+  "captured_at": "930b1d64c",
+  "programs": [
+    {
+      "digest": "0779a77d9ea5fb0fed4f8fa69981cf8b1341f88204d857c6f62be2d531992a2f",
+      "index": 0,
+      "kind": "Cell",
+      "steps": 2
+    },
+    {
+      "digest": "a4ad67d4f03a4d6e1674f80fdd1244d2a0141c2c20ac031aeb0024ea9a5fedab",
+      "index": 1,
+      "kind": "Queue",
+      "steps": 2
+    },
+    {
+      "digest": "606a5722153ccde13389e29c0e5fcc243933f95d1be17beb7593070fccfa4939",
+      "index": 2,
+      "kind": "Stack",
+      "steps": 2
+    },
+    {
+      "digest": "ab007c08b8a4bf89f5899bf4dca652c0fcbf936a50575704c142524e8e6b4bf5",
+      "index": 3,
+      "kind": "Bag",
+      "steps": 4
+    },
+    {
+      "digest": "fbcb3e76ef088df2fe87850ab3af0ad59f1b33edf61742b0de8b98cffbac5727",
+      "index": 4,
+      "kind": "Stack",
+      "steps": 6
+    },
+    {
+      "digest": "f189b0b4e2e35053823f3bfdbfb92a625ca0fe18ba6bc685f6919cebea5a851b",
+      "index": 5,
+      "kind": "Set",
+      "steps": 3
+    },
+    {
+      "digest": "8ac9fea7f921e1d2b17bd98734ae791764ec6b002b29c507d661d9d32c1bac0e",
+      "index": 6,
+      "kind": "Pq",
+      "steps": 5
+    },
+    {
+      "digest": "6098af94770000aa2266c9f24b9206ec11682a2c6a03e559d12a219d1bb5242a",
+      "index": 7,
+      "kind": "Set",
+      "steps": 7
+    },
+    {
+      "digest": "7f6602d25df48aee3e6d16c02b8216d159da7daa27dff37f96d3b1b59e7a76a2",
+      "index": 8,
+      "kind": "Pq",
+      "steps": 1
+    },
+    {
+      "digest": "13cc2e7cd99ce289b9d0a512366558ae5b9d879d2180523f0df12eb5c584d509",
+      "index": 9,
+      "kind": "Pq",
+      "steps": 6
+    },
+    {
+      "digest": "17f97dcbb1ee428c3f428eb18862cfa3489454eaae2847f8db5af54d5bac68c8",
+      "index": 10,
+      "kind": "Pq",
+      "steps": 5
+    },
+    {
+      "digest": "37e1a8d25e4a3e8b229c8586c694d0db1e6316787419f5d59be508063fe1a27c",
+      "index": 11,
+      "kind": "Bag",
+      "steps": 7
+    },
+    {
+      "digest": "34c8ae36d22dd612ac7dbcdb5476d1ec60b8be7e6cb9660f78010e6b5f85d9c8",
+      "index": 12,
+      "kind": "Set",
+      "steps": 7
+    },
+    {
+      "digest": "87e2fad06e97d2e14e4a8769b0d9b4029c5b17ce95d39f20d9e8377a953df01a",
+      "index": 13,
+      "kind": "Set",
+      "steps": 8
+    },
+    {
+      "digest": "62962ed7b21ed885abb264aa48453c47e323187bb93bb234fbfe81aa554f0e7d",
+      "index": 14,
+      "kind": "Queue",
+      "steps": 7
+    },
+    {
+      "digest": "ba8d2b8080978347f35fb3dd5cd73cdab9931a0b21291e6e1eb1ab3d315e0cc0",
+      "index": 15,
+      "kind": "Pq",
+      "steps": 5
+    },
+    {
+      "digest": "5e4db25d67dc62e1626e604cb34d1a434788f4176a4d0772dadcee00a6acec02",
+      "index": 16,
+      "kind": "Bag",
+      "steps": 8
+    },
+    {
+      "digest": "f3148efbc4c7cf3501a252be79c07d36137d8795f0c558e96b3b7be5098d3b2d",
+      "index": 17,
+      "kind": "Cell",
+      "steps": 7
+    },
+    {
+      "digest": "cf10804841bd6b8eb4d0b4e8db595c5edb83cbc545119c2eedf5af9fd5593545",
+      "index": 18,
+      "kind": "Cell",
+      "steps": 5
+    },
+    {
+      "digest": "1733c576558ce9d5632595194815c7a1e1662077fc6db6b2b8ee25e3dc8f0ec5",
+      "index": 19,
+      "kind": "Cell",
+      "steps": 4
+    },
+    {
+      "digest": "9794720b9b65c46a4edf567fe36d58f04c44ca0246fd095bdf43aee0063e810d",
+      "index": 20,
+      "kind": "Set",
+      "steps": 1
+    },
+    {
+      "digest": "c2ff76aca8755e2bcb58878e5b0300e5e2617b78a36502aa3d7868bd68d121a5",
+      "index": 21,
+      "kind": "Cell",
+      "steps": 4
+    },
+    {
+      "digest": "7934b5131dd261d3a2738d05995e69d6072e523346d1e662d8b5e3bf81ec30b1",
+      "index": 22,
+      "kind": "Bag",
+      "steps": 6
+    },
+    {
+      "digest": "4d72cf3b250d9660021779bcf56d353c3542e5c226a1c4765ef36b698d43e5fc",
+      "index": 23,
+      "kind": "Set",
+      "steps": 1
+    },
+    {
+      "digest": "a5dcf64cd79b90d1e9e2723b5bd9eeb7494e306d5afc1b08e31a0fde0f37b7ae",
+      "index": 24,
+      "kind": "Bag",
+      "steps": 2
+    },
+    {
+      "digest": "bf33e5dd948427303fc83f2bc7531445053f6bbb7fa9a1e9ef225da2de117526",
+      "index": 25,
+      "kind": "Queue",
+      "steps": 8
+    },
+    {
+      "digest": "ef47765dc570d7b8959c56342271015869f7ebbc29275b2b6a2b3980f989f58d",
+      "index": 26,
+      "kind": "Bag",
+      "steps": 1
+    },
+    {
+      "digest": "e86c2b0f20d8482704cedfd700318f7e960874939c43d38ef8a9e54f934205fe",
+      "index": 27,
+      "kind": "Queue",
+      "steps": 1
+    },
+    {
+      "digest": "141424bef93b92a175ea1c848cb6ba9997f7f72067a153d6801b781cc8266d4a",
+      "index": 28,
+      "kind": "Pq",
+      "steps": 2
+    },
+    {
+      "digest": "6bf8e6d5c59dbcf09ff6e3c200a2d5d40bca013002c6bcf1bf4c6838e520a7a0",
+      "index": 29,
+      "kind": "Cell",
+      "steps": 8
+    },
+    {
+      "digest": "259f9a55bcf64bdb97184490c55c5f4fd0f34107a1a28e5b16d2a1477226d17c",
+      "index": 30,
+      "kind": "Pq",
+      "steps": 7
+    },
+    {
+      "digest": "090248f3e6c1b25f3bc451eb5820ab13cd46722f3e78a1953461d197008a78b4",
+      "index": 31,
+      "kind": "Stack",
+      "steps": 5
+    },
+    {
+      "digest": "5fd3a4430d8738644df4cb14b9958f38e24702bba92a699b425fcefcb2797926",
+      "index": 32,
+      "kind": "Pq",
+      "steps": 2
+    },
+    {
+      "digest": "83ea64112c957e3598ad5f34a2fd6b11745e6ec131424b2443b22a20023d1ef7",
+      "index": 33,
+      "kind": "Set",
+      "steps": 7
+    },
+    {
+      "digest": "9608fc063d4166b5bac6516cb7322567fc1efeca6103f3b61147e3494eee8a4a",
+      "index": 34,
+      "kind": "Set",
+      "steps": 2
+    },
+    {
+      "digest": "a41a00b2b59e9316dd09229a8ac770751d6baac1e14ee7aa59794dacee9a759a",
+      "index": 35,
+      "kind": "Cell",
+      "steps": 2
+    },
+    {
+      "digest": "1976b9b00601b2c0bc0aee79f2a746c8a2442c50ad17c0f8db43502eac3d82b9",
+      "index": 36,
+      "kind": "Cell",
+      "steps": 7
+    },
+    {
+      "digest": "5ed07b37741de5561346eda82a690f36bce78879d4a4c1ef179bc330c69a7632",
+      "index": 37,
+      "kind": "Pq",
+      "steps": 2
+    },
+    {
+      "digest": "57f1252a16160b9a00a5769148af677522cb2c88af49236f760f4f572b80a587",
+      "index": 38,
+      "kind": "Cell",
+      "steps": 6
+    },
+    {
+      "digest": "640c5e76304b36b065b96a161e3ccf56fd0ebd07106a52e9802fc99d33a9223c",
+      "index": 39,
+      "kind": "Stack",
+      "steps": 2
+    },
+    {
+      "digest": "d3bca743ff74170ee0397703bf5a7119bea0875432ecc4b1f733797d45a5dfe2",
+      "index": 40,
+      "kind": "Set",
+      "steps": 1
+    },
+    {
+      "digest": "18f45af011eb0cd77db9e485d4cc7537a81eac92bf49e77813a7f70e1126ea85",
+      "index": 41,
+      "kind": "Queue",
+      "steps": 2
+    },
+    {
+      "digest": "3492590f20f8eea27982fd4d72806b3d5aec0d83a86384cfdeb4b84a860a5b7b",
+      "index": 42,
+      "kind": "Queue",
+      "steps": 5
+    },
+    {
+      "digest": "95adfe695c408f672cf3f9622ba50bb8a0d7d03eb8e7b84b710e768f50f84b48",
+      "index": 43,
+      "kind": "Stack",
+      "steps": 4
+    },
+    {
+      "digest": "0c51d1a90d8a86dff5095b073aa0ba8a2260fed1ceb2a4024168157bbdc76989",
+      "index": 44,
+      "kind": "Bag",
+      "steps": 7
+    },
+    {
+      "digest": "12bddda75b5a042a7daf38b3ff64d7e5bc4ec73f26fcfd1a0df7bc4aec81af06",
+      "index": 45,
+      "kind": "Pq",
+      "steps": 4
+    },
+    {
+      "digest": "300abb6fff22406b3ee7d001dcfe04893a27ae42f3e5500d433b5d671606a89a",
+      "index": 46,
+      "kind": "Stack",
+      "steps": 2
+    },
+    {
+      "digest": "a6ab65535085bf8f5ece638d723ba3927766f49211191ee4646e9a568c2f9450",
+      "index": 47,
+      "kind": "Set",
+      "steps": 2
+    },
+    {
+      "digest": "4643b6cb4c8138d14386ca70de49c2d745e8936800fbd12da1043020b5334e83",
+      "index": 48,
+      "kind": "Cell",
+      "steps": 3
+    },
+    {
+      "digest": "4baebc4c09a19bdb2d57d3ea35ac2ed37af72b19811f4b20c3a9c6342536656a",
+      "index": 49,
+      "kind": "Bag",
+      "steps": 6
+    },
+    {
+      "digest": "88c274618cacae4dd12e15b477c9d8c624fc5004ed7e6b93be802108526e9c73",
+      "index": 50,
+      "kind": "Set",
+      "steps": 6
+    },
+    {
+      "digest": "283654433f7d5ded909ba8bba42b8ae68dc199523c78ec52c5667d0826aa0923",
+      "index": 51,
+      "kind": "Bag",
+      "steps": 8
+    },
+    {
+      "digest": "7b66b060af8ff8c8d44436322632219c7db2b783a9f8f298deb389c8123782cc",
+      "index": 52,
+      "kind": "Stack",
+      "steps": 6
+    },
+    {
+      "digest": "c03e524660689a6839dbcfe2806bc6687db2cb70e19d232d68e16c911b29c0ec",
+      "index": 53,
+      "kind": "Bag",
+      "steps": 8
+    },
+    {
+      "digest": "4961987f7feb88eb8cd56339b904d51dd7f03f351bc6a71ba55d846658798683",
+      "index": 54,
+      "kind": "Cell",
+      "steps": 2
+    },
+    {
+      "digest": "c8fc48e985815142dce3df7d1059b26a8e26f59ed4c9c525dbc997c08e7b2de9",
+      "index": 55,
+      "kind": "Bag",
+      "steps": 8
+    },
+    {
+      "digest": "c0d12767e1be8188125781ea057e1df7ddf5b0116ec0fabac16da20e1c29745a",
+      "index": 56,
+      "kind": "Queue",
+      "steps": 7
+    },
+    {
+      "digest": "4b59148e7ce6794151cd6a90113d39a4fe7ac6d9c66dbc08c8715964f182a789",
+      "index": 57,
+      "kind": "Bag",
+      "steps": 4
+    },
+    {
+      "digest": "68263d6814480c85e309eb1376fe481ac86f740f117f912eb7a6f638360652cd",
+      "index": 58,
+      "kind": "Stack",
+      "steps": 8
+    },
+    {
+      "digest": "ad7443d0d4031888c1910608f87215bdfcb9d63282bdee2fd9d125018ec880e2",
+      "index": 59,
+      "kind": "Pq",
+      "steps": 6
+    },
+    {
+      "digest": "99104d50d796c72d69487ea7f97616ff08d39df6a98d9c5b570ef4d6e3512ee8",
+      "index": 60,
+      "kind": "Stack",
+      "steps": 2
+    },
+    {
+      "digest": "97a6ca1eee60cc3182c05f32231d9cd900f5ca255c8e430373c85da0e651da18",
+      "index": 61,
+      "kind": "Stack",
+      "steps": 5
+    },
+    {
+      "digest": "af95c9dfe67599fb8d5efd2f14327494bc5e9cd9b097df48d69a4a6c68379c4f",
+      "index": 62,
+      "kind": "Stack",
+      "steps": 5
+    },
+    {
+      "digest": "bc8f46b04db5a6478602a06f30b7ff7e24645141e48866d9fcff73a7c68ff0c9",
+      "index": 63,
+      "kind": "Stack",
+      "steps": 7
+    },
+    {
+      "digest": "eb971a266d9ccfa676fd2c74356fde967afc0b33d3e2f28e5df1b734c73f2448",
+      "index": 64,
+      "kind": "Queue",
+      "steps": 10
+    },
+    {
+      "digest": "31f2485aa4bd96debf9cd1952921408e6dfa5b145ad4fe4865dd2b68eae1e420",
+      "index": 65,
+      "kind": "Set",
+      "steps": 9
+    },
+    {
+      "digest": "bb43a637f82a99d78c9599d97df4cec5034079963243808dcd10a9751199c85d",
+      "index": 66,
+      "kind": "Stack",
+      "steps": 11
+    },
+    {
+      "digest": "293a22eef403776092898015d8afa9a1945243de49e3d15ef55cd4bcb8a510db",
+      "index": 67,
+      "kind": "Queue",
+      "steps": 112
+    },
+    {
+      "digest": "e57f292e966ee3195b7750959a586b9ce495567f8001108ab3b361e78980db0b",
+      "index": 68,
+      "kind": "Queue",
+      "steps": 9
+    },
+    {
+      "digest": "7f81b00619a3290089c14a5c6628474bf2732a5beffd5265d591b99a787fa775",
+      "index": 69,
+      "kind": "Pq",
+      "steps": 2
+    },
+    {
+      "digest": "a47165f4ed4c3e3a3154bb634564a53b0a303bb29e5d7d1832a15f6889908c58",
+      "index": 70,
+      "kind": "Queue",
+      "steps": 5
+    },
+    {
+      "digest": "6e7738792f910f92a8e7c53675d5e42458bd553fca2421ccde2a49d70e1b6848",
+      "index": 71,
+      "kind": "Set",
+      "steps": 4
+    },
+    {
+      "digest": "163a16b28c27a9b22b52a3a4652e64cd0dcce89e6406d016b8418bf22663066c",
+      "index": 72,
+      "kind": "Stack",
+      "steps": 77
+    },
+    {
+      "digest": "3ad79e34e554a5656f01418e18a9e5a15a30286ce7bf728d707d03b852911498",
+      "index": 73,
+      "kind": "Stack",
+      "steps": 9
+    },
+    {
+      "digest": "e10b59199a74ebff95bef81498e2902e0a9b30fbf77e4d68a3793f7ade92866c",
+      "index": 74,
+      "kind": "Queue",
+      "steps": 69
+    },
+    {
+      "digest": "f27543181bb9c3380e0d9a3be14114d261f117844027820a99fe075228b216f0",
+      "index": 75,
+      "kind": "Set",
+      "steps": 6
+    },
+    {
+      "digest": "c5123f2f080a2b9ab9f1c43106cb9470f5250d0c9b5eadbd096aaaa40c58f8ff",
+      "index": 76,
+      "kind": "Bag",
+      "steps": 69
+    },
+    {
+      "digest": "e7ab3ebfcb2dc1ac1ffb42a5d9dcb8c740eda8a3f10a69f15dc17efb7e9f4451",
+      "index": 77,
+      "kind": "Pq",
+      "steps": 6
+    },
+    {
+      "digest": "b6db11e9fb8cd055772af2932f75340129b0c692c223f3fbbca605c59be207e6",
+      "index": 78,
+      "kind": "Stack",
+      "steps": 9
+    },
+    {
+      "digest": "b99d2d8f8e955a1ca4e573d64bbbc4898a98f31047d71c68048e047516fff04e",
+      "index": 79,
+      "kind": "Bag",
+      "steps": 1
+    }
+  ],
+  "schema": "reified-join-seams-v1",
+  "seed": "0x0e0d202610060005"
+}

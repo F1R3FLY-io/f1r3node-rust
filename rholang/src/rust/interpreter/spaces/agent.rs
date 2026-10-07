@@ -206,6 +206,10 @@ pub struct PendingProduce {
     pub record: ListParWithRandom,
     /// True for a persistent record.
     pub persist: bool,
+    /// The depth of the marker that a peek COMM removed, for a second send of a PathMap datum
+    /// (joins plan section 9): the settle job restores that marker when the second send fires
+    /// nothing. A keyed store always carries `None`.
+    pub restore: Option<u8>,
 }
 
 /// The rest of a cascade of the join engine (P5c, joins plan section 4.10).
