@@ -73,6 +73,23 @@
      rust_depth_entry_constant_covers_header_moves (D-O6, DR-93): the same
      bounds for the 24-byte entries of a depth walk.
 
+   Results (D-E1, DR-108): the first entry that a popped entry's children
+   push reuses the popped slot, so only the root and the further entries
+   reserve worklist backing (1 + charged_pushes ks for the run ks).
+   - run_peak_le_charged_pushes and walk_peak_le_charged_pushes: the peak of
+     every run is at most the root plus the further entries;
+   - charged_pushes_independent_of_step_order;
+   - charged_pushes_le_entries: never more than the backing of DR-92;
+   - chain_slot_charge_covers_worklist and
+     chain_slot_charge_covers_worklist_for_slot: the chained slot pays the
+     chunks, the chunk headers and the header moves;
+   - shared_release_charge_covers_work: a block-mode release of a
+     store-owned shared pointer pays the pointer read and the strong-count
+     read and write when the header is at least two words;
+   - negative controls free_root_push_uncovered_example,
+     per_entry_backing_overcharges_chain_example and
+     shared_release_without_header_uncovered_example.
+
    Rust correspondence: shared/src/rust/clone_backing.rs (Walker in block
    mode: push_block_entry, block, referent_block, ChunkedWorklist; the
    *_blocks entry points; E = BLOCK_ENTRY_SCANNED = 2p + 3w with p = 16 and
@@ -733,6 +750,113 @@ Proof.
   apply Nat.ltb_lt. vm_compute. reflexivity.
 Qed.
 
+(* D-E1 (DR-108): the chained worklist slot. The walk pops one entry, and the
+   popped entry's children push k entries; the first of them reuses the
+   popped slot. The run of a walk is the list of k for the popped entries,
+   in pop order. Only the root and, for each popped entry, the entries after
+   the first reserve worklist backing: 1 + charged_pushes ks entries. *)
+Fixpoint charged_pushes (ks : list nat) : nat :=
+  match ks with
+  | [] => 0
+  | k :: rest => (k - 1) + charged_pushes rest
+  end.
+
+(* The highest height of the worklist from height h: each step pops one
+   entry and pushes k. *)
+Fixpoint run_peak (h : nat) (ks : list nat) : nat :=
+  match ks with
+  | [] => h
+  | k :: rest => Nat.max h (run_peak (h - 1 + k) rest)
+  end.
+
+Theorem run_peak_le_charged_pushes : forall ks h c,
+  h <= 1 + c -> run_peak h ks <= 1 + c + charged_pushes ks.
+Proof.
+  induction ks as [| k rest IH]; intros h c bounded; cbn [run_peak charged_pushes]; [lia |].
+  pose proof (IH (h - 1 + k) (c + (k - 1)) ltac:(lia)) as rest_bound.
+  apply Nat.max_lub; lia.
+Qed.
+
+(* A walk starts with the root alone on the worklist. *)
+Corollary walk_peak_le_charged_pushes : forall ks,
+  run_peak 1 ks <= 1 + charged_pushes ks.
+Proof. intros ks. pose proof (run_peak_le_charged_pushes ks 1 0 ltac:(lia)). lia. Qed.
+
+(* The charge counts each popped entry's k, so it does not depend on the
+   order in which the walk pops the entries. *)
+Theorem charged_pushes_independent_of_step_order : forall ks ks',
+  Permutation ks ks' -> charged_pushes ks = charged_pushes ks'.
+Proof. intros ks ks' perm. induction perm; cbn [charged_pushes]; lia. Qed.
+
+(* DR-92 reserved backing for the root and every pushed entry. *)
+Theorem charged_pushes_le_entries : forall ks,
+  1 + charged_pushes ks <= 1 + fold_right Nat.add 0 ks.
+Proof. induction ks as [| k rest IH]; cbn [charged_pushes fold_right]; lia. Qed.
+
+(* The chained slot pays the worklist: the bounds of worklist_charge_covers_
+   entries hold for the root and the further entries. *)
+Theorem chain_slot_charge_covers_worklist : forall fuel k ks,
+  (k = 0 /\ 1 <= run_peak 1 ks) \/ (1 <= k /\ 4 * (2 ^ k - 1) < run_peak 1 ks) ->
+  worklist_allocated_bytes fuel k <= 64 * (1 + charged_pushes ks) /\
+  worklist_moved_bytes fuel k <= 8 * (1 + charged_pushes ks).
+Proof.
+  intros fuel k ks reach.
+  exact (worklist_charge_covers_entries fuel k (run_peak 1 ks) (1 + charged_pushes ks)
+           reach (walk_peak_le_charged_pushes ks)).
+Qed.
+
+(* The same bound for the 24-byte entries of a depth walk (DR-93). *)
+Theorem chain_slot_charge_covers_worklist_for_slot : forall slot fuel k ks,
+  16 <= slot ->
+  (k = 0 /\ 1 <= run_peak 1 ks) \/ (1 <= k /\ 4 * (2 ^ k - 1) < run_peak 1 ks) ->
+  worklist_allocated_bytes_for slot fuel k <= 4 * slot * (1 + charged_pushes ks).
+Proof.
+  intros slot fuel k ks wide reach.
+  pose proof (worklist_charge_covers_peak_for_slot slot fuel k (run_peak 1 ks) wide reach)
+    as covered.
+  assert (4 * slot * run_peak 1 ks <= 4 * slot * (1 + charged_pushes ks))
+    by (apply Nat.mul_le_mono_l; apply walk_peak_le_charged_pushes).
+  lia.
+Qed.
+
+(* D-E1 (DR-108): the block-mode cleanup of n store-owned shared pointers.
+   Each release reads the pointer (w bytes) and reads and writes the strong
+   count (2w bytes). The charge is one field read and the header hdr for
+   each pointer. *)
+Definition shared_release_work (n w : nat) : nat := n * (w + 2 * w).
+Definition shared_release_charge (n w hdr : nat) : nat := n * w + n * hdr.
+
+Theorem shared_release_charge_covers_work : forall n w hdr,
+  2 * w <= hdr -> shared_release_work n w <= shared_release_charge n w hdr.
+Proof.
+  intros n w hdr header. unfold shared_release_work, shared_release_charge.
+  assert (n * (2 * w) <= n * hdr) by (apply Nat.mul_le_mono_l; exact header).
+  nia.
+Qed.
+
+(* Negative control: if the root also reused a slot, a walk of one entry
+   would reserve nothing, while chunk 0 allocates 4 slots of 16 bytes. *)
+Example free_root_push_uncovered_example :
+  charged_pushes [] = 0 /\ worklist_allocated_bytes 0 0 = 64 /\
+  64 * charged_pushes [] < worklist_allocated_bytes 0 0.
+Proof. split; [reflexivity | split; [reflexivity | cbn; lia]]. Qed.
+
+(* Negative control: in a chain, each popped entry pushes one entry and the
+   last none. The chained slot reserves one slot, the peak; DR-92 reserved
+   one slot for each of the four entries. *)
+Example per_entry_backing_overcharges_chain_example :
+  1 + charged_pushes [1; 1; 1; 0] = 1 /\ run_peak 1 [1; 1; 1; 0] = 1 /\
+  1 + fold_right Nat.add 0 [1; 1; 1; 0] = 4.
+Proof. split; [reflexivity | split; reflexivity]. Qed.
+
+(* Negative control: with w = 8, a release charged one field read without
+   the header pays 8 bytes of its 24. *)
+Example shared_release_without_header_uncovered_example :
+  shared_release_charge 1 8 0 = 8 /\ shared_release_work 1 8 = 24 /\
+  shared_release_charge 1 8 0 < shared_release_work 1 8.
+Proof. split; [reflexivity | split; [reflexivity | cbn; lia]]. Qed.
+
+
 Print Assumptions visit_reads_le_block_bytes.
 Print Assumptions fields_have_no_visit_reads.
 Print Assumptions block_inspection_covers_walk_and_traversal.
@@ -750,3 +874,13 @@ Print Assumptions rust_depth_entry_constant_covers_header_moves.
 Print Assumptions level_charge_counts_inline_bytes_per_level.
 Print Assumptions nested_chain_well_formed.
 Print Assumptions level_charge_example.
+Print Assumptions charged_pushes_independent_of_step_order.
+Print Assumptions run_peak_le_charged_pushes.
+Print Assumptions walk_peak_le_charged_pushes.
+Print Assumptions charged_pushes_le_entries.
+Print Assumptions chain_slot_charge_covers_worklist.
+Print Assumptions chain_slot_charge_covers_worklist_for_slot.
+Print Assumptions shared_release_charge_covers_work.
+Print Assumptions free_root_push_uncovered_example.
+Print Assumptions per_entry_backing_overcharges_chain_example.
+Print Assumptions shared_release_without_header_uncovered_example.

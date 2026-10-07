@@ -81,7 +81,10 @@ pub trait CloneBacking {
 pub const BLOCK_ENTRY_SCANNED: usize = 2 * size_of::<&dyn CloneBacking>() + 3 * size_of::<u64>();
 /// D-B3 (DR-92): the chunks of the worklist and the vector of chunk headers
 /// allocate at most four slots per entry of the peak, so at most four slots
-/// per entry the walk pushes.
+/// per entry the walk pushes. D-E1 (DR-108): the peak is at most the root
+/// plus, for each popped entry, the entries its children push after the
+/// first, so only those entries reserve this backing
+/// (`WalkerBlockCharge.chain_slot_charge_covers_worklist`).
 pub const BLOCK_ENTRY_BACKING: usize = 4 * size_of::<&dyn CloneBacking>();
 /// D-O1 (DR-92): an inline field lies in its enclosing block, which is
 /// charged once; a consumer may re-read one machine word of the field (a
@@ -207,6 +210,10 @@ pub struct Walker<'a> {
     deep: ChunkedWorklist<DepthEntry<'a>>,
     current_depth: usize,
     max_depth: usize,
+    /// D-E1 (DR-108): the slot of the entry that the drain popped last is
+    /// free until the popped entry's children push their first entry, which
+    /// reuses the slot and reserves no worklist backing.
+    slot_free: bool,
 }
 
 impl<'a> Walker<'a> {
@@ -309,9 +316,21 @@ impl<'a> Walker<'a> {
     fn is_inline<T: CloneBacking>(&self) -> bool {
         if self.copy_payload {
             T::inline()
+        // D-E1 (DR-108): a block-mode cleanup of store-owned shared pointers
+        // does not walk the payload, so a shared pointer is an inline field
+        // whose release pays the strong-count header (`shared_header_paid`).
+        } else if self.blocks && self.shared_pointers && T::shared_header() {
+            true
         } else {
             T::inline_inspection()
         }
+    }
+
+    /// D-E1 (DR-108): a block-mode push of a shared pointer pays the read and
+    /// the write of its strong count: a copy increments it, and the cleanup
+    /// of a store-owned pointer decrements it.
+    fn shared_header_paid<T: CloneBacking>(&self) -> bool {
+        (self.copy_payload || self.shared_pointers) && T::shared_header()
     }
 
     /// D-O1 (DR-92): a push in block mode. An inline field costs a constant
@@ -323,7 +342,10 @@ impl<'a> Walker<'a> {
             return self.meter.reserve(3, BLOCK_FIELD_SCANNED, 0);
         }
         if self.is_inline::<T>() {
-            let header = if self.copy_payload && T::shared_header() {
+            // Changed by D-E1 (DR-108): the cleanup of a store-owned shared
+            // pointer also pays its strong-count header.
+            // let header = if self.copy_payload && T::shared_header() {
+            let header = if self.shared_header_paid::<T>() {
                 BLOCK_SHARED_HEADER_SCANNED
             } else {
                 0
@@ -336,9 +358,15 @@ impl<'a> Walker<'a> {
                 0,
             );
         }
+        // Changed by D-E1 (DR-108): the first entry that a popped entry's
+        // children push reuses the popped slot, so it reserves no worklist
+        // backing. The root and every further entry reserve it.
+        let reused = std::mem::take(&mut self.slot_free);
         if self.depths {
-            self.meter
-                .reserve(3, BLOCK_DEPTH_ENTRY_SCANNED, BLOCK_DEPTH_ENTRY_BACKING)?;
+            // self.meter
+            //     .reserve(3, BLOCK_DEPTH_ENTRY_SCANNED, BLOCK_DEPTH_ENTRY_BACKING)?;
+            let backing = if reused { 0 } else { BLOCK_DEPTH_ENTRY_BACKING };
+            self.meter.reserve(3, BLOCK_DEPTH_ENTRY_SCANNED, backing)?;
             let depth = self
                 .current_depth
                 .checked_add(1)
@@ -346,8 +374,10 @@ impl<'a> Walker<'a> {
             self.max_depth = self.max_depth.max(depth);
             return self.deep.push(DepthEntry { value, depth });
         }
-        self.meter
-            .reserve(3, BLOCK_ENTRY_SCANNED, BLOCK_ENTRY_BACKING)?;
+        // self.meter
+        //     .reserve(3, BLOCK_ENTRY_SCANNED, BLOCK_ENTRY_BACKING)?;
+        let backing = if reused { 0 } else { BLOCK_ENTRY_BACKING };
+        self.meter.reserve(3, BLOCK_ENTRY_SCANNED, backing)?;
         self.chunked.push(value)
     }
 
@@ -371,7 +401,10 @@ impl<'a> Walker<'a> {
             self.opaque_allocation(bytes)?;
             // D-O1 (DR-94): a block-mode copy of shared pointers also updates
             // each pointer's strong count, as a pushed shared pointer does.
-            if self.blocks && self.copy_payload && T::shared_header() {
+            // Changed by D-E1 (DR-108): so does the cleanup of store-owned
+            // shared pointers.
+            // if self.blocks && self.copy_payload && T::shared_header() {
+            if self.blocks && self.shared_header_paid::<T>() {
                 self.meter.reserve(
                     0,
                     values
@@ -391,15 +424,19 @@ impl<'a> Walker<'a> {
     }
 
     fn drain(&mut self) -> Result<(), BackingError> {
+        // D-E1 (DR-108): each pop frees the popped entry's slot for the first
+        // entry that its children push.
         if self.depths {
             while let Some(DepthEntry { value, depth }) = self.deep.pop() {
                 self.current_depth = depth;
+                self.slot_free = true;
                 value.children(self)?;
             }
             return Ok(());
         }
         if self.blocks {
             while let Some(value) = self.chunked.pop() {
+                self.slot_free = true;
                 value.children(self)?;
             }
             return Ok(());
@@ -428,6 +465,7 @@ fn walk<T: CloneBacking>(
         deep: ChunkedWorklist::new(),
         current_depth: 0,
         max_depth: 0,
+        slot_free: false,
     };
     walker.push(value)?;
     walker.drain()
@@ -450,6 +488,7 @@ fn walk_slice<T: CloneBacking>(
         deep: ChunkedWorklist::new(),
         current_depth: 0,
         max_depth: 0,
+        slot_free: false,
     };
     walker.slice(values)?;
     walker.drain()
@@ -476,6 +515,7 @@ fn walk_blocks<T: CloneBacking>(
         deep: ChunkedWorklist::new(),
         current_depth: 0,
         max_depth: 0,
+        slot_free: false,
     };
     walker.referent_block::<T>()?;
     walker.push(value)?;
@@ -500,6 +540,7 @@ fn walk_slice_blocks<T: CloneBacking>(
         deep: ChunkedWorklist::new(),
         current_depth: 0,
         max_depth: 0,
+        slot_free: false,
     };
     walker.slice(values)?;
     walker.drain()
@@ -600,6 +641,7 @@ pub fn inspect_blocks_depth<T: CloneBacking>(
         deep: ChunkedWorklist::new(),
         current_depth: 0,
         max_depth: 0,
+        slot_free: false,
     };
     walker.referent_block::<T>()?;
     walker.push(value)?;
@@ -678,6 +720,7 @@ pub fn inspect_shared_pointers<T: CloneBacking>(
         deep: ChunkedWorklist::new(),
         current_depth: 0,
         max_depth: 0,
+        slot_free: false,
     };
     walker.push(value)?;
     walker.drain()
@@ -702,6 +745,7 @@ pub fn inspect_shared_pointer_slice<T: CloneBacking>(
         deep: ChunkedWorklist::new(),
         current_depth: 0,
         max_depth: 0,
+        slot_free: false,
     };
     walker.slice(values)?;
     walker.drain()

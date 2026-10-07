@@ -5614,6 +5614,10 @@ which is not yet released. It changes no observable value.
   and covers the allocation of the pointer copy.
 - `shared_cleanup_charges_the_pointer_only`.
 
+**Amendment (DR-108).** In block mode, the cleanup walk of store-owned shared
+pointers charges each pointer as a field with its strong-count header
+(DR-108).
+
 **Cross-refs.** DR-81, DR-82. Leaf `ofp-2-cap-conditional-c5-c6-c11`.
 
 ## DR-84 — A split adds one causal-path segment
@@ -6412,6 +6416,10 @@ inline field, not as a worklist entry. A block-mode copy of a slice of
 shared pointers charges each pointer's strong-count update. See DR-94
 decisions 5 and 6.
 
+**Amendment (DR-108).** Decision 3: the first entry that a popped entry's
+children push reuses the popped slot, so only the root and the further
+entries reserve `BLOCK_ENTRY_BACKING` (DR-108).
+
 **Cross-refs.** DR-81, DR-82 and DR-83 (shared pointers and prepaid
 releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
 `ofp-2-cap-d-b3-worklist-charge`.
@@ -6716,6 +6724,10 @@ of 23.7 MB for the validator and 21.5 MB for the producer. The deferred
 RSpace source preparation, about 130 MB of validator VerificationBytes,
 accounts for most of the difference from the plan's projection of 258 MB
 for this cluster.
+
+**Amendment (DR-108).** Decision 5: the block-mode cleanup of store-owned
+shared pointers also charges the strong-count header of each pointer
+(DR-108).
 
 **Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93. Leaf
 `ofp-2-cap-d-b4-walker-stage-a`.
@@ -9682,3 +9694,169 @@ original SearchStateBytes cap.
 
 **Cross-refs.** DR-81, DR-82, DR-88, DR-96, DR-106. Leaf
 `ofp-2-cap-d-d5-incoming-datum`.
+
+## DR-108 — The chained worklist slot, the shared-pointer release and the RSpace walker sites in block mode
+
+**Status.** Part 1, the walker (decisions 1 and 2), implemented 2026-10-07
+for Phase D item D-E1 of epic 8946 (D-O1 Stage B). Part 2, the walker sites
+of rspace++, follows. A read-only design pass took the inventory of the
+walker sites of rspace++. It found that the site switch needs these two
+walker changes, which the D-E1 item did not name. The user approved them as
+part of D-E1.
+
+**Context.**
+
+- DR-92 reserved `BLOCK_ENTRY_BACKING` (four 16-byte slots, 64 bytes) of
+  SearchStateBytes for each worklist entry that a block-mode walk pushes.
+  The chunked worklist allocates only when the stack grows past its peak.
+  So for a walk whose stack stays low, for example a chain of boxes or a
+  deep continuation, the charge counted every entry while the allocation
+  followed only the peak. The legacy walker reserved only the growth of its
+  worklist vector. A switch of the 139 walker sites of rspace++ to block
+  mode under DR-92 would raise the SearchStateBytes of the replay by about
+  13 to 15 MiB, above its original cap.
+- A block-mode cleanup of store-owned shared pointers
+  (`inspect_shared_pointers_blocks`, `inspect_shared_pointer_slice_blocks`)
+  pushed each pointer as a worklist entry. The entry constant pays the
+  walker's moves and one word that the consumer reads. A release also reads
+  and writes the pointer's strong count, which no charge paid. The legacy
+  walker charged three words for each pointer, which covered that work. The
+  Stage A cleanup in rholang `replay_authority.rs` uses this walk.
+
+**Decision.**
+
+1. The chained worklist slot (W2). The drain frees the slot of the popped
+   entry before it calls the popped entry's `children`. The first entry that
+   those children push takes the free slot and reserves no worklist backing.
+   The root and every further entry reserve `BLOCK_ENTRY_BACKING`, or
+   `BLOCK_DEPTH_ENTRY_BACKING` in a depth walk. A field or an empty
+   container does not take the slot. The scanned charge of each entry does
+   not change.
+2. The shared-pointer release (W1). In a block-mode cleanup of store-owned
+   shared pointers, a shared pointer is an inline field. Its charge adds
+   `BLOCK_SHARED_HEADER_SCANNED` (two words) for the strong count, as a
+   block-mode copy of a shared pointer does (DR-94 decision 5). The same
+   applies to a slice of shared pointers.
+3. The replaced lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨drain⟩ ≡
+  while an entry e can be popped:
+    slot_free ← true                         -- the slot of e is free
+    e.children(walker)
+
+⟨push an entry⟩ ≡                             -- block mode, not inline, not empty
+  reused ← slot_free;  slot_free ← false
+  reserve (3 operations, E scanned bytes, if reused then 0 else 4 slots)
+  push the entry on the chunked worklist
+
+⟨push a store-owned shared pointer⟩ ≡         -- block-mode cleanup
+  reserve (3 operations, F + 2 words scanned bytes, 0)
+```
+
+**Soundness.**
+
+- *Worklist.* The chunked worklist never frees a chunk (DR-92), so it
+  allocates only when the stack grows past its previous peak. A pop lowers
+  the height by one, so the first push after a pop never allocates. Suppose
+  that the popped entries push $`k_1, k_2, \ldots`$ entries. Then the height
+  never exceeds $`1 + \sum_i (k_i - 1)^+`$, the root plus the further
+  entries, for every order of the pops
+  (`WalkerBlockCharge.run_peak_le_charged_pushes`,
+  `walk_peak_le_charged_pushes`, `charged_pushes_independent_of_step_order`).
+  So the bounds of DR-92 for a peak hold for the entries that reserve
+  backing (`chain_slot_charge_covers_worklist`, and
+  `chain_slot_charge_covers_worklist_for_slot` for the 24-byte depth
+  entries). The scanned slack of every entry still pays the header moves of
+  the chunk vector. The reserved backing never exceeds that of DR-92
+  (`charged_pushes_le_entries`).
+- *Release.* A release reads the pointer and reads and writes the strong
+  count. One field word and a header of two words pay that work
+  (`shared_release_charge_covers_work`). The walk does not visit the payload,
+  whose release was prepaid when it entered the store (DR-83).
+- *Determinism.* The k of an entry depends only on the entry's own value, and
+  the charge sums the k of the popped entries. So every role charges the
+  same.
+
+**Effect on the sites in block mode.** The chained slot lowers the
+SearchStateBytes of every block-mode walk: the Stage A sites (DR-94), the
+depth walks of the nested encodes (DR-93) and the sites of D-D1 to D-D5.
+The release changes the charge of the Stage A cleanup in
+`replay_authority.rs`. No other VerificationBytes term changes.
+
+**Scope.** This change is cost-accounting work. The block-mode walker exists
+only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. No value, encoding, root, event or receipt
+changes.
+
+**Verification (part 1).** `WalkerBlockCharge.v` proves these results without
+axioms, in its section for D-E1:
+
+- `run_peak_le_charged_pushes`, `walk_peak_le_charged_pushes`,
+  `charged_pushes_independent_of_step_order` and `charged_pushes_le_entries`.
+- `chain_slot_charge_covers_worklist` and
+  `chain_slot_charge_covers_worklist_for_slot`.
+- `shared_release_charge_covers_work`.
+- Negative controls: `free_root_push_uncovered_example` (a free root leaves
+  chunk 0 unpaid), `per_entry_backing_overcharges_chain_example` (DR-92
+  reserved four slots for a chain whose peak is one) and
+  `shared_release_without_header_uncovered_example` (8 of 24 bytes).
+
+Tests in `shared/src/rust/clone_backing/tests.rs`:
+
+- `chain_slot_backing_never_exceeds_per_entry_backing` (256 cases): the
+  backing equals the root and the further entries of an independent count,
+  and never exceeds one slot set for each entry.
+- `chain_slot_backing_covers_worklist_allocations`: a node of 600 children,
+  a chain of 10,000 boxes and a mix of both allocate at most their backing.
+  The chain reserves one slot set and allocates exactly one chunk.
+- `chain_slot_charges_the_root_and_each_further_child`: a field before the
+  entry does not take the slot, and a second entry reserves backing.
+- `shared_release_walk_charges_pointer_and_strong_count`: one pointer
+  charges its bytes, a field word and the header. A vector of five pointers
+  charges the same for small and for large payloads.
+- The independent oracles of the block rules (`Tree` here, `Par` in rholang)
+  now state the chained slot, and they still equal the walker exactly. The
+  chunk-model, depth-walk and empty-container tests state it too. The
+  allocation-coverage tests pass unchanged.
+
+Four mutations in a scratch copy fail tests:
+
+- A free root push fails eleven tests, among them the three
+  allocation-coverage tests.
+- A field that takes the slot fails two tests, among them the rholang
+  oracle.
+- A slot that is never cleared fails nine tests, among them the
+  allocation-coverage tests.
+- A release without the header fails
+  `shared_release_walk_charges_pointer_and_strong_count`.
+
+
+**Measurement (part 1).** The D-G0 probe ran the gateway test twice with
+DR-107 and twice with part 1 of DR-108, under the provisional caps. Every
+role charged exactly the same usage. The replay of the gateway funding
+block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-107, run 1 | 1,115,096,284 | 135,174,339 | 57,868,930 |
+| DR-107, run 2 | 1,102,623,236 | 135,097,087 | 57,853,668 |
+| DR-108 part 1, run 1 | 1,115,496,469 | 124,281,345 | 57,860,329 |
+| DR-108 part 1, run 2 | 1,088,851,334 | 123,896,655 | 57,833,274 |
+| Change of the means | −6.7 MB (−0.6 %) | −11.05 MB (−8.2 %) | −14 K (0.0 %) |
+
+The VerificationBytes runs of the two builds overlap. Their change is about
+a quarter of the largest difference between two runs of one build
+(26.6 MB), so part 1 does not change VerificationBytes measurably, as
+expected. The SearchStateBytes runs do not overlap, and their change is
+about 29 times the largest difference between two runs of one build. The
+SearchStateBytes of the producer's execution also fall by about 11 MB. In
+multiples of the original caps, the replay is now at 4.11 in
+VerificationBytes and 0.92 in SearchStateBytes, which is below the original
+SearchStateBytes cap.
+
+
+**Cross-refs.** DR-83, DR-92, DR-93, DR-94. Leaf
+`ofp-2-cap-d-e1-rspace-sites`.

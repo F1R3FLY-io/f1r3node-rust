@@ -621,6 +621,9 @@ fn block_usage(
 struct ParBlockOracle {
     copy: bool,
     totals: [usize; 3],
+    /// D-E1 (DR-108): the slot of the entry whose children the oracle
+    /// charges is free until those children push their first entry.
+    slot_free: bool,
 }
 
 impl ParBlockOracle {
@@ -631,12 +634,28 @@ impl ParBlockOracle {
     }
 
     /// A pushed value: one worklist entry.
+    /// Changed by D-E1 (DR-108): the first entry that a popped entry's
+    /// children push reuses the popped slot and reserves no backing.
     fn entry(&mut self) {
-        self.add([
-            3,
-            backing::BLOCK_ENTRY_SCANNED,
-            backing::BLOCK_ENTRY_BACKING,
-        ]);
+        // self.add([
+        //     3,
+        //     backing::BLOCK_ENTRY_SCANNED,
+        //     backing::BLOCK_ENTRY_BACKING,
+        // ]);
+        let backing = if std::mem::take(&mut self.slot_free) {
+            0
+        } else {
+            backing::BLOCK_ENTRY_BACKING
+        };
+        self.add([3, backing::BLOCK_ENTRY_SCANNED, backing]);
+    }
+
+    /// D-E1 (DR-108): the charges of a popped entry's children, with the
+    /// popped entry's slot free for their first entry.
+    fn popped(&mut self, children: impl FnOnce(&mut Self)) {
+        let outer = std::mem::replace(&mut self.slot_free, true);
+        children(self);
+        self.slot_free = outer;
     }
 
     /// An inline scalar: its bytes lie in the enclosing block.
@@ -662,14 +681,26 @@ impl ParBlockOracle {
             return;
         }
         self.entry();
-        self.add([2 * values.len(), 0, 0]);
-        self.block(std::mem::size_of_val(values), visited, true);
-        if visited {
-            for value in values {
-                self.entry();
-                element(self, value);
+        // Changed by D-E1 (DR-108): the popped vector pushes its elements,
+        // and each popped element pushes its own children.
+        // self.add([2 * values.len(), 0, 0]);
+        // self.block(std::mem::size_of_val(values), visited, true);
+        // if visited {
+        //     for value in values {
+        //         self.entry();
+        //         element(self, value);
+        //     }
+        // }
+        self.popped(|oracle| {
+            oracle.add([2 * values.len(), 0, 0]);
+            oracle.block(std::mem::size_of_val(values), visited, true);
+            if visited {
+                for value in values {
+                    oracle.entry();
+                    oracle.popped(|oracle| element(oracle, value));
+                }
             }
-        }
+        });
     }
 
     fn bytes(&mut self, bytes: &[u8]) { self.vector(bytes, false, |_, _| {}); }
@@ -677,10 +708,19 @@ impl ParBlockOracle {
     fn optional_par(&mut self, value: &Option<Par>) {
         match value {
             None => self.field(),
+            // Changed by D-E1 (DR-108): the popped option pushes the term,
+            // and the popped term pushes its fields.
+            // Some(par) => {
+            //     self.entry();
+            //     self.entry();
+            //     self.par(par);
+            // }
             Some(par) => {
                 self.entry();
-                self.entry();
-                self.par(par);
+                self.popped(|oracle| {
+                    oracle.entry();
+                    oracle.popped(|oracle| oracle.par(par));
+                });
             }
         }
     }
@@ -764,14 +804,26 @@ impl ParBlockOracle {
         let (operations, bytes) =
             shared::rust::collection_backing::tree_backing::<String, Par>(injections.len())
                 .expect("tree backing");
-        self.add([operations, 0, 0]);
-        self.block(bytes, true, true);
-        for (key, value) in injections {
-            self.entry();
-            self.block(key.len(), false, true);
-            self.entry();
-            self.par(value);
-        }
+        // Changed by D-E1 (DR-108): the popped map pushes its keys and
+        // values, and each popped key or value charges its own children.
+        // self.add([operations, 0, 0]);
+        // self.block(bytes, true, true);
+        // for (key, value) in injections {
+        //     self.entry();
+        //     self.block(key.len(), false, true);
+        //     self.entry();
+        //     self.par(value);
+        // }
+        self.popped(|oracle| {
+            oracle.add([operations, 0, 0]);
+            oracle.block(bytes, true, true);
+            for (key, value) in injections {
+                oracle.entry();
+                oracle.popped(|oracle| oracle.block(key.len(), false, true));
+                oracle.entry();
+                oracle.popped(|oracle| oracle.par(value));
+            }
+        });
         self.bytes(locally_free);
     }
 
@@ -779,13 +831,25 @@ impl ParBlockOracle {
         let Expr { expr_instance } = expr;
         match expr_instance {
             None => self.field(),
+            // Changed by D-E1 (DR-108): the popped option pushes the
+            // instance, and the popped instance pushes its bytes.
+            // Some(instance) => {
+            //     self.entry();
+            //     self.entry();
+            //     match instance {
+            //         expr::ExprInstance::GByteArray(bytes) => self.bytes(bytes),
+            //         _ => unreachable!("term() has only byte-array expressions"),
+            //     }
+            // }
             Some(instance) => {
                 self.entry();
-                self.entry();
-                match instance {
-                    expr::ExprInstance::GByteArray(bytes) => self.bytes(bytes),
-                    _ => unreachable!("term() has only byte-array expressions"),
-                }
+                self.popped(|oracle| {
+                    oracle.entry();
+                    oracle.popped(|oracle| match instance {
+                        expr::ExprInstance::GByteArray(bytes) => oracle.bytes(bytes),
+                        _ => unreachable!("term() has only byte-array expressions"),
+                    });
+                });
             }
         }
     }
@@ -797,10 +861,13 @@ fn par_block_oracle(par: &Par, copy: bool) -> [usize; 3] {
     let mut oracle = ParBlockOracle {
         copy,
         totals: [0; 3],
+        slot_free: false,
     };
     oracle.block(size_of::<Par>(), true, false);
     oracle.entry();
-    oracle.par(par);
+    // Changed by D-E1 (DR-108): the popped root pushes its fields.
+    // oracle.par(par);
+    oracle.popped(|oracle| oracle.par(par));
     oracle.totals
 }
 

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2e513f4a21055a593f632079afe4c26a38251ada5d52649b1bc230ec50d24460 # shrinks to par = Par { sends: [], receives: [], news: [], exprs: [Expr { expr_instance: Some(GByteArray([])) }], matches: [], unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: [7], connective_used: false, cost_signed_terms: [], cost_stacks: [] }

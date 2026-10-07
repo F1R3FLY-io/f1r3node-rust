@@ -117,7 +117,11 @@ fn tree_strategy() -> impl Strategy<Value = Tree> {
 /// An independent statement of the block-accounting rules (D-O1, DR-92) for
 /// `Tree`: the charge of the subtree below one `Tree` worklist entry.
 fn oracle_below(tree: &Tree, copy: bool, totals: &mut [usize; 3]) {
-    let entry = [3, BLOCK_ENTRY_SCANNED, BLOCK_ENTRY_BACKING];
+    // Changed by D-E1 (DR-108): the first entry that a popped entry's
+    // children push reuses the popped slot and reserves no backing.
+    // let entry = [3, BLOCK_ENTRY_SCANNED, BLOCK_ENTRY_BACKING];
+    let first = [3, BLOCK_ENTRY_SCANNED, 0];
+    let further = [3, BLOCK_ENTRY_SCANNED, BLOCK_ENTRY_BACKING];
     let field = [3, BLOCK_FIELD_SCANNED, 0];
     let add = |totals: &mut [usize; 3], charge: [usize; 3]| {
         for (total, amount) in totals.iter_mut().zip(charge) {
@@ -135,28 +139,32 @@ fn oracle_below(tree: &Tree, copy: bool, totals: &mut [usize; 3]) {
         Tree::Bytes(bytes) if bytes.is_empty() => add(totals, field),
         Tree::Text(text) if text.is_empty() => add(totals, field),
         Tree::Node(children) if children.is_empty() => add(totals, field),
+        // The popped `Tree` pushes one entry, which reuses its slot.
         Tree::Bytes(bytes) => {
-            add(totals, entry);
+            add(totals, first);
             add(totals, [2 * bytes.len(), 0, 0]);
             block(totals, bytes.len(), false);
         }
         Tree::Text(text) => {
-            add(totals, entry);
+            add(totals, first);
             block(totals, text.len(), false);
         }
         Tree::Node(children) => {
-            add(totals, entry);
+            add(totals, first);
             add(totals, [2 * children.len(), 0, 0]);
             block(totals, children.len() * size_of::<Tree>(), true);
-            for child in children {
-                add(totals, entry);
+            // The popped vector pushes its elements; the first reuses its slot.
+            for (index, child) in children.iter().enumerate() {
+                add(totals, if index == 0 { first } else { further });
                 oracle_below(child, copy, totals);
             }
         }
+        // The popped `Tree` pushes the box, and the popped box pushes the
+        // boxed `Tree`: each reuses the slot of its parent.
         Tree::Boxed(child) => {
-            add(totals, entry);
+            add(totals, first);
             block(totals, size_of::<Tree>(), true);
-            add(totals, entry);
+            add(totals, first);
             oracle_below(child, copy, totals);
         }
     }
@@ -350,9 +358,12 @@ fn worklist_chunks_follow_the_chunk_model() {
         let tree = Tree::Node(vec![Tree::Node(Vec::new()); count]);
         let (charged, allocated) = measured(|| usage(|meter| inspect_blocks(&tree, meter)));
         assert_eq!(allocated, chunk_model_bytes(count), "{count} children");
-        // The root and its child vector, and one entry per child: each
-        // child's empty vector is a field (DR-94).
-        let entries = if count == 0 { 1 } else { count + 2 };
+        // Changed by D-E1 (DR-108): the root and each child after the first
+        // reserve backing; the child vector and the first child reuse the
+        // slots of their popped parents. Each child's empty vector is a
+        // field (DR-94).
+        // let entries = if count == 0 { 1 } else { count + 2 };
+        let entries = count.max(1);
         assert_eq!(
             charged[2],
             entries * BLOCK_ENTRY_BACKING,
@@ -454,9 +465,18 @@ proptest! {
         prop_assert_eq!(walk.depth, entry_depth(&tree));
         prop_assert_eq!(walk.scanned, charged[1]);
         prop_assert_eq!(charged[0], block[0]);
-        let entries = block[2] / BLOCK_ENTRY_BACKING;
-        prop_assert_eq!(block[2], entries * BLOCK_ENTRY_BACKING);
-        prop_assert_eq!(charged[2], entries * BLOCK_DEPTH_ENTRY_BACKING);
+        // Changed by D-E1 (DR-108): only the root and the further entries
+        // reserve backing, while every entry reserves its scanned bytes.
+        // let entries = block[2] / BLOCK_ENTRY_BACKING;
+        // prop_assert_eq!(block[2], entries * BLOCK_ENTRY_BACKING);
+        // prop_assert_eq!(charged[2], entries * BLOCK_DEPTH_ENTRY_BACKING);
+        // prop_assert_eq!(
+        //     charged[1],
+        //     block[1] + entries * (BLOCK_DEPTH_ENTRY_SCANNED - BLOCK_ENTRY_SCANNED)
+        // );
+        let (entries, backed) = entry_counts(&tree);
+        prop_assert_eq!(block[2], backed * BLOCK_ENTRY_BACKING);
+        prop_assert_eq!(charged[2], backed * BLOCK_DEPTH_ENTRY_BACKING);
         prop_assert_eq!(
             charged[1],
             block[1] + entries * (BLOCK_DEPTH_ENTRY_SCANNED - BLOCK_ENTRY_SCANNED)
@@ -548,5 +568,168 @@ fn empty_containers_are_charged_as_fields() {
         backing
     ]);
     let full = inspected(&Some(vec![1_u64]));
-    assert_eq!(full[2], 2 * backing);
+    // Changed by D-E1 (DR-108): the vector reuses the slot of the popped
+    // root, so only the root reserves backing.
+    // assert_eq!(full[2], 2 * backing);
+    assert_eq!(full[2], backing);
+}
+
+/// D-E1 (DR-108): the worklist entries of a block walk of `tree` from the
+/// root, and the entries that reserve worklist backing: the root and, for
+/// each popped entry, the entries after the first that its children push.
+fn entry_counts(tree: &Tree) -> (usize, usize) {
+    /// The entries pushed below a popped `Tree` entry, and those of them
+    /// that reserve backing.
+    fn below(tree: &Tree) -> (usize, usize) {
+        match tree {
+            Tree::Leaf(_) => (0, 0),
+            Tree::Bytes(bytes) if bytes.is_empty() => (0, 0),
+            Tree::Text(text) if text.is_empty() => (0, 0),
+            Tree::Node(children) if children.is_empty() => (0, 0),
+            Tree::Bytes(_) | Tree::Text(_) => (1, 0),
+            Tree::Node(children) => children.iter().fold(
+                (1 + children.len(), children.len() - 1),
+                |(entries, backed), child| {
+                    let (child_entries, child_backed) = below(child);
+                    (entries + child_entries, backed + child_backed)
+                },
+            ),
+            Tree::Boxed(child) => {
+                let (entries, backed) = below(child);
+                (2 + entries, backed)
+            }
+        }
+    }
+    let (entries, backed) = below(tree);
+    (1 + entries, 1 + backed)
+}
+
+/// D-E1 (DR-108): a chain of `depth` boxes around a leaf.
+fn box_chain(depth: usize) -> Tree {
+    let mut tree = Tree::Leaf(7);
+    for _ in 0..depth {
+        tree = Tree::Boxed(Box::new(tree));
+    }
+    tree
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-E1 (DR-108; `WalkerBlockCharge.charged_pushes_le_entries`): the
+    /// chained slot reserves backing for the root and the further entries
+    /// only, which is never more than the backing of every entry (DR-92).
+    #[test]
+    fn chain_slot_backing_never_exceeds_per_entry_backing(tree in tree_strategy()) {
+        let (entries, backed) = entry_counts(&tree);
+        let charged = usage(|meter| inspect_blocks(&tree, meter));
+        prop_assert_eq!(charged[2], backed * BLOCK_ENTRY_BACKING);
+        prop_assert!(backed <= entries);
+    }
+}
+
+/// D-E1 (DR-108; `WalkerBlockCharge.chain_slot_charge_covers_worklist`): the
+/// worklist allocates at most the backing that the chained slot reserves,
+/// for a wide node, a deep chain and a mix of both. A chain of boxes keeps
+/// one entry on the worklist, so its walk reserves and allocates one chunk.
+#[test]
+fn chain_slot_backing_covers_worklist_allocations() {
+    let wide = Tree::Node(vec![Tree::Leaf(1); 600]);
+    let deep = box_chain(10_000);
+    let mixed = Tree::Node((0..50).map(|_| box_chain(50)).collect());
+    for (name, tree) in [("wide", &wide), ("deep", &deep), ("mixed", &mixed)] {
+        let (charged, allocated) = measured(|| usage(|meter| inspect_blocks(tree, meter)));
+        assert!(
+            allocated <= charged[2],
+            "{name}: allocated {allocated} charged {charged:?}"
+        );
+        let (_, backed) = entry_counts(tree);
+        assert_eq!(charged[2], backed * BLOCK_ENTRY_BACKING, "{name}");
+        let (depth_charged, depth_allocated) = measured(|| depth_walk(tree).0);
+        assert!(depth_allocated <= depth_charged[2], "{name}: depth walk");
+    }
+    let (charged, allocated) = measured(|| usage(|meter| inspect_blocks(&deep, meter)));
+    assert_eq!(charged[2], BLOCK_ENTRY_BACKING);
+    assert_eq!(
+        allocated,
+        FIRST_CHUNK_SLOTS * size_of::<&dyn CloneBacking>()
+    );
+}
+
+/// D-E1 (DR-108): the root reserves backing, and each popped entry's first
+/// pushed entry reuses its slot. A field that the popped entry pushes before
+/// that entry does not take the slot.
+#[test]
+fn chain_slot_charges_the_root_and_each_further_child() {
+    let backing = |value: &dyn Fn(&dyn BackingMeter) -> Result<(), BackingError>| {
+        usage(|meter| value(meter))[2]
+    };
+    // The root, then the tuple and its vector reuse popped slots; the
+    // scalar before the vector is a field.
+    let after_field = Some((7_u64, vec![1_u64]));
+    assert_eq!(
+        backing(&|meter| inspect_blocks(&after_field, meter)),
+        BLOCK_ENTRY_BACKING
+    );
+    // The tuple pushes two vectors: the second reserves backing.
+    let two = Some((vec![1_u64], vec![2_u64]));
+    assert_eq!(
+        backing(&|meter| inspect_blocks(&two, meter)),
+        2 * BLOCK_ENTRY_BACKING
+    );
+    // A node of n leaves: the root and the n - 1 leaves after the first.
+    for count in 1..=9 {
+        let node = Tree::Node(vec![Tree::Leaf(1); count]);
+        assert_eq!(
+            backing(&|meter| inspect_blocks(&node, meter)),
+            count * BLOCK_ENTRY_BACKING,
+            "{count} leaves"
+        );
+    }
+}
+
+/// D-E1 (DR-108; `WalkerBlockCharge.shared_release_charge_covers_work`): the
+/// block-mode cleanup of store-owned shared pointers charges each pointer as
+/// a field with its strong-count header, and no worklist entry or payload.
+#[test]
+fn shared_release_walk_charges_pointer_and_strong_count() {
+    let single = Arc::new(Big([3; 64]));
+    assert_eq!(
+        usage(|meter| inspect_shared_pointers_blocks(&single, meter)),
+        [
+            3,
+            size_of::<Arc<Big>>() + BLOCK_FIELD_SCANNED + BLOCK_SHARED_HEADER_SCANNED,
+            0
+        ]
+    );
+    let count: usize = 5;
+    let large: Vec<Arc<Big>> = (0..count)
+        .map(|index| Arc::new(Big([u64::try_from(index).expect("small index"); 64])))
+        .collect();
+    let small: Vec<Arc<u64>> = (0..count)
+        .map(|index| Arc::new(u64::try_from(index).expect("small index")))
+        .collect();
+    let pointers = count * size_of::<Arc<Big>>();
+    let expected = [
+        3 + 2 * count,
+        2 * size_of::<Vec<Arc<Big>>>()
+            + BLOCK_ENTRY_SCANNED
+            + pointers
+            + count * BLOCK_SHARED_HEADER_SCANNED,
+        BLOCK_ENTRY_BACKING,
+    ];
+    assert_eq!(
+        usage(|meter| inspect_shared_pointers_blocks(&large, meter)),
+        expected
+    );
+    assert_eq!(
+        usage(|meter| inspect_shared_pointers_blocks(&small, meter)),
+        expected
+    );
+    let slice = usage(|meter| inspect_shared_pointer_slice_blocks(&large, meter));
+    assert_eq!(slice, [
+        2 * count,
+        pointers + count * BLOCK_SHARED_HEADER_SCANNED,
+        0
+    ]);
 }
