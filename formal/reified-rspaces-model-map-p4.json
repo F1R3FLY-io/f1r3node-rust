@@ -2406,7 +2406,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "eval_marker",
-      "line": 185,
+      "line": 191,
       "role": "H2: refresh, strict decode, then USE or NEWSPACE.",
       "rocq": [
         "fire_step",
@@ -2426,7 +2426,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "eval_use",
-      "line": 204,
+      "line": 212,
       "role": "use s { P }: P under the context of s.",
       "rocq": [
         "enter_use"
@@ -2442,7 +2442,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "native_space_ref",
-      "line": 265,
+      "line": 273,
       "role": "Evaluate, substitute and classify a space reference.",
       "rocq": [
         "enter_use"
@@ -2459,7 +2459,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "reified_produce",
-      "line": 297,
+      "line": 305,
       "role": "H3: params, route, the persistent-send rule.",
       "rocq": [
         "route",
@@ -2479,7 +2479,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "reified_consume",
-      "line": 387,
+      "line": 395,
       "role": "H4/H5: the fast path, the USE wrapper, the route.",
       "rocq": [
         "routes_to_default_without_context",
@@ -2496,7 +2496,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "routes_to_default_without_context",
-      "line": 732,
+      "line": 750,
       "role": "Every class but a space name and an agent name.",
       "rocq": [
         "routes_to_default_without_context"
@@ -3178,7 +3178,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "struct",
       "name": "Field",
-      "line": 1100,
+      "line": 1118,
       "role": "Value, List, Map, Annotations, NewBody.",
       "rocq": [
         "field_flags"
@@ -3193,7 +3193,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "marker_fields",
-      "line": 1114,
+      "line": 1132,
       "role": "The fields of each marker.",
       "rocq": [
         "derived_flags"
@@ -3208,7 +3208,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "derived_flag",
-      "line": 1207,
+      "line": 1225,
       "role": "The flag that the encoder derives for a field.",
       "rocq": [
         "derived_flags"
@@ -3224,7 +3224,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_field",
-      "line": 1273,
+      "line": 1291,
       "role": "Recompute the derived flags of a field.",
       "rocq": [
         "refresh"
@@ -3239,7 +3239,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple",
-      "line": 1344,
+      "line": 1362,
       "role": "Recompute the derived flags of a marker tuple.",
       "rocq": [
         "refresh"
@@ -3254,7 +3254,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_tuple",
-      "line": 1355,
+      "line": 1373,
       "role": "A current tuple is not copied.",
       "rocq": [
         "refresh",
@@ -3271,7 +3271,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple_par",
-      "line": 1376,
+      "line": 1394,
       "role": "The tuple and its holder Par.",
       "rocq": [
         "refresh"
@@ -3286,7 +3286,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_marker_par",
-      "line": 1402,
+      "line": 1420,
       "role": "H4: the QUERY source before it fails closed.",
       "rocq": [
         "refresh"
@@ -3302,7 +3302,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "trailing_params",
-      "line": 1415,
+      "line": 1433,
       "role": "H3: refresh, then split_trailing_params.",
       "rocq": [
         "sdecode"

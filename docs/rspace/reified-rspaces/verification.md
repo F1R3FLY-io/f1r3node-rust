@@ -1727,9 +1727,9 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1937` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1702` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1752` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1955` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1720` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1770` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:193` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:440` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
@@ -2989,8 +2989,10 @@ To run the P5 checks, do these steps from the repository root, after the prepara
 7. Run `python3 scripts/verify-reified/check-consensus-checklist.py --milestone p5`.
 8. Run `cargo test -p rholang --test <suite>` for each suite of Table 88, and `cargo test -p rholang --lib`.
 9. Run `python3 scripts/verify-reified/doc_lint.py` and `docs/rspace/reified-rspaces/diagrams/render.sh --check`.
+10. Run `cargo build --release -p node`.
 
 Run each cargo command under the resource limits of section [10.3](#103-rust-suites), and write its log under `target/`.
+Step 10 is necessary because `cargo check` computes no layout of an async state machine ([design N1](design.md#n1-module-map-and-hook-lines)).
 
 *Table 88. The P5 suites.*
 

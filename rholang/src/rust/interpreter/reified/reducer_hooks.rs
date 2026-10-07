@@ -26,11 +26,12 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
+use std::future::{Future, Ready};
 use std::pin::Pin;
 use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use futures::future::Either;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
     BindPattern, Bundle, CostAuthority, EList, EMap, ETuple, Expr, ListParWithRandom, New, Par,
@@ -182,21 +183,28 @@ impl ReducerCore {
     /// Hook H2: evaluates a USE or NEWSPACE tuple in process position (P4 design C.3). The term
     /// filter (H1) admits no other tuple. A tuple that is not canonical after the I-20 refresh
     /// fails with `Malformed`.
-    pub(super) async fn eval_marker(
-        &self,
-        tuple: &ETuple,
-        env: &Env<Par>,
+    ///
+    /// The future is boxed. The evaluation future of the reducer holds the future of each term
+    /// kind, and the future of a USE or NEWSPACE tuple holds the allocation jobs of the spaces.
+    /// Unboxed, it makes the layout of every evaluation future deeper, and the release build of
+    /// `node` exceeds the query depth limit of rustc. Only marker tuples pay for the box.
+    pub(super) fn eval_marker<'a>(
+        &'a self,
+        tuple: &'a ETuple,
+        env: &'a Env<Par>,
         rand: Blake2b512Random,
-        authority: &CostAuthority,
-    ) -> Result<(), InterpreterError> {
-        let construct =
-            decode_process_tuple(&refreshed_tuple(tuple)).map_err(ReifiedReduceError::Malformed)?;
-        match construct {
-            ProcessConstruct::Use(block) => self.eval_use(block, env, rand, authority).await,
-            ProcessConstruct::NewSpace(new_space) => {
-                self.eval_new_space(new_space, env, rand, authority).await
+        authority: &'a CostAuthority,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a>> {
+        Box::pin(async move {
+            let construct = decode_process_tuple(&refreshed_tuple(tuple))
+                .map_err(ReifiedReduceError::Malformed)?;
+            match construct {
+                ProcessConstruct::Use(block) => self.eval_use(block, env, rand, authority).await,
+                ProcessConstruct::NewSpace(new_space) => {
+                    self.eval_new_space(new_space, env, rand, authority).await
+                }
             }
-        }
+        })
     }
 
     /// `use s { P }`: evaluates `P` with the use-context of the native space `s`. `P` gets the
@@ -492,26 +500,36 @@ impl ReducerCore {
     /// each plain binder becomes a name of the space of the context, through one allocation job
     /// for that space (`allocate_in_spaces`). The URI binders keep their values. `authority` is
     /// the cost authority of the process that evaluates the `new`.
-    pub(super) async fn reified_allocate(
-        &self,
-        new: &New,
-        env: &Env<Par>,
-        rand: &mut Blake2b512Random,
-        authority: &CostAuthority,
-    ) -> Result<Env<Par>, InterpreterError> {
+    ///
+    /// Outside a use-context, the future is ready at once and allocates nothing, as the call of
+    /// `allocate_new_bindings` was. Inside a use-context, the future of the allocation jobs is
+    /// boxed, so it does not deepen the evaluation future of the reducer (see `eval_marker`).
+    #[allow(clippy::type_complexity)]
+    pub(super) fn reified_allocate<'a>(
+        &'a self,
+        new: &'a New,
+        env: &'a Env<Par>,
+        rand: &'a mut Blake2b512Random,
+        authority: &'a CostAuthority,
+    ) -> Either<
+        Ready<Result<Env<Par>, InterpreterError>>,
+        Pin<Box<dyn Future<Output = Result<Env<Par>, InterpreterError>> + std::marker::Send + 'a>>,
+    > {
         match self.context_space() {
-            None => super::allocate_new_bindings(new, env, rand, &self.urn_map),
-            Some(space) => {
-                self.allocate_in_spaces(
-                    native_agent(),
-                    new,
-                    env,
-                    rand,
-                    BinderSpaces::All(space),
-                    authority,
-                )
-                .await
-            }
+            None => Either::Left(std::future::ready(super::allocate_new_bindings(
+                new,
+                env,
+                rand,
+                &self.urn_map,
+            ))),
+            Some(space) => Either::Right(Box::pin(self.allocate_in_spaces(
+                native_agent(),
+                new,
+                env,
+                rand,
+                BinderSpaces::All(space),
+                authority,
+            ))),
         }
     }
 

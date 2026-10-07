@@ -2267,7 +2267,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "reject_query_source",
-      "line": 717,
+      "line": 735,
       "role": "Hook H4: fails only on a malformed QUERY tuple.",
       "rocq": [
         "h4_passes",
@@ -2285,7 +2285,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "takes_fast_path",
-      "line": 744,
+      "line": 762,
       "role": "The fast path of a receive admits no marker tuple.",
       "rocq": [
         "takes_fast_path",
@@ -2302,7 +2302,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "query_bind",
-      "line": 757,
+      "line": 775,
       "role": "The inner channel and the query of a receive bind.",
       "rocq": [
         "decode_source",
@@ -2318,7 +2318,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "readable_channel",
-      "line": 776,
+      "line": 794,
       "role": "The read rule of a receive source.",
       "rocq": [
         "read_channel"
@@ -2333,7 +2333,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "single_bind_route",
-      "line": 788,
+      "line": 806,
       "role": "The route of a receive with one bind and its query.",
       "rocq": [
         "single_target"
@@ -2349,7 +2349,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "route_receive",
-      "line": 468,
+      "line": 476,
       "role": "Routes each bind of a receive by its inner channel.",
       "rocq": [
         "read_bind",
@@ -2365,7 +2365,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "join_route",
-      "line": 825,
+      "line": 843,
       "role": "The route of a join.",
       "unmodeled": "Joins are the JOINS batch (P5c). This campaign keeps the P4 join rule until then."
     },
@@ -2375,7 +2375,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "space_params",
-      "line": 925,
+      "line": 943,
       "role": "The named params of a send to a space.",
       "unmodeled": "The agent checks the params against the discipline (S1). No model needs the hook."
     },
@@ -2386,7 +2386,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "allocate_names",
-      "line": 584,
+      "line": 602,
       "role": "Runs one allocation job with the authority of the new.",
       "unmodeled": "OuterStorage.v models the allocation, and the P4 headline native_execution_fails_closed models its fail-closed rule."
     },
@@ -2397,7 +2397,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "allocate_in_spaces",
-      "line": 538,
+      "line": 556,
       "role": "The names of a new in its spaces.",
       "unmodeled": "A structural loop over the binder groups. The witness test reducer_space_routing_allocation_jobs_give_index_names checks it."
     },

@@ -505,7 +505,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "pub(super) async fn eval_marker("
+          "pattern": "pub(super) fn eval_marker<'a>("
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
@@ -660,7 +660,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "pub(super) async fn eval_marker("
+          "pattern": "pub(super) fn eval_marker<'a>("
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
@@ -672,7 +672,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "pub(super) async fn reified_allocate("
+          "pattern": "pub(super) fn reified_allocate<'a>("
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
