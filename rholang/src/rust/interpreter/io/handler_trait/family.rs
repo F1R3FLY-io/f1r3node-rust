@@ -75,9 +75,10 @@ mod tests {
     use super::*;
 
     /// Variant ordering is a hidden surface — the per-family count
-    /// pin (yet to land) will likely iterate variants in declaration
-    /// order and index into a fixed-size `[usize; 5]`.  Pin here
-    /// that nothing has been inserted or re-ordered.
+    /// pin (slice 5.51) iterates
+    /// `EXPECTED_PER_FAMILY_HANDLER_COUNTS` which declares
+    /// variants in this order.  Pin here that nothing has been
+    /// inserted or re-ordered.
     #[test]
     fn variants_match_declaration_order() {
         assert_eq!(HandlerFamily::Mutation as u8, 0);
@@ -88,8 +89,8 @@ mod tests {
     }
 
     /// Variant count pin — a sixth variant added without updating
-    /// the per-family count pin (yet to land) would silently
-    /// escape the breakdown.  Caught at test-time here first.
+    /// the per-family count pin (slice 5.51) would silently escape
+    /// the breakdown.  Caught at test-time here first.
     #[test]
     fn exactly_five_variants() {
         // Exhaustive match proves variant count without runtime
@@ -115,9 +116,9 @@ mod tests {
         assert_eq!(variants.len(), 5);
     }
 
-    /// Equality + copy semantics — handlers store family as a
-    /// `pub family: HandlerFamily` field (yet to land); the
-    /// per-family count pin compares by equality.  `Copy` keeps
+    /// Equality + copy semantics — handlers store family in the
+    /// `FsHandlerEntry.family: HandlerFamily` field; the per-family
+    /// count pin (slice 5.51) compares by equality.  `Copy` keeps
     /// the comparison allocation-free.
     #[test]
     fn copy_and_eq_round_trip() {

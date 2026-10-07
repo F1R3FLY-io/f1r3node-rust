@@ -11,8 +11,10 @@
 //     (leader, verify-success, verify-divergence, oracular-echo).
 //   - [`HandlerFamily`] — groups handlers by effect shape
 //     (mutation, observation, stream, lock, lifecycle).  Used by
-//     the per-family count pin in the yet-to-land handler-dispatcher
-//     slice and by future per-family file splits.
+//     the per-family count pin
+//     (`fs_handlers_per_family_counts_match_pinned`, slice 5.51)
+//     and by the per-family file splits under
+//     `handlers/{mutation,observation,stream,lock,lifecycle}/*.rs`.
 //
 // # Deferred to subsequent Wave 4 slices
 //
