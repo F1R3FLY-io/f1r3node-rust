@@ -426,17 +426,25 @@ tasks:
       - "Deploy admission cap. block_creator.rs caps ordinary user deploys per block at 4, 8, or 16 in the non-leader fallback (NON_LEADER_FALLBACK_*_ORDINARY_DEPLOY_CAP). In the 2026-09-25 breakdown the cap held at 4 under sustained load, and about 484 of 1512 deploys were never included. At 10 deploys/s, a cap of 4 or 8 per block can hold deploys for several blocks."
       - "Heartbeat wait. The 2026-09-25 breakdown measured 5.6 s of each 7 s idle round as validators waiting for their next heartbeat tick before they propose (casper.heartbeat check-interval 5 s). Each wait adds directly to inclusion time."
       - "Empty heartbeat blocks. The proposer skips an empty proposal only outside the heartbeat lane (block_creator.rs). Heartbeat proposals use EmptyBlocks::HeartbeatLane (proposer.rs) and still emit empty blocks, which every peer must replay. The issue measured about 54% empty blocks in April. The current share is not measured."
+      - "API-driven LFB computation. MultiParentCasper::last_finalized_block (dispatch.rs) calls compute_last_finalized_block directly, outside the single-flight guard of run_queued_finalizer. The bond_status and exploratory_deploy API endpoints (casper/src/rust/api/block_api.rs) call it. A request during a background finalizer run starts a second, overlapping evaluation that can apply the finalization effect. record_directly_finalized tolerates concurrent callers (global write lock and a reconcile loop). Whether the effect closure (process_finalized: event publication and mergeable-channel GC) can run twice for one block is not verified."
+    finalizer_facts:
+      - "The background finalizer is single-flight (finalizer_task_in_progress). Triggers during a run set finalizer_task_queued and coalesce into one rerun (finalization_runner.rs)."
+      - "Each run selects at most one new LFB through floor::floor_of_view. record_directly_finalized then finalizes the LFB and all its unfinalized ancestors in one batch."
+      - "A run that exceeds 15 s is abandoned for that cycle with a warning."
+      - "Decision D-05 (ratified 2026-09-16) keeps single-flight as the default. The bounded parallel evaluation of PR #216 is optional, and the casper-soak publication profile blocks it (parallel_policy_not_approved). That profile is qualified only on synthetic fixtures and does not model the API-driven path."
     not_suspects:
       - "Merger conflict detection: compute_relation_map is still O(N²), but the merger buckets measure about 45 ms per merge."
       - "Replay runtime spawn: about 3.8 ms per block in the soak."
       - "Block parking: below 2% after PR #653."
-    scope: "Measurement first: the time from deploy submit to the first block that includes the deploy, split by stage (deploy pool wait, proposal trigger, block creation, block propagation). A fix starts only after a measurement names the stage. The fix needs its own TDD plan and, under the EPIC-021 cbc_policy, a pending claim before any code change."
+    scope: "Measurement first: the time from deploy submit to the first block that includes the deploy, split by stage (deploy pool wait, proposal trigger, block creation, block propagation). Add finalizer metrics to ISSUE24_METRICS: finalizer run duration, queued reruns, 15 s timeouts, and API-triggered LFB computations with their overlap with a background run. Check whether the system-integration test_load calls exploratory_deploy or bond_status during its load phases. A fix starts only after a measurement names the stage. The fix needs its own TDD plan and, under the EPIC-021 cbc_policy, a pending claim before any code change."
     acceptance:
       - "A per-deploy timeline for the test_load high phase names the stage that holds the deploy, with evidence from two runs."
       - "A pending CbC claim exists before any code change to proposal or deploy selection."
+      - "The soak record reports the finalizer metrics and the API-triggered LFB computations."
       - "Each fix behavior has a test that fails before its change and passes after it."
       - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in the high phase."
       - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
+    candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
 ---
 ```
 
