@@ -150,12 +150,18 @@ tasks:
       - "Over 24 hours after deployment, the invoke log shows at least 44 of 48 scheduled sweeps."
   - id: TASK-022-3
     title: "Tag each heavy-pipeline runner VM with its GitHub run at launch"
-    status: pending
-    claimed_by: null
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T00:30:00Z
     blocked_by: []
-    design: "launch_ephemeral_runners passes RUNNER_NAMES_FILE to launch-runner.sh, which appends the name of each VM that OCI accepted. A step with if: always() in the same job tags each named instance with github-run-id and github-run-attempt (read-modify-write of the freeform tags), also when some launches failed."
+    files:
+      - .github/workflows/_integration-pipeline.yml
+      - .github/scripts/test-ephemeral-run-tagging.sh
+      - .github/workflows/ci.yml
+    progress: "2026-10-08: the launch step passes RUNNER_NAMES_FILE, and the new step Tag launched VMs with this run (if: always()) tags each listed VM. The step accepts only names that match ^ci-eph-[A-Za-z0-9._-]+$, retries each VM 6 times at 10 s, and only warns when a VM stays untagged. test-ephemeral-run-tagging.sh extracts the step from the workflow and runs it against a stub oci CLI. A deliberate mutation that dropped the existing tags made the test fail. The Lint job of ci.yml now runs this test and the three EPIC-022 Function and deploy tests. All four pass in an ubuntu:24.04 container with mawk."
+    design: "launch_ephemeral_runners passes RUNNER_NAMES_FILE to launch-runner.sh, which appends the name of each VM that OCI accepted. A step with if: always() in the same job tags each named instance with github-run-id and github-run-key (run id and attempt, the key that merge-recovery-soak.yml already uses), with the read-modify-write and retry of the soak self-tag step, also when some launches failed or the launch step was cancelled. The step stays inline because the launch job holds the OCI secrets and checks out only system-integration."
     acceptance:
-      - "Every VM that a launch job creates carries github-run-id and github-run-attempt, including the created VMs of a partly failed launch."
+      - "Every VM that a launch job creates carries github-run-id and github-run-key, including the created VMs of a partly failed launch."
       - "A VM created after a step was cancelled and before it was tagged is left to the reaper (accepted residual)."
       - "No change to the system-integration repository is necessary."
   - id: TASK-022-4

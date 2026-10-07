@@ -340,6 +340,9 @@ jobs:
           # Register ephemeral runners on the base repo (where the run executes).
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
+          # launch-runner.sh appends the name of each VM that OCI accepted.
+          # The tag step below reads it, also after a failed or cancelled launch.
+          RUNNER_NAMES_FILE: ${{ runner.temp }}/ephemeral-runner-names
         run: |
           cd system-integration/ci/oci-runners
           # Launch in parallel; each script exits as soon as the OCI launch
@@ -384,6 +387,69 @@ jobs:
             exit 1
           fi
           echo "All 6 ephemeral runner VMs submitted."
+
+      # Tags every VM this run created with github-run-id and github-run-key
+      # (run id and attempt, the key merge-recovery-soak.yml also uses), so the
+      # end-of-run cleanup can find the VMs of this run without GitHub runner
+      # registrations (EPIC-022). always(): a failed or cancelled launch can
+      # still have created VMs. Same read-modify-write and retry as the soak
+      # self-tag step, because --freeform-tags replaces the whole map. A VM
+      # left untagged is not an error here: the reaper still removes it.
+      # .github/scripts/test-ephemeral-run-tagging.sh runs this block.
+      - name: Tag launched VMs with this run
+        if: always()
+        shell: bash -e {0}
+        env:
+          RUNNER_NAMES_FILE: ${{ runner.temp }}/ephemeral-runner-names
+        run: |
+          if [ ! -s "$RUNNER_NAMES_FILE" ]; then
+            echo "No VM was launched; nothing to tag."
+            exit 0
+          fi
+          . system-integration/ci/oci-runners/state.env
+          run_key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          untagged=0
+          while read -r name; do
+            if ! [[ "$name" =~ ^ci-eph-[A-Za-z0-9._-]+$ ]]; then
+              echo "::warning::skip unexpected runner name: $name"
+              continue
+            fi
+            tagged=""
+            for attempt in 1 2 3 4 5 6; do
+              iid="$(oci compute instance list -c "$COMP" --region "$REGION" --all \
+                --query "data[?\"display-name\"=='$name' && \"lifecycle-state\"!='TERMINATED'].id | [0]" \
+                --raw-output 2>/dev/null || true)"
+              case "$iid" in
+                ocid1.instance.*) ;;
+                *) sleep 10; continue ;;
+              esac
+              if ! existing="$(oci compute instance get --instance-id "$iid" --region "$REGION" \
+                   --query 'data."freeform-tags"' --raw-output 2>/dev/null)"; then
+                sleep 10
+                continue
+              fi
+              case "$existing" in ''|null) existing='{}' ;; esac
+              if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+                sleep 10
+                continue
+              fi
+              merged="$(jq -cn --argjson cur "$existing" --arg id "$GITHUB_RUN_ID" --arg key "$run_key" \
+                '$cur + {"github-run-id": $id, "github-run-key": $key}')"
+              if oci compute instance update --instance-id "$iid" --region "$REGION" \
+                   --force --freeform-tags "$merged" >/dev/null 2>&1; then
+                tagged=1
+                break
+              fi
+              sleep 10
+            done
+            if [ -n "$tagged" ]; then
+              echo "Tagged $name with github-run-key=$run_key"
+            else
+              echo "::warning::could not tag $name; the reaper removes it after its age limit"
+              untagged=$((untagged + 1))
+            fi
+          done < "$RUNNER_NAMES_FILE"
+          echo "tag step finished with $untagged untagged VM(s)"
 
       - name: Remove OCI credentials
         if: always()
