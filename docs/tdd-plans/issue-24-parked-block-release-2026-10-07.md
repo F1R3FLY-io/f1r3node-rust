@@ -108,7 +108,7 @@ behaviors:
     statement: "A recovery re-request for a dependency is counted apart from ordinary request retries"
     priority: should
     deep_module: false
-    done: false
+    done: true
     notes: "Counter block.requests.recovery. Today recovery and ordinary retries share block.requests.retries with no label."
     cycle_log:
       - date: 2026-10-07
@@ -119,6 +119,7 @@ behaviors:
           - casper/src/rust/engine/block_retriever.rs
           - casper/src/rust/metrics_constants.rs
           - casper/tests/sync/block_retriever_spec.rs
+        suite: "cargo test --release -p casper: every target passed (mod 1001 passed, 11 ignored; lib 500 passed; the other targets passed). clippy -D warnings clean for the casper lib and the mod test target. cargo fmt clean. Commit 36a3e9bd0 was made while this suite still ran."
         observations:
           - "block.requests.retries stays the total of all retries, so its meaning for existing dashboards does not change. Ordinary retries are retries minus recovery."
           - "The test uses metrics::set_default_local_recorder, because recover_dependency is async. A single-thread tokio test keeps the call on the thread that holds the recorder."
@@ -127,9 +128,26 @@ behaviors:
     statement: "A buffered block whose dependencies are all validated is released and processed, even when a stale parent link remains"
     priority: must
     deep_module: false
-    done: false
+    done: true
     notes: "Defect regression. Write the test first and confirm that it fails on the current code, where the block is dropped as AlreadyProcessed."
-    cycle_log: []
+    cycle_log:
+      - date: 2026-10-07
+        test: "casper --test mod sync::stale_buffer_link_spec::a_released_block_with_a_stale_parent_link_is_processed"
+        red: "left: AlreadyProcessed, right: Fresh. Node 1 validated A, then got B in its block store and a buffer link B -> A. The release scan offered B, and check_if_of_interest dropped it as AlreadyProcessed."
+        green: "New Casper query buffer_waits_on_dependency: true when the block has a buffered parent that is not in the DAG. The trait default returns buffer_contains, so stubs keep today's behavior. MultiParentCasperImpl checks the buffered parents against the DAG. check_if_of_interest uses the new query in place of buffer_contains."
+        files:
+          - casper/src/rust/blocks/block_processor.rs
+          - casper/src/rust/casper.rs
+          - casper/src/rust/engine/multi_parent_casper/block_admission.rs
+          - casper/src/rust/engine/multi_parent_casper/dispatch.rs
+          - casper/tests/sync/stale_buffer_link_spec.rs
+          - casper/tests/sync/mod.rs
+        suite: "cargo test --release -p casper: every target passed (mod 1002 passed, 11 ignored; lib 500 passed; the other targets passed). The 25 sync specs include recovery_purge_race_spec. clippy -D warnings clean for the casper lib and the mod test target. cargo fmt clean."
+        observations:
+          - "buffer_contains keeps its meaning. running.rs ignore_casper_message still uses it to skip hash broadcasts for blocks that the node holds."
+          - "recovery_purge_race_spec still passes: a duplicate copy of a block that waits on a missing parent stays AlreadyProcessed."
+          - "The resolver also treats an equivocating or invalid parent as available. The new query counts only DAG membership, so a block whose only unmet parent is invalid is still dropped, as before. This is no regression, and B6 or a later item can align the two predicates."
+          - "This cycle does not check how the stale link leaves the buffer after the block is processed. B6 prevents the link from being created."
   - id: B6
     statement: "A block whose dependency check races with the validation of its parent never keeps a stale relation to that parent"
     priority: must

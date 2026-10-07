@@ -386,8 +386,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         block: &BlockMessage,
     ) -> Result<OfInterestVerdict, CasperError> {
         // TODO casper.dag_contains does not take into account equivocation tracker
-        let already_processed =
-            casper.dag_contains(&block.block_hash) || casper.buffer_contains(&block.block_hash);
+        let already_processed = casper.dag_contains(&block.block_hash)
+            || casper.buffer_waits_on_dependency(&block.block_hash);
 
         let shard_of_interest = casper.get_approved_block().map(|approved_block| {
             approved_block
