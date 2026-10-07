@@ -2684,12 +2684,15 @@
       ]
     },
     "P5": {
-      "title": "P5 wave W2: the engine (Match.v, GenericRSpace.v and the engine headline of AgentReadCoverage.v), the bag (DataCollection.v, ContinuationCollection.v), the cell (CellDiscipline.v), the Array and Vector stores with the allocator (OuterStorage.v, VectorStore.v, HashMapStore.v, and the allocator race of CounterConflict.tla), the pure PathMap layer (PathMapPrefix.v), the P5 families (SpaceFactory.v), the routing of receive queries (SpaceRefs.v), and the stack with one fire count for each transaction (StackDiscipline.v, StackDiscipline.tla, decision 49)",
-      "design": "P5 design v3 (decision 48) and the W2 batch reports. R# are Rocq headlines and V# are TLA+ invariants. V1-V8 are the invariants of GenericRSpace.tla, V9-V10 the allocator invariants of CounterConflict.tla. The properties of the engine run the real bag, queue and cell disciplines and a probe of the set. witness_tests lists deterministic tests of the W2 code. V11-V15 are the invariants of StackDiscipline.tla, with TxnFiresBounded (decision 49).",
+      "title": "P5 wave W2: the engine (Match.v, GenericRSpace.v and the engine headline of AgentReadCoverage.v), the bag (DataCollection.v, ContinuationCollection.v), the cell (CellDiscipline.v), the Array and Vector stores with the allocator (OuterStorage.v, VectorStore.v, HashMapStore.v, and the allocator race of CounterConflict.tla), the pure PathMap layer (PathMapPrefix.v), the P5 families (SpaceFactory.v), the routing of receive queries (SpaceRefs.v), and the stack with one fire count for each transaction (StackDiscipline.v, StackDiscipline.tla, decision 49), and for P5 wave W3 the PathMap engine of Phase 1 (PathMapPrefix.v headlines R97-R107, PathMapPrefix.tla invariants V23-V25), and the joins of one space (JoinCascade.v R108-R124, the join rows R125-R126 of RecordEnvelope.v and CounterConflict.v, JoinCascade.tla V26-V34) with the set merges of CounterConflict.v (R127-R128)",
+      "design": "P5 design v3 (decision 48) and the W2 batch reports. R# are Rocq headlines and V# are TLA+ invariants. V1-V8 are the invariants of GenericRSpace.tla, V9-V10 the allocator invariants of CounterConflict.tla. The properties of the engine run the real bag, queue and cell disciplines and a probe of the set. witness_tests lists deterministic tests of the W2 code. V11-V15 are the invariants of StackDiscipline.tla, with TxnFiresBounded (decision 49). V23-V25 are the invariants of PathMapPrefix.tla. Six PathMap properties are pending, with no file yet: Phase 2 of the PathMap engine writes them in rholang/tests/reified_pathmap.rs, and that change adds the file and removes the status (decision 51). R108-R126 and V26-V34 are the rows of the JOINS-FORMAL batch (fragments/JOINS-FORMAL/invariant-map-rows.json), and the JOINS-TESTS batch writes their properties in rholang/tests/reified_join_props.rs. R127-R128 are F24 and F25 of the P5 design v2. The engine anchor prop_join_engine_agrees_with_drivers_without_joins covers the two search headlines, because on a join-free collection the engine must make the choices of the drivers.",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
         "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
         "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
         "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
         "rholang/tests/reified_array_vector.rs",
@@ -2699,13 +2702,15 @@
         "rholang/tests/reified_engine_props.rs",
         "rholang/tests/reified_families.rs",
         "rholang/tests/reified_hooks_p5.rs",
+        "rholang/tests/reified_join_props.rs",
+        "rholang/tests/reified_joins.rs",
         "rholang/tests/reified_merge_p5.rs",
         "rholang/tests/reified_pattern_enforcement.rs",
         "rholang/tests/reified_priority_queue.rs",
         "rholang/tests/reified_set.rs",
         "rholang/tests/reified_stack.rs"
       ],
-      "expected_properties": 106,
+      "expected_properties": 144,
       "formal": {
         "R1": {
           "kind": "rocq",
@@ -2957,6 +2962,7 @@
           "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
           "statement": "The FIPS example. A send on @[0,1,2] is a send on every prefix. @[0,1,2]!({|\"hi\"|}), @[0,1,2]!({|\"hello\"|}) and @[0,1,3]!({|\"there\"|}) received on @[0,1] bind {|[2,\"hi\"]|}, {|[2,\"hello\"]|} and {|[3,\"there\"]|}. @[0,1,2]!(42) binds [2, 42], and @[0,1,2,\"hi\"]!({||}) binds {|[2,\"hi\"]|}.",
           "tests": [
+            "prop_rerooted_datum_is_reroot_of_each_argument",
             "prop_unit_shift"
           ]
         },
@@ -3800,6 +3806,409 @@
           "statement": "No transaction makes more than Cap fires, its settles included (revision I-21), on every schedule.",
           "tests": [
             "prop_pq_txn_fires_bounded_at_the_cap"
+          ]
+        },
+        "R97": {
+          "kind": "rocq",
+          "name": "marker_record_roundtrip",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "The strict decoder of a path marker inverts its encoder, the encoder is injective, and the tag of a marker is the record tag of the kind I.",
+          "tests": [
+            "prop_marker_record_roundtrip"
+          ]
+        },
+        "R98": {
+          "kind": "rocq",
+          "name": "vehicle_carries_payload",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "The vehicle of a datum on a prefix is the marker of the datum on that prefix followed by the payload, so its introduction bytes cover the payload (decision 40, Q3).",
+          "tests": [
+            "prop_vehicle_carries_payload"
+          ]
+        },
+        "R99": {
+          "kind": "rocq",
+          "name": "path_element_rules",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "A path of more than 64 elements fails with PathTooDeep before the element scan, a PathMap or a zipper at any depth fails with UnsupportedPathElement, and the prefixes of an accepted path are closed and give at most 65 markers.",
+          "tests": [
+            "prop_path_element_rules"
+          ]
+        },
+        "R100": {
+          "kind": "rocq",
+          "name": "delivery_vehicle_single_channel",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "Every event of a PathMap delivery is single-channel: the delivery COMM is on the index channel of the waiter, every retire is a single-channel K_retire, and the vehicle is never stored.",
+          "tests": [
+            "prop_pathmap_delivery_is_single_channel"
+          ]
+        },
+        "R101": {
+          "kind": "rocq",
+          "name": "prefix_contact_anchored",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "Every prefix contact of a stored datum and a waiter meets on the index channel of the prefix, because the datum has a marker there.",
+          "tests": [
+            "prop_candidates_cover_the_prefix_in_key_order"
+          ]
+        },
+        "R102": {
+          "kind": "rocq",
+          "name": "peek_restores_delivered_marker",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "Under Rule E the second send of a peeked datum is offered most specific first, and it either restores the delivered marker with its identity or spends the datum.",
+          "tests": [
+            "prop_marker_invariant_preserved",
+            "prop_waiter_prefixes_are_most_specific_first"
+          ]
+        },
+        "R103": {
+          "kind": "rocq",
+          "name": "no_match_remains",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "The scan plans on prefixes leave no waiter without a guard that a stored datum under its prefix matches.",
+          "tests": [
+            "prop_candidates_cover_the_prefix_in_key_order",
+            "prop_pathmap_no_match_remains_any_schedule",
+            "prop_waiter_prefixes_are_most_specific_first"
+          ]
+        },
+        "R104": {
+          "kind": "rocq",
+          "name": "marker_invariant_preserved",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "Every staging and every plan keeps the marker invariant: a stored datum on p has exactly one marker on I(q) for each prefix q of p, and no other marker exists.",
+          "tests": [
+            "prop_marker_invariant_preserved"
+          ]
+        },
+        "R105": {
+          "kind": "rocq",
+          "name": "heads_no_match",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "On head-only disciplines over prefixes, the changed prefixes are covered, and a cascade ends with no fireable head.",
+          "tests": [
+            "prop_pathmap_head_cascade_leaves_no_fireable_head"
+          ]
+        },
+        "R106": {
+          "kind": "rocq",
+          "name": "token_ord_reentry",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "The token gives distinct orders, a re-issued persistent operation keeps its first-round order, and a re-entry meets no tie (decisions 31 and 43).",
+          "tests": [
+            "prop_pathmap_token_orders_reenter_at_their_place"
+          ]
+        },
+        "R107": {
+          "kind": "rocq",
+          "name": "prefix_scan_trace_covered",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "The prefix scan reserves each unit of work before it reads, and the outcome after the commit reads nothing that the scan did not reserve (decision 42).",
+          "tests": [
+            "prop_pathmap_reservation_cut_rejects_without_effect"
+          ]
+        },
+        "V23": {
+          "kind": "tla",
+          "name": "NoMatchRemains",
+          "file": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+          "statement": "At every quiescent state of the PathMap bag model, no waiter without a guard matches a datum stored under its prefix.",
+          "tests": [
+            "prop_candidates_cover_the_prefix_in_key_order",
+            "prop_pathmap_no_match_remains_any_schedule",
+            "prop_waiter_prefixes_are_most_specific_first"
+          ]
+        },
+        "V24": {
+          "kind": "tla",
+          "name": "MarkerCount",
+          "file": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+          "statement": "Every stored datum has exactly one marker on the index channel of each prefix of its path, and every marker belongs to a stored datum.",
+          "tests": [
+            "prop_marker_invariant_preserved"
+          ]
+        },
+        "V25": {
+          "kind": "tla",
+          "name": "MergeDetectsPrefixContact",
+          "file": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+          "statement": "When two branches put a datum and a waiter on a path and a prefix of it, merge check #2 sees the contact on the shared index channel.",
+          "tests": [
+            "prop_pathmap_merge_detects_prefix_contact"
+          ]
+        },
+        "R108": {
+          "kind": "rocq",
+          "name": "join_search_is_head_greedy",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "The consume-side search of a join is GREEDY over the lane-visible windows in group order (HEAD's greedy, decision 37): sound, and the receive fires exactly when GREEDY succeeds and the guard admits the values in bind order once.",
+          "tests": [
+            "prop_join_engine_agrees_with_drivers_without_joins",
+            "prop_join_search_is_head_greedy"
+          ]
+        },
+        "R109": {
+          "kind": "rocq",
+          "name": "join_produce_search_agrees_with_head",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "When GREEDY on the state with x stored binds x at p*, SEARCH-PRODUCE completes at a position p <= p* with that assignment at p*, and when HEAD's greedy (x at index 0) binds x both fire the same assignment.",
+          "tests": [
+            "prop_join_engine_agrees_with_drivers_without_joins",
+            "prop_join_produce_search_agrees_with_head"
+          ]
+        },
+        "R110": {
+          "kind": "rocq",
+          "name": "join_incoming_binds_once",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "Every produce-side join fire binds its incoming record at exactly one position, after at most m_W(c_x) attempts (decision 28).",
+          "tests": [
+            "prop_join_incoming_binds_once"
+          ]
+        },
+        "R111": {
+          "kind": "rocq",
+          "name": "join_fires_heads_only",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "Every fire of the join engine (OFFER, RECEIVE, the cascade) is at the head of each lane of every collection of its group and binds records of its windows.",
+          "tests": [
+            "prop_join_fires_heads_only"
+          ]
+        },
+        "R112": {
+          "kind": "rocq",
+          "name": "join_repeated_channel_distinct_records",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "The binds of one fire bind pairwise distinct records (distinct classes for a set), persistent records included.",
+          "tests": [
+            "prop_join_repeated_channel_distinct_records"
+          ]
+        },
+        "R113": {
+          "kind": "rocq",
+          "name": "join_set_bind_retires_class",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "After a set fire whose waiter does not peek (a produce-side, consume-side or cascade fire), no non-persistent member of a bound class stays stored, and a peek fire retires nothing.",
+          "tests": [
+            "prop_join_set_bind_retires_class"
+          ]
+        },
+        "R114": {
+          "kind": "rocq",
+          "name": "cascade_terminates",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "Each step of DRAIN-AND-CASCADE that goes on lowers mu lexicographically or stops, also when the persistent element of the operation is a pending second send (DV-3), and a drain that starts after f fires stages at most cap - f fires.",
+          "tests": [
+            "prop_cascade_terminates_any_schedule"
+          ]
+        },
+        "R115": {
+          "kind": "rocq",
+          "name": "join_txn_fires_bounded",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "The settle before the plan, the plan, the second sends and the cascade share one fire count (decision 49): a transaction makes at most FIRE_ROUND_CAP fires, and a settle job starts at 0.",
+          "tests": [
+            "prop_join_txn_fires_bounded_at_the_cap"
+          ]
+        },
+        "R116": {
+          "kind": "rocq",
+          "name": "cascade_restores_inv",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "The head-only disciplines (decision 11) and the set (decision 50): every fireable waiter at the end of a transaction has a dirty collection (CI), and a transaction with no stop ends with no work and INV_head (no waiter is fireable, guarded waiters included). Bag: INV_scan holds at the end of every transaction. Without the set cascade, a class move breaks INV_scan (set_join_class_shift_breaks_inv_scan).",
+          "tests": [
+            "prop_cascade_restores_inv_any_schedule"
+          ]
+        },
+        "R117": {
+          "kind": "rocq",
+          "name": "cascade_order_independent",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "Single-head disciplines: two fireable waiters that do not peek have disjoint groups, each stays fireable after the fire of the other, and the two fires commute.",
+          "tests": [
+            "prop_cascade_order_independent"
+          ]
+        },
+        "R118": {
+          "kind": "rocq",
+          "name": "lift_reoffer_equals_direct_comm",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "Lift and re-offer leave the view of one direct COMM of the stored pair and add only the K_lift events after the bumps of TOUCH, and the K_retire events of a set fire that does not peek (decision 50).",
+          "tests": [
+            "prop_lift_reoffer_equals_direct_comm"
+          ]
+        },
+        "R119": {
+          "kind": "rocq",
+          "name": "cascade_bumps_touched_counters",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "For a discipline with a counter, every staging of a transaction on a collection follows the one bump of its counter in that transaction.",
+          "tests": [
+            "prop_cascade_bumps_touched_counters"
+          ]
+        },
+        "R120": {
+          "kind": "rocq",
+          "name": "bind_permutation_restores_order",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "The canonical group order is a function of the bind multiset (FR-1'), and the v2 slots put the receipt results back in bind order for every permutation.",
+          "tests": [
+            "prop_bind_permutation_restores_order"
+          ]
+        },
+        "R121": {
+          "kind": "rocq",
+          "name": "plan_then_lock_stable",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "Every staging of RUN-JOIN lies in the lock keys of the join closure; with the footprint premise PREPARE runs the plan of the state once and its lock check passes.",
+          "tests": [
+            "prop_plan_then_lock_covers_every_staged_channel"
+          ]
+        },
+        "R122": {
+          "kind": "rocq",
+          "name": "join_reissue_keeps_bind_ords",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "A re-issued persistent JoinOp carries its first-round ords (one for each bind), and each round bumps every own counter (decision 43).",
+          "tests": [
+            "prop_join_reissue_keeps_bind_ords"
+          ]
+        },
+        "R123": {
+          "kind": "rocq",
+          "name": "peek_join_restores_stored_candidates",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "A peek join fire sends every removed non-persistent record again through OFFER, in receipt order, with its own identity and authority, and the element in flight also when it is persistent (decision 30, DV-3). No record is lost, also across a stop. At a stop the element of the operation returns to its operation, and a stop that owes nothing re-issues its resume only (DV-5).",
+          "tests": [
+            "prop_peek_join_restores_stored_candidates"
+          ]
+        },
+        "R124": {
+          "kind": "rocq",
+          "name": "greedy_join_can_miss_assignment",
+          "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+          "statement": "A computed negative result: on a repeated channel, GREEDY parks a waiter although an assignment exists (decision 37 until P12).",
+          "tests": [
+            "prop_greedy_join_limit"
+          ]
+        },
+        "R125": {
+          "kind": "rocq",
+          "name": "continuation_v2_roundtrip",
+          "file": "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+          "statement": "The version 2 continuation record of a join waiter decodes back to its slots and its continuation; every version 1 decoder rejects it, and the version 2 decoder rejects the version 1 records (each compares the whole tag).",
+          "tests": [
+            "prop_continuation_v2_roundtrip"
+          ]
+        },
+        "R126": {
+          "kind": "rocq",
+          "name": "join_ops_race_on_every_counter",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "A join step over ks and any step on a collection k of ks, from one pre-state, race in check #1 on the counter of k, or on the space counter when k is new.",
+          "tests": [
+            "prop_join_ops_race_on_every_counter"
+          ]
+        },
+        "V26": {
+          "kind": "tla",
+          "name": "QuiescentNoPendingMatch",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "With no re-issued operation and no settle job outstanding, no waiter is fireable (queue, stack and set) and no waiter without a guard has a greedy match (bag).",
+          "tests": [
+            "prop_quiescent_no_pending_match_any_schedule"
+          ]
+        },
+        "V27": {
+          "kind": "tla",
+          "name": "JoinFiresHeadsOnly",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "Every fire of the join engine is at the head of each collection of its group.",
+          "tests": [
+            "prop_join_fires_heads_only"
+          ]
+        },
+        "V28": {
+          "kind": "tla",
+          "name": "DistinctRecordsPerBind",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "The stored records of one fire are pairwise distinct, and of distinct classes on a set.",
+          "tests": [
+            "prop_join_repeated_channel_distinct_records"
+          ]
+        },
+        "V29": {
+          "kind": "tla",
+          "name": "IncomingBoundOnce",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "A produce-side fire binds its incoming record at exactly one position.",
+          "tests": [
+            "prop_join_incoming_binds_once"
+          ]
+        },
+        "V30": {
+          "kind": "tla",
+          "name": "CascadeMeasureDecreases",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "Each drain step that goes on lowers mu or stops.",
+          "tests": [
+            "prop_cascade_measure_decreases"
+          ]
+        },
+        "V31": {
+          "kind": "tla",
+          "name": "TxnFiresBounded",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "No join transaction makes more than Cap fires.",
+          "tests": [
+            "prop_join_txn_fires_bounded_at_the_cap"
+          ]
+        },
+        "V32": {
+          "kind": "tla",
+          "name": "NoRecordLost",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "Every record that a transaction holds is stored, spent by a fire of a waiter that does not peek or by a retirement, or pending in an outstanding settle job.",
+          "tests": [
+            "prop_no_record_lost_any_schedule"
+          ]
+        },
+        "V33": {
+          "kind": "tla",
+          "name": "ReissueKeepsBindOrds",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "A re-issued persistent operation carries the ords of its first round, and another re-issued operation carries none.",
+          "tests": [
+            "prop_join_reissue_keeps_bind_ords"
+          ]
+        },
+        "V34": {
+          "kind": "tla",
+          "name": "TouchedCountersBumped",
+          "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "statement": "Each staging of a join transaction on a collection follows a bump of its counter in the same transaction (queue, stack).",
+          "tests": [
+            "prop_cascade_bumps_touched_counters"
+          ]
+        },
+        "R127": {
+          "kind": "rocq",
+          "name": "set_retirements_race",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Two branches from one pre-state that each retire one stored member of a set, by the class fire over [D; n] or by a K_retire COMM, race in check #1 on the channel of the member (F24 of the P5 design v2).",
+          "tests": [
+            "prop_set_retirements_race"
+          ]
+        },
+        "R128": {
+          "kind": "rocq",
+          "name": "unordered_set_writes_commute",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Writes to set collections merge with no race, and every view of a set that ignores the order of its records, as the class view in the canonical order of DR-75 does, gives the merged records the view of both serial orders (F25 of the P5 design v2).",
+          "tests": [
+            "prop_unordered_set_writes_commute"
           ]
         }
       },
@@ -4695,6 +5104,324 @@
           "covers": [
             "R95",
             "R96"
+          ]
+        },
+        {
+          "number": 107,
+          "test": "prop_marker_record_roundtrip",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+          "covers": [
+            "R97"
+          ]
+        },
+        {
+          "number": 108,
+          "test": "prop_vehicle_carries_payload",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+          "covers": [
+            "R98"
+          ]
+        },
+        {
+          "number": 109,
+          "test": "prop_path_element_rules",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R99"
+          ]
+        },
+        {
+          "number": 110,
+          "test": "prop_candidates_cover_the_prefix_in_key_order",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R101",
+            "R103",
+            "V23"
+          ]
+        },
+        {
+          "number": 111,
+          "test": "prop_marker_invariant_preserved",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R102",
+            "R104",
+            "V24"
+          ]
+        },
+        {
+          "number": 112,
+          "test": "prop_waiter_prefixes_are_most_specific_first",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R102",
+            "R103",
+            "V23"
+          ]
+        },
+        {
+          "number": 113,
+          "test": "prop_rerooted_datum_is_reroot_of_each_argument",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R27"
+          ]
+        },
+        {
+          "number": 114,
+          "test": "prop_pathmap_delivery_is_single_channel",
+          "covers": [
+            "R100"
+          ],
+          "status": "pending"
+        },
+        {
+          "number": 115,
+          "test": "prop_pathmap_no_match_remains_any_schedule",
+          "covers": [
+            "R103",
+            "V23"
+          ],
+          "status": "pending"
+        },
+        {
+          "number": 116,
+          "test": "prop_pathmap_head_cascade_leaves_no_fireable_head",
+          "covers": [
+            "R105"
+          ],
+          "status": "pending"
+        },
+        {
+          "number": 117,
+          "test": "prop_pathmap_token_orders_reenter_at_their_place",
+          "covers": [
+            "R106"
+          ],
+          "status": "pending"
+        },
+        {
+          "number": 118,
+          "test": "prop_pathmap_reservation_cut_rejects_without_effect",
+          "covers": [
+            "R107"
+          ],
+          "status": "pending"
+        },
+        {
+          "number": 119,
+          "test": "prop_pathmap_merge_detects_prefix_contact",
+          "covers": [
+            "V25"
+          ],
+          "status": "pending"
+        },
+        {
+          "number": 120,
+          "test": "prop_bind_permutation_restores_order",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R120"
+          ]
+        },
+        {
+          "number": 121,
+          "test": "prop_cascade_bumps_touched_counters",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R119",
+            "V34"
+          ]
+        },
+        {
+          "number": 122,
+          "test": "prop_cascade_measure_decreases",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "V30"
+          ]
+        },
+        {
+          "number": 123,
+          "test": "prop_cascade_order_independent",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R117"
+          ]
+        },
+        {
+          "number": 124,
+          "test": "prop_cascade_restores_inv_any_schedule",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R116"
+          ]
+        },
+        {
+          "number": 125,
+          "test": "prop_cascade_terminates_any_schedule",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R114"
+          ]
+        },
+        {
+          "number": 126,
+          "test": "prop_continuation_v2_roundtrip",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R125"
+          ]
+        },
+        {
+          "number": 127,
+          "test": "prop_greedy_join_limit",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R124"
+          ]
+        },
+        {
+          "number": 128,
+          "test": "prop_join_engine_agrees_with_drivers_without_joins",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R108",
+            "R109"
+          ]
+        },
+        {
+          "number": 129,
+          "test": "prop_join_fires_heads_only",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R111",
+            "V27"
+          ]
+        },
+        {
+          "number": 130,
+          "test": "prop_join_incoming_binds_once",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R110",
+            "V29"
+          ]
+        },
+        {
+          "number": 131,
+          "test": "prop_join_ops_race_on_every_counter",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R126"
+          ]
+        },
+        {
+          "number": 132,
+          "test": "prop_join_produce_search_agrees_with_head",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R109"
+          ]
+        },
+        {
+          "number": 133,
+          "test": "prop_join_reissue_keeps_bind_ords",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R122",
+            "V33"
+          ]
+        },
+        {
+          "number": 134,
+          "test": "prop_join_repeated_channel_distinct_records",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R112",
+            "V28"
+          ]
+        },
+        {
+          "number": 135,
+          "test": "prop_join_search_is_head_greedy",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R108"
+          ]
+        },
+        {
+          "number": 136,
+          "test": "prop_join_set_bind_retires_class",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R113"
+          ]
+        },
+        {
+          "number": 137,
+          "test": "prop_join_txn_fires_bounded_at_the_cap",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R115",
+            "V31"
+          ]
+        },
+        {
+          "number": 138,
+          "test": "prop_lift_reoffer_equals_direct_comm",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R118"
+          ]
+        },
+        {
+          "number": 139,
+          "test": "prop_no_record_lost_any_schedule",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "V32"
+          ]
+        },
+        {
+          "number": 140,
+          "test": "prop_peek_join_restores_stored_candidates",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R123"
+          ]
+        },
+        {
+          "number": 141,
+          "test": "prop_plan_then_lock_covers_every_staged_channel",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "R121"
+          ]
+        },
+        {
+          "number": 142,
+          "test": "prop_quiescent_no_pending_match_any_schedule",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "V26"
+          ]
+        },
+        {
+          "number": 143,
+          "test": "prop_set_retirements_race",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R127"
+          ]
+        },
+        {
+          "number": 144,
+          "test": "prop_unordered_set_writes_commute",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R128"
           ]
         }
       ],
@@ -5597,6 +6324,295 @@
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
             "R93"
+          ]
+        },
+        {
+          "test": "the_marker_decoder_is_strict",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+          "covers": [
+            "R97"
+          ]
+        },
+        {
+          "test": "the_marker_tag_is_a_record_tag_of_the_kind_i",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+          "covers": [
+            "R97"
+          ]
+        },
+        {
+          "test": "a_marker_decodes_to_its_source_and_suffix",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+          "covers": [
+            "R97"
+          ]
+        },
+        {
+          "test": "a_vehicle_is_the_marker_followed_by_the_payload",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+          "covers": [
+            "R98"
+          ]
+        },
+        {
+          "test": "check_key_follows_the_path_rules",
+          "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+          "covers": [
+            "R99"
+          ]
+        },
+        {
+          "test": "a_removal_retires_the_record_and_every_other_marker",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R100"
+          ]
+        },
+        {
+          "test": "the_index_channels_of_the_model_are_the_store_channels",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R100"
+          ]
+        },
+        {
+          "test": "the_path_channels_are_storage_channels_of_the_space",
+          "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+          "covers": [
+            "R101",
+            "V25"
+          ]
+        },
+        {
+          "test": "a_broken_marker_invariant_is_inconsistent",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R104"
+          ]
+        },
+        {
+          "test": "head_orders_take_the_heads_of_a_path",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R105"
+          ]
+        },
+        {
+          "test": "the_token_is_the_space_counter_and_the_counter_of_every_path",
+          "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+          "covers": [
+            "R106"
+          ]
+        },
+        {
+          "test": "the_planner_reserves_its_work",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+          "covers": [
+            "R107"
+          ]
+        },
+        {
+          "test": "metered_forms_equal_the_plain_forms_and_reject_a_cut_budget",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+          "covers": [
+            "R107"
+          ]
+        },
+        {
+          "test": "the_metered_builders_reserve_their_work",
+          "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+          "covers": [
+            "R107"
+          ]
+        },
+        {
+          "test": "pathmap_segment_codec_matches_epm1_vectors",
+          "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+          "covers": [
+            "R23"
+          ]
+        },
+        {
+          "test": "marker_random_states_differ_by_depth_and_follow_the_path_marker_purpose",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+          "covers": [],
+          "unmodeled": "The model names a marker by its datum and its prefix. The derivation of its random state is a fact of the Rust code, and this test checks it."
+        },
+        {
+          "test": "space_joins_queue_heads_only",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R111"
+          ]
+        },
+        {
+          "test": "space_joins_stack_heads_only",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R111"
+          ]
+        },
+        {
+          "test": "space_joins_pq_heads_only",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R111"
+          ]
+        },
+        {
+          "test": "space_joins_incoming_binds_once",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R110"
+          ]
+        },
+        {
+          "test": "space_joins_repeated_channel_distinct_records",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R112"
+          ]
+        },
+        {
+          "test": "space_joins_guard_checked_once_after_all_binds",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R108"
+          ]
+        },
+        {
+          "test": "space_joins_bag_greedy",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R124"
+          ]
+        },
+        {
+          "test": "space_joins_set_bind_retires_class",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R113"
+          ]
+        },
+        {
+          "test": "space_joins_cascade_after_produce",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R116"
+          ]
+        },
+        {
+          "test": "space_joins_cascade_after_consume",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R116"
+          ]
+        },
+        {
+          "test": "space_joins_set_join_cascade_fires_exposed_waiter",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R116"
+          ]
+        },
+        {
+          "test": "space_joins_cascade_order_independent",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R117"
+          ]
+        },
+        {
+          "test": "space_joins_cascade_round_cap_reissues_settle",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R115"
+          ]
+        },
+        {
+          "test": "space_joins_txn_fires_bounded_at_the_cap",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R115",
+            "V31"
+          ]
+        },
+        {
+          "test": "space_joins_settle_before_cap_resumes_the_operation",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R115"
+          ]
+        },
+        {
+          "test": "space_joins_bind_order_restored_for_body",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R120"
+          ]
+        },
+        {
+          "test": "space_joins_multi_ord_envelope_roundtrip",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R125"
+          ]
+        },
+        {
+          "test": "space_joins_escalation_relocks_once",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R121"
+          ]
+        },
+        {
+          "test": "space_joins_reissued_join_keeps_bind_ords",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R122"
+          ]
+        },
+        {
+          "test": "space_joins_peek_join_restores_stored_candidates",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R123"
+          ]
+        },
+        {
+          "test": "space_joins_cap_carries_pending_second_sends",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R123",
+            "V32"
+          ]
+        },
+        {
+          "test": "space_joins_produce_side_peek_reproduces_in_receipt_order",
+          "file": "rholang/tests/reified_joins.rs",
+          "covers": [
+            "R123"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_join_ops_race_all_counters",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R126"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_set_retirements_race",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R127"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_set_writes_merge",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R128"
           ]
         }
       ]

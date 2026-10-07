@@ -3532,6 +3532,7 @@ fn kept_place(reissue: &SpaceReissue) -> Option<(Side, i64)> {
         SpaceOp::Produce(op) => op.reissued_ord.map(|ord| (Side::Data, ord)),
         SpaceOp::Consume(op) => op.reissued_ord.map(|ord| (Side::Waiters, ord)),
         SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
+        SpaceOp::Join(_) => unreachable!("the queue programs of this suite issue no join"),
     }
 }
 
@@ -3757,6 +3758,7 @@ fn step_ord(record: &RunRecord) -> i64 {
         SpaceOp::Produce(op) => op.reissued_ord,
         SpaceOp::Consume(op) => op.reissued_ord,
         SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
+        SpaceOp::Join(_) => unreachable!("the queue programs of this suite issue no join"),
     };
     kept.unwrap_or(record.bumped)
 }
@@ -3767,6 +3769,7 @@ fn persistent_op(op: &SpaceOp) -> bool {
         SpaceOp::Produce(op) => op.persistent,
         SpaceOp::Consume(op) => op.persistent,
         SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
+        SpaceOp::Join(_) => unreachable!("the queue programs of this suite issue no join"),
     }
 }
 
@@ -3811,6 +3814,7 @@ async fn queue_reissue_keeps_first_round_ord_case(
                 SpaceOp::Produce(_) => record.after.records.iter().any(|entry| entry.ord == ord),
                 SpaceOp::Consume(_) => record.after.waiters.iter().any(|entry| entry.ord == ord),
                 SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
+                SpaceOp::Join(_) => unreachable!("the queue programs of this suite issue no join"),
             };
             prop_assert!(stored, "the element of order {} is not at its place", ord);
         }
@@ -4143,6 +4147,7 @@ async fn queue_reentry_head_blocks_case(
             SpaceOp::Produce(op) => op.reissued_ord,
             SpaceOp::Consume(op) => op.reissued_ord,
             SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
+            SpaceOp::Join(_) => unreachable!("the queue programs of this suite issue no join"),
         };
         let Some(ord) = kept else {
             continue;
@@ -4245,6 +4250,7 @@ async fn queue_reentry_permutation_invariant_case(
             ..consume
         }),
         SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
+        SpaceOp::Join(_) => unreachable!("the queue programs of this suite issue no join"),
     };
     let first_outcome = first.run_space_op(reentry(&first)).await;
     let second_outcome = second.run_space_op(reentry(&second)).await;
@@ -8683,6 +8689,7 @@ async fn prepare_commit_atomic_case(state: QueueState, op: QueueOp) -> Result<()
                     QueueAgent::default().prepare_consume(&env, consume).await
                 }
                 SpaceOp::Settle(settle) => QueueAgent::default().prepare_settle(&env, settle).await,
+                SpaceOp::Join(join) => QueueAgent::default().prepare_join(&env, join).await,
             }
         }
     };

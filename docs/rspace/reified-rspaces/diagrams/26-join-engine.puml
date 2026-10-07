@@ -1,0 +1,121 @@
+' 26 Join engine: one transaction of the join engine of the native spaces.
+'
+' Source of Figure N12.4 in ../design.md (section N12). The figure restates
+' classify, join_scope and run_join of
+' rholang/src/rust/interpreter/spaces/join.rs, prepare_collection_op and
+' begin_join of spaces/generic.rs, and the methods run, drain_and_cascade,
+' next_fire, lift_and_reoffer and commit of the engine (decisions 29, 43, 45,
+' 49 and 50). It adds no new fact.
+'
+' Reading order:
+'   1. PREPARE classifies the operation. An operation that no join reaches
+'      keeps the driver of its collection.
+'   2. The scope closes the collections of the operation under their join
+'      groups, and the transaction locks the whole scope, with at most one
+'      escalation.
+'   3. RUN-JOIN bumps the own collections, settles before the plan when the
+'      discipline cascades, and opens the plan only below the cap.
+'   4. DRAIN-AND-CASCADE offers the owed second sends and fires the exposed
+'      waiters, on the one fire count of the transaction.
+'   5. COMMIT re-issues a settle job when the transaction stops with owed
+'      work, and otherwise the operation when its element is still in flight.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 26-join-engine.puml   Check: ./render.sh --check
+
+@startuml 26-join-engine
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title One transaction of the join engine (decisions 29, 49 and 50)
+
+start
+partition "PREPARE: plan, then lock" {
+  :begin over the own collections
+  read the config once; <<$rrs_substrate>>
+  if (CLASSIFY: a JoinOp, a settle job with a cascade,
+  or a collection with a join group of other channels?) then (no)
+    :run_with: the driver of one collection
+    (its reservations equal the P4 join check); <<$rrs_agent>>
+    stop
+  else (yes)
+  endif
+  :JOIN-SCOPE: check each bind with the store and the discipline
+  close the collections under their join groups; <<$rrs_agent>>
+  if (the open transaction covers the scope?) then (no)
+    :drop it, nothing is staged
+    begin once over the lock keys of the scope; <<$rrs_substrate>>
+  else (yes)
+  endif
+}
+partition "RUN-JOIN" {
+  :TOUCH each own collection: one bump each (decision 31)
+  take the orders, or the carried orders (decision 43); <<$rrs_storage>>
+  if (a settle job?) then (yes)
+    :put its pending second sends on the work stack
+    mark every collection of the scope dirty; <<$rrs_agent>>
+  else (no)
+    if (the discipline cascades?
+    queue, stack, cell, priority queue, set) then (yes)
+      :settle before the plan:
+      DRAIN-AND-CASCADE over the whole scope; <<$rrs_agent>>
+    else (no, the bag)
+    endif
+    if (stopped, or the count is FIRE_ROUND_CAP?) then (yes)
+      :COMMIT the fires of the settle
+      the operation re-issues with its orders; <<$rrs_reject>>
+      stop
+    else (no)
+    endif
+    :the plan: OFFER the datum, or RECEIVE the waiter
+    windows, greedy search, the guard once
+    a peek fire pushes its second sends; <<$rrs_agent>>
+  endif
+}
+partition "DRAIN-AND-CASCADE" {
+  while (a second send on the stack, or a fireable waiter\non a dirty collection of a cascading discipline?) is (yes)
+    if (the count is FIRE_ROUND_CAP?) then (yes)
+      :stop: carry the rest; <<$rrs_reject>>
+      break
+    else (no)
+    endif
+    if (a second send on the stack?) then (yes)
+      :pop it and OFFER it
+      receipt order, its own identity (Rule E); <<$rrs_agent>>
+    else (no)
+      :NEXT-FIRE: the least dirty collection
+      its head, its oldest lane head, or its first set waiter; <<$rrs_agent>>
+      :LIFT-AND-REOFFER: lift the first non-persistent bound record
+      K_lift keyed by counter and step, or by source hash on a set
+      offer it to the waiter, retire the bound set classes; <<$rrs_storage>>
+    endif
+  endwhile (no)
+}
+partition "COMMIT" {
+  if (stopped with owed work?) then (yes)
+    :commit the staged prefix
+    re-issue one settle job: pending sends, dirty seeds, resume; <<$rrs_reject>>
+  else (no)
+    :commit
+    re-issue the operation only when its element is in flight; <<$rrs_effect>>
+  endif
+}
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_substrate>  | the substrate: transactions, lock keys, staging |
+|<$rrs_agent>      | the join engine: classification, searches, fires |
+|<$rrs_storage>    | counters and records of the collections |
+|<$rrs_reject>     | a stop: the transaction commits and re-issues |
+|<$rrs_effect>     | a quiescent commit |
+endlegend
+@enduml

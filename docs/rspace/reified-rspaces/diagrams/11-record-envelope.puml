@@ -1,0 +1,108 @@
+' 11 Record envelope: the space-owned envelopes of the records of a native space.
+'
+' Source of Figure N12.8 in ../design.md (section N12). The figure restates
+' the module documentation and the encoders of
+' rholang/src/rust/interpreter/spaces/record.rs: the version 1 envelopes of
+' a datum, a continuation, a counter and a config (decision M-2), the
+' priority-queue slots (decision 38), and the version 2 envelope of a join
+' continuation (decision 29). It adds no new fact.
+'
+' Reading order:
+'   1. Every record starts with a list whose first element is its tag.
+'   2. A datum keeps its payload after the envelope, and the host fields of
+'      the datum stay outside the envelope.
+'   3. A continuation of one bind keeps version 1. A join waiter keeps
+'      version 2, with one slot for each position of its canonical group.
+'   4. A fire of a join waiter puts its results back into bind order by the
+'      bind index of each slot.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 11-record-envelope.puml   Check: ./render.sh --check
+
+@startuml 11-record-envelope
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam rectangle {
+  BorderColor $rrs_relation
+  RoundCorner 8
+}
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.4
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+left to right direction
+title Space records: the envelopes of version 1 and the join continuation of version 2
+
+rectangle TAG $rrs_tag [
+**Record tag:** a GByteArray of four bytes
+<latex>\mathit{tag} = [\mathtt{0xE0},\ \mathtt{0x52},\ \mathit{kind},\ \mathit{version}]</latex>
+kind: D datum, K continuation, S counter, C config
+version 1 for every record, version 2 for a join waiter
+]
+
+rectangle DATUM $rrs_storage [
+**Datum record, version 1**, on <latex>D(\mathit{sid}, k)</latex>
+|= par |= content |
+| 0 | <latex>\mathrm{EList}[\mathit{tag}_D,\ \mathrm{GInt}(\mathit{ord}),\ \mathit{priority},\ \mathit{embedding}]</latex> |
+| 1 to n | the payload of the send |
+The random state, the cost authority and the cost stack
+of the send stay outside the envelope.
+A priority queue puts the level of the record in its priority slot.
+]
+
+rectangle META $rrs_storage [
+**Counter and config records, version 1**
+|= record |= pars |
+| counter on <latex>S(\mathit{sid})</latex> or <latex>S(\mathit{sid}, k)</latex> | <latex>[\mathrm{EList}[\mathit{tag}_S],\ \mathrm{GInt}(n)]</latex> |
+| config on <latex>C(\mathit{sid})</latex> | <latex>[\mathrm{EList}[\mathit{tag}_C],\ \mathit{config\ map}]</latex> |
+No space datum is a single number (decision M-2).
+]
+
+rectangle K1 $rrs_storage [
+**Continuation of one bind, version 1**, on <latex>[D(\mathit{sid}, k)]</latex>
+<latex>\mathrm{ParBody.body} = \mathrm{Par}\{\mathrm{exprs}: [\mathrm{EList}[\mathit{tag}_K,\ \mathrm{GInt}(\mathit{ord}),\ \mathit{policy},\ \mathit{body}]]\}</latex>
+policy: Nil, or the lane of a priority queue
+The random state, the guard and the cost authority stay outside.
+]
+
+rectangle K2 $rrs_storage [
+**Continuation of a join, version 2**, on its canonical group <latex>G = [c_0, \dots, c_{n-1}]</latex>
+<latex>\mathrm{ParBody.body} = \mathrm{Par}\{\mathrm{exprs}: [\mathrm{EList}[\mathit{tag}_{K2},\ \mathrm{EList}[s_0, \dots, s_{n-1}],\ \mathit{body}]]\}</latex>
+|= slot <latex>s_i</latex> |= content |
+| <latex>\mathrm{GInt}(\mathit{ord}_i)</latex> | the order of the waiter in the collection of the position i |
+| <latex>\mathrm{GInt}(\mathit{bind}_i)</latex> | the bind of the position i in the receive |
+| <latex>\mathit{policy}_i</latex> | Nil, or the lane of a bind on a priority queue |
+The bind indices are a permutation of <latex>0, \dots, n-1</latex>.
+Repeated channels of one collection have equal orders.
+]
+
+rectangle FIRE $rrs_agent [
+**A fire of a join waiter**
+The receipt gives the results <latex>r_0, \dots, r_{n-1}</latex> in group order.
+restore_bind_order puts <latex>r_i</latex> at the bind <latex>\mathit{bind}_i</latex>.
+The body then binds its values in the bind order of the receive.
+]
+
+TAG --> DATUM : kind D
+TAG --> META : kinds S and C
+TAG --> K1 : kind K, version 1
+TAG --> K2 : kind K, version 2
+K2 --> FIRE : the slots
+
+note right of K2
+  The decoders of each version compare the whole tag,
+  so a version 1 decoder rejects a version 2 record,
+  and a version 2 decoder rejects a version 1 record.
+  Every decoder is strict: a record that is not the
+  exact image of its encoder is Inconsistent.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_tag>      | the record tag under the namespace byte 0xE0 |
+|<$rrs_storage>  | stored records: data, counters, the config and parked continuations |
+|<$rrs_agent>    | the outcome of a fire in the space agent |
+endlegend
+@enduml

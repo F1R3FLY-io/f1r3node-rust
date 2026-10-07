@@ -12,8 +12,11 @@
 //!    operation can touch (readiness review S2).
 //! 2. Read the config record on `C(sid)`. Without it the operation fails with `DanglingName` for
 //!    a space name and with `DanglingHandle` for every other channel.
-//! 3. Check the family of the config (`FamilyUnavailable`) and that `D(sid,k)` holds no join
-//!    other than `[D(sid,k)]` (`Inconsistent`).
+//! 3. Check the family of the config (`FamilyUnavailable`). Then classify the operation
+//!    ([`FamilySpace::classify`]): a collection whose data channel holds no join group other
+//!    than `[D(sid,k)]` runs the steps below. Every other operation, a join and a settle with a
+//!    cascade run in the join engine of P5c (`spaces::join`), which escalates the locks to the
+//!    join closure first ([`prepare_collection_op`]).
 //! 4. Before any staging, check the routed key with the outer store (`OuterStore::check_key`).
 //!    Then check the named params and the query with the schema of `D`: the keys
 //!    (`UnknownParam`), a query that `D` does not take (`QuerySpecUnsupported`), and the values
@@ -99,12 +102,14 @@ use serde::Serialize;
 use shared::rust::collection_backing::tree_backing;
 
 use super::agent::{
-    AllocOp, Allocation, ConsumeOp, ParSpaceReceipt, ParSpaceTxn, Prepared, ProduceOp, QueryParams,
-    SettleOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceFire, SpaceOp, SpaceOutcome, SpaceReissue,
+    AllocOp, Allocation, ConsumeOp, JoinOp, ParSpaceReceipt, ParSpaceTxn, Prepared, ProduceOp,
+    QueryParams, SettleOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceFire, SpaceOp, SpaceOutcome,
+    SpaceReissue,
 };
 use super::counter::{self, BumpContext, CounterChannels, CounterOp};
 use super::errors::SpaceError;
 use super::factory::defaults::suggestion;
+use super::join::{self, JoinRoute, JoinScope};
 use super::matching::SpaceMatcher;
 use super::namespace::{self, CollectionKey, NativeSpace, RandomPurpose, ReifiedId};
 use super::record::{self, Introduction, OperationAuthority};
@@ -207,6 +212,23 @@ pub struct Ordered<'a, T> {
     pub entry: &'a T,
 }
 
+/// The entries of a collection that a bind of a join can bind (P5c, joins plan section 3.2). A
+/// join with `m` binds on one collection binds `m` distinct entries of its window (decision 28).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JoinWindow {
+    /// The first `m` entries of the head order of the records: the queue, the stack and the cell
+    /// (decision 11).
+    Head,
+    /// For each level, the first `m` records of the level that the lane of the bind sees: the
+    /// priority queue (decision 38).
+    Lanes,
+    /// Every stored record, in the canonical order of DR-75: the bag (decision 41).
+    Scan,
+    /// One representative for each class, the first member of the class in the canonical order:
+    /// the set (F5). A bind claims its whole class.
+    Classes,
+}
+
 /// The inner collection of a family: the order in which the entries of a collection interact,
 /// and the plans of its operations (P5 design v3, A.3.3).
 ///
@@ -220,9 +242,9 @@ pub trait Discipline: Default + Send + Sync + 'static {
     /// True when every operation bumps the collection counter (M-1, decision 31).
     const USES_COUNTER: bool;
 
-    // Disabled by decision 29: same-space joins into ordered collections arrive in P5c, so the
-    // agent no longer gates a family on this flag. The join-group check of `check_joins` stays
-    // until the joins land.
+    // Disabled by decision 29: same-space joins into every collection run in the join engine of
+    // P5c (`spaces::join`), so no family is gated on this flag. `Discipline::JOIN_WINDOW` gives
+    // the entries that a join bind sees instead.
     // /// True when a receive may join this collection with other channels (P5).
     // const JOINS: bool;
 
@@ -236,6 +258,10 @@ pub trait Discipline: Default + Send + Sync + 'static {
     /// The most entries of each side of a collection, or `None` for no bound. A cell holds one
     /// record and one waiter (F15).
     const CAPACITY: Option<usize> = None;
+
+    /// The window of a join bind on a collection of the discipline (P5c). The default is the
+    /// head window of the head-only disciplines.
+    const JOIN_WINDOW: JoinWindow = JoinWindow::Head;
 
     /// The head of one side: the entry that interacts next, or `None` for an empty side. The
     /// result depends on the entry set only, not on the order of `entries`. Each comparison and
@@ -351,6 +377,17 @@ pub trait Discipline: Default + Send + Sync + 'static {
     ) -> Result<Option<SpaceReissue>, SpaceError> {
         Err(SpaceError::Inconsistent("the discipline has no settle"))
     }
+
+    /// The class of the payload `payload` in a join window (P5c). `None` makes each record a
+    /// class of its own, as every discipline but the set does. The set gives its F5 class key,
+    /// with its work reserved on `meter` first. The default does no work.
+    fn join_class_key(
+        &self,
+        _payload: &[Par],
+        _meter: &ScanMeter,
+    ) -> Result<Option<Vec<u8>>, SpaceError> {
+        Ok(None)
+    }
 }
 
 /// The operation around which a settle hook runs (P5b): a borrowed view. A hook copies only
@@ -368,12 +405,36 @@ pub enum OpView<'a> {
 /// transaction of an operation and reads the config once. The agent of the family that the
 /// config names then runs the operation in that transaction.
 pub trait FamilySpace: SpaceAgent {
+    /// Classifies the operation `op` in the open transaction `opened` (P5c, joins plan section
+    /// 4.1): `Single` when the data channel of its collection holds no join group other than
+    /// its own, and otherwise `Join` with the closure of its collections and the lock keys of
+    /// that closure. A join and a settle with a cascade are always `Join`. The reads are not
+    /// lock-checked, and the classification stages nothing. It reserves what the join check of
+    /// P4 reserved for a collection without joins, so the host work of such an operation does not
+    /// change.
+    fn classify(
+        &self,
+        env: &SpaceEnv,
+        opened: &mut CollectionTxn,
+        op: &SpaceOp,
+    ) -> Result<JoinRoute, SpaceError>;
+
     /// Steps 3 to 8 of the collection operation `op` in the open transaction `opened`, whose
     /// config names the family of this agent (`RUN-WITH`).
     fn run_with(
         &self,
         env: &SpaceEnv,
         opened: CollectionTxn,
+        op: SpaceOp,
+    ) -> Result<Prepared<SpaceOutcome>, SpaceError>;
+
+    /// The join engine (P5c) for the operation `op` in the open transaction `opened`, whose
+    /// lock keys cover the closure `scope`.
+    fn run_join(
+        &self,
+        env: &SpaceEnv,
+        opened: CollectionTxn,
+        scope: JoinScope,
         op: SpaceOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError>;
 
@@ -397,6 +458,12 @@ pub struct GenericSpace<S, D> {
 impl<S, D> GenericSpace<S, D> {
     /// The agent of the outer store `outer` and the discipline `discipline`.
     pub const fn new(outer: S, discipline: D) -> Self { Self { outer, discipline } }
+
+    /// The outer store of the family.
+    pub(crate) fn outer(&self) -> &S { &self.outer }
+
+    /// The discipline of the family.
+    pub(crate) fn discipline(&self) -> &D { &self.discipline }
 }
 
 /// The channels of one collection operation, in the order of its lock keys: the config channel
@@ -410,7 +477,7 @@ pub struct CollectionChannels {
 /// The template of a `GPrivate` name with an empty id. A channel of a collection is this name
 /// with its id, so a reserved copy of the template and a reserved id buffer cover its
 /// allocations.
-static GPRIVATE: LazyLock<Par> = LazyLock::new(|| namespace::gprivate(Vec::new()));
+pub(crate) static GPRIVATE: LazyLock<Par> = LazyLock::new(|| namespace::gprivate(Vec::new()));
 
 impl CollectionChannels {
     /// The channels of the collection `key` of `space` in the outer store `outer`.
@@ -507,6 +574,10 @@ enum Staged {
     /// A consume fire that lifts a stored record out of its collection during a settle (P5b,
     /// F2). It is never dispatched.
     Lift,
+    /// A fire of a waiter with two or more binds (P5c). Its continuation record has the slots
+    /// of version 2, and the outcome dispatches every result of its receipt in the bind order of
+    /// the receive.
+    JoinFire,
 }
 
 /// What the plans of one operation share.
@@ -641,6 +712,16 @@ impl<'p> Cx<'_, 'p> {
         self.plan.matcher.admits(continuation, matched)
     }
 
+    /// The `where` guard of `continuation` over the values `matched` of every bind, in bind
+    /// order, metered (decision 37: once, after every bind matched).
+    pub fn admits_all(
+        &self,
+        continuation: &TaggedContinuation,
+        matched: &[ListParWithRandom],
+    ) -> Result<bool, SpaceError> {
+        self.plan.matcher.admits_all(continuation, matched)
+    }
+
     /// The spatial match and then the guard: `None` when either refuses.
     pub fn matches(
         &self,
@@ -653,7 +734,7 @@ impl<'p> Cx<'_, 'p> {
 
     /// The head of the entries of one side: its index in `entries` and its order. The scan
     /// reserves its buffer and the decode of each envelope (`ord_of`), and it copies nothing.
-    fn scan_head<D: Discipline, T: Serialize>(
+    pub(crate) fn scan_head<D: Discipline, T: Serialize>(
         discipline: &D,
         side: Side,
         entries: &[T],
@@ -1082,11 +1163,160 @@ impl<'p> Cx<'_, 'p> {
     pub fn reissue(&self, op: SpaceOp, cause: ReissueCause) -> SpaceReissue {
         SpaceReissue { op, cause }
     }
+
+    // ── The primitives of the join engine (P5c) ───────────────────────────────────────────
+
+    /// The join groups of `channel` in the staged view. The caller reserves its reads of the
+    /// groups.
+    pub fn joins_on(&mut self, channel: &Par) -> Result<&[Vec<Par>], SpaceError> {
+        Ok(self.txn.joins(channel)?)
+    }
+
+    /// The waiting continuations of the join group `group` in the staged view. The lock keys
+    /// of the operation must hold every channel of the group.
+    pub fn group_waiters(&mut self, group: &[Par]) -> Result<&[ParWaiter], SpaceError> {
+        Ok(self.txn.continuations(group)?)
+    }
+
+    /// The indices of the waiting continuations of the join group `group` in the canonical
+    /// order of DR-75, with the work reserved as the branch reserves it.
+    pub fn canonical_group_order(&mut self, group: &[Par]) -> Result<Vec<usize>, SpaceError> {
+        let meter = self.meter();
+        Ok(canonical_continuation_order(
+            self.txn.continuations(group)?,
+            meter,
+        )?)
+    }
+
+    /// Bumps the counters `counters` of a collection that the transaction touches (decision
+    /// 31): the staged operations of the bump of the collection of the operation, through the
+    /// legacy chain of the plan. It returns the value of the collection counter before the bump.
+    pub fn bump_on(
+        &mut self,
+        counters: CounterChannels<'_>,
+        random: &Blake2b512Random,
+        authority: OperationAuthority<'_>,
+    ) -> Result<i64, SpaceError> {
+        stage_bump(self.txn, self.plan, counters, random, authority)
+    }
+
+    /// Stages a produce-side fire of the group `channels`: the datum `data` on `channel` fires
+    /// `waiter` with `candidates`, one for each channel of the group in group order, of which
+    /// exactly one is the incoming candidate (`incoming_candidate`). A group of two or more
+    /// channels stages a `JoinFire`, and a group of one channel a `Fire`. The decode of the fired
+    /// continuation by the outcome is prepaid here, for the record version of the group.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fire_offer_group(
+        &mut self,
+        channel: &Par,
+        data: ListParWithRandom,
+        persist: bool,
+        waiter: ParWaiter,
+        channels: Vec<Par>,
+        candidates: Vec<ParCandidate>,
+        introduction: &Arc<Introduction>,
+    ) -> Result<(), SpaceError> {
+        let width = candidates.len();
+        if width == 0 || channels.len() != width {
+            return Err(SpaceError::Inconsistent(
+                "a group fire does not line up its channels and candidates",
+            ));
+        }
+        let meter = self.meter();
+        let kind = match width {
+            1 => {
+                record::prepay_continuation_unwrap(&waiter.continuation, meter)?;
+                Staged::Fire
+            }
+            _ => {
+                record::prepay_join_continuation_unwrap(&waiter.continuation, width, meter)?;
+                Staged::JoinFire
+            }
+        };
+        let op = SpaceProduce {
+            channel: meter.copy(channel)?,
+            data,
+            persist,
+            outcome: ProduceOutcome::Fire {
+                channels,
+                continuation: waiter,
+                data: candidates,
+            },
+            before_observe: Some(record::register_introduction(introduction, meter)?),
+        };
+        self.plan.legacy.produce(self.txn, op)?;
+        self.push_staged(kind)
+    }
+
+    /// Stages a consume-side fire of a join waiter: `continuation`, a record of version 2, over
+    /// the group `channels` with `patterns` and the stored candidates `candidates`, one for each
+    /// channel in group order, with the introduction of the operation. It stages a `JoinFire`,
+    /// and the decode of the continuation by the outcome is prepaid here.
+    pub fn fire_join(
+        &mut self,
+        channels: Vec<Par>,
+        patterns: Vec<BindPattern>,
+        continuation: TaggedContinuation,
+        persist: bool,
+        peeks: BTreeSet<i32>,
+        candidates: Vec<ParCandidate>,
+    ) -> Result<(), SpaceError> {
+        let width = candidates.len();
+        if width < 2 || channels.len() != width || patterns.len() != width {
+            return Err(SpaceError::Inconsistent(
+                "a join fire does not line up its channels, patterns and candidates",
+            ));
+        }
+        let meter = self.meter();
+        record::prepay_join_continuation_unwrap(&continuation, width, meter)?;
+        let staged = SpaceConsume {
+            channels,
+            patterns,
+            continuation,
+            persist,
+            peeks,
+            outcome: ConsumeOutcome::Fire { data: candidates },
+            before_observe: Some(record::register_introduction(
+                self.plan.introduction,
+                meter,
+            )?),
+        };
+        self.plan.legacy.consume(self.txn, staged)?;
+        self.push_staged(Staged::JoinFire)
+    }
+}
+
+/// Stages the bump of the counters `counters` through the legacy chain of `plan`, and lists its
+/// staged operations in the plan. It returns the value of the collection counter before the
+/// bump. The bump of the collection of an operation and the bump of each collection that a join
+/// transaction touches stage the same operations.
+fn stage_bump(
+    txn: &mut ParSpaceTxn,
+    plan: &mut Plan<'_>,
+    counters: CounterChannels<'_>,
+    random: &Blake2b512Random,
+    authority: OperationAuthority<'_>,
+) -> Result<i64, SpaceError> {
+    let bump = counter::bump(
+        txn,
+        counters,
+        &BumpContext {
+            matcher: plan.matcher,
+            random,
+            authority,
+        },
+        &mut plan.legacy,
+    )?;
+    let meter = plan.matcher.meter();
+    for kind in bump.staged.iter().copied() {
+        push_reserved(&mut plan.staged, Staged::Counter(kind), meter)?;
+    }
+    Ok(bump.ord)
 }
 
 /// The candidate of a consume-side fire of one record on `channel`: the record moves into the
 /// candidate, with the values that it binds.
-fn receive_candidate(channel: Par, fire: ReceiveFire) -> ParCandidate {
+pub(crate) fn receive_candidate(channel: Par, fire: ReceiveFire) -> ParCandidate {
     let ReceiveFire {
         head: Datum { a, persist, source },
         matched,
@@ -1107,7 +1337,11 @@ fn receive_candidate(channel: Par, fire: ReceiveFire) -> ParCandidate {
 /// Appends `value` to `values`. A list at its capacity reserves its growth on `meter` before it
 /// grows, as `Vec` doubles its buffer (decision 42). A head-only plan starts with room for all
 /// of its operations (`MAX_STAGED`), so it reserves no growth.
-fn push_reserved<T>(values: &mut Vec<T>, value: T, meter: &ScanMeter) -> Result<(), SpaceError> {
+pub(crate) fn push_reserved<T>(
+    values: &mut Vec<T>,
+    value: T,
+    meter: &ScanMeter,
+) -> Result<(), SpaceError> {
     if values.len() == values.capacity() {
         let grown = values
             .capacity()
@@ -1134,6 +1368,16 @@ pub fn peek_set(peek: bool, meter: &ScanMeter) -> Result<BTreeSet<i32>, SpaceErr
         }
         false => Ok(BTreeSet::new()),
     }
+}
+
+/// The peek set of a join receive that peeks (P5c): `{0, …, n-1}`, because one arrow covers
+/// every bind of a receive. Its tree nodes are reserved first.
+pub fn peek_set_all(n: usize, meter: &ScanMeter) -> Result<BTreeSet<i32>, SpaceError> {
+    let last = i32::try_from(n)
+        .map_err(|_| SpaceError::Inconsistent("a join has more binds than a peek set holds"))?;
+    let (operations, bytes) = tree_backing::<i32, ()>(n).ok_or(RSpaceError::HostWorkRejected)?;
+    meter.charge(operations, 0, bytes)?;
+    Ok((0..last).collect())
 }
 
 /// The error of a missing config record: `DanglingName` for a space name and `DanglingHandle`
@@ -1349,13 +1593,13 @@ fn restore_peeked<D: Discipline>(
 }
 
 /// The order of a record in the staged view, with the decode of its envelope reserved.
-fn datum_ord(datum: &ParDatum, meter: &ScanMeter) -> Result<i64, SpaceError> {
+pub(crate) fn datum_ord(datum: &ParDatum, meter: &ScanMeter) -> Result<i64, SpaceError> {
     record::datum_ord_metered(&datum.a, meter)
 }
 
 /// The order of a waiting continuation in the staged view, with the decode of its envelope
 /// reserved.
-fn waiter_ord(waiter: &ParWaiter, meter: &ScanMeter) -> Result<i64, SpaceError> {
+pub(crate) fn waiter_ord(waiter: &ParWaiter, meter: &ScanMeter) -> Result<i64, SpaceError> {
     record::continuation_ord_metered(&waiter.continuation, meter)
 }
 
@@ -1365,7 +1609,7 @@ fn waiter_ord(waiter: &ParWaiter, meter: &ScanMeter) -> Result<i64, SpaceError> 
 /// `0..bumped`, and any other value is `Inconsistent`. The two comparisons are reserved first.
 /// Without a counter every order is 0, so a re-issued order other than 0 is `Inconsistent`, and
 /// its comparison is reserved first.
-fn operation_ord(
+pub(crate) fn operation_ord(
     reissued: Option<i64>,
     bumped: Option<i64>,
     meter: &ScanMeter,
@@ -1425,7 +1669,7 @@ fn read_space_config<'t>(
 fn fire_count(staged: &[Staged]) -> usize {
     staged
         .iter()
-        .filter(|kind| matches!(kind, Staged::Fire | Staged::FirePrefix))
+        .filter(|kind| matches!(kind, Staged::Fire | Staged::FirePrefix | Staged::JoinFire))
         .count()
 }
 
@@ -1496,6 +1740,23 @@ fn outcome(
                     results,
                 })
             }
+            (
+                Staged::JoinFire,
+                SpaceOpReceipt::Fired {
+                    continuation,
+                    results,
+                    ..
+                },
+            ) => {
+                let record::JoinContinuationRecord {
+                    slots,
+                    continuation,
+                } = record::into_join_continuation(continuation.continuation)?;
+                fires.push(SpaceFire {
+                    continuation,
+                    results: record::restore_bind_order(&slots, results)?,
+                })
+            }
             _ => {
                 return Err(SpaceError::Inconsistent(
                     "a receipt differs from its staged operation",
@@ -1547,6 +1808,135 @@ pub async fn begin_collection<S: OuterStore>(
         channels.config(),
         space,
         || missing_config(channel, meter),
+        meter,
+    )?;
+    Ok(CollectionTxn {
+        txn,
+        channels,
+        config,
+    })
+}
+
+/// Runs the collection operation `op` with the family agent `agent` in the open transaction
+/// `opened` ("scope, then lock, then plan", joins plan section 4.1). The agent classifies the
+/// operation. A `Single` operation runs `run_with` in `opened`. A `Join` operation runs the join
+/// engine. When the lock keys of `opened` do not cover the closure of the join, the agent drops
+/// `opened`, which stages nothing, and begins one new transaction over the lock keys of the
+/// closure: the scheduler footprint `[2]‖sid` serializes every job of the space, so the state
+/// does not change between the two transactions, and the closure is complete, so one escalation
+/// is enough. The config of `opened` is read once (decision 42).
+pub async fn prepare_collection_op(
+    agent: &dyn FamilySpace,
+    env: &SpaceEnv,
+    mut opened: CollectionTxn,
+    op: SpaceOp,
+) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+    match agent.classify(env, &mut opened, &op)? {
+        JoinRoute::Single => agent.run_with(env, opened, op),
+        JoinRoute::Join(scope) => match scope.covers(&scope.own, &env.meter)? {
+            true => agent.run_join(env, opened, scope, op),
+            false => {
+                let CollectionTxn {
+                    txn,
+                    channels,
+                    config,
+                } = opened;
+                drop(txn);
+                let txn = env.store.begin(scope.lock_keys()).await?;
+                agent.run_join(
+                    env,
+                    CollectionTxn {
+                        txn,
+                        channels,
+                        config,
+                    },
+                    scope,
+                    op,
+                )
+            }
+        },
+    }
+}
+
+/// The plan of one transaction of the join engine (P5c) over the open transaction `txn`, whose
+/// own data channel is `data`: the staged list, the metered matcher, the introduction of
+/// `introduction_authority`, the legacy chain of decision 45 and the fire count of the
+/// transaction (decision 49), as `run_with` makes them. `stage` stages the operations through
+/// [`Cx`] and returns the re-issue. The outcome after the commit is the outcome of `run_with`,
+/// and its buffer is prepaid here.
+pub(crate) fn run_plan(
+    env: &SpaceEnv,
+    mut txn: ParSpaceTxn,
+    data: &Par,
+    introduction_authority: &CostAuthority,
+    stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<Option<SpaceReissue>, SpaceError>,
+) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+    let meter = &env.meter;
+    let staged = meter.buffer::<Staged>(MAX_STAGED)?;
+    let matcher = SpaceMatcher::metered(env)?;
+    let introduction = Introduction::new(&env.budget, introduction_authority, meter)?;
+    let mut plan = Plan {
+        data,
+        matcher: &matcher,
+        introduction: &introduction,
+        staged,
+        prefixes: Vec::new(),
+        bumped: None,
+        legacy: LegacyChain::new(&env.budget),
+        rounds: FireRounds::new(),
+    };
+    let reissue = stage(&mut Cx {
+        txn: &mut txn,
+        plan: &mut plan,
+    })?;
+    let Plan {
+        staged,
+        prefixes,
+        legacy,
+        ..
+    } = plan;
+    prepay_outcome(&staged, meter)?;
+    Ok(Prepared::new(txn, move |receipt| {
+        legacy.finish()?;
+        outcome(receipt, staged, prefixes, reissue)
+    }))
+}
+
+/// Steps 1 and 2 of the join `op` (P5c): the transaction over the lock keys `[C(sid), S(sid)]`
+/// and `[S(sid,k), D(sid,k)]` of each distinct collection `k` of its binds, in ascending key
+/// order, and the config, read once (decision 42). The channels of the result are the channels
+/// of the collection of the first bind. A join without a bind is `Inconsistent`. The names of
+/// the lock keys are reserved before they are made.
+pub async fn begin_join<S: OuterStore>(
+    outer: &S,
+    env: &SpaceEnv,
+    op: &JoinOp,
+) -> Result<CollectionTxn, SpaceError> {
+    let meter = &env.meter;
+    let Some(first) = op.binds.first() else {
+        return Err(SpaceError::Inconsistent("a join has no bind"));
+    };
+    let channels = CollectionChannels::new_metered(outer, op.space, &first.key, meter)?;
+    let keys = join::distinct_bind_keys(op, meter)?;
+    let length = keys
+        .len()
+        .checked_mul(2)
+        .and_then(|length| length.checked_add(2))
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    let mut lock_keys = meter.buffer::<Par>(length)?;
+    lock_keys.push(meter.copy(channels.config())?);
+    lock_keys.push(meter.copy(channels.space_counter())?);
+    for key in keys {
+        let collection = join::scoped_collection(outer, op.space, key, meter)?;
+        lock_keys.push(collection.counter);
+        lock_keys.push(collection.data);
+    }
+    let mut txn = env.store.begin(&lock_keys).await?;
+    let (config, _) = read_space_config(
+        &mut txn,
+        channels.config(),
+        op.space,
+        || missing_config(&first.channel, meter),
         meter,
     )?;
     Ok(CollectionTxn {
@@ -1691,41 +2081,44 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
         }
     }
 
-    /// Step 3: the data channel holds no join other than its own group. The check reads the
-    /// stored group and the data channel, so it reserves both reads and one comparison, as the
-    /// branch's channel position check does.
-    fn check_joins(
-        &self,
-        txn: &mut ParSpaceTxn,
-        channels: &CollectionChannels,
-        meter: &ScanMeter,
-    ) -> Result<(), SpaceError> {
-        let data = channels.data();
-        match txn.joins(data)? {
-            [] => Ok(()),
-            [group] => {
-                meter.inspect(group)?;
-                meter.inspect(data)?;
-                meter.charge(1, 0, 0)?;
-                match group.as_slice() == std::slice::from_ref(data) {
-                    true => Ok(()),
-                    false => Err(SpaceError::Inconsistent(
-                        "a collection channel is part of a join",
-                    )),
-                }
-            }
-            _ => Err(SpaceError::Inconsistent(
-                "a collection channel is part of a join",
-            )),
-        }
-    }
+    // Disabled by decision 29 (P5c): `FamilySpace::classify` makes the same reads and
+    // reservations, and it sends an operation on a collection with a join group to the join
+    // engine (`spaces::join`) instead of failing with `Inconsistent`.
+    // /// Step 3: the data channel holds no join other than its own group. The check reads the
+    // /// stored group and the data channel, so it reserves both reads and one comparison, as the
+    // /// branch's channel position check does.
+    // fn check_joins(
+    //     &self,
+    //     txn: &mut ParSpaceTxn,
+    //     channels: &CollectionChannels,
+    //     meter: &ScanMeter,
+    // ) -> Result<(), SpaceError> {
+    //     let data = channels.data();
+    //     match txn.joins(data)? {
+    //         [] => Ok(()),
+    //         [group] => {
+    //             meter.inspect(group)?;
+    //             meter.inspect(data)?;
+    //             meter.charge(1, 0, 0)?;
+    //             match group.as_slice() == std::slice::from_ref(data) {
+    //                 true => Ok(()),
+    //                 false => Err(SpaceError::Inconsistent(
+    //                     "a collection channel is part of a join",
+    //                 )),
+    //             }
+    //         }
+    //         _ => Err(SpaceError::Inconsistent(
+    //             "a collection channel is part of a join",
+    //         )),
+    //     }
+    // }
 
     /// Step 4: the named params `params` of a send and the query `query` of a receive against
     /// the schema of `D`, before any staging. Each key is compared with the schema, and an
     /// unknown key fails with `UnknownParam` and the closest schema key. A query on a discipline
     /// without query params fails with `QuerySpecUnsupported`. Then `D::check_values` checks the
     /// values. An operation without params and without a query does no work.
-    fn check_params(
+    pub(crate) fn check_params(
         &self,
         config: &SpaceConfig,
         params: &BTreeMap<String, Par>,
@@ -1759,25 +2152,20 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
             return Ok(None);
         }
         let random = Blake2b512Random::from_bytes(random_state);
-        let bump = counter::bump(
-            txn,
-            channels.counters(),
-            &BumpContext {
-                matcher: plan.matcher,
-                random: &random,
-                authority,
-            },
-            &mut plan.legacy,
-        )?;
-        let meter = plan.matcher.meter();
-        for kind in bump.staged.iter().copied() {
-            push_reserved(&mut plan.staged, Staged::Counter(kind), meter)?;
-        }
-        Ok(Some(bump.ord))
+        stage_bump(txn, plan, channels.counters(), &random, authority).map(Some)
     }
 }
 
 impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
+    fn classify(
+        &self,
+        env: &SpaceEnv,
+        opened: &mut CollectionTxn,
+        op: &SpaceOp,
+    ) -> Result<JoinRoute, SpaceError> {
+        join::classify(self, env, opened, op)
+    }
+
     /// Every check happens before the bump, so a rejected operation leaves the counter
     /// unchanged. A settle bumps the counter, as every round of an operation does (decision 31,
     /// decision 43).
@@ -1793,7 +2181,8 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             channels,
             config,
         } = opened;
-        self.check_joins(&mut txn, &channels, meter)?;
+        // Disabled by decision 29 (P5c): `classify` reads the join groups before this step.
+        // self.check_joins(&mut txn, &channels, meter)?;
         let no_params = BTreeMap::new();
         let (channel, key, params, query, introduction_authority) = match &op {
             SpaceOp::Produce(op) => (&op.channel, &op.key, &op.params, None, &op.authority),
@@ -1804,13 +2193,23 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
                 op.query.as_ref(),
                 &op.introduction_authority,
             ),
-            SpaceOp::Settle(op) => (
-                &op.channel,
-                &op.key,
-                &no_params,
-                None,
-                &op.introduction_authority,
-            ),
+            SpaceOp::Settle(op) => match op.cascade {
+                None => (
+                    &op.channel,
+                    &op.key,
+                    &no_params,
+                    None,
+                    &op.introduction_authority,
+                ),
+                Some(_) => {
+                    return Err(SpaceError::Inconsistent(
+                        "a settle with a cascade runs in the join engine",
+                    ))
+                }
+            },
+            SpaceOp::Join(_) => {
+                return Err(SpaceError::Inconsistent("a join runs in the join engine"))
+            }
         };
         self.outer.check_key(&config, channel, key, meter)?;
         self.check_params(&config, params, query, meter)?;
@@ -1877,6 +2276,9 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
                 };
                 self.discipline.settle_job(&mut cx, op)?
             }
+            SpaceOp::Join(_) => {
+                return Err(SpaceError::Inconsistent("a join runs in the join engine"))
+            }
         };
         let Plan {
             staged,
@@ -1889,6 +2291,16 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             legacy.finish()?;
             outcome(receipt, staged, prefixes, reissue)
         }))
+    }
+
+    fn run_join(
+        &self,
+        env: &SpaceEnv,
+        opened: CollectionTxn,
+        scope: JoinScope,
+        op: SpaceOp,
+    ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+        join::run_join(self, env, opened, scope, op)
     }
 
     /// A store without an allocator answers `Baseline` with no further work, and the dropped
@@ -2012,11 +2424,13 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&self.outer, env, op.space, &op.key, &op.channel).await?;
         let config = self.check_family(opened.config, &env.meter)?;
-        self.run_with(
+        prepare_collection_op(
+            self,
             env,
             CollectionTxn { config, ..opened },
             SpaceOp::Produce(op),
         )
+        .await
     }
 
     async fn prepare_consume(
@@ -2026,11 +2440,13 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&self.outer, env, op.space, &op.key, &op.channel).await?;
         let config = self.check_family(opened.config, &env.meter)?;
-        self.run_with(
+        prepare_collection_op(
+            self,
             env,
             CollectionTxn { config, ..opened },
             SpaceOp::Consume(op),
         )
+        .await
     }
 
     async fn prepare_settle(
@@ -2040,7 +2456,29 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&self.outer, env, op.space, &op.key, &op.channel).await?;
         let config = self.check_family(opened.config, &env.meter)?;
-        self.run_with(env, CollectionTxn { config, ..opened }, SpaceOp::Settle(op))
+        prepare_collection_op(
+            self,
+            env,
+            CollectionTxn { config, ..opened },
+            SpaceOp::Settle(op),
+        )
+        .await
+    }
+
+    async fn prepare_join(
+        &self,
+        env: &SpaceEnv,
+        op: JoinOp,
+    ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+        let opened = begin_join(&self.outer, env, &op).await?;
+        let config = self.check_family(opened.config, &env.meter)?;
+        prepare_collection_op(
+            self,
+            env,
+            CollectionTxn { config, ..opened },
+            SpaceOp::Join(op),
+        )
+        .await
     }
 
     async fn allocate(&self, env: &SpaceEnv, op: AllocOp) -> Result<Allocation, SpaceError> {
@@ -3687,7 +4125,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn space_queue_collection_join_is_inconsistent() {
+    /// A join group that holds a channel outside the namespace of the space is foreign: the
+    /// classification of P5c finds it while it computes the closure, and every operation on the
+    /// collection fails with `Inconsistent` before it stages anything (decision 29). The P4
+    /// version of this test expected the rejection of every join group.
+    async fn space_queue_foreign_join_is_inconsistent() {
         let Fixture { space, env } = fixture().await;
         produce(&env, send(1)).await;
         let ch = channels();
@@ -3706,7 +4148,7 @@ mod tests {
         .expect("the join parks");
         txn.commit().await.expect("the join commits");
         space.take_event_log().await;
-        let joined = SpaceError::Inconsistent("a collection channel is part of a join");
+        let joined = SpaceError::Inconsistent("a collection channel is part of a foreign join");
         assert_eq!(
             run(&env, SpaceOp::Produce(send(2))).await,
             Err(joined.clone())
@@ -4850,6 +5292,387 @@ mod tests {
                 Err(SpaceError::Inconsistent(message))
             );
         }
+    }
+
+    // ── The primitives of the join engine (P5c) ─────────────────────────────────────────────
+
+    fn join_slot(bind: usize) -> record::JoinSlot {
+        record::JoinSlot {
+            ord: 0,
+            bind,
+            priority: None,
+        }
+    }
+
+    #[test]
+    fn space_engine_join_fire_outcome_restores_bind_order() {
+        let result = |value: i64| RSpaceResult {
+            channel: int(value),
+            matched_datum: ListParWithRandom {
+                pars: vec![int(value)],
+                ..ListParWithRandom::default()
+            },
+            removed_datum: ListParWithRandom::default(),
+            persistent: false,
+        };
+        let fired_with =
+            |continuation: TaggedContinuation,
+             results: Vec<RSpaceResult<Par, ListParWithRandom>>| {
+                SpaceOpReceipt::Fired {
+                    comm: COMM {
+                        consume: Consume::create(
+                            &vec![int(1); results.len()],
+                            &vec![any(); results.len()],
+                            &named("k", None),
+                            false,
+                        ),
+                        produces: Vec::new(),
+                        peeks: BTreeSet::new(),
+                        times_repeated: BTreeMap::new(),
+                    },
+                    continuation: ContResult {
+                        continuation,
+                        persistent: false,
+                        channels: vec![int(1); results.len()],
+                        patterns: vec![any(); results.len()],
+                        peek: false,
+                    },
+                    results,
+                    produce: None,
+                }
+            };
+        let receipt = |ops| ParSpaceReceipt { ops };
+        // The receipt lists the results in group order, and slot i names the bind of result i:
+        // result 10 belongs to bind 2, result 20 to bind 0 and result 30 to bind 1.
+        let join = record::wrap_join_continuation(
+            &[join_slot(2), join_slot(0), join_slot(1)],
+            &named("k", None),
+        )
+        .expect("a join record");
+        let three = || vec![result(10), result(20), result(30)];
+        let dispatched = outcome(
+            receipt(vec![fired_with(join.clone(), three())]),
+            vec![Staged::JoinFire],
+            Vec::new(),
+            None,
+        )
+        .expect("a join fire");
+        assert_eq!(dispatched.fires.len(), 1);
+        assert_eq!(dispatched.fires[0].continuation, named("k", None));
+        assert_eq!(fired(&dispatched), vec![("k".to_string(), vec![
+            int(20),
+            int(30),
+            int(10)
+        ])]);
+        // A join fire decodes a record of version 2 only, and a fire a record of version 1 only.
+        let malformed = Err(SpaceError::Inconsistent("a malformed continuation record"));
+        assert_eq!(
+            outcome(
+                receipt(vec![fired_with(wrapped("k"), three())]),
+                vec![Staged::JoinFire],
+                Vec::new(),
+                None,
+            ),
+            malformed
+        );
+        assert_eq!(
+            outcome(
+                receipt(vec![fired_with(join.clone(), three())]),
+                vec![Staged::Fire],
+                Vec::new(),
+                None,
+            ),
+            malformed
+        );
+        // A receipt with another number of results than the record has slots is Inconsistent.
+        assert_eq!(
+            outcome(
+                receipt(vec![fired_with(join, vec![result(1), result(2)])]),
+                vec![Staged::JoinFire],
+                Vec::new(),
+                None,
+            ),
+            Err(SpaceError::Inconsistent(
+                "a join fire has not one result for each slot"
+            ))
+        );
+    }
+
+    /// The data channels of the collections `a` and `b` in canonical group order (FR-1'), and the
+    /// bind index of each group position, for a receive that binds `a` first and `b` second.
+    fn join_group() -> (Vec<Par>, Vec<usize>) {
+        let a = channels_of(&string("a")).data().clone();
+        let b = channels_of(&string("b")).data().clone();
+        match stable_hash_provider::hash(&a) <= stable_hash_provider::hash(&b) {
+            true => (vec![a, b], vec![0, 1]),
+            false => (vec![b, a], vec![1, 0]),
+        }
+    }
+
+    /// The join waiter `name` of the receive `for (x <- a & y <- b)`, with a record of version 2.
+    fn join_waiter(name: &str, binds: &[usize]) -> TaggedContinuation {
+        let slots: Vec<record::JoinSlot> = binds.iter().map(|&bind| join_slot(bind)).collect();
+        record::wrap_join_continuation(&slots, &named(name, None)).expect("a join record")
+    }
+
+    /// Stages `stage` in a plan of its own with the lock keys `keys`, whose own collection is
+    /// the collection of the first data channel of `keys`, and commits it.
+    async fn staged_group_plan(
+        env: &SpaceEnv,
+        keys: &[Par],
+        stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<(), SpaceError>,
+    ) -> Result<SpaceOutcome, SpaceError> {
+        let mut txn = env.store.begin(keys).await?;
+        let matcher = SpaceMatcher::metered(env)?;
+        let introduction = Introduction::new(&env.budget, &CostAuthority::default(), &env.meter)?;
+        let mut plan = Plan {
+            data: &keys[0],
+            matcher: &matcher,
+            introduction: &introduction,
+            staged: env.meter.buffer::<Staged>(MAX_STAGED)?,
+            prefixes: Vec::new(),
+            bumped: None,
+            legacy: LegacyChain::new(&env.budget),
+            rounds: FireRounds::new(),
+        };
+        stage(&mut Cx {
+            txn: &mut txn,
+            plan: &mut plan,
+        })?;
+        let Plan {
+            staged,
+            prefixes,
+            legacy,
+            ..
+        } = plan;
+        Prepared::new(txn, move |receipt| {
+            legacy.finish()?;
+            outcome(receipt, staged, prefixes, None)
+        })
+        .commit()
+        .await
+    }
+
+    /// The datum record of the payload `value` with the order 0, and its stored copy on `channel`.
+    fn stored_on(channel: &Par, value: i64) -> (ListParWithRandom, ParDatum) {
+        let record = record::wrap_datum(0, &send_on(channel, value, false).data);
+        let datum = Datum {
+            a: record.clone(),
+            persist: false,
+            source: Produce::create(channel, &record, false),
+        };
+        (record, datum)
+    }
+
+    #[tokio::test]
+    async fn space_engine_join_group_fires_line_up_and_dispatch_in_bind_order() {
+        let Fixture { space, env } = fixture().await;
+        let (group, binds) = join_group();
+        let a = channels_of(&string("a")).data().clone();
+        let b = channels_of(&string("b")).data().clone();
+        // Park the join waiter `k` on the group, and store 2 on b.
+        staged_group_plan(&env, &group, |cx| {
+            cx.park_on(
+                group.clone(),
+                vec![any(), any()],
+                join_waiter("k", &binds),
+                false,
+                BTreeSet::new(),
+            )?;
+            let (record, _) = stored_on(&b, 2);
+            let introduction = Arc::clone(cx.introduction());
+            cx.store_on(&b, record, false, &introduction)
+        })
+        .await
+        .expect("the park and the store commit");
+        // The produce of 1 on a fires the waiter with the incoming datum and the stored record.
+        let outcome = staged_group_plan(&env, &group, |cx| {
+            let waiter = cx.group_waiters(&group)?[0].clone();
+            let stored = cx.data_on(&b)?[0].clone();
+            let (incoming, _) = stored_on(&a, 1);
+            let source = Produce::create(&a, &incoming, false);
+            let payload = |record: &ListParWithRandom| {
+                record::unwrap_datum(record).expect("a datum record").datum
+            };
+            let incoming_match = cx.bind(&any(), &payload(&incoming))?.expect("any() binds");
+            let stored_match = cx.bind(&any(), &payload(&stored.a))?.expect("any() binds");
+            let candidates = group
+                .iter()
+                .map(|channel| match *channel == a {
+                    true => incoming_candidate(
+                        a.clone(),
+                        source.clone(),
+                        incoming.clone(),
+                        false,
+                        incoming_match.clone(),
+                    ),
+                    false => receive_candidate(b.clone(), ReceiveFire {
+                        head: stored.clone(),
+                        matched: stored_match.clone(),
+                        view_index: 0,
+                    }),
+                })
+                .collect();
+            let introduction = Arc::clone(cx.introduction());
+            cx.fire_offer_group(
+                &a,
+                incoming,
+                false,
+                waiter,
+                group.clone(),
+                candidates,
+                &introduction,
+            )
+        })
+        .await
+        .expect("the group fire commits");
+        // The body sees the value of a first and the value of b second, whatever the group order.
+        assert_eq!(fired(&outcome), vec![("k".to_string(), vec![
+            int(1),
+            int(2)
+        ])]);
+        assert!(space.get_data(&b).await.is_empty());
+        assert!(space
+            .get_waiting_continuations(group.clone())
+            .await
+            .is_empty());
+        assert!(space.get_joins(a.clone()).await.is_empty());
+        // The consume side: store 3 on a and 4 on b, then fire a new join waiter over both.
+        staged_group_plan(&env, &group, |cx| {
+            let introduction = Arc::clone(cx.introduction());
+            for (channel, value) in [(&a, 3), (&b, 4)] {
+                let (record, _) = stored_on(channel, value);
+                cx.store_on(channel, record, false, &introduction)?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("the stores commit");
+        let outcome = staged_group_plan(&env, &group, |cx| {
+            let mut candidates = Vec::new();
+            for channel in &group {
+                let stored = cx.data_on(channel)?[0].clone();
+                let payload = record::unwrap_datum(&stored.a)
+                    .expect("a datum record")
+                    .datum;
+                let matched = cx.bind(&any(), &payload)?.expect("any() binds");
+                candidates.push(receive_candidate(channel.clone(), ReceiveFire {
+                    head: stored,
+                    matched,
+                    view_index: 0,
+                }));
+            }
+            cx.fire_join(
+                group.clone(),
+                vec![any(), any()],
+                join_waiter("j", &binds),
+                false,
+                BTreeSet::new(),
+                candidates,
+            )
+        })
+        .await
+        .expect("the join fire commits");
+        assert_eq!(fired(&outcome), vec![("j".to_string(), vec![
+            int(3),
+            int(4)
+        ])]);
+        assert!(space.get_data(&a).await.is_empty());
+        // A group fire that does not line up stages nothing.
+        space.take_event_log().await;
+        let misaligned = staged_group_plan(&env, &group, |cx| {
+            cx.fire_join(
+                vec![a.clone()],
+                vec![any()],
+                join_waiter("x", &binds),
+                false,
+                BTreeSet::new(),
+                Vec::new(),
+            )
+        })
+        .await;
+        assert_eq!(
+            misaligned,
+            Err(SpaceError::Inconsistent(
+                "a join fire does not line up its channels, patterns and candidates"
+            ))
+        );
+        let misaligned = staged_group_plan(&env, &group, |cx| {
+            let waiter = ParWaiter {
+                patterns: vec![any(), any()],
+                continuation: join_waiter("x", &binds),
+                persist: false,
+                peeks: BTreeSet::new(),
+                source: Consume::create(&group, &vec![any(), any()], &named("x", None), false),
+            };
+            let (incoming, _) = stored_on(&a, 5);
+            let introduction = Arc::clone(cx.introduction());
+            cx.fire_offer_group(
+                &a,
+                incoming,
+                false,
+                waiter,
+                group.clone(),
+                Vec::new(),
+                &introduction,
+            )
+        })
+        .await;
+        assert_eq!(
+            misaligned,
+            Err(SpaceError::Inconsistent(
+                "a group fire does not line up its channels and candidates"
+            ))
+        );
+        assert!(space.take_event_log().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn space_engine_bump_on_stages_the_bump_of_the_collection() {
+        let Fixture { space, env } = fixture().await;
+        let ch = channels();
+        let random = Blake2b512Random::create_from_bytes(b"touch");
+        // Two bumps of the queue collection in one plan: the first opens the counter, the second
+        // steps it, as the bumps of two operations do.
+        staged_group_plan(&env, ch.lock_keys(), |cx| {
+            let introduction = Arc::clone(cx.introduction());
+            let authority = OperationAuthority {
+                continuation: None,
+                introduction: &introduction,
+            };
+            assert_eq!(cx.bump_on(ch.counters(), &random, authority)?, 0);
+            assert_eq!(
+                cx.bump_on(ch.counters(), &random.split_byte(1), authority)?,
+                1
+            );
+            Ok(())
+        })
+        .await
+        .expect("the bumps commit");
+        assert_eq!(labels(&space.take_event_log().await), vec![
+            "consume S",
+            "comm S",
+            "produce S",
+            "produce K",
+            "consume K",
+            "comm K",
+            "produce K"
+        ]);
+        assert_eq!(counter(&space, ch.counter()).await, vec![2]);
+        assert_eq!(counter(&space, ch.space_counter()).await, vec![1]);
+        // A produce on the collection now takes the next order.
+        produce(&env, send(7)).await;
+        assert_eq!(records(&space).await, vec![(2, vec![int(7)], false)]);
+    }
+
+    #[test]
+    fn space_engine_join_peek_set_covers_every_bind() {
+        let host_work = unbounded();
+        let meter = ScanMeter::new(Some(host_work.clone()));
+        assert_eq!(peek_set_all(3, &meter), Ok(BTreeSet::from([0, 1, 2])));
+        assert!(host_work.usage(HostWorkDimension::SearchStateBytes).get() > 0);
+        assert_eq!(peek_set_all(0, &meter), Ok(BTreeSet::new()));
+        assert_eq!(peek_set_all(1, &meter), peek_set(true, &meter));
     }
 
     #[test]

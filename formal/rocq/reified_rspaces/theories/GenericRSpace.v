@@ -63,14 +63,14 @@
    rec, wtr, state          the staged view of one collection: the records
                             and the waiting continuations of D(sid,k)
                             (Cx::data, Cx::waiters, spaces/generic.rs:
-                            585-595)
+                            657-666)
    elem                     the element of a produce: the record, its
                             persistence and the introduction that its
                             staged operations register (ProduceOp,
                             spaces/agent.rs; Introduction, spaces/record.rs:
-                            1210-1254)
+                            1639-1683)
    staged, apply            the staging primitives of Cx and their effect
-                            on the view (spaces/generic.rs:807-1078):
+                            on the view (spaces/generic.rs:888-1159):
                             store_on (SStore), park_on (SPark),
                             fire_offer_on (SFireOffer), fire_receive_group
                             (SFireRecv), retire (SRetire). A fire removes
@@ -82,7 +82,7 @@
                             record at the front (rspace/hot_store.rs)
    data_order, waiter_order Cx::canonical_data_order and
                             Cx::canonical_waiter_order
-                            (spaces/generic.rs:609-624; DR-75 of decision
+                            (spaces/generic.rs:680-695; DR-75 of decision
                             41, rspace++/src/rspace/space_store_handle.rs:
                             312-344). The model takes any permutation
    after_fire, cap          FireRounds::after_fire and FIRE_ROUND_CAP
@@ -97,7 +97,7 @@
      receive_loop
    restore_elem,            RESTORE-SCAN (A.7, decision 45): the record r,
      restore_scan           persist = false, Introduction::for_record
-                            (spaces/record.rs:1240-1253), through the produce
+                            (spaces/record.rs:1669-1682), through the produce
                             plan
    host_resend, second_send the host's second send: produce_peeks
                             (reduce.rs:981-1016) produces the removed datum
@@ -106,13 +106,13 @@
                             authority (design report of decision 45, A.1,
                             A.2, C.4)
    cell_offer_loop,         offer_head and receive_head of S1
-     cell_receive_loop      (spaces/generic.rs:1171-1244, 1246-1337) with
-                            Cx::check_capacity (spaces/generic.rs:768-783)
+     cell_receive_loop      (spaces/generic.rs:1415-1488, 1490-1581) with
+                            Cx::check_capacity (spaces/generic.rs:849-864)
                             and the plain restore of Discipline::restore
-                            (spaces/generic.rs:310-323, 877-897). The cell
+                            (spaces/generic.rs:336-349, 958-978). The cell
                             reaches the head on every operation
                             (reaches_head = true, precedes = true)
-   operation_ord            operation_ord (spaces/generic.rs:1362-1396):
+   operation_ord            operation_ord (spaces/generic.rs:1606-1640):
                             with no counter every order is 0
    scan_round, scan_reissue the record of a round of a scan produce
                             (record::wrap_datum_metered with the order of

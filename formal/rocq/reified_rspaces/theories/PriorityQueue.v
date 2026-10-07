@@ -79,8 +79,8 @@
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code (rholang/src/rust/interpreter)
    ─────────────────────────────────────────────────────────────────────────
-   below, least_from, least  spaces/disciplines/priority_queue.rs:240-247
-                             and 352-394 (lane_heads with head_metered of
+   below, least_from, least  spaces/disciplines/priority_queue.rs:243-250
+                             and 355-397 (lane_heads with head_metered of
                              the queue on each pair: the least (ord, bytes),
                              the earlier entry on equal keys)
    lvl_class, lvl_index,     spaces/disciplines/priority_queue.rs:119-155
@@ -88,17 +88,17 @@
                              ascending, then Unprioritized)
    sees                      spaces/disciplines/priority_queue.rs:186-192
                              (Lane::sees)
-   record_head, waiter_head  spaces/disciplines/priority_queue.rs:397-408
+   record_head, waiter_head  spaces/disciplines/priority_queue.rs:400-411
                              (record_heads and waiter_heads)
-   view                      spaces/disciplines/priority_queue.rs:443-503
+   view                      spaces/disciplines/priority_queue.rs:446-506
                              (record_head_list: the record in flight is the
                              head of its level when its order is the least)
-   first_match               spaces/disciplines/priority_queue.rs:510-536
+   first_match               spaces/disciplines/priority_queue.rs:513-539
                              (the first level head, in ascending level
                              order, that the lane sees and that matches)
-   fireable                  spaces/disciplines/priority_queue.rs:969-1063
+   fireable                  spaces/disciplines/priority_queue.rs:978-1072
                              (first_match, then Cx::admits once)
-   fire_candidates, oldest,  spaces/disciplines/priority_queue.rs:969-1063
+   fire_candidates, oldest,  spaces/disciplines/priority_queue.rs:978-1072
    next_fire                 (PriorityQueueView::next_fire: the fireable
                              waiter-lane head with the least order)
    lands_first               spaces/settle.rs:425-430 (a fire of a stored
@@ -116,37 +116,37 @@
    cand1, cand2              spaces/disciplines/priority_queue.rs:149-154
                              (Level::candidate_lanes) and 542-594 (the
                              lookup of each candidate lane head)
-   offer_pick                spaces/disciplines/priority_queue.rs:542-594
+   offer_pick                spaces/disciplines/priority_queue.rs:545-597
                              (offer_target: the older head first, and each
                              refusal marks its lane)
-   fits_datum                spaces/generic.rs:645-652 (Cx::matches)
-   offer_loop                spaces/disciplines/priority_queue.rs:756-815
+   fits_datum                spaces/generic.rs:726-733 (Cx::matches)
+   offer_loop                spaces/disciplines/priority_queue.rs:765-824
                              (offer_pq)
-   receive_loop,             spaces/disciplines/priority_queue.rs:821-924 and
+   receive_loop,             spaces/disciplines/priority_queue.rs:830-933 and
    consume_fire              929-938 (receive_pq and restore_peeked) and
-                             spaces/generic.rs:316-323 (Discipline::restore)
-   fresh_offer,              spaces/disciplines/priority_queue.rs:251-265 and
+                             spaces/generic.rs:342-349 (Discipline::restore)
+   fresh_offer,              spaces/disciplines/priority_queue.rs:254-268 and
    fresh_receive,            416-437 (reaches_head, precedes and
    reenter_offer,            at_lane_head: a fresh element joins the tail of
    reenter_receive           its lane, and a re-entry precedes with <)
-   with_settles,             spaces/generic.rs:1156-1169 (open_plan) and
-   plan_at_cap               spaces/disciplines/priority_queue.rs:316-342
+   with_settles,             spaces/generic.rs:1400-1413 (open_plan) and
+   plan_at_cap               spaces/disciplines/priority_queue.rs:319-345
                              (the settle hooks)
-   carried, next_round       spaces/settle.rs:643-675 and 681-703, and
-                             spaces/disciplines/priority_queue.rs:807 and 916
+   carried, next_round       spaces/settle.rs:643-675 and 681-705, and
+                             spaces/disciplines/priority_queue.rs:816 and 925
                              (reissued_ord: persistent.then_some(ord))
-   produce, consume,         spaces/generic.rs:1784-1892 (run_with) and
+   produce, consume,         spaces/generic.rs:2172-2304 (run_with) and
    bumped, bump_ord          spaces/counter.rs:165-245 (bump)
-   fires (the fire count)    spaces/generic.rs:530, 583 and 1828 (Plan.rounds,
+   fires (the fire count)    spaces/generic.rs:601, 654 and 2227 (Plan.rounds,
                              Cx::rounds, and the FireRounds of a transaction)
    apply, run, drop_key      the staged view of the substrate
                              (space_store_handle.rs, stage_produce and
                              stage_consume), as in StackDiscipline.v
-   priority_admitted,        spaces/disciplines/priority_queue.rs:272-292 and
+   priority_admitted,        spaces/disciplines/priority_queue.rs:275-295 and
    produce_checked           658-738 (check_values, priority_of,
                              priorities_bound, check_priority, send_level)
    size                      the staged view: records and waiters only (I-10)
-   lane_scan, head_test,     spaces/disciplines/priority_queue.rs:352-394,
+   lane_scan, head_test,     spaces/disciplines/priority_queue.rs:355-397,
    settle_round,             443-503, 510-536, 542-594, 756-815, 821-924 and
    receive_round,            969-1063, and spaces/settle.rs:404-498 and
    offer_round               519-563 (the scans, the decodes, the matches,

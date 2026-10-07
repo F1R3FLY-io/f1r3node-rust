@@ -15,20 +15,21 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Native space](#native-space) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Negative control](#negative-control) | 2 |
-| [Admission verdict](#admission-verdict) | 2 | [Op channel](#op-channel) | 2 |
-| [Agent](#agent) | 1 | [Operation order](#operation-order) | 2 |
-| [Allocation job](#allocation-job) | 2 | [Outcome](#outcome) | 2 |
-| [Allocator](#allocator) | 2 | [Outer store](#outer-store) | 2 |
-| [Binding](#binding) | 2 | [Pairing](#pairing) | 2 |
-| [Block](#block) | 1 | [Par](#par) | 1 |
-| [Body channel](#body-channel) | 2 | [Param rule](#param-rule) | 2 |
-| [Bundle](#bundle) | 1 | [Path](#path) | 2 |
-| [Canonical form](#canonical-form) | 2 | [Path marker](#path-marker) | 2 |
-| [Canonical group](#canonical-group) | 2 | [Pattern](#pattern) | 1 |
-| [Canonical order](#canonical-order) | 2 | [Peek](#peek) | 1 |
-| [Capacity](#capacity) | 2 | [Persistent](#persistent) | 1 |
+| [Acceptance category](#acceptance-category) | 2 | [Namespace tag](#namespace-tag) | 2 |
+| [Accounting observer](#accounting-observer) | 1 | [Native space](#native-space) | 2 |
+| [Admission verdict](#admission-verdict) | 2 | [Negative control](#negative-control) | 2 |
+| [Agent](#agent) | 1 | [Op channel](#op-channel) | 2 |
+| [Allocation job](#allocation-job) | 2 | [Operation order](#operation-order) | 2 |
+| [Allocator](#allocator) | 2 | [Outcome](#outcome) | 2 |
+| [Binding](#binding) | 2 | [Outer store](#outer-store) | 2 |
+| [Block](#block) | 1 | [Pairing](#pairing) | 2 |
+| [Body channel](#body-channel) | 2 | [Par](#par) | 1 |
+| [Bundle](#bundle) | 1 | [Param rule](#param-rule) | 2 |
+| [Canonical form](#canonical-form) | 2 | [Path](#path) | 2 |
+| [Canonical group](#canonical-group) | 2 | [Path marker](#path-marker) | 2 |
+| [Canonical order](#canonical-order) | 2 | [Pattern](#pattern) | 1 |
+| [Capacity](#capacity) | 2 | [Peek](#peek) | 1 |
+| [Cascade](#cascade) | 2 | [Persistent](#persistent) | 1 |
 | [Cell](#cell) | 2 | [pgmcp](#pgmcp) | 1 |
 | [Channel](#channel) | 1 | [Phlo](#phlo) | 1 |
 | [Checkpoint](#checkpoint) | 1 | [Play](#play) | 1 |
@@ -72,29 +73,32 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Host operation](#host-operation) | 2 | [Space reference](#space-reference) | 2 |
 | [Host work](#host-work) | 1 | [Space transaction](#space-transaction) | 2 |
 | [Hot store](#hot-store) | 1 | [Staged view](#staged-view) | 2 |
-| [Index name](#index-name) | 2 | [Storage channel](#storage-channel) | 2 |
-| [Inductive invariant](#inductive-invariant) | 1 | [Store identity](#store-identity) | 2 |
-| [Inert](#inert) | 2 | [Sub-order](#sub-order) | 2 |
-| [Inner collection](#inner-collection) | 2 | [Sweep](#sweep) | 2 |
-| [Internal operation](#internal-operation) | 2 | [System process](#system-process) | 1 |
-| [Invariant map](#invariant-map) | 2 | [Tested prefix](#tested-prefix) | 2 |
-| [Join](#join) | 1 | [Theory](#theory) | 2 |
-| [KIND](#kind) | 2 | [Theory identity](#theory-identity) | 2 |
-| [Lane](#lane) | 2 | [Times-repeated](#times-repeated) | 2 |
-| [Legacy charge](#legacy-charge) | 2 | [TLA+](#tla) | 1 |
-| [Level](#level) | 2 | [Trigger event](#trigger-event) | 2 |
-| [LFS](#lfs) | 2 | [Tuple space](#tuple-space) | 1 |
-| [Lift](#lift) | 2 | [Typed reply](#typed-reply) | 2 |
-| [List order](#list-order) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
-| [Lock coverage](#lock-coverage) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
-| [Lock stripe](#lock-stripe) | 1 | [URN](#urn) | 1 |
-| [Marker](#marker) | 2 | [Use context](#use-context) | 2 |
-| [Marker tuple](#marker-tuple) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
-| [Matcher](#matcher) | 2 | [Verification recipe](#verification-recipe) | 2 |
-| [Merge](#merge) | 1 | [Volatile channel](#volatile-channel) | 2 |
-| [Model map](#model-map) | 2 | [Waiter](#waiter) | 2 |
-| [Name](#name) | 1 | [Witness test](#witness-test) | 2 |
-| [Namespace tag](#namespace-tag) | 2 | [Write skew](#write-skew) | 2 |
+| [Index channel](#index-channel) | 2 | [Storage channel](#storage-channel) | 2 |
+| [Index name](#index-name) | 2 | [Store identity](#store-identity) | 2 |
+| [Inductive invariant](#inductive-invariant) | 1 | [Sub-order](#sub-order) | 2 |
+| [Inert](#inert) | 2 | [Sweep](#sweep) | 2 |
+| [Inner collection](#inner-collection) | 2 | [System process](#system-process) | 1 |
+| [Internal operation](#internal-operation) | 2 | [Tested prefix](#tested-prefix) | 2 |
+| [Invariant map](#invariant-map) | 2 | [Theory](#theory) | 2 |
+| [Join](#join) | 1 | [Theory identity](#theory-identity) | 2 |
+| [Join engine](#join-engine) | 2 | [Times-repeated](#times-repeated) | 2 |
+| [Join scope](#join-scope) | 2 | [TLA+](#tla) | 1 |
+| [Join slot](#join-slot) | 2 | [Token](#token) | 2 |
+| [KIND](#kind) | 2 | [Trigger event](#trigger-event) | 2 |
+| [Lane](#lane) | 2 | [Tuple space](#tuple-space) | 1 |
+| [Legacy charge](#legacy-charge) | 2 | [Typed reply](#typed-reply) | 2 |
+| [Level](#level) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [LFS](#lfs) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
+| [Lift](#lift) | 2 | [URN](#urn) | 1 |
+| [List order](#list-order) | 2 | [Use context](#use-context) | 2 |
+| [Lock coverage](#lock-coverage) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Lock stripe](#lock-stripe) | 1 | [Vehicle](#vehicle) | 2 |
+| [Marker](#marker) | 2 | [Verification recipe](#verification-recipe) | 2 |
+| [Marker tuple](#marker-tuple) | 2 | [Volatile channel](#volatile-channel) | 2 |
+| [Matcher](#matcher) | 2 | [Waiter](#waiter) | 2 |
+| [Merge](#merge) | 1 | [Witness test](#witness-test) | 2 |
+| [Model map](#model-map) | 2 | [Write skew](#write-skew) | 2 |
+| [Name](#name) | 1 |  |  |
 
 ## Part 1: background terms
 
@@ -781,6 +785,8 @@ A parked continuation holds the envelope `(ord, query policy)` around its body.
 Counters, allocators, and the PathMap index records carry envelopes too, so no Reified datum is a single number.
 The host data structures do not change, and only space agents read envelopes.
 
+A join waiter holds version 2 of the continuation envelope, with one [join slot](#join-slot) for each position of its group.
+
 ### Config record
 
 The config record of a native space is the one datum on its config channel $`C(\mathit{sid}) = \mathtt{0xE0} \mathbin{\Vert} \mathtt{C} \mathbin{\Vert} \mathit{sid}`$ ([decision I-17](decision-register.md#i-17)).
@@ -1087,8 +1093,24 @@ Otherwise the space stores or parks it at its place.
 
 A path marker is a datum that records a stored PathMap datum at one of its prefixes.
 For a datum at path `p`, the space stores one path marker at the path-index channel of each prefix $`q \preceq p`$, including $`q = p`$.
-A COMM event that removes the datum also removes all of its path markers, and a peek keeps them.
+A COMM event that removes the datum also removes all of its path markers.
+A peek removes the marker of its COMM, and its second send stores that marker again or spends the datum ([decision 45](decision-register.md#decision-45), Rule E).
 Path markers make a send and a waiter on related paths touch a shared channel, so merge check #2 sees the contact.
+
+### Index channel
+
+The index channel $`I(\mathit{sid}, \mathrm{prefix\_key}(q))`$ of a PathMap space holds the waiters on the prefix $`q`$.
+It also holds one [path marker](#path-marker) for each stored datum under $`q`$.
+
+### Vehicle
+
+The vehicle of a PathMap datum on a prefix $`q`$ is the [path marker](#path-marker) of the datum on $`q`$, followed by its payload.
+It is the incoming record of a delivery to a waiter on $`q`$, and no store keeps it ([decision 40](decision-register.md#decision-40), Q3).
+
+### Token
+
+The token of a PathMap space is its [space counter](#space-counter) $`S(\mathit{sid})`$.
+Every operation of an ordered discipline bumps it, and so does every change of state of a bag or a set ([decision 51](decision-register.md#decision-51)).
 
 ### LFS
 
@@ -1292,10 +1314,37 @@ The lane of a priority sees the head of its [level](#level), and the unrestricte
 
 A settle fires the pairs of entries that a fire exposes below the heads of a stack or a priority queue ([specification SK-3](specification.md#34-stack), [PQ-8](specification.md#36-priority-queue)).
 A collection settles before and after each plan, and in a settle job, which is a space operation of its own.
+The [join engine](#join-engine) settles the collections of a [join scope](#join-scope) with its [cascade](#cascade).
 
 ### Tested prefix
 
 The tested prefix of a plan holds the candidates that the element in flight failed. The plan does not test them again.
+
+### Join scope
+
+The join scope of an operation is the set of collections that the join groups of its space connect to its own collections ([specification JN-2](specification.md#38-joins)).
+The scope also holds the lock keys of these collections. The [join engine](#join-engine) locks the whole scope before it stages anything.
+
+### Join slot
+
+A join slot is the part of the record of a join waiter for one position of its [canonical group](#canonical-group).
+It holds the order of the waiter in the collection of the position and the index of the bind in the receive.
+It also holds the [lane](#lane) of a bind on a priority queue.
+Version 2 of the continuation envelope holds one slot for each position. So a fire can put its results back into the bind order of the receive.
+
+### Join engine
+
+The join engine runs every space operation that a [join](#join) can reach ([decision 29](decision-register.md#decision-29)).
+These are the receives with two or more binds on one space and the operations on a collection with a join group of other channels.
+The engine searches the windows of every collection of a group.
+It stages the fires, the [second sends](#second-send), and the [cascade](#cascade) on one [fire count](#fire-count).
+
+### Cascade
+
+A cascade fires each waiter that a fire exposes in a [join scope](#join-scope), in the same transaction ([specification JN-10](specification.md#38-joins)).
+It takes the first non-persistent record of the waiter out of its collection with a [lift](#lift), and it offers that record to the waiter again.
+The head-only disciplines and the set cascade ([decision 50](decision-register.md#decision-50)), and a bag needs no cascade.
+At the fire cap, the transaction re-issues a settle job that carries the rest of the cascade.
 
 ## References
 

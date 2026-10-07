@@ -35,7 +35,8 @@
 //! named params of a send ([`ProduceOp::params`]), the query of a receive
 //! ([`ConsumeOp::query`]), the settle of a collection after a fire ([`SettleOp`],
 //! [`SpaceAgent::prepare_settle`]), and the allocation of index names ([`AllocOp`],
-//! [`SpaceAgent::allocate`]). Joins add `JoinOp` in P5c.
+//! [`SpaceAgent::allocate`]). Joins add [`JoinOp`], [`SpaceAgent::prepare_join`] and the
+//! cascade state of a settle ([`SettleOp::cascade`]) in P5c.
 
 use std::collections::BTreeMap;
 
@@ -150,9 +151,80 @@ pub struct ConsumeOp {
     pub reissued_ord: Option<i64>,
 }
 
+/// One bind of a join (P5c, decision 29): a collection of the space, the channel as the program
+/// names it, the pattern of the bind and its query. A bind on a priority queue may carry the
+/// query param `priority`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JoinBind {
+    /// The collection of the bind: the canonical bytes of its inner channel.
+    pub key: CollectionKey,
+    /// The inner channel as the program names it, after the unbundling of `unbundle_receive`.
+    pub channel: Par,
+    /// The pattern of the bind.
+    pub pattern: BindPattern,
+    /// The query of the bind, or `None`.
+    pub query: Option<QueryParams>,
+}
+
+/// A receive with two or more binds whose channels all route to one native space (P5c,
+/// decision 29). The join engine runs it (`spaces::join`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct JoinOp {
+    /// The space.
+    pub space: NativeSpace,
+    /// The binds in the bind order of the receive. A join has at least two binds.
+    pub binds: Vec<JoinBind>,
+    /// The body and its random state. Under a use-context the body is already wrapped
+    /// (`reified::scope::wrap_body`).
+    pub body: ParWithRandom,
+    /// True for `<=`.
+    pub persistent: bool,
+    /// True for `<<-`. One arrow covers every bind of a receive, so every bind peeks.
+    pub peek: bool,
+    /// The substituted `where` guard. It is checked once, over the values of every bind in
+    /// bind order (decision 37).
+    pub guard: Option<Par>,
+    /// The cost authority of the continuation: the receive authority of `eval_receive`.
+    pub authority: CostAuthority,
+    /// The introduction authority of the receive (P4 design B.7).
+    pub introduction_authority: CostAuthority,
+    /// The order of the first round of a re-issued persistent join in the collection of each
+    /// bind, in bind order, or `None` (decision 43). Repeated binds on one collection have equal
+    /// orders. A join of the program and a re-issued join that is not persistent have none.
+    pub reissued_ords: Option<Vec<i64>>,
+}
+
+/// A second send (decision 45, Rule E) that a cascade of the join engine still owes when its
+/// transaction stops at the round cap (decision 49). The settle job that continues the cascade
+/// offers it first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingProduce {
+    /// The collection of the record.
+    pub key: CollectionKey,
+    /// The record as the store held it: its envelope and its payload. The bytes fix the produce
+    /// identity, so the second send keeps the identity of the record.
+    pub record: ListParWithRandom,
+    /// True for a persistent record.
+    pub persist: bool,
+}
+
+/// The rest of a cascade of the join engine (P5c, joins plan section 4.10).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CascadeState {
+    /// The other collections that may owe fires, in ascending key order, without the key of the
+    /// settle.
+    pub seeds: Vec<CollectionKey>,
+    /// The second sends that the cascade owes, in the order in which they run.
+    pub pending: Vec<PendingProduce>,
+    /// The operation to re-issue when the cascade completes (decision 43 order): the operation
+    /// whose transaction stopped before its element settled, or `None`.
+    pub resume: Option<Box<SpaceReissue>>,
+}
+
 /// The settle of a collection: the fires that a discipline with a settle rule still owes after
 /// an operation (P5b, F2). A stack or a priority queue issues it as the re-issue of a settle
-/// that reached `FIRE_ROUND_CAP`. A program never issues it.
+/// that reached `FIRE_ROUND_CAP`. The join engine issues it with a cascade state (P5c). A
+/// program never issues it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettleOp {
     /// The space.
@@ -167,6 +239,9 @@ pub struct SettleOp {
     pub authority: CostAuthority,
     /// The introduction authority of the operation that started the settle.
     pub introduction_authority: CostAuthority,
+    /// The rest of a cascade of the join engine, or `None` for the settle of one collection
+    /// (P5b).
+    pub cascade: Option<Box<CascadeState>>,
 }
 
 /// The allocation of `count` index names of an Array or Vector space (P5d, F11): the names of
@@ -198,6 +273,7 @@ pub enum SpaceOp {
     Produce(ProduceOp),
     Consume(ConsumeOp),
     Settle(SettleOp),
+    Join(JoinOp),
 }
 
 impl SpaceOp {
@@ -207,6 +283,7 @@ impl SpaceOp {
             SpaceOp::Produce(op) => op.space,
             SpaceOp::Consume(op) => op.space,
             SpaceOp::Settle(op) => op.space,
+            SpaceOp::Join(op) => op.space,
         }
     }
 
@@ -220,6 +297,10 @@ impl SpaceOp {
                 false => Some(op.authority.clone()),
             },
             SpaceOp::Settle(op) => match op.authority.regions.is_empty() {
+                true => None,
+                false => Some(op.authority.clone()),
+            },
+            SpaceOp::Join(op) => match op.authority.regions.is_empty() {
                 true => None,
                 false => Some(op.authority.clone()),
             },
@@ -331,11 +412,20 @@ pub trait SpaceAgent: Send + Sync {
     ) -> Result<Prepared<SpaceOutcome>, SpaceError>;
 
     /// Stages the settle of a collection (P5b). A discipline without a settle rule fails with
-    /// `Inconsistent`, because no operation of it issues a settle.
+    /// `Inconsistent`, because no operation of it issues a settle. A settle with a cascade
+    /// state runs in the join engine (P5c).
     async fn prepare_settle(
         &self,
         env: &SpaceEnv,
         op: SettleOp,
+    ) -> Result<Prepared<SpaceOutcome>, SpaceError>;
+
+    /// Stages a join (P5c, decision 29): lock the channels of the collections of its binds,
+    /// read the config, then escalate the locks to the join closure and run the join engine.
+    async fn prepare_join(
+        &self,
+        env: &SpaceEnv,
+        op: JoinOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError>;
 
     /// Allocates the index names of `op` (P5d). An outer store without an allocator returns
@@ -370,6 +460,7 @@ pub async fn run_op(
         SpaceOp::Produce(op) => agent.prepare_produce(env, op).await?,
         SpaceOp::Consume(op) => agent.prepare_consume(env, op).await?,
         SpaceOp::Settle(op) => agent.prepare_settle(env, op).await?,
+        SpaceOp::Join(op) => agent.prepare_join(env, op).await?,
     };
     prepared.commit().await
 }
@@ -491,6 +582,14 @@ mod tests {
             _op: SettleOp,
         ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
             Err(SpaceError::Inconsistent("the test agent does not settle"))
+        }
+
+        async fn prepare_join(
+            &self,
+            _env: &SpaceEnv,
+            _op: JoinOp,
+        ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+            Err(SpaceError::Inconsistent("the test agent does not join"))
         }
 
         async fn allocate(&self, _env: &SpaceEnv, _op: AllocOp) -> Result<Allocation, SpaceError> {

@@ -328,6 +328,7 @@ fn settle_after_send(op: &ProduceOp) -> SettleOp {
         random_state: op.data.random_state.clone(),
         authority: op.data.cost_authority.clone().unwrap_or_default(),
         introduction_authority: op.authority.clone(),
+        cascade: None,
     }
 }
 

@@ -71,7 +71,7 @@
    ─────────────────────────────────────────────────────────────────────────
    cell_capacity            spaces/disciplines/cell.rs:57
                             (CellDiscipline::CAPACITY = Some(1))
-   has_room                 spaces/generic.rs:768-783 (Cx::check_capacity:
+   has_room                 spaces/generic.rs:849-864 (Cx::check_capacity:
                             no bound does no work, and a side that holds
                             capacity entries fails with CellOccupied)
    cell_reaches_head        spaces/disciplines/cell.rs:72-74
@@ -87,39 +87,39 @@
                             reified/costs.rs:44, 315-333 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
    store_checked, park_checked
-                            spaces/generic.rs:1188-1191, 1197-1200,
-                            1207-1210 and 1271-1274, 1279-1282, 1285-1288
+                            spaces/generic.rs:1432-1435, 1441-1444,
+                            1451-1454 and 1515-1518, 1523-1526, 1529-1532
                             (check_capacity, then store or park)
-   offer, offer_loop        spaces/generic.rs:1177-1244 (offer_head, the
+   offer, offer_loop        spaces/generic.rs:1421-1488 (offer_head, the
                             default Discipline::offer)
-   receive, receive_loop    spaces/generic.rs:1253-1337 (receive_head, the
+   receive, receive_loop    spaces/generic.rs:1497-1581 (receive_head, the
                             default Discipline::receive)
    fire_view, restores, receive_ops, receive_fired
-                            spaces/generic.rs:1328-1333, 1306-1335 and
-                            1339-1349 (the copy of a peeked non-persistent
+                            spaces/generic.rs:1572-1577, 1550-1579 and
+                            1583-1593 (the copy of a peeked non-persistent
                             record, the fire, and restore_peeked), the
                             default Discipline::restore at
-                            spaces/generic.rs:310-323 and Cx::restore at
+                            spaces/generic.rs:336-349 and Cx::restore at
                             869-880 (a plain store_on with no capacity
                             check). The substrate removes a peeked
                             non-persistent record (decision 45).
    bump_ord, bumped, produce, consume
-                            spaces/generic.rs:1784-1892 (run_with: bump
+                            spaces/generic.rs:2172-2304 (run_with: bump
                             the counter, then the plan with the ord of the
                             bump) and spaces/counter.rs (the ord is the
                             value of the counter, and the first operation
                             takes 0)
-   operation_ord            spaces/generic.rs:1362-1396 (a re-issued ord
+   operation_ord            spaces/generic.rs:1606-1640 (a re-issued ord
                             lies below the value of the counter, else
                             Inconsistent)
    reentry_at_head, record_head_ord, waiter_head_ord
-                            spaces/generic.rs:739-766 and 706-728
+                            spaces/generic.rs:820-847 and 787-809
                             (Cx::at_head and Cx::head_ord: an empty side,
                             or the rule precedes, and Inconsistent on an
                             equal ord)
    reenter_offer, reenter_receive, reenter_produce, reenter_consume
-                            spaces/generic.rs:1177-1244, 1253-1337 and
-                            1784-1892 (the plans with a reissued_ord)
+                            spaces/generic.rs:1421-1488, 1497-1581 and
+                            2172-2304 (the plans with a reissued_ord)
    step_view, replay_view   the substrate applies each staged operation to
                             the staged view: a store and a re-store put a
                             record at the front of its list, a park puts a
@@ -136,7 +136,7 @@
    ─────────────────────────────────────────────────────────────────────────
    - fits w d is the metered match of the payload of d against the pattern
      of w, followed by the guard of w (SpaceMatcher::matches,
-     spaces/matching.rs:85-99). The model takes it as a section variable:
+     spaces/matching.rs:107-121). The model takes it as a section variable:
      every theorem holds for every matcher.
    - The bincode bytes of an entry give a strict total order on distinct
      entries. The model writes rank for the position of those bytes in that

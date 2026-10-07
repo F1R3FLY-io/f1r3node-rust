@@ -24,8 +24,8 @@ use models::rhoapi::Par;
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 
 use super::agent::{
-    AllocOp, Allocation, ConsumeOp, Prepared, ProduceOp, SettleOp, SpaceAgent, SpaceCreation,
-    SpaceEnv, SpaceOp, SpaceOutcome,
+    AllocOp, Allocation, ConsumeOp, JoinOp, Prepared, ProduceOp, SettleOp, SpaceAgent,
+    SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
 };
 use super::disciplines::bag::BagDiscipline;
 use super::disciplines::cell::CellDiscipline;
@@ -35,8 +35,9 @@ use super::disciplines::set::SetDiscipline;
 use super::disciplines::stack::StackDiscipline;
 use super::errors::SpaceError;
 use super::generic::{
-    begin_allocation, begin_collection, family_matches, family_unavailable, read_config_map,
-    CollectionTxn, Discipline, FamilySpace, GenericSpace, OuterStore,
+    begin_allocation, begin_collection, begin_join, family_matches, family_unavailable,
+    prepare_collection_op, read_config_map, CollectionTxn, Discipline, FamilySpace, GenericSpace,
+    OuterStore,
 };
 use super::namespace::NativeSpace;
 use super::outer::array::ArrayOuter;
@@ -343,14 +344,15 @@ pub fn query_params(urn: SpaceFactoryUrn) -> Option<&'static [&'static str]> {
 pub struct FamilyAgent;
 
 /// Runs the collection operation `op` in the open transaction `opened` with the agent of the
-/// family that the config names.
-fn dispatch(
+/// family that the config names: the driver of the collection, or the join engine of P5c after
+/// the escalation of its locks (`generic::prepare_collection_op`).
+async fn dispatch(
     env: &SpaceEnv,
     opened: CollectionTxn,
     op: SpaceOp,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
     match Family::of_config(&opened.config, &env.meter)? {
-        Some(family) => family.agent().run_with(env, opened, op),
+        Some(family) => prepare_collection_op(family.agent(), env, opened, op).await,
         None => Err(family_unavailable(opened.config)),
     }
 }
@@ -363,7 +365,7 @@ impl SpaceAgent for FamilyAgent {
         op: ProduceOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&HashMapOuter, env, op.space, &op.key, &op.channel).await?;
-        dispatch(env, opened, SpaceOp::Produce(op))
+        dispatch(env, opened, SpaceOp::Produce(op)).await
     }
 
     async fn prepare_consume(
@@ -372,7 +374,7 @@ impl SpaceAgent for FamilyAgent {
         op: ConsumeOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&HashMapOuter, env, op.space, &op.key, &op.channel).await?;
-        dispatch(env, opened, SpaceOp::Consume(op))
+        dispatch(env, opened, SpaceOp::Consume(op)).await
     }
 
     async fn prepare_settle(
@@ -381,7 +383,18 @@ impl SpaceAgent for FamilyAgent {
         op: SettleOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&HashMapOuter, env, op.space, &op.key, &op.channel).await?;
-        dispatch(env, opened, SpaceOp::Settle(op))
+        dispatch(env, opened, SpaceOp::Settle(op)).await
+    }
+
+    /// The join locks the collections of its binds in the HashMap store, as every keyed
+    /// operation does (A5).
+    async fn prepare_join(
+        &self,
+        env: &SpaceEnv,
+        op: JoinOp,
+    ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+        let opened = begin_join(&HashMapOuter, env, &op).await?;
+        dispatch(env, opened, SpaceOp::Join(op)).await
     }
 
     async fn allocate(&self, env: &SpaceEnv, op: AllocOp) -> Result<Allocation, SpaceError> {

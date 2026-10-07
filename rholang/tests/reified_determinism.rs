@@ -1,8 +1,14 @@
 //! The determinism suite of the native spaces (P5 design v2 section 2.6, as P5 design v3 C.1
 //! item 7 corrects it): the leaves `rrs-spaces-determinism-canonical-iteration` and
-//! `rrs-spaces-determinism-serialization-failure`, for the families of P5 wave W2 that the family
-//! agent wires: `hashmap:bag`, `hashmap:queue`, `hashmap:stack` and `hashmap:cell`. The set and
-//! priority-queue rows follow in wave W3.
+//! `rrs-spaces-determinism-serialization-failure`, for the families that the family agent wires.
+//! Wave W2 covered `hashmap:bag`, `hashmap:queue`, `hashmap:stack` and `hashmap:cell`. Wave W3
+//! adds these rows:
+//!
+//! * `hashmap:set` and `hashmap:priorityqueue`,
+//! * the bag, stack and cell rows of the Array and Vector stores,
+//! * the join groups of P5c: no choice of the join engine depends on the list order of the join
+//!   groups or of their waiters,
+//! * the ties of a priority query.
 //!
 //! **Canonical iteration.** The choices of an agent are a function of the entry set of its
 //! collection, never of the order in which the hot store lists the entries. The hot store puts
@@ -50,7 +56,7 @@
 mod support;
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -58,7 +64,8 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, EEq, EVar, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation, Var,
+    BindPattern, CostAuthority, EEq, EVar, Expr, ListParWithRandom, Par, ParWithRandom,
+    TaggedContinuation, Var,
 };
 use models::rust::host_work::{
     HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkReservationError, HostWorkUnits,
@@ -74,13 +81,19 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::spaces::agent::{ConsumeOp, SpaceEnv, SpaceOp, SpaceOutcome};
+use rholang::rust::interpreter::spaces::agent::{
+    AllocOp, Allocation, ConsumeOp, ProduceOp, QueryParams, SpaceAgent, SpaceEnv, SpaceOp,
+    SpaceOutcome,
+};
+use rholang::rust::interpreter::spaces::disciplines::priority_queue::PRIORITY_PARAM;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::families::FamilyAgent;
 use rholang::rust::interpreter::spaces::generic::{ParDatum, ParWaiter};
 use rholang::rust::interpreter::spaces::namespace::{self, Durability, NativeSpace, SID_LEN};
-use rholang::rust::interpreter::spaces::record;
+use rholang::rust::interpreter::spaces::outer::array::SIZE_PARAM;
+use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
+use rholang::rust::interpreter::spaces::{allocator, record};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
@@ -108,6 +121,10 @@ enum Kind {
     Stack,
     /// `hashmap:cell`: the head driver, one record and one waiter.
     Cell,
+    /// `hashmap:set`: the scan driver over classes, with no counter (wave W3).
+    Set,
+    /// `hashmap:priorityqueue`: the lane driver, the least `ord` first in each level (wave W3).
+    Pq,
 }
 
 impl Kind {
@@ -121,6 +138,8 @@ impl Kind {
             Kind::Queue => SpaceInner::Queue,
             Kind::Stack => SpaceInner::Stack,
             Kind::Cell => SpaceInner::Cell,
+            Kind::Set => SpaceInner::Set,
+            Kind::Pq => SpaceInner::PriorityQueue,
         }
     }
 
@@ -193,6 +212,125 @@ async fn create_space(kind: Kind, host: &ParRSpace, budget: &RuntimeBudget) -> S
     env
 }
 
+/// The outer store of a canonical-iteration rig (wave W3 adds the Array and Vector rows).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Store {
+    /// The HashMap store: any channel names a collection.
+    HashMap,
+    /// A fixed Array store of four index names.
+    Array,
+    /// A Vector store.
+    Vector,
+}
+
+impl Store {
+    /// The outer store.
+    fn outer(self) -> SpaceOuter {
+        match self {
+            Store::HashMap => SpaceOuter::HashMap,
+            Store::Array => SpaceOuter::Array,
+            Store::Vector => SpaceOuter::Vector,
+        }
+    }
+
+    /// The family `<store>:<kind>`.
+    fn family(self, kind: Kind) -> SpaceFactoryUrn {
+        SpaceFactoryUrn {
+            outer: self.outer(),
+            inner: kind.inner(),
+        }
+    }
+
+    /// The config map of [`SPACE`] for the discipline `kind`. An Array space has four index
+    /// names.
+    fn config(self, kind: Kind) -> Par {
+        let mut config = SpaceConfig::new(
+            SPACE.sid,
+            self.outer().as_str(),
+            kind.inner().as_str(),
+            SpaceQualifier::Default,
+        );
+        if self == Store::Array {
+            config.params.insert(SIZE_PARAM.to_string(), int(4));
+        }
+        config.to_par()
+    }
+
+    /// The constructor arguments of the factory, as Rholang source.
+    fn ctor(self) -> &'static str {
+        match self {
+            Store::HashMap | Store::Vector => "\"default\"",
+            Store::Array => "\"default\"; size=4",
+        }
+    }
+
+    /// The inner channels of the two collections of a rig. They are two strings on a HashMap
+    /// space, and the index names 0 and 1 on an Array or a Vector space.
+    fn collections(self) -> [Par; 2] {
+        match self {
+            Store::HashMap => [left(), right()],
+            Store::Array | Store::Vector => [
+                allocator::index_name(SPACE, 0),
+                allocator::index_name(SPACE, 1),
+            ],
+        }
+    }
+
+    /// The channels that hold the whole state of a rig: [`space_channels`] of the collections,
+    /// and the allocator `A(sid)` of an Array or a Vector space.
+    fn channels(self) -> Vec<Par> {
+        let mut channels = space_channels(&self.collections());
+        if self != Store::HashMap {
+            channels.push(allocator::allocator_channel(SPACE));
+        }
+        channels
+    }
+}
+
+/// Creates the space of `store` and `kind` in `host` with the family agent. On an Array or a
+/// Vector space, it allocates the index names 0 and 1. It returns the environment of a job over
+/// `host` that charges `budget`.
+async fn create_space_in(
+    store: Store,
+    kind: Kind,
+    host: &ParRSpace,
+    budget: &RuntimeBudget,
+) -> SpaceEnv {
+    if store == Store::HashMap {
+        return create_space(kind, host, budget).await;
+    }
+    let env = env_over(host.clone(), budget);
+    create(
+        &FamilyAgent,
+        &env,
+        creation(SPACE, store.config(kind), store.family(kind)),
+    )
+    .await;
+    let op = AllocOp {
+        space: SPACE,
+        count: 2,
+        random_state: Blake2b512Random::create_from_bytes(b"rrs-det-allocation").to_bytes(),
+        authority: CostAuthority::default(),
+    };
+    match FamilyAgent
+        .allocate(&env, op)
+        .await
+        .expect("the allocation of two index names runs")
+    {
+        Allocation::Indices(prepared) => {
+            let indices = prepared.commit().await.expect("the allocation commits");
+            assert_eq!(
+                indices,
+                vec![0, 1],
+                "the space hands out the index names 0 and 1"
+            );
+        }
+        Allocation::Baseline => panic!("an Array or a Vector space has an allocator"),
+    }
+    host.take_event_log().await;
+    env
+}
+
 // ─── Operations ──────────────────────────────────────────────────────────────────────────────
 
 /// A send of the payload `pars` on `channel`, with a random state that the text `salt` fixes.
@@ -222,6 +360,33 @@ fn send_forever(channel: &Par, value: i64, salt: u64) -> SpaceOp {
 /// A receive on `channel` whose body is the string `name`.
 fn receive(channel: &Par, name: &str, pattern: BindPattern) -> SpaceOp {
     SpaceOp::Consume(receive_on(SPACE, channel, name, pattern))
+}
+
+/// The named params of a send or of a query with the level `level` of a priority queue.
+fn priority(level: i64) -> BTreeMap<String, Par> {
+    BTreeMap::from([(PRIORITY_PARAM.to_string(), int(level))])
+}
+
+/// A send of `value` on `channel` of a priority queue at the level `level`, with the salt `salt`.
+fn send_at(channel: &Par, value: i64, salt: u64, level: i64) -> SpaceOp {
+    match send(channel, value, salt) {
+        SpaceOp::Produce(op) => SpaceOp::Produce(ProduceOp {
+            params: priority(level),
+            ..op
+        }),
+        other => other,
+    }
+}
+
+/// A receive on `channel` of a priority queue in the lane of the level `level`.
+fn receive_in(channel: &Par, name: &str, pattern: BindPattern, level: i64) -> SpaceOp {
+    SpaceOp::Consume(ConsumeOp {
+        query: Some(QueryParams {
+            payload: Vec::new(),
+            named: priority(level),
+        }),
+        ..receive_on(SPACE, channel, name, pattern)
+    })
 }
 
 /// `op`, a receive, as a peek (`<<-`).
@@ -472,8 +637,14 @@ async fn observe(host: &ParRSpace, script: &[SpaceOp]) -> Run {
 
 /// Builds the space of `kind` in a fresh store and runs the agent operations `build` in order.
 async fn built(kind: Kind, build: &[SpaceOp]) -> ParRSpace {
+    built_in(Store::HashMap, kind, build).await
+}
+
+/// Builds the space of `store` and `kind` in a fresh store and runs the agent operations `build`
+/// in order.
+async fn built_in(store: Store, kind: Kind, build: &[SpaceOp]) -> ParRSpace {
     let host = play().await;
-    let env = create_space(kind, &host, &budget()).await;
+    let env = create_space_in(store, kind, &host, &budget()).await;
     run_all(&env, build).await;
     host.take_event_log().await;
     host
@@ -498,8 +669,18 @@ struct ListOrders {
 /// holds at most one entry in each list (F15), so its lists have one order only, and the three
 /// stores list the cell in the same order.
 async fn list_orders(kind: Kind, build: &[SpaceOp], probe: &[SpaceOp]) -> ListOrders {
-    let channels = space_channels(&[left(), right()]);
-    let agent_host = built(kind, build).await;
+    list_orders_in(Store::HashMap, kind, build, probe).await
+}
+
+/// [`list_orders`] on the space of `store` and `kind`.
+async fn list_orders_in(
+    store: Store,
+    kind: Kind,
+    build: &[SpaceOp],
+    probe: &[SpaceOp],
+) -> ListOrders {
+    let channels = store.channels();
+    let agent_host = built_in(store, kind, build).await;
     let agent_rows = rows_of(&agent_host, &channels).await;
     let reorderable = agent_rows
         .iter()
@@ -524,7 +705,7 @@ async fn list_orders(kind: Kind, build: &[SpaceOp], probe: &[SpaceOp]) -> ListOr
         "{kind:?}: the raw store lists the entries in another order"
     );
 
-    let history_host = built(kind, build).await;
+    let history_host = built_in(store, kind, build).await;
     history_host
         .create_checkpoint()
         .await
@@ -594,8 +775,20 @@ fn assert_same_runs(kind: Kind, orders: &ListOrders, same_work: bool) {
 /// * Cell: a record and a waiter that does not take it on the left collection, and a waiter on
 ///   the right collection. The probe fires both waiters, peeks, takes the record, and fills the
 ///   cell, so the last send fails with `CellOccupied`.
-fn script_of(kind: Kind) -> (Vec<SpaceOp>, Vec<SpaceOp>) {
-    let (a, b) = (left(), right());
+fn script_of(kind: Kind) -> (Vec<SpaceOp>, Vec<SpaceOp>) { script_on(kind, &left(), &right()) }
+
+/// [`script_of`] on the collections of `a` and `b`.
+///
+/// * Set: the left collection holds five records (two members of the class of 1) and a waiter
+///   for 7. The right collection holds three waiters. No send fires. The probe takes the class of
+///   1 with one class fire, fires the waiter for 7, peeks, and fires the waiters of the right
+///   collection.
+/// * Priority queue: the left collection holds three records at the levels 1, 0 and none. The
+///   right collection holds three waiters: one of any value, one for 5 in the lane 0 and one for
+///   6 in the lane 1. The probe takes the least level and peeks in the lane 1. It sends 7, 6 and 5
+///   at the levels 0, 1 and 0, and the oldest lane head fires first.
+fn script_on(kind: Kind, a: &Par, b: &Par) -> (Vec<SpaceOp>, Vec<SpaceOp>) {
+    let (a, b) = (a.clone(), b.clone());
     match kind {
         Kind::Bag => (
             vec![
@@ -655,6 +848,48 @@ fn script_of(kind: Kind) -> (Vec<SpaceOp>, Vec<SpaceOp>) {
                 send(&a, 5, 1),
             ],
         ),
+        Kind::Set => (
+            vec![
+                send(&a, 5, 1),
+                send(&a, 1, 1),
+                send(&a, 4, 1),
+                send(&a, 1, 2),
+                send(&a, 3, 1),
+                receive(&a, "w7", exactly(7)),
+                receive(&b, "x", exactly(2)),
+                receive(&b, "y", any()),
+                receive(&b, "z", exactly(3)),
+            ],
+            vec![
+                receive(&a, "p1", exactly(1)),
+                send(&a, 7, 1),
+                peeking(receive(&a, "p3", exactly(4))),
+                persisting(receive(&a, "p4", exactly(5))),
+                send(&a, 5, 3),
+                send(&b, 3, 1),
+                send(&b, 2, 1),
+                send(&b, 6, 1),
+            ],
+        ),
+        Kind::Pq => (
+            vec![
+                send_at(&a, 1, 1, 1),
+                send_at(&a, 2, 1, 0),
+                send(&a, 3, 1),
+                receive(&b, "w1", any()),
+                receive_in(&b, "w5", exactly(5), 0),
+                receive_in(&b, "w6", exactly(6), 1),
+            ],
+            vec![
+                receive(&a, "p1", any()),
+                peeking(receive_in(&a, "p2", any(), 1)),
+                send_at(&b, 7, 1, 0),
+                send_at(&b, 6, 1, 1),
+                send_at(&b, 5, 1, 0),
+                receive(&a, "p7", exactly(9)),
+                send(&a, 9, 1),
+            ],
+        ),
     }
 }
 
@@ -694,13 +929,52 @@ struct RuntimeRun {
 /// The output channel of a determinism program.
 const OUTPUT: &str = "rrs-det-out";
 
-/// Runs the setup of `kind` and then `program` in a fresh runtime.
-async fn fresh_run(kind: Kind, program: &str) -> RuntimeRun {
+/// The records of the collection of `name` in `session`, in `ord` order: `(ord, payload,
+/// persistent)`. The decoder of the priority queue reads the records of every discipline.
+async fn records_any(
+    session: &Session,
+    space: NativeSpace,
+    name: &Par,
+) -> Vec<(i64, Vec<Par>, bool)> {
+    let mut records: Vec<(i64, Vec<Par>, bool)> = session
+        .data(&support::session::data_channel(space, name))
+        .await
+        .into_iter()
+        .map(|datum| {
+            let decoded = record::unwrap_pq_datum(&datum.a).expect("a datum record decodes");
+            (decoded.ord, decoded.datum.pars, datum.persist)
+        })
+        .collect();
+    records.sort_by(|left, right| {
+        (left.0, format!("{:?}", left.1)).cmp(&(right.0, format!("{:?}", right.1)))
+    });
+    records
+}
+
+/// The parked continuations of the collection of `name` in `session`, in `ord` order: `(ord,
+/// persistent, peek)`. The decoder of the priority queue reads the waiters of every discipline.
+async fn parked_any(session: &Session, space: NativeSpace, name: &Par) -> Vec<(i64, bool, bool)> {
+    let mut parked: Vec<(i64, bool, bool)> = session
+        .waiters(&support::session::data_channel(space, name))
+        .await
+        .into_iter()
+        .map(|waiter| {
+            let decoded = record::unwrap_pq_continuation(&waiter.continuation)
+                .expect("a parked continuation decodes");
+            (decoded.ord, waiter.persist, !waiter.peeks.is_empty())
+        })
+        .collect();
+    parked.sort();
+    parked
+}
+
+/// Runs the setup of `store` and `kind` and then `program` in a fresh runtime.
+async fn fresh_run_in(store: Store, kind: Kind, program: &str) -> RuntimeRun {
     let mut session = Session::new().await;
-    let urn = kind.family().to_string();
+    let urn = store.family(kind).to_string();
     let setup = session
         .run(
-            &setup_source(&urn, "\"default\""),
+            &setup_source(&urn, store.ctor()),
             &format!("rrs-det-setup {urn}"),
         )
         .await;
@@ -715,12 +989,12 @@ async fn fresh_run(kind: Kind, program: &str) -> RuntimeRun {
         .run(&with_space(program), &format!("rrs-det-program {urn}"))
         .await;
     let records = [
-        session.records(space.space, &space.a).await,
-        session.records(space.space, &space.b).await,
+        records_any(&session, space.space, &space.a).await,
+        records_any(&session, space.space, &space.b).await,
     ];
     let parked = [
-        session.parked(space.space, &space.a).await,
-        session.parked(space.space, &space.b).await,
+        parked_any(&session, space.space, &space.a).await,
+        parked_any(&session, space.space, &space.b).await,
     ];
     let outputs = session.values(OUTPUT).await;
     let root = session.play.create_checkpoint().await.root;
@@ -757,15 +1031,32 @@ for (@2 <- b) { @"rrs-det-out"!(["two", 2]) } | b!(1) | b!(2)"#
             r#"a!(1) | for (@x <- a) { @"rrs-det-out"!(["take", x]) | a!(x + 1) } |
 for (@y <<- b) { @"rrs-det-out"!(["peek", y]) } | b!(5)"#
         }
+        Kind::Set => {
+            r#"a!(3) | a!(1) | a!(2) | a!(1) | b!!(7) |
+for (@1 <- a) { @"rrs-det-out"!(["class", 1]) } |
+for (@x <- a) { @"rrs-det-out"!(["take", x]) } |
+for (@y <<- a) { @"rrs-det-out"!(["peek", y]) } |
+for (@z <- b) { @"rrs-det-out"!(["persistent", z]) }"#
+        }
+        Kind::Pq => {
+            r#"a!(1; priority=1) | a!(2; priority=0) | a!(3) |
+for (@x <- a) { @"rrs-det-out"!(["take", x]) } |
+for (@y <<- a) { @"rrs-det-out"!(["peek", y]) } |
+for (@z <- a ~ (; priority=1)) { @"rrs-det-out"!(["lane", z]) } |
+for (@2 <- b ~ (; priority=0)) { @"rrs-det-out"!(["two", 2]) } | b!(1) | b!(2; priority=0)"#
+        }
     }
 }
 
 /// Runs the program of `kind` twice, in two fresh runtimes, and compares the root, the event
 /// logs and the costs (N9, `run_twice_assert_canonical_equal`).
-async fn check_runs_twice(kind: Kind) {
+async fn check_runs_twice(kind: Kind) { check_runs_twice_in(Store::HashMap, kind).await }
+
+/// [`check_runs_twice`] on the space of `store` and `kind`.
+async fn check_runs_twice_in(store: Store, kind: Kind) {
     let program = program_of(kind);
-    let first = fresh_run(kind, program).await;
-    let second = fresh_run(kind, program).await;
+    let first = fresh_run_in(store, kind, program).await;
+    let second = fresh_run_in(store, kind, program).await;
     assert!(!first.events.is_empty(), "{kind:?}: the program has events");
     assert!(!first.outputs.is_empty(), "{kind:?}: the program fires");
     assert!(first.cost.value > 0, "{kind:?}: the program costs phlo");
@@ -833,6 +1124,191 @@ async fn space_canonical_iteration_cell_views() {
     check_runs_twice(Kind::Cell).await;
 }
 
+/// Set views are a function of the entry set (wave W3). The agent visits the records and the
+/// waiters of a set in the canonical order of DR-75. A class sits at the place of its first
+/// member. So the list order of the store changes no choice, no event, no legacy charge and no
+/// root. The host work is not compared, because the canonical order sorts with the heapsort of
+/// the bag.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_canonical_iteration_set_views() {
+    let (build, probe) = script_of(Kind::Set);
+    let orders = list_orders(Kind::Set, &build, &probe).await;
+    assert_same_runs(Kind::Set, &orders, false);
+    check_runs_twice(Kind::Set).await;
+}
+
+/// The priority queue keeps its order whatever the list order of the store (wave W3). In each
+/// level, the record with the least `ord` is the head. In each lane, the waiter with the least
+/// `ord` is the head. The oldest lane head meets a send first. The lane scan charges the same host
+/// work in every list order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_canonical_iteration_pq_order() {
+    check_ordered_list_orders(Kind::Pq).await;
+    check_runs_twice(Kind::Pq).await;
+}
+
+/// The canonical-iteration rows of the bag, the stack and the cell on the store `store` (wave W3).
+/// Three list orders give the same steps and roots. For the stack and the cell, they also give
+/// the same host work. One program gives the same run in two fresh runtimes.
+async fn check_store_rows(store: Store) {
+    let [a, b] = store.collections();
+    for kind in [Kind::Bag, Kind::Stack, Kind::Cell] {
+        let (build, probe) = script_on(kind, &a, &b);
+        let orders = list_orders_in(store, kind, &build, &probe).await;
+        assert_same_runs(kind, &orders, kind != Kind::Bag);
+        check_runs_twice_in(store, kind).await;
+    }
+}
+
+/// `array:bag`, `array:stack` and `array:cell`: the collections are the index names 0 and 1 of a
+/// fixed Array space. The list order of the store changes no step and no root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_canonical_iteration_array_rows() { check_store_rows(Store::Array).await; }
+
+/// `vector:bag`, `vector:stack` and `vector:cell`: the collections are the index names 0 and 1
+/// of a Vector space. The list order of the store changes no step and no root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_canonical_iteration_vector_rows() { check_store_rows(Store::Vector).await; }
+
+/// The join waiters of the groups `groups` in `space`, each group in the list order of the store.
+async fn group_rows(
+    space: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    groups: &[Vec<Par>],
+) -> Vec<Vec<ParWaiter>> {
+    let mut rows = Vec::with_capacity(groups.len());
+    for group in groups {
+        rows.push(space.get_waiting_continuations(group.clone()).await);
+    }
+    rows
+}
+
+/// Parks the join waiters `rows` of the groups `groups` in `target` with raw host consumes, in the
+/// order `order(n)` of each list. No raw join waiter takes a raw record, because a record holds
+/// its envelope before its payload.
+async fn store_raw_groups(
+    target: &ParRSpace,
+    groups: &[Vec<Par>],
+    rows: &[Vec<ParWaiter>],
+    order: &dyn Fn(usize) -> Vec<usize>,
+) {
+    for (group, waiters) in groups.iter().zip(rows) {
+        for index in order(waiters.len()) {
+            let waiter = &waiters[index];
+            let fired = target
+                .consume(
+                    group.clone(),
+                    waiter.patterns.clone(),
+                    waiter.continuation.clone(),
+                    waiter.persist,
+                    waiter.peeks.clone(),
+                )
+                .await
+                .expect("a raw consume runs");
+            assert!(fired.is_none(), "a raw join waiter parks");
+        }
+    }
+    target.take_event_log().await;
+}
+
+/// The join groups of P5c and the list order of the store (wave W3). The choices of the join
+/// engine are a function of the entry set. They never depend on the order in which the store
+/// lists the join groups of a channel or the waiters of a group. The test uses a bag and a queue.
+///
+/// * Three join waiters wait on the group of the left and the right collection.
+/// * One join waiter waits on the group of the left and the context collection.
+/// * One waiter waits on the right collection.
+///
+/// They wait in the order of the agent, in the reverse order of raw host consumes, and in the
+/// order of the history. A probe of sends fires joins. The three runs give the same steps and
+/// roots, and on the queue the same host work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_canonical_iteration_join_groups() {
+    let (a, b, c) = (left(), right(), context());
+    let join = |binds: &[(&Par, BindPattern)], name: &str| {
+        SpaceOp::Join(support::agent::join_on(SPACE, binds, name))
+    };
+    let build = vec![
+        send(&a, 1, 1),
+        send(&a, 2, 1),
+        send(&a, 3, 1),
+        join(&[(&a, any()), (&b, any())], "j1"),
+        join(&[(&a, any()), (&b, any())], "j2"),
+        join(&[(&a, exactly(2)), (&b, any())], "j3"),
+        join(&[(&a, any()), (&c, any())], "k"),
+        receive(&b, "r9", exactly(9)),
+    ];
+    let probe = vec![
+        send(&b, 5, 1),
+        send(&c, 7, 1),
+        send(&b, 6, 1),
+        send(&b, 9, 1),
+        send(&b, 8, 1),
+    ];
+    let channels = space_channels(&[a.clone(), b.clone(), c.clone()]);
+    let groups = vec![
+        support::agent::join_group(SPACE, &[&a, &b]),
+        support::agent::join_group(SPACE, &[&a, &c]),
+    ];
+    for kind in [Kind::Bag, Kind::Queue] {
+        let agent_host = built(kind, &build).await;
+        let agent_rows = rows_of(&agent_host, &channels).await;
+        let agent_groups = group_rows(&agent_host, &groups).await;
+        assert_eq!(
+            agent_groups.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![3, 1],
+            "{kind:?}: the joins park"
+        );
+
+        let reversed_host = play().await;
+        store_raw(&reversed_host, &channels, &agent_rows, &reverse_order).await;
+        store_raw_groups(&reversed_host, &groups, &agent_groups, &reverse_order).await;
+        let reversed_rows = rows_of(&reversed_host, &channels).await;
+        let reversed_groups = group_rows(&reversed_host, &groups).await;
+        assert_eq!(entry_set(&reversed_rows), entry_set(&agent_rows));
+        assert_eq!(
+            sorted_groups(&reversed_groups),
+            sorted_groups(&agent_groups),
+            "{kind:?}: the raw store holds the join waiters of the agent"
+        );
+        assert_ne!(
+            encoded(&reversed_groups[0]),
+            encoded(&agent_groups[0]),
+            "{kind:?}: the raw store lists the join waiters in another order"
+        );
+
+        let history_host = built(kind, &build).await;
+        history_host
+            .create_checkpoint()
+            .await
+            .expect("a checkpoint of the entry set");
+        let history_groups = group_rows(&history_host, &groups).await;
+        assert_eq!(
+            sorted_groups(&history_groups),
+            sorted_groups(&agent_groups),
+            "{kind:?}: the history holds the join waiters of the agent"
+        );
+
+        let orders = ListOrders {
+            agent: observe(&agent_host, &probe).await,
+            reversed: observe(&reversed_host, &probe).await,
+            history: observe(&history_host, &probe).await,
+        };
+        assert_same_runs(kind, &orders, kind != Kind::Bag);
+    }
+}
+
+/// The join waiters of `groups` as sorted bytes: the entry set of the groups.
+fn sorted_groups(groups: &[Vec<ParWaiter>]) -> Vec<Vec<Vec<u8>>> {
+    groups
+        .iter()
+        .map(|waiters| {
+            let mut bytes = encoded(waiters);
+            bytes.sort();
+            bytes
+        })
+        .collect()
+}
+
 // ─── Serialization failure ───────────────────────────────────────────────────────────────────
 
 /// The length of the string payload of a tied candidate in the example tests.
@@ -853,11 +1329,17 @@ enum Side {
     Waiters,
 }
 
+/// The level of the tied entries of a priority queue: a priority query selects one of them
+/// (wave W3).
+const TIE_LEVEL: i64 = 0;
+
 /// A collection of the discipline `kind` whose two candidates on `side` tie, with payloads of
 /// `length` bytes.
 ///
-/// * Bag: two byte-identical records, stored by two equal sends. Their source hashes are equal,
-///   so DR-75 orders them by their digests.
+/// * Bag and set: two byte-identical records, stored by two equal sends. Their source hashes are
+///   equal, so DR-75 orders them by their digests.
+/// * Priority queue: as the queue, at the level [`TIE_LEVEL`]. A receive with the priority query
+///   of that level selects one record, and a send at that level selects one waiter of its lane.
 /// * Queue, stack, cell: two entries with the `ord` 0, stored by raw host operations: records
 ///   with the payloads `"a…"` and `"b…"`, or waiters with the bodies `"a…"` and `"b…"`. With
 ///   `reversed`, the `"b…"` entry arrives first.
@@ -884,12 +1366,29 @@ fn tie_random(fill: char) -> Vec<u8> {
 impl Tie {
     /// The tied record with the payload of `fill`, as the store holds it.
     fn record(&self, fill: char) -> ListParWithRandom {
-        record::wrap_datum(0, &ListParWithRandom {
+        let datum = ListParWithRandom {
             pars: vec![text(fill, self.length)],
             random_state: tie_random(fill),
             cost_authority: None,
             cost_stack: None,
-        })
+        };
+        match self.kind {
+            Kind::Pq => record::wrap_pq_datum(0, Some(TIE_LEVEL), &datum),
+            Kind::Bag | Kind::Queue | Kind::Stack | Kind::Cell | Kind::Set => {
+                record::wrap_datum(0, &datum)
+            }
+        }
+    }
+
+    /// The parked continuation of the tied waiter with the body of `fill`, as the store holds it.
+    fn parked(&self, fill: char) -> TaggedContinuation {
+        match self.kind {
+            Kind::Pq => record::wrap_pq_continuation(0, Some(TIE_LEVEL), &self.continuation(fill)),
+            Kind::Bag | Kind::Queue | Kind::Stack | Kind::Cell | Kind::Set => {
+                record::wrap_continuation(0, &self.continuation(fill))
+            }
+        }
+        .expect("a continuation record")
     }
 
     /// The continuation of the tied waiter with the body of `fill`, as the program gives it.
@@ -917,7 +1416,7 @@ impl Tie {
     fn winner(&self) -> char {
         match self.kind {
             Kind::Stack => 'b',
-            Kind::Bag | Kind::Queue | Kind::Cell => 'a',
+            Kind::Bag | Kind::Queue | Kind::Cell | Kind::Set | Kind::Pq => 'a',
         }
     }
 
@@ -931,7 +1430,7 @@ impl Tie {
             .expect("the context waiter parks");
         let data = data_channel(SPACE, &tied());
         match (self.kind, self.side) {
-            (Kind::Bag, _) => {
+            (Kind::Bag | Kind::Set, _) => {
                 let twin = send_pars(
                     &tied(),
                     vec![text('t', self.length)],
@@ -955,8 +1454,7 @@ impl Tie {
             }
             (_, Side::Waiters) => {
                 for fill in self.arrivals() {
-                    let parked = record::wrap_continuation(0, &self.continuation(fill))
-                        .expect("a continuation record");
+                    let parked = self.parked(fill);
                     let fired = host
                         .consume(
                             vec![data.clone()],
@@ -977,9 +1475,11 @@ impl Tie {
     /// The operation that selects one of the tied candidates: a receive of any one value for
     /// records, and a send of 1 for waiters.
     fn op(&self) -> SpaceOp {
-        match self.side {
-            Side::Records => receive(&tied(), "select", any()),
-            Side::Waiters => send(&tied(), 1, 1),
+        match (self.side, self.kind) {
+            (Side::Records, Kind::Pq) => receive_in(&tied(), "select", any(), TIE_LEVEL),
+            (Side::Waiters, Kind::Pq) => send_at(&tied(), 1, 1, TIE_LEVEL),
+            (Side::Records, _) => receive(&tied(), "select", any()),
+            (Side::Waiters, _) => send(&tied(), 1, 1),
         }
     }
 
@@ -995,7 +1495,7 @@ impl Tie {
     async fn step(&self, host: &ParRSpace) -> (Vec<Reservation>, usize) {
         let data = data_channel(SPACE, &tied());
         match (self.kind, self.side) {
-            (Kind::Bag, _) => {
+            (Kind::Bag | Kind::Set, _) => {
                 let view = host.get_data(&data).await;
                 let tied_order = recorded_order(&view);
                 let mut distinct = view.clone();
@@ -1345,7 +1845,7 @@ async fn selected(tie: Tie) -> char {
             let [result] = fire.results.as_slice() else {
                 panic!("{tie:?}: the fire binds {} records", fire.results.len());
             };
-            let payload = record::unwrap_datum(&result.removed_datum)
+            let payload = record::unwrap_pq_datum(&result.removed_datum)
                 .expect("a datum record")
                 .datum;
             fill_of(&payload.pars[0])
@@ -1535,6 +2035,67 @@ async fn space_candidate_serialize_failure_ordered() {
             };
             assert_cut_on_replay_and_reset(tie, cuts[0]).await;
         }
+    }
+}
+
+/// A set orders two byte-identical records by their digests (DR-75), as the bag does (wave W3).
+/// A budget can end exactly at the first read of the tie digest. Then the class fire fails with
+/// `HostWorkRejected` before it stages anything. This holds on a play space, on a rigged replay
+/// space and after a checkpoint reset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_candidate_serialize_failure_set() {
+    let tie = Tie {
+        kind: Kind::Set,
+        side: Side::Records,
+        length: TIE_LENGTH,
+        reversed: false,
+    };
+    let cut = find_cut(tie).await;
+    println!("{tie:?}: {cut:?}");
+    assert!(cut.requested > 0);
+    assert_cut_on_play(tie, cut).await;
+    assert_cut_on_replay_and_reset(tie, cut).await;
+    assert_eq!(selected(tie).await, 't', "the class of the twins fires");
+}
+
+/// A priority queue orders two entries with one `ord` in one level by their bincode bytes, as
+/// the queue does. These are the ties of a priority query (wave W3). Take each side and each arrival order.
+/// A budget can end exactly at the first read of the metered encode of the tie-break. Then the
+/// selection fails with `HostWorkRejected` before it stages anything. This holds on a play space,
+/// on a rigged replay space and after a checkpoint reset. With enough budget, the least bytes
+/// select the candidate in both arrival orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_candidate_serialize_failure_priority() {
+    for side in [Side::Records, Side::Waiters] {
+        let mut cuts = Vec::with_capacity(2);
+        for reversed in [false, true] {
+            let tie = Tie {
+                kind: Kind::Pq,
+                side,
+                length: TIE_LENGTH,
+                reversed,
+            };
+            assert_eq!(
+                selected(tie).await,
+                tie.winner(),
+                "{tie:?}: the bytes select the candidate"
+            );
+            let cut = find_cut(tie).await;
+            println!("{tie:?}: {cut:?}");
+            assert_cut_on_play(tie, cut).await;
+            cuts.push(cut);
+        }
+        assert_eq!(
+            cuts[0], cuts[1],
+            "{side:?}: the cut does not depend on the arrival order"
+        );
+        let tie = Tie {
+            kind: Kind::Pq,
+            side,
+            length: TIE_LENGTH,
+            reversed: false,
+        };
+        assert_cut_on_replay_and_reset(tie, cuts[0]).await;
     }
 }
 
@@ -1840,11 +2401,19 @@ fn prop_canonical_iteration_ordered_any_list_order() {
 /// `scan_trace_covered`, `settle_trace_covered` and `engine_primitives_trace_covered`, at the
 /// serialization step: for generated disciplines, sides, arrival orders and payload lengths, a
 /// budget that ends exactly at the first read of the step rejects the selection before it stages
-/// anything, and one more read lets it pass that read.
+/// anything, and one more read lets it pass that read. Wave W3 adds the set (the tie digest of
+/// DR-75) and the priority queue (the ties of a priority query).
 #[test]
 fn prop_candidate_serialize_failure_cut_is_exact() {
     let strategy = (
-        select(vec![Kind::Bag, Kind::Queue, Kind::Stack, Kind::Cell]),
+        select(vec![
+            Kind::Bag,
+            Kind::Queue,
+            Kind::Stack,
+            Kind::Cell,
+            Kind::Set,
+            Kind::Pq,
+        ]),
         arbitrary::<bool>(),
         arbitrary::<bool>(),
         1usize..256,
@@ -1854,7 +2423,7 @@ fn prop_candidate_serialize_failure_cut_is_exact() {
         strategy,
         |(kind, waiters, reversed, length)| {
             let side = match (kind, waiters) {
-                (Kind::Bag, _) | (_, false) => Side::Records,
+                (Kind::Bag | Kind::Set, _) | (_, false) => Side::Records,
                 (_, true) => Side::Waiters,
             };
             let tie = Tie {

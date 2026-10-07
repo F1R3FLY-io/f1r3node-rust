@@ -2,4 +2,5 @@
 
 pub mod array;
 pub mod hashmap;
+pub mod pathmap;
 pub mod vector;

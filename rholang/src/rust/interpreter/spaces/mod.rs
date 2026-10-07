@@ -13,6 +13,7 @@ pub mod errors;
 pub mod factory;
 pub mod families;
 pub mod generic;
+pub mod join;
 pub mod matching;
 pub mod namespace;
 pub mod outer;

@@ -26,7 +26,7 @@ use super::scan::{self, ScanDiscipline};
 use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{ConsumeOp, ProduceOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
-use crate::rust::interpreter::spaces::generic::{Cx, Discipline, Ordered, Side};
+use crate::rust::interpreter::spaces::generic::{Cx, Discipline, JoinWindow, Ordered, Side};
 
 /// The bag discipline.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -36,6 +36,8 @@ impl Discipline for BagDiscipline {
     const NAME: &'static str = "bag";
     const USES_COUNTER: bool = false;
     const SEND_PARAMS: &'static [&'static str] = &[];
+    /// A join bind sees every stored record in the canonical order of DR-75 (P5c).
+    const JOIN_WINDOW: JoinWindow = JoinWindow::Scan;
 
     /// The entry with the least `(ord, bincode bytes)`, as for the queue. Every entry of a bag
     /// has the `ord` 0, so it is the entry with the least bytes. Only the head driver uses a

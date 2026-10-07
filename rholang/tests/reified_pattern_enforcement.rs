@@ -6,10 +6,16 @@
 //! For each of these families, a pattern for 42 never receives 43, in both orders: a send of 43
 //! before a receive for 42, and a receive for 42 before a send of 43. Both entries stay in the
 //! collection with their orders, and no COMM touches the collection. A receive for 42 on a fresh
-//! name then takes a send of 42, so the matcher is not vacuous. The rows of this wave are the
-//! families that the family agent wires at the base of wave W2: `hashmap:bag`, `hashmap:queue`,
-//! `hashmap:stack`, `hashmap:cell`, `array:queue` and `vector:queue`. The set and priority-queue
-//! rows follow in wave W3.
+//! name then takes a send of 42, so the matcher is not vacuous. The rows are the families that
+//! the family agent wires. They combine the disciplines `bag`, `queue`, `stack`, `set`, `cell`
+//! and `priorityqueue` with the stores `hashmap`, `array` and `vector`. Wave W2 added the rows
+//! `hashmap:{bag,queue,stack,cell}`, `array:queue` and `vector:queue`, and wave W3 adds the set and
+//! priority-queue rows and the other Array and Vector rows.
+//!
+//! **Joins (P5c, decision 29).** A join of two names of one space runs in the join engine. A join
+//! whose first bind is a pattern for 42 never receives 43 either, in both orders, on a queue, a
+//! bag and a set. The records and the join waiter stay, and no COMM touches either collection. A
+//! join for 42 on two fresh names receives 42.
 //!
 //! **Unsupported pairs.** These families reject before any space exists:
 //!
@@ -43,6 +49,7 @@ use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
 use proptest::prelude::*;
 use proptest::sample::select;
 use proptest::test_runner::TestCaseError;
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::spaces::agent::{SpaceAgent, SpaceOp};
 use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
@@ -53,7 +60,10 @@ use rholang::rust::interpreter::spaces::namespace::{self, Durability, NativeSpac
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier as ConfigQualifier;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
+use rspace_plus_plus::rspace::trace::event::Event;
 use support::agent::{budget, creation, env_over, play, run, send_on};
 use support::props::{check, runtime_config, tokio_runtime};
 use support::session::{comms_on, data_channel, with_space, Injections, Session};
@@ -82,12 +92,19 @@ impl Row {
     }
 
     /// True when every operation of the discipline bumps a counter, so the entries of a
-    /// collection have the orders of their operations. Bag records and waiters have the order 0.
-    fn counted(self) -> bool { self.inner != SpaceInner::Bag }
+    /// collection have the orders of their operations. Bag and set records and waiters have the
+    /// order 0.
+    fn counted(self) -> bool { !matches!(self.inner, SpaceInner::Bag | SpaceInner::Set) }
 }
 
-/// The rows of this wave.
-const ROWS: [Row; 6] = [
+/// The constructor arguments of a family without params.
+const DEFAULT: &str = r#""default""#;
+
+/// The constructor arguments of a fixed Array space of four index names.
+const SIZED: &str = r#""default"; size=4"#;
+
+/// The rows: the six of wave W2, then the twelve of wave W3.
+const ROWS: [Row; 18] = [
     Row {
         outer: SpaceOuter::HashMap,
         inner: SpaceInner::Bag,
@@ -118,7 +135,74 @@ const ROWS: [Row; 6] = [
         inner: SpaceInner::Queue,
         constructor: r#""default""#,
     },
+    Row {
+        outer: SpaceOuter::HashMap,
+        inner: SpaceInner::Set,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::HashMap,
+        inner: SpaceInner::PriorityQueue,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::Array,
+        inner: SpaceInner::Bag,
+        constructor: SIZED,
+    },
+    Row {
+        outer: SpaceOuter::Array,
+        inner: SpaceInner::Stack,
+        constructor: SIZED,
+    },
+    Row {
+        outer: SpaceOuter::Array,
+        inner: SpaceInner::Set,
+        constructor: SIZED,
+    },
+    Row {
+        outer: SpaceOuter::Array,
+        inner: SpaceInner::Cell,
+        constructor: SIZED,
+    },
+    Row {
+        outer: SpaceOuter::Array,
+        inner: SpaceInner::PriorityQueue,
+        constructor: SIZED,
+    },
+    Row {
+        outer: SpaceOuter::Vector,
+        inner: SpaceInner::Bag,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::Vector,
+        inner: SpaceInner::Stack,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::Vector,
+        inner: SpaceInner::Set,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::Vector,
+        inner: SpaceInner::Cell,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::Vector,
+        inner: SpaceInner::PriorityQueue,
+        constructor: DEFAULT,
+    },
 ];
+
+/// The row of the family `outer:inner`.
+fn row(outer: SpaceOuter, inner: SpaceInner) -> Row {
+    ROWS.into_iter()
+        .find(|row| row.outer == outer && row.inner == inner)
+        .unwrap_or_else(|| panic!("no row for {}:{}", outer.as_str(), inner.as_str()))
+}
 
 /// The output channel of the programs of the matrix.
 const GOT: &str = "rrs-n3-got";
@@ -287,6 +371,185 @@ async fn pattern_enforcement_array_queue() { check_row(ROWS[4]).await; }
 /// `vector:queue`: a pattern for 42 never receives 43 on its index names, in both orders.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pattern_enforcement_vector_queue() { check_row(ROWS[5]).await; }
+
+/// `hashmap:set`: a pattern for 42 never receives 43, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_hashmap_set() {
+    check_row(row(SpaceOuter::HashMap, SpaceInner::Set)).await;
+}
+
+/// `hashmap:priorityqueue`: a pattern for 42 never receives 43, in both orders, with sends and
+/// receives without a priority.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_hashmap_priorityqueue() {
+    check_row(row(SpaceOuter::HashMap, SpaceInner::PriorityQueue)).await;
+}
+
+/// `array:bag`, a fixed Array space of size 4: a pattern for 42 never receives 43 on its index
+/// names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_array_bag() {
+    check_row(row(SpaceOuter::Array, SpaceInner::Bag)).await;
+}
+
+/// `array:stack`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_array_stack() {
+    check_row(row(SpaceOuter::Array, SpaceInner::Stack)).await;
+}
+
+/// `array:set`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_array_set() {
+    check_row(row(SpaceOuter::Array, SpaceInner::Set)).await;
+}
+
+/// `array:cell`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_array_cell() {
+    check_row(row(SpaceOuter::Array, SpaceInner::Cell)).await;
+}
+
+/// `array:priorityqueue`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_array_priorityqueue() {
+    check_row(row(SpaceOuter::Array, SpaceInner::PriorityQueue)).await;
+}
+
+/// `vector:bag`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_vector_bag() {
+    check_row(row(SpaceOuter::Vector, SpaceInner::Bag)).await;
+}
+
+/// `vector:stack`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_vector_stack() {
+    check_row(row(SpaceOuter::Vector, SpaceInner::Stack)).await;
+}
+
+/// `vector:set`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_vector_set() {
+    check_row(row(SpaceOuter::Vector, SpaceInner::Set)).await;
+}
+
+/// `vector:cell`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_vector_cell() {
+    check_row(row(SpaceOuter::Vector, SpaceInner::Cell)).await;
+}
+
+/// `vector:priorityqueue`: a pattern for 42 never receives 43 on its index names, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_vector_priorityqueue() {
+    check_row(row(SpaceOuter::Vector, SpaceInner::PriorityQueue)).await;
+}
+
+// ─── The join rows ───────────────────────────────────────────────────────────────────────────
+
+/// The number of COMMs of `log` whose consume names one of the channels `channels`.
+fn join_comms(log: &[Event], channels: &[Par]) -> usize {
+    let hashes: Vec<Blake2b256Hash> = channels.iter().map(hash).collect();
+    log.iter()
+        .filter(|event| match event {
+            Event::Comm(comm) => comm
+                .consume
+                .channel_hashes
+                .iter()
+                .any(|channel| hashes.contains(channel)),
+            Event::IoEvent(_) => false,
+        })
+        .count()
+}
+
+/// The join row of `row` (P5c, decision 29): the join `for (@42 <- a & @y <- b)` never receives
+/// the record 43 of `a`, in both orders. The two records and the join waiter stay, and no COMM
+/// touches either collection. A join for 42 on two fresh names receives 42.
+async fn check_join_row(row: Row) {
+    let urn = row.family().to_string();
+    for send_first in [true, false] {
+        let mut session = Session::new().await;
+        let space = session.setup(&urn, row.constructor).await;
+        let channels = [
+            data_channel(space.space, &space.a),
+            data_channel(space.space, &space.b),
+        ];
+        let sends = with_space("a!(43) | b!(1)");
+        let join = with_space(&format!(
+            r#"for (@42 <- a & @y <- b) {{ @"{GOT}"!(["join", y]) }}"#
+        ));
+        let deploys = match send_first {
+            true => [sends, join],
+            false => [join, sends],
+        };
+        for (index, source) in deploys.iter().enumerate() {
+            let deploy = session
+                .run(source, &format!("rrs-n3 join {urn} {send_first} {index}"))
+                .await;
+            assert_eq!(
+                join_comms(&deploy.log, &channels),
+                0,
+                "{urn}: no COMM touches the joined collections"
+            );
+        }
+        assert!(
+            session.values(GOT).await.is_empty(),
+            "{urn}: a join for 42 never receives 43"
+        );
+        for (name, value) in [(&space.a, 43), (&space.b, 1)] {
+            let records = session.records(space.space, name).await;
+            assert_eq!(
+                records
+                    .iter()
+                    .map(|(_, payload, persistent)| (payload.clone(), *persistent))
+                    .collect::<Vec<_>>(),
+                vec![(vec![gint(value)], false)],
+                "{urn}: the record {value} stays"
+            );
+        }
+        let mut group = channels.to_vec();
+        group.sort_by_key(hash);
+        assert_eq!(
+            session.play.get_continuations(group).await.len(),
+            1,
+            "{urn}: the join waiter stays"
+        );
+    }
+    let mut session = Session::new().await;
+    session.setup(&urn, row.constructor).await;
+    session
+        .run(
+            &with_space(&format!(
+                r#"for (c <- space!?("gensym")) {{ for (d <- space!?("gensym")) {{ for (@42 <- c & @y <- d) {{ @"{GOT}"!(["positive", y]) }} | c!(42) | d!(7) }} }}"#
+            )),
+            &format!("rrs-n3 join {urn} positive"),
+        )
+        .await;
+    assert_eq!(
+        session.values(GOT).await,
+        vec![got("positive", 7)],
+        "{urn}: a join for 42 receives 42"
+    );
+}
+
+/// `hashmap:queue`: a join whose first bind is a pattern for 42 never receives 43.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_hashmap_queue_join() {
+    check_join_row(row(SpaceOuter::HashMap, SpaceInner::Queue)).await;
+}
+
+/// `hashmap:bag`: a join whose first bind is a pattern for 42 never receives 43.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_hashmap_bag_join() {
+    check_join_row(row(SpaceOuter::HashMap, SpaceInner::Bag)).await;
+}
+
+/// `hashmap:set`: a join whose first bind is a pattern for 42 never receives 43.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_hashmap_set_join() {
+    check_join_row(row(SpaceOuter::HashMap, SpaceInner::Set)).await;
+}
 
 // ─── The unsupported pairs ───────────────────────────────────────────────────────────────────
 

@@ -99,11 +99,11 @@
 //!
 //! A fire of a waiter that peeks removes the non-persistent records that it binds, as the host
 //! does. The incoming record of a re-offer stays in flight (decision 30), and the settle stores it
-//! again at its order with its identity when it has no further fire. A fire over several channels
-//! also binds other stored records, which the settle must store again (the joins of P5c). The
-//! engine stages a produce-side fire over one channel only (`Cx::fire_offer_on`), so a plan over a
-//! group of more than one channel is `Inconsistent` here, and a one-channel plan binds no other
-//! stored record.
+//! again at its order with its identity when it has no further fire. This settle runs only on a
+//! collection without a join group: the join engine of P5c (`spaces::join`) runs every collection
+//! that a join reaches, with its own cascade and its own second sends for the other stored records
+//! of a fire. So a plan over a group of more than one channel is `Inconsistent` here, and a
+//! one-channel plan binds no other stored record.
 //!
 //! # Fire rounds
 //!
@@ -690,6 +690,7 @@ pub fn settle_operation(op: OpView<'_>, meter: &ScanMeter) -> Result<SettleOp, S
                 None => CostAuthority::default(),
             },
             introduction_authority: meter.copy(&op.authority)?,
+            cascade: None,
         }),
         OpView::Consume(op) => Ok(SettleOp {
             space: op.space,
@@ -698,6 +699,7 @@ pub fn settle_operation(op: OpView<'_>, meter: &ScanMeter) -> Result<SettleOp, S
             random_state: meter.copy(&op.body.random_state)?,
             authority: meter.copy(&op.authority)?,
             introduction_authority: meter.copy(&op.introduction_authority)?,
+            cascade: None,
         }),
     }
 }
@@ -954,6 +956,7 @@ mod tests {
                 random_state: produce.data.random_state.clone(),
                 authority: region(2),
                 introduction_authority: region(3),
+                cascade: None,
             })
         );
         let unsigned = ProduceOp {
@@ -977,6 +980,7 @@ mod tests {
                 random_state: consume.body.random_state.clone(),
                 authority: region(4),
                 introduction_authority: region(5),
+                cascade: None,
             })
         );
     }

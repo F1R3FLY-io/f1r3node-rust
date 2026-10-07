@@ -15,7 +15,7 @@ Where this register and the ledger differ, this register applies.
 - Read the statement for the decision itself, and the reason for its rationale.
 
 The plan quotes the words of the user for some decisions, and the entries keep these words in double quotes.
-Decisions 19 to 44 override the earlier plan sections where they conflict.
+Decisions 19 to 51 override the earlier plan sections where they conflict.
 The minimal-footprint revision (M-1 to M-5) overrides the target architecture of the plan where they conflict.
 
 ## Terms used in this register
@@ -75,7 +75,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 26](#decision-26) | Completion goal | 2026-10-04 | In force |
 | [Decision 27](#decision-27) | Activation and rollout out of scope | 2026-10-04 | In force |
 | [Decision 28](#decision-28) | Repeated channels in a group | 2026-10-04 | In force |
-| [Decision 29](#decision-29) | Joins into ordered collections in P5 | 2026-10-04 | In force |
+| [Decision 29](#decision-29) | Joins into ordered collections in P5 | 2026-10-04 | In force. Implemented in P5 wave W3 |
 | [Decision 30](#decision-30) | Peek fires re-offer the sent value | 2026-10-04 | In force |
 | [Decision 31](#decision-31) | Every operation on an ordered collection bumps its counter | 2026-10-04 | In force |
 | [Decision 32](#decision-32) | P4 plan-text changes | 2026-10-04 | In force |
@@ -89,13 +89,15 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 40](#decision-40) | Space charging follows the cost-accounted-rho policy | 2026-10-05 | In force. Applied in P5 |
 | [Decision 41](#decision-41) | Bag and set spaces order candidates by source hash | 2026-10-05 | In force. Applied in P5a |
 | [Decision 42](#decision-42) | The queue agent's metering is aligned now | 2026-10-05 | In force. Implemented |
-| [Decision 43](#decision-43) | A re-issued persistent operation keeps its first-round identity | 2026-10-05 | In force. Implementation pending |
+| [Decision 43](#decision-43) | A re-issued persistent operation keeps its first-round identity | 2026-10-05 | In force. Implemented |
 | [Decision 44](#decision-44) | Merge of feature/cost-accounted-rho at 4d67b5ccc | 2026-10-05 | In force |
 | [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Rule E and Option P implemented |
 | [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | In force. Implemented |
 | [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Planned after P5 (decision 48) |
 | [Decision 48](#decision-48) | The work order after decision 43 | 2026-10-06 | In force |
 | [Decision 49](#decision-49) | One fire count for each space transaction | 2026-10-06 | In force. Implemented in P5 wave W2 |
+| [Decision 50](#decision-50) | Joined set collections cascade | 2026-10-07 | In force. Implemented in P5 wave W3 |
+| [Decision 51](#decision-51) | A PathMap bag or set peek bumps the token when its second send changes state | 2026-10-07 | In force. Implementation with the PathMap engine |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -815,9 +817,9 @@ Two keys for one multiset would make the checkpoint refuse two actions on one hi
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. Implemented in P5 wave W3 by the [join engine](design.md#n12-wave-w3-of-p5-joins-of-one-space) |
 | Supersedes | None |
-| Related | [Decision 11](#decision-11), [head-only matching](glossary.md#head-only-matching), [counter meta-channel](glossary.md#counter-meta-channel) |
+| Related | [Decision 11](#decision-11), [decision 50](#decision-50), [head-only matching](glossary.md#head-only-matching), [counter meta-channel](glossary.md#counter-meta-channel) |
 
 **Statement.**
 
@@ -826,6 +828,7 @@ Two keys for one multiset would make the checkpoint refuse two actions on one hi
 - The design uses a continuation envelope with several `ord` values and a cascade that ends: it lifts a waiter and offers its data again.
 - P5 implements these joins after its own design pass and its proofs of invariant preservation, cascade termination, and order independence.
 - The P4 single-channel slice rejects such joins with `OrderedJoinUnsupported`, but only until P5 lands.
+- P5 wave W3 implements the joins of one space for every discipline, and it retires `OrderedJoinUnsupported`.
 
 **User's words.** "Implement in P5 (Recommended)"
 
@@ -1103,7 +1106,7 @@ A waiter queue for each level gives each queue one head, and the order rule deci
 - F13: the legacy Rocq modules get the dispositions that the P5 design report lists, with the changes of its readiness review. The port drops the axiom `FunctionalExtensionality`.
 - F14: two set waiters are equal only when they are byte-identical.
 - F15: a cell holds one record and one waiter.
-- F16: PathMap bag and set peeks do not bump the token, which is the space counter that orders a PathMap space.
+- F16: PathMap bag and set peeks do not bump the token, which is the space counter that orders a PathMap space. [Decision 51](#decision-51) amends F16 for a peek whose second send changes state.
 - F17: the `temp` and `seq` rows of the pattern-enforcement matrix complete in P7.
 - F20: the `[D;n]` consume never parks, so [I-16](#i-16) holds.
 - F21 is dropped: no `MixedArrowJoin` error code, because a program cannot reach it.
@@ -1203,7 +1206,7 @@ Five mutants of the model and the properties `prop_agent_*` of `rholang/tests/re
 | Field | Value |
 |---|---|
 | Date | 2026-10-05 |
-| Status | In force. The implementation is pending. |
+| Status | In force. Implemented in commit `bc7783417`. |
 | Amends | [Decision 31](#decision-31) for re-issued operations: the counter still bumps in every round |
 | Related | [I-21](#i-21), [decision 29](#decision-29) |
 
@@ -1390,6 +1393,66 @@ So one transaction could make $`3 \times \mathrm{FIRE\_ROUND\_CAP}`$ fires. Aske
 
 **Evidence.** The test `space_stack_plan_after_a_full_settle_reissues_the_operation` shows the re-issue of a full transaction.
 The property `prop_stack_settle_bounded_any_schedule` checks the bound on every schedule. The stack models `StackDiscipline.v` and `StackDiscipline.tla` and the restore check of `GenericRSpace.v` model the count.
+
+### <a id="decision-50"></a>Decision 50: Joined set collections cascade
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implemented in P5 wave W3 |
+| Amends | The joins plan of [decision 29](#decision-29): its claim that a removal exposes no fire on a collection without a head |
+| Related | [Decision 37](#decision-37), [decision 41](#decision-41), [decision 49](#decision-49), [join engine](design.md#n12-wave-w3-of-p5-joins-of-one-space) |
+
+**Statement.**
+
+- The [join engine](glossary.md#join-engine) runs its [cascade](glossary.md#cascade) for a set collection as for a collection of a queue, a stack, a cell or a priority queue.
+- The cascade of a set has the parts of every other cascade: the lift and the re-offer, and the retirement of the bound classes.
+- It also has the one fire count, the settle before the plan, and the carry at the cap.
+- A bag keeps no cascade.
+- The driver of one set collection does not change, and [decision 37](#decision-37) and [decision 41](#decision-41) do not change.
+
+**User's words.** The JOINS-FORMAL batch found that a set class can move when a fire removes its first member.
+Asked how to resolve this, the user answered "Cascade for sets (Recommended)".
+
+**Reason.**
+
+- A set class sits at the place of its first member in the canonical order of DR-75 ([decision 41](#decision-41)).
+- A fire can remove a non-persistent first member while a persistent member of the class stays. The class then takes the place of the persistent member.
+- A waiter can bind one set collection two or more times. Such a parked waiter without a guard can then have a match under the greedy search of [decision 37](#decision-37).
+- Without a cascade, nothing fires that waiter, and the space keeps a pending match.
+- A bag has no classes, and a removal only makes the pool of each bind smaller. So a removal never gives a bag waiter a match that it did not have.
+
+**Evidence.** `set_join_class_shift_breaks_inv_scan` in `JoinCascade.v` proves the pending match of the set without a cascade, and `ref_fill_mono` proves the monotonicity of the bag.
+The unit test `space_join_engine_set_cascade_fires_a_waiter_that_a_class_move_exposes` in `rholang/src/rust/interpreter/spaces/join.rs` shows the fire of the exposed waiter.
+A set has no counter, so the engine keys each `K_lift` on a set by the source hash of the lifted record.
+So each lift of a set has an identity of its own.
+
+### <a id="decision-51"></a>Decision 51: A PathMap bag or set peek bumps the token when its second send changes state
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation with the PathMap engine of P5 wave W3 |
+| Amends | F16 of [decision 39](#decision-39) |
+| Related | [Decision 45](#decision-45), [decision 31](#decision-31), [M-1](#m-1) |
+
+**Statement.**
+
+- A peek on a PathMap bag or set space bumps the token $`S(\mathit{sid})`$ exactly when its transaction changes state.
+- Under Rule E, the peek COMM removes the delivered path marker.
+- The second send of the datum is then offered to the waiters of its path and of each prefix of the path.
+- When the second send fires a waiter that does not peek, it spends the datum and retires its record and its markers. That transaction bumps the token.
+- When no such waiter fires, the second send restores the marker with its identity. That transaction changes no state, and it does not bump the token.
+
+**User's words.** The PATHMAP-ENGINE batch asked how F16 applies under Rule E, and the user answered "Bump on change (Recommended)".
+
+**Reason.**
+
+- F16 predates Rule E, so it assumed that a peek leaves the datum and its markers in place.
+- Under Rule E, the second send of a peek can spend the datum and retire markers under prefixes that other operations share.
+- The token keeps two deploys of one block that write under one shared index channel in one chain ([M-1](#m-1)). A rejected chain then leaves no orphan marker and no missing marker.
+- A peek whose marker returns changes no state, so it needs no bump.
+- So concurrent pure reads of a bag or a set stay free of conflicts.
 
 ## Minimal-footprint revision: M-1 to M-5
 

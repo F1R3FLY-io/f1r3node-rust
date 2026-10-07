@@ -55,6 +55,10 @@ A program uses a native space in four steps:
 3. Send and receive on the space, inside a `use` block or on names that `new x : s` puts in the space.
 4. Call a method of the handle, for example `h!(ret, "produce", ch, [1])`, and receive the reply on `ret`.
 
+A receive can join two or more channels of one space, for example `for (@a <- x & @b <- y) { P }` inside `use s { … }` ([specification 3.8](specification.md#38-joins)).
+The join engine of the space runs such a receive ([design N12](design.md#n12-wave-w3-of-p5-joins-of-one-space)).
+A join over two spaces, or over a space and the default space, aborts with `CrossSpaceJoin`.
+
 Figure 1 shows the creation of a space and one handle call, from the send of the program to the reply.
 
 ![Lifecycle of a native handle as a sequence. A deploy sends the factory call hmq!(*ret) with its constructor. The reducer routes the op channel [0xE0, 0x01] to the default space, checks the persistent flag, packs the constructor and produces on the op channel. The COMM with the installed factory runs FactoryProcess::call: it validates the constructor and derives sid from the random state of the call. A space intent with the footprint [2] ‖ sid and H(sid) runs one creation transaction: begin on C(sid), S(sid) and H(sid), a check for SpaceAlreadyExists, the config record stored persistently on C(sid), the space counter S(sid) = 0, and the handle continuation parked persistently on H(sid); the commit logs the events. The factory replies bundle+{H(sid)} on ret. Later the deploy calls h!(*ack, "produce", "jobs", [1]): the reducer removes the write bundle, routes H(sid) to the default space and produces on it; the COMM with the persistent handle continuation runs its body, which produces (this, args) on HANDLE_OP. HANDLE_OP checks the bare handle id, reads C(sid) in a read-only space intent that commits nothing, parses the message, and runs the method produce as a collection operation in its own space intent: the counter bump and the head-only offer. It dispatches the fires and replies Nil on ack. A protocol error replies a typed error ("rho:space:error", code, detail) instead, and a missing config record aborts with DanglingHandle.](diagrams/03-native-handle-lifecycle.svg)
@@ -106,7 +110,7 @@ A program that names one of them fails with the baseline error `No value set for
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:898-938`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:965-1005`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 

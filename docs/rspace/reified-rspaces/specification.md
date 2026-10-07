@@ -38,9 +38,9 @@ Each new section must state the items that its extension point lists, so that a 
 
 | Phase | Section | Content |
 |---|---|---|
-| P5 | [2.2](#22-array) to [2.6](#26-outer-stores-of-later-phases) | The Array and Vector outer stores with their allocator, the PathMap paths, and the PathMap and HashSet stores of later waves |
-| P5 | [3.2](#32-bag) to [3.8](#38-disciplines-of-later-phases) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and joins on ordered collections ([decision 29](decision-register.md#decision-29)) |
-| P6 | [3.8](#38-disciplines-of-later-phases) | The VectorDB discipline, its query, and its bounds |
+| P5 | [2.2](#22-array) to [2.7](#27-outer-stores-of-later-phases) | The Array and Vector outer stores with their allocator, the PathMap paths, the [PathMap store](#26-the-pathmap-store), and the HashSet store of a later phase |
+| P5 | [3.2](#32-bag) to [3.9](#39-disciplines-of-later-phases) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and the [joins of one space](#38-joins) ([decision 29](decision-register.md#decision-29)) |
+| P6 | [3.9](#39-disciplines-of-later-phases) | The VectorDB discipline, its query, and its bounds |
 | P7 | [4.2](#42-qualifiers-of-later-phases) and [5](#5-theories) | The `temp` and `seq` qualifiers, the sweep of their state, and the theories |
 | P8 | [6](#6-constructs-that-fail-closed) | Spaces that user agents implement |
 
@@ -112,7 +112,8 @@ Two collections share no record and no waiter.
 **Rule SM-6: entries.** A collection holds records and waiters.
 A record is a datum with its order, and a waiter is a waiting continuation with its order.
 A record keeps the payload, the persistence flag, and the random state that the operation gave it.
-A waiter has exactly one bind, because no join reads a collection in P4.
+The waiter of a receive with one bind has one bind.
+A join waiter has one bind for each channel of its receive, and it waits on all its channels at once ([section 3.8](#38-joins)).
 
 **Rule SM-7: operations.** A program reaches a collection with two operations, which Table 4 lists.
 Each operation has the persistence flag of its form, and a consume also has a peek flag.
@@ -164,7 +165,7 @@ Its factory creates the spaces of the family, and its agent runs their operation
 A registered family with the index $`i`$ binds its URN to `bundle+{[0xE0, i]}`, and it installs its factory with the body reference $`200 + i`$.
 An unregistered family has no URN binding, so a program that names it fails before any space work.
 
-**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:347-356`).
+**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:349-358`).
 The dispatch tries the arms in a fixed order: `hashmap:queue` first, then ascending family index.
 Each arm that it tries reserves one comparison of the names, so a queue operation keeps the host work of P4.
 A config that names no wired family fails with `FamilyUnavailable`.
@@ -283,7 +284,7 @@ So the identities of each job are new, also when a cyclic allocator takes a valu
 
 **Rule AL-5: races.** Two branches that allocate from one space consume one produce of $`A(\mathit{sid})`$.
 So merge check #1 sees their race, and a merge never hands one index to both branches (`NoDuplicateIndex`).
-Two `new` blocks inside `use` of one Array or Vector space race in the same way (`rholang/tests/reified_merge_p5.rs:858-919`).
+Two `new` blocks inside `use` of one Array or Vector space race in the same way (`rholang/tests/reified_merge_p5.rs:874-935`).
 
 **Rule AL-6: other stores.** A HashMap or PathMap space has no allocator.
 Its allocation job answers `Baseline`: it reads the config, commits nothing, and charges no phlo.
@@ -294,7 +295,7 @@ This covers the names of its lock keys, the config and the shape of an Array spa
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
 An allocation job fails closed in native play and native replay ([decision 46](decision-register.md#decision-46)).
 
-**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:563-590`).
+**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:584-611`).
 That process evaluates the `new`, or it calls the handle method `gensym`.
 So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
 
@@ -349,9 +350,58 @@ The FIPS example holds: `@[0,1,2]!({|"hi"|})` on `@[0,1]` binds `{|[2, "hi"]|}`,
 The decode orders the paths by entry key and keeps the first entry of each key.
 The encode writes each path in its canonical entry form, so $`\mathrm{decode}(\mathrm{encode}(m)) = m`$.
 
-### 2.6 Outer stores of later phases
+### 2.6 The PathMap store
 
-Wave W3 adds the PathMap store: its markers, its waiters and its delivery. Phase P7 adds the HashSet store.
+The PathMap store keeps each datum on the data channel of its path ([decision 9.3](decision-register.md#decision-9-3)).
+It also keeps a [path marker](glossary.md#path-marker) of the datum on the [index channel](glossary.md#index-channel) of each prefix of the path.
+The [PathMap delivery](pathmap-prefix-delivery.md) explains the model, the plans and their proofs.
+Phase 1 of wave W3 implements the store, the markers and the delivery plans.
+Phase 2 runs the plans on the join engine and registers the PathMap families ([decision 51](decision-register.md#decision-51)).
+
+**Rule PS-1: channels.** The data channel $`D(\mathit{sid}, \mathrm{path\_key}(p))`$ holds the records of the path $`p`$.
+The index channel $`I(\mathit{sid}, \mathrm{prefix\_key}(q))`$ holds the markers and the waiters of the prefix $`q`$.
+The [token](glossary.md#token) $`S(\mathit{sid})`$ is the counter of every path, and the store has no allocator (`rholang/src/rust/interpreter/spaces/outer/pathmap.rs:79-90`, `184-186`).
+
+**Rule PS-2: keys and names.** The store keeps the rules HM-2 to HM-4.
+Its collection key is the path key of rule PP-2 instead of the key of rule HM-1.
+Its key check applies the rules PP-3 and PP-4 before any staging (`rholang/src/rust/interpreter/spaces/outer/pathmap.rs:167-176`).
+A name that the space makes is a fresh name, so it roots a private subtree (rule PP-1).
+
+**Rule PS-3: markers.** A stored datum $`d`$ on $`p`$ has exactly one marker on $`I(q)`$ for each prefix $`q \preceq p`$, and no other marker exists.
+The marker holds the pars `[EList[tag_I, GByteArray(src(d))], EList(p∖q)]`, with the tag `[0xE0, 0x52, 0x49, 0x01]` and the source hash $`\mathrm{src}(d)`$ of $`d`$.
+Its random state derives from the random state of $`d`$ under the purpose `PathMarker` and the depth of $`q`$ (`rholang/src/rust/interpreter/spaces/pathmap/markers.rs:128-156`).
+Its persistence equals that of $`d`$, and it holds the authority of the store and no cost stack.
+
+**Rule PS-4: vehicle.** The [vehicle](glossary.md#vehicle) of $`d`$ on $`q`$ is the marker pars of $`d`$ on $`q`$, followed by the payload of $`d`$.
+It has the random state, the authority and the cost stack of $`d`$, and no store keeps it (`rholang/src/rust/interpreter/spaces/pathmap/markers.rs:188-204`, [decision 40](decision-register.md#decision-40), Q3).
+
+**Rule PS-5: receive.** The candidates of a receive on $`q`$ are the datums under $`q`$, in path-key order, with the exact path first.
+Within one path they follow the order of the discipline.
+The receive takes the first candidate whose re-rooted payload its pattern binds, and it checks its guard once on that candidate ([decision 37](decision-register.md#decision-37)).
+A refusal parks the receive on $`I(q)`$. The delivery COMM is on $`I(q)`$, over the marker of the datum on $`q`$ (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:173-219`).
+
+**Rule PS-6: send.** A send on $`p`$ offers its vehicle to the waiters of $`I(p)`$, and then to the waiters of each shorter prefix, up to $`I(\varepsilon)`$.
+The first waiter whose pattern binds the re-rooted payload and whose guard admits it fires, and a refusal moves on.
+Without a fire, the send stores its record on $`D(p)`$ and then its markers in depth order (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:338-380`, `409-436`).
+
+**Rule PS-7: retire.** A removal of a datum stages a single-channel `K_retire` on $`D(p)`$.
+It then stages one on each marker of the datum, except the marker of the delivery COMM (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:444-453`).
+
+**Rule PS-8: peeks.** A peek COMM removes only the marker of the datum on the prefix of the receive ([decision 45](decision-register.md#decision-45), Rule E).
+The second send then offers the datum to the waiters of its path and its prefixes, the most specific first.
+A fire of a waiter that does not peek spends the datum by rule PS-7.
+Without such a fire, the second send restores the marker with its identity, and at the fire cap the re-issue carries the marker.
+
+**Rule PS-9: token.** Every operation of an ordered discipline bumps the token, and a re-issued persistent operation keeps its first-round order ([decision 31](decision-register.md#decision-31), [decision 43](decision-register.md#decision-43)).
+On a bag or a set, every operation that changes the state bumps the token, and every order is 0.
+A peek of a bag or a set bumps the token only when its second send changes the state ([decision 51](decision-register.md#decision-51)).
+
+**Rule PS-10: merges.** A new datum on $`p`$ and a new waiter on a prefix $`q \preceq p`$ meet on $`I(q)`$, so merge check #2 sees the contact.
+Two branches that change one PathMap space race on its token under merge check #1.
+
+### 2.7 Outer stores of later phases
+
+Phase P7 adds the HashSet store.
 The section of each store must state these items:
 
 - the key function of the store, and the channels that share a key
@@ -385,7 +435,7 @@ A collection with two counter records, or with a persistent counter record, is `
 **Rule OC-5: races and chains.** Two branches that both operate on one collection consume one counter produce, so merge check 1 must report a race.
 Two branches whose first operations open collections of one space race on the space counter in the same way.
 Two deploys of one block that operate on one collection form one chain, so a rejection removes both.
-This holds for every family with a counter: the queue, the stack and the cell, also in Array and Vector spaces (`shared_collection_race`, `CounterConflict.v:767`).
+This holds for every family with a counter: the queue, the stack and the cell, also in Array and Vector spaces (`shared_collection_race`, `CounterConflict.v:833`).
 
 **Rule OC-6: serializable merges.** When merge check 1 finds no race, the merged state must equal the state of a serial run of the two branches.
 
@@ -402,7 +452,7 @@ The pushes bump different counters and the pops take different records, so no ch
 
 In the merge A pops 20 and B pops 10.
 But after A, B pops 1, and after B, A pops 2, so no serial order gives the merged pops.
-Rule OC-1 makes both branches race on both counters instead (`crossed_stacks_without_removal_counters_fabricate`, `CounterConflict.v:1759`).
+Rule OC-1 makes both branches race on both counters instead (`crossed_stacks_without_removal_counters_fabricate`, `CounterConflict.v:2146`).
 
 ### 3.1 Queue
 
@@ -515,7 +565,7 @@ With $`F = \emptyset`$, the rule $`\mathrm{SHADOW}`$ is $`\mathrm{INV}`$.
 **Rule QD-7: first in, first out.** Records leave a queue in the order of their arrival, and waiters fire in the order of their arrival.
 The arrival of a re-issued persistent entry is its first round, so the entry takes that place again when it re-enters (rule QD-9).
 
-**Rule QD-8: no joins, params, or queries.** A join that reads a queue collection must abort with `OrderedJoinUnsupported` until P5.
+**Rule QD-8: joins, params, and queries.** A join that reads a queue collection follows [section 3.8](#38-joins), since P5 wave W3 retired `OrderedJoinUnsupported` ([decision 29](decision-register.md#decision-29)).
 A send with named params to a queue collection must abort with `UnknownParam`, because the discipline has no send param.
 A receive with a query must abort with `QuerySpecUnsupported`.
 
@@ -547,14 +597,14 @@ Table 7 shows both schedules, and both end with the same fire and an empty colle
 
 Figure 1 shows the states of one queue collection and the transitions between them.
 
-![States of one queue collection as a state machine. A collection starts unopened. Its first operation consumes the space counter S(sid) and produces it again, opens S(sid, k) = 1, and takes the order 0. The open collection is in one of four states: Empty with R and W empty, Records queued with R not empty, Waiters queued with W not empty, and Blocked with both sides not empty, where the head waiter does not match the head record and no fresh operation leaves the state, while a re-entry ahead of a head can fire. A send without a waiter stores the record, and a receive without a record parks the waiter. A receive that fires with the head record removes it, or keeps it: a peek stores it again in the same transaction (decision 45), and a persistent record stays. A receive that does not match the head record parks the waiter and blocks. A persistent receive drains every record and then parks. A send that fires the head waiter removes it unless it is persistent. A datum that survives every fire, after a peek waiter or as a send !!, is stored when no waiter matches. A note gives the rules: every operation bumps S(sid, k) from v to v + 1 and takes the order v, a re-issued persistent operation keeps the order of its first round and re-enters at its place, the head of a side is the least (ord, bincode), the re-offer, the re-store of a peeked record, the drain, the re-issue of a divergent pair after one round, the re-issue of any chain after 64 fires, and the invariant INV at the end of every deploy.](diagrams/05-head-only-queue.svg)
+![States of one queue collection as a state machine. A collection starts unopened. Its first operation consumes the space counter S(sid) and produces it again, opens S(sid, k) = 1, and takes the order 0. The open collection is in one of four states: Empty with R and W empty, Records queued with R not empty, Waiters queued with W not empty, and Blocked with both sides not empty, where the head waiter does not match the head record and no fresh operation leaves the state, while a re-entry ahead of a head can fire. A send without a waiter stores the record, and a receive without a record parks the waiter. A receive that fires with the head record removes it, or keeps it: a peek stores it again in the same transaction (decision 45), and a persistent record stays. A receive that does not match the head record parks the waiter and blocks. A persistent receive drains every record and then parks. A send that fires the head waiter removes it unless it is persistent. A datum that survives every fire, after a peek waiter or as a send !!, is stored when no waiter matches. A note gives the rules: every operation bumps S(sid, k) from v to v + 1 and takes the order v, a re-issued persistent operation keeps the order of its first round and re-enters at its place, the head of a side is the least (ord, bincode), the re-offer, the re-store of a peeked record, the drain, the re-issue of a divergent pair after one round, the re-issue of any chain after 64 fires, and the invariant INV at the end of every deploy. A second note gives the joins of P5 wave W3: a collection that a join waiter holds runs on the join engine, the join waiter fires only as the head waiter of each of its queue collections, m binds on one collection see its first m records, and the cascade fires a matching pair of heads that a fire exposes, in the same transaction.](diagrams/05-head-only-queue.svg)
 
 *Figure 1. Source: [diagrams/05-head-only-queue.puml](diagrams/05-head-only-queue.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 ### 3.2 Bag
 
 A bag collection is a multiset on both sides.
-The scan driver plans its operations (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:178-217`, `rholang/src/rust/interpreter/spaces/disciplines/scan.rs:228-314`), and `BagDiscipline` uses it (`rholang/src/rust/interpreter/spaces/disciplines/bag.rs:35-97`).
+The scan driver plans its operations (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:178-217`, `rholang/src/rust/interpreter/spaces/disciplines/scan.rs:228-314`), and `BagDiscipline` uses it (`rholang/src/rust/interpreter/spaces/disciplines/bag.rs:35-99`).
 
 **Rule BG-1: canonical order.** The driver visits the records and the waiters of a collection in the canonical order of DR-75 ([decision 41](decision-register.md#decision-41)).
 The order sorts by the hash of the source produce or consume of each entry, and then by digest inside a run of equal hashes. It depends on the entry set only.
@@ -582,7 +632,7 @@ The second send has the identity of the record and registers the cost authority 
 **Rule BG-6: peek waiters.** A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
 
 **Rule BG-7: no counter.** A bag has no counter. Every record and every waiter has the order 0, so a re-issued element keeps its record and its identity ([decision 43](decision-register.md#decision-43)).
-So two branches that write one bag merge, as on a host channel (`rholang/tests/reified_merge_p5.rs:628-683`).
+So two branches that write one bag merge, as on a host channel (`rholang/tests/reified_merge_p5.rs:644-699`).
 
 **Rule BG-8: bounds.** One transaction makes at most `FIRE_ROUND_CAP` fires, the fires of a peek re-store included ([decision I-21](decision-register.md#i-21)).
 A divergent pair or the cap re-issues the element in flight, and every read and copy is reserved before it is made ([decision 42](decision-register.md#decision-42)).
@@ -592,7 +642,7 @@ A divergent pair or the cap re-issues the element in flight, and every read and 
 A cell collection holds at most one record and at most one waiting continuation (F15).
 The family `hashmap:cell` runs `CellDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/cell.rs:53-88`) on the head driver of the engine.
 
-**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:772-783`).
+**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:853-864`).
 The job drops the transaction, so the failed operation logs no event, bumps no counter, and makes no legacy charge.
 
 **Rule CL-2: both sides meet.** A fresh send always meets the waiting continuation of the cell, and a fresh receive always meets the record of the cell.
@@ -600,7 +650,7 @@ Only an element that does not fire is stored or parked, so a receive can fire th
 
 **Rule CL-3: counter.** Every operation that commits bumps the counter of the collection once ([decision 31](decision-register.md#decision-31)).
 Two branches that operate on one cell race under merge check #1, so a merge never puts two records into one cell.
-A cell operation that fails with `CellOccupied` fails its deploy, and the merge leaves a failed deploy out (`rholang/tests/reified_merge_p5.rs:687-735`).
+A cell operation that fails with `CellOccupied` fails its deploy, and the merge leaves a failed deploy out (`rholang/tests/reified_merge_p5.rs:703-751`).
 
 **Rule CL-4: peeks.** A consume-side peek removes a non-persistent record, and the same transaction stores the record again with its identity (Rule E).
 The fire left the record slot empty, so the re-store is never `CellOccupied`.
@@ -628,7 +678,7 @@ The settle fires the top pair. It lifts a stored record that is not persistent w
 **Rule SK-4: peeks in a settle.** A record that a peek waiter did not spend stays in flight, and it lands at its order when the settle ends (Rule E).
 
 **Rule SK-5: fire count.** One transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21)).
-The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1156-1169`).
+The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1400-1413`).
 A plan whose transaction is full after the settle before it stages nothing, and its operation re-issues.
 
 **Rule SK-6: re-issues.** At the cap or at a divergent pair, the settle before the plan re-issues the operation, which it has not inserted yet.
@@ -639,7 +689,7 @@ The settle after the plan and a settle job re-issue a settle job, because the el
 ### 3.5 Set
 
 A set collection is a bag whose records form classes of equal payloads.
-The family `hashmap:set` runs `SetDiscipline` on the scan driver of the bag (`rholang/src/rust/interpreter/spaces/disciplines/set.rs:80-153`).
+The family `hashmap:set` runs `SetDiscipline` on the scan driver of the bag (`rholang/src/rust/interpreter/spaces/disciplines/set.rs:80-165`).
 
 **Rule ST-1: key.** The class key of a payload $`p_1 \dots p_n`$ is the F5 key
 
@@ -647,7 +697,7 @@ The family `hashmap:set` runs `SetDiscipline` on the scan driver of the bag (`rh
 \mathrm{key}(p_1 \dots p_n) = \mathrm{u64}(n) \,\Vert\, \mathrm{u64}(\ell_1) \,\Vert\, b_1 \,\Vert\, \cdots \,\Vert\, \mathrm{u64}(\ell_n) \,\Vert\, b_n
 ```
 
-Here $`b_i`$ is the bincode of the sorted $`p_i`$, and $`\ell_i`$ is the length of $`b_i`$ (`rholang/src/rust/interpreter/spaces/disciplines/set.rs:164-215`).
+Here $`b_i`$ is the bincode of the sorted $`p_i`$, and $`\ell_i`$ is the length of $`b_i`$ (`rholang/src/rust/interpreter/spaces/disciplines/set.rs:176-227`).
 $`\mathrm{u64}`$ gives the 8 big-endian bytes of a length.
 The key never includes the random state, the authority or the cost stack of a record.
 
@@ -665,7 +715,7 @@ The fire dispatches only the result of the representative, and it removes every 
 
 **Rule ST-6: send and retire.** A send fires the first waiter in canonical order whose pattern binds the datum and whose guard admits it.
 After each fire of a waiter that does not peek, the send retires the non-persistent stored members of the class of its datum.
-Each retire is a single-channel COMM of a `K_retire` continuation, in canonical order (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:787-846`).
+Each retire is a single-channel COMM of a `K_retire` continuation, in canonical order (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:785-870`).
 A retire is never dispatched, and it is not a fire round of the transaction.
 
 **Rule ST-7: peeks.** A peek binds only the representative, on $`[D]`$, and its fire removes a representative that is not persistent.
@@ -673,10 +723,14 @@ The same operation sends the representative again (Rule E, [decision 45](decisio
 When the second send fires a waiter that does not peek, that fire retires the class (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:700-780`).
 
 **Rule ST-8: membership.** The driver compares the metered hashes of two keys first, and it compares the full keys only when the hashes are equal (DR-90).
-So a hash collision never joins two classes (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:851-866`).
+So a hash collision never joins two classes (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:875-890`).
 
 **Rule ST-9: no counter.** A set has no counter, no params, no query and no capacity.
 Two waiters are equal only when their bytes are equal (F14). Every order is 0, so a re-issued element keeps its identity ([decision 43](decision-register.md#decision-43)).
+
+Without a counter, the merges of a set follow the merge checks of its records.
+Writes to one set merge, and the merged view is the view of each serial order (F25).
+Two branches that each retire one stored member of a set race in merge check 1 on the produce of that member (F24).
 
 **Rule ST-10: keys under a budget.** A metered job stores only a record whose key exists under its metering (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:411-421`).
 The metered sorter rejects a term deeper than its depth limit with `HostWorkRejected`, so the send of such a payload fails before it stages anything.
@@ -696,7 +750,7 @@ $`\#_s(R)`$ is the number of records with the source $`s`$ in $`R`$.
 ### 3.6 Priority queue
 
 A priority-queue collection keeps its records in levels and its waiting continuations in lanes ([decision 38](decision-register.md#decision-38)).
-The family `hashmap:priorityqueue` runs `PriorityQueueDiscipline` on the head driver and the settle loop (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:232-343`).
+The family `hashmap:priorityqueue` runs `PriorityQueueDiscipline` on the head driver and the settle loop (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:232-346`).
 
 **Rule PQ-1: levels.** A send with `priority = p` puts its datum in the level $`p`$.
 A send without a priority puts its datum in the unprioritized level, which comes after every priority level (F6, `rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:119-155`).
@@ -704,26 +758,26 @@ A send without a priority puts its datum in the unprioritized level, which comes
 **Rule PQ-2: lanes.** A receive with `priority = p` waits in the lane of the level $`p`$.
 A receive without a priority waits in the unrestricted lane (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:157-193`).
 
-**Rule PQ-3: no storage for each level.** A record holds its level in the priority slot of its envelope, and a continuation holds its lane in its policy slot (`rholang/src/rust/interpreter/spaces/record.rs:842-1208`).
+**Rule PQ-3: no storage for each level.** A record holds its level in the priority slot of its envelope, and a continuation holds its lane in its policy slot (`rholang/src/rust/interpreter/spaces/record.rs:855-1221`).
 So the priority queue keeps no storage for each level (I-10).
 
-**Rule PQ-4: heads.** Each level and each lane is a FIFO queue whose head has the least pair (ord, bincode bytes) (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:352-394`).
+**Rule PQ-4: heads.** Each level and each lane is a FIFO queue whose head has the least pair (ord, bincode bytes) (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:355-397`).
 The lane of the level $`p`$ sees the head of the level $`p`$ (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:186-192`).
-The unrestricted lane sees the heads of all levels in ascending level order (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:510-536`).
+The unrestricted lane sees the heads of all levels in ascending level order (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:513-539`).
 
 **Rule PQ-5: send.** A send offers its datum to the head of the lane of its level and to the head of the unrestricted lane.
-The older head that fits fires, and a refusal moves the send on to the other head (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:542-594`, `756-815`).
+The older head that fits fires, and a refusal moves the send on to the other head (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:545-597`, `765-824`).
 
 **Rule PQ-6: receive.** A receive binds the first matching level head that its lane sees, and it checks its guard once, on that head.
-A refusal parks the receive (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:821-924`).
+A refusal parks the receive (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:830-933`).
 
-**Rule PQ-7: peeks.** A peek of a record that is not persistent stores the record again at once, at its order and in its level (Rule E, `rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:929-938`).
+**Rule PQ-7: peeks.** A peek of a record that is not persistent stores the record again at once, at its order and in its level (Rule E, `rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:938-947`).
 
-**Rule PQ-8: settle.** A fire can expose a pair, so the priority queue settles before and after each plan and in a settle job (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:316-342`).
-Strict confluence fails for a priority queue (readiness review S4), so the settle fires the oldest fireable lane head first (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:969-1063`).
+**Rule PQ-8: settle.** A fire can expose a pair, so the priority queue settles before and after each plan and in a settle job (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:319-345`).
+Strict confluence fails for a priority queue (readiness review S4), so the settle fires the oldest fireable lane head first (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:978-1072`).
 When that fire binds a stored record while a record is in flight, the record in flight lands first (`rholang/src/rust/interpreter/spaces/settle.rs:425-430`).
 
-**Rule PQ-9: params.** The send param and the query param `priority` take a `GInt` of at least 0 (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:717-729`).
+**Rule PQ-9: params.** The send param and the query param `priority` take a `GInt` of at least 0 (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:720-732`).
 When the space sets the bound `priorities`, the value must be below it, and otherwise the operation fails with `InvalidParam`.
 A positional query part fails with `PositionalParamsUnsupported`.
 
@@ -732,18 +786,133 @@ A re-issued element takes its FIFO place in its level, and a re-entered waiter k
 
 ### 3.7 Receive queries
 
-**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:736-750`).
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:757-771`).
 The inner channel takes the read rule of a receive source.
 
-**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:767-797`).
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:788-818`).
 A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
 The default space fails with `QuerySpecUnsupported`, and a user agent fails closed until P8.
 
-**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:723-725`).
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:744-746`).
 
-### 3.8 Disciplines of later phases
+### 3.8 Joins
 
-Wave W3 adds the joins (P5c) and the PathMap delivery, and phase P6 adds the VectorDB discipline.
+A [join](glossary.md#join) receives on two or more channels at once.
+P5 wave W3 lets a join read the collections of one native space, for every discipline ([decision 29](decision-register.md#decision-29)).
+The [join engine](glossary.md#join-engine) runs every operation that a join can reach, and the drivers of sections 3.1 to 3.6 run every other operation.
+The rules below use the group $`G`$ of a waiter $`W`$: the data channels of its binds, in canonical order.
+For a collection $`c`$, $`m_W(c)`$ is the number of positions of $`W`$ on $`c`$.
+
+**Rule JN-1: route.** A receive with two or more binds whose channels all route to one native space is a join of that space.
+The join keeps its binds in the order of the receive, each with its query (rule RQ-1).
+A join with channels of two spaces, or of a space and the default space, must abort with `CrossSpaceJoin`.
+A join with a channel of a user agent must abort with `AgentSpacesUnavailable` until P8.
+
+**Rule JN-2: checks and scope.** A join checks the key of each bind with the outer store and the query of each bind with the discipline, before it stages anything.
+The [join scope](glossary.md#join-scope) of an operation is the closure of its collections under the join groups of their data channels.
+The transaction of the operation locks every collection of its scope before it stages anything.
+A join group with a channel outside the space makes the state `Inconsistent`, and the operation must abort.
+
+**Rule JN-3: group and record.** The waiter of a join waits on its group, which is a [canonical group](glossary.md#canonical-group) ([decision 28](decision-register.md#decision-28)).
+A channel can occur more than once in a group, and $`k`$ binds on one collection bind $`k`$ distinct records.
+The record of the waiter holds one [join slot](glossary.md#join-slot) for each position of its group.
+A fire puts its results back into the bind order of the receive by the slots.
+
+**Rule JN-4: one arrow.** One arrow covers every bind of a join, so the binds all consume, all persist, or all peek.
+
+**Rule JN-5: counters and orders.** A join bumps the counter of each distinct collection of its binds once, when the discipline has a counter (rule OC-1).
+The join takes the value of each bump as its order in that collection, and a bag or a set gives the order 0.
+A re-issued persistent join keeps the order of its first round in each collection ([decision 43](decision-register.md#decision-43)).
+Every other collection that the transaction stages on is bumped once, before its first staging.
+
+**Rule JN-6: windows.** The positions of $`W`$ on $`c`$ see a window of the entries of $`c`$.
+On a queue, a stack, or a cell, the window is the first $`m_W(c)`$ entries of the head order of $`c`$.
+On a priority queue, the window is the first $`m_W(c)`$ records of each level that the lane of the position sees.
+On a bag or a set, the window is every record of $`c`$, in the canonical order of DR-75 ([decision 41](decision-register.md#decision-41)).
+An element in flight takes its place in the window of its collection.
+
+**Rule JN-7: heads.** A join waiter fires only when it is the head waiter of each head-only collection of its group ([decision 11](decision-register.md#decision-11)).
+On a priority queue, the waiter must be the head of its lane.
+A fresh waiter parks at the tail of each of its collections, and a re-issued waiter takes the places of its carried orders.
+
+**Rule JN-8: consume-side search.** The search takes the positions of $`G`$ in order, and it never goes back to an earlier position ([decision 37](decision-register.md#decision-37)).
+Each position binds the first unclaimed entry of its window that its pattern binds, and a set position claims the whole class of the entry.
+The guard of the join runs once, over the bound values in bind order.
+A position without an entry, or a refusal of the guard, parks the waiter.
+
+**Rule JN-9: produce-side search.** A send offers its datum to the waiters of its collection, in the order of the discipline.
+A queue, a stack, or a cell offers it to the head waiter.
+A priority queue offers it to the heads of two lanes, the older head first.
+A bag or a set offers it to every waiter, in the canonical order of the union of its groups.
+
+On a head-only collection a refusal of the head stores the datum ([decision 11](decision-register.md#decision-11)).
+Otherwise a refusal moves on to the next waiter ([decision 38](decision-register.md#decision-38)).
+For each waiter, the datum binds exactly one position ([decision 28](decision-register.md#decision-28)).
+The search tries each position where the datum enters the window, in group order, and it fills the other positions as rule JN-8 does.
+So the datum can bind a later position when an earlier position of its collection gives no complete match.
+
+**Rule JN-10: cascade.** A fire can make a parked waiter of the scope fireable ([decision 50](decision-register.md#decision-50)).
+The fire can give a head-only collection a new head, or it can move a set class to a new place.
+The join engine fires each such waiter in the same transaction, and it visits the changed collections in ascending key order.
+On each collection, it fires the head waiter, the oldest lane head of a priority queue, or the first set waiter in canonical order.
+It lifts the first non-persistent record that the waiter binds, and it offers that record to the waiter again with its identity and its authority.
+
+A persistent record is never lifted, and its re-offer leaves it stored.
+A bag has no cascade, because a removal never gives a bag waiter without a guard a new match.
+The engine also runs the cascade before the plan of each operation on a space whose discipline cascades.
+
+**Rule JN-11: set classes.** After a fire of a waiter that does not peek, each bound set class retires its other non-persistent stored members (rule ST-6).
+Each retire is a single-channel COMM of a `K_retire` continuation.
+A single-bind receive on a joined set keeps its class fire over $`[D; n]`$ (rule ST-5).
+
+**Rule JN-12: peeks.** A join that peeks removes each bound non-persistent stored record in its COMM, as the host COMM does.
+The same transaction sends each such record again through rule JN-9, in receipt order ([decision 45](decision-register.md#decision-45), Rule E).
+After a peek fire, the element in flight is offered again, also when it is persistent ([decision 30](decision-register.md#decision-30)).
+
+**Rule JN-13: fire count and re-issue.** A transaction of the join engine makes at most `FIRE_ROUND_CAP` fires ([decision 49](decision-register.md#decision-49)).
+At the cap it commits its fires and re-issues one settle job.
+The job carries the owed second sends, the collections that can still owe a fire, and the re-issue of the operation, in this order.
+A divergent pair does not stop the transaction, and the operation re-issues itself when the cascade ends (P4 item A10).
+A stop that owes nothing re-issues only the operation, or nothing when the operation is complete.
+
+**Rule JN-14: invariant.** Let a transaction of the join engine end with nothing owed.
+Then no waiter of its scope can fire on a queue, stack, cell, priority-queue, or set space, also when the waiter has a guard.
+On a bag space, no waiter of the scope without a guard has a match, and a guarded waiter can keep a match ([decision 37](decision-register.md#decision-37)).
+Each re-issue runs in the same deploy, so a completed deploy owes nothing.
+
+**Rule JN-15: merges.** A join transaction bumps the counter of each collection that it stages on, so two branches that touch one ordered collection race (rule OC-5).
+A parked join waiter makes every later produce on its channels conflict with every other branch under merge check 3, as a host join does.
+Bag and set joins race under merge checks 2 and 3, as host joins do.
+Only a parked join of a program leaves a join entry of two or more channels ([decision I-16](decision-register.md#i-16)).
+
+**Example 1: a cascade on two queue collections.** Table 7a shows how one send fires a join and how the cascade then fires a waiter that the join fire exposed.
+The waiter W1 is the join `for (@x <- a & @y <- b)`, and the waiter W3 is `for (@u <- b)`.
+
+*Table 7a. A cascade on two queue collections.*
+
+| Step | Event | State after the step |
+|---|---|---|
+| 0 | The start. | `a` is empty, and `b` holds 5, then 6. The waiters of `b` are W1, then W3, so W1 blocks W3. |
+| 1 | The send `a!(1)` offers 1 to W1, the head waiter of `a` and of `b`. The search of W1 binds 1 and the head 5 of `b`. | W1 fires. `b` holds 6, and its head waiter is W3, which matches 6. |
+| 2 | The cascade lifts 6 with `K_lift` and offers 6 to W3 again. | W3 fires with `u = 6`, and both collections are empty. |
+
+Without the cascade, the heads of `b` would keep a waiter and a record that match, and rule JN-14 would fail.
+
+**Example 2: a class that moves in a set.** Table 7b shows the case of [decision 50](decision-register.md#decision-50).
+The waiter W is the join `for (@x <- s & @1 <- s)` on one set collection `s`, and V is the receive `for (@1 <- s)`.
+
+*Table 7b. A cascade on a set collection.*
+
+| Step | Event | State after the step |
+|---|---|---|
+| 0 | The start. | `s` holds `a1` with 1, `b` with 2, and the persistent `a2` with 1, in this canonical order. The class of 1 sits at the place of `a1`. |
+| 1 | W arrives. Its first position takes the class of 1, and its second position finds no other class of 1. | W parks. |
+| 2 | V fires with the class of 1. | `a1` leaves and `a2` stays, so the class of 1 sits at the place of `a2`, after `b`. |
+| 3 | The cascade finds that W can fire now: its first position takes `b`, and its second position takes the class of 1. | The engine lifts `b` and offers it to W, so W fires with `x = 2`. `s` holds `a2`. |
+
+### 3.9 Disciplines of later phases
+
+Wave W3 adds the PathMap delivery, and phase P6 adds the VectorDB discipline.
 The section of each discipline must state these items, which the trait `Discipline` of the design also names:
 
 - the head rule of each side, and whether an incoming entry reaches the head
@@ -800,7 +969,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | Rule | Formal evidence | Tests |
 |---|---|---|
 | SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:650`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:794`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
-| SM-2 | `counter_and_config_roundtrip` (`RecordEnvelope.v:1042`), the TLA+ invariant `HandleUnique` (U5) | `prop_counter_and_config_records_roundtrip`, `space_meta_channels_config_record` |
+| SM-2 | `counter_and_config_roundtrip` (`RecordEnvelope.v:1075`), the TLA+ invariant `HandleUnique` (U5) | `prop_counter_and_config_records_roundtrip`, `space_meta_channels_config_record` |
 | SM-3 | The TLA+ invariant `DanglingIsDeterministicError` (U6) | `reified_handle_dangling_aborts`, `space_queue_dangling_name_aborts` |
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:727`), `space_and_collection_counters_distinct` (`Namespace.v:784`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
@@ -809,16 +978,16 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1035`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:995`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
-| OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:817`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
+| OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:883`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
 | OC-4 | None | `space_counter_rejects_corrupt_counters` |
-| OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:788`), `ordered_reads_race_on_counter` (`CounterConflict.v:802`), `same_block_ops_chain` (`CounterConflict.v:991`), `shared_collection_race` (`CounterConflict.v:767`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain`, `space_collection_conflicts_cell_writes_race`, `space_collection_conflicts_stack_push_pop_race`, `prop_cell_ops_race_on_counter` |
-| OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1367`), `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:1759`), the TLA+ invariant `NoMergedOrderFabrication` (U4, and V16 with `MC_CounterConflict_Stacks.cfg`) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge`, `prop_merged_stack_state_is_serial`, `space_collection_conflicts_crossed_stacks` |
+| OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:854`), `ordered_reads_race_on_counter` (`CounterConflict.v:868`), `same_block_ops_chain` (`CounterConflict.v:1057`), `shared_collection_race` (`CounterConflict.v:833`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain`, `space_collection_conflicts_cell_writes_race`, `space_collection_conflicts_stack_push_pop_race`, `prop_cell_ops_race_on_counter` |
+| OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1433`), `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2146`), the TLA+ invariant `NoMergedOrderFabrication` (U4, and V16 with `MC_CounterConflict_Stacks.cfg`) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge`, `prop_merged_stack_state_is_serial`, `space_collection_conflicts_crossed_stacks` |
 | QD-1 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:530`) | `prop_queue_candidates_head_only` |
 | QD-2, QD-3 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`), the TLA+ invariant `HeadBlocks` (U2) | `space_queue_head_only_data_head_blocks`, `space_queue_head_only_waiter_head_blocks` |
 | QD-4, QD-5 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1380`) | `space_queue_reissue_persistent_send`, `space_queue_reissue_peek_produce`, `space_queue_divergent_pair_exhausts_phlo` |
 | QD-6 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:928`), `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:948`), the TLA+ invariants `QuiescentNoPendingMatch` (U1) and `ShadowedNoPendingMatch` (U9), `queue_reentry_preserves_shadow_inv` (`HeadOnlyDisciplines.v:2712`), `queue_quiescent_inv` (`HeadOnlyDisciplines.v:2781`) | `prop_queue_produce_preserves_invariant`, `prop_queue_consume_preserves_invariant`, `prop_queue_shadow_invariant_with_inflight` |
 | QD-7 | `queue_fifo` (`HeadOnlyDisciplines.v:1135`), `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2946`), the TLA+ invariants `FifoOrder` (U3) and `LeaveOrder` (U12) | `space_queue_head_only_fifo_delivery`, `prop_queue_fifo_with_reentries` |
-| QD-8 | None | `space_queue_join_rejected`, `space_queue_send_params_rejected`, `space_queue_query_rejected` |
+| QD-8 | None | `space_joins_queue_programs_run_as_joins`, `space_queue_send_params_rejected`, `space_queue_query_rejected` |
 | QD-9 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2373`), `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:3021`), `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2342`), the TLA+ invariants `ReissueKeepsOrd` (U10), `IntroducedOnce` (U11) and `FifoOrder` (U3) | `space_queue_reissue_reenters_ahead_of_younger_records`, `prop_queue_reissue_keeps_first_round_ord`, `prop_queue_reentry_head_blocks` |
 | QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:372`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
 | QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay` |
@@ -841,6 +1010,16 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | PP-3, PP-4 | None | `the_depth_cap_bounds_channel_paths_and_prefixes`, `pathmaps_and_zippers_are_unsupported_at_any_depth` |
 | PP-5 | `reroot_ident` (`PathMapPrefix.v:843`), `reroot_compose` (`PathMapPrefix.v:850`), `fips_example` (`PathMapPrefix.v:959`) | `prop_reroot_ident`, `prop_reroot_compose`, `prop_unit_shift`, `fips_example` |
 | PP-6 | `reroot_injective` (`PathMapPrefix.v:922`) | `prop_head_adapter_roundtrip`, `prop_reroot_injective` |
+| PS-1 | `prefix_contact_anchored` (`PathMapPrefix.v:1948`) | `the_path_channels_are_storage_channels_of_the_space`, `the_token_is_the_space_counter_and_the_counter_of_every_path` |
+| PS-2 | `path_element_rules` (`PathMapPrefix.v:1455`) | `prop_path_element_rules`, `check_key_follows_the_path_rules`, `gensym_names_root_a_private_subtree` |
+| PS-3 | `marker_record_roundtrip` (`PathMapPrefix.v:1350`), `marker_invariant_preserved` (`PathMapPrefix.v:2560`), the TLA+ invariant `MarkerCount` (V24) | `prop_marker_record_roundtrip`, `prop_marker_invariant_preserved`, `marker_random_states_differ_by_depth_and_follow_the_path_marker_purpose` |
+| PS-4 | `vehicle_carries_payload` (`PathMapPrefix.v:1382`), `delivery_vehicle_single_channel` (`PathMapPrefix.v:1911`) | `prop_vehicle_carries_payload`, `a_vehicle_is_the_marker_followed_by_the_payload` |
+| PS-5 | `candidate_order_total` (`PathMapPrefix.v:1014`), `no_match_remains` (`PathMapPrefix.v:2380`) | `prop_candidates_cover_the_prefix_in_key_order`, `the_fips_paths_deliver_the_exact_path_first_and_rerooted` |
+| PS-6 | `no_match_remains` (`PathMapPrefix.v:2380`), the TLA+ invariant `NoMatchRemains` (V23) | `prop_waiter_prefixes_are_most_specific_first`, `the_waiters_of_a_send_are_the_most_specific_first` |
+| PS-7 | `delivery_vehicle_single_channel` (`PathMapPrefix.v:1911`), `marker_invariant_preserved` (`PathMapPrefix.v:2560`) | `a_removal_retires_the_record_and_every_other_marker`, `prop_marker_invariant_preserved` |
+| PS-8 | `peek_restores_delivered_marker` (`PathMapPrefix.v:2010`) | `prop_marker_invariant_preserved` |
+| PS-9 | `token_ord_reentry` (`PathMapPrefix.v:3126`) | `the_token_is_the_space_counter_and_the_counter_of_every_path` |
+| PS-10 | `prefix_contact_anchored` (`PathMapPrefix.v:1948`), the TLA+ invariant `MergeDetectsPrefixContact` (V25) | `the_path_channels_are_storage_channels_of_the_space` |
 | BG-1 | `bag_visit_order_canonical` (`DataCollection.v:243`), `waiter_visit_order_canonical` (`ContinuationCollection.v:337`) | `prop_bag_visit_order_canonical`, `prop_bag_waiter_visit_order_canonical` |
 | BG-2, BG-3 | `bag_consume_first_spatial_match` (`DataCollection.v:445`), `guard_once_greedy_like_head` (`Match.v:658`) | `prop_bag_consume_first_spatial_match`, `prop_engine_guard_checked_once_as_the_host_checks_it` |
 | BG-4 | `bag_multiplicity_preserved` (`DataCollection.v:559`), `bag_removal_keeps_equal_duplicate` (`DataCollection.v:578`), `bag_persistent_match_not_removed` (`DataCollection.v:536`) | `prop_bag_multiplicity_preserved`, `prop_bag_removal_keeps_equal_duplicate` |
@@ -863,19 +1042,34 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | ST-6 | `set_produce_fire_retires_stored_class` (`SetDiscipline.v:1151`), the TLA+ invariant `SetClassRetired` (V6) | `prop_set_produce_fire_retires_stored_class`, `prop_set_class_retired_any_schedule`, `space_set_discipline_guarded_waiter_then_equal_send_retires_class` |
 | ST-7 | `set_peek_restores_representative_only` (`SetDiscipline.v:1205`) | `prop_set_peek_restores_representative_only`, `space_set_discipline_peek_restore_reoffer_retires_class` |
 | ST-8 | `set_membership_full_compare_on_equal_hash` (`SetDiscipline.v:1274`) | `prop_set_membership_full_compare_on_equal_hash` |
-| ST-9 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`) | `space_set_discipline_persistent_reissue_keeps_identity`, `space_set_discipline_equal_receives_stay_two_waiters` |
+| ST-9 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`), `set_retirements_race` (`CounterConflict.v:1936`), `unordered_set_writes_commute` (`CounterConflict.v:1968`) | `space_set_discipline_persistent_reissue_keeps_identity`, `space_set_discipline_equal_receives_stay_two_waiters`, `prop_set_retirements_race`, `prop_unordered_set_writes_commute`, `space_collection_conflicts_set_retirements_race`, `space_collection_conflicts_set_writes_merge` |
 | ST-10 | `set_key_trace_covered` (`SetDiscipline.v:1389`) | `prop_set_key_trace_covered`, `space_set_discipline_failed_canonicalization_rejects_before_staging` |
 | PQ-1 | `pq_level_order` (`PriorityQueue.v:863`), `pq_unprioritized_lowest` (`PriorityQueue.v:887`), the TLA+ invariant `PqLevelOrder` (V17) | `prop_pq_level_order`, `space_disciplines_pq_ascending_levels`, `space_disciplines_pq_unprioritized_lowest` |
 | PQ-2, PQ-4 | `pq_restricted_waiter_in_level_queue` (`PriorityQueue.v:1921`), `pq_unrestricted_first_matching_level` (`PriorityQueue.v:1943`), `pq_fifo_within_level` (`PriorityQueue.v:2151`), `pq_head_blocks_within_level` (`PriorityQueue.v:2324`) | `prop_pq_fifo_order_any_schedule`, `space_disciplines_pq_restricted_waiter_waits_in_level_queue`, `space_disciplines_pq_head_blocks_within_level` |
-| PQ-3 | `pq_no_level_storage` (`PriorityQueue.v:3903`), `datum_priority_slot_roundtrip` (`RecordEnvelope.v:1473`), `continuation_policy_slot_roundtrip` (`RecordEnvelope.v:1509`) | `prop_pq_no_level_storage`, `prop_pq_record_slots_roundtrip` |
+| PQ-3 | `pq_no_level_storage` (`PriorityQueue.v:3903`), `datum_priority_slot_roundtrip` (`RecordEnvelope.v:1506`), `continuation_policy_slot_roundtrip` (`RecordEnvelope.v:1542`) | `prop_pq_no_level_storage`, `prop_pq_record_slots_roundtrip` |
 | PQ-5, PQ-8 | `pq_settle_oldest_first` (`PriorityQueue.v:1899`), `pq_settle_order_matters` (`PriorityQueue.v:4081`), `pq_produce_preserves_inv` (`PriorityQueue.v:1390`), `pq_without_settle_breaks_inv` (`PriorityQueue.v:4002`), the TLA+ invariants `PqOldestFirst` (V18) and `PqNoPendingMatch` (V19) | `prop_pq_oldest_first_any_schedule`, `prop_pq_no_pending_match_any_schedule`, `space_disciplines_pq_older_waiter_wins` |
 | PQ-6 | `pq_consume_preserves_inv` (`PriorityQueue.v:1404`), `pq_unrestricted_first_matching_level` (`PriorityQueue.v:1943`) | `prop_pq_no_pending_match_any_schedule`, `space_disciplines_pq_guarded_unrestricted_receive_parks` |
 | PQ-7 | `pq_peek_restores_head` (`PriorityQueue.v:2486`), `pq_settle_keeps_unspent_records` (`PriorityQueue.v:2864`), the TLA+ invariant `NoRecordLost` (V20) | `space_disciplines_pq_peek_restores_head`, `space_disciplines_pq_produce_peek_waiter_reoffers` |
 | PQ-9 | `pq_priority_domain` (`PriorityQueue.v:3730`) | `prop_pq_priority_domain`, `space_disciplines_pq_priorities_bound_rejects`, `space_disciplines_pq_priority_param_type_checked` |
 | PQ-10 | `pq_settle_terminates` (`PriorityQueue.v:3181`), `pq_reissue_takes_level_fifo_place` (`PriorityQueue.v:2673`), `pq_reentered_waiter_keeps_seniority` (`PriorityQueue.v:2716`), the TLA+ invariants `TxnFiresBounded` (V22) and `ReissueKeepsOrd` (V21) | `prop_pq_txn_fires_bounded_at_the_cap`, `prop_pq_reissue_keeps_ord_any_schedule` |
+| JN-1 | None | `space_joins_cross_space_join_aborts`, `space_joins_default_and_space_join_aborts`, `reducer_space_routing_agent_gate` |
+| JN-2 | `plan_then_lock_stable` (`JoinCascade.v:5723`) | `prop_plan_then_lock_covers_every_staged_channel`, `space_joins_escalation_relocks_once`, `space_joins_classification_reserves_check_joins` |
+| JN-3 | `join_repeated_channel_distinct_records` (`JoinCascade.v:1244`), `bind_permutation_restores_order` (`JoinCascade.v:2148`), `continuation_v2_roundtrip` (`RecordEnvelope.v:1734`), the TLA+ invariant `DistinctRecordsPerBind` (V28) | `prop_join_repeated_channel_distinct_records`, `prop_bind_permutation_restores_order`, `prop_continuation_v2_roundtrip`, `space_joins_repeated_channel_distinct_records`, `space_joins_bind_order_restored_for_body`, `space_joins_multi_ord_envelope_roundtrip` |
+| JN-4 | None | `space_joins_peek_join_restores_stored_candidates`, `space_joins_reissued_join_keeps_bind_ords` |
+| JN-5 | `cascade_bumps_touched_counters` (`JoinCascade.v:4056`), `join_reissue_keeps_bind_ords` (`JoinCascade.v:4130`), the TLA+ invariants `TouchedCountersBumped` (V34) and `ReissueKeepsBindOrds` (V33) | `prop_cascade_bumps_touched_counters`, `prop_join_reissue_keeps_bind_ords`, `space_joins_multi_ord_envelope_roundtrip`, `space_joins_reissued_join_keeps_bind_ords` |
+| JN-6, JN-7 | `join_fires_heads_only` (`JoinCascade.v:3210`), the TLA+ invariant `JoinFiresHeadsOnly` (V27) | `prop_join_fires_heads_only`, `space_joins_queue_heads_only`, `space_joins_stack_heads_only`, `space_joins_pq_heads_only`, `space_joins_cell_join` |
+| JN-8 | `join_search_is_head_greedy` (`JoinCascade.v:1468`), `greedy_join_can_miss_assignment` (`JoinCascade.v:1345`) | `prop_join_search_is_head_greedy`, `prop_greedy_join_limit`, `space_joins_bag_greedy`, `space_joins_set_classes`, `space_joins_guard_checked_once_after_all_binds` |
+| JN-9 | `join_produce_search_agrees_with_head` (`JoinCascade.v:1871`), `join_incoming_binds_once` (`JoinCascade.v:1146`), the TLA+ invariant `IncomingBoundOnce` (V29) | `prop_join_produce_search_agrees_with_head`, `prop_join_incoming_binds_once`, `space_joins_incoming_binds_once` |
+| JN-10 | `cascade_terminates` (`JoinCascade.v:4497`), `cascade_order_independent` (`JoinCascade.v:3144`), `lift_reoffer_equals_direct_comm` (`JoinCascade.v:3576`), the TLA+ invariant `CascadeMeasureDecreases` (V30) | `prop_cascade_terminates_any_schedule`, `prop_cascade_order_independent`, `prop_lift_reoffer_equals_direct_comm`, `prop_cascade_measure_decreases`, `space_joins_cascade_after_produce`, `space_joins_cascade_after_consume`, `space_joins_cascade_order_independent`, `space_joins_set_join_cascade_fires_exposed_waiter` |
+| JN-11 | `join_set_bind_retires_class` (`JoinCascade.v:2973`) | `prop_join_set_bind_retires_class`, `space_joins_set_bind_retires_class` |
+| JN-12 | `peek_join_restores_stored_candidates` (`JoinCascade.v:5156`), the TLA+ invariant `NoRecordLost` (V32) | `prop_peek_join_restores_stored_candidates`, `prop_no_record_lost_any_schedule`, `space_joins_peek_join_restores_stored_candidates`, `space_joins_produce_side_peek_reproduces_in_receipt_order` |
+| JN-13 | `join_txn_fires_bounded` (`JoinCascade.v:4642`), the TLA+ invariant `TxnFiresBounded` (V31) | `prop_join_txn_fires_bounded_at_the_cap`, `space_joins_txn_fires_bounded_at_the_cap`, `space_joins_cascade_round_cap_reissues_settle`, `space_joins_cap_carries_pending_second_sends`, `space_joins_settle_before_cap_resumes_the_operation` |
+| JN-14 | `cascade_restores_inv` (`JoinCascade.v:7230`), the TLA+ invariant `QuiescentNoPendingMatch` (V26) | `prop_cascade_restores_inv_any_schedule`, `prop_quiescent_no_pending_match_any_schedule`, `prop_join_engine_agrees_with_drivers_without_joins` |
+| JN-15 | `join_ops_race_on_every_counter` (`CounterConflict.v:1891`) | `prop_join_ops_race_on_every_counter`, `space_collection_conflicts_join_ops_race_all_counters`, `space_collection_conflicts_unrelated_collections_merge`, `space_collection_conflicts_bag_join_potential_comm`, `space_joins_persisted_waiter_check3_conflict`, `reified_p5c_only_user_joins_persist` |
 
-No model states the rules OC-4, QD-8, AL-6, AL-8, PP-3 and PP-4, because they are checks of limits, of input and of the fail-closed rules.
+No model states the rules OC-4, QD-8, AL-6, AL-8, PP-3, PP-4 and JN-1, because they are checks of limits, of input or of fail-closed rules.
 Their tests show each abort.
+Rule JN-4 holds by construction, because a normalized receive carries one `persistent` flag and one `peek` flag for all its binds.
 
 ## References
 

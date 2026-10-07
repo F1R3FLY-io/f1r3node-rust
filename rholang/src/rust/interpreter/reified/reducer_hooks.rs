@@ -58,8 +58,8 @@ use crate::rust::interpreter::reified::system_channels::{
 };
 use crate::rust::interpreter::reified::system_processes::native_agent;
 use crate::rust::interpreter::spaces::agent::{
-    AllocOp, ConsumeOp, ProduceOp, QueryParams, SpaceAgent, SpaceFire, SpaceOp, SpaceOutcome,
-    SpaceReissue,
+    AllocOp, ConsumeOp, JoinBind, JoinOp, ProduceOp, QueryParams, SpaceAgent, SpaceFire, SpaceOp,
+    SpaceOutcome, SpaceReissue,
 };
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{self, CollectionKey, NameTail, NativeSpace};
@@ -102,6 +102,12 @@ enum ReceiveRoute {
         /// The query of the bind, or `None` (P5b). The agent checks it against the schema of
         /// its discipline.
         query: Option<QueryParams>,
+    },
+    /// A join whose channels all route to one native space (P5c, decision 29), with its binds
+    /// in bind order. The join engine runs it.
+    Join {
+        space: NativeSpace,
+        binds: Vec<JoinBind>,
     },
 }
 
@@ -374,7 +380,8 @@ impl ReducerCore {
     /// * A query on the default space: `QuerySpecUnsupported`.
     /// * One channel on a native space: a consume with `space_op`, with the query of the bind.
     ///   The agent checks the query against the schema of its discipline.
-    /// * Two or more channels on one native space: `OrderedJoinUnsupported` (A3).
+    /// * Two or more channels on one native space: a join with `space_op`, with the query of each
+    ///   bind (P5c, decision 29). The join engine runs it.
     /// * A channel of a user agent: `AgentSpacesUnavailable`.
     /// * Every other join: `CrossSpaceJoin`.
     pub(in crate::rust::interpreter) fn reified_consume<'a>(
@@ -435,6 +442,20 @@ impl ReducerCore {
                     authority,
                     introduction_authority,
                     reissued_ord: None,
+                }),
+                None,
+            )),
+            Ok(ReceiveRoute::Join { space, binds }) => Box::pin(self.space_op(
+                SpaceOp::Join(JoinOp {
+                    space,
+                    binds,
+                    body,
+                    persistent,
+                    peek,
+                    guard,
+                    authority,
+                    introduction_authority,
+                    reissued_ords: None,
                 }),
                 None,
             )),
@@ -798,7 +819,9 @@ fn single_bind_route(bind: RoutedBind) -> Result<ReceiveRoute, InterpreterError>
 
 /// The target of a receive with any number of binds other than one. When every channel routes
 /// to the default space, the receive is the HEAD consume, or `QuerySpecUnsupported` when a bind
-/// has a query. A join with a channel off the default space fails with `join_error`.
+/// has a query. When every channel routes to one native space, the receive is a join of that
+/// space, with the query of each bind (P5c, decision 29). Any other join fails with
+/// `join_error`.
 fn join_route(routed: Vec<RoutedBind>) -> Result<ReceiveRoute, InterpreterError> {
     match (
         routed
@@ -813,29 +836,73 @@ fn join_route(routed: Vec<RoutedBind>) -> Result<ReceiveRoute, InterpreterError>
                 .collect(),
         )),
         (true, true) => Err(ReifiedReduceError::QuerySpecUnsupported.into()),
-        (false, _) => Err(join_error(routed.iter().map(|bind| &bind.route).collect()).into()),
+        (false, _) => match one_space(&routed) {
+            Some(space) => {
+                let width = routed.len();
+                let binds: Vec<JoinBind> = routed.into_iter().filter_map(join_bind).collect();
+                match binds.len() == width {
+                    true => Ok(ReceiveRoute::Join { space, binds }),
+                    false => Err(InterpreterError::BugFoundError(
+                        "a join on one space has a bind of another route".to_string(),
+                    )),
+                }
+            }
+            None => Err(join_error(routed.iter().map(|bind| &bind.route).collect()).into()),
+        },
     }
 }
 
-/// The error of a join with two or more binds whose channels do not all route to the default
-/// space.
-fn join_error(routes: Vec<&Route>) -> ReifiedReduceError {
-    let first = match routes.first() {
-        Some(Route::Space { space, .. }) => Some(*space),
-        _ => None,
+/// The bind of a join of a bind that routes to a native space, or `None` for another route.
+fn join_bind(bind: RoutedBind) -> Option<JoinBind> {
+    match bind.route {
+        Route::Space { key, .. } => Some(JoinBind {
+            key,
+            channel: bind.channel,
+            pattern: bind.pattern,
+            query: bind.query,
+        }),
+        Route::Default | Route::Agent => None,
+    }
+}
+
+/// The space of a join whose channels all route to one native space, or `None`.
+fn one_space(routed: &[RoutedBind]) -> Option<NativeSpace> {
+    let first = match routed.first().map(|bind| &bind.route) {
+        Some(Route::Space { space, .. }) => *space,
+        Some(Route::Default | Route::Agent) | None => return None,
     };
-    let one_space = first.is_some_and(|first| {
-        routes
-            .iter()
-            .all(|route| matches!(route, Route::Space { space, .. } if *space == first))
-    });
-    match (
-        one_space,
-        routes.iter().any(|route| matches!(route, Route::Agent)),
-    ) {
-        (true, _) => ReifiedReduceError::OrderedJoinUnsupported,
-        (false, true) => ReifiedReduceError::AgentSpacesUnavailable,
-        (false, false) => ReifiedReduceError::CrossSpaceJoin,
+    routed
+        .iter()
+        .all(|bind| matches!(&bind.route, Route::Space { space, .. } if *space == first))
+        .then_some(first)
+}
+
+/// The error of a join with two or more binds whose channels neither all route to the default
+/// space nor all route to one native space: a channel of a user agent fails closed until P8,
+/// and every other mix is a `CrossSpaceJoin`.
+fn join_error(routes: Vec<&Route>) -> ReifiedReduceError {
+    // Disabled by decision 29: same-space joins run in the join engine (P5c). `join_route`
+    // sends a join on one native space there, so this function sees only the other mixes.
+    // let first = match routes.first() {
+    //     Some(Route::Space { space, .. }) => Some(*space),
+    //     _ => None,
+    // };
+    // let one_space = first.is_some_and(|first| {
+    //     routes
+    //         .iter()
+    //         .all(|route| matches!(route, Route::Space { space, .. } if *space == first))
+    // });
+    // match (
+    //     one_space,
+    //     routes.iter().any(|route| matches!(route, Route::Agent)),
+    // ) {
+    //     (true, _) => ReifiedReduceError::OrderedJoinUnsupported,
+    //     (false, true) => ReifiedReduceError::AgentSpacesUnavailable,
+    //     (false, false) => ReifiedReduceError::CrossSpaceJoin,
+    // }
+    match routes.iter().any(|route| matches!(route, Route::Agent)) {
+        true => ReifiedReduceError::AgentSpacesUnavailable,
+        false => ReifiedReduceError::CrossSpaceJoin,
     }
 }
 
@@ -2377,8 +2444,11 @@ mod tests {
         .await
     }
 
-    /// A join with a channel on a native space fails closed: one space gives
-    /// `OrderedJoinUnsupported` (A3), and every other mix gives `CrossSpaceJoin`.
+    /// A join with a channel on a native space: a join whose channels all route to one native
+    /// space routes to the join engine (P5c, decision 29) with its binds in bind order, and
+    /// without a host runtime it fails closed with `RuntimeUnavailable`. Every other mix gives
+    /// `CrossSpaceJoin`. The P4 version of this test expected `OrderedJoinUnsupported` (A3) for
+    /// the joins on one space.
     #[tokio::test]
     async fn reducer_space_routing_receive_joins_route_by_space() {
         let fixture = detached().await;
@@ -2389,28 +2459,50 @@ mod tests {
         for (channels, failure) in [
             (vec![name(first, 1), private(1)], "CrossSpaceJoin"),
             (vec![private(1), name(first, 1)], "CrossSpaceJoin"),
-            (
-                vec![name(first, 1), name(first, 2)],
-                "OrderedJoinUnsupported",
-            ),
-            (
-                vec![name(first, 1), name(first, 1)],
-                "OrderedJoinUnsupported",
-            ),
             (vec![name(first, 1), name(second, 1)], "CrossSpaceJoin"),
         ] {
             assert_eq!(code(receive(reducer, channels).await), expected(failure));
         }
+        for channels in [vec![name(first, 1), name(first, 2)], vec![
+            name(first, 1),
+            name(first, 1),
+        ]] {
+            assert_eq!(
+                route_join(reducer, channels.clone()),
+                (
+                    first,
+                    channels
+                        .iter()
+                        .map(|channel| join_bind_of(channel, None))
+                        .collect()
+                )
+            );
+            assert_eq!(
+                code(receive(reducer, channels).await),
+                expected("RuntimeUnavailable")
+            );
+        }
         let core = scoped(reducer, first);
+        for channels in [vec![string("rrs-4c-a"), string("rrs-4c-b")], vec![
+            string("rrs-4c-a"),
+            name(first, 3),
+        ]] {
+            assert_eq!(
+                route_join(&core, channels.clone()),
+                (
+                    first,
+                    channels
+                        .iter()
+                        .map(|channel| join_bind_of(channel, None))
+                        .collect()
+                )
+            );
+            assert_eq!(
+                code(receive(&core, channels).await),
+                expected("RuntimeUnavailable")
+            );
+        }
         for (channels, failure) in [
-            (
-                vec![string("rrs-4c-a"), string("rrs-4c-b")],
-                "OrderedJoinUnsupported",
-            ),
-            (
-                vec![string("rrs-4c-a"), name(first, 3)],
-                "OrderedJoinUnsupported",
-            ),
             (vec![string("rrs-4c-a"), private(2)], "CrossSpaceJoin"),
             (vec![string("rrs-4c-a"), name(second, 3)], "CrossSpaceJoin"),
         ] {
@@ -2860,6 +2952,26 @@ mod tests {
         core.route_receive(vec![bind(source)])
     }
 
+    /// The space and the binds of the join route of a receive with one bind of `bind` on each
+    /// of `sources`.
+    fn route_join(core: &ReducerCore, sources: Vec<Par>) -> (NativeSpace, Vec<JoinBind>) {
+        match core.route_receive(sources.into_iter().map(bind).collect()) {
+            Ok(ReceiveRoute::Join { space, binds }) => (space, binds),
+            other => panic!("the receive does not route to a join: {other:?}"),
+        }
+    }
+
+    /// The bind of a join on `channel` with the pattern of `bind` and the query `query`.
+    fn join_bind_of(channel: &Par, query: Option<QueryParams>) -> JoinBind {
+        let (pattern, _) = bind(channel.clone());
+        JoinBind {
+            key: CollectionKey::of_channel(channel).expect("a key"),
+            channel: channel.clone(),
+            pattern,
+            query,
+        }
+    }
+
     /// The space, the channel and the query of a route to a native space.
     fn space_route(
         route: Result<ReceiveRoute, InterpreterError>,
@@ -2993,10 +3105,6 @@ mod tests {
                 vec![on_host.clone(), string("rrs-p5-query-other")],
                 "QuerySpecUnsupported",
             ),
-            (
-                vec![on_name.clone(), space_name(space, [7; 32])],
-                "OrderedJoinUnsupported",
-            ),
             (vec![on_name.clone(), private(2)], "CrossSpaceJoin"),
         ] {
             assert_eq!(
@@ -3004,6 +3112,16 @@ mod tests {
                 expected(failure)
             );
         }
+        // A join on one space keeps the query of each bind (P5c): the first bind has the query,
+        // and the second has none. The P4 version expected `OrderedJoinUnsupported`.
+        let other = space_name(space, [7; 32]);
+        assert_eq!(
+            route_join(reducer, vec![on_name.clone(), other.clone()]),
+            (space, vec![
+                join_bind_of(&name, Some(wanted.clone())),
+                join_bind_of(&other, None),
+            ])
+        );
 
         assert_eq!(
             code(receive(reducer, vec![on_host.clone()]).await),
@@ -3094,11 +3212,13 @@ mod tests {
             })
     }
 
-    /// The target of a receive with one bind, as a comparable value.
+    /// The target of a receive, as a comparable value. A receive with one bind never routes to
+    /// a join (P5c).
     #[derive(Clone, Debug, PartialEq)]
     enum Target {
         Host(Vec<(BindPattern, Par)>),
         Space(NativeSpace, CollectionKey, Par, Option<QueryParams>),
+        Join(NativeSpace, Vec<JoinBind>),
         Failed(InterpreterError),
     }
 
@@ -3112,6 +3232,7 @@ mod tests {
                 query,
                 ..
             }) => Target::Space(space, key, channel, query),
+            Ok(ReceiveRoute::Join { space, binds }) => Target::Join(space, binds),
             Err(error) => Target::Failed(error),
         }
     }

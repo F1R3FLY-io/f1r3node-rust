@@ -31,6 +31,19 @@
 //! continuation with [`into_continuation`], which knows no discipline, so that decoder accepts
 //! both policy forms.
 //!
+//! A waiter of a join (P5c, decision 29) parks with version 2 of the continuation envelope. It
+//! holds one slot for each position of its group, in group order:
+//!
+//! | Record                    | Content                                                                 |
+//! |---------------------------|-------------------------------------------------------------------------|
+//! | join continuation         | `ParBody.body = Par{exprs: [EList[tag_K2, EList[slot…], body]]}`         |
+//! | slot of a group position  | `EList[GInt(ord), GInt(bind), policy]`, `policy` as for a priority queue |
+//!
+//! The tag `tag_K2` is `GByteArray([0xE0, 0x52, b'K', 2])`. The bind indices of the slots are a
+//! permutation of the binds, so [`restore_bind_order`] puts the results of a fire back into the
+//! bind order of the receive. A waiter with one bind keeps the version 1 record, and the decoders
+//! of each version reject the records of the other version.
+//!
 //! The bit sets of an envelope are the union of the bit sets of its elements. They belong to no
 //! identity. The decoders are strict: a record that is not the exact image of its encoder is a
 //! [`MalformedRecord`], and the operation aborts with `Inconsistent`.
@@ -52,7 +65,7 @@ use models::rhoapi::{
 };
 use models::rust::utils::union;
 use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;
+use rspace_plus_plus::rspace::rspace_interface::{RSpaceOperationSource, RSpaceResult};
 use rspace_plus_plus::rspace::space_store_handle::BeforeObserve;
 
 use super::agent::{ConsumeOp, ProduceOp};
@@ -1207,6 +1220,422 @@ pub fn pq_continuation_slots_metered(
     Ok(pq_continuation_slots(continuation)?)
 }
 
+// ── The continuation record of a join (P5c, decision 29) ──────────────────────────────────
+//
+// A waiter with two or more binds parks on the group of its channels in canonical order
+// (FR-1', decision 28). Its record is version 2 of the continuation envelope:
+//
+//   ParBody.body = Par{exprs: [EList[tag_K2, EList[slot_0 … slot_{n-1}], body]]}
+//   tag_K2       = GByteArray([0xE0, 0x52, b'K', 2])
+//   slot_i       = EList[GInt(ord_i), GInt(bind_i), policy_i]
+//
+// The slot `i` belongs to the group position `i`. `ord_i` is the order of the waiter in the
+// collection of that position, `bind_i` is the index of the bind of that position in the
+// receive, and `policy_i` is `Nil` or the policy of a priority-queue lane (`pq_policy`). The
+// bind indices are a permutation of `0..n`, so the outcome of a fire puts the results of its
+// receipt, which follow the group order, back into the bind order of the receive. A waiter with
+// one bind keeps the version 1 record. The decoders of each version reject the other version,
+// because they compare the whole tag.
+
+/// The envelope version of the continuation record of a join.
+pub const JOIN_CONTINUATION_VERSION: u8 = 2;
+
+/// The bytes of the tag of the continuation record of a join.
+pub const JOIN_CONTINUATION_TAG: [u8; 4] = [
+    REIFIED_TAG,
+    RECORD_TAG_MARK,
+    RecordKind::Continuation as u8,
+    JOIN_CONTINUATION_VERSION,
+];
+
+/// The slot of one group position of a join waiter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinSlot {
+    /// The order of the waiter in the collection of the position. Repeated channels of one
+    /// collection have equal orders, and a bag or a set gives the order 0.
+    pub ord: i64,
+    /// The index of the bind of the position in the receive.
+    pub bind: usize,
+    /// The waiter queue of the bind in a priority queue: `Some(p)` for the level `p`, and
+    /// `None` for the unrestricted queue and for every other discipline.
+    pub priority: Option<i64>,
+}
+
+/// A decoded continuation record of a join.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JoinContinuationRecord {
+    /// The slots of the group positions, in group order.
+    pub slots: Vec<JoinSlot>,
+    /// The continuation as the program parked it: the original body, its random state, its
+    /// guard and its cost authority.
+    pub continuation: TaggedContinuation,
+}
+
+/// The type of one result of a fire receipt.
+type FiredResult = RSpaceResult<Par, ListParWithRandom>;
+
+fn join_tag() -> Par { expr_par(ExprInstance::GByteArray(JOIN_CONTINUATION_TAG.to_vec())) }
+
+fn is_join_tag(par: &Par) -> bool {
+    match (sole_expr(par), par.connective_used) {
+        (Some(ExprInstance::GByteArray(bytes)), false) => bytes.as_slice() == JOIN_CONTINUATION_TAG,
+        _ => false,
+    }
+}
+
+/// True when `slots` is the slot list of a join record: two or more slots, natural orders,
+/// natural levels, and bind indices that are a permutation of `0..slots.len()`. The check of the
+/// permutation allocates one flag for each slot.
+fn join_slots_valid(slots: &[JoinSlot]) -> bool {
+    let mut seen = vec![false; slots.len()];
+    slots.len() >= 2
+        && slots.iter().all(|slot| {
+            let level = slot.priority.is_none_or(|level| level >= 0);
+            let fresh = match seen.get_mut(slot.bind) {
+                Some(flag @ false) => {
+                    *flag = true;
+                    true
+                }
+                Some(true) | None => false,
+            };
+            slot.ord >= 0 && level && fresh
+        })
+}
+
+/// The par of one slot. A checked slot list has its bind indices below its length, so each
+/// index fits an `i64`.
+fn join_slot_par(slot: &JoinSlot) -> Result<Par, MalformedRecord> {
+    let bind = i64::try_from(slot.bind).map_err(|_| MalformedRecord(RecordKind::Continuation))?;
+    Ok(list_par(vec![
+        int_par(slot.ord),
+        int_par(bind),
+        pq_policy(slot.priority),
+    ]))
+}
+
+/// The envelope of a checked slot list around `body`.
+fn join_envelope_of(slots: &[JoinSlot], body: Par) -> Result<Par, MalformedRecord> {
+    let slot_pars = slots
+        .iter()
+        .map(join_slot_par)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(list_par(vec![join_tag(), list_par(slot_pars), body]))
+}
+
+/// The envelope of the continuation record of a join with the slots `slots` around `body`.
+/// The encoder accepts exactly the slot lists that its decoder returns: two or more slots,
+/// natural orders and levels, and bind indices that are a permutation of `0..n`.
+pub fn join_continuation_envelope(slots: &[JoinSlot], body: Par) -> Result<Par, MalformedRecord> {
+    match join_slots_valid(slots) {
+        true => join_envelope_of(slots, body),
+        false => Err(MalformedRecord(RecordKind::Continuation)),
+    }
+}
+
+/// The parked continuation of `continuation` as a join waiter with the slots `slots`: its body
+/// inside the envelope. The random state, the guard and the cost authority stay as they are.
+/// Only a `ParBody` with a body has a continuation record.
+pub fn wrap_join_continuation(
+    slots: &[JoinSlot],
+    continuation: &TaggedContinuation,
+) -> Result<TaggedContinuation, MalformedRecord> {
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body),
+            random_state,
+        })) => Ok(TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(join_continuation_envelope(slots, body.clone())?),
+                random_state: random_state.clone(),
+            })),
+            guard: continuation.guard.clone(),
+            cost_authority: continuation.cost_authority.clone(),
+        }),
+        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
+        | Some(TaggedCont::ScalaBodyRef(_))
+        | None => Err(MalformedRecord(RecordKind::Continuation)),
+    }
+}
+
+/// The slot of the par `par`, for a record with `count` slots.
+fn join_slot_of(par: &Par, count: usize) -> Option<JoinSlot> {
+    match list_elements(par) {
+        Some([ord, bind, policy]) => {
+            let ord = natural_of(ord)?;
+            let bind = usize::try_from(natural_of(bind)?).ok()?;
+            let priority = level_of_policy(policy)?;
+            (bind < count).then_some(JoinSlot {
+                ord,
+                bind,
+                priority,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The slots and the original body of the continuation record of a join.
+fn join_continuation_parts(
+    continuation: &TaggedContinuation,
+) -> Result<(Vec<JoinSlot>, &Par, &ParWithRandom), MalformedRecord> {
+    let malformed = MalformedRecord(RecordKind::Continuation);
+    let body = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => body,
+        Some(TaggedCont::ScalaBodyRef(_)) | None => return Err(malformed),
+    };
+    match body.body.as_ref().and_then(list_elements) {
+        Some([tag, slot_list, original]) if is_join_tag(tag) => {
+            let slot_pars = list_elements(slot_list).ok_or(malformed)?;
+            let slots = slot_pars
+                .iter()
+                .map(|par| join_slot_of(par, slot_pars.len()))
+                .collect::<Option<Vec<_>>>()
+                .ok_or(malformed)?;
+            match join_slots_valid(&slots) {
+                true => Ok((slots, original, body)),
+                false => Err(malformed),
+            }
+        }
+        _ => Err(malformed),
+    }
+}
+
+/// The slots of the continuation record of a join. Only the envelope is decoded.
+pub fn join_continuation_slots(
+    continuation: &TaggedContinuation,
+) -> Result<Vec<JoinSlot>, MalformedRecord> {
+    join_continuation_parts(continuation).map(|(slots, _, _)| slots)
+}
+
+/// Decodes the continuation record of a join (the inverse of [`wrap_join_continuation`]).
+pub fn unwrap_join_continuation(
+    continuation: &TaggedContinuation,
+) -> Result<JoinContinuationRecord, MalformedRecord> {
+    let (slots, original, body) = join_continuation_parts(continuation)?;
+    Ok(JoinContinuationRecord {
+        slots,
+        continuation: TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(original.clone()),
+                random_state: body.random_state.clone(),
+            })),
+            guard: continuation.guard.clone(),
+            cost_authority: continuation.cost_authority.clone(),
+        },
+    })
+}
+
+/// Decodes an owned continuation record of a join. It moves the original body, the random
+/// state, the guard and the cost authority out of the record, as [`into_continuation`] does.
+/// [`prepay_join_continuation_unwrap`] reserves its work.
+pub fn into_join_continuation(
+    continuation: TaggedContinuation,
+) -> Result<JoinContinuationRecord, MalformedRecord> {
+    let malformed = MalformedRecord(RecordKind::Continuation);
+    let slots = join_continuation_slots(&continuation)?;
+    let TaggedContinuation {
+        tagged_cont,
+        guard,
+        cost_authority,
+    } = continuation;
+    let ParWithRandom { body, random_state } = match tagged_cont {
+        Some(TaggedCont::ParBody(body)) => body,
+        Some(TaggedCont::ScalaBodyRef(_)) | None => return Err(malformed),
+    };
+    let original = body
+        .and_then(|mut envelope| match envelope.exprs.pop() {
+            Some(Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList { mut ps, .. })),
+            }) => ps.pop(),
+            _ => None,
+        })
+        .ok_or(malformed)?;
+    Ok(JoinContinuationRecord {
+        slots,
+        continuation: TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(original),
+                random_state,
+            })),
+            guard,
+            cost_authority,
+        },
+    })
+}
+
+/// The results of a join fire in the bind order of its receive. The receipt lists one result
+/// for each group position, in group order, and the slot of position `i` names its bind. The
+/// host dispatches the results of a join in bind order (`dispatch.rs`), so the outcome puts
+/// result `i` at the place `slots[i].bind`. [`prepay_join_continuation_unwrap`] reserves the two
+/// buffers and the moves.
+pub fn restore_bind_order<T>(slots: &[JoinSlot], results: Vec<T>) -> Result<Vec<T>, SpaceError> {
+    if slots.len() != results.len() {
+        return Err(SpaceError::Inconsistent(
+            "a join fire has not one result for each slot",
+        ));
+    }
+    let mut placed: Vec<Option<T>> = Vec::with_capacity(results.len());
+    placed.resize_with(results.len(), || None);
+    for (slot, result) in slots.iter().zip(results) {
+        match placed.get_mut(slot.bind) {
+            Some(place @ None) => *place = Some(result),
+            Some(Some(_)) | None => {
+                return Err(SpaceError::Inconsistent(
+                    "the slots of a join fire are not a permutation of its binds",
+                ))
+            }
+        }
+    }
+    placed
+        .into_iter()
+        .map(|result| {
+            result.ok_or(SpaceError::Inconsistent(
+                "the slots of a join fire are not a permutation of its binds",
+            ))
+        })
+        .collect()
+}
+
+/// The template of the envelope of a join record with an empty slot list around an empty body:
+/// the spine, the tag and the spine of the slot list.
+static JOIN_CONTINUATION_ENVELOPE: LazyLock<Par> =
+    LazyLock::new(|| list_par(vec![join_tag(), list_par(Vec::new()), Par::default()]));
+
+/// The template of one slot without a policy: the orders are inline integers.
+static JOIN_SLOT: LazyLock<Par> =
+    LazyLock::new(|| list_par(vec![int_par(0), int_par(0), Par::default()]));
+
+/// The bytes of the spine of a join envelope: the `Par`, its `Expr`, the `EList` and the three
+/// element `Par`s.
+const JOIN_SPINE_BYTES: usize =
+    size_of::<Par>() + size_of::<Expr>() + size_of::<EList>() + 3 * size_of::<Par>();
+
+/// The parked continuation of a receive with two or more binds and the slots `slots`, built
+/// from its parts with one copy of each part. It equals [`wrap_join_continuation`] of the
+/// continuation with these parts.
+///
+/// The reservations are the check of the slots (one flag for each slot), the envelope (the
+/// template of its spine), the buffer of the slot list, each slot (the template of its shape and
+/// a lane policy), the body, the work of `list_par` on the bit set of the body, the random
+/// state, the guard and the cost authority.
+pub fn wrap_join_continuation_metered(
+    slots: &[JoinSlot],
+    body: &ParWithRandom,
+    guard: &Option<Par>,
+    cost_authority: Option<&CostAuthority>,
+    meter: &ScanMeter,
+) -> Result<TaggedContinuation, SpaceError> {
+    let Some(original) = &body.body else {
+        return Err(MalformedRecord(RecordKind::Continuation).into());
+    };
+    meter.reserve_buffer::<bool>(slots.len())?;
+    if !join_slots_valid(slots) {
+        return Err(MalformedRecord(RecordKind::Continuation).into());
+    }
+    meter.reserve_copy(&*JOIN_CONTINUATION_ENVELOPE)?;
+    meter.reserve_buffer::<Par>(slots.len())?;
+    for slot in slots {
+        meter.reserve_copy(&*JOIN_SLOT)?;
+        if slot.priority.is_some() {
+            meter.reserve_copy(&*PQ_POLICY)?;
+        }
+    }
+    meter.reserve_copy(original)?;
+    meter.reserve_copy(&original.locally_free)?;
+    meter.reserve_buffer::<u8>(original.locally_free.len())?;
+    meter.reserve_copy(&original.locally_free)?;
+    meter.reserve_copy(&body.random_state)?;
+    meter.reserve_copy(guard)?;
+    let cost_authority = cost_authority
+        .map(|authority| meter.copy(authority))
+        .transpose()?;
+    Ok(TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(join_envelope_of(slots, original.clone())?),
+            random_state: body.random_state.clone(),
+        })),
+        guard: guard.clone(),
+        cost_authority,
+    })
+}
+
+/// The elements of the outer list of the envelope of `continuation`, read without a check. A
+/// continuation without such a list has none.
+fn envelope_elements(continuation: &TaggedContinuation) -> &[Par] {
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => match sole_expr(body) {
+            Some(ExprInstance::EListBody(EList { ps, .. })) => ps.as_slice(),
+            _ => &[],
+        },
+        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
+        | Some(TaggedCont::ScalaBodyRef(_))
+        | None => &[],
+    }
+}
+
+/// Reserves the decode of the envelope of a join record: its spine, its tag, its slot list and
+/// the two buffers of the decoder (the slots and the flags of the permutation check), never its
+/// body.
+fn reserve_join_envelope(
+    continuation: &TaggedContinuation,
+    meter: &ScanMeter,
+) -> Result<(), SpaceError> {
+    meter.charge(4, JOIN_SPINE_BYTES, 0)?;
+    let count = match envelope_elements(continuation) {
+        [tag, slot_list, ..] => {
+            meter.inspect(tag)?;
+            meter.inspect(slot_list)?;
+            match sole_expr(slot_list) {
+                Some(ExprInstance::EListBody(EList { ps, .. })) => ps.len(),
+                _ => 0,
+            }
+        }
+        [tag] => {
+            meter.inspect(tag)?;
+            0
+        }
+        [] => 0,
+    };
+    meter.reserve_buffer::<JoinSlot>(count)?;
+    meter.reserve_buffer::<bool>(count)?;
+    Ok(())
+}
+
+/// [`join_continuation_slots`] with its read reserved: the spine, the tag and the slot list of
+/// the envelope and the buffers of the decoder, never the body.
+pub fn join_continuation_slots_metered(
+    continuation: &TaggedContinuation,
+    meter: &ScanMeter,
+) -> Result<Vec<JoinSlot>, SpaceError> {
+    reserve_join_envelope(continuation, meter)?;
+    Ok(join_continuation_slots(continuation)?)
+}
+
+/// Reserves the later [`into_join_continuation`] and [`restore_bind_order`] of a fired join
+/// waiter at the time its fire is staged, for a receipt of `results` results: the decode of the
+/// envelope, the moves of its four slots, the two buffers of the bind order and the two moves of
+/// each result. The outcome runs after the commit, so a host-work rejection never follows a
+/// commit.
+pub fn prepay_join_continuation_unwrap(
+    continuation: &TaggedContinuation,
+    results: usize,
+    meter: &ScanMeter,
+) -> Result<(), SpaceError> {
+    reserve_join_envelope(continuation, meter)?;
+    for slot in CONTINUATION_MOVED_SLOTS {
+        meter.moved(slot)?;
+    }
+    meter.reserve_buffer::<Option<FiredResult>>(results)?;
+    meter.reserve_buffer::<FiredResult>(results)?;
+    for _ in 0..results {
+        meter.moved(size_of::<FiredResult>())?;
+        meter.moved(size_of::<Option<FiredResult>>())?;
+    }
+    Ok(())
+}
+
 /// The introduction authority of one operation and the phlo budget of its deploy. The staged
 /// operations of the operation share it, so each callback copies one shared pointer instead of
 /// the budget and the authority.
@@ -2129,5 +2558,369 @@ mod tests {
             budget.usage(operations).get()
         };
         assert!(usage_of(Some(1)) > usage_of(None));
+    }
+
+    // ── The continuation record of a join (P5c, decision 29) ──────────────────────────────
+
+    fn slot(ord: i64, bind: usize, priority: Option<i64>) -> JoinSlot {
+        JoinSlot {
+            ord,
+            bind,
+            priority,
+        }
+    }
+
+    /// Slot lists of two and three positions: plain orders, repeated orders (two positions on
+    /// one collection), bind permutations and lane policies.
+    fn join_slot_lists() -> Vec<Vec<JoinSlot>> {
+        vec![
+            vec![slot(0, 0, None), slot(0, 1, None)],
+            vec![slot(4, 1, None), slot(9, 0, None)],
+            vec![slot(3, 0, Some(2)), slot(3, 1, None)],
+            vec![
+                slot(7, 2, None),
+                slot(1, 0, Some(0)),
+                slot(i64::MAX, 1, Some(i64::MAX)),
+            ],
+        ]
+    }
+
+    #[test]
+    fn space_record_join_envelope_roundtrips_the_slots_and_the_body() {
+        let mut body = new_boundvar_par(0, Vec::new(), false);
+        body.exprs.extend(new_freevar_par(1, Vec::new()).exprs);
+        body.locally_free = vec![0b101];
+        body.connective_used = true;
+        let original = parked(body.clone());
+        for slots in join_slot_lists() {
+            let wrapped =
+                wrap_join_continuation(&slots, &original).expect("a body has a join record");
+            let envelope = match &wrapped.tagged_cont {
+                Some(TaggedCont::ParBody(ParWithRandom {
+                    body: Some(envelope),
+                    random_state,
+                })) => {
+                    assert_eq!(random_state, &vec![5, 6]);
+                    envelope.clone()
+                }
+                other => panic!("a wrapped join waiter keeps its ParBody: {other:?}"),
+            };
+            assert_eq!(
+                Ok(envelope.clone()),
+                join_continuation_envelope(&slots, body.clone())
+            );
+            // The bit sets of the envelope are those of the body: the slots are ground.
+            assert!(envelope.connective_used);
+            assert_eq!(envelope.locally_free, body.locally_free);
+            assert_eq!(wrapped.guard, original.guard);
+            assert_eq!(wrapped.cost_authority, original.cost_authority);
+            assert_eq!(join_continuation_slots(&wrapped), Ok(slots.clone()));
+            let decoded = JoinContinuationRecord {
+                slots: slots.clone(),
+                continuation: original.clone(),
+            };
+            assert_eq!(unwrap_join_continuation(&wrapped), Ok(decoded.clone()));
+            assert_eq!(into_join_continuation(wrapped), Ok(decoded));
+        }
+        // The slots are part of the record: other orders, binds or lanes give other records.
+        let base = vec![slot(1, 0, None), slot(2, 1, None)];
+        for other in [
+            vec![slot(1, 0, None), slot(3, 1, None)],
+            vec![slot(1, 1, None), slot(2, 0, None)],
+            vec![slot(1, 0, Some(0)), slot(2, 1, None)],
+        ] {
+            assert_ne!(
+                wrap_join_continuation(&base, &original),
+                wrap_join_continuation(&other, &original)
+            );
+        }
+        // A ScalaBodyRef or a missing body has no record.
+        let malformed = Some(MalformedRecord(RecordKind::Continuation));
+        for continuation in [
+            TaggedContinuation {
+                tagged_cont: Some(TaggedCont::ScalaBodyRef(201)),
+                ..original.clone()
+            },
+            TaggedContinuation {
+                tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                    body: None,
+                    random_state: Vec::new(),
+                })),
+                ..original.clone()
+            },
+            TaggedContinuation::default(),
+        ] {
+            assert_eq!(
+                wrap_join_continuation(&base, &continuation).err(),
+                malformed
+            );
+            assert_eq!(join_continuation_slots(&continuation).err(), malformed);
+            assert_eq!(into_join_continuation(continuation).err(), malformed);
+        }
+    }
+
+    #[test]
+    fn space_record_join_and_single_bind_records_are_disjoint() {
+        assert!(RecordKind::ALL
+            .iter()
+            .all(|kind| kind.tag_bytes() != JOIN_CONTINUATION_TAG));
+        assert_eq!(JOIN_CONTINUATION_TAG, [
+            REIFIED_TAG,
+            RECORD_TAG_MARK,
+            b'K',
+            JOIN_CONTINUATION_VERSION
+        ]);
+        let original = parked(int(9));
+        let malformed = MalformedRecord(RecordKind::Continuation);
+        // The decoders of version 1 reject every join record.
+        for slots in join_slot_lists() {
+            let join = wrap_join_continuation(&slots, &original).expect("a join record");
+            assert_eq!(continuation_ord(&join), Err(malformed));
+            assert_eq!(unwrap_continuation(&join).err(), Some(malformed));
+            assert_eq!(pq_continuation_slots(&join), Err(malformed));
+            assert_eq!(unwrap_pq_continuation(&join).err(), Some(malformed));
+            assert_eq!(into_continuation(join).err(), Some(malformed));
+        }
+        // The decoders of version 2 reject every record of version 1, with and without a lane.
+        for priority in PRIORITIES {
+            let single = wrap_pq_continuation(3, priority, &original).expect("a single record");
+            assert_eq!(join_continuation_slots(&single), Err(malformed));
+            assert_eq!(unwrap_join_continuation(&single).err(), Some(malformed));
+            assert_eq!(into_join_continuation(single).err(), Some(malformed));
+        }
+    }
+
+    /// A join envelope with the slot pars `slot_pars` around the body `9`, built without the
+    /// checks of the encoder.
+    fn raw_join(tag: Par, slot_pars: Vec<Par>) -> TaggedContinuation {
+        parked(list_par(vec![tag, list_par(slot_pars), int(9)]))
+    }
+
+    fn raw_slot(ord: Par, bind: Par, policy: Par) -> Par { list_par(vec![ord, bind, policy]) }
+
+    #[test]
+    fn space_record_join_decoder_rejects_malformed_envelopes() {
+        let malformed = MalformedRecord(RecordKind::Continuation);
+        let good = || raw_slot(int(1), int(0), Par::default());
+        let second = || raw_slot(int(1), int(1), Par::default());
+        // The well-formed control decodes.
+        assert_eq!(
+            join_continuation_slots(&raw_join(join_tag(), vec![good(), second()])),
+            Ok(vec![slot(1, 0, None), slot(1, 1, None)])
+        );
+        let mut flagged = int(1);
+        flagged.connective_used = true;
+        let mut remainder = list_par(vec![good(), second()]);
+        if let Some(Expr {
+            expr_instance: Some(ExprInstance::EListBody(list)),
+        }) = remainder.exprs.first_mut()
+        {
+            list.remainder = Some(Var {
+                var_instance: Some(models::rhoapi::var::VarInstance::FreeVar(0)),
+            });
+        }
+        let cases: Vec<TaggedContinuation> = vec![
+            // One slot: a waiter with one bind keeps the version 1 record.
+            raw_join(join_tag(), vec![good()]),
+            raw_join(join_tag(), Vec::new()),
+            // The bind indices are not a permutation.
+            raw_join(join_tag(), vec![good(), good()]),
+            raw_join(join_tag(), vec![
+                good(),
+                raw_slot(int(1), int(2), Par::default()),
+            ]),
+            raw_join(join_tag(), vec![
+                good(),
+                raw_slot(int(1), int(-1), Par::default()),
+            ]),
+            // A negative, flagged or non-integer order.
+            raw_join(join_tag(), vec![
+                raw_slot(int(-1), int(0), Par::default()),
+                second(),
+            ]),
+            raw_join(join_tag(), vec![
+                raw_slot(flagged.clone(), int(0), Par::default()),
+                second(),
+            ]),
+            raw_join(join_tag(), vec![
+                raw_slot(string("1"), int(0), Par::default()),
+                second(),
+            ]),
+            // A flagged bind index, a malformed lane policy, a negative level.
+            raw_join(join_tag(), vec![
+                raw_slot(int(1), flagged, Par::default()),
+                second(),
+            ]),
+            raw_join(join_tag(), vec![raw_slot(int(1), int(0), int(2)), second()]),
+            raw_join(join_tag(), vec![
+                raw_slot(int(1), int(0), pq_policy(Some(1))),
+                raw_slot(
+                    int(1),
+                    int(1),
+                    policy_map(vec![(string(PRIORITY_KEY), int(-1))], false, false),
+                ),
+            ]),
+            // A slot of two or four elements.
+            raw_join(join_tag(), vec![list_par(vec![int(1), int(0)]), second()]),
+            raw_join(join_tag(), vec![
+                list_par(vec![int(1), int(0), Par::default(), Par::default()]),
+                second(),
+            ]),
+            // A slot list with a remainder, or a slot list that is not a list.
+            parked(list_par(vec![join_tag(), remainder, int(9)])),
+            parked(list_par(vec![join_tag(), int(1), int(9)])),
+            // The tags of version 1 and of version 3, and a short envelope.
+            raw_join(RecordKind::Continuation.tag(), vec![good(), second()]),
+            raw_join(tag_with([REIFIED_TAG, RECORD_TAG_MARK, b'K', 3]), vec![
+                good(),
+                second(),
+            ]),
+            parked(list_par(vec![join_tag(), list_par(vec![good(), second()])])),
+        ];
+        for bad in cases {
+            assert_eq!(join_continuation_slots(&bad), Err(malformed), "{bad:?}");
+            assert_eq!(unwrap_join_continuation(&bad).err(), Some(malformed));
+            assert_eq!(into_join_continuation(bad).err(), Some(malformed));
+        }
+        // The encoder accepts exactly the slot lists that the decoder returns.
+        let original = parked(int(9));
+        for bad in [
+            Vec::new(),
+            vec![slot(0, 0, None)],
+            vec![slot(0, 0, None), slot(0, 0, None)],
+            vec![slot(0, 0, None), slot(0, 2, None)],
+            vec![slot(-1, 0, None), slot(0, 1, None)],
+            vec![slot(0, 0, Some(-1)), slot(0, 1, None)],
+        ] {
+            assert_eq!(join_continuation_envelope(&bad, int(9)), Err(malformed));
+            assert_eq!(
+                wrap_join_continuation(&bad, &original).err(),
+                Some(malformed)
+            );
+            assert_eq!(
+                wrap_join_continuation_metered(
+                    &bad,
+                    &ParWithRandom {
+                        body: Some(int(9)),
+                        random_state: vec![5, 6],
+                    },
+                    &None,
+                    None,
+                    &ScanMeter::new(None),
+                )
+                .err(),
+                Some(SpaceError::from(malformed))
+            );
+        }
+    }
+
+    #[test]
+    fn space_record_join_results_return_to_bind_order() {
+        // Every permutation of three binds puts result i at the place of its bind.
+        let permutations: [[usize; 3]; 6] =
+            [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
+                2, 1, 0,
+            ]];
+        for binds in permutations {
+            let slots: Vec<JoinSlot> = binds.iter().map(|&bind| slot(0, bind, None)).collect();
+            let results: Vec<usize> = binds.to_vec();
+            assert_eq!(restore_bind_order(&slots, results), Ok(vec![0, 1, 2]));
+        }
+        let slots = vec![slot(0, 1, None), slot(0, 0, None)];
+        assert_eq!(
+            restore_bind_order(&slots, vec!["b", "a"]),
+            Ok(vec!["a", "b"])
+        );
+        assert_eq!(
+            restore_bind_order(&slots, vec!["only"]),
+            Err(SpaceError::Inconsistent(
+                "a join fire has not one result for each slot"
+            ))
+        );
+        for bad in [vec![slot(0, 0, None), slot(0, 0, None)], vec![
+            slot(0, 0, None),
+            slot(0, 2, None),
+        ]] {
+            assert_eq!(
+                restore_bind_order(&bad, vec![1, 2]),
+                Err(SpaceError::Inconsistent(
+                    "the slots of a join fire are not a permutation of its binds"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn space_record_join_metered_forms_equal_the_plain_forms_and_reserve_first() {
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+        use crate::rust::interpreter::host_work::HostWorkBudget;
+
+        let unbounded =
+            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let operations = HostWorkDimension::VerificationOperations;
+        let body = ParWithRandom {
+            body: Some(int(9)),
+            random_state: vec![5, 6],
+        };
+        for slots in join_slot_lists() {
+            let budget = unbounded();
+            let meter = ScanMeter::new(Some(budget.clone()));
+            let wrapped = wrap_join_continuation_metered(
+                &slots,
+                &body,
+                &Some(int(1)),
+                Some(&region(7)),
+                &meter,
+            )
+            .expect("a join record");
+            assert_eq!(
+                wrapped,
+                wrap_join_continuation(&slots, &parked(int(9))).expect("a body")
+            );
+            assert_eq!(
+                join_continuation_slots_metered(&wrapped, &meter),
+                Ok(slots.clone())
+            );
+            prepay_join_continuation_unwrap(&wrapped, slots.len(), &meter)
+                .expect("an unbounded prepay");
+            let usage = budget.usage(operations).get();
+            assert!(usage > 0, "the forms reserve their work");
+            // A budget one unit short rejects the forms before they return a value.
+            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            limits.set(operations, HostWorkLimit::new(usage - 1));
+            let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
+            let outcome = wrap_join_continuation_metered(
+                &slots,
+                &body,
+                &Some(int(1)),
+                Some(&region(7)),
+                &cut,
+            )
+            .and_then(|wrapped| {
+                join_continuation_slots_metered(&wrapped, &cut)?;
+                prepay_join_continuation_unwrap(&wrapped, slots.len(), &cut)
+            });
+            assert_eq!(
+                outcome,
+                Err(SpaceError::Host(RSpaceError::HostWorkRejected))
+            );
+        }
+        // More slots and more results reserve more work.
+        let usage_of = |slots: &[JoinSlot]| {
+            let budget = unbounded();
+            let meter = ScanMeter::new(Some(budget.clone()));
+            let wrapped = wrap_join_continuation_metered(slots, &body, &None, None, &meter)
+                .expect("a join record");
+            join_continuation_slots_metered(&wrapped, &meter).expect("the slots");
+            prepay_join_continuation_unwrap(&wrapped, slots.len(), &meter).expect("a prepay");
+            budget.usage(operations).get()
+        };
+        let two = vec![slot(0, 0, None), slot(0, 1, None)];
+        let three = vec![slot(0, 0, None), slot(0, 1, None), slot(0, 2, None)];
+        assert!(usage_of(&three) > usage_of(&two));
+        // A lane policy is reserved.
+        let laned = vec![slot(0, 0, Some(1)), slot(0, 1, None)];
+        assert!(usage_of(&laned) > usage_of(&two));
     }
 }

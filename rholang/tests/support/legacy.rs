@@ -8,9 +8,14 @@
 //! and the re-produces that the host reducer makes after a peek fire (`produce_peeks`, decision
 //! 45, Rule E). A test compares the charges of the staged operation (`produce_charges`,
 //! `consume_charges`) with the entries.
+//!
+//! The join suites of P5c run each staged operation of an agent alone on a fresh host
+//! ([`lone_host_produce`], [`lone_host_consume`]). The host matches with a
+//! [`PinnedPayloadMatcher`], so it binds exactly the records that the staged operation binds,
+//! by their payloads, as the agent matches them.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation};
@@ -21,8 +26,10 @@ use rholang::rust::interpreter::reified::legacy_charges::{
     LegacyCharges, ParSpaceConsume, ParSpaceProduce,
 };
 use rholang::rust::interpreter::rho_runtime::RhoISpace;
+use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum, WaitingContinuation};
+use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::{ContResult, ISpace, RSpaceResult};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -242,4 +249,187 @@ pub async fn host_consume(
         },
         reproduced,
     }
+}
+
+// ─── Lone host calls (P5c) ───────────────────────────────────────────────────────────────────
+
+/// The phlo of the budget of a lone host call: far above the charges of one operation.
+const LONE_PHLO: i64 = 1_000_000_000_000;
+
+/// The records that a [`PinnedPayloadMatcher`] may bind: `None` for every record, and
+/// `Some(records)` for these records only.
+pub type Pin = Arc<Mutex<Option<Vec<ListParWithRandom>>>>;
+
+/// The matcher of a lone host call. It matches the payload of a datum record without its
+/// envelope, as a space agent matches it (`spaces/matching.rs`). It matches every other record,
+/// for example a counter record, whole. While its pin is set, it binds only the pinned records. The
+/// guard of a continuation lies outside the envelope, so the guard check is the check of the
+/// Rholang matcher.
+#[derive(Clone)]
+pub struct PinnedPayloadMatcher {
+    /// The records that the matcher may bind.
+    pub pin: Pin,
+}
+
+impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for PinnedPayloadMatcher {
+    fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
+        let allowed = match self.pin.lock().expect("the pin lock").as_ref() {
+            Some(pinned) => pinned.contains(data),
+            None => true,
+        };
+        match (allowed, record::unwrap_pq_datum(data)) {
+            (false, _) => None,
+            (true, Ok(decoded)) => Matcher.get(pattern, &decoded.datum),
+            (true, Err(_)) => Matcher.get(pattern, data),
+        }
+    }
+
+    fn check_commit(
+        &self,
+        continuation: &TaggedContinuation,
+        matched: &[ListParWithRandom],
+    ) -> bool {
+        Matcher.check_commit(continuation, matched)
+    }
+}
+
+/// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedPayloadMatcher`] of `pin`,
+/// which charges `budget`.
+pub async fn pinned_charging_host(
+    budget: &RuntimeBudget,
+    pin: &Pin,
+) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+    let mut stores = InMemoryStoreManager::new();
+    let space = ParRSpace::create(
+        stores.r_space_stores().await.expect("in-memory stores"),
+        Arc::new(Box::new(PinnedPayloadMatcher { pin: pin.clone() })),
+    )
+    .expect("an in-memory space");
+    let host: RhoISpace = Arc::new(Box::new(space));
+    ChargingRSpace::charging_rspace(host, budget.clone())
+}
+
+/// Sets the pin of a lone host call to `records`.
+fn set_pin(pin: &Pin, records: Vec<ListParWithRandom>) {
+    *pin.lock().expect("the pin lock") = Some(records);
+}
+
+/// Stores `candidate`, the stored record of a fire, on its channel of a lone host, with its
+/// persist flag. The pin of the host is closed, so the store fires nothing.
+async fn store_candidate(
+    host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    candidate: &ConsumeCandidate<Par, ListParWithRandom>,
+) {
+    let fired = host
+        .produce(
+            candidate.channel.clone(),
+            candidate.removed_datum.clone(),
+            candidate.datum.persist,
+        )
+        .await
+        .expect("a lone host stores a candidate record");
+    assert!(fired.is_none(), "a closed pin fires nothing");
+}
+
+/// The legacy log entries of the staged produce `op` when a fresh host runs it alone.
+///
+/// 1. The host stores the stored candidates of a fire with their persist flags and parks its
+///    waiter, with a closed pin, so nothing fires.
+/// 2. The pin opens to the records of the operation: the produced record and the candidates.
+/// 3. The host runs the produce, and the call fires exactly when `op` fires.
+///
+/// A fire whose group repeats a channel must not bind a persistent record there. The host binds
+/// a persistent record again for each occurrence of its channel, and decision 28 forbids that for
+/// spaces.
+pub async fn lone_host_produce(op: &ParSpaceProduce) -> Vec<Cost> {
+    let budget = RuntimeBudget::new(Cost::create(LONE_PHLO, "rrs lone host produce"));
+    let _scope = budget.enter_legacy_scope();
+    let pin: Pin = Arc::new(Mutex::new(Some(Vec::new())));
+    let host = pinned_charging_host(&budget, &pin).await;
+    let mut pinned = vec![op.data.clone()];
+    let fires = match &op.outcome {
+        ProduceOutcome::Store => false,
+        ProduceOutcome::Fire {
+            channels,
+            continuation,
+            data,
+        } => {
+            for candidate in data.iter().filter(|candidate| candidate.datum_index >= 0) {
+                store_candidate(&host, candidate).await;
+                pinned.push(candidate.removed_datum.clone());
+            }
+            let parked = host
+                .consume(
+                    channels.clone(),
+                    continuation.patterns.clone(),
+                    continuation.continuation.clone(),
+                    continuation.persist,
+                    continuation.peeks.clone(),
+                )
+                .await
+                .expect("a lone host parks the waiter of a fire");
+            assert!(parked.is_none(), "a closed pin parks the waiter");
+            true
+        }
+    };
+    set_pin(&pin, pinned);
+    let run = host_produce(
+        &host,
+        &budget,
+        op.channel.clone(),
+        op.data.clone(),
+        op.persist,
+    )
+    .await;
+    assert_eq!(
+        run.fired.is_some(),
+        fires,
+        "the lone host produce fires exactly when the staged produce fires"
+    );
+    run.entries
+}
+
+/// The legacy log entries of the staged consume `op` when a fresh host runs it alone. The host
+/// stores the candidates of a fire with a closed pin and opens the pin to them. Then it runs the
+/// consume with the peeks of `op`, which are empty or every bind. The call fires exactly when
+/// `op` fires. The rule on repeated channels of [`lone_host_produce`] holds here too.
+pub async fn lone_host_consume(op: &ParSpaceConsume) -> Vec<Cost> {
+    let budget = RuntimeBudget::new(Cost::create(LONE_PHLO, "rrs lone host consume"));
+    let _scope = budget.enter_legacy_scope();
+    let pin: Pin = Arc::new(Mutex::new(Some(Vec::new())));
+    let host = pinned_charging_host(&budget, &pin).await;
+    let mut pinned = Vec::new();
+    let fires = match &op.outcome {
+        ConsumeOutcome::Park => false,
+        ConsumeOutcome::Fire { data } => {
+            for candidate in data {
+                store_candidate(&host, candidate).await;
+                pinned.push(candidate.removed_datum.clone());
+            }
+            true
+        }
+    };
+    let peek = !op.peeks.is_empty();
+    assert_eq!(
+        op.peeks,
+        peeks_of(peek, op.channels.len()),
+        "the peeks of a staged consume are empty or every bind"
+    );
+    set_pin(&pin, pinned);
+    let run = host_consume(
+        &host,
+        &budget,
+        op.channels.clone(),
+        op.patterns.clone(),
+        op.continuation.clone(),
+        op.persist,
+        peek,
+    )
+    .await;
+    assert_eq!(
+        run.fired.is_some(),
+        fires,
+        "the lone host consume fires exactly when the staged consume fires"
+    );
+    run.entries
 }

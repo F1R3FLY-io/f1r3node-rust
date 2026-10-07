@@ -28,6 +28,8 @@
 //! makes them (decision 42). The formal model of this layer is `PathMapPrefix.v`.
 
 pub mod adapter;
+pub mod delivery;
+pub mod markers;
 pub mod path_codec;
 pub mod reroot;
 

@@ -1240,6 +1240,7 @@ async fn host_program(
         },
         SpaceOp::Consume(receive) => HostCall::Receive(Box::new(receive.clone())),
         SpaceOp::Settle(_) => panic!("a set issues no settle"),
+        SpaceOp::Join(_) => panic!("the set programs of this suite issue no join"),
     }]);
     let mut fires = Vec::new();
     while let Some(call) = calls.pop_front() {

@@ -701,6 +701,7 @@ mod tests {
             random_state: vec![1, 2, 3],
             authority: CostAuthority::default(),
             introduction_authority: CostAuthority::default(),
+            cascade: None,
         };
         assert_eq!(
             run(&env, SpaceOp::Settle(settle_op)).await,

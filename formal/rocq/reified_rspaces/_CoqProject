@@ -1,7 +1,8 @@
 # Reified RSpaces — Formal Verification (P1: the storage substrate, P2: the
 # wire encoding, P4: the hashmap:queue slice, its metering and its legacy
 # charges, P5 wave W2: the engine, the bag, cell and stack disciplines, the
-# Array and Vector stores, the PathMap paths and the P5 families)
+# Array and Vector stores, the PathMap paths and the P5 families, P5 wave
+# W3: the joins of one space and the PathMap engine)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -97,7 +98,12 @@
 #                     by its canonical channel (A5).
 #   PathMapPrefix     P5e (6 headlines): path keys order paths by prefix,
 #                     the re-rooting laws, the FIPS example, and a total
-#                     candidate order.
+#                     candidate order. Wave W3 (11 headlines): the marker
+#                     record and the vehicle, the path rules, single-channel
+#                     deliveries and retires, the prefix contact, the second
+#                     send of a peek (Rule E), no pending match, the marker
+#                     invariant, the heads and their cascade, the token
+#                     orders, and the metering of the prefix scan.
 #   StackDiscipline   P5b (13 headlines): the head of a stack, LIFO order,
 #                     head blocking, the settle loop and its termination,
 #                     re-entry at the LIFO place, and one fire count for
@@ -119,6 +125,20 @@
 #                     storage for each level (I-10), and the level-scan
 #                     metering (decision 42). RecordEnvelope.v adds the
 #                     priority and policy slots (2 headlines).
+#   JoinCascade       P5c (17 headlines): the joins of one space (decision
+#                     29). The greedy search with one guard check (decision
+#                     37), the incoming datum bound once (decision 28), the
+#                     heads of each head-only collection (decision 11),
+#                     distinct records and classes, the retired set
+#                     classes, the cascade that ends and restores INV_head
+#                     on the head-only disciplines and the set (decision 50)
+#                     and INV_scan on the bag, one fire count (decision 49),
+#                     lift and re-offer, the bumps of the touched counters,
+#                     the bind order of the join slots, plan then lock, the
+#                     re-issued orders (decision 43), the second sends of
+#                     Rule E (decision 45), and the greedy limit.
+#                     RecordEnvelope.v adds continuation_v2_roundtrip, and
+#                     CounterConflict.v adds join_ops_race_on_every_counter.
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -154,3 +174,4 @@ theories/PathMapPrefix.v
 theories/StackDiscipline.v
 theories/SetDiscipline.v
 theories/PriorityQueue.v
+theories/JoinCascade.v

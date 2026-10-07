@@ -38,9 +38,11 @@ pub enum ReifiedReduceError {
     /// space.
     #[error("a join reads from more than one space")]
     CrossSpaceJoin,
-    /// A join on a collection of an ordered discipline (A3, joins arrive in P5).
-    #[error("a join on an ordered collection is not supported")]
-    OrderedJoinUnsupported,
+    // Disabled by decision 29: a join whose channels all route to one native space runs in the
+    // join engine of P5c (`spaces::join`), so no route builds this variant.
+    // /// A join on a collection of an ordered discipline (A3, joins arrive in P5).
+    // #[error("a join on an ordered collection is not supported")]
+    // OrderedJoinUnsupported,
     /// The empty `Par` as a space reference.
     #[error("the space reference is empty")]
     EmptySpaceRef,
@@ -66,7 +68,8 @@ impl ReifiedReduceError {
             ReifiedReduceError::PersistentOpCall => "PersistentOpCall",
             ReifiedReduceError::AgentSpacesUnavailable => "AgentSpacesUnavailable",
             ReifiedReduceError::CrossSpaceJoin => "CrossSpaceJoin",
-            ReifiedReduceError::OrderedJoinUnsupported => "OrderedJoinUnsupported",
+            // Disabled by decision 29 with its variant (P5c).
+            // ReifiedReduceError::OrderedJoinUnsupported => "OrderedJoinUnsupported",
             ReifiedReduceError::EmptySpaceRef => "EmptySpaceRef",
             ReifiedReduceError::HandleNotWritable => "HandleNotWritable",
             ReifiedReduceError::NotASpaceRef => "NotASpaceRef",
@@ -102,7 +105,8 @@ mod tests {
             ReifiedReduceError::PersistentOpCall,
             ReifiedReduceError::AgentSpacesUnavailable,
             ReifiedReduceError::CrossSpaceJoin,
-            ReifiedReduceError::OrderedJoinUnsupported,
+            // Disabled by decision 29 with its variant (P5c).
+            // ReifiedReduceError::OrderedJoinUnsupported,
             ReifiedReduceError::EmptySpaceRef,
             ReifiedReduceError::HandleNotWritable,
             ReifiedReduceError::NotASpaceRef,

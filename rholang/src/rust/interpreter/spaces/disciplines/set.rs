@@ -68,7 +68,7 @@ use super::scan::{self, ScanDiscipline};
 use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{ConsumeOp, ProduceOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
-use crate::rust::interpreter::spaces::generic::{Cx, Discipline, Ordered, Side};
+use crate::rust::interpreter::spaces::generic::{Cx, Discipline, JoinWindow, Ordered, Side};
 
 /// The bytes of one length field of a set key: a big-endian `u64`.
 pub const LENGTH_BYTES: usize = size_of::<u64>();
@@ -81,6 +81,8 @@ impl Discipline for SetDiscipline {
     const NAME: &'static str = "set";
     const USES_COUNTER: bool = false;
     const SEND_PARAMS: &'static [&'static str] = &[];
+    /// A join bind sees one representative for each class, and it claims its whole class (P5c).
+    const JOIN_WINDOW: JoinWindow = JoinWindow::Classes;
 
     /// The entry with the least `(ord, bincode bytes)`, as for the queue and the bag. Every
     /// entry of a set has the `ord` 0. Only the head driver uses a head. A set does not use the
@@ -141,6 +143,16 @@ impl Discipline for SetDiscipline {
         record: ListParWithRandom,
     ) -> Result<Option<SpaceReissue>, SpaceError> {
         scan::restore(self, cx, record)
+    }
+
+    /// The class of a payload in a join window: its F5 set key, as for the scan driver
+    /// ([`ScanDiscipline::class_key`]).
+    fn join_class_key(
+        &self,
+        payload: &[Par],
+        meter: &ScanMeter,
+    ) -> Result<Option<Vec<u8>>, SpaceError> {
+        ScanDiscipline::class_key(self, payload, meter)
     }
 }
 

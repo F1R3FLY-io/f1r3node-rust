@@ -689,8 +689,8 @@ pub(crate) mod alloc_harness {
 
     use crate::rust::interpreter::reified::costs::ScanMeter;
     use crate::rust::interpreter::spaces::agent::{
-        AllocOp, Allocation, ConsumeOp, Prepared, ProduceOp, SettleOp, SpaceAgent, SpaceCreation,
-        SpaceEnv, SpaceOutcome,
+        AllocOp, Allocation, ConsumeOp, JoinOp, Prepared, ProduceOp, SettleOp, SpaceAgent,
+        SpaceCreation, SpaceEnv, SpaceOutcome,
     };
     use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
     use crate::rust::interpreter::spaces::errors::SpaceError;
@@ -812,6 +812,14 @@ pub(crate) mod alloc_harness {
             op: SettleOp,
         ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
             FamilyAgent.prepare_settle(env, op).await
+        }
+
+        async fn prepare_join(
+            &self,
+            env: &SpaceEnv,
+            op: JoinOp,
+        ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+            FamilyAgent.prepare_join(env, op).await
         }
 
         async fn allocate(&self, env: &SpaceEnv, op: AllocOp) -> Result<Allocation, SpaceError> {

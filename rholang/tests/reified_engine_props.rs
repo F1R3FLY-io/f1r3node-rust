@@ -48,7 +48,7 @@ use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::spaces::agent::{
-    ConsumeOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome,
+    ConsumeOp, JoinOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome,
 };
 // Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
 // use rholang::rust::interpreter::spaces::agent::SpaceReissue;
@@ -827,7 +827,7 @@ async fn run_with<D: Discipline>(setup: Setup, script: &[Step]) -> Trace {
             .iter()
             .filter_map(|op| match op {
                 SpaceOp::Produce(produce) => Some(produce.data.random_state.clone()),
-                SpaceOp::Consume(_) | SpaceOp::Settle(_) => None,
+                SpaceOp::Consume(_) | SpaceOp::Settle(_) | SpaceOp::Join(_) => None,
             })
             .collect();
         observations.push(Observation {
@@ -889,13 +889,15 @@ fn takes(waiter: &Wtr, payload: &ListParWithRandom) -> bool {
 /// The receive of `op`, when it is one.
 fn receive_name(op: &SpaceOp) -> Option<String> {
     match op {
-        SpaceOp::Consume(consume) => consume.body.body.as_ref().map(|_| {
-            name_of(&TaggedContinuation {
-                tagged_cont: Some(TaggedCont::ParBody(consume.body.clone())),
-                guard: None,
-                cost_authority: None,
+        SpaceOp::Consume(ConsumeOp { body, .. }) | SpaceOp::Join(JoinOp { body, .. }) => {
+            body.body.as_ref().map(|_| {
+                name_of(&TaggedContinuation {
+                    tagged_cont: Some(TaggedCont::ParBody(body.clone())),
+                    guard: None,
+                    cost_authority: None,
+                })
             })
-        }),
+        }
         SpaceOp::Produce(_) | SpaceOp::Settle(_) => None,
     }
 }
@@ -904,7 +906,7 @@ fn receive_name(op: &SpaceOp) -> Option<String> {
 fn produce_token(op: &SpaceOp) -> Option<Vec<u8>> {
     match op {
         SpaceOp::Produce(produce) => Some(produce.data.random_state.clone()),
-        SpaceOp::Consume(_) | SpaceOp::Settle(_) => None,
+        SpaceOp::Consume(_) | SpaceOp::Settle(_) | SpaceOp::Join(_) => None,
     }
 }
 
@@ -1140,7 +1142,7 @@ fn prop_engine_guard_checked_once_as_the_host_checks_it() {
                             let name = receive_name(&obs.op).expect("a receive");
                             check_receive_choice(trace, obs, &name, &refused)?;
                         }
-                        SpaceOp::Produce(_) | SpaceOp::Settle(_) => {}
+                        SpaceOp::Produce(_) | SpaceOp::Settle(_) | SpaceOp::Join(_) => {}
                     }
                 }
                 Ok(())

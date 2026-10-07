@@ -63,54 +63,54 @@
    fire_round_cap, after_fire
                             reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:1177-1244 (offer_head, the
+   offer, offer_loop        spaces/generic.rs:1421-1488 (offer_head, the
                             head driver of Discipline::offer)
-   receive, receive_loop    spaces/generic.rs:1253-1337 (receive_head, the
+   receive, receive_loop    spaces/generic.rs:1497-1581 (receive_head, the
                             head driver of Discipline::receive. The row of
                             code_ops covers its re-store of decision 45.)
-   head_waiter, head_record spaces/generic.rs:656-672, 676-689, 693-704
+   head_waiter, head_record spaces/generic.rs:737-753, 757-770, 774-785
                             (Cx::scan_head, Cx::head_waiter, Cx::head_datum)
    bump                     spaces/counter.rs:165-245 (the ord is the
                             counter value, and the first operation takes 0
                             and opens the counter at 1)
-   produce, consume         spaces/generic.rs:1784-1892 (run_with of
+   produce, consume         spaces/generic.rs:2172-2304 (run_with of
                             FamilySpace: bump, then plan)
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
                             similarity scans every waiter, commit ff479042)
-   in_flight, flight_ord    spaces/agent.rs:107, 150
+   in_flight, flight_ord    spaces/agent.rs:108, 151
                             (ProduceOp::reissued_ord and
                             ConsumeOp::reissued_ord: the first-round ord of
                             a re-issued persistent operation)
-   operation_ord            spaces/generic.rs:1368-1396 (the check
+   operation_ord            spaces/generic.rs:1612-1640 (the check
                             0 <= reissued_ord < bump.ord, else
                             Inconsistent, and the bump value for a fresh
                             operation)
    ord_precedes             spaces/disciplines/queue.rs:65-74
                             (QueueDiscipline::precedes: ord < head)
-   reentry_at_head          spaces/generic.rs:745-766, 708-728
+   reentry_at_head          spaces/generic.rs:826-847, 789-809
                             (Cx::at_head and Cx::head_ord: an empty side,
                             or an ord that precedes the head, and
                             Inconsistent on an equal ord)
    reenter_offer, reenter_receive
-                            spaces/generic.rs:1177-1244, 1253-1337
+                            spaces/generic.rs:1421-1488, 1497-1581
                             (offer_head and receive_head: store or park at
                             its place when not at the head, else the loop)
    reenter_produce, reenter_consume
-                            spaces/generic.rs:1784-1892 (run_with of
+                            spaces/generic.rs:2172-2304 (run_with of
                             FamilySpace with a reissued_ord: bump, then
                             operation_ord, then the plan)
    reissued_ord, flight_after
-                            spaces/generic.rs:1236, 1329 (offer_head and
+                            spaces/generic.rs:1480, 1573 (offer_head and
                             receive_head: the re-issue sets
                             reissued_ord: op.persistent.then_some(ord))
-   round, run_rounds        reified/reducer_hooks.rs:624-674
+   round, run_rounds        reified/reducer_hooks.rs:645-695
                             (dispatch_space_outcome: a re-issue is a new
                             Intent::Space, the last dispatch branch of the
                             same deploy)
    code_staged, code_of, code_ops
-                            spaces/generic.rs:895-906, 1373-1382, 1328-1333
-                            and 1306-1335 (Cx::restore and Cx::restore_on
+                            spaces/generic.rs:976-987, 1617-1626, 1572-1577
+                            and 1550-1579 (Cx::restore and Cx::restore_on
                             stage a Store of the same record bytes with
                             persist = false, and restore_peeked calls
                             Discipline::restore, whose default is
@@ -141,7 +141,7 @@
    ─────────────────────────────────────────────────────────────────────────
    - fits w d is the metered match of the payload of d against the pattern
      of w followed by the guard of w (SpaceMatcher::matches,
-     spaces/matching.rs:85-99). The model takes it as a section variable:
+     spaces/matching.rs:107-121). The model takes it as a section variable:
      every theorem holds for every matcher.
    - The bincode bytes of an entry give a strict total order on distinct
      entries. The model writes rank for the position of those bytes in that

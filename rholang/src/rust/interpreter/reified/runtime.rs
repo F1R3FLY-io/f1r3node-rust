@@ -284,7 +284,9 @@ mod tests {
     use crate::rust::interpreter::deterministic_reduction::{root, ReductionCoordinator};
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::rho_runtime::RhoISpace;
-    use crate::rust::interpreter::spaces::agent::{ConsumeOp, Prepared, ProduceOp, SettleOp};
+    use crate::rust::interpreter::spaces::agent::{
+        ConsumeOp, JoinOp, Prepared, ProduceOp, SettleOp,
+    };
     use crate::rust::interpreter::spaces::namespace::{
         CollectionKey, Durability, NameTail, SID_LEN,
     };
@@ -379,6 +381,14 @@ mod tests {
             _op: SettleOp,
         ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
             Err(SpaceError::Inconsistent("the test agent does not settle"))
+        }
+
+        async fn prepare_join(
+            &self,
+            _env: &SpaceEnv,
+            _op: JoinOp,
+        ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+            Err(SpaceError::Inconsistent("the test agent does not join"))
         }
 
         async fn allocate(&self, _env: &SpaceEnv, _op: AllocOp) -> Result<Allocation, SpaceError> {

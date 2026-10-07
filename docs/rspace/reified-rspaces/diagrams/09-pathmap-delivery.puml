@@ -1,0 +1,131 @@
+' 09 PathMap delivery: a send on p, a receive on q, and the second send of a peek.
+'
+' Source of Figure 1 in ../pathmap-prefix-delivery.md. The figure restates the
+' delivery plans of rholang/src/rust/interpreter/spaces/pathmap/delivery.rs,
+' the markers of spaces/pathmap/markers.rs and the path rules of
+' spaces/outer/pathmap.rs, as the engine model of PathMapPrefix.v and the
+' model PathMapPrefix.tla state them. It adds no new fact.
+'
+' Reading order:
+'   1. Every operation checks its path first: at most 64 elements, and no
+'      PathMap or zipper inside an element.
+'   2. A send on p offers its datum x to PRODUCE-WAITERS(p): the waiters of
+'      I(p), I(parent(p)), ..., I(eps), the most specific prefix first. The
+'      first waiter that binds the re-rooted datum and whose guard admits it
+'      fires. A refusal moves on (decision 37).
+'   3. A fire is one COMM on I(q) with the vehicle of x, which is never
+'      stored. A waiter that does not peek spends a non-persistent x.
+'   4. A send that no waiter spends stores x on D(p) and one marker on each
+'      index channel I(q), q a prefix of p, in depth order.
+'   5. A receive on q takes the first datum of CONSUME-CANDIDATES(q) that its
+'      pattern binds. It checks the guard once, and a refusal parks it.
+'   6. The COMM on I(q) consumes the marker of the datum on q. A persistent
+'      datum stays, and a persistent receive then re-issues (a divergent
+'      pair). A delivery that does not peek retires the record and the other
+'      markers with single-channel K_retire COMMs.
+'   7. A peek of a non-persistent datum sends it again (decision 45, Rule E).
+'      A fire of a waiter that does not peek spends it. With no such fire,
+'      the marker of the COMM is stored again with its identity.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 09-pathmap-delivery.puml   Check: ./render.sh --check
+
+@startuml 09-pathmap-delivery
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title PathMap delivery (P5e): a send on p, a receive on q, and the second send of a peek
+
+start
+if (the path has more than 64 elements,\nor an element holds a PathMap or a zipper?) then (yes)
+  :PathTooDeep or UnsupportedPathElement,
+  before any staging; <<$rrs_reject>>
+  stop
+else (no)
+endif
+if (the operation?) then (send x on p)
+  :PRODUCE-WAITERS(p): the waiters of I(p), I(parent(p)), …, I(ε),
+  the most specific prefix first, each prefix in its discipline order; <<$rrs_agent>>
+  while (a later waiter W on a prefix q binds R(p∖q, x)\nand its guard admits x? (a refusal moves on)) is (yes)
+    :one COMM on I(q): the vehicle of x
+    (the marker pars and the payload) meets W.
+    The vehicle is never stored; <<$rrs_effect>>
+    if (x is not persistent and W does not peek?) then (yes)
+      :x is spent: a fresh send never stored it; <<$rrs_effect>>
+      stop
+    else (no)
+      if (W is persistent?) then (yes)
+        :re-issue the send: the next round
+        offers x to W again; <<$rrs_reject>>
+        stop
+      else (no)
+        :x stays in flight
+        (W peeks, or x is persistent); <<$rrs_flow>>
+      endif
+    endif
+  endwhile (no)
+  :STORE-MARKERS: store x on D(p), then the marker
+  of x on each I(q), q ⪯ p, in depth order (ε first); <<$rrs_storage>>
+else (receive K on q)
+  :d ← the first datum of CONSUME-CANDIDATES(q)
+  (path keys in byte order, the exact path first)
+  whose re-rooted payload the pattern of K binds; <<$rrs_agent>>
+  if (a datum d was found and the guard of K admits it?\n(the guard is checked once)) then (no)
+    :park K on I(q); <<$rrs_storage>>
+    stop
+  else (yes)
+  endif
+  :one COMM on I(q) over the marker m_q(d),
+  with R(p∖q, payload(d)) bound; <<$rrs_effect>>
+  if (d is persistent?) then (yes)
+    :d and all of its markers stay; <<$rrs_storage>>
+    if (K is persistent?) then (yes)
+      :re-issue K: a divergent pair; <<$rrs_reject>>
+    else (no)
+    endif
+  else (no)
+    if (K peeks?) then (yes)
+      :the COMM removed m_q(d) only.
+      The second send of d (decision 45, Rule E)
+      has the identity and the cost authority of d; <<$rrs_flow>>
+      if (the transaction made FIRE_ROUND_CAP fires?) then (yes)
+        :re-issue the second send of d.
+        It carries m_q(d), which is pending; <<$rrs_reject>>
+      else (no)
+        :PRODUCE-WAITERS(p), the most specific prefix first; <<$rrs_agent>>
+        if (a waiter that does not peek fires on d?) then (yes)
+          :RETIRE-PLAN: K_retire of D(p):r and of every
+          other marker of d, one channel each; <<$rrs_fail>>
+        else (no)
+          :store m_q(d) again with its identity:
+          d is stored as before the peek; <<$rrs_storage>>
+        endif
+      endif
+    else (no)
+      :RETIRE-PLAN: K_retire of D(p):r, then of the marker
+      of d on each prefix other than q, one channel each; <<$rrs_fail>>
+      if (K is persistent?) then (yes)
+        :K takes the next candidate in the next round; <<$rrs_agent>>
+      else (no)
+      endif
+    endif
+  endif
+endif
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_agent>    | a choice of the plan: an order of the prefixes, the candidates or the waiters |
+|<$rrs_effect>   | a COMM that the plan stages |
+|<$rrs_flow>     | a datum in flight, or the second send of a peek (Rule E) |
+|<$rrs_fail>     | a retire: K_retire COMMs on single channels |
+|<$rrs_storage>  | a stored record, a restored marker or a parked waiter |
+|<$rrs_reject>   | a failure or a re-issue, with no staging of the operation |
+endlegend
+@enduml

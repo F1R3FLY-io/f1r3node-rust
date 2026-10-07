@@ -35,15 +35,15 @@
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
-   be, u64_be, LENGTH_BYTES set.rs:74 and 211-215 (u64_be, the 8 big-endian
+   be, u64_be, LENGTH_BYTES set.rs:74 and 223-227 (u64_be, the 8 big-endian
                             bytes of u64::to_be_bytes)
    frame, key_of_encodings,
-   canonical_bytes, set_key set.rs:164-182 (set_key: the count field, then
+   canonical_bytes, set_key set.rs:176-194 (set_key: the count field, then
                             the length field and the bytes of each element)
                             and 188-208 (canonical_bytes: bincode of the
                             sorted Par, metered sort and encode)
-   rkey, same, class_val    set.rs:148-153 (ScanDiscipline::class_key) and
-                            scan.rs:851-866 (same_class)
+   rkey, same, class_val    set.rs:160-165 (ScanDiscipline::class_key) and
+                            scan.rs:875-890 (same_class)
    canon, first_match       space_store_handle.rs canonical_data_order
                             (DR-75) and scan.rs:561-581 (first_bound_record)
    view, dedup              the classes in the order of their first members:
@@ -59,21 +59,21 @@
                             staging rules of space_store_handle.rs
                             (check_arity, canonical_group_key,
                             check_lined_up, check_stored_candidates,
-                            claim_positions); scan.rs:649-676 and 787-846
+                            claim_positions); scan.rs:649-676 and 785-870
    op, on_records           the staged operations of the driver (Cx::store_on,
                             Cx::park, Cx::fire_offer_on,
                             Cx::fire_receive_group, Cx::retire)
-   retire_class             scan.rs:787-846 (retire_class: K_retire of each
+   retire_class             scan.rs:785-870 (retire_class: K_retire of each
                             stored non-persistent member in canonical order)
    fits, offer_pass         scan.rs:400-491 (offer_scan with
                             first_admitting_waiter at 519-550 and
                             retiring_of at 491-513)
    peek_group, peek_plan    scan.rs:228-314 (receive: a peek binds [r]),
                             694-704 (restore_in) and 715-747 (restore_scan)
-   same_class               scan.rs:851-866 (same_class: metered_hash, then
+   same_class               scan.rs:875-890 (same_class: metered_hash, then
                             the full compare only on equal hashes)
-   key_trace                set.rs:164-208 (the reserved buffers, the
-                            metered sort and encode) and scan.rs:851-866
+   key_trace                set.rs:176-220 (the reserved buffers, the
+                            metered sort and encode) and scan.rs:875-890
                             (the reserved hash and comparisons)
 
    ─────────────────────────────────────────────────────────────────────────

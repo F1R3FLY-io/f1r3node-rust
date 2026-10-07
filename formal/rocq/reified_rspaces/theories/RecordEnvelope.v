@@ -26,50 +26,71 @@
      the config shape) and I-17 (the config is a canonical Par record).
      Headlines 9 and 10: the P5 design v3, section A.8 (the PQ slots of
      record.rs), and plan decision 38 (the lanes of a priority queue).
+     Headline 11: the joins plan (.reified-rspaces-work/p5/joins-plan.md),
+     sections 2.2 and 8.3 (the version 2 record of a join waiter).
    - Code: the P4 commit of this repository, with the PQ slots of the PQ
      batch of wave W2 of P5. The line numbers below are the line numbers
-     after the PQ batch, which moved the P4 lines of record.rs by 14.
+     after the PQ batch, which moved the P4 lines of record.rs by 14. The
+     rows of headline 11 cite the version 2 items of record.rs in the
+     working tree of the P5c step S1 (not yet committed when this model
+     was written). The alignment pass of P5c confirms them.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    record_kind, kind_byte, tag_bytes, tag
-                            spaces/record.rs:69, 72, 77-82, 94-96, 99
+                            spaces/record.rs:82, 85, 90-95, 107-109, 112
                             (RECORD_TAG_MARK, RECORD_VERSION, RecordKind,
                             tag_bytes, tag)
-   sole shapes of rpar      spaces/record.rs:121-156, 159-166 (sole_expr,
+   sole shapes of rpar      spaces/record.rs:134-169, 172-179 (sole_expr,
                             expr_par)
-   list_par                 spaces/record.rs:170-193 (the bit sets of the
+   list_par                 spaces/record.rs:183-206 (the bit sets of the
                             normalizer)
-   list_elements            spaces/record.rs:198-217 (strict flags)
+   list_elements            spaces/record.rs:211-230 (strict flags)
    is_tag, is_nil, natural_of
-                            spaces/record.rs:219-224, 226, 228-233
+                            spaces/record.rs:232-237, 239, 241-246
    datum_envelope, wrap_datum, datum_ord, unwrap_datum
-                            spaces/record.rs:238-245, 249-259, 262-272,
-                            285-300
+                            spaces/record.rs:251-258, 262-272, 275-285,
+                            298-313
    continuation_envelope, wrap_continuation, continuation_parts,
-   unwrap_continuation      spaces/record.rs:303-310, 315-335, 338-355,
-                            373-388
+   unwrap_continuation      spaces/record.rs:316-323, 328-348, 351-368,
+                            386-401
    counter_record, counter_value
-                            spaces/record.rs:397-408, 411-420
+                            spaces/record.rs:410-421, 424-433
    config_record, config_map
-                            spaces/record.rs:427-434, 437-450
-   key_priority             spaces/record.rs:842 (PRIORITY_KEY)
-   priority_slot,           spaces/record.rs:846-851, 855-860
+                            spaces/record.rs:440-447, 450-463
+   key_priority             spaces/record.rs:855 (PRIORITY_KEY)
+   priority_slot,           spaces/record.rs:859-864, 868-873
    level_of_slot            (priority_slot, level_of_slot)
-   pq_datum_envelope,       spaces/record.rs:865-872, 877-891, 896-909,
+   pq_datum_envelope,       spaces/record.rs:878-885, 890-904, 909-922,
    wrap_pq_datum,           925-941 (pq_datum_envelope, wrap_pq_datum,
    pq_datum_slots,          pq_datum_slots, unwrap_pq_datum)
    unwrap_pq_datum
-   pq_policy,               spaces/record.rs:947-960, 966-993 (pq_policy,
+   pq_policy,               spaces/record.rs:960-973, 979-1006 (pq_policy,
    level_of_policy          level_of_policy)
    pq_continuation_envelope,
-   wrap_pq_continuation,    spaces/record.rs:997-1004, 1009-1030,
+   wrap_pq_continuation,    spaces/record.rs:1010-1017, 1022-1043,
    pq_continuation_parts,   1035-1052, 1076-1092
    unwrap_pq_continuation   (pq_continuation_envelope, wrap_pq_continuation,
                             pq_continuation_parts, unwrap_pq_continuation)
-   into_continuation        spaces/record.rs:752-789 (into_continuation, the
+   into_continuation        spaces/record.rs:765-802 (into_continuation, the
                             outcome decoder of every family)
+   join_continuation_version, join_tag_bytes, join_tag, is_join_tag
+                            spaces/record.rs:1241, 1244-1249, 1277,
+                            1279-1284 (JOIN_CONTINUATION_VERSION,
+                            JOIN_CONTINUATION_TAG, join_tag, is_join_tag)
+   join_slot                spaces/record.rs:1253-1262 (JoinSlot)
+   level_ok, slots_fresh,   spaces/record.rs:1289-1303 (join_slots_valid:
+   join_slots_valid         two or more slots, natural ords and levels,
+                            and a fresh bind index below the count)
+   slot_par                 spaces/record.rs:1307-1314 (join_slot_par)
+   join_continuation_envelope, wrap_join_continuation
+                            spaces/record.rs:1317-1333, 1338-1358
+                            (join_envelope_of, join_continuation_envelope,
+                            wrap_join_continuation)
+   join_slot_of, join_slots_of, join_continuation_parts,
+   unwrap_join_continuation spaces/record.rs:1361-1375, 1378-1401,
+                            1411-1426
    space_config, to_par, from_par
                             spaces/types/config.rs:31-49, 53-64, 85-106,
                             112-141, 160-208 (the keys, SpaceConfig,
@@ -111,6 +132,9 @@
    - An ord is a Z. The code stores an i64. The counters stop at i64::MAX
      with CounterOverflow (spaces/counter.rs:188, 221), so every stored
      ord is a natural number below 2^63.
+   - A bind index is a nat. The code stores a usize and writes it as a
+     GInt (join_slot_par). A valid slot list has its indices below its
+     length, so each index fits an i64.
    - The merger predicate single_gint is fixed by the code on every shape
      that the model names. On an opaque Par the model takes it as a section
      variable, other_single_gint, because no record of this module puts an
@@ -144,11 +168,16 @@
                                        policy forms: it extends the strict P4
                                        decoder and accepts only the images of
                                        the two encoders
+   11. continuation_v2_roundtrip       the version 2 record of a join waiter
+                                       decodes back to its slots and its
+                                       continuation, every version 1 decoder
+                                       rejects it, and the version 2 decoder
+                                       rejects the version 1 records (P5c)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. The file
    imports only the Rocq standard library.
 
-   Negative controls of headlines 9 and 10 (the CONTROLS format of
+   Negative controls of headlines 9, 10 and 11 (the CONTROLS format of
    scripts/verify-reified/rocq-negative-controls.py). Each control changes
    one rule in a scratch copy, and the copy must fail in a lemma whose
    statement the change makes false:
@@ -162,6 +191,10 @@
                                → level_of_policy_sound
    re-pq-into-strict           into_continuation decodes with the strict P4
                                decoder → continuation_policy_slot_roundtrip
+   re-v2-slot-without-bind     a slot of the version 2 record has no bind
+                               index → continuation_v2_roundtrip
+   re-v2-tag-version-1         the tag of the version 2 record carries the
+                               version 1 → continuation_v2_roundtrip
 
    Failed strategies (kept so that they are not tried again)
    - Deriving the equality of rpar with decide equality fails on the nested
@@ -1543,6 +1576,240 @@ Proof.
     injection H as <- <-. exists level. exact (unwrap_pq_continuation_sound k' z' level original Eu).
 Qed.
 
+(* ── 12. Headline 11: the version 2 record of a join waiter (P5c) ────── *)
+
+(* A waiter with two or more binds (a join) has the version 2 envelope
+   (the joins plan, section 2.2):
+     ParBody.body = Par{exprs: [EList[tag_K2, EList[slot_0 … slot_{n-1}], body]]}
+     tag_K2       = GByteArray([0xE0, 0x52, b'K', 2])
+     slot_i       = EList[GInt(ord_i), GInt(bind_i), policy_i]
+   The slot i belongs to the group position i: the ord of the waiter in the
+   collection of that position, the index of its bind in the receive, and
+   Nil or the policy of a lane of a priority queue. A waiter with one bind
+   keeps the version 1 record. *)
+
+Definition join_continuation_version : nat := 2.
+
+Definition join_tag_bytes : bytes :=
+  [reified_tag; record_tag_mark; kind_byte RContinuation; join_continuation_version].
+
+Definition join_tag : rpar := PBytes join_tag_bytes false.
+
+(* is_join_tag: exactly the bytes of the tag, with the flag false. *)
+Definition is_join_tag (p : rpar) : bool :=
+  match p with
+  | PBytes b false => bytes_eqb b join_tag_bytes
+  | _ => false
+  end.
+
+(* JoinSlot: the ord, the bind index and the level of a lane (None for the
+   unrestricted lane and every other discipline). *)
+Record join_slot : Type := mkSlot { s_ord : Z; s_bind : nat; s_priority : option Z }.
+
+Definition level_ok (priority : option Z) : bool :=
+  match priority with Some p => (0 <=? p)%Z | None => true end.
+
+(* The check of join_slots_valid for each slot: a natural ord and level, and
+   a bind index below the count that no slot before it has (seen). *)
+Fixpoint slots_fresh (seen : list nat) (n : nat) (ss : list join_slot) : bool :=
+  match ss with
+  | [] => true
+  | s :: rest =>
+      (0 <=? s_ord s)%Z && level_ok (s_priority s) && (s_bind s <? n) &&
+      negb (existsb (Nat.eqb (s_bind s)) seen) && slots_fresh (s_bind s :: seen) n rest
+  end.
+
+(* join_slots_valid: two or more slots, and each slot passes the check. *)
+Definition join_slots_valid (ss : list join_slot) : bool :=
+  (2 <=? length ss) && slots_fresh [] (length ss) ss.
+
+(* join_slot_par. *)
+Definition slot_par (s : join_slot) : rpar :=
+  list_par [int_par (s_ord s); int_par (Z.of_nat (s_bind s)); pq_policy (s_priority s)].
+
+(* join_continuation_envelope: the encoder accepts exactly the slot lists
+   that its decoder returns. *)
+Definition join_continuation_envelope (ss : list join_slot) (body : rpar) : option rpar :=
+  if join_slots_valid ss then Some (list_par [join_tag; list_par (map slot_par ss); body]) else None.
+
+Definition wrap_join_continuation (ss : list join_slot) (k : tagged) : option tagged :=
+  match t_cont k with
+  | TParBody (Some body) rnd =>
+      match join_continuation_envelope ss body with
+      | Some env => Some (mkTagged (TParBody (Some env) rnd) (t_guard k) (t_authority k))
+      | None => None
+      end
+  | TParBody None _ | TScala _ | TNone => None
+  end.
+
+(* join_slot_of: the slot of one par of a record with count slots. *)
+Definition join_slot_of (p : rpar) (count : nat) : option join_slot :=
+  match list_elements p with
+  | Some [o; b; policy] =>
+      match natural_of o, natural_of b, level_of_policy policy with
+      | Some z, Some bz, Some level =>
+          if Z.to_nat bz <? count then Some (mkSlot z (Z.to_nat bz) level) else None
+      | _, _, _ => None
+      end
+  | _ => None
+  end.
+
+Fixpoint join_slots_of (ps : list rpar) (count : nat) : option (list join_slot) :=
+  match ps with
+  | [] => Some []
+  | p :: rest =>
+      match join_slot_of p count, join_slots_of rest count with
+      | Some s, Some ss => Some (s :: ss)
+      | _, _ => None
+      end
+  end.
+
+(* join_continuation_parts: the slots, the original body and the random
+   state of a join record. *)
+Definition join_continuation_parts (k : tagged) : option (list join_slot * rpar * bytes) :=
+  match t_cont k with
+  | TParBody (Some b) rnd =>
+      match list_elements b with
+      | Some [t; sl; original] =>
+          if is_join_tag t then
+            match list_elements sl with
+            | Some ps =>
+                match join_slots_of ps (length ps) with
+                | Some ss => if join_slots_valid ss then Some (ss, original, rnd) else None
+                | None => None
+                end
+            | None => None
+            end
+          else None
+      | _ => None
+      end
+  | TParBody None _ | TScala _ | TNone => None
+  end.
+
+Definition unwrap_join_continuation (k : tagged) : option (list join_slot * tagged) :=
+  match join_continuation_parts k with
+  | Some (ss, original, rnd) =>
+      Some (ss, mkTagged (TParBody (Some original) rnd) (t_guard k) (t_authority k))
+  | None => None
+  end.
+
+(* The slot list of a join waiter: two or more slots, natural ords and
+   levels, and bind indices that are a permutation of 0..n-1 (pairwise
+   distinct and below n). *)
+Definition join_slots_wf (ss : list join_slot) : Prop :=
+  2 <= length ss /\ NoDup (map s_bind ss) /\
+  Forall (fun s => (0 <= s_ord s)%Z /\ natural_level (s_priority s) /\ s_bind s < length ss) ss.
+
+Lemma slots_fresh_ok :
+  forall n ss seen,
+    (forall s, In s ss -> (0 <= s_ord s)%Z /\ natural_level (s_priority s) /\ s_bind s < n) ->
+    NoDup (map s_bind ss) -> (forall s, In s ss -> ~ In (s_bind s) seen) ->
+    slots_fresh seen n ss = true.
+Proof.
+  intros n ss. induction ss as [| s rest IH]; intros seen Hall Hnd Hseen; [reflexivity |].
+  cbn [slots_fresh map] in *. apply NoDup_cons_iff in Hnd as [Hn Hnd].
+  destruct (Hall s (or_introl eq_refl)) as (Ho & Hp & Hb).
+  rewrite (proj2 (Z.leb_le 0 (s_ord s)) Ho), (proj2 (Nat.ltb_lt _ _) Hb).
+  assert (Hl : level_ok (s_priority s) = true).
+  { destruct (s_priority s) as [p |]; cbn [level_ok natural_level] in *; [apply Z.leb_le; exact Hp | reflexivity]. }
+  assert (He : existsb (Nat.eqb (s_bind s)) seen = false).
+  { apply Bool.not_true_iff_false. intros E. apply existsb_exists in E as (x & Hx & Ex).
+    apply Nat.eqb_eq in Ex. subst x. exact (Hseen s (or_introl eq_refl) Hx). }
+  rewrite Hl, He. cbn [negb andb]. apply IH.
+  - intros s' Hs'. exact (Hall s' (or_intror Hs')).
+  - exact Hnd.
+  - intros s' Hs' [E | Hin].
+    + apply Hn. rewrite E. apply in_map. exact Hs'.
+    + exact (Hseen s' (or_intror Hs') Hin).
+Qed.
+
+(* Headline 11 (the joins plan, sections 2.2 and 8.3). A join waiter with a
+   valid slot list wraps, and the version 2 decoder gives back the slots and
+   the continuation. The version 1 decoders (the strict P4 decoder, the
+   decoder of a priority queue and the outcome decoder into_continuation)
+   reject the version 2 record, and the version 2 decoder rejects the two
+   version 1 records. Each decoder compares the whole tag: a version 1
+   decoder rejects the version 2 tag (unknown_version_rejected for the
+   strict decoder), and the version 2 decoder rejects the version 1 tag. *)
+Theorem continuation_v2_roundtrip :
+  (forall ss k k', join_slots_wf ss -> wrap_join_continuation ss k = Some k' ->
+     unwrap_join_continuation k' = Some (ss, k)) /\
+  (forall ss body rnd guard auth, join_slots_wf ss ->
+     wrap_join_continuation ss (mkTagged (TParBody (Some body) rnd) guard auth) <> None) /\
+  (forall ss k k', wrap_join_continuation ss k = Some k' ->
+     continuation_parts k' = None /\ pq_continuation_parts k' = None /\ into_continuation k' = None) /\
+  (forall ord k k', wrap_continuation ord k = Some k' -> join_continuation_parts k' = None) /\
+  (forall ord priority k k', wrap_pq_continuation ord priority k = Some k' ->
+     join_continuation_parts k' = None) /\
+  (forall ord body rnd,
+     continuation_parts (continuation_with_tag join_tag ord body rnd) = None /\
+     pq_continuation_parts (continuation_with_tag join_tag ord body rnd) = None) /\
+  (forall ss body rnd guard auth,
+     join_continuation_parts
+       (mkTagged (TParBody (Some (list_par [tag RContinuation; list_par (map slot_par ss); body])) rnd)
+          guard auth) = None).
+Proof.
+  assert (Hvalid : forall ss, join_slots_wf ss -> join_slots_valid ss = true).
+  { intros ss (Hlen & Hnd & Hall). unfold join_slots_valid. apply andb_true_iff.
+    split; [apply Nat.leb_le; exact Hlen |].
+    apply slots_fresh_ok; [| exact Hnd | intros s _ []].
+    intros s Hs. exact (proj1 (Forall_forall _ _) Hall s Hs). }
+  split; [| split; [| split; [| split; [| split; [| split]]]]].
+  - intros ss [[[body |] rnd | n |] guard auth] k' Hwf H; cbn [wrap_join_continuation t_cont] in H;
+      try discriminate.
+    unfold join_continuation_envelope in H. rewrite (Hvalid ss Hwf) in H. injection H as <-.
+    destruct Hwf as (Hlen & Hnd & Hall).
+    (* each slot decodes back *)
+    assert (Hslot : forall s, In s ss -> join_slot_of (slot_par s) (length ss) = Some s).
+    { intros [o b p] Hs. destruct (proj1 (Forall_forall _ _) Hall _ Hs) as (Ho & Hp & Hb).
+      cbn [s_ord s_bind s_priority] in Ho, Hp, Hb.
+      unfold join_slot_of, slot_par. cbn [s_ord s_bind s_priority]. rewrite list_elements_list_par.
+      cbv beta iota.
+      rewrite (natural_of_int o Ho), (natural_of_int (Z.of_nat b) (Nat2Z.is_nonneg b)),
+        (level_of_policy_pq_policy p Hp), Nat2Z.id.
+      apply Nat.ltb_lt in Hb. rewrite Hb. reflexivity. }
+    assert (Hslots : forall l, (forall s, In s l -> join_slot_of (slot_par s) (length ss) = Some s) ->
+                       join_slots_of (map slot_par l) (length ss) = Some l).
+    { induction l as [| s l IH]; intros Hl; [reflexivity |]. cbn [map join_slots_of].
+      rewrite (Hl s (or_introl eq_refl)), IH; [reflexivity |]. intros s' Hs'. exact (Hl s' (or_intror Hs')). }
+    assert (Hjt : is_join_tag join_tag = true) by (unfold is_join_tag, join_tag; apply bytes_eqb_iff; reflexivity).
+    unfold unwrap_join_continuation, join_continuation_parts. cbn [t_cont t_guard t_authority].
+    rewrite list_elements_list_par. cbv beta iota. rewrite Hjt. cbv beta iota.
+    rewrite list_elements_list_par. cbv beta iota. rewrite length_map, (Hslots ss Hslot). cbv beta iota.
+    rewrite (Hvalid ss (conj Hlen (conj Hnd Hall))). reflexivity.
+  - intros ss body rnd guard auth Hwf. cbn [wrap_join_continuation t_cont].
+    unfold join_continuation_envelope. rewrite (Hvalid ss Hwf). discriminate.
+  - intros ss [[[body |] rnd | n |] guard auth] k' H; cbn [wrap_join_continuation t_cont] in H;
+      try discriminate.
+    unfold join_continuation_envelope in H. destruct (join_slots_valid ss); [| discriminate].
+    injection H as <-. split; [| split].
+    + unfold continuation_parts. cbn [t_cont]. rewrite list_elements_list_par. reflexivity.
+    + unfold pq_continuation_parts. cbn [t_cont]. rewrite list_elements_list_par. reflexivity.
+    + unfold into_continuation, unwrap_pq_continuation, pq_continuation_parts. cbn [t_cont].
+      rewrite list_elements_list_par. reflexivity.
+  - intros ord [[[body |] rnd | n |] guard auth] k' H; cbn [wrap_continuation t_cont] in H; try discriminate.
+    injection H as <-. unfold join_continuation_parts, continuation_envelope. cbn [t_cont].
+    rewrite list_elements_list_par. reflexivity.
+  - intros ord priority [[[body |] rnd | n |] guard auth] k' H; cbn [wrap_pq_continuation t_cont] in H;
+      try discriminate.
+    injection H as <-. unfold join_continuation_parts, pq_continuation_envelope. cbn [t_cont].
+    rewrite list_elements_list_par. reflexivity.
+  - intros ord body rnd.
+    assert (Hv : join_continuation_version <> record_version)
+      by (unfold join_continuation_version, record_version; discriminate).
+    destruct (unknown_version_rejected (kind_byte RContinuation) join_continuation_version Hv) as (_ & _ & Hk & _).
+    split; [exact (Hk ord body rnd) |].
+    unfold pq_continuation_parts, continuation_with_tag. cbn [t_cont]. rewrite list_elements_list_par.
+    cbv beta iota.
+    replace (is_tag join_tag RContinuation) with false by (unfold join_tag, join_tag_bytes, join_continuation_version; reflexivity).
+    reflexivity.
+  - intros ss body rnd guard auth. unfold join_continuation_parts. cbn [t_cont].
+    rewrite list_elements_list_par. cbv beta iota.
+    replace (is_join_tag (tag RContinuation)) with false
+      by (unfold is_join_tag, join_tag_bytes, join_continuation_version; reflexivity).
+    reflexivity.
+Qed.
+
 (* ── 12. Worked examples and negative controls ─────────────────────────── *)
 
 Example datum_with_empty_payload :
@@ -1594,3 +1861,4 @@ Print Assumptions no_reified_datum_is_single_number.
 Print Assumptions unknown_version_rejected.
 Print Assumptions datum_priority_slot_roundtrip.
 Print Assumptions continuation_policy_slot_roundtrip.
+Print Assumptions continuation_v2_roundtrip.

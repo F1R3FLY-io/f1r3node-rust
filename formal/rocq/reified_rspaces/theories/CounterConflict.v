@@ -35,6 +35,22 @@
      merge of the M-1 arbitration (headline 11, computed). The race of
      crossed stacks with the counters is crossed_collections_race.
 
+   P5c (the joins of one space) adds a join step: TOUCH bumps the counter
+   of each distinct collection of the group of a join before the first
+   staging on it (decision 31). So a join races on every counter of its
+   group (join_ops_race_on_every_counter, headline 12). The single-step
+   headlines stay as they are, and the join headline composes with
+   check1_counter_race.
+
+   P5 wave W3 adds the merges of set collections. A set has no counter, so
+   its merges follow the HEAD checks of its records. Two branches that each
+   retire one stored member of a set, by the class fire over [D; n] or by
+   a K_retire COMM, race in check #1 on its produce (set_retirements_race,
+   headline 13, F24 of the P5 design v2). Set writes commute, and every
+   view that ignores the order of the records, as the class view in the
+   canonical order of DR-75 does, gives the merge the view of both serial
+   orders (unordered_set_writes_commute, headline 14, F25).
+
    Sources
    - Design: the P4 design report B.3 (counters), D.2 (check #1 and the
      two A2 counterexamples), D.3 (one block, one chain) and E.1 (the
@@ -46,6 +62,11 @@
    - P5: the P5 design v3 (A.7, A.8, A.13), v2 (F23, section 3.1) and the
      M-1 arbitration of the plan ("Why removals must touch it"). The P5
      rows below cite the lines of the W2 checkpoint commit bc43b8653.
+   - P5c: the joins plan (.reified-rspaces-work/p5/joins-plan.md),
+     sections 4.3 (TOUCH) and 8.3, and the join engine
+     (rholang/src/rust/interpreter/spaces/join.rs) in the working tree of
+     the model alignment pass of 2026-10-07 (4329 lines). The P5c rows cite
+     the lines of that tree.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -77,7 +98,7 @@
                             165-245, 251-309 (bump, and take: the COMM has
                             no peeks)
    exec (the plan)          rholang/src/rust/interpreter/spaces/generic.rs:
-                            1784-1892 (run_with: bump, then plan)
+                            2172-2304 (run_with: bump, then plan)
    list_diff                rspace++/src/rspace/merger/channel_change.rs:
                             74-82 (vec_diff), rspace++/src/rspace/merger/
                             state_change.rs:318-357 (multiset_diff gives
@@ -110,7 +131,7 @@
                             (the block index skips a failed user deploy,
                             so a CellOccupied abort never reaches check #1)
    the cell abort (P5)      rholang/src/rust/interpreter/spaces/generic.rs:
-                            772-783 (Cx::check_capacity: CellOccupied
+                            853-864 (Cx::check_capacity: CellOccupied
                             before any staging), rholang/src/rust/
                             interpreter/spaces/disciplines/cell.rs:57
                             (CAPACITY = Some 1)
@@ -120,6 +141,29 @@
                             stack.rs:71-93 (a counter, and the head is the
                             entry with the greatest ord: a pop takes the
                             last push)
+   bump, bump_all (P5c)     rholang/src/rust/interpreter/spaces/counter.rs:
+                            165-245 (bump, as in exec), one for each
+                            collection of the group: Engine::touch and
+                            Engine::touch_all of spaces/join.rs:1895-1929
+                            (TOUCH, joins plan 4.3)
+   jstep, exec_join,        the join step: spaces/join.rs:1951-2037
+   run_jsteps, join_bumps   (Engine::run: TOUCH of each own collection,
+   (P5c)                    then the settle before the plan and the plan),
+                            1913-1925 (touch_all of the distinct
+                            collections of a group before a fire).
+                            join_plan and join_events are section
+                            variables
+   retires (W3)             a COMM without peeks that consumes a stored
+                            member: the class fire over [D; n] of a set
+                            receive (rholang/src/rust/interpreter/spaces/
+                            disciplines/scan.rs:588-644, class_of), and the
+                            K_retire COMMs of RETIRE-CLASS (scan.rs:785-800,
+                            810-870) and of RETIRE-SET-BINDS in a join
+                            (rholang/src/rust/interpreter/spaces/join.rs:
+                            2621-2654)
+   set_view (W3)            the class view of a set: one representative of
+                            each class in the canonical order of DR-75
+                            (decision 41), a parameter of headline 14
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -154,6 +198,11 @@
      meets.
    - The OrderDependenceGuard of conflict_set_merger.rs only observes the
      changes. It does not change the post-state, so the model omits it.
+   - A join step bumps the distinct collections of its group in the order
+     of its list (the caller gives the canonical order). The order does not
+     matter for check #1. The plan of a join (its new records and its
+     events on the D channels) is a section variable, as the plan of one
+     collection is.
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. check1_race_iff                    check #1 finds a race exactly for a
@@ -175,6 +224,23 @@
                                           a removal without the counter
                                           admits the crossed-stack merge
                                           (P5, computed)
+   12. join_ops_race_on_every_counter    a join step and any step on a
+                                          collection of its group race on
+                                          the counter of that collection,
+                                          or on the space counter for a new
+                                          collection (P5c)
+   13. set_retirements_race              two branches that retire one
+                                          member of a set race on its
+                                          produce (P5 wave W3, F24)
+   14. unordered_set_writes_commute      set writes commute, and the merge
+                                          has the view of both serial
+                                          orders (P5 wave W3, F25)
+
+   The negative control cc-join-bumps-first-only (a join step bumps only
+   the first collection of its group) fails in headline 12. The control
+   cc-set-retire-peeks (a retirement as a peek COMM) fails in
+   retires_consumed, and cc-set-view-list-order (a set view in the list order
+   of the records) fails in headline 14.
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -1598,6 +1664,327 @@ Section Spaces.
         let r := run_rf tag (x_store x) rest in
         mkRun (r_store r) (x_obs x :: r_obs r) (x_log x ++ r_log r)
     end.
+
+  (* ── 10. Headline 12: a join step races on every counter (P5c) ─────── *)
+
+  (* A join step (the joins plan, section 4.3): TOUCH bumps the counter of
+     each distinct collection of the group before the first staging on it,
+     in canonical order, and the plan of the join then stages its events
+     on the D channels. The plan of a join is a section variable: the new
+     records of each collection, and the events. *)
+  Variable join_plan : nat -> list Coll -> (Coll -> list D) -> Coll -> list D.
+  Variable join_events : nat -> list Coll -> nat -> list ev.
+
+  (* A step of a deploy: one collection operation, or a join step over the
+     collections of a group (the identity of its plan is j). *)
+  Inductive jstep : Type := JOne (k : Coll) (q : qop) | JJoin (ks : list Coll) (j : nat).
+
+  (* The bump of one collection (counter.rs bump), as in exec. *)
+  Definition bump (tag : nat) (st : store) (k : Coll) : store * list ev :=
+    match sc st k with
+    | Some (v, cr) =>
+        let kont := mkConsume [ChS k] (CidCounter tag (ChS k) v) false in
+        (mkStore (sd st) (upd_c (sc st) k (Some (S v, Made tag))) (ss st),
+         [EvConsume kont; EvComm kont [counter_produce (ChS k) v cr] false;
+          EvProduce (counter_produce (ChS k) (S v) (Made tag))])
+    | None =>
+        let s := space_of k in
+        let m := fst (ss st s) in
+        let crs := snd (ss st s) in
+        let kont := mkConsume [ChSP s] (CidCounter tag (ChSP s) m) false in
+        (mkStore (sd st) (upd_c (sc st) k (Some (1, Made tag))) (upd_s (ss st) s (S m, Made tag)),
+         [EvConsume kont; EvComm kont [counter_produce (ChSP s) m crs] false;
+          EvProduce (counter_produce (ChSP s) (S m) (Made tag));
+          EvProduce (counter_produce (ChS k) 1 (Made tag))])
+    end.
+
+  Fixpoint bump_all (tag : nat) (st : store) (ks : list Coll) : store * list ev :=
+    match ks with
+    | [] => (st, [])
+    | k :: rest =>
+        let b := bump tag st k in
+        let r := bump_all tag (fst b) rest in
+        (fst r, snd b ++ snd r)
+    end.
+
+  (* The collections that a join step bumps: the distinct collections of
+     its group. *)
+  Definition join_bumps (ks : list Coll) : list Coll := nodup coll_eq_dec ks.
+
+  Definition exec_join (tag : nat) (st : store) (ks : list Coll) (j : nat) : store * list ev :=
+    let b := bump_all tag st (join_bumps ks) in
+    (mkStore (join_plan j ks (sd (fst b))) (sc (fst b)) (ss (fst b)), snd b ++ join_events tag ks j).
+
+  Definition exec_jstep (tag : nat) (st : store) (x : jstep) : store * list ev :=
+    match x with
+    | JOne k q => (x_store (exec tag st k q), x_log (exec tag st k q))
+    | JJoin ks j => exec_join tag st ks j
+    end.
+
+  (* A deploy of steps, each in its own transaction. *)
+  Fixpoint run_jsteps (tag : nat) (st : store) (xs : list jstep) : store * list ev :=
+    match xs with
+    | [] => (st, [])
+    | x :: rest =>
+        let e := exec_jstep tag st x in
+        let r := run_jsteps tag (fst e) rest in
+        (fst r, snd e ++ snd r)
+    end.
+
+  (* The collections whose counters a step bumps, and the collections that
+     it stages on. *)
+  Definition jstep_bumps (x : jstep) : list Coll :=
+    match x with JOne k _ => [k] | JJoin ks _ => join_bumps ks end.
+
+  Definition jstep_colls (x : jstep) : list Coll :=
+    match x with JOne k _ => [k] | JJoin ks _ => ks end.
+
+  Lemma bump_sc_other : forall tag st k k', k <> k' -> sc (fst (bump tag st k)) k' = sc st k'.
+  Proof.
+    intros tag st k k' H. unfold bump. destruct (sc st k) as [[v cr] |]; cbn [fst sc]; apply upd_c_neq; exact H.
+  Qed.
+
+  Lemma bump_ss_other :
+    forall tag st k s, (sc st k <> None \/ space_of k <> s) -> ss (fst (bump tag st k)) s = ss st s.
+  Proof.
+    intros tag st k s H. unfold bump. destruct (sc st k) as [[v cr] |] eqn:E; cbn [fst ss]; [reflexivity |].
+    apply upd_s_neq. destruct H as [H | H]; [contradiction | exact H].
+  Qed.
+
+  Lemma bump_sc_self : forall tag st k, sc (fst (bump tag st k)) k <> None.
+  Proof.
+    intros tag st k. unfold bump. destruct (sc st k) as [[v cr] |]; cbn [fst sc]; rewrite upd_c_eq; discriminate.
+  Qed.
+
+  Lemma bump_all_sc_other :
+    forall tag ks st k, ~ In k ks -> sc (fst (bump_all tag st ks)) k = sc st k.
+  Proof.
+    intros tag ks. induction ks as [| k0 rest IH]; intros st k H; [reflexivity |]. cbn [bump_all fst].
+    rewrite IH by (intros Hin; apply H; right; exact Hin).
+    apply bump_sc_other. intros E. apply H. left. exact E.
+  Qed.
+
+  Lemma bump_all_ss_other :
+    forall tag ks st s, (forall k, In k ks -> sc st k <> None \/ space_of k <> s) ->
+      ss (fst (bump_all tag st ks)) s = ss st s.
+  Proof.
+    intros tag ks. induction ks as [| k0 rest IH]; intros st s H; [reflexivity |]. cbn [bump_all fst].
+    rewrite IH.
+    - apply bump_ss_other. exact (H k0 (or_introl eq_refl)).
+    - intros k Hk. destruct (coll_eq_dec k0 k) as [-> | Hne].
+      + left. apply bump_sc_self.
+      + rewrite bump_sc_other by exact Hne. exact (H k (or_intror Hk)).
+  Qed.
+
+  (* The first bump of k in a list consumes the counter of k that it finds. *)
+  Lemma bump_all_consumed :
+    forall tag ks st k v cr, sc st k = Some (v, cr) -> In k ks ->
+      In (counter_produce (ChS k) v cr) (consumed (snd (bump_all tag st ks))).
+  Proof.
+    intros tag ks. induction ks as [| k0 rest IH]; intros st k v cr Hsc Hin; [destruct Hin |].
+    cbn [bump_all snd]. rewrite consumed_app. apply in_or_app.
+    destruct (coll_eq_dec k0 k) as [-> | Hne].
+    - left. unfold bump. rewrite Hsc. cbn [snd]. unfold consumed. cbn. left. reflexivity.
+    - right. apply IH; [rewrite bump_sc_other by exact Hne; exact Hsc |].
+      destruct Hin as [E | Hin]; [contradiction | exact Hin].
+  Qed.
+
+  (* The first bump that opens a collection of the space s consumes the
+     space counter of s that it finds. *)
+  Lemma bump_all_space_consumed :
+    forall tag ks st s, (exists k, In k ks /\ space_of k = s /\ sc st k = None) ->
+      In (counter_produce (ChSP s) (fst (ss st s)) (snd (ss st s))) (consumed (snd (bump_all tag st ks))).
+  Proof.
+    intros tag ks. induction ks as [| k0 rest IH]; intros st s (k & Hin & Hs & Hnone); [destruct Hin |].
+    cbn [bump_all snd]. rewrite consumed_app. apply in_or_app.
+    destruct (sc st k0) as [[v cr] |] eqn:E0.
+    - right. rewrite <- (bump_ss_other tag st k0 s) by (left; rewrite E0; discriminate).
+      apply IH. exists k. destruct Hin as [Heq | Hin].
+      + subst k0. rewrite Hnone in E0. discriminate.
+      + split; [exact Hin | split; [exact Hs |]].
+        rewrite bump_sc_other; [exact Hnone |]. intros ->. rewrite Hnone in E0. discriminate.
+    - destruct (space_eq_dec (space_of k0) s) as [Hs0 | Hs0].
+      + left. rewrite <- Hs0. unfold bump. rewrite E0. cbn [snd]. unfold consumed. cbn. left. reflexivity.
+      + right. rewrite <- (bump_ss_other tag st k0 s) by (right; exact Hs0).
+        apply IH. exists k. destruct Hin as [Heq | Hin].
+        * subst k0. contradiction.
+        * split; [exact Hin | split; [exact Hs |]].
+          rewrite bump_sc_other; [exact Hnone |]. intros ->. contradiction.
+  Qed.
+
+  Lemma exec_jstep_sc_other :
+    forall tag st x k, ~ In k (jstep_bumps x) -> sc (fst (exec_jstep tag st x)) k = sc st k.
+  Proof.
+    intros tag st [k0 q | ks j] k H; cbn [exec_jstep jstep_bumps fst] in *.
+    - apply exec_sc_other. intros E. apply H. left. exact E.
+    - unfold exec_join. cbn [fst sc]. apply bump_all_sc_other. exact H.
+  Qed.
+
+  Lemma exec_jstep_ss_other :
+    forall tag st x s, (forall k, In k (jstep_bumps x) -> sc st k <> None \/ space_of k <> s) ->
+      ss (fst (exec_jstep tag st x)) s = ss st s.
+  Proof.
+    intros tag st [k0 q | ks j] s H; cbn [exec_jstep jstep_bumps fst] in *.
+    - apply exec_ss_other. exact (H k0 (or_introl eq_refl)).
+    - unfold exec_join. cbn [fst ss]. apply bump_all_ss_other. exact H.
+  Qed.
+
+  (* counter_consumed for steps: the first step that bumps k consumes the
+     counter of k that it finds. *)
+  Lemma jstep_counter_consumed :
+    forall tag xs st k v cr, sc st k = Some (v, cr) -> (exists x, In x xs /\ In k (jstep_bumps x)) ->
+      In (counter_produce (ChS k) v cr) (consumed (snd (run_jsteps tag st xs))).
+  Proof.
+    intros tag xs. induction xs as [| x rest IH]; intros st k v cr Hsc (y & Hy & Hky); [destruct Hy |].
+    cbn [run_jsteps snd]. rewrite consumed_app. apply in_or_app.
+    destruct (in_dec coll_eq_dec k (jstep_bumps x)) as [Hx | Hx].
+    - left. destruct x as [k0 q | ks j]; cbn [jstep_bumps exec_jstep snd] in *.
+      + destruct Hx as [<- | []]. unfold exec. rewrite Hsc. cbn [x_log]. unfold consumed.
+        rewrite produces_consumed_app. apply in_or_app. left. cbn. left. reflexivity.
+      + unfold exec_join. cbn [snd]. rewrite consumed_app. apply in_or_app. left.
+        exact (bump_all_consumed tag _ st k v cr Hsc Hx).
+    - right. apply IH; [rewrite exec_jstep_sc_other by exact Hx; exact Hsc |].
+      exists y. destruct Hy as [<- | Hy]; [contradiction | split; [exact Hy | exact Hky]].
+  Qed.
+
+  (* space_counter_consumed for steps: the first step that opens a
+     collection of the space s consumes the space counter of s. *)
+  Lemma jstep_space_counter_consumed :
+    forall tag xs st s,
+      (exists x k, In x xs /\ In k (jstep_bumps x) /\ space_of k = s /\ sc st k = None) ->
+      In (counter_produce (ChSP s) (fst (ss st s)) (snd (ss st s))) (consumed (snd (run_jsteps tag st xs))).
+  Proof.
+    intros tag xs. induction xs as [| x rest IH]; intros st s (y & k & Hy & Hky & Hs & Hnone); [destruct Hy |].
+    cbn [run_jsteps snd]. rewrite consumed_app. apply in_or_app.
+    destruct (existsb (fun k0 => if space_eq_dec (space_of k0) s then match sc st k0 with None => true | Some _ => false end
+                                 else false) (jstep_bumps x)) eqn:Eo.
+    - left. apply existsb_exists in Eo as (k0 & Hk0 & E0).
+      destruct (space_eq_dec (space_of k0) s) as [Hs0 | Hs0]; [| discriminate].
+      destruct (sc st k0) as [[v cr] |] eqn:Ek0; [discriminate |].
+      destruct x as [k1 q | ks j]; cbn [jstep_bumps exec_jstep snd] in *.
+      + destruct Hk0 as [<- | []]. rewrite <- Hs0. unfold exec. rewrite Ek0. cbn [x_log]. unfold consumed.
+        rewrite produces_consumed_app. apply in_or_app. left. cbn. left. reflexivity.
+      + unfold exec_join. cbn [snd]. rewrite consumed_app. apply in_or_app. left.
+        apply bump_all_space_consumed. exists k0. split; [exact Hk0 | split; [exact Hs0 | exact Ek0]].
+    - assert (Hno : forall k0, In k0 (jstep_bumps x) -> sc st k0 <> None \/ space_of k0 <> s).
+      { intros k0 Hk0. destruct (space_eq_dec (space_of k0) s) as [Hs0 | Hs0]; [| right; exact Hs0].
+        left. intros E0. assert (Ht : existsb (fun k1 => if space_eq_dec (space_of k1) s then
+                                                          match sc st k1 with None => true | Some _ => false end
+                                                        else false) (jstep_bumps x) = true).
+        { apply existsb_exists. exists k0. split; [exact Hk0 |].
+          destruct (space_eq_dec (space_of k0) s); [rewrite E0; reflexivity | contradiction]. }
+        rewrite Eo in Ht. discriminate. }
+      right. rewrite <- (exec_jstep_ss_other tag st x s Hno).
+      apply IH. exists y, k. destruct Hy as [<- | Hy].
+      + exfalso. destruct (Hno k Hky) as [H | H]; [exact (H Hnone) | exact (H Hs)].
+      + split; [exact Hy | split; [exact Hky | split; [exact Hs |]]].
+        rewrite exec_jstep_sc_other; [exact Hnone |]. intros Hk.
+        destruct (Hno k Hk) as [H | H]; [exact (H Hnone) | exact (H Hs)].
+  Qed.
+
+  (* Headline 12 (the joins plan, section 8.3). Branch A runs a join step
+     over the collections ks, and branch B stages on a collection k of ks
+     (one operation on k, or a join step whose group holds k). Both branches
+     start from one pre-state. TOUCH bumps every distinct collection of a
+     group, so check #1 reports the counter of k, or the space counter when
+     k has no counter yet. *)
+  Theorem join_ops_race_on_every_counter :
+    forall tA tB base xsA xsB ks j k,
+      In (JJoin ks j) xsA -> In k ks -> (exists x, In x xsB /\ In k (jstep_colls x)) ->
+      match sc base k with
+      | Some _ => In (ChS k) (check1_spaces (snd (run_jsteps tA base xsA)) (snd (run_jsteps tB base xsB)))
+      | None => In (ChSP (space_of k)) (check1_spaces (snd (run_jsteps tA base xsA)) (snd (run_jsteps tB base xsB)))
+      end.
+  Proof.
+    intros tA tB base xsA xsB ks j k HA Hk (x & HxB & HkB).
+    assert (Hbumps : forall y, In k (jstep_colls y) -> In k (jstep_bumps y)).
+    { intros [k0 q | ks0 j0] Hy; cbn [jstep_colls jstep_bumps] in *; [exact Hy |].
+      unfold join_bumps. apply nodup_In. exact Hy. }
+    assert (HA' : exists y, In y xsA /\ In k (jstep_bumps y)).
+    { exists (JJoin ks j). split; [exact HA |]. apply Hbumps. exact Hk. }
+    assert (HB' : exists y, In y xsB /\ In k (jstep_bumps y)).
+    { exists x. split; [exact HxB |]. apply Hbumps. exact HkB. }
+    destruct (sc base k) as [[v cr] |] eqn:E.
+    - apply (check1_counter_race _ _ (ChS k) v cr); apply jstep_counter_consumed; assumption.
+    - apply (check1_counter_race _ _ (ChSP (space_of k)) (fst (ss base (space_of k))) (snd (ss base (space_of k))));
+        apply jstep_space_counter_consumed.
+      + destruct HA' as (y & Hy & Hky). exists y, k. split; [exact Hy | split; [exact Hky | split; [reflexivity | exact E]]].
+      + destruct HB' as (y & Hy & Hky). exists y, k. split; [exact Hy | split; [exact Hky | split; [reflexivity | exact E]]].
+  Qed.
+  (* ── 13. Headlines 13 and 14: the merges of set collections (P5 wave W3) ─ *)
+
+  (* A retirement of a stored member of a set: a COMM without peeks whose
+     produces hold the produce of the member. The class fire over [D; n]
+     of a receive (rule ST-5) and a K_retire COMM (rule ST-6, and
+     RETIRE-SET-BINDS of a join) are both such COMMs. A set has no counter,
+     so the COMM is the only event of the retirement on D(sid,k). *)
+  Definition retires (log : list ev) (p : produce chan pid) : Prop :=
+    exists kont ps, In (EvComm kont ps false) log /\ In p ps.
+
+  Lemma retires_consumed : forall log p, retires log p -> In p (consumed log).
+  Proof.
+    intros log p (kont & ps & Hin & Hp). unfold consumed, produces_consumed.
+    apply in_flat_map. exists (EvComm kont ps false). split; [exact Hin | exact Hp].
+  Qed.
+
+  (* Headline 13 (F24 of the P5 design v2). Two branches from one pre-state
+     that each retire one stored member of a set race in check #1 on the
+     channel of the member. Each retirement is the class fire over [D; n] or
+     a K_retire COMM, so each branch consumes the produce of the member
+     without a peek. The member is not persistent, because a fire removes
+     only the non-persistent members of a class. *)
+  Theorem set_retirements_race :
+    forall la lb k i cr,
+      retires la (mkProduce (ChD k) (PidData i cr) false) ->
+      retires lb (mkProduce (ChD k) (PidData i cr) false) ->
+      In (ChD k) (check1_spaces la lb).
+  Proof.
+    intros la lb k i cr HA HB. unfold check1_spaces, check1. apply in_or_app. right.
+    apply in_map_iff. exists (mkProduce (ChD k) (PidData i cr) false). split; [reflexivity |].
+    apply filter_In. split; [apply retires_consumed; exact HA |].
+    rewrite (proj2 (inp_iff _ _ _ _ _ _) (retires_consumed _ _ HB)), !no_mergeable_produces. reflexivity.
+  Qed.
+
+  Lemma map_ditem_inj : forall a b, map DItem a = map DItem b -> a = b.
+  Proof.
+    induction a as [| x a IH]; intros [| y b] H; cbn in H; try discriminate; [reflexivity |].
+    injection H as -> Hab. f_equal. exact (IH b Hab).
+  Qed.
+
+  Lemma perm_ditems : forall a b, Permutation (map DItem a) (map DItem b) -> Permutation b a.
+  Proof.
+    intros a b H. destruct (Permutation_map_inv DItem _ H) as (c & Hc & Hbc).
+    apply map_ditem_inj in Hc. subst c. exact Hbc.
+  Qed.
+
+  (* Headline 14 (F25 of the P5 design v2). Writes to set collections merge
+     with no race, and the merged view of every set collection is a serial
+     view. A set stores every record, also equal ones (rule ST-3), so its
+     writes are the counter-free produces of bag_run. The view of a set keeps
+     one representative of each class, in the canonical order of DR-75
+     (decision 41), so it depends only on the multiset of the records. So
+     every view that ignores the order of its input gives the merged records
+     the view of both serial orders. *)
+  Theorem unordered_set_writes_commute :
+    forall (X : Type) (set_view : list D -> X),
+      (forall l l', Permutation l l' -> set_view l = set_view l') ->
+      forall tA tB base wsA wsB,
+        (forall k d, In (k, d) wsA -> In (k, d) wsB -> False) ->
+        let endA := fst (bag_run tA 0 base wsA) in
+        let endB := fst (bag_run tB 0 base wsB) in
+        check1_spaces (snd (bag_run tA 0 base wsA)) (snd (bag_run tB 0 base wsB)) = [] /\
+        (forall k, exists ds, merged base endA endB (ChD k) = Some (map DItem ds) /\
+                   set_view ds = set_view (sd (fst (bag_run tB 0 endA wsB)) k) /\
+                   set_view ds = set_view (sd (fst (bag_run tA 0 endB wsA)) k)).
+  Proof.
+    intros X set_view Hperm tA tB base wsA wsB Hdisj. cbv zeta.
+    destruct (unordered_writes_commute tA tB base wsA wsB Hdisj) as [Hc Hm]. split; [exact Hc |].
+    intros k. destruct (Hm (ChD k)) as (l & Hl & HpB & HpA). cbn [view] in HpB, HpA.
+    destruct (Permutation_map_inv DItem _ HpB) as (ds & -> & Hds).
+    exists ds. split; [exact Hl | split].
+    - apply Hperm. apply Permutation_sym. exact Hds.
+    - apply Hperm. apply perm_ditems. apply Permutation_sym. exact HpA.
+  Qed.
 End Spaces.
 
 Arguments QEnqueue {D} d.
@@ -1790,3 +2177,6 @@ Print Assumptions merge_without_race_is_serializable.
 Print Assumptions WriteSkew.counter_free_peek_admits_write_skew.
 Print Assumptions shared_collection_race.
 Print Assumptions CrossedStacks.crossed_stacks_without_removal_counters_fabricate.
+Print Assumptions join_ops_race_on_every_counter.
+Print Assumptions set_retirements_race.
+Print Assumptions unordered_set_writes_commute.

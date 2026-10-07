@@ -972,6 +972,7 @@ async fn host_program(
         },
         SpaceOp::Consume(receive) => HostCall::Receive(Box::new(receive.clone())),
         SpaceOp::Settle(_) => panic!("a bag issues no settle"),
+        SpaceOp::Join(_) => panic!("the bag programs of this suite issue no join"),
     }]);
     let mut fires = Vec::new();
     while let Some(call) = calls.pop_front() {
@@ -2201,6 +2202,7 @@ async fn authority_case(program: Vec<BagOp>) -> Result<(), TestCaseError> {
             }
             SpaceOp::Consume(receive) => Some(receive.introduction_authority.clone()),
             SpaceOp::Settle(_) => None,
+            SpaceOp::Join(join) => Some(join.introduction_authority.clone()),
         };
         rig.run(space_op)
             .await

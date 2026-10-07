@@ -780,23 +780,49 @@ fn restored_send(
 }
 
 /// RETIRE-CLASS: stages the retire of each stored member of the class of `retiring` that is not
-/// persistent, in canonical order (decision 37, decision 41). Each retire is the consume of
-/// `K_retire(m)` over `[D]` with the record `m`. It is never dispatched, and it is not a fire
-/// round. A persistent member stays, because a COMM never removes a persistent record. A
-/// retire locates its member again before it stages, because each retire removes a record.
+/// persistent, in canonical order (decision 37, decision 41), on the collection of the operation
+/// ([`retire_class_on`]).
 fn retire_class<D: ScanDiscipline>(
     discipline: &D,
     cx: &mut Cx<'_, '_>,
     retiring: &Retiring,
 ) -> Result<(), SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
-    let order = cx.canonical_data_order(data)?;
+    retire_class_on(
+        cx,
+        data,
+        &retiring.key,
+        &retiring.key_hash,
+        &retiring.random,
+        retiring.authority.as_ref(),
+        |payload, meter| discipline.class_key(payload, meter),
+    )
+}
+
+/// RETIRE-CLASS on the collection whose data channel is `channel`: stages the retire of each
+/// stored member of the class `key`, whose metered hash is `key_hash`, that is not persistent,
+/// in canonical order. `class_key` gives the class of a stored payload. Each retire is the
+/// consume of `K_retire(m)` over `[channel]` with the record `m`, with the random state `random`
+/// and the cost authority `authority`. It is never dispatched, and it is not a fire round. A
+/// persistent member stays, because a COMM never removes a persistent record. A retire locates
+/// its member again before it stages, because each retire removes a record. The join engine
+/// retires the classes of the binds of a join fire with it (P5c).
+pub(crate) fn retire_class_on(
+    cx: &mut Cx<'_, '_>,
+    channel: &Par,
+    key: &[u8],
+    key_hash: &Blake2b256Hash,
+    random: &Blake2b512Random,
+    authority: Option<&CostAuthority>,
+    class_key: impl Fn(&[Par], &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError>,
+) -> Result<(), SpaceError> {
+    let meter = cx.meter();
+    let order = cx.canonical_data_order(channel)?;
     let mut members: Vec<(ParDatum, ListParWithRandom)> = Vec::new();
     for &index in &order {
         // A COMM never removes a persistent record, so a persistent member is not decoded.
         let payload = {
-            let stored = record_at(cx, index)?;
+            let stored = record_on(cx, channel, index)?;
             match stored.persist {
                 true => None,
                 false => Some(record::unwrap_datum_metered(&stored.a, meter)?.datum),
@@ -805,17 +831,17 @@ fn retire_class<D: ScanDiscipline>(
         let Some(payload) = payload else {
             continue;
         };
-        let Some(key) = discipline.class_key(&payload.pars, meter)? else {
+        let Some(member_key) = class_key(&payload.pars, meter)? else {
             continue;
         };
-        if !same_class(&retiring.key, &retiring.key_hash, &key, meter)? {
+        if !same_class(key, key_hash, &member_key, meter)? {
             continue;
         }
-        let member = meter.copy(record_at(cx, index)?)?;
+        let member = meter.copy(record_on(cx, channel, index)?)?;
         push_reserved(&mut members, (member, payload), meter)?;
     }
     for (member, payload) in members {
-        let index = located(cx, &member.source.hash)?;
+        let index = located(cx, channel, &member.source.hash)?;
         let matched = cx
             .bind(&RETIRE_PATTERN, &payload)?
             .ok_or(SpaceError::Inconsistent(
@@ -823,19 +849,17 @@ fn retire_class<D: ScanDiscipline>(
             ))?;
         meter.reserve_copy(&*RETIRE_CONTINUATION)?;
         meter.reserve_buffer::<u8>(member.source.hash.0.len())?;
-        meter.random_bytes(&retiring.random)?;
-        let authority = retiring
-            .authority
-            .as_ref()
+        meter.random_bytes(random)?;
+        let authority = authority
             .map(|authority| meter.copy(authority))
             .transpose()?;
-        let continuation = retire_continuation(&member.source.hash, &retiring.random, authority);
+        let continuation = retire_continuation(&member.source.hash, random, authority);
         let mut channels = meter.buffer::<Par>(1)?;
-        channels.push(meter.copy(data)?);
+        channels.push(meter.copy(channel)?);
         let mut patterns = meter.buffer::<BindPattern>(1)?;
         patterns.push(meter.copy(&*RETIRE_PATTERN)?);
         let mut candidates = meter.buffer::<ParCandidate>(1)?;
-        candidates.push(stored_candidate(meter.copy(data)?, Member {
+        candidates.push(stored_candidate(meter.copy(channel)?, Member {
             record: member,
             matched,
             view_index: view_index(index)?,
@@ -848,7 +872,7 @@ fn retire_class<D: ScanDiscipline>(
 /// True when the key `other` equals `key`, whose metered hash is `key_hash` (DR-90): the hashes
 /// are compared first, and the full keys only when the hashes are equal. Each hash and each
 /// comparison is reserved before it is made.
-fn same_class(
+pub(crate) fn same_class(
     key: &[u8],
     key_hash: &Blake2b256Hash,
     other: &[u8],
@@ -865,12 +889,12 @@ fn same_class(
     }
 }
 
-/// The index in the staged view of the first record whose source hash is `hash`. Each
-/// comparison of two hashes is reserved first. Two records with one source hash are
+/// The index in the staged view of `channel` of the first record whose source hash is `hash`.
+/// Each comparison of two hashes is reserved first. Two records with one source hash are
 /// byte-identical, so either one is the member.
-fn located(cx: &mut Cx<'_, '_>, hash: &Blake2b256Hash) -> Result<usize, SpaceError> {
+fn located(cx: &mut Cx<'_, '_>, channel: &Par, hash: &Blake2b256Hash) -> Result<usize, SpaceError> {
     let meter = cx.meter();
-    let records = cx.data()?;
+    let records = cx.data_on(channel)?;
     for (index, stored) in records.iter().enumerate() {
         meter.compare(hash.0.len(), stored.source.hash.0.len())?;
         if stored.source.hash == *hash {
@@ -887,6 +911,19 @@ fn record_at<'v>(cx: &'v mut Cx<'_, '_>, index: usize) -> Result<&'v ParDatum, S
     cx.data()?.get(index).ok_or(SpaceError::Inconsistent(
         "a canonical index is outside the staged view",
     ))
+}
+
+/// The record at `index` of the staged view of `channel`.
+fn record_on<'v>(
+    cx: &'v mut Cx<'_, '_>,
+    channel: &Par,
+    index: usize,
+) -> Result<&'v ParDatum, SpaceError> {
+    cx.data_on(channel)?
+        .get(index)
+        .ok_or(SpaceError::Inconsistent(
+            "a canonical index is outside the staged view",
+        ))
 }
 
 /// The waiting continuation at `index` of the staged view of the collection.

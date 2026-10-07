@@ -18,6 +18,8 @@
 '      record. A head that does not match blocks every entry behind it.
 '   5. Notes give the fire rounds: the re-offer, the persistent drain, the
 '      re-issue of a divergent pair, and the cap of 64 fires.
+'   6. A second note gives the joins of P5 wave W3: the head rule for each
+'      collection of a join and the cascade of the join engine.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 05-head-only-queue.puml   Check: ./render.sh --check
@@ -91,6 +93,16 @@ note right of OPEN
   <latex>R = \emptyset \lor W = \emptyset \lor \neg\, \mathrm{match}(\mathrm{head}(W), \mathrm{head}(R))</latex>
   Inside a deploy, the heads can match only while a
   persistent element in flight precedes the head of its side.
+end note
+
+note bottom of OPEN
+  **Joins** (P5 wave W3, decision 29): a collection that a join waiter
+  holds runs on the join engine (design N12). The join waiter fires
+  only as the head waiter of each of its queue collections, and
+  m binds on one collection see its first m records. A fire can expose
+  a matching pair of heads on another collection of the join scope.
+  The cascade fires that pair in the same transaction with a lift and
+  a re-offer, so INV holds again at the end of the transaction.
 end note
 
 legend bottom

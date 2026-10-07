@@ -80,6 +80,28 @@ impl<'a> SpaceMatcher<'a> {
         }
     }
 
+    /// The `where` guard of `continuation` over the bound values `matched` of all its binds, in
+    /// the bind order of its receive (decision 37: one check, after every bind matched). A
+    /// continuation without a guard admits every match. With a meter, the slice of references
+    /// that the metered check reads is a reserved buffer, and no value is copied. Without one,
+    /// the check reads `matched` as the host reads the matches of a join.
+    pub fn admits_all(
+        &self,
+        continuation: &TaggedContinuation,
+        matched: &[ListParWithRandom],
+    ) -> Result<bool, SpaceError> {
+        match self.meter.is_metered() {
+            true => {
+                let mut references = self.meter.buffer::<&ListParWithRandom>(matched.len())?;
+                references.extend(matched.iter());
+                Ok(self
+                    .matcher
+                    .check_commit_metered(continuation, &references, self.meter)?)
+            }
+            false => Ok(self.matcher.check_commit(continuation, matched)),
+        }
+    }
+
     /// The match of one bind: the spatial match of `pattern` against `data`, then the guard of
     /// `continuation`. `None` when either refuses.
     pub fn matches(
@@ -377,6 +399,76 @@ mod tests {
         let scanning = env_with_calls_only().await;
         let matcher = SpaceMatcher::new(&scanning);
         assert_eq!(matcher.bind(&any(), &datum(1)).err(), rejected);
+    }
+
+    /// The guard `x < y` over the values of two binds: the bound values form one environment in
+    /// bind order, so the value of the second bind is the bound variable 0.
+    fn ascending() -> Par {
+        use models::rhoapi::expr::ExprInstance;
+        use models::rhoapi::{ELt, Expr};
+        use models::rust::utils::new_boundvar_par;
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::ELtBody(ELt {
+                    p1: Some(new_boundvar_par(1, Vec::new(), false)),
+                    p2: Some(new_boundvar_par(0, Vec::new(), false)),
+                })),
+            }],
+            ..Par::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn space_matching_join_guard_reads_every_bind_in_bind_order() {
+        let guarded = continuation(Some(ascending()));
+        let ordered = [datum(1), datum(2)];
+        let reversed = [datum(2), datum(1)];
+        for host_work in [None, Some(budget(u64::MAX))] {
+            let env = env(host_work).await;
+            let matcher = SpaceMatcher::new(&env);
+            assert_eq!(matcher.admits_all(&guarded, &ordered), Ok(true));
+            assert_eq!(matcher.admits_all(&guarded, &reversed), Ok(false));
+            assert_eq!(matcher.admits_all(&continuation(None), &reversed), Ok(true));
+            // The host checks the guard of a join once, over the matches of every bind.
+            assert_eq!(
+                matcher.admits_all(&guarded, &ordered),
+                Ok(Matcher.check_commit(&guarded, &ordered))
+            );
+            assert_eq!(
+                matcher.admits_all(&guarded, &reversed),
+                Ok(Matcher.check_commit(&guarded, &reversed))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn space_matching_join_guard_reserves_one_check_and_its_buffer() {
+        let host_work = budget(1_000_000);
+        let env = env(Some(host_work.clone())).await;
+        let matcher = SpaceMatcher::new(&env);
+        let values = [datum(1), datum(2), datum(3)];
+        let before = charged(&host_work);
+        matcher
+            .admits_all(&continuation(None), &values)
+            .expect("the guard fits the budget");
+        let after = charged(&host_work);
+        let buffer_bytes = (values.len() * std::mem::size_of::<&ListParWithRandom>()) as u64;
+        assert_eq!(
+            [
+                after[0] - before[0],
+                after[1] - before[1],
+                after[2] - before[2]
+            ],
+            [values.len() as u64 + 2, buffer_bytes, buffer_bytes],
+            "the buffer of the references, then one unguarded check"
+        );
+        let refused = env_with_calls_only().await;
+        assert_eq!(
+            SpaceMatcher::new(&refused)
+                .admits_all(&continuation(Some(ascending())), &values)
+                .err(),
+            Some(SpaceError::Host(RSpaceError::HostWorkRejected))
+        );
     }
 
     // A budget of one unit in every dimension: room for one operation, but not for the reads of

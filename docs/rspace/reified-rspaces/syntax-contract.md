@@ -433,14 +433,14 @@ The table lists each construct that P4 rejects, with its code and the phase that
 | A space reference that names a user agent | `use @"space" { @"x"!(1) }` | `AgentSpacesUnavailable` | P8 |
 | A send or a receive on a name of a user agent | None in P4, because only a user agent makes such a name | `AgentSpacesUnavailable` | P8 |
 | The handle method `consume` | `h!(ret, "consume", pairs, "<-", body)` | `AgentSpacesUnavailable`, or a typed reply | P8 |
-| A join with a channel of a queue space | `for (@a <- x & @b <- y) { Nil }`, with `x` and `y` in one queue space | `OrderedJoinUnsupported` | P5 |
+| A join with a channel of a queue space | `for (@a <- x & @b <- y) { Nil }`, with `x` and `y` in one queue space | `OrderedJoinUnsupported` in P4 only | P5: wave W3 runs the join on the join engine ([specification 3.8](specification.md#38-joins)) |
 | A join over two spaces, or over a space and the default space | `for (@a <- x & @b <- @"y") { Nil }`, with `x` in a space | `CrossSpaceJoin` | None: the plan keeps this abort |
-| A factory of another family, or a FIPS alias | ``new f(`rho:space:hashmap:bag`) in { Nil }`` | The baseline error `No value set for <urn>` | P5 and P6 |
+| A factory of a family that is not registered yet, or its FIPS alias | ``new f(`rho:space:pathmap:bag`) in { Nil }`` | The baseline error `No value set for <urn>` | P5 wave W3 for PathMap, P6 for VectorDB, P7 for HashSet |
 
-A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:736-750`).
+A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:757-771`).
 The inner channel takes the read rule of a receive source, with the same error text.
-A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:767-797`).
-On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:696-707`).
+A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:788-818`).
+On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:717-728`).
 A reference that names no space aborts with `EmptySpaceRef`, `HandleNotWritable`, or `NotASpaceRef` in every phase.
 
 ## Keyword rule

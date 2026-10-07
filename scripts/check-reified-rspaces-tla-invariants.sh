@@ -27,7 +27,13 @@
 # re-issue order, one fire count for each transaction),
 # PriorityQueue.tla (the level order, the older head first, no pending
 # match, no lost record, the re-issue order, the transaction bound) and the
-# allocator of CounterConflict.tla.
+# allocator of CounterConflict.tla. Wave W3: PathMapPrefix.tla (the PathMap
+# delivery on prefixes: no pending match, one marker for each stored datum
+# and prefix, and the merge contact on a shared index channel), and
+# JoinCascade.tla (the joins of one space: no pending match at a quiescent
+# end, the heads of a join, distinct records, the incoming datum bound once,
+# the cascade measure, one fire count, no lost record, the re-issued orders
+# and the touched counters, on the queue, the stack, the bag and the set).
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -105,6 +111,13 @@ SAFE_CONFIGS=(
   "GenericRSpace MC_GenericRSpace_Set.cfg"
   "GenericRSpace MC_GenericRSpace_Cell.cfg"
   "StackDiscipline MC_StackDiscipline.cfg"
+  "PathMapPrefix MC_PathMapPrefix.cfg"
+  "PathMapPrefix MC_PathMapPrefix_Peek.cfg"
+  "PathMapPrefix MC_PathMapPrefix_Merge.cfg"
+  "JoinCascade MC_JoinCascade_Queue.cfg"
+  "JoinCascade MC_JoinCascade_Stack.cfg"
+  "JoinCascade MC_JoinCascade_Bag.cfg"
+  "JoinCascade MC_JoinCascade_Set.cfg"
 )
 # <module> <config> <the one invariant that it must refute>
 UNSAFE_CONFIGS=(
@@ -144,6 +157,21 @@ UNSAFE_CONFIGS=(
   "StackDiscipline StackReentryAtTopUnsafe.cfg LifoOrder"
   "StackDiscipline StackPerPhaseCountUnsafe.cfg TxnFiresBounded"
   "StackDiscipline StackPlanOpensAtCapUnsafe.cfg TxnFiresBounded"
+  "PathMapPrefix SpaceWideIndexUnsafe.cfg MergeDetectsPrefixContact"
+  "PathMapPrefix PathMapExactPathOnlyUnsafe.cfg NoMatchRemains"
+  "PathMapPrefix PathMapNoRetireUnsafe.cfg MarkerCount"
+  "PathMapPrefix PathMapMarkerNotRestoredUnsafe.cfg MarkerCount"
+  "JoinCascade NoLiftUnsafe.cfg QuiescentNoPendingMatch"
+  "JoinCascade NoSetCascadeUnsafe.cfg QuiescentNoPendingMatch"
+  "JoinCascade PlainRestoreUnsafe.cfg QuiescentNoPendingMatch"
+  "JoinCascade StoredRecordTwiceUnsafe.cfg DistinctRecordsPerBind"
+  "JoinCascade IncomingTwiceUnsafe.cfg IncomingBoundOnce"
+  "JoinCascade HeadOnIncomingOnlyUnsafe.cfg JoinFiresHeadsOnly"
+  "JoinCascade JoinPerPhaseCountUnsafe.cfg TxnFiresBounded"
+  "JoinCascade RestoreDroppedUnsafe.cfg NoRecordLost"
+  "JoinCascade JoinReissueFreshOrdsUnsafe.cfg ReissueKeepsBindOrds"
+  "JoinCascade LazyTouchUnsafe.cfg TouchedCountersBumped"
+  "JoinCascade PeekPersistUnsafe.cfg CascadeMeasureDecreases"
 )
 # <name>|<module>|<config>|<length>|<expected outcome>|<marker in the violated formula>
 APALACHE_CHECKS=(
@@ -194,7 +222,7 @@ if [[ ! "$APALACHE_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue)"
+echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue, PathMapPrefix, JoinCascade)"
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 tools_ok=true

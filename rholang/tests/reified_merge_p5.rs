@@ -17,9 +17,16 @@
 //! merge, so the counters are necessary (M-1).
 //!
 //! Scope of wave W2: the families `hashmap:{queue,bag,stack,cell}`, `array:queue` and
-//! `vector:queue`. The set and priority-queue rows follow in wave W3, after their families are
-//! wired. The formal counterparts are `CounterConflict.v` and `CounterConflict.tla`. Each
-//! property names the headline or the invariant that it tests.
+//! `vector:queue`. Wave W3 adds these rows:
+//!
+//! * the set rows (F24 `set_retirements_race`, F25 `unordered_set_writes_commute`),
+//! * the priority-queue rows, and item 18 for the class fire `[D; n]`,
+//! * the rows of the same-space joins (P5c, joins plan section 5).
+//!
+//! A join bumps the counter of each of its collections. So it races with every branch that uses
+//! one of them. Only the join waiters of user programs persist as join entries. The formal counterparts are
+//! `CounterConflict.v` and `CounterConflict.tla`. Each property names the headline or the
+//! invariant that it tests.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -72,6 +79,15 @@ const HASHMAP_CELL: &str = "rho:space:hashmap:cell";
 
 /// The factory of the stack family.
 const HASHMAP_STACK: &str = "rho:space:hashmap:stack";
+
+/// The factory of the queue family.
+const HASHMAP_QUEUE: &str = "rho:space:hashmap:queue";
+
+/// The factory of the set family.
+const HASHMAP_SET: &str = "rho:space:hashmap:set";
+
+/// The factory of the priority-queue family.
+const HASHMAP_PRIORITY_QUEUE: &str = "rho:space:hashmap:priorityqueue";
 
 /// The factory of the Array family with the queue discipline.
 const ARRAY_QUEUE: &str = "rho:space:array:queue";
@@ -989,6 +1005,36 @@ fn join_programs() -> Vec<JoinProgram> {
             ],
         },
         JoinProgram {
+            family: "set",
+            urn: HASHMAP_SET,
+            ctor: DEFAULT,
+            steps: vec![
+                "a!(1) | a!(1) | a!(2)".to_string(),
+                format!("for (@1 <- a) {{ {} }}", out("class", "1")),
+                format!("for (@x <<- a) {{ {} }}", out("peek", "x")),
+                "b!(3) | b!!(3)".to_string(),
+                format!("for (@3 <- b) {{ {} }}", out("three", "3")),
+                format!("for (@x <= c) {{ {} }} | c!(4) | c!(5)", out("each", "x")),
+            ],
+        },
+        JoinProgram {
+            family: "priorityqueue",
+            urn: HASHMAP_PRIORITY_QUEUE,
+            ctor: DEFAULT,
+            steps: vec![
+                "a!(1; priority=1) | a!(2; priority=0) | a!(3)".to_string(),
+                format!("for (@x <- a) {{ {} }}", out("take", "x")),
+                format!("for (@x <- a ~ (; priority=1)) {{ {} }}", out("lane", "x")),
+                format!("for (@x <<- a) {{ {} }}", out("peek", "x")),
+                format!(
+                    "for (@x <- b) {{ {} }} | for (@9 <- b) {{ {} }}",
+                    out("w", "x"),
+                    out("nine", "9")
+                ),
+                "b!(9) | b!(4)".to_string(),
+            ],
+        },
+        JoinProgram {
             family: "array",
             urn: ARRAY_QUEUE,
             ctor: FIXED_ARRAY,
@@ -1003,9 +1049,18 @@ fn join_programs() -> Vec<JoinProgram> {
     ]
 }
 
-/// Item 18 at P5: every consume and every COMM of `logs` names one channel. The state at `root`
-/// holds no join of two or more channels on a channel of the logs. So the space machinery adds
-/// no pre-state join for merge check #3. It returns the number of channels that it checked.
+/// True when the channels `channels` of a consume name one collection. They are one channel, or
+/// the `n` copies of one data channel of the class fire `[D; n]` of a set.
+fn one_collection(channels: &[Blake2b256Hash]) -> bool {
+    channels
+        .split_first()
+        .is_some_and(|(first, rest)| rest.iter().all(|channel| channel == first))
+}
+
+/// Item 18 at P5: every consume and every COMM of `logs` names one collection. That is one
+/// channel, or the `n` copies of one channel of the class fire `[D; n]` of a set (wave W3). The
+/// state at `root` holds no join of two or more channels on a channel of the logs. So the space machinery
+/// adds no pre-state join for merge check #3. It returns the number of channels that it checked.
 fn assert_no_join(node: &Node, root: &Blake2b256Hash, logs: &[Vec<Event>], label: &str) -> usize {
     let mut channels: BTreeSet<Blake2b256Hash> = BTreeSet::new();
     for event in logs.iter().flatten() {
@@ -1014,18 +1069,16 @@ fn assert_no_join(node: &Node, root: &Blake2b256Hash, logs: &[Vec<Event>], label
                 channels.insert(produce.channel_hash.clone());
             }
             Event::IoEvent(IOEvent::Consume(consume)) => {
-                assert_eq!(
-                    consume.channel_hashes.len(),
-                    1,
+                assert!(
+                    one_collection(&consume.channel_hashes),
                     "{label}: a consume names {} channels",
                     consume.channel_hashes.len()
                 );
                 channels.extend(consume.channel_hashes.iter().cloned());
             }
             Event::Comm(comm) => {
-                assert_eq!(
-                    comm.consume.channel_hashes.len(),
-                    1,
+                assert!(
+                    one_collection(&comm.consume.channel_hashes),
                     "{label}: a COMM consumes on {} channels",
                     comm.consume.channel_hashes.len()
                 );
@@ -1049,9 +1102,10 @@ fn assert_no_join(node: &Node, root: &Blake2b256Hash, logs: &[Vec<Event>], label
     channels.len()
 }
 
-/// Consensus checklist item 18 at P5: the bag, cell, stack and allocator operations of wave W2
-/// use no multi-channel join (I-16). This includes the `K_lift` of the stack settle and the
-/// `K_alloc` of an allocation. An ordinary host join is the control: the check sees it.
+/// Consensus checklist item 18 at P5: the bag, cell, stack, set, priority-queue and allocator
+/// operations use no join of two channels (I-16). This includes the `K_lift` of a settle and the
+/// `K_alloc` of an allocation. It also includes the class fire `[D; n]` of a set, which consumes
+/// on `n` copies of one channel. An ordinary host join is the control: the check sees it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_p5_synthesizes_no_join() {
     for program in join_programs() {
@@ -1096,6 +1150,21 @@ async fn reified_p5_synthesizes_no_join() {
                 let allocations: usize =
                     logs.iter().map(|log| comms_on(log, &rig.allocator())).sum();
                 assert_eq!(allocations, 4, "three gensym calls and one new run K_alloc");
+            }
+            "set" => {
+                // Step 1 takes the class of 1 with one class fire `[D; 2]`: a consume on two
+                // copies of `D(a)`.
+                let class_fires = steps[1]
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        Event::Comm(comm) if comm.consume.channel_hashes == vec![rig.data(0), rig.data(0)]
+                    ))
+                    .count();
+                assert_eq!(
+                    class_fires, 1,
+                    "the class fire binds both members of the class of 1"
+                );
             }
             _ => {}
         }
@@ -1724,5 +1793,510 @@ async fn merged_stack_state_is_serial_case(
         true => STACK_MERGES_COMPARED.fetch_add(1, Ordering::Relaxed),
         false => STACK_MERGES_REJECTED.fetch_add(1, Ordering::Relaxed),
     };
+    Ok(())
+}
+
+// ─── Set (wave W3): no counter, so writes merge, and retirements race (F24, F25) ─────────────
+
+/// Two branches that store records in one set merge (F25 `unordered_set_writes_commute`): a set
+/// uses no counter, so equal and new values commute. The merged set holds the records of both
+/// branches, and it is the state of each serial order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_set_writes_merge() {
+    let label = "rrs-p5-merge-set";
+    let mut rig = Rig::new(HASHMAP_SET, DEFAULT, "a!(10)", label).await;
+    let (left_label, right_label) = (format!("{label}-left"), format!("{label}-right"));
+    let (left_body, right_body) = ("a!(1) | a!(10)", "a!(2) | a!(10)");
+    let left = rig.branch_ok(left_body, &left_label).await;
+    let right = rig.branch_ok(right_body, &right_label).await;
+    for branch in [&left, &right] {
+        for counter in rig.counters() {
+            assert_eq!(
+                touching(branch.log(), &counter),
+                0,
+                "a set operation touches no counter"
+            );
+        }
+    }
+    assert!(
+        rig.conflicts(left.log(), right.log()).is_empty(),
+        "set writes conflict: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
+    let (_, serial, _) = rig
+        .serial(&[(left_body, &left_label), (right_body, &right_label)])
+        .await;
+    let (_, reversed, _) = rig
+        .serial(&[(right_body, &right_label), (left_body, &left_label)])
+        .await;
+    assert_eq!(merged, serial, "the merge is the serial state");
+    assert_eq!(merged, reversed, "the merge is the reversed serial state");
+    assert_eq!(
+        rig.node.data_at(&merged, &rig.data(0)).len(),
+        5,
+        "the merged set holds the seed record and the four writes"
+    );
+}
+
+/// Two branches that retire the members of one class race on their produces (F24
+/// `set_retirements_race`). The class of 1 has two members. The left branch takes the class with
+/// one class fire `[D; 2]`. The right branch binds the class in a join, and the join retires the
+/// other member with `K_retire`. Both branches consume both members, so merge check #1 sees
+/// two produce races on `D(a)`. Two class fires race the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_set_retirements_race() {
+    let label = "rrs-p5-merge-set-retire";
+    let mut rig = Rig::new(HASHMAP_SET, DEFAULT, "a!(1) | a!(1) | b!(5)", label).await;
+    let class_fire = format!("for (@1 <- a) {{ {} }}", out("class", "1"));
+    let join = format!("for (@1 <- a & @y <- b) {{ {} }}", out("join", "y"));
+    let left = rig.branch_ok(&class_fire, &format!("{label}-class")).await;
+    let right = rig.branch_ok(&join, &format!("{label}-join")).await;
+    assert_eq!(
+        consumes_on(right.log(), &rig.data(0)),
+        1,
+        "the join retires the other member with one K_retire"
+    );
+    assert_eq!(left.out, vec![("class".to_string(), 1)]);
+    assert_eq!(right.out, vec![("join".to_string(), 5)]);
+    assert_eq!(
+        rig.conflicts(left.log(), right.log()),
+        BTreeSet::from([rig.data(0)]),
+        "the retirements race on the members"
+    );
+    assert_eq!(
+        rig.reason(left.log(), right.log()).as_deref(),
+        Some("racesForSameIOEvent: produceRaces=2"),
+        "both members are consumed in both branches"
+    );
+    let twin = rig
+        .branch_ok(&class_fire, &format!("{label}-class-twin"))
+        .await;
+    assert_eq!(
+        rig.conflicts(left.log(), twin.log()),
+        BTreeSet::from([rig.data(0)]),
+        "two class fires race on the members"
+    );
+}
+
+// ─── Priority queue (wave W3): one counter for every operation (decision 31) ─────────────────
+
+/// Two dequeues of one priority queue race on its counter and on the head record that both
+/// take. A send and a dequeue race on the counter only, and without the counter events they
+/// merge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_pq_dequeue_race() {
+    let label = "rrs-p5-merge-pq-dequeue";
+    let mut rig = Rig::new(
+        HASHMAP_PRIORITY_QUEUE,
+        DEFAULT,
+        "a!(10; priority=0) | a!(20; priority=1)",
+        label,
+    )
+    .await;
+    let expected = BTreeSet::from([rig.counter(0)]);
+    assert_counter_race(
+        &mut rig,
+        "a!(1; priority=0)",
+        "for (@x <- a) { Nil }",
+        expected,
+        &format!("{label}-send"),
+    )
+    .await;
+    let left = rig
+        .branch_ok(
+            &format!("for (@x <- a) {{ {} }}", out("left", "x")),
+            &format!("{label}-left"),
+        )
+        .await;
+    let right = rig
+        .branch_ok(
+            &format!("for (@y <- a) {{ {} }}", out("right", "y")),
+            &format!("{label}-right"),
+        )
+        .await;
+    assert_eq!(left.out, vec![("left".to_string(), 10)]);
+    assert_eq!(right.out, vec![("right".to_string(), 10)]);
+    assert_eq!(
+        rig.conflicts(left.log(), right.log()),
+        BTreeSet::from([rig.counter(0), rig.data(0)]),
+        "two dequeues race on the counter and on the head record"
+    );
+}
+
+/// A peek of a priority queue bumps its counter (decision 31). A peek keeps the head record,
+/// because Rule E sends it again with its identity (decision 45). The merge index counts no
+/// consume of a peek COMM. So a peek races with a send and with a dequeue on the counter alone.
+/// Without the counter events each pair merges, so the counter of a peek is necessary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_pq_peek_race() {
+    let label = "rrs-p5-merge-pq-peek";
+    let mut rig = Rig::new(HASHMAP_PRIORITY_QUEUE, DEFAULT, "a!(10; priority=0)", label).await;
+    let peek = format!("for (@x <<- a) {{ {} }}", out("peek", "x"));
+    let dequeue = format!("for (@y <- a) {{ {} }}", out("take", "y"));
+    let expected = BTreeSet::from([rig.counter(0)]);
+    assert_counter_race(
+        &mut rig,
+        &peek,
+        "a!(1; priority=1)",
+        expected.clone(),
+        &format!("{label}-send"),
+    )
+    .await;
+    let (left, right) = assert_counter_race(
+        &mut rig,
+        &peek,
+        &dequeue,
+        expected,
+        &format!("{label}-dequeue"),
+    )
+    .await;
+    assert_eq!(left.out, vec![("peek".to_string(), 10)]);
+    assert_eq!(right.out, vec![("take".to_string(), 10)]);
+}
+
+// ─── Joins (P5c, joins plan section 5) ───────────────────────────────────────────────────────
+
+/// The seed that opens the collections of `a`, `b` and `c` and leaves them empty, so no branch
+/// opens a collection and races on `S(sid)`.
+const OPEN_ALL: &str =
+    "a!(0) | b!(0) | c!(0) | for (@x <- a) { Nil } | for (@y <- b) { Nil } | for (@z <- c) { Nil }";
+
+/// The join of `a` and `b` whose body delivers the value of `a`.
+fn join_ab() -> String { format!("for (@x <- a & @y <- b) {{ {} }}", out("join", "x")) }
+
+/// A join bumps the counter of each of its collections (decision 31, joins plan 5). So it races
+/// with a branch that uses any of them (`join_ops_race_on_every_counter`, `CounterConflict.v`).
+/// The join over `a` and `b` races with a receive on `a` on `S(sid,a)`. It races with a receive on
+/// `b` and with a join over `b` and `c` on `S(sid,b)`. Without the counter events each pair
+/// merges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_join_ops_race_all_counters() {
+    let label = "rrs-p5-merge-join-counters";
+    let mut rig = Rig::new(HASHMAP_QUEUE, DEFAULT, OPEN_ALL, label).await;
+    let join = join_ab();
+    let on_b_and_c = format!("for (@y <- b & @z <- c) {{ {} }}", out("bc", "y"));
+    for (slot, other, tag) in [
+        (vec![0], "for (@z <- a) { Nil }".to_string(), "a"),
+        (vec![1], "for (@z <- b) { Nil }".to_string(), "b"),
+        (vec![1], on_b_and_c, "bc"),
+    ] {
+        let expected: BTreeSet<Blake2b256Hash> =
+            slot.iter().map(|slot| rig.counter(*slot)).collect();
+        assert_counter_race(&mut rig, &join, &other, expected, &format!("{label}-{tag}")).await;
+    }
+}
+
+/// A join over `a` and `b` and operations on `c` merge: the join bumps only the counters of its
+/// own collections. The merged state is the state of each serial order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_unrelated_collections_merge() {
+    let label = "rrs-p5-merge-join-unrelated";
+    let mut rig = Rig::new(HASHMAP_QUEUE, DEFAULT, OPEN_ALL, label).await;
+    let (left_label, right_label) = (format!("{label}-left"), format!("{label}-right"));
+    let join = join_ab();
+    let other = format!("c!(7) | for (@z <- c) {{ {} }}", out("c", "z"));
+    let left = rig.branch_ok(&join, &left_label).await;
+    let right = rig.branch_ok(&other, &right_label).await;
+    assert!(
+        rig.conflicts(left.log(), right.log()).is_empty(),
+        "unrelated collections conflict: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let (left_index, right_index) = (rig.index(left.log()), rig.index(right.log()));
+    assert!(!depends(&left_index, &right_index));
+    assert!(!depends(&right_index, &left_index));
+    let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
+    let (_, serial, _) = rig
+        .serial(&[(&join, &left_label), (&other, &right_label)])
+        .await;
+    let (_, reversed, _) = rig
+        .serial(&[(&other, &right_label), (&join, &left_label)])
+        .await;
+    assert_eq!(merged, serial, "the merge is the serial state");
+    assert_eq!(merged, reversed, "the merge is the reversed serial state");
+}
+
+/// Merge check #2 for a bag join (joins plan 5). Bag and set joins have no counter. A join over
+/// `a` and `b` parks in one branch, and a send on `a` stores in the other. They meet as a
+/// potential COMM on `D(a)`. A send on `c` merges with the join.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_bag_join_potential_comm() {
+    let label = "rrs-p5-merge-bag-join";
+    let mut rig = Rig::new(HASHMAP_BAG, DEFAULT, "b!(1)", label).await;
+    let join = join_ab();
+    let left = rig.branch_ok(&join, &format!("{label}-left")).await;
+    let right = rig.branch_ok("a!(2)", &format!("{label}-right")).await;
+    assert!(left.out.is_empty() && right.out.is_empty());
+    assert_eq!(
+        rig.conflicts(left.log(), right.log()),
+        BTreeSet::from([rig.data(0)]),
+        "the parked join and the stored send meet on D(a)"
+    );
+    let reason = rig.reason(left.log(), right.log());
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("potentialCOMMs")),
+        "merge check #2 finds the potential COMM: {reason:?}"
+    );
+    let other = rig.branch_ok("c!(2)", &format!("{label}-other")).await;
+    assert!(
+        rig.conflicts(left.log(), other.log()).is_empty(),
+        "a send on another collection merges with the join"
+    );
+}
+
+/// A program of `reified_p5c_only_user_joins_persist`: the family label, the factory, the step
+/// bodies, and the slots of the joins that the user writes.
+type UserJoinProgram = (&'static str, &'static str, Vec<String>, Vec<[usize; 2]>);
+
+/// The programs of `reified_p5c_only_user_joins_persist`: for each family, the step bodies and
+/// the slots of the joins that the user writes.
+fn user_join_programs() -> Vec<UserJoinProgram> {
+    let lifts = vec![
+        join_ab(),
+        format!("for (@z <- b) {{ {} }}", out("v", "z")),
+        "b!(10) | b!(20)".to_string(),
+        "a!(1)".to_string(),
+        format!(
+            "for (@x <<- a & @y <- c) {{ {} }} | a!(5) | c!(6)",
+            out("peek", "x")
+        ),
+    ];
+    vec![
+        ("queue", HASHMAP_QUEUE, lifts.clone(), vec![[0, 1], [0, 2]]),
+        ("stack", HASHMAP_STACK, lifts, vec![[0, 1], [0, 2]]),
+        (
+            "bag",
+            HASHMAP_BAG,
+            vec![
+                "a!(1) | b!!(2)".to_string(),
+                format!("for (@x <<- a & @y <- b) {{ {} }}", out("peek", "x")),
+                join_ab(),
+                format!("for (@x <- a & @y <- c) {{ {} }}", out("ac", "x")),
+                "c!(3)".to_string(),
+            ],
+            vec![[0, 1], [0, 2]],
+        ),
+        (
+            "set",
+            HASHMAP_SET,
+            vec![
+                "a!(1) | a!(1) | a!(2) | b!(5)".to_string(),
+                format!("for (@1 <- a & @y <- b) {{ {} }}", out("retire", "y")),
+                format!("for (@x <- a & @y <- c) {{ {} }}", out("ac", "x")),
+                "c!(3)".to_string(),
+            ],
+            vec![[0, 1], [0, 2]],
+        ),
+    ]
+}
+
+/// Item 18 at P5c (joins plan 5, I-16): only the join of a user program persists as a join entry.
+/// After each step of a join program, take every join entry of two or more channels on a channel
+/// of the space. It is the group of a parked user join, whose continuation is a record of
+/// version 2. In the logs, every consume that names two or more collections is the consume of a
+/// user join. So `K_lift`, `K_retire`, the counter bumps and the second sends of Rule E add no
+/// join. The queue program makes a `K_lift` and the set program a `K_retire`, both single-channel
+/// consumes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reified_p5c_only_user_joins_persist() {
+    for (family, urn, steps, joins) in user_join_programs() {
+        let label = format!("rrs-p5-merge-user-joins-{family}");
+        let mut rig = Rig::new(urn, DEFAULT, "", &label).await;
+        rig.node.reset(&rig.root).await;
+        let user: Vec<BTreeSet<Blake2b256Hash>> = joins
+            .iter()
+            .map(|slots| slots.iter().map(|slot| rig.data(*slot)).collect())
+            .collect();
+        let data: Vec<Blake2b256Hash> = (0..NAMES.len()).map(|slot| rig.data(slot)).collect();
+        let mut persisted = 0;
+        let mut synthesized = Vec::with_capacity(steps.len());
+        for (step, body) in steps.iter().enumerate() {
+            let log = rig
+                .node
+                .run(&with_names(body), &format!("{label}-step-{step}"))
+                .await;
+            synthesized.push(
+                data.iter()
+                    .map(|channel| consumes_on(&log, channel))
+                    .sum::<usize>(),
+            );
+            for event in &log {
+                let channels = match event {
+                    Event::IoEvent(IOEvent::Consume(consume)) => &consume.channel_hashes,
+                    Event::Comm(comm) => &comm.consume.channel_hashes,
+                    Event::IoEvent(IOEvent::Produce(_)) => continue,
+                };
+                if one_collection(channels) {
+                    continue;
+                }
+                let named: BTreeSet<Blake2b256Hash> = channels.iter().cloned().collect();
+                assert!(
+                    user.contains(&named),
+                    "{label} step {step}: a consume on {} collections is not a user join",
+                    named.len()
+                );
+            }
+            let root = rig.node.checkpoint().await;
+            for channel in &data {
+                for group in rig.node.joins_at(&root, channel) {
+                    if group.len() < 2 {
+                        continue;
+                    }
+                    let waiters = rig.node.play.get_continuations(group.clone()).await;
+                    assert!(
+                        !waiters.is_empty(),
+                        "{label} step {step}: a join entry has no waiter"
+                    );
+                    for waiter in waiters {
+                        assert!(
+                            rholang::rust::interpreter::spaces::record::unwrap_join_continuation(
+                                &waiter.continuation
+                            )
+                            .is_ok(),
+                            "{label} step {step}: a join entry is not the group of a user join"
+                        );
+                        persisted += 1;
+                    }
+                }
+            }
+        }
+        assert!(persisted > 0, "{label}: a user join persists at some step");
+        match family {
+            "queue" => assert_eq!(
+                synthesized[3], 1,
+                "{label}: the cascade lifts the next head of b with K_lift"
+            ),
+            "set" => assert_eq!(
+                synthesized[1], 1,
+                "{label}: the join retires the other member of the class with K_retire"
+            ),
+            _ => {}
+        }
+    }
+}
+
+// ─── Properties: F24 and F25 (wave W3) ───────────────────────────────────────────────────────
+
+/// `set_retirements_race` (F24, `CounterConflict.v`). Two branches each retire the members of
+/// one class of a set, through the class fire `[D; n]` or through the `K_retire` of a join. They
+/// race in merge check #1 on the produces of the members. The class has two to four members that
+/// are not persistent.
+#[test]
+fn prop_set_retirements_race() {
+    check(
+        runtime_config(),
+        (2usize..5, any::<bool>(), any::<bool>(), vec(any::<u8>(), 4)),
+        |(members, left_join, right_join, seed)| {
+            tokio_runtime().block_on(set_retirements_race_case(
+                members, left_join, right_join, seed,
+            ))
+        },
+    );
+}
+
+/// One case of `prop_set_retirements_race`.
+async fn set_retirements_race_case(
+    members: usize,
+    left_join: bool,
+    right_join: bool,
+    seed_bytes: Vec<u8>,
+) -> Result<(), TestCaseError> {
+    let label = case_label("rrs-p5-prop-set-retire", &seed_bytes);
+    let mut seed_parts: Vec<&str> = std::iter::repeat_n("a!(1)", members).collect();
+    seed_parts.push("b!(5) | b!(6)");
+    let mut rig = Rig::new(HASHMAP_SET, DEFAULT, &seed_parts.join(" | "), &label).await;
+    let body = |join: bool, tag: &str| match join {
+        true => format!("for (@1 <- a & @y <- b) {{ {} }}", out(tag, "y")),
+        false => format!("for (@1 <- a) {{ {} }}", out(tag, "1")),
+    };
+    let left = rig
+        .branch_ok(&body(left_join, "left"), &format!("{label}-left"))
+        .await;
+    let right = rig
+        .branch_ok(&body(right_join, "right"), &format!("{label}-right"))
+        .await;
+    let found = rig.conflicts(left.log(), right.log());
+    prop_assert!(
+        found.contains(&rig.data(0)),
+        "the retirements race on the members: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let reason = rig.reason(left.log(), right.log());
+    prop_assert!(
+        reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("racesForSameIOEvent")),
+        "merge check #1 finds the race: {:?}",
+        reason
+    );
+    Ok(())
+}
+
+/// `unordered_set_writes_commute` (F25, `CounterConflict.v`): two branches of stores on the sets
+/// `a` and `b`, with equal and new values, touch no counter and do not conflict. The merged state
+/// is the state of both serial orders.
+#[test]
+fn prop_unordered_set_writes_commute() {
+    check(
+        runtime_config(),
+        (
+            vec(arb_value(), 0..3),
+            vec((0usize..2, arb_value()), 1..4),
+            vec((0usize..2, arb_value()), 1..4),
+            vec(any::<u8>(), 4),
+        ),
+        |(records, first, second, seed)| {
+            tokio_runtime().block_on(set_writes_commute_case(records, first, second, seed))
+        },
+    );
+}
+
+/// One case of `prop_unordered_set_writes_commute`.
+async fn set_writes_commute_case(
+    records: Vec<i64>,
+    first: Vec<(usize, i64)>,
+    second: Vec<(usize, i64)>,
+    seed_bytes: Vec<u8>,
+) -> Result<(), TestCaseError> {
+    let label = case_label("rrs-p5-prop-set", &seed_bytes);
+    let mut rig = Rig::new(HASHMAP_SET, DEFAULT, &seed(&[Some(records)]), &label).await;
+    let writes = |writes: &[(usize, i64)]| -> String {
+        program(
+            &writes
+                .iter()
+                .map(|(slot, value)| SlotOp::Send {
+                    slot: *slot,
+                    value: *value,
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    let (first_body, second_body) = (writes(&first), writes(&second));
+    let (first_label, second_label) = (format!("{label}-left"), format!("{label}-right"));
+    let left = rig.branch(&first_body, &first_label).await;
+    let right = rig.branch(&second_body, &second_label).await;
+    for branch in [&left, &right] {
+        prop_assert!(branch.deployed.ok(), "{:?}", branch.deployed.result.errors);
+        for counter in rig.counters() {
+            prop_assert_eq!(touching(branch.log(), &counter), 0);
+        }
+    }
+    prop_assert!(
+        rig.conflicts(left.log(), right.log()).is_empty(),
+        "set writes conflict: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
+    let (_, serial, _) = rig
+        .serial(&[(&first_body, &first_label), (&second_body, &second_label)])
+        .await;
+    let (_, reversed, _) = rig
+        .serial(&[(&second_body, &second_label), (&first_body, &first_label)])
+        .await;
+    prop_assert_eq!(&merged, &serial);
+    prop_assert_eq!(&merged, &reversed);
     Ok(())
 }

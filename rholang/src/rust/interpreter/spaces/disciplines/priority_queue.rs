@@ -99,8 +99,8 @@ use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::factory::defaults::PRIORITIES_PARAM;
 use crate::rust::interpreter::spaces::generic::{
-    open_plan, peek_set, Cx, Discipline, OfferFire, OpView, Ordered, ParDatum, ParWaiter,
-    ReceiveFire, Side,
+    open_plan, peek_set, Cx, Discipline, JoinWindow, OfferFire, OpView, Ordered, ParDatum,
+    ParWaiter, ReceiveFire, Side,
 };
 use crate::rust::interpreter::spaces::record;
 use crate::rust::interpreter::spaces::settle::{
@@ -234,6 +234,9 @@ impl Discipline for PriorityQueueDiscipline {
     const USES_COUNTER: bool = true;
     const SEND_PARAMS: &'static [&'static str] = PRIORITY_PARAMS;
     const QUERY_PARAMS: &'static [&'static str] = PRIORITY_PARAMS;
+    /// A join bind sees, for each level that its lane sees, the first records of the level
+    /// (P5c, decision 38).
+    const JOIN_WINDOW: JoinWindow = JoinWindow::Lanes;
 
     /// The head of one lane: the entry with the least `(ord, bincode bytes)`, the rule of the
     /// queue discipline. The plans of the priority queue apply it to each lane.
@@ -730,7 +733,10 @@ fn check_priority(config: &SpaceConfig, value: &Par, meter: &ScanMeter) -> Resul
 
 /// The level of the datum of a send: `Priority(p)` for `priority = p`, and `Unprioritized`
 /// without the param. `check_values` checked the value before the bump.
-fn send_level(params: &BTreeMap<String, Par>, meter: &ScanMeter) -> Result<Level, SpaceError> {
+pub(crate) fn send_level(
+    params: &BTreeMap<String, Par>,
+    meter: &ScanMeter,
+) -> Result<Level, SpaceError> {
     match priority_value(params, meter)? {
         Some(value) => Ok(Level::Priority(priority_of(value, meter)?)),
         None => Ok(Level::Unprioritized),
@@ -739,7 +745,10 @@ fn send_level(params: &BTreeMap<String, Par>, meter: &ScanMeter) -> Result<Level
 
 /// The lane of the continuation of a receive: `Level(p)` for a query with `priority = p`, and
 /// `Any` otherwise. `check_values` checked the query before the bump.
-fn receive_lane(query: &Option<QueryParams>, meter: &ScanMeter) -> Result<Lane, SpaceError> {
+pub(crate) fn receive_lane(
+    query: &Option<QueryParams>,
+    meter: &ScanMeter,
+) -> Result<Lane, SpaceError> {
     match query {
         Some(QueryParams { named, .. }) => match priority_value(named, meter)? {
             Some(value) => Ok(Lane::Level(priority_of(value, meter)?)),

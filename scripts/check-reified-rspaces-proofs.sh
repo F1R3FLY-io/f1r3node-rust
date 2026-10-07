@@ -46,7 +46,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 209: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 241: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -65,7 +65,11 @@
 #                        of W2: the F23 headline and the crossed stacks
 #                        of CounterConflict.v, SetDiscipline (8),
 #                        PriorityQueue (20) and the 2 PQ slot headlines
-#                        of RecordEnvelope.v)
+#                        of RecordEnvelope.v, and 32 for P5 wave W3: the
+#                        11 PathMap engine headlines of PathMapPrefix.v,
+#                        the 17 headlines of JoinCascade.v, the v2 join
+#                        record of RecordEnvelope.v, and the join race and
+#                        the two set merges (F24, F25) of CounterConflict.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -84,7 +88,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-209}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-241}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -95,8 +99,8 @@ declare -A EXPECTED_PER_MODULE=(
   [VolatileSweep]=6
   [Encoding]=15
   [Namespace]=11
-  [RecordEnvelope]=10
-  [CounterConflict]=11
+  [RecordEnvelope]=11
+  [CounterConflict]=14
   [HeadOnlyDisciplines]=20
   [SpaceRefs]=12
   [SpaceFactory]=13
@@ -110,10 +114,11 @@ declare -A EXPECTED_PER_MODULE=(
   [OuterStorage]=8
   [VectorStore]=3
   [HashMapStore]=2
-  [PathMapPrefix]=6
+  [PathMapPrefix]=17
   [StackDiscipline]=13
   [SetDiscipline]=8
   [PriorityQueue]=20
+  [JoinCascade]=17
 )
 
 PASS=0

@@ -42,8 +42,8 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter};
 use rholang::rust::interpreter::spaces::agent::{
-    ConsumeOp, ProduceOp, QueryParams, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
-    SpaceReissue,
+    ConsumeOp, JoinOp, ProduceOp, QueryParams, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
+    SpaceOutcome, SpaceReissue,
 };
 use rholang::rust::interpreter::spaces::disciplines::cell::CellDiscipline;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
@@ -181,15 +181,24 @@ fn with_reissued(op: SpaceOp, ord: i64) -> SpaceOp {
             ..consume
         }),
         SpaceOp::Settle(settle) => SpaceOp::Settle(settle),
+        SpaceOp::Join(join) => SpaceOp::Join(JoinOp {
+            reissued_ords: Some(vec![ord; join.binds.len()]),
+            ..join
+        }),
     }
 }
 
-/// The first-round order that a re-issued operation carries.
+/// The first-round order that a re-issued operation carries: the order of its first bind for a
+/// join.
 fn reissued_ord_of(op: &SpaceOp) -> Option<i64> {
     match op {
         SpaceOp::Produce(produce) => produce.reissued_ord,
         SpaceOp::Consume(consume) => consume.reissued_ord,
         SpaceOp::Settle(_) => None,
+        SpaceOp::Join(join) => join
+            .reissued_ords
+            .as_ref()
+            .and_then(|ords| ords.first().copied()),
     }
 }
 

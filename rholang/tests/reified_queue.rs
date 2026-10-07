@@ -1456,39 +1456,42 @@ fn check_rows(result: &EvaluateResult, log: &[Event], label: &str) {
     assert_eq!(comm_rows, comms, "{label}: one COMM row per COMM");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_queue_join_rejected() {
-    let mut session = Session::new().await;
-    let space = session.setup().await;
-    for (label, body) in [
-        (
-            "two-names",
-            r#"for (@x <- a & @y <- b) { @"rrs-join"!(x, y) }"#,
-        ),
-        (
-            "repeated",
-            r#"new dup in { dup!(*a, *a) | for (c, d <- dup) { for (@x <- c & @y <- d) { @"rrs-join"!(x, y) } } }"#,
-        ),
-        (
-            "forged",
-            r#"use queue { for (@x <- @"left" & @y <- @"right") { Nil } }"#,
-        ),
-        ("peek", r#"for (@x <<- a & @y <<- b) { Nil }"#),
-        ("persistent", r#"for (@x <= a & @y <= b) { Nil }"#),
-    ] {
-        session
-            .fail_with(
-                &with_space(body),
-                &format!("rrs-p4-join-{label}"),
-                &Injections::new(),
-                &["OrderedJoinUnsupported"],
-            )
-            .await;
-    }
-    assert!(session.records(space.space, &space.a).await.is_empty());
-    assert!(session.parked(space.space, &space.a).await.is_empty());
-    assert!(session.values("rrs-join").await.is_empty());
-}
+// Disabled by decision 29: a join whose channels all route to one native space runs in the
+// join engine of P5c (`spaces::join`), so these programs no longer fail with
+// `OrderedJoinUnsupported`. `reified_joins.rs` runs them as joins.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_queue_join_rejected() {
+//     let mut session = Session::new().await;
+//     let space = session.setup().await;
+//     for (label, body) in [
+//         (
+//             "two-names",
+//             r#"for (@x <- a & @y <- b) { @"rrs-join"!(x, y) }"#,
+//         ),
+//         (
+//             "repeated",
+//             r#"new dup in { dup!(*a, *a) | for (c, d <- dup) { for (@x <- c & @y <- d) { @"rrs-join"!(x, y) } } }"#,
+//         ),
+//         (
+//             "forged",
+//             r#"use queue { for (@x <- @"left" & @y <- @"right") { Nil } }"#,
+//         ),
+//         ("peek", r#"for (@x <<- a & @y <<- b) { Nil }"#),
+//         ("persistent", r#"for (@x <= a & @y <= b) { Nil }"#),
+//     ] {
+//         session
+//             .fail_with(
+//                 &with_space(body),
+//                 &format!("rrs-p4-join-{label}"),
+//                 &Injections::new(),
+//                 &["OrderedJoinUnsupported"],
+//             )
+//             .await;
+//     }
+//     assert!(session.records(space.space, &space.a).await.is_empty());
+//     assert!(session.parked(space.space, &space.a).await.is_empty());
+//     assert!(session.values("rrs-join").await.is_empty());
+// }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_queue_cross_space_join_rejected() {

@@ -452,6 +452,7 @@ fn settle_after_send(op: &ProduceOp) -> SettleOp {
         random_state: op.data.random_state.clone(),
         authority: op.data.cost_authority.clone().unwrap_or_default(),
         introduction_authority: op.authority.clone(),
+        cascade: None,
     }
 }
 
@@ -3150,6 +3151,7 @@ async fn own_lane(space: &ParRSpace, op: &SpaceOp) -> Vec<i64> {
                 .collect()
         }
         SpaceOp::Settle(_) => Vec::new(),
+        SpaceOp::Join(_) => Vec::new(),
     }
 }
 

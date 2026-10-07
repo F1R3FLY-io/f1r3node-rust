@@ -24,7 +24,7 @@ This README is the index and the reading order of the documents.
 1. Read the [glossary](glossary.md) first. Each later document uses its terms and links its anchors.
 2. Read the [decision register](decision-register.md) for the normative decisions and their reasons.
 3. Read the [specification](specification.md), the [syntax contract](syntax-contract.md), and the [agent API](agent-api.md) for the behavior of spaces.
-4. Read the [design](design.md), the PathMap delivery, and the theory seam for the structure of the implementation.
+4. Read the [design](design.md), the [PathMap delivery](pathmap-prefix-delivery.md), and the theory seam for the structure of the implementation.
 5. Read the security, performance, and verification documents and the FIPS matrix for the evidence.
 6. Read the F1r3lang integration document for the merge path of phase P12.
 7. Read the [design record](design-record/README.md) last, as history of the early design.
@@ -38,15 +38,15 @@ A document that a later phase writes shows the phase as "planned in Pn" and name
 |---|---|---|
 | [README.md](README.md) | This index: scope, reading order, documents, diagrams, phases, and the checking procedure. | Written |
 | [glossary.md](glossary.md) | Every campaign term with a stable anchor, in dependency order, with the background terms of Rholang, RSpace, and the verification tools. | Written |
-| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 44, M-1 to M-5, and I-1 to I-21, with dates, words of the user, reasons, and supersession links. | Written. `rrs-doc-design-record` (P10) keeps it current. |
-| [specification.md](specification.md) | The normative behavior of spaces: outer stores, disciplines, qualifiers, the sweep, the VectorDB bounds, and the vector operations. | The P4 sections are written: the space model, the HashMap outer store, the ordered collections, the queue discipline, and the default qualifier. P5 to P7 add sections, and P10 completes it (`rrs-perf-docs-final-spec-design-security`). |
+| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 51, M-1 to M-5, and I-1 to I-21, with dates, words of the user, reasons, and supersession links. | Written. `rrs-doc-design-record` (P10) keeps it current. |
+| [specification.md](specification.md) | The normative behavior of spaces: outer stores, disciplines, qualifiers, the sweep, the VectorDB bounds, and the vector operations. | The P4 sections are written: the space model, the HashMap outer store, the ordered collections, the queue discipline, and the default qualifier. P5 adds the Array and Vector stores, the PathMap paths, the bag, cell, stack, set, and priority queue disciplines, the receive queries, and the joins of one space. P6 and P7 add sections, and P10 completes it (`rrs-perf-docs-final-spec-design-security`). |
 | `fips-conformance-matrix.md` and `.json` | One row for each normative clause of the FIPS and of the agent section of the Agents FIPS, with code, proof, test, and document evidence. | Planned in P10 (`rrs-fips-clause-matrix`). P11 runs it on the frozen candidate. |
-| [design.md](design.md) | The module structure: types, the agent traits, the generic space algorithm, the space transaction, and the metrics source. | The substrate section of P1 and the native-spaces section of P4 are written. Later phases add sections, and P10 completes the document. |
+| [design.md](design.md) | The module structure: types, the agent traits, the generic space algorithm, the space transaction, and the metrics source. | The substrate section of P1 and the native-spaces section of P4 are written. P5 adds the legacy charges (N10), the drivers and stores of wave W2 (N11), and the join engine (N12) and the PathMap engine (N13) of wave W3. Later phases add sections, and P10 completes the document. |
 | [agent-api.md](agent-api.md) | Factories, handles, methods, replies, errors, `getSpaceAgent`, space references, and user agent-backed spaces. | The P4 sections are written: the system processes, the factory, the handle and its methods, the replies, the typed replies, `getSpaceAgent`, and `assertEqual`. P8 adds sections, and P10 completes it (`rrs-doc-agent-api`). |
 | `theory-seam.md` | Admission verdicts, builtin theories, theory identity, charging, guard composition, and the path after the F1r3lang merge. | Planned in P7 (`rrs-theory-seam`, `rrs-reducer-theory-admission`). P10 completes it (`rrs-doc-theory-seam`). |
-| `pathmap-prefix-delivery.md` | Paths, prefix keys, re-rooting, path markers, waiters, and the merge behavior of PathMap spaces. | Planned in P5 (`rrs-pathmap-prefix-delivery`). |
+| [pathmap-prefix-delivery.md](pathmap-prefix-delivery.md) | Paths, prefix keys, re-rooting, path markers, waiters, and the merge behavior of PathMap spaces. | Phase 1 of P5 wave W3 is written: the store, the markers, the vehicle, the delivery plans, and the formal models. Phase 2 adds the prefix source of the join engine and the integration tests (`rrs-pathmap-prefix-delivery`). |
 | [syntax-contract.md](syntax-contract.md) | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | The P3 sections are written: the grammar forms, the normalization mapping with the builders and the marker tuples, the errors, the keyword rule, and the corpus. The P4 section on the meaning at run time is written. P12 adds the Rholang 1.4 productions. |
-| [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | The P1 sections and the P4 section are written. Each later phase adds the sections of its models and suites. P10 completes it (`rrs-doc-verification-dossier`). |
+| [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | The P1 sections, the P4 section, and the P5 section with waves W2 and W3 (the joins of one space and Phase 1 of the PathMap engine) are written. Each later phase adds the sections of its models and suites. P10 completes it (`rrs-doc-verification-dossier`). |
 | `security.md` | Capability checks, private channels, input validation, query limits, failure atomicity, and a threat model. | Planned in P10 (`rrs-perf-docs-final-spec-design-security`). |
 | `performance.md` | Benchmarks of the space operations against frozen baselines, with any regressions. | Planned in P10 (`rrs-perf-docs-final-benchmarks`). |
 | `f1r3lang-integration.md` | The F1r3lang merge: conflict resolutions, guard composition, and the Rholang 1.4 productions. | Planned in P10 (`rrs-doc-theory-seam`). P12 extends it after the readiness signal. |
@@ -73,19 +73,29 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 02 | [Namespace bytes](diagrams/02-namespace-bytes.svg) | Drawn. P4 corrected the status of the op channels. |
 | 03 | [Native handle lifecycle](diagrams/03-native-handle-lifecycle.svg) (sequence) | Drawn in P4 |
 | 04 | User-agent translation (sequence) | Planned in P10 (`rrs-doc-diagrams`) |
-| 05 | [Head-only queue](diagrams/05-head-only-queue.svg) (state) | Drawn in P4 for the queue. P10 extends it to the other ordered disciplines (`rrs-doc-diagrams`). |
+| 05 | [Head-only queue](diagrams/05-head-only-queue.svg) (state) | Drawn in P4 for the queue. P5 wave W3 adds the note on joins. P10 extends it to the other ordered disciplines (`rrs-doc-diagrams`). |
 | 06 | [Commit of a space transaction](diagrams/06-space-txn-commit.svg) (activity) | Drawn in P1 |
 | 06a | [Lifecycle of a space transaction](diagrams/06a-space-txn-lifecycle.svg) (state), a sub-figure of figure 06 | Drawn in P1 |
 | 07 | [Checkpoint, replay, and sweep](diagrams/07-checkpoint-replay-sweep.svg) (sequence) | Drawn in P1. The restart suite adds the restart part (`rrs-tests-verification-restart-rehydrate`). |
 | 08 | [Merge flow of the counter conflict](diagrams/08-counter-conflict-merge.svg) (activity) | Drawn in P4 |
-| 09 | PathMap re-rooting and path markers | Planned in P5 (`rrs-pathmap-prefix-delivery`) |
+| 09 | [PathMap delivery](diagrams/09-pathmap-delivery.svg) (activity) | Drawn in P5 wave W3 |
 | 10 | Theory admission | Planned in P7 (`rrs-theory-seam`) |
-| 11 | Layout of the record envelope | Planned in P10 (`rrs-doc-diagrams`) |
+| 11 | [Layout of the record envelope](diagrams/11-record-envelope.svg) (component) | Drawn in P5 wave W3, with the join continuation of version 2 |
 | 12 | [Routing decision](diagrams/12-routing-decision.svg) (activity) | Drawn in P4 |
 | 13 | [Verification pipeline](diagrams/13-verification-pipeline.svg) (component) | Drawn for the checks of P1. P10 extends it to all phases (`rrs-doc-diagrams`). |
 | 14 | Phase Gantt chart | Planned in P10 (`rrs-doc-diagrams`) |
 | 15 | [Normalization of the Reified syntax](diagrams/15-syntax-normalization.svg) (activity) | Drawn in P3 |
 | 16 | [Space replay when a deploy runs out of phlo](diagrams/16-space-replay-out-of-phlo.svg) (sequence) | Drawn for the finding. Its third part shows the fix of decision 36. |
+| 17 | [Legacy charges of a space transaction](diagrams/17-legacy-charge-chain.svg) (sequence) | Drawn for decision 45, Option P |
+| 18 | [The scan driver](diagrams/18-scan-driver.svg) (activity) | Drawn in P5 wave W2 for the bag |
+| 19 | [The keys of a PathMap path](diagrams/19-pathmap-keys.svg) (object) | Drawn in P5 wave W2 for the pure PathMap layer |
+| 20 | [The re-rooting of one argument](diagrams/20-pathmap-reroot.svg) (activity) | Drawn in P5 wave W2 for the pure PathMap layer |
+| 21 | [The fire count of a space transaction](diagrams/21-transaction-fire-count.svg) (activity) | Drawn in P5 wave W2 for decision 49 |
+| 22 | [The allocation job](diagrams/22-allocation-job.svg) (sequence) | Drawn in P5 wave W2 for the Array and Vector stores |
+| 23 | [The crossed stacks](diagrams/23-crossed-stacks-merge.svg) (activity) | Drawn in P5 wave W2 for plan revision M-1 |
+| 24 | [The class fire of a set](diagrams/24-set-class-fire.svg) (activity) | Drawn in P5 wave W2 for the set |
+| 25 | [The lanes of a priority queue](diagrams/25-priority-queue-lanes.svg) (activity) | Drawn in P5 wave W2 for the priority queue |
+| 26 | [One transaction of the join engine](diagrams/26-join-engine.svg) (activity) | Drawn in P5 wave W3 for the joins of one space |
 
 ## Campaign phases
 
