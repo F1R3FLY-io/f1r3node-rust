@@ -134,9 +134,25 @@ behaviors:
     statement: "The node block pipeline takes blocks from the release queue, with released blocks pushed to the released lane and gossip blocks to the gossip lane"
     priority: must
     deep_module: false
-    done: false
-    notes: "Wiring of the B7 queue into BlockProcessorInstance in place of the single mpsc FIFO. Added 2026-10-07 after B7. The user ratifies it at the next /tdd."
-    cycle_log: []
+    done: true
+    notes: "Wiring of the B7 queue into BlockProcessorInstance in place of the single mpsc FIFO. Added 2026-10-07 after B7. Ratified 2026-10-07."
+    design_decision: "2026-10-07: the user chose the testable scheduler. run_scheduler in release_queue.rs owns the slot-then-pick loop and does not know about Casper. BlockProcessorInstance calls it with the real validation. The casper gossip sender is unchanged. A forwarder task moves gossip into the gossip lane and waits for room, so the bounded channel still applies backpressure."
+    cycle_log:
+      - date: 2026-10-07
+        test: "node --test release_queue::a_block_released_while_gossip_waits_is_processed_before_that_gossip"
+        red: "run_scheduler was first written with the current pipeline behavior (take a block, then wait for a slot, and send released blocks to the back of the one FIFO). Order: gossip-1, gossip-2, gossip-3, released-1. Expected: gossip-1, released-1, gossip-2, gossip-3."
+        green: "run_scheduler waits for a processing slot first and then takes the next block, so a block released while gossip waits is taken first. Released blocks go to the released lane. ReleaseQueue gained push_gossip_wait (waits for room in the gossip lane) and close (pop returns None when the queue is closed and empty). BlockProcessorInstance forwards the gossip channel into the queue, calls run_scheduler with MAX_PARALLEL_BLOCKS slots, and returns dependency-free pendants from the handler instead of sending them to the channel tail."
+        files:
+          - node/src/rust/instances/release_queue.rs
+          - node/src/rust/instances/block_processor_instance.rs
+          - node/tests/release_queue.rs
+        suite: "cargo test --release -p node: every target passed (258 lib tests, 3 release_queue tests, the other test files). clippy -D warnings clean for node, all targets. cargo fmt clean."
+        observations:
+          - "The gossip lane holds MAX_PARALLEL_BLOCKS blocks, so the total queue bound grows by 2 over the 2048 channel capacity. The released lane is bounded by the in-flight cap MAX_BLOCKS_IN_PROCESSING, because each pendant is marked in flight before it is released."
+          - "RELEASED_BLOCKS_BEFORE_GOSSIP_TURN = 4 is a first value. The soak queue-wait metric (B2) is the evidence to tune it."
+          - "The instance no longer sends to its own block_queue_tx. It drops that sender at start, so the forwarder can see the channel close. The 'Dropping dependency-free pendant because block queue is closed' warning is gone, because pendants never pass through the channel now."
+          - "The release scan still holds the processing slot, as before. B8 moves it out."
+          - "No test drives BlockProcessorInstance itself. The casper suites and the comparison soak cover the real validation path."
   - id: B8
     statement: "After a block is processed, only its buffered descendants are considered for release, and the processing permit is free during that work"
     priority: must

@@ -69,3 +69,49 @@ fn a_released_block_records_its_wait_from_release_to_processing() {
         "only the released block records a release-to-processing wait"
     );
 }
+
+#[tokio::test]
+async fn a_block_released_while_gossip_waits_is_processed_before_that_gossip() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use node::rust::instances::release_queue::run_scheduler;
+
+    let queue = Arc::new(ReleaseQueue::new(3, 16));
+    for gossip in ["gossip-1", "gossip-2", "gossip-3"] {
+        queue.push_gossip(gossip).unwrap();
+    }
+
+    let processed = Arc::new(Mutex::new(Vec::new()));
+    let handler_log = processed.clone();
+    let scheduler = tokio::spawn(run_scheduler(queue, 1, move |block: &'static str| {
+        let log = handler_log.clone();
+        async move {
+            log.lock().unwrap().push(block);
+            if block == "gossip-1" {
+                vec!["released-1"]
+            } else {
+                Vec::new()
+            }
+        }
+    }));
+
+    let wait_for_all = async {
+        while processed.lock().unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    let finished = tokio::time::timeout(Duration::from_secs(5), wait_for_all).await;
+    scheduler.abort();
+
+    assert!(
+        finished.is_ok(),
+        "the scheduler processed {:?}",
+        processed.lock().unwrap()
+    );
+    assert_eq!(
+        *processed.lock().unwrap(),
+        vec!["gossip-1", "released-1", "gossip-2", "gossip-3"],
+        "with one processing slot, the block that gossip-1 releases runs before the gossip that was already waiting"
+    );
+}
