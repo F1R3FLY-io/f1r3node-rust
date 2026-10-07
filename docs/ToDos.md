@@ -420,7 +420,16 @@ tasks:
       - "Scheduled soak 37598606554, preflight: high phase inclusion p50 8.9 s and p95 21.7 s, finalization p95 41.2 s, 7 unfinalized."
       - "The 2026-09-16 issue #24 comment found every earlier failure in the sustained phase and none in the high phase. After PR #653 the failure moved to the high phase."
       - "Fewer than 2% of the blocks parked on the failing test_load shard (issue #24 comment 6040401089), so parked blocks do not explain the delay."
+      - "Issue #24 comment 6043103631 (2026-10-07) records the state of every optimization in the issue. Fixed: settled-signature probes (PR #362), prior_rejection_counts (PR #366), and parked blocks (PR #653). Open: the bonds query, the precharge and refund cost, the heartbeat wait, the deploy admission cap, and the suppression of empty heartbeat blocks."
     hypothesis: "Deploy selection or the proposer cadence holds deploys under the high-phase submit rate (10 deploys/s for 15 s). This is not proven. The first step measures before any change."
+    first_suspects:
+      - "Deploy admission cap. block_creator.rs caps ordinary user deploys per block at 4, 8, or 16 in the non-leader fallback (NON_LEADER_FALLBACK_*_ORDINARY_DEPLOY_CAP). In the 2026-09-25 breakdown the cap held at 4 under sustained load, and about 484 of 1512 deploys were never included. At 10 deploys/s, a cap of 4 or 8 per block can hold deploys for several blocks."
+      - "Heartbeat wait. The 2026-09-25 breakdown measured 5.6 s of each 7 s idle round as validators waiting for their next heartbeat tick before they propose (casper.heartbeat check-interval 5 s). Each wait adds directly to inclusion time."
+      - "Empty heartbeat blocks. The proposer skips an empty proposal only outside the heartbeat lane (block_creator.rs). Heartbeat proposals use EmptyBlocks::HeartbeatLane (proposer.rs) and still emit empty blocks, which every peer must replay. The issue measured about 54% empty blocks in April. The current share is not measured."
+    not_suspects:
+      - "Merger conflict detection: compute_relation_map is still O(N²), but the merger buckets measure about 45 ms per merge."
+      - "Replay runtime spawn: about 3.8 ms per block in the soak."
+      - "Block parking: below 2% after PR #653."
     scope: "Measurement first: the time from deploy submit to the first block that includes the deploy, split by stage (deploy pool wait, proposal trigger, block creation, block propagation). A fix starts only after a measurement names the stage. The fix needs its own TDD plan and, under the EPIC-021 cbc_policy, a pending claim before any code change."
     acceptance:
       - "A per-deploy timeline for the test_load high phase names the stage that holds the deploy, with evidence from two runs."
