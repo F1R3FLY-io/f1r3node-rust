@@ -3284,21 +3284,25 @@ pub(crate) fn remove_matched_datum_and_join<C, P, A, K>(
 // }
 // ```
 
-// ops_consume.rs `store_waiting_continuation`.
+// ops_consume.rs `store_waiting_continuation`. Returns whether the store
+// took the continuation, which the waiting-continuation estimate of native
+// replay counts, as the replay form of this step does.
 pub(crate) fn store_waiting_continuation<C, P, A, K>(
     store: &dyn HotStore<C, P, A, K>,
     channels: Vec<C>,
     wc: WaitingContinuation<P, K>,
-) where
+) -> bool
+where
     C: Clone + Hash + Eq,
     P: Clone,
     A: Clone,
     K: Clone,
 {
-    let _ = store.put_continuation(&channels, wc);
+    let inserted = store.put_continuation(&channels, wc).unwrap_or(false);
     for channel in channels.iter() {
         store.put_join(channel, &channels);
     }
+    inserted
 }
 
 // ops_consume.rs `store_persistent_data`.

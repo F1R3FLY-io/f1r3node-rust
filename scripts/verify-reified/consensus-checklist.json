@@ -10,6 +10,7 @@
     "p3",
     "p4",
     "p5",
+    "d47",
     "p6",
     "p7",
     "p8",
@@ -214,7 +215,37 @@
             "rspace++/src/rspace/replay_rspace/**"
           ],
           "step": "footprint",
-          "proves": "COMM::new and its host callers match HEAD."
+          "proves": "COMM::new and its host callers match HEAD.",
+          "until": "p5"
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "byte_identical",
+          "paths": [
+            "rspace++/src/rspace/trace/**",
+            "rspace++/src/rspace/rspace/ops_produce.rs",
+            "rspace++/src/rspace/rspace/ops_consume.rs",
+            "rspace++/src/rspace/replay_rspace/native_candidate.rs",
+            "rspace++/src/rspace/replay_rspace/native_candidate/**",
+            "rspace++/src/rspace/replay_rspace/native_directive.rs",
+            "rspace++/src/rspace/replay_rspace/native_epoch.rs",
+            "rspace++/src/rspace/replay_rspace/native_session/**"
+          ],
+          "step": "footprint",
+          "proves": "COMM::new and its host callers match HEAD. From decision 47, native_session.rs holds one approved module line.",
+          "from": "d47"
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "approved_edits",
+          "paths": [
+            "rspace++/src/rspace/replay_rspace/native_session.rs"
+          ],
+          "from": "d47",
+          "step": "footprint",
+          "proves": "The native replay session holds only the module line of the native space backend (decision 47)."
         },
         {
           "kind": "footprint",
@@ -654,7 +685,35 @@
             "casper/src/rust/rholang/replay_runtime.rs"
           ],
           "step": "footprint",
-          "proves": "Replay helpers and the casper acceptance rule match HEAD."
+          "proves": "Replay helpers and the casper acceptance rule match HEAD.",
+          "until": "p5"
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "byte_identical",
+          "paths": [
+            "rspace++/src/rspace/replay_rspace/native_candidate.rs",
+            "rspace++/src/rspace/replay_rspace/native_candidate/**",
+            "rspace++/src/rspace/replay_rspace/native_directive.rs",
+            "rspace++/src/rspace/replay_rspace/native_epoch.rs",
+            "rspace++/src/rspace/replay_rspace/native_session/**",
+            "casper/src/rust/rholang/replay_runtime.rs"
+          ],
+          "step": "footprint",
+          "proves": "Replay helpers and the casper acceptance rule match HEAD. From decision 47, native_session.rs holds one approved module line.",
+          "from": "d47"
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "approved_edits",
+          "paths": [
+            "rspace++/src/rspace/replay_rspace/native_session.rs"
+          ],
+          "from": "d47",
+          "step": "footprint",
+          "proves": "The native replay session holds only the module line of the native space backend (decision 47)."
         }
       ]
     },

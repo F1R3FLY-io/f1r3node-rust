@@ -1336,6 +1336,70 @@
       "property_files": [
         "rholang/tests/support/props.rs"
       ]
+    },
+    "d47": {
+      "description": "Decision 47, spaces in native execution (design v2). Step 1 adds the metered reads of the substrate (S1 to S5) and SpaceEnv::begin (N2). Step 2 adds the native replay backend over the native replay session (R1 to R7), with its unit tests over a scripted epoch.",
+      "sources": [
+        "rspace++/src/rspace/space_store_handle.rs",
+        "rspace++/src/rspace/rspace/space_play.rs",
+        "rspace++/src/rspace/replay_rspace/space_replay.rs",
+        "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+        "rholang/src/rust/interpreter/spaces/agent.rs"
+      ],
+      "entry_points": [
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "    NativeReplay,"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "pub async fn begin_metered("
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "pub trait ViewReads<C, P, A, K>: Send + Sync"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "pub struct NativeViewReads<M> {"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "pub(crate) struct Reads<'r, C, P, A, K>"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "    fn history(&self) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError>;"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "pub(crate) fn store_waiting_continuation<C, P, A, K>("
+        },
+        {
+          "file": "rspace++/src/rspace/replay_rspace/native_session.rs",
+          "pattern": "pub mod space;"
+        },
+        {
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "pattern": "pub struct NativeSpaceHost<O, C, P, A, K, E>"
+        },
+        {
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "pattern": "impl<O, C, P, A, K, E> SpaceTxnHost<C, P, A, K> for NativeSpaceHost<O, C, P, A, K, E>"
+        },
+        {
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "pattern": "impl<O, C, P, A, K, E> TxnBackend<C, P, A, K> for NativeBackend<O, C, P, A, K, E>"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+          "pattern": "pub async fn begin(&self, lock_keys: &[Par]) -> Result<ParSpaceTxn, SpaceTxnError> {"
+        }
+      ],
+      "tests": [
+        "rspace++/src/rspace/replay_rspace/native_session/space.rs"
+      ],
+      "property_files": []
     }
   }
 }

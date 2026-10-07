@@ -506,7 +506,7 @@ The Error controls are `step-doublepair-unsafe` (marker `vStaged[`), `step-joinr
 
 The substrate suites hold five negative controls:
 
-- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:4030`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:4046`) show that the event correlation of the commit rejects a defect.
+- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:4034`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:4050`) show that the event correlation of the commit rejects a defect.
 - `space_store_handle_remove_all_continuations_keeps_joins_control` (`reified_space_store_handle.rs:2199`) pins the HEAD behavior that `JoinResidueUnsafe` models.
 - `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2510`) shows that the host refuses a checkpoint with one channel set under two orders.
 - `space_store_handle_host_replay_repeated_channel_control` (`reified_space_store_handle.rs:3439`) shows that host replay of a repeated channel can compute another COMM than the play log.
@@ -605,7 +605,7 @@ The test `space_store_handle_commit_checks_cost_changed_entries` covers no headl
 | `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:4492` | FR-10 | H1, H11 | Every result of a peek fire keeps the persist flag of the host, and the re-store and the re-offer report Stored with the identities of their records. |
 | `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:4641` | FR-10 | H1, H2, H11, H12 | A peek and its re-stores have the events, observer calls, state, and root of the HEAD program, whose reducer sends the peeked data again, in play, replay, and reporting. |
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | FR-10 | H2, H11 | Control: the removal and the re-store leave one copy of the record. A re-store without the removal leaves two copies, and a removal without the re-store loses the record. |
-| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4401` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4405` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
 | `space_store_handle_replay_reproduces_play_rejection` | `reified_space_store_handle.rs:1997` | Decision 36 | H23, T6 | For each position of a fallible observer call, play fails there and keeps its log. Replay with that log fails at the same call, with the outcome, the calls, and the state of play. |
 | `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:850` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
 
@@ -2101,7 +2101,7 @@ The three mutants of decision 45 in `EventCorrelation.v` are in Table 12: `ec-pe
 | `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:4641` | A peek and its re-stores equal the HEAD program in play, replay, and reporting: events, calls, counters, state, and root. |
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | Control: Rule E leaves one copy, a re-store without the removal leaves two, and a removal without the re-store leaves none. |
 | `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2455` | Generated peek runs with re-offers and re-stores equal the HEAD peek path exactly, and they replay and report (H5, H11, H12). |
-| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4401` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4405` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
 | `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:3331` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
 | `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:3364` | The re-store registers the authority of the record, and the peek registers its own. |
 | `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3404` | A peek of a persistent record removes nothing and stores nothing again. |
@@ -2374,7 +2374,7 @@ So the golden pins the one comparison of the family check.
 | `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:5909` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
 | `space_families_wire_exactly_the_listed_families` | `families.rs:566` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
 | `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:711` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
-| `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3876` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
+| `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3880` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
 | `harness_session_runs_a_queue_space_under_the_family_agent` | `reified_p5_harness.rs:28` | The shared session creates a space and runs deploys under the family agent. |
 | `harness_agent_env_runs_the_family_agent_in_fifo_order` | `reified_p5_harness.rs:65` | Over the shared agent environment, the family agent delivers in send order and bumps once for each operation (64 cases). |
 

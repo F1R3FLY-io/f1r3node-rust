@@ -863,7 +863,7 @@
       "scope": null,
       "kind": "fn",
       "name": "commit_staged",
-      "line": 3361,
+      "line": 3365,
       "role": "Applies the staged operations in order under sub_order(parent, i). StoreSwapped rejects the commit before any operation, and TxnRegistration::admit_parent rejects a second commit under one parent (FR-5). A failure of operation i keeps operations 0..i (decision D6). Decision 36: an unpaired replay fire fails here, with the error of a rejected call or with ReplayDivergence, and with the same prefix.",
       "rocq": [
         "commit_run",
@@ -899,7 +899,7 @@
       "scope": null,
       "kind": "fn",
       "name": "commit_operation",
-      "line": 3328,
+      "line": 3332,
       "role": "Commits one staged operation: apply_op applies it, after the state check of the entries that it removes (ready_produce, ready_consume), and then the event correlation is checked. Both checks cost O(changed entries) and run in every build profile, so debug and release commit identical results (FR-7').",
       "rocq": [
         "commit_op",
@@ -919,7 +919,7 @@
       "scope": "HostTxn",
       "kind": "fn",
       "name": "commit",
-      "line": 3595,
+      "line": 3599,
       "role": "Closes the transaction, clears the staged pairings and the counter delta, commits the staged operations and releases the locks and the registration.",
       "rocq": [
         "txn_lifecycle",
@@ -1023,7 +1023,7 @@
       "scope": null,
       "kind": "fn",
       "name": "sweep_volatile_channels",
-      "line": 3648,
+      "line": 3652,
       "role": "The volatile sweep of every host mode (design §3.1): validation (installed guard, require_canonical on every stored join group, crossing groups, persisted keys) before any mutation, the continuation, join and data loops, and the post check. SweepReport.joins counts the joins actually removed, and on_continuation_removed lets the replay host update its estimate (FR-8).",
       "rocq": [
         "sweep_volatile",
@@ -1142,7 +1142,7 @@
       "scope": null,
       "kind": "fn",
       "name": "root_leaf_records",
-      "line": 3612,
+      "line": 3616,
       "role": "The record count of the data leaf of a channel at a history root (the outer frame, decision D5).",
       "rocq": [
         "root_leaf_record_count",
@@ -1439,7 +1439,7 @@
       "scope": "HostTxn",
       "kind": "fn",
       "name": "recorded_comms",
-      "line": 3525,
+      "line": 3529,
       "role": "FR-3: the recorded COMMs under the trigger key of the queried source that this transaction has not paired: count / binding_multiplicity minus the paired copies.",
       "rocq": [
         "available",

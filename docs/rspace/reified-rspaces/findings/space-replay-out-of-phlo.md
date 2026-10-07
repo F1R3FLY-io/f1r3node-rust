@@ -84,7 +84,7 @@ Figure F1 shows the three runs side by side.
 ### 4.1 Play
 
 Staging makes no host call.
-The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:3353-3397`).
+The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:3357-3401`).
 For each operation, play makes its charges first and logs its events only after the observer accepts them (`rspace++/src/rspace/rspace/space_play.rs:143-149` and `183-193`).
 When a charge of operation $`k`$ rejects, the commit stops at operation $`k`$.
 The operations before $`k`$ stay applied and logged (D6), and operation $`k`$ leaves no event.
@@ -181,7 +181,7 @@ The fix changes only two substrate files. Casper, the host, and the P4 agents do
 | `ReplayBackend::produce_fire` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:254-263` |
 | `ReplayBackend::produce_observed` | A failed fire rolls the counter step back, also for an unpaired fire. | `rspace++/src/rspace/replay_rspace/space_replay.rs:209-211` |
 | `ReplayBackend::consume_observed` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:406-415` |
-| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:107-111` and `3353-3360` |
+| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:107-111` and `3357-3364` |
 
 ### 6.4 The proofs and the models
 

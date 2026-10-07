@@ -120,7 +120,7 @@
                             restore_peeked.)
    remove_key, sub_step, sub_records
                             rspace/space_play.rs:148, 208, 307,
-                            space_store_handle.rs:3218-3235, 3238-3262, 3305-3321,
+                            space_store_handle.rs:3218-3235, 3238-3262, 3309-3325,
                             replay_rspace/space_replay.rs:197, 299-300 and
                             442, and hot_store.rs:879-897 (a Store calls
                             store_data, which calls put_datum. put_datum

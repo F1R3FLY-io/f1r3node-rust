@@ -16,6 +16,7 @@ mod result;
 mod locks;
 mod history;
 mod installation;
+pub mod space;
 use publication::PublicationGuard;
 
 type EpochCheckpoint<E> = <<E as NativeReplayEpoch>::Boundary as NativeReplayBoundary>::Checkpoint;
