@@ -1,9 +1,12 @@
 use models::rhoapi::Par;
 use models::rust::utils::FreeMap;
-use rspace_plus_plus::rspace::errors::RSpaceError;
+// Changed by D-D1a (D-M2, DR-103): free-map inserts charge through MatcherWork;
+// only the tests still name RSpaceError.
+// use rspace_plus_plus::rspace::errors::RSpaceError;
 use shared::rust::clone_backing::{BackingError, CloneBacking, Walker};
-use shared::rust::collection_backing::tree_backing;
 
+// Changed by D-D1a (D-M2, DR-103): whole-tree backing is no longer charged here.
+// use shared::rust::collection_backing::tree_backing;
 use super::spatial_matcher::MatcherWork;
 
 #[derive(Clone, Debug)]
@@ -180,7 +183,10 @@ macro_rules! list_match {
                   level: i32,
                   merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
               ) -> Option<()> {
-                self.reserve_inspect(&self.free_map)?;
+                // Changed by D-D1a (D-M2, DR-103): one B-tree search reads one
+                // root-to-leaf path of i32 keys, not the whole map.
+                // self.reserve_inspect(&self.free_map)?;
+                self.reserve_free_map_search(self.free_map.len())?;
                 let remainder_par = match self.free_map.get(&level) {
                     Some(par) => {
                         self.reserve_clone(par)?;
@@ -192,13 +198,17 @@ macro_rules! list_match {
                 let work = self.work()?;
                 let remainder_par_updated = merger(remainder_par, remainder_targets, &work)?;
 
-                let Some(entries) = self.free_map.len().checked_add(1) else {
-                    return self.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
-                };
-                let Some((operations, bytes)) = shared::rust::collection_backing::tree_backing::<i32, Par>(entries) else {
-                    return self.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
-                };
-                self.reserve(operations, bytes, bytes)?;
+                // Changed by D-D1a (D-M2, DR-103): whole-tree backing on every insert,
+                // the pattern DR-77 replaced; the insert now charges its search, its
+                // moves and the growth of the tree.
+                // let Some(entries) = self.free_map.len().checked_add(1) else {
+                //     return self.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
+                // };
+                // let Some((operations, bytes)) = shared::rust::collection_backing::tree_backing::<i32, Par>(entries) else {
+                //     return self.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
+                // };
+                // self.reserve(operations, bytes, bytes)?;
+                self.reserve_free_map_insert(self.free_map.len())?;
                 self.free_map.insert(level, remainder_par_updated);
 
                 Some(())
@@ -247,14 +257,18 @@ pub(super) fn aggregate_updates(
 ) -> Option<FreeMap> {
     for free_map in free_maps {
         for (level, value) in free_map {
-            work.reserve_inspect(&current_free_map)?;
-            let Some(entries) = current_free_map.len().checked_add(1) else {
-                return work.reject(RSpaceError::HostWorkRejected);
-            };
-            let Some((operations, bytes)) = tree_backing::<i32, Par>(entries) else {
-                return work.reject(RSpaceError::HostWorkRejected);
-            };
-            work.reserve(operations, bytes, bytes)?;
+            // Changed by D-D1a (D-M2, DR-103): one insert charges its search, its
+            // moves and the growth of the tree, not a whole-map walk and the
+            // whole-tree backing.
+            // work.reserve_inspect(&current_free_map)?;
+            // let Some(entries) = current_free_map.len().checked_add(1) else {
+            //     return work.reject(RSpaceError::HostWorkRejected);
+            // };
+            // let Some((operations, bytes)) = tree_backing::<i32, Par>(entries) else {
+            //     return work.reject(RSpaceError::HostWorkRejected);
+            // };
+            // work.reserve(operations, bytes, bytes)?;
+            work.reserve_free_map_insert(current_free_map.len())?;
             current_free_map.insert(level, value);
         }
     }
@@ -265,6 +279,8 @@ pub(super) fn aggregate_updates(
 mod metered_tests {
     use std::cell::Cell;
     use std::sync::Mutex;
+
+    use rspace_plus_plus::rspace::errors::RSpaceError;
 
     use super::super::spatial_matcher::SpatialMatcherContext;
     use super::*;
@@ -357,5 +373,178 @@ mod metered_tests {
             context.take_error(),
             Some(RSpaceError::HostWorkRejected)
         ));
+    }
+
+    /// The three totals that a metered closure receives during `action`.
+    fn charge_of(action: impl FnOnce(&mut SpatialMatcherContext<'_>)) -> [usize; 3] {
+        let totals = Mutex::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut sum = totals.lock().expect("totals lock");
+            for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let before = *totals.lock().expect("totals lock");
+        action(&mut context);
+        assert!(context.take_error().is_none());
+        let after = *totals.lock().expect("totals lock");
+        [
+            after[0] - before[0],
+            after[1] - before[1],
+            after[2] - before[2],
+        ]
+    }
+
+    fn payload(size: usize) -> Par {
+        Par {
+            exprs: vec![models::rust::utils::new_gint_expr(7); size],
+            ..Default::default()
+        }
+    }
+
+    fn bindings(levels: &[i32], size: usize) -> FreeMap {
+        levels.iter().map(|level| (*level, payload(size))).collect()
+    }
+
+    fn remainder_charge(free_map: FreeMap) -> [usize; 3] {
+        charge_of(|context| {
+            context.free_map = free_map;
+            context
+                .handle_remainder(vec![Par::default()], 0, &|par, _, _| Some(par))
+                .expect("the remainder binds");
+        })
+    }
+
+    /// D-D1a (DR-103): a remainder binding charges one search and one insert,
+    /// whatever the size of the other bindings in the free map.
+    #[test]
+    fn remainder_charge_is_independent_of_other_bindings() {
+        for target_present in [false, true] {
+            let charges = [1usize, 16].map(|scale| {
+                let mut free_map = bindings(&[1, 2, 3, 4], 8 * scale);
+                if target_present {
+                    free_map.insert(0, payload(3));
+                }
+                remainder_charge(free_map)
+            });
+            assert_eq!(charges[0], charges[1], "target present: {target_present}");
+            assert!(charges[0][0] > 0 && charges[0][1] > 0);
+        }
+    }
+
+    /// The charge before D-D1a: a walk of the whole map, then the backing of
+    /// the whole tree as scanned and as backing bytes.
+    fn legacy_remainder_charge(free_map: &FreeMap) -> [usize; 3] {
+        let totals = Mutex::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut sum = totals.lock().expect("totals lock");
+            for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok::<(), BackingError>(())
+        };
+        shared::rust::clone_backing::inspect(free_map, &meter).expect("legacy inspection");
+        let (operations, bytes) =
+            shared::rust::collection_backing::tree_backing::<i32, Par>(free_map.len() + 1)
+                .expect("legacy tree backing");
+        let mut sum = totals.into_inner().expect("totals lock");
+        sum[0] += operations;
+        sum[1] += bytes;
+        sum[2] += bytes;
+        sum
+    }
+
+    /// Negative control: the legacy charge grew with the other bindings.
+    #[test]
+    fn legacy_remainder_charge_grew_with_other_bindings() {
+        let small = legacy_remainder_charge(&bindings(&[1, 2, 3, 4], 8));
+        let large = legacy_remainder_charge(&bindings(&[1, 2, 3, 4], 128));
+        assert!(large[0] > small[0]);
+        assert!(large[1] > small[1]);
+    }
+
+    /// D-D1a (DR-103): the exact search and insert charges at the sizes where
+    /// the height bound changes.
+    #[test]
+    fn free_map_charges_at_boundary_sizes() {
+        use shared::rust::collection_backing::{tree_growth, tree_insert_moves, tree_search_bound};
+
+        for entries in [0usize, 1, 5, 9, 10, 11, 70, 71, 430, 431] {
+            let search = tree_search_bound(entries);
+            let (growth_operations, growth_bytes) =
+                tree_growth::<i32, Par>(entries, 1).expect("tree growth");
+            let moves = tree_insert_moves::<i32, Par>(entries + 1).expect("insert moves");
+            assert_eq!(
+                charge_of(|context| context
+                    .reserve_free_map_search(entries)
+                    .expect("search charge")),
+                [search, 8 * search, 0],
+                "search at {entries}"
+            );
+            assert_eq!(
+                charge_of(|context| context
+                    .reserve_free_map_insert(entries)
+                    .expect("insert charge")),
+                [
+                    search + 1 + growth_operations,
+                    8 * search + moves,
+                    growth_bytes
+                ],
+                "insert at {entries}"
+            );
+        }
+        assert_eq!(
+            charge_of(|context| context.reserve_free_map_insert(0).expect("insert charge")),
+            [5, 3_832, 3_472]
+        );
+        assert_eq!(
+            charge_of(|context| context.reserve_free_map_insert(10).expect("insert charge")),
+            [16, 7_752, 3_472]
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        /// D-D1a (DR-103): from an empty map or a charged clone, the insert
+        /// charges cover every node that the std `BTreeMap` allocates.
+        #[test]
+        fn free_map_insert_reservation_covers_std_btree_allocations(
+            keys in proptest::collection::vec(proptest::prelude::any::<i32>(), 1..600),
+            base in 0usize..40,
+        ) {
+            let original: FreeMap = (0..base as i32).map(|key| (key, Par::default())).collect();
+            let totals = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut sum = totals.lock().expect("totals lock");
+                for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                    *total += amount;
+                }
+                Ok(())
+            };
+            let context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+            let start = totals.lock().expect("totals lock")[2];
+            context.reserve_clone(&original).expect("clone charge");
+            let (mut map, mut allocated) =
+                crate::rust::interpreter::accounting::measured_allocations(|| original.clone());
+            for key in keys {
+                context.reserve_free_map_insert(map.len()).expect("insert charge");
+                let (_, used) = crate::rust::interpreter::accounting::measured_allocations(|| {
+                    map.insert(key, Par::default());
+                });
+                allocated += used;
+                let reserved = totals.lock().expect("totals lock")[2] - start;
+                proptest::prop_assert!(
+                    allocated <= reserved,
+                    "allocated {} > reserved {} at {} entries",
+                    allocated,
+                    reserved,
+                    map.len()
+                );
+            }
+            proptest::prop_assert!(allocated > 0, "the counting allocator saw the nodes");
+        }
     }
 }

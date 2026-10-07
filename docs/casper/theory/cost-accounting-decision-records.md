@@ -4992,6 +4992,12 @@ extract these results:
   and removal sequences on a standard `BTreeMap`);
 - `legacy_whole_tree_charge_per_insert_is_quadratic` (1,000 inserts).
 
+**Amendment (DR-103).** The spatial matcher's free map had kept the
+replaced pattern: four insert sites reserved $`B(n + 1)`$ as scanned and as
+backing bytes on every insert, after a walk of the whole map. DR-103 makes
+them reserve the growth $`B(n + 1) - B(n)`$, a search bound and a per-level
+move bound.
+
 **Cross-refs.** DR-76. Leaves `ofp-2-cap-c13-incremental-tree-backing` and
 `ofp-2-cap-root-causes`.
 
@@ -8204,6 +8210,10 @@ possible with the test genesis builder: four runs with one fixed validator
 gave four different roots. The genesis argument above therefore rests on the
 code and on `unit_payer_keeps_its_region`.
 
+**Amendment (DR-103).** With the free-map charges of DR-103,
+`a_process_that_a_system_contract_runs_keeps_its_callers_seal` also passes
+under the committed caps. Six of the nine tests still need the Phase D caps.
+
 **Cross-refs.** DR-31, DR-41, DR-68, DR-98, DR-100. Bug 10056
 (`bug-after-one-signer-writes-the-registry-any-other-signer-s-registry-lookup-or-insert-is-unfundable-work-charged-to-the-earlier-writer-s-authority-51d630`).
 
@@ -8453,3 +8463,264 @@ SearchStateBytes to its replay budget. The final probe measurement of Phase D
 
 **Cross-refs.** DR-72, DR-95, DR-100, DR-101. Leaf
 `ofp-2-cap-d-c5b-acceptance-attribution-test`.
+
+## DR-103 — Free-map bindings charge B-tree bounds, not whole-map walks
+
+**Status.** Part 1 implemented 2026-10-07 for Phase D item D-D1a of epic
+8946 (D-D1 of the Phase D plan). Part 2, the in-place merge of a remainder
+binding (item D-D1b), is a separate change. A design pass made two
+corrections to the planned bound, and the implementation review made two
+more. This record includes all four.
+
+**Terms.**
+
+- The *free map* of the spatial matcher is a `BTreeMap<i32, Par>`
+  (`FreeMap`). It maps the level of each free variable of a pattern to the
+  binding of that variable.
+- $`n`$ is the number of entries in the free map before an operation.
+- $`h(n)`$ is the height bound of DR-78 (`tree_height_bound`). Every B-tree
+  with the node bounds of the standard `BTreeMap` and $`n`$ entries has at
+  most $`h(n)`$ levels.
+- $`B(n)`$ is the backing bound of DR-77 (`tree_backing`). The growth of one
+  insert is $`B(n + 1) - B(n)`$, in operations and in bytes (`tree_growth`).
+- A *slot* is one key and its value. A *link* is the parent pointer and the
+  parent index of a child node. A node *length* is a `u16`.
+- $`L(K, V)`$ is the per-level bound of an insert
+  (`tree_insert_level_bytes`).
+
+**Context.** Four sites insert into the free map:
+
+- `handle_remainder` in `list_match.rs` binds the remainder of a list, a
+  set, a map or one field list of a `Par`.
+- `aggregate_updates` in `list_match.rs` merges the free maps of the
+  sub-matches of an unordered match.
+- `Matcher::get_with_context` in `match.rs` binds the remainder of a
+  receive pattern.
+- The `EList` remainder in `spatial_matcher.rs` binds the rest of a list
+  pattern.
+
+Before DR-103, each insert charged a walk of the whole free map
+(`reserve_inspect`). It then charged the backing of the whole tree at its new
+size, $`B(n + 1)`$, as scanned bytes and as backing bytes. DR-77 replaced the
+same pattern for the runtime registries. `handle_remainder` also walked the
+whole map before its lookup.
+
+The walk charged every byte of every other binding. A `Par` pattern with a
+remainder variable matches its ten field lists, so `handle_remainder` runs ten
+times for each such variable. When the variable with index $`j`$ binds, the
+map holds the $`j`$ earlier bindings. Thus binding $`v`$ variables of payload
+$`s`$ charged these walk bytes:
+
+```math
+\sum_{j=0}^{v-1} 10\, j\, s \;=\; 5\, s\, v\, (v - 1)
+```
+
+For $`v = 8`$ and $`s = 1{,}000`$, the walks charged 280,000 bytes. The
+cumulative backing charge also grew quadratically, as DR-77 shows for the
+registries.
+
+**Decision.**
+
+1. `MatcherWork::reserve_free_map_search(n)` charges one search:
+   $`S(n) = 11\, h(n)`$ operations, $`8\, S(n)`$ scanned bytes and no
+   backing. Each comparison reads two `i32` keys.
+2. `MatcherWork::reserve_free_map_insert(n)` charges one insert. It charges
+   the search, then $`1 + g_{\mathrm{ops}}`$ operations,
+   $`h(n + 1) \cdot L`$ scanned bytes and $`g_{\mathrm{bytes}}`$ backing
+   bytes, where $`(g_{\mathrm{ops}}, g_{\mathrm{bytes}})`$ is the growth
+   $`B(n + 1) - B(n)`$.
+3. $`L(K, V)`$ bounds the bytes that an insert moves or writes on one level:
+   12 slots, 12 edges, 12 links, 4 node lengths and 1 parent pointer. With
+   $`|p| = 8`$, the size of a pointer on a 64-bit target:
+
+   ```math
+   L(K, V) = 12\,(|K| + |V|) + 12\,|p| + 12\,(|p| + 2) + 4 \cdot 2 + |p|
+   ```
+
+   For an `i32` key and a 296-byte `Par`,
+   $`L = 3{,}600 + 96 + 120 + 8 + 8 = 3{,}832`$. A static assertion in
+   `spatial_matcher.rs` fixes this value.
+4. `handle_remainder` charges one search for its lookup and one insert.
+   `aggregate_updates`, the receive remainder and the `EList` remainder each
+   charge one insert. The `EList` site keeps its own charge for the new
+   `Expr`.
+5. The replaced lines stay in the source, commented out with their reason.
+   The imports that only those lines used are commented out too.
+
+**Algorithm (literate form).**
+
+```text
+⟨free-map search charge⟩ ≡
+  if the context has no meter: reserve nothing
+  S ← 11 · h(n)                         -- at most 11 comparisons on each level
+  reserve (S operations, 8 · S scanned bytes, 0 backing)
+
+⟨free-map insert charge⟩ ≡
+  if the context has no meter: reserve nothing
+  ⟨free-map search charge⟩              -- the insert finds its edge first
+  M ← h(n + 1) · L(i32, Par)            -- moves and writes, one bound per level
+  (g_ops, g_bytes) ← B(n + 1) − B(n)    -- DR-77 growth
+  reserve (1 + g_ops operations, M scanned bytes, g_bytes backing)
+```
+
+Each step rejects with `HostWorkRejected` if an intermediate value
+overflows.
+
+**The level bound.** The model follows `alloc::collections::btree::node`.
+For an insert at edge $`e`$ of a full node, `splitpoint` picks the middle key
+$`m`$ and the receiving half:
+
+| Edge $`e`$ | Middle $`m`$ | Receiving half and index |
+| --- | --- | --- |
+| $`e < 5`$ | 4 | left, $`e`$ |
+| $`e = 5`$ | 5 | left, 5 |
+| $`e = 6`$ | 5 | right, 0 |
+| $`e \ge 7`$ | 6 | right, $`e - 7`$ |
+
+A level does one of these:
+
+- A *fit* into a node with $`\ell \le 10`$ keys at edge $`e`$. `slice_insert`
+  shifts $`\ell - e`$ slots and writes one. An internal node also shifts
+  $`\ell - e`$ edges, writes one and corrects $`\ell + 1 - e`$ links. The
+  node's length is written once.
+- A *split* of a full node. A new node gets its parent pointer and length.
+  `split_leaf_data` reads the middle slot, moves $`10 - m`$ slots and writes
+  the lengths of both nodes. An internal split also moves $`11 - m`$ edges,
+  and `from_new_internal` corrects $`11 - m`$ links. A fit into the
+  receiving half follows.
+- The *last level* of an insert. It is a fit, a new root
+  (`push_internal_level` and `push`), the first leaf of an empty map, or the
+  replacement of the value at an existing key.
+
+![Diagram of one internal split at edge 0, the most expensive level of a free-map insert. A full internal node holds 11 slots k0 to k10 and 12 edges e0 to e11. The insert at edge 0 picks the middle key k4 and the left half. Three arrows lead to three boxes. The middle slot k4 is read, 1 slot, and goes up to the parent level. The new node gets 1 parent pointer and 1 length, receives k5 to k10, 6 slots, and its length, receives e5 to e11, 7 edges, and gets 7 corrected parent links. The left half gets its length set to 4, shifts k0 to k3 and writes the new slot, 5 slots, shifts e1 to e4 and writes the new edge, 5 edges, corrects 5 parent links and writes its length. A level-total panel adds 12 slots, 12 edges, 12 links, 4 lengths and 1 parent pointer to L equal to 3,832 bytes. A charge panel states the search charge, S of n equal to 11 times h of n operations and 8 S of n scanned bytes, and the insert charge, 1 plus the growth operations, h of n plus 1 times L scanned bytes and the growth B of n plus 1 minus B of n as backing bytes, with the example of an insert at n equal to 10. A legacy panel states that every insert walked the whole map and charged B of n plus 1, so v variables of payload s walked 5 s v times v minus 1 bytes, 280,000 bytes for v equal to 8 and s equal to 1,000.](diagrams/free-map-insert-charge.svg)
+
+(*Source: [`diagrams/free-map-insert-charge.puml`](diagrams/free-map-insert-charge.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/free-map-insert-charge.puml`.*)
+
+The internal split at edge 0 is the tight case. It moves 12 slots, 12 edges
+and 12 links, and it writes 4 lengths and 1 parent pointer: exactly $`L`$. A
+fit costs at most $`11 \cdot 300 + 11 \cdot 8 + 11 \cdot 10 + 2 = 3{,}500`$
+bytes. Thus the last level leaves room for the 8-byte length of the map and,
+when the root changes, the 16-byte root.
+
+**Soundness.**
+
+- *Search.* A standard `BTreeMap` keeps every non-root node at 5 keys or
+  more. A search in such a tree with $`n`$ entries makes at most
+  $`11\, h(n)`$ comparisons (DR-78,
+  `OrderedLookupBound.search_within_size_bound`). Each comparison reads two
+  4-byte keys, so $`8\, S(n)`$ covers the bytes (`free_map_search_covered`).
+- *Moves.* Every level of an insert costs at most $`L`$
+  (`insert_level_work_bounded`). An insert path is a sequence of splits and
+  one last level, and it touches distinct levels of the tree after the
+  insert. With the map's header writes, a path that touches $`k`$ levels
+  costs at most $`k \cdot L`$ (`insert_path_within_charge`). The tree after
+  the insert has $`n + 1`$ entries, or $`n`$ after a replacement. The height
+  bound is monotone, so the path costs at most $`h(n + 1) \cdot L`$
+  (`insert_within_size_charge`, `insert_within_rust_charge`).
+- *Growth.* The context holds the free map through a charged clone, which
+  reserves $`B(n_0)`$ for $`n_0`$ entries. Each insert reserves the growth from
+  the current size. After $`k`$ inserts the charges add up to
+  $`B(n_0 + k)`$ (`clone_growth_covers_nodes`, DR-77). A replacement
+  allocates nothing.
+- *Drops.* A replacement drops the old value. The matcher charged that
+  cleanup with the clone that created the value
+  (`reserve_copy_and_cleanup`).
+- *Determinism.* Every term depends only on $`n`$ and on compile-time
+  sizes, and play and replay agree on $`n`$. The charge does not depend on
+  the payloads, on hash seeds or on the schedule
+  (`remainder_charge_independent_of_bindings`).
+
+The model counts the bytes that an insert moves or writes in tree nodes and
+in the map's header. It does not count moves of the inserted value between
+stack frames, which the compiler can remove.
+
+**Corrections.** The plan charged 11 slots for each level, 3,300 bytes. It
+also argued that each match builds a fresh map. The design pass made two
+corrections:
+
+- An internal split also moves edges and corrects links. The design added
+  12 edges, 12 links and one 12-byte node header, for 3,528 bytes.
+  `kv_area_undercounts_internal_split` refutes the 3,300-byte bound.
+- The free map is a charged clone, not a fresh map. The growth telescopes
+  from the clone.
+
+The implementation review made two more corrections:
+
+- A leaf split at edge 0 moves 11 slots and writes the new one, so a level
+  needs 12 slots (`eleven_slot_level_undercounts_leaf_split`).
+- A split writes four lengths and a parent pointer, 16 bytes, not one
+  12-byte header (`twelve_byte_header_undercounts_internal_split`).
+
+**Scope.** This change is cost-accounting work. The metered matcher exists
+only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. The matcher does the same inserts and returns the
+same bindings. No encoding, root, event or receipt changes.
+
+**Verification.** `FreeMapBindings.v` proves these results without axioms:
+
+- `free_map_search_covered`.
+- `insert_level_moves_bounded` and `insert_level_work_bounded`: every level
+  fits the per-dimension bounds and costs at most $`L`$. A finite check
+  covers every node length, edge index and node kind.
+- `level_charge_value` ($`L = 3{,}832`$) and `internal_split_attains_charge`
+  (the bound is tight).
+- `last_level_within_charge`, `insert_path_within_charge`,
+  `insert_within_size_charge` and `insert_within_rust_charge`.
+- `clone_growth_covers_nodes`.
+- `remainder_charge_independent_of_bindings`.
+- Negative controls: `legacy_remainder_inspection_quadratic` with
+  `legacy_remainder_example` (280,000 bytes),
+  `kv_area_undercounts_internal_split`,
+  `eleven_slot_level_undercounts_leaf_split` and
+  `twelve_byte_header_undercounts_internal_split`.
+
+No TLA+ model is needed. Each charge is a function of the map size, and the
+matcher does its inserts in sequence.
+
+Tests:
+
+- `tree_insert_moves_at_the_height_boundaries` in `collection_backing.rs`
+  checks $`L = 3{,}832`$ for an `i32` key and a 296-byte value, and
+  $`h(n) \cdot L`$ at the sizes where the height bound changes.
+- The `metered_tests` module of `list_match.rs` has four tests:
+  - `remainder_charge_is_independent_of_other_bindings`: other bindings 16
+    times larger leave the charge unchanged, with and without a binding at
+    the target level.
+  - `legacy_remainder_charge_grew_with_other_bindings`: the negative
+    control.
+  - `free_map_charges_at_boundary_sizes`: the exact search and insert
+    charges at ten sizes. The insert charge is $`(5, 3{,}832, 3{,}472)`$ at
+    $`n = 0`$ and $`(16, 7{,}752, 3{,}472)`$ at $`n = 10`$.
+  - `free_map_insert_reservation_covers_std_btree_allocations` (64 cases):
+    from a charged clone of up to 40 entries, up to 600 random inserts never
+    allocate more than the reserved backing (counting allocator).
+
+**Measurement.** The D-G0 probe ran the gateway test twice on HEAD and twice
+with DR-103. It used the provisional caps, so the test reaches its funding
+block. In every run, the producer's self-replay and every validator replay of
+a block charged exactly the same usage. The replay of the gateway funding
+block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| HEAD, run 1 | 1,714,420,032 | 190,225,798 | 65,069,690 |
+| HEAD, run 2 | 1,714,594,044 | 190,339,413 | 65,061,702 |
+| DR-103, run 1 | 1,414,843,614 | 157,578,002 | 62,780,899 |
+| DR-103, run 2 | 1,404,389,055 | 157,707,790 | 62,786,462 |
+| Change of the means | −304.9 MB (−17.8 %) | −32.6 MB (−17.2 %) | −2.28 M (−3.5 %) |
+
+The test genesis is different in each process, so two runs of one build
+differ by up to 10.5 MB of VerificationBytes. The change is about 30 times
+that spread. In multiples of the original caps, the replay falls from 6.39
+to 5.25 in VerificationBytes and from 1.42 to 1.17 in SearchStateBytes. The
+replay of the installer block falls by 1.4 MB of VerificationBytes. The
+producer's execution budget and the small acceptance and system budgets
+change by less than the spread. In every run the test then stops at the
+gateway call, which gap G3 (installer funding) still rejects.
+
+Under the committed caps, the Casper suite now passes
+`a_process_that_a_system_contract_runs_keeps_its_callers_seal`, one of the
+seven DR-101 tests that those caps rejected at their first deployment.
+
+**Cross-refs.** DR-77, DR-78, DR-91. Leaf
+`ofp-2-cap-d-d1a-free-map-charges`.

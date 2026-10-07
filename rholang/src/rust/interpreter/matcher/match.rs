@@ -8,8 +8,9 @@ use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::r#match::Match;
 use shared::rust::clone_backing::{self, BackingError, BackingMeter};
-use shared::rust::collection_backing::tree_backing;
 
+// Changed by D-D1a (D-M2, DR-103): whole-tree backing is no longer charged here.
+// use shared::rust::collection_backing::tree_backing;
 use super::exports::*;
 use super::fold_match::FoldMatch;
 use super::spatial_matcher::SpatialMatcherContext;
@@ -39,14 +40,18 @@ impl Matcher {
             remainder
                 .exprs
                 .push(new_elist_expr(caught_rem, Vec::new(), false, None));
-            spatial_matcher.reserve_inspect(&free_map)?;
-            let Some(entries) = free_map.len().checked_add(1) else {
-                return spatial_matcher.reject(RSpaceError::HostWorkRejected);
-            };
-            let Some((operations, bytes)) = tree_backing::<i32, Par>(entries) else {
-                return spatial_matcher.reject(RSpaceError::HostWorkRejected);
-            };
-            spatial_matcher.reserve(operations, bytes, bytes)?;
+            // Changed by D-D1a (D-M2, DR-103): one insert charges its search, its
+            // moves and the growth of the tree, not a whole-map walk and the
+            // whole-tree backing.
+            // spatial_matcher.reserve_inspect(&free_map)?;
+            // let Some(entries) = free_map.len().checked_add(1) else {
+            //     return spatial_matcher.reject(RSpaceError::HostWorkRejected);
+            // };
+            // let Some((operations, bytes)) = tree_backing::<i32, Par>(entries) else {
+            //     return spatial_matcher.reject(RSpaceError::HostWorkRejected);
+            // };
+            // spatial_matcher.reserve(operations, bytes, bytes)?;
+            spatial_matcher.reserve_free_map_insert(free_map.len())?;
             free_map.insert(*level, remainder);
         }
         // Changed by D-M4 (DR-91): the owned free map is consumed in key order;

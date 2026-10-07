@@ -9,6 +9,7 @@ use models::rust::utils::*;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use shared::rust::clone_backing::{self, arc_allocation_bytes, BackingError, CloneBacking};
+use shared::rust::collection_backing::{tree_growth, tree_insert_moves, tree_search_bound};
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
@@ -174,7 +175,55 @@ impl<'a> MatcherWork<'a> {
         }
         Some(())
     }
+
+    /// D-D1a (DR-103): one search of a free map with `entries` entries reads
+    /// one root-to-leaf path of `i32` keys.
+    pub fn reserve_free_map_search(&self, entries: usize) -> Option<()> {
+        if self.meter.is_none() {
+            return self.reserve(0, 0, 0);
+        }
+        let comparisons = tree_search_bound(entries);
+        let Some(scanned) = comparisons.checked_mul(2 * std::mem::size_of::<i32>()) else {
+            return self.reject(RSpaceError::HostWorkRejected);
+        };
+        self.reserve(comparisons, scanned, 0)
+    }
+
+    /// D-D1a (DR-103): one insert into a free map with `entries` entries: its
+    /// search, the slots, edges and parent links that it moves on each level,
+    /// and the growth of the tree's nodes.
+    pub fn reserve_free_map_insert(&self, entries: usize) -> Option<()> {
+        if self.meter.is_none() {
+            return self.reserve(0, 0, 0);
+        }
+        self.reserve_free_map_search(entries)?;
+        let Some(moves) = entries
+            .checked_add(1)
+            .and_then(tree_insert_moves::<i32, Par>)
+        else {
+            return self.reject(RSpaceError::HostWorkRejected);
+        };
+        let Some((operations, growth)) = tree_growth::<i32, Par>(entries, 1) else {
+            return self.reject(RSpaceError::HostWorkRejected);
+        };
+        let Some(operations) = operations.checked_add(1) else {
+            return self.reject(RSpaceError::HostWorkRejected);
+        };
+        self.reserve(operations, moves, growth)
+    }
 }
+
+// D-D1a (DR-103): the per-level move bound of a free-map insert, as the Rocq
+// model `FreeMapBindings.level_charge_value` and DR-103 state it.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(
+    12 * (std::mem::size_of::<i32>() + std::mem::size_of::<Par>())
+        + 12 * 8
+        + 12 * (8 + 2)
+        + 4 * 2
+        + 8
+        == 3_832
+);
 
 #[derive(Clone)]
 pub struct SpatialMatcherContext<'a> {
@@ -221,6 +270,14 @@ impl<'a> SpatialMatcherContext<'a> {
 
     pub fn reserve_slice<T: CloneBacking>(&self, values: &[T]) -> Option<()> {
         self.work.reserve_slice(values)
+    }
+
+    pub(super) fn reserve_free_map_search(&self, entries: usize) -> Option<()> {
+        self.work.reserve_free_map_search(entries)
+    }
+
+    pub(super) fn reserve_free_map_insert(&self, entries: usize) -> Option<()> {
+        self.work.reserve_free_map_insert(entries)
     }
 
     pub(super) fn work(&self) -> Option<MatcherWork<'a>> {
@@ -659,21 +716,26 @@ impl<'a> SpatialMatcher<Expr, Expr> for SpatialMatcherContext<'a> {
 
                 match free_level {
                     Some(level) => {
-                        let Some(entries) = self.free_map.len().checked_add(1) else {
-                            return self.reject(RSpaceError::HostWorkRejected);
-                        };
-                        let Some((operations, bytes)) =
-                            shared::rust::collection_backing::tree_backing::<i32, Par>(entries)
-                        else {
-                            return self.reject(RSpaceError::HostWorkRejected);
-                        };
-                        let Some(backing) = bytes.checked_add(std::mem::size_of::<Expr>()) else {
-                            return self.reject(RSpaceError::HostWorkRejected);
-                        };
-                        let Some(operations) = operations.checked_add(2) else {
-                            return self.reject(RSpaceError::HostWorkRejected);
-                        };
-                        self.reserve(operations, bytes, backing)?;
+                        // Changed by D-D1a (D-M2, DR-103): whole-tree backing on every
+                        // insert, the pattern DR-77 replaced; the insert now charges its
+                        // search, its moves and the growth of the tree.
+                        // let Some(entries) = self.free_map.len().checked_add(1) else {
+                        //     return self.reject(RSpaceError::HostWorkRejected);
+                        // };
+                        // let Some((operations, bytes)) =
+                        //     shared::rust::collection_backing::tree_backing::<i32, Par>(entries)
+                        // else {
+                        //     return self.reject(RSpaceError::HostWorkRejected);
+                        // };
+                        // let Some(backing) = bytes.checked_add(std::mem::size_of::<Expr>()) else {
+                        //     return self.reject(RSpaceError::HostWorkRejected);
+                        // };
+                        // let Some(operations) = operations.checked_add(2) else {
+                        //     return self.reject(RSpaceError::HostWorkRejected);
+                        // };
+                        // self.reserve(operations, bytes, backing)?;
+                        self.reserve(2, 0, std::mem::size_of::<Expr>())?;
+                        self.reserve_free_map_insert(self.free_map.len())?;
                         self.free_map.insert(
                             level,
                             new_elist_par(matched_rem, Vec::new(), false, None, Vec::new(), false),

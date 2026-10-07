@@ -638,6 +638,7 @@ theories/NativeSharedReads.v
 theories/ReplayChargeScheduleInvariance.v
 theories/SystemResidueSeal.v
 theories/ReplayRoleAttribution.v
+theories/FreeMapBindings.v
 theories/DetachedPathCompaction.v
 theories/NativePathTrie.v
 theories/OfferedOnlyActivation.v

@@ -113,6 +113,39 @@ pub fn tree_height_bound(entries: usize) -> usize {
 /// (`OrderedLookupBound.search_within_size_bound`).
 pub fn tree_search_bound(entries: usize) -> usize { tree_height_bound(entries).saturating_mul(11) }
 
+/// Upper bound on the bytes that one standard `BTreeMap` insert moves or
+/// writes on one level of the tree. A level moves or writes at most 12
+/// key-value slots: a split moves the middle slot and the slots of the new
+/// node, then shifts the receiving half and writes the new entry. A level also
+/// moves or writes at most 12 edges and rewrites at most 12 child parent links
+/// (a parent pointer and a parent index each). A split writes four node
+/// lengths and the parent pointer of the node that it allocates. The last
+/// level of an insert leaves room for the writes to the map's length and root
+/// (D-D1a, DR-103; `FreeMapBindings.insert_level_moves_bounded` and
+/// `FreeMapBindings.insert_path_within_charge`).
+pub fn tree_insert_level_bytes<K, V>() -> Option<usize> {
+    let slots = size_of::<K>()
+        .checked_add(size_of::<V>())?
+        .checked_mul(12)?;
+    let edges = size_of::<usize>().checked_mul(12)?;
+    let links = size_of::<usize>()
+        .checked_add(size_of::<u16>())?
+        .checked_mul(12)?;
+    let header = size_of::<usize>().checked_add(size_of::<u16>().checked_mul(4)?)?;
+    slots
+        .checked_add(edges)?
+        .checked_add(links)?
+        .checked_add(header)
+}
+
+/// Upper bound on the bytes that one `BTreeMap` insert moves or writes when
+/// the map holds `entries_after` entries after the insert. The insert touches
+/// at most `tree_height_bound(entries_after)` levels, and each level is
+/// bounded by [`tree_insert_level_bytes`].
+pub fn tree_insert_moves<K, V>(entries_after: usize) -> Option<usize> {
+    tree_height_bound(entries_after).checked_mul(tree_insert_level_bytes::<K, V>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -145,6 +178,32 @@ mod tests {
         COMPARISONS.with(|count| count.set(0));
         let value = action();
         (value, COMPARISONS.with(Cell::get))
+    }
+
+    /// `FreeMapBindings.level_charge_value`: with an `i32` key and a 296-byte
+    /// value, one level of an insert costs at most 3,832 bytes, and an insert
+    /// is charged one level for each level of the tree after it.
+    #[test]
+    fn tree_insert_moves_at_the_height_boundaries() {
+        type Value = [u8; 296];
+        assert_eq!(tree_insert_level_bytes::<i32, Value>(), Some(3_832));
+        for (entries, height) in [
+            (0, 0),
+            (1, 1),
+            (10, 1),
+            (11, 2),
+            (70, 2),
+            (71, 3),
+            (430, 3),
+            (431, 4),
+        ] {
+            assert_eq!(tree_height_bound(entries), height, "{entries}");
+            assert_eq!(
+                tree_insert_moves::<i32, Value>(entries),
+                Some(height * 3_832),
+                "{entries}"
+            );
+        }
     }
 
     /// `OrderedLookupBound.btree_size_lower_bound`: the bound changes exactly at
