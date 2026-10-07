@@ -432,7 +432,7 @@ pub const FINALITY_DIVERGENCE_DETECTED_METRIC: &str = "finality.divergence.detec
 pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 // Counter: cycles that returned an error.
 pub const FINALIZER_RUN_FAILURES_METRIC: &str = "finalizer.run.failures";
-// Counter: cycles abandoned by the 15 s backstop.
+// Counter: cycles abandoned by the backstop timeout of run_queued_finalizer.
 pub const FINALIZER_RUN_TIMEOUTS_METRIC: &str = "finalizer.run.timeouts";
 // Counter: extra cycles a run made because a trigger arrived during it.
 pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";

@@ -967,6 +967,7 @@ mod finalizer_run_metric_tests {
         assert!(queued.load(Ordering::SeqCst));
         assert_eq!(recorded.counter(FINALIZER_RUN_QUEUED_METRIC), 3);
     }
+
     #[tokio::test(flavor = "current_thread")]
     async fn api_lfb_counts_each_call_and_the_calls_that_overlap_a_run() {
         let recorder = DebuggingRecorder::new();
