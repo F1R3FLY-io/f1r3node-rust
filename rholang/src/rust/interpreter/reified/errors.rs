@@ -119,7 +119,8 @@ mod tests {
             SpaceError::DanglingHandle,
             SpaceError::DanglingName,
             SpaceError::CounterOverflow,
-            SpaceError::SpacesUnsupportedInNativeExecution,
+            // Retired by decision 47.
+            // SpaceError::SpacesUnsupportedInNativeExecution,
         ]
         .iter()
         .map(SpaceError::code)

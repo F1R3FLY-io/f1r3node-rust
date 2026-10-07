@@ -2,7 +2,7 @@
   "schema": "reified-rspaces-model-map/2",
   "phase": "P4",
   "title": "Reified RSpaces P4: the Rust items of the hashmap:queue slice and the formal models that cover them",
-  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32, and decision 42 (AgentReadCoverage.v: the agent reserves each read and copy before it makes it), and decision 46 (SpaceRefs.v native_execution_fails_closed: spaces fail closed in native play and native replay), and decision 45, Option P (LegacyCharges.v: the legacy storage charges of a space job follow the host program, in play and in replay)",
+  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32, and decision 42 (AgentReadCoverage.v: the agent reserves each read and copy before it makes it), and decision 46 (SpaceRefs.v native_execution_fails_closed: spaces fail closed in native play and native replay), amended by decision 47 (SpaceRefs.v native_execution_runs_spaces: native play and a bound native replay runtime run spaces), and decision 45, Option P (LegacyCharges.v: the legacy storage charges of a space job follow the host program, in play and in replay)",
   "code_base": "The items are in the P4 commit of this repository. The I-20 refresh and the normalizers are as of the P3b commit. The line numbers below are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
@@ -423,9 +423,9 @@
     },
     "Q67": {
       "kind": "rocq",
-      "name": "native_execution_fails_closed",
+      "name": "native_execution_runs_spaces",
       "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
-      "statement": "Decision 46: native play and native replay reject a space entry at one point, with no staged operation and one error; outside native execution a host runtime runs the job unchanged."
+      "statement": "Decision 47 (amends decision 46): native play runs a space entry as legacy execution runs it, and a native replay runtime that its environment bound runs it as native play, so play and replay stage the same operations; a native replay runtime that is not bound yet, and a detached runtime, stage nothing and fail with RuntimeUnavailable."
     },
     "Q68": {
       "kind": "rocq",
@@ -2496,7 +2496,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "routes_to_default_without_context",
-      "line": 750,
+      "line": 749,
       "role": "Every class but a space name and an agent name.",
       "rocq": [
         "routes_to_default_without_context"
@@ -3138,7 +3138,7 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "create_space",
-      "line": 140,
+      "line": 184,
       "role": "One Intent::Space job for a creation.",
       "rocq": [
         "prepare_create",
@@ -3159,7 +3159,7 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "read_config",
-      "line": 211,
+      "line": 255,
       "role": "The read-only config job of a handle call.",
       "tla": [
         "Call"
@@ -3178,7 +3178,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "struct",
       "name": "Field",
-      "line": 1118,
+      "line": 1117,
       "role": "Value, List, Map, Annotations, NewBody.",
       "rocq": [
         "field_flags"
@@ -3193,7 +3193,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "marker_fields",
-      "line": 1132,
+      "line": 1131,
       "role": "The fields of each marker.",
       "rocq": [
         "derived_flags"
@@ -3208,7 +3208,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "derived_flag",
-      "line": 1225,
+      "line": 1224,
       "role": "The flag that the encoder derives for a field.",
       "rocq": [
         "derived_flags"
@@ -3224,7 +3224,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_field",
-      "line": 1291,
+      "line": 1290,
       "role": "Recompute the derived flags of a field.",
       "rocq": [
         "refresh"
@@ -3239,7 +3239,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple",
-      "line": 1362,
+      "line": 1361,
       "role": "Recompute the derived flags of a marker tuple.",
       "rocq": [
         "refresh"
@@ -3254,7 +3254,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_tuple",
-      "line": 1373,
+      "line": 1372,
       "role": "A current tuple is not copied.",
       "rocq": [
         "refresh",
@@ -3271,7 +3271,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple_par",
-      "line": 1394,
+      "line": 1393,
       "role": "The tuple and its holder Par.",
       "rocq": [
         "refresh"
@@ -3286,7 +3286,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_marker_par",
-      "line": 1420,
+      "line": 1419,
       "role": "H4: the QUERY source before it fails closed.",
       "rocq": [
         "refresh"
@@ -3302,7 +3302,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "trailing_params",
-      "line": 1433,
+      "line": 1432,
       "role": "H3: refresh, then split_trailing_params.",
       "rocq": [
         "sdecode"
@@ -3824,7 +3824,7 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "host",
-      "line": 84,
+      "line": 97,
       "role": "The availability check of every space entry: a detached runtime, native play and native replay fail before any space work (decision 46).",
       "rocq": [
         "ensure_available",
@@ -3841,7 +3841,7 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "ensure_available",
-      "line": 97,
+      "line": 118,
       "role": "The availability check of getSpaceAgent, which reads the config without a job of its own.",
       "rocq": [
         "ensure_available"

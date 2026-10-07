@@ -57,7 +57,7 @@
    r7_produce               rholang/src/rust/interpreter/reified/execution.rs:
                             112-129 (produce routes with no context)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:735-740
+     without_context        reducer_hooks.rs:734-739
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             106-129
@@ -89,18 +89,18 @@
                             models/src/rust/reified/encoding.rs:346-356,
                             369-374 (marker_of, sole_marker_tuple)
    decode_source, h4_passes rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:720-731 (reject_query_source),
+                            reducer_hooks.rs:719-730 (reject_query_source),
                             models/src/rust/reified/encoding.rs:841-848
                             (decode_query_source)
    takes_fast_path          rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:762-764
+                            reducer_hooks.rs:761-763
    read_channel             rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:779-787 (readable_channel)
+                            reducer_hooks.rs:778-786 (readable_channel)
    read_bind, route_bind    rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:760-774, 475-494 (query_bind,
+                            reducer_hooks.rs:759-773, 475-494 (query_bind,
                             route_receive)
    single_target            rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:791-821 (single_bind_route)
+                            reducer_hooks.rs:790-820 (single_bind_route)
    receive_one              rholang/src/rust/interpreter/reified/
                             reducer_hooks.rs:394-471 (reified_consume)
 
@@ -155,9 +155,9 @@
     9. use_wrapper_restores_ctx           a stored body runs in its context
    10. handle_dispatch_total              the handle process drops, aborts or
                                           replies on a reply name
-   11. native_execution_fails_closed      native play and native replay reject
-                                          a space entry at one point, before
-                                          any space work (decision 46)
+   11. native_execution_runs_spaces       native play and a bound native replay
+                                          runtime run a space entry, and an
+                                          unbound one fails closed (decision 47)
    12. query_source_routes_inner_channel  a receive with a QUERY tuple routes
                                           the inner channel of the query, and
                                           a source without one keeps the
@@ -1037,26 +1037,76 @@ Section HandleDispatch.
   Qed.
 End HandleDispatch.
 
-(* ── 7. Availability in native execution (runtime.rs, decision 46) ───── *)
+(* ── 7. Availability in native execution (runtime.rs, decisions 46, 47) ─ *)
+
+(* Decision 47 amends the model of decision 46: native play and native
+   replay run spaces. The model of decision 46 stays here as a comment.
+
+   (* The state of the Reified runtime of a reducer: a host runtime over the
+      space of the runtime, a detached runtime, or the runtime of the native
+      replay environment. A host runtime also sees whether its budget runs a
+      native deploy (RuntimeBudget::native_execution_active). *)
+   Inductive runtime_state : Type := RtHost | RtDetached | RtNativeReplay.
+
+   Inductive availability_error : Type :=
+   | RuntimeUnavailable
+   | SpacesUnsupportedInNativeExecution.
+
+   (* ReifiedRuntime::host and ensure_available: the first check of every space
+      entry point (run_op, create_space, read_config, getSpaceAgent). *)
+   Definition ensure_available (st : runtime_state) (native : bool)
+       : option availability_error :=
+     match st with
+     | RtHost => if native then Some SpacesUnsupportedInNativeExecution else None
+     | RtDetached => Some RuntimeUnavailable
+     | RtNativeReplay => Some SpacesUnsupportedInNativeExecution
+     end.
+
+   (* A space entry point: when the runtime is unavailable it stages nothing
+      and fails with the error of the check, before any space work; otherwise
+      it runs its job, which stages the operations ops. *)
+   Definition space_entry {Op : Type} (st : runtime_state) (native : bool) (ops : list Op)
+       : list Op * option availability_error :=
+     match ensure_available st native with
+     | Some e => ([], Some e)
+     | None => (ops, None)
+     end.
+
+   (* Headline 11. In native execution, native play (a host runtime whose budget
+      runs a native deploy) and native replay (the runtime of the native replay
+      environment) give the same result for every space entry: no staged
+      operation and the error SpacesUnsupportedInNativeExecution. Outside native
+      execution a host runtime runs the job unchanged. So a space deploy fails
+      at one point in play and in replay, and replay reproduces play. *)
+   Theorem native_execution_fails_closed :
+     forall (Op : Type) (ops : list Op) (replay_native : bool),
+       space_entry RtHost true ops = space_entry RtNativeReplay replay_native ops /\
+       space_entry RtHost true ops = ([], Some SpacesUnsupportedInNativeExecution) /\
+       space_entry RtHost false ops = (ops, None).
+   Proof.
+     intros Op ops replay_native. unfold space_entry, ensure_available.
+     destruct replay_native; repeat split; reflexivity.
+   Qed.
+*)
 
 (* The state of the Reified runtime of a reducer: a host runtime over the
    space of the runtime, a detached runtime, or the runtime of the native
-   replay environment. A host runtime also sees whether its budget runs a
-   native deploy (RuntimeBudget::native_execution_active). *)
-Inductive runtime_state : Type := RtHost | RtDetached | RtNativeReplay.
+   replay environment, which the environment binds once to the store of its
+   native replay session (bound = true). A host runtime also sees whether its
+   budget runs a native deploy (RuntimeBudget::native_execution_active), and
+   it runs space jobs in both cases. *)
+Inductive runtime_state : Type := RtHost | RtDetached | RtNativeReplay (bound : bool).
 
-Inductive availability_error : Type :=
-| RuntimeUnavailable
-| SpacesUnsupportedInNativeExecution.
+Inductive availability_error : Type := RuntimeUnavailable.
 
 (* ReifiedRuntime::host and ensure_available: the first check of every space
-   entry point (run_op, create_space, read_config, getSpaceAgent). *)
+   entry point (run_op, create_space, read_config, allocate, getSpaceAgent). *)
 Definition ensure_available (st : runtime_state) (native : bool)
     : option availability_error :=
   match st with
-  | RtHost => if native then Some SpacesUnsupportedInNativeExecution else None
+  | RtHost => None
   | RtDetached => Some RuntimeUnavailable
-  | RtNativeReplay => Some SpacesUnsupportedInNativeExecution
+  | RtNativeReplay bound => if bound then None else Some RuntimeUnavailable
   end.
 
 (* A space entry point: when the runtime is unavailable it stages nothing
@@ -1069,20 +1119,22 @@ Definition space_entry {Op : Type} (st : runtime_state) (native : bool) (ops : l
   | None => (ops, None)
   end.
 
-(* Headline 11. In native execution, native play (a host runtime whose budget
-   runs a native deploy) and native replay (the runtime of the native replay
-   environment) give the same result for every space entry: no staged
-   operation and the error SpacesUnsupportedInNativeExecution. Outside native
-   execution a host runtime runs the job unchanged. So a space deploy fails
-   at one point in play and in replay, and replay reproduces play. *)
-Theorem native_execution_fails_closed :
-  forall (Op : Type) (ops : list Op) (replay_native : bool),
-    space_entry RtHost true ops = space_entry RtNativeReplay replay_native ops /\
-    space_entry RtHost true ops = ([], Some SpacesUnsupportedInNativeExecution) /\
-    space_entry RtHost false ops = (ops, None).
+(* Headline 11 (decision 47). Native play (a host runtime whose budget runs a
+   native deploy) runs a space entry as legacy execution runs it. A native
+   replay runtime that the environment bound runs it as native play, so play
+   and replay stage the same operations. A native replay runtime that is not
+   bound yet, and a detached runtime, stage nothing and fail with
+   RuntimeUnavailable. *)
+Theorem native_execution_runs_spaces :
+  forall (Op : Type) (ops : list Op) (native : bool),
+    space_entry RtHost true ops = space_entry RtHost false ops /\
+    space_entry (RtNativeReplay true) native ops = space_entry RtHost true ops /\
+    space_entry RtHost true ops = (ops, None) /\
+    space_entry (RtNativeReplay false) native ops = ([], Some RuntimeUnavailable) /\
+    space_entry RtDetached native ops = ([], Some RuntimeUnavailable).
 Proof.
-  intros Op ops replay_native. unfold space_entry, ensure_available.
-  destruct replay_native; repeat split; reflexivity.
+  intros Op ops native. unfold space_entry, ensure_available.
+  repeat split; reflexivity.
 Qed.
 
 (* ── 8. Receive queries (reducer_hooks.rs, P5b) ─────────────────────────── *)
@@ -1339,5 +1391,5 @@ Print Assumptions r7_route_ignores_ctx.
 Print Assumptions ordinary_channels_route_default.
 Print Assumptions use_wrapper_restores_ctx.
 Print Assumptions handle_dispatch_total.
-Print Assumptions native_execution_fails_closed.
+Print Assumptions native_execution_runs_spaces.
 Print Assumptions query_source_routes_inner_channel.

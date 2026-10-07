@@ -1338,13 +1338,14 @@
       ]
     },
     "d47": {
-      "description": "Decision 47, spaces in native execution (design v2). Step 1 adds the metered reads of the substrate (S1 to S5) and SpaceEnv::begin (N2). Step 2 adds the native replay backend over the native replay session (R1 to R7), with its unit tests over a scripted epoch.",
+      "description": "Decision 47, spaces in native execution (design v2). Step 1 adds the metered reads of the substrate (S1 to S5) and SpaceEnv::begin (N2). Step 2 adds the native replay backend over the native replay session (R1 to R7), with its unit tests over a scripted epoch. Step 3 binds the native replay runtime to the session (the accessor space_store, the bound state and the bind call), and native play runs spaces.",
       "sources": [
         "rspace++/src/rspace/space_store_handle.rs",
         "rspace++/src/rspace/rspace/space_play.rs",
         "rspace++/src/rspace/replay_rspace/space_replay.rs",
         "rspace++/src/rspace/replay_rspace/native_session/space.rs",
-        "rholang/src/rust/interpreter/spaces/agent.rs"
+        "rholang/src/rust/interpreter/spaces/agent.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs"
       ],
       "entry_points": [
         {
@@ -1394,10 +1395,27 @@
         {
           "file": "rholang/src/rust/interpreter/spaces/agent.rs",
           "pattern": "pub async fn begin(&self, lock_keys: &[Par]) -> Result<ParSpaceTxn, SpaceTxnError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay/session/execution.rs",
+          "pattern": "    pub(crate) fn space_store("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "pattern": "    pub fn bind_native_replay("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "pattern": "        bound: OnceLock<(ParSpaceStore, RuntimeBudget)>,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/rho_runtime.rs",
+          "pattern": "    native_space_runtime.bind_native_replay(session.space_store(cost.clone())?, cost.clone())?;"
         }
       ],
       "tests": [
-        "rspace++/src/rspace/replay_rspace/native_session/space.rs"
+        "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+        "rholang/tests/reified_native_fail_closed.rs"
       ],
       "property_files": []
     }

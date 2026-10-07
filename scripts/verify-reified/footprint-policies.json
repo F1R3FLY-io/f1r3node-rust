@@ -2533,7 +2533,7 @@
       ]
     },
     "d47": {
-      "description": "Decision 47 (native execution of spaces, design v2). It extends campaign and restates the edits and the new files of p5, as p5 restates p4. Step 2 adds the native replay backend: one module line in native_session.rs and the new file native_session/space.rs.",
+      "description": "Decision 47 (native execution of spaces, design v2). It extends campaign and restates the edits and the new files of p5, as p5 restates p4. Step 2 adds the native replay backend: one module line in native_session.rs and the new file native_session/space.rs. Step 3 adds the accessor space_store of the accounting session (the approved M-3 exception of decision 47) and the bind line of create_native_replay_env, which joins the cumulative edit of rho_runtime.rs.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -2722,7 +2722,8 @@
             "        native_space_runtime,",
             "    let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());",
             "    reified::system_processes::register(extra_system_processes, &space_runtime);",
-            "        space_runtime,"
+            "        space_runtime,",
+            "    native_space_runtime.bind_native_replay(session.space_store(cost.clone())?, cost.clone())?;"
           ],
           "added_line_counts": [
             [
@@ -3211,6 +3212,74 @@
           "path": "rspace++/src/rspace/replay_rspace/native_session.rs",
           "added_lines": [
             "pub mod space;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay/session/execution.rs",
+          "replaced_blocks": [
+            [
+              [
+                "use rspace_plus_plus::rspace::errors::RSpaceError;",
+                "use rspace_plus_plus::rspace::trace::event::Produce;"
+              ],
+              [
+                "use rspace_plus_plus::rspace::errors::RSpaceError;",
+                "use rspace_plus_plus::rspace::replay_rspace::native_session::space::NativeSpaceHost;",
+                "use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;",
+                "use rspace_plus_plus::rspace::space_store_handle::SpaceStoreHandle;",
+                "use rspace_plus_plus::rspace::trace::event::Produce;"
+              ]
+            ],
+            [
+              [
+                "};",
+                ""
+              ],
+              [
+                "};",
+                "use crate::rust::interpreter::spaces::agent::ParSpaceStore;",
+                ""
+              ]
+            ],
+            [
+              [
+                "        }))",
+                "    }"
+              ],
+              [
+                "        }))",
+                "    }",
+                "",
+                "    /// The space store of this session for the Reified RSpaces runtime of native replay",
+                "    /// (decision 47). A space operation gets its introduction authority from `budget`, as",
+                "    /// `NativeExecution` gives one to a host operation.",
+                "    pub(crate) fn space_store(",
+                "        self: &Arc<Self>,",
+                "        budget: RuntimeBudget,",
+                "    ) -> Result<ParSpaceStore, RSpaceError> {",
+                "        let host = NativeSpaceHost::new(",
+                "            Arc::clone(self),",
+                "            |session: &Self| &session.inner,",
+                "            Arc::new(move |source: RSpaceOperationSource<'_>| {",
+                "                let (identity, kind) = match source {",
+                "                    RSpaceOperationSource::Produce(produce) => (",
+                "                        produce_introduction_identity(produce),",
+                "                        AuthorityByteEventKind::ProduceIntroduction,",
+                "                    ),",
+                "                    RSpaceOperationSource::Consume(consume) => (",
+                "                        consume_introduction_identity(consume),",
+                "                        AuthorityByteEventKind::ConsumeIntroduction,",
+                "                    ),",
+                "                };",
+                "                budget",
+                "                    .introduction_authority(identity, kind)",
+                "                    .map_err(Into::into)",
+                "            }),",
+                "        )?;",
+                "        Ok(SpaceStoreHandle::new(host))",
+                "    }"
+              ]
+            ]
           ]
         }
       ],

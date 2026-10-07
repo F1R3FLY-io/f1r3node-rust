@@ -1236,7 +1236,7 @@ Table S8 maps the checklist items to the reason and to the gate that shows it.
 | 15 | System byte names are unchanged. | `rholang/src` is unchanged in P1. | Footprint `p1` |
 | 16 | No schema shift happens. | The protobuf files are frozen, and ordinary terms keep their bytes. | R7, `runtime_spec` |
 | 17 | `ISpace` implementors compile unchanged. | `rspace_interface.rs` and `ispace_impl.rs` are frozen. | Workspace build, footprint `p1` |
-| 21 | `contract_call.rs`, `dispatch.rs`, `ispace_impl.rs`, and the cost-accounting module are byte-identical. | The policy `campaign`, which `p1` extends, freezes them. | Footprint `p1` |
+| 21 | `contract_call.rs`, `dispatch.rs`, `ispace_impl.rs`, and the cost-accounting module are byte-identical, except the accessor `space_store` of the native replay session that decision 47 approves. | The policy `campaign`, which `p1` extends, freezes them. From decision 47, the policy `d47` approves the accessor as the only edit of the accounting module. | Footprints `p1` and `d47` |
 | 22 | The parser is a conservative extension of HEAD parsing. | Every repository source normalizes to the bytes of HEAD. | `ordinary_source_normalization_unchanged` |
 
 Items 18 to 20 concern the space machinery of P4 to P7, which P1 does not add.
@@ -1490,9 +1490,9 @@ The paths of the rows are relative to `rholang/src/rust/interpreter/`, except th
 | Footprint and execution | `deterministic_reduction.rs:935`, `984` | The footprint and the execution of a space intent. |
 | Imports | `rho_runtime.rs:30`, `52` | `SpaceTxnHost` and the module `reified`. |
 | Reducer setup | `rho_runtime.rs:1494`, `1510`, `1543` | The runtime parameter, the R7 wrap of the dispatch space, and the runtime field. |
-| Native replay | `rho_runtime.rs:1917-1918`, `1948` | A runtime that fails closed, with the Reified definitions. |
-| Host runtime | `rho_runtime.rs:1989-1990`, `2033` | The runtime of the host space, captured before the scheduler wrap, with the Reified definitions. |
-| Host bounds | `rho_runtime.rs:1983`, `2070`, `2140`, `2183`, `2209`, `2215` | The bound `SpaceTxnHost` on the six runtime constructors. |
+| Native replay | `rho_runtime.rs:1917-1918`, `1949` | A runtime that fails closed, with the Reified definitions. |
+| Host runtime | `rho_runtime.rs:1990-1991`, `2034` | The runtime of the host space, captured before the scheduler wrap, with the Reified definitions. |
+| Host bounds | `rho_runtime.rs:1984`, `2071`, `2141`, `2184`, `2210`, `2216` | The bound `SpaceTxnHost` on the six runtime constructors. |
 
 Every hook returns a future that adds little depth to the evaluation future of the reducer.
 `reified_produce` and `reified_consume` return boxed futures.
@@ -2187,7 +2187,7 @@ A join with a user agent fails with `AgentSpacesUnavailable`, and every other mi
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1362-1382`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1361-1381`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2248,7 +2248,7 @@ A read, such as the config read of `getSpaceAgent`, stages nothing and drops its
 An empty commit would claim the parent order, and a later commit under the same order would fail with `ParentOrderReused`.
 The job never awaits between `begin` and `commit`, except inside `begin`, and matching is synchronous.
 
-**The evaluation scope.** `inj`, `inj_with_observation`, and `inj_with_host_work` call `begin_evaluation_scope` at their entry (`reified/runtime.rs:73-78`).
+**The evaluation scope.** `inj`, `inj_with_observation`, and `inj_with_host_work` call `begin_evaluation_scope` at their entry (`reified/runtime.rs:83-93`).
 The three interpreter entries `inj_attempt`, `inj_attempt_with_native_phlo`, and `inj_attempt_with_host_work` reach the reducer through `inj_with_observation`.
 The test `reducer_space_routing_inj_with_host_work_begins_an_evaluation_scope` runs one term twice through `inj_with_host_work` under the same operation orders.
 In the host mode, the call resets the tracker of committed parent orders, so a deploy that runs again commits under the same orders (FR-5').
@@ -2272,24 +2272,24 @@ The agent prepays at staging the work of the outcome after the commit.
 So a host-work rejection always happens before the commit, and the operation has no effect (`AgentReadCoverage.v`, `cut_rejects_before_commit`).
 Without a budget, the meter accepts every charge and skips every walk, as `reserve_host_work` does ([decision I-12](decision-register.md#i-12)).
 
-**The runtime of a reducer.** `ReifiedRuntime` (`reified/runtime.rs:55-57`) has three modes, and only the host mode runs space jobs.
+**The runtime of a reducer.** `ReifiedRuntime` (`reified/runtime.rs:63-65`) has three modes. The host mode and a bound native replay mode run space jobs.
 
 *Table N6.1. The modes of the runtime.*
 
 | Mode | Made by | A space operation |
 |---|---|---|
-| `Host` | `for_host`, at the start of `create_rho_env` | runs one space intent over the handle of the host space, and fails with `SpacesUnsupportedInNativeExecution` while its budget runs a native deploy ([decision 46](decision-register.md#decision-46)) |
+| `Host` | `for_host`, at the start of `create_rho_env` | runs one space intent over the handle of the host space, in legacy execution and in native play ([decision 47](decision-register.md#decision-47)) |
 | `Detached` | `unavailable`, in `ReducerCore::new` and `DebruijnInterpreter::new` | fails with `RuntimeUnavailable` |
-| `NativeReplay` | `native_replay`, in the native replay environment | fails with `SpacesUnsupportedInNativeExecution` ([decision I-13](decision-register.md#i-13)) |
+| `NativeReplay` | `native_replay`, in the native replay environment, which binds it to the store of its native replay session with `bind_native_replay` | runs one space intent over the native backend of the session once bound, and fails with `RuntimeUnavailable` before ([decision 47](decision-register.md#decision-47)) |
 
-Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:84-93, 97`).
+Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:97-114, 118`).
 `run_op`, `create_space`, and `read_config` check it before `submit_space`, so a failing check takes no operation order and makes no observer call.
-So native play and native replay reject a space deploy at one point.
-Native replay then reproduces the failure of play (`SpaceRefs.v`, `native_execution_fails_closed`).
+Native play and a bound native replay runtime run the same space entry, so native replay reproduces play (`SpaceRefs.v`, `native_execution_runs_spaces`).
+[Decision 46](decision-register.md#decision-46) made both modes reject a space deploy before any space work, and decision 47 replaces that rule.
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:663-713`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:662-712`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome
@@ -2434,10 +2434,10 @@ Figure N7 shows the lifecycle of a native handle, from the factory call to a rep
 
 A Reified failure is either an abort of the deploy or a [typed reply](glossary.md#typed-reply).
 An abort is the error `InterpreterError::ReduceError` with the text `reified:<Code>: <message>`, which the soft checkpoint of the deploy then reverts.
-A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:163-170`).
+A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:167-174`).
 The message text is not consensus state, but the code names the failure for tests and for users.
 
-The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:149-157`):
+The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:153-161`):
 
 - `SpaceTxnError::Host` becomes `SpaceError::Host`, which keeps the class of the host error.
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
@@ -2459,7 +2459,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `OrderedJoinUnsupported` | Retired in P5 wave W3 ([decision 29](decision-register.md#decision-29)). A join whose binds route to one native space runs on the join engine (N12), and the code stays commented out in `reified/errors.rs`. |
 | `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. |
 
-*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-104`).*
+*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-107`).*
 
 | Code | Trigger |
 |---|---|
@@ -2474,7 +2474,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `PositionalParamsUnsupported` | Positional params on a factory, on a handle call, or on a space channel. |
 | `QualifierUnavailable`, `TheoryUnavailable` | A `temp` or `seq` qualifier, or a theory, until P7. |
 | `FamilyUnavailable` | A family that this phase does not register or run. |
-| `RuntimeUnavailable`, `SpacesUnsupportedInNativeExecution` | A space operation in a detached runtime, or in native play or native replay ([decision 46](decision-register.md#decision-46)). |
+| `RuntimeUnavailable` | A space operation in a detached runtime, or in a native replay runtime that its environment has not bound yet. Decision 47 retires `SpacesUnsupportedInNativeExecution`, the code of [decision 46](decision-register.md#decision-46) for native play and native replay. |
 | `DanglingHandle`, `DanglingName` | A space without its config record, reached through a handle or through a space name. |
 | `CounterOverflow` | An `ord` counter at `i64::MAX`. |
 | `Inconsistent` | A malformed record, a second counter or config record, a persistent counter record, a collection in a join, a fire group that does not line up, or a receipt that differs from its staged operation. |
@@ -2760,8 +2760,8 @@ An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family
 `AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2407-2455`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
-The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:556-596`).
-Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:602-629`).
+The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:555-595`).
+Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:601-628`).
 So each allocation is paid by its caller (P4 design B.7), and the handle method `gensym` runs a job with the authority of its call.
 A store without an allocator answers `Baseline`, and the binders keep the names that HEAD draws.
 
@@ -2795,8 +2795,8 @@ Every read, copy, comparison and allocation of the layer is reserved before it i
 
 #### N11.8 Receive queries and allocation jobs in the hooks
 
-Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:735-746`, `reified/reducer_hooks.rs:775-789`).
-The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:762-764`).
+Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:734-745`, `reified/reducer_hooks.rs:774-788`).
+The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:761-763`).
 
 ```text
 REIFIED-PRODUCE: Space(n,k) → remove the PARAMS tuple from data; named ← SPACE-PARAMS(params)   ▷ positional: PositionalParamsUnsupported
@@ -2914,8 +2914,8 @@ A program never issues a settle job, and the reducer issues a join only through 
 | `PendingProduce` (`spaces/agent.rs:218-230`) | One owed second send: its collection, its record with the envelope, and its persistence. |
 | `SpaceAgent::prepare_join` (`spaces/agent.rs:446-450`) | Stages a join: the classification, the scope, and the engine. |
 
-The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:843-871`).
-Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:901-925`).
+The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:842-870`).
+Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:900-924`).
 
 #### N12.2 Classification and the scope
 

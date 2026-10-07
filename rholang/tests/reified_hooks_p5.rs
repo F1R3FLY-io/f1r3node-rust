@@ -907,23 +907,67 @@ async fn native_replay(
     (replayed, complete, usage)
 }
 
-/// Decision 46: the allocation job of `new` in a `use` block is a space entry, so native play
-/// rejects the deploy at `new` with `SpacesUnsupportedInNativeExecution`, before any space work,
-/// and native replay reproduces the rejection. The same `use` block without `new` makes no space
-/// entry, so it plays natively without an error.
+// Disabled by decision 47: native execution runs the allocation job of `new` in a `use`
+// block, so no deploy fails with `SpacesUnsupportedInNativeExecution`. Its successor is
+// `hooks_new_in_use_native_play_and_replay_agree`.
+//
+// ```
+// /// Decision 46: the allocation job of `new` in a `use` block is a space entry, so native play
+// /// rejects the deploy at `new` with `SpacesUnsupportedInNativeExecution`, before any space work,
+// /// and native replay reproduces the rejection. The same `use` block without `new` makes no space
+// /// entry, so it plays natively without an error.
+// #[tokio::test]
+// async fn hooks_new_in_use_fails_closed_in_native_execution() {
+//     let played = native_play(NATIVE_NEW_IN_USE).await;
+//     assert_eq!(
+//         played.result.errors,
+//         vec![InterpreterError::ReduceError(
+//             "reified:SpacesUnsupportedInNativeExecution: native execution does not support Reified RSpaces"
+//                 .to_owned(),
+//         )]
+//     );
+//     assert_eq!(
+//         played.space_channels, 0,
+//         "native play staged no record on a channel of a space"
+//     );
+//     let (replayed, complete, usage) = native_replay(&played, NATIVE_NEW_IN_USE).await;
+//     assert_eq!(replayed.errors, played.result.errors);
+//     assert_eq!(
+//         complete,
+//         Ok(()),
+//         "replay consumed every journal row of play"
+//     );
+//     let recording = played
+//         .result
+//         .native_budget_recording
+//         .as_ref()
+//         .expect("native play records its budget");
+//     assert_eq!(usage, recording.used, "replay used the phlo of play");
+//
+//     let control = native_play(NATIVE_USE_ONLY).await;
+//     assert!(
+//         control.result.errors.is_empty(),
+//         "{:?}",
+//         control.result.errors
+//     );
+//     assert_eq!(control.space_channels, 0);
+// }
+// ```
+
+/// Decision 47: native execution runs the allocation job of `new` in a `use` block. The handle
+/// names a missing space, so the job fails with `DanglingHandle` in native play, after the read
+/// of the config and before any staged operation. Native replay reproduces the failure: the
+/// same error, a complete journal and the phlo usage of play. The same `use` block without
+/// `new` makes no space entry, so it plays natively without an error.
 #[tokio::test]
-async fn hooks_new_in_use_fails_closed_in_native_execution() {
+async fn hooks_new_in_use_native_play_and_replay_agree() {
     let played = native_play(NATIVE_NEW_IN_USE).await;
-    assert_eq!(
-        played.result.errors,
-        vec![InterpreterError::ReduceError(
-            "reified:SpacesUnsupportedInNativeExecution: native execution does not support Reified RSpaces"
-                .to_owned(),
-        )]
-    );
+    assert_eq!(played.result.errors, vec![InterpreterError::ReduceError(
+        "reified:DanglingHandle: the space of this handle does not exist".to_owned(),
+    )]);
     assert_eq!(
         played.space_channels, 0,
-        "native play staged no record on a channel of a space"
+        "native play stored no record on a channel of a space"
     );
     let (replayed, complete, usage) = native_replay(&played, NATIVE_NEW_IN_USE).await;
     assert_eq!(replayed.errors, played.result.errors);

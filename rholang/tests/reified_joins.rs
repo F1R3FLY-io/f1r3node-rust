@@ -3837,23 +3837,112 @@ fn native_config() -> NativeRuntimeConfig {
     )
 }
 
-/// Decision 46: native play and native replay fail closed before any space work. A join, a send
-/// on a joined collection and a settle job with a cascade fail with
-/// `SpacesUnsupportedInNativeExecution`. They fail in a host runtime whose deploy runs natively,
-/// and in the native replay runtime. The recording host sees no transaction, and the space keeps
-/// its events and its root. A deploy routes a join to this gate with no read of the space. The
-/// route of a channel is a function of its name (`reified/route.rs`).
-#[tokio::test]
-async fn space_joins_native_execution_fails_closed() {
-    let (rig, record) = Rig::recording(SpaceInner::Queue, &budget()).await;
+// Disabled by decision 47: native execution runs joins, so no operation fails with
+// `SpacesUnsupportedInNativeExecution`. Its successor is
+// `space_joins_native_play_commits_as_legacy`.
+//
+// ```
+// /// Decision 46: native play and native replay fail closed before any space work. A join, a send
+// /// on a joined collection and a settle job with a cascade fail with
+// /// `SpacesUnsupportedInNativeExecution`. They fail in a host runtime whose deploy runs natively,
+// /// and in the native replay runtime. The recording host sees no transaction, and the space keeps
+// /// its events and its root. A deploy routes a join to this gate with no read of the space. The
+// /// route of a channel is a function of its name (`reified/route.rs`).
+// #[tokio::test]
+// async fn space_joins_native_execution_fails_closed() {
+//     let (rig, record) = Rig::recording(SpaceInner::Queue, &budget()).await;
+//     let (a, b, c) = (ch("a"), ch("b"), ch("c"));
+//     rig.ok(put(&a, 1)).await;
+//     rig.ok(put(&b, 2)).await;
+//     rig.ok(joined(join(&[(&a, exactly(9)), (&c, any())], "parked")))
+//         .await;
+//     rig.log().await;
+//     let before = rig.root().await;
+//     *record.lock().expect("the record lock") = HostRecord::default();
+//     let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs join native"));
+//     native.set_deploy_signature_funded(
+//         b"rrs-join-native",
+//         funding_sig_compound(&[&1u64.to_be_bytes()]),
+//     );
+//     native
+//         .reset_for_native_execution(native_config())
+//         .expect("the budget enters native execution");
+//     assert!(native.native_execution_active());
+//     let send = send_salted(&a, 3, 0);
+//     let ops = [
+//         joined(join(&[(&a, any()), (&b, any())], "w")),
+//         SpaceOp::Produce(send.clone()),
+//         settle_after(&send, &[&c], Vec::new(), None),
+//     ];
+//     let (recording, _) = RecordingHost::new(rig.host.clone());
+//     let recorded = Arc::clone(&record);
+//     let host_runtime = runtime::for_host(recording, native);
+//     for reified in [host_runtime, runtime::native_replay()] {
+//         for op in &ops {
+//             match reified.run_op(Arc::new(FamilyAgent), op.clone()).await {
+//                 Err(InterpreterError::ReduceError(message)) => assert_eq!(
+//                     message,
+//                     "reified:SpacesUnsupportedInNativeExecution: native execution does not \
+//                      support Reified RSpaces",
+//                     "{op:?}"
+//                 ),
+//                 other => panic!("a space operation ran in native execution: {other:?}: {op:?}"),
+//             }
+//         }
+//     }
+//     assert!(recorded.lock().expect("the record lock").begins.is_empty());
+//     assert!(rig.log().await.is_empty(), "no space work");
+//     assert_eq!(rig.root().await, before);
+// }
+// ```
+
+/// The outcomes of the operations of `space_joins_native_play_commits_as_legacy`, the events of
+/// the play space, its root, and the record of the host of the runtime.
+type JoinRun = (Vec<SpaceOutcome>, Vec<Event>, Blake2b256Hash, Vec<bool>);
+
+/// Runs a join, a send on a joined collection and a settle job with a cascade over a fresh queue
+/// space, in a host runtime whose deploy charges `deploy`. The space holds 1 on `a`, 2 on `b`
+/// and a parked join on `a` and `c` before the operations.
+async fn join_run(deploy: RuntimeBudget) -> JoinRun {
+    let (rig, _) = Rig::recording(SpaceInner::Queue, &budget()).await;
     let (a, b, c) = (ch("a"), ch("b"), ch("c"));
     rig.ok(put(&a, 1)).await;
     rig.ok(put(&b, 2)).await;
     rig.ok(joined(join(&[(&a, exactly(9)), (&c, any())], "parked")))
         .await;
     rig.log().await;
-    let before = rig.root().await;
-    *record.lock().expect("the record lock") = HostRecord::default();
+    let send = send_salted(&a, 3, 0);
+    let ops = [
+        joined(join(&[(&a, any()), (&b, any())], "w")),
+        SpaceOp::Produce(send.clone()),
+        settle_after(&send, &[&c], Vec::new(), None),
+    ];
+    let (recording, record) = RecordingHost::new(rig.host.clone());
+    let reified = runtime::for_host(recording, deploy);
+    let mut outcomes = Vec::with_capacity(ops.len());
+    for op in ops {
+        let label = format!("{op:?}");
+        outcomes.push(
+            reified
+                .run_op(Arc::new(FamilyAgent), op)
+                .await
+                .unwrap_or_else(|error| panic!("the operation commits: {error:?}: {label}")),
+        );
+    }
+    let log = rig.log().await;
+    let root = rig.root().await;
+    let metered = record.lock().expect("the record lock").metered.clone();
+    (outcomes, log, root, metered)
+}
+
+/// Decision 47: native play runs joins. A join, a send on a joined collection and a settle job
+/// with a cascade commit in a host runtime whose deploy runs natively as they commit in legacy
+/// execution: the same outcomes, the same events and the same root. Each transaction of the
+/// native run reads through the metered reads of the substrate, and no legacy transaction does.
+/// A native replay runtime that is not bound yet fails each operation closed with
+/// `RuntimeUnavailable`.
+#[tokio::test]
+async fn space_joins_native_play_commits_as_legacy() {
     let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs join native"));
     native.set_deploy_signature_funded(
         b"rrs-join-native",
@@ -3863,29 +3952,36 @@ async fn space_joins_native_execution_fails_closed() {
         .reset_for_native_execution(native_config())
         .expect("the budget enters native execution");
     assert!(native.native_execution_active());
+    let (legacy_outcomes, legacy_log, legacy_root, legacy_metered) = join_run(budget()).await;
+    let (native_outcomes, native_log, native_root, native_metered) = join_run(native).await;
+    assert_eq!(native_outcomes, legacy_outcomes);
+    assert_eq!(native_log, legacy_log);
+    assert_eq!(native_root, legacy_root);
+    assert!(!legacy_metered.is_empty());
+    assert_eq!(native_metered.len(), legacy_metered.len());
+    assert!(legacy_metered.iter().all(|metered| !metered));
+    assert!(native_metered.iter().all(|metered| *metered));
+
+    let (rig, _) = Rig::recording(SpaceInner::Queue, &budget()).await;
+    let a = ch("a");
+    rig.ok(put(&a, 1)).await;
+    rig.log().await;
+    let before = rig.root().await;
+    let unbound = runtime::native_replay();
     let send = send_salted(&a, 3, 0);
-    let ops = [
-        joined(join(&[(&a, any()), (&b, any())], "w")),
+    for op in [
+        joined(join(&[(&a, any()), (&ch("b"), any())], "w")),
         SpaceOp::Produce(send.clone()),
-        settle_after(&send, &[&c], Vec::new(), None),
-    ];
-    let (recording, _) = RecordingHost::new(rig.host.clone());
-    let recorded = Arc::clone(&record);
-    let host_runtime = runtime::for_host(recording, native);
-    for reified in [host_runtime, runtime::native_replay()] {
-        for op in &ops {
-            match reified.run_op(Arc::new(FamilyAgent), op.clone()).await {
-                Err(InterpreterError::ReduceError(message)) => assert_eq!(
-                    message,
-                    "reified:SpacesUnsupportedInNativeExecution: native execution does not \
-                     support Reified RSpaces",
-                    "{op:?}"
-                ),
-                other => panic!("a space operation ran in native execution: {other:?}: {op:?}"),
-            }
+        settle_after(&send, &[&ch("c")], Vec::new(), None),
+    ] {
+        match unbound.run_op(Arc::new(FamilyAgent), op.clone()).await {
+            Err(InterpreterError::ReduceError(message)) => assert!(
+                message.starts_with("reified:RuntimeUnavailable: "),
+                "{message}: {op:?}"
+            ),
+            other => panic!("an unbound native replay runtime ran {op:?}: {other:?}"),
         }
     }
-    assert!(recorded.lock().expect("the record lock").begins.is_empty());
     assert!(rig.log().await.is_empty(), "no space work");
     assert_eq!(rig.root().await, before);
 }

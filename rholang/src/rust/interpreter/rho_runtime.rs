@@ -1930,6 +1930,7 @@ pub async fn create_native_replay_env(
         installations,
         cost.clone(),
     )?);
+    native_space_runtime.bind_native_replay(session.space_store(cost.clone())?, cost.clone())?;
     let reducer = setup_reducer(
         session.execution_space(cost.clone()),
         block_data.clone(),

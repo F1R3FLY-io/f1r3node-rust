@@ -72,8 +72,10 @@ The P4 controls (batch 4E-F) revert one rule of the hashmap:queue slice:
   Encoding (I-20)     the refresh, the derived tuple flag, the strict flag
                       check
 
-Decision 46 (SpaceRefs.v) has one control: a host runtime runs space jobs in
-native play, so native play and native replay disagree.
+Decision 47 (SpaceRefs.v) has two controls: a host runtime that rejects space
+jobs in native play, as decision 46 did, and a native replay runtime that runs
+space jobs before its environment binds it. The control of decision 46 is
+retired with its headline.
 
 Decision 42 (AgentReadCoverage.v) has five controls. Each reverts one part of
 the metering rule: a step that reads before it reserves, a fire that does not
@@ -759,11 +761,24 @@ CONTROLS = (
      "  decode (ferase x).",
      ("refresh_strict_decode_erase",)),
     # ── Decision 46: SpaceRefs.v ─────────────────────────────────────────
-    ("sr-native-play-runs-spaces", "SpaceRefs",
-     "a host runtime runs space jobs in native play, as before decision 46",
-     "  | RtHost => if native then Some SpacesUnsupportedInNativeExecution else None",
+    # Retired by decision 47 with the headline native_execution_fails_closed:
+    # native play now runs space jobs, so this mutant states the new rule.
+    # ("sr-native-play-runs-spaces", "SpaceRefs",
+    #  "a host runtime runs space jobs in native play, as before decision 46",
+    #  "  | RtHost => if native then Some SpacesUnsupportedInNativeExecution else None",
+    #  "  | RtHost => None",
+    #  ("native_execution_fails_closed",)),
+    # ── Decision 47: SpaceRefs.v ─────────────────────────────────────────
+    ("sr-native-play-rejects-spaces", "SpaceRefs",
+     "a host runtime rejects space jobs in native play, as decision 46 did",
      "  | RtHost => None",
-     ("native_execution_fails_closed",)),
+     "  | RtHost => if native then Some RuntimeUnavailable else None",
+     ("native_execution_runs_spaces",)),
+    ("sr-unbound-native-replay-runs", "SpaceRefs",
+     "a native replay runtime runs space jobs before its environment binds it",
+     "  | RtNativeReplay bound => if bound then None else Some RuntimeUnavailable",
+     "  | RtNativeReplay bound => None",
+     ("native_execution_runs_spaces",)),
     # ── Decision 42: AgentReadCoverage.v ─────────────────────────────────
     ("arc-read-before-reserve", "AgentReadCoverage",
      "a step reads before it reserves (the P4 order: copy, then charge)",

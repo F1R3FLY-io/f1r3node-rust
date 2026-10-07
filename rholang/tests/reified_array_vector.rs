@@ -1511,13 +1511,52 @@ fn native_config() -> NativeRuntimeConfig {
     )
 }
 
+// Disabled by decision 47: native execution runs the allocation job, so it does not fail with
+// `SpacesUnsupportedInNativeExecution`. Its successor is
+// `allocation_native_play_allocates_as_legacy`.
+//
+// ```
+// #[tokio::test]
+// async fn allocation_native_fails_closed() {
+//     // Decision 46: native play and native replay fail before any space work, so an allocation
+//     // job reads no config and stages nothing.
+//     let space = play().await;
+//     let env = env_over(space.clone(), &budget());
+//     create_store(Store::Fixed(4), &space, &env).await;
+//     let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs-p5d native allocation"));
+//     native.set_deploy_signature_funded(
+//         b"rrs-p5d-native",
+//         funding_sig_compound(&[&1u64.to_be_bytes()]),
+//     );
+//     native
+//         .reset_for_native_execution(native_config())
+//         .expect("the budget enters native execution");
+//     assert!(native.native_execution_active());
+//     let array: Arc<dyn SpaceAgent> =
+//         Arc::new(GenericSpace::<ArrayOuter, QueueDiscipline>::default());
+//     for reified in [
+//         runtime::for_host(space.clone(), native),
+//         runtime::native_replay(),
+//     ] {
+//         match reified.allocate(Arc::clone(&array), alloc_op(1, 1)).await {
+//             Err(InterpreterError::ReduceError(message)) => assert!(
+//                 message.starts_with("reified:SpacesUnsupportedInNativeExecution: "),
+//                 "{message}"
+//             ),
+//             other => panic!("an allocation ran in native execution: {other:?}"),
+//         }
+//     }
+//     assert!(space.take_event_log().await.is_empty());
+//     assert_eq!(allocator_values(&space).await, vec![0]);
+// }
+// ```
+
 #[tokio::test]
-async fn allocation_native_fails_closed() {
-    // Decision 46: native play and native replay fail before any space work, so an allocation
-    // job reads no config and stages nothing.
-    let space = play().await;
-    let env = env_over(space.clone(), &budget());
-    create_store(Store::Fixed(4), &space, &env).await;
+async fn allocation_native_play_allocates_as_legacy() {
+    // Decision 47: native play runs the allocation job of an Array space as legacy execution
+    // runs it: the same indices, the same events and the same allocator value. A native replay
+    // runtime that is not bound yet fails the job closed with `RuntimeUnavailable`, so it reads
+    // no config and stages nothing.
     let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs-p5d native allocation"));
     native.set_deploy_signature_funded(
         b"rrs-p5d-native",
@@ -1529,17 +1568,38 @@ async fn allocation_native_fails_closed() {
     assert!(native.native_execution_active());
     let array: Arc<dyn SpaceAgent> =
         Arc::new(GenericSpace::<ArrayOuter, QueueDiscipline>::default());
-    for reified in [
-        runtime::for_host(space.clone(), native),
-        runtime::native_replay(),
-    ] {
-        match reified.allocate(Arc::clone(&array), alloc_op(1, 1)).await {
-            Err(InterpreterError::ReduceError(message)) => assert!(
-                message.starts_with("reified:SpacesUnsupportedInNativeExecution: "),
-                "{message}"
-            ),
-            other => panic!("an allocation ran in native execution: {other:?}"),
-        }
+    let mut runs = Vec::with_capacity(2);
+    for deploy in [budget(), native] {
+        let space = play().await;
+        let env = env_over(space.clone(), &budget());
+        create_store(Store::Fixed(4), &space, &env).await;
+        space.take_event_log().await;
+        let indices = runtime::for_host(space.clone(), deploy)
+            .allocate(Arc::clone(&array), alloc_op(1, 1))
+            .await
+            .expect("the allocation commits");
+        runs.push((
+            indices,
+            space.take_event_log().await,
+            allocator_values(&space).await,
+        ));
+    }
+    assert_eq!(runs[0].0, Some(vec![0]));
+    assert_eq!(runs[1], runs[0]);
+
+    let space = play().await;
+    let env = env_over(space.clone(), &budget());
+    create_store(Store::Fixed(4), &space, &env).await;
+    space.take_event_log().await;
+    match runtime::native_replay()
+        .allocate(Arc::clone(&array), alloc_op(1, 1))
+        .await
+    {
+        Err(InterpreterError::ReduceError(message)) => assert!(
+            message.starts_with("reified:RuntimeUnavailable: "),
+            "{message}"
+        ),
+        other => panic!("an unbound native replay runtime allocated: {other:?}"),
     }
     assert!(space.take_event_log().await.is_empty());
     assert_eq!(allocator_values(&space).await, vec![0]);

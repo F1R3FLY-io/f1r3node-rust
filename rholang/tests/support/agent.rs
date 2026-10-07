@@ -556,6 +556,9 @@ pub enum RecordPoint {
 pub struct HostRecord {
     /// The lock keys of each transaction, in the order of the begins.
     pub begins: Vec<Vec<Par>>,
+    /// Whether each transaction reads through the metered reads of native execution (decision
+    /// 47), in the order of the begins.
+    pub metered: Vec<bool>,
     /// Each staged operation with the index of its transaction, in staging order.
     pub staged: Vec<(usize, StagedCopy)>,
     /// The index of each transaction that committed, in commit order.
@@ -652,10 +655,12 @@ where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         registration: TxnRegistration,
     ) -> Result<BoxedSpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation>, SpaceTxnError>
     {
+        let metered = registration.is_metered();
         let inner = self.inner.begin(lock_keys, registration).await?;
         let index = {
             let mut record = self.record.lock().expect("the record lock");
             record.begins.push(lock_keys.to_vec());
+            record.metered.push(metered);
             let index = record.begins.len() - 1;
             note_usage(
                 &mut record,

@@ -158,8 +158,8 @@ The gate `scripts/check-reified-rspaces-proofs.sh` copies the tree into a scratc
 3. **Headlines.** Each `Print Assumptions` line prints `Closed under the global context`. The gate expects 17 for EventCorrelation.v and 6 for VolatileSweep.v.
 4. **Kernel check.** `rocqchk -o -R . '' <module>` checks the compiled `.vo` file and each of its dependencies again. The context summary must report `Axioms: <none>`, no constant that relies on type-in-type, no unsafe fixpoint, and no assumed positivity.
 5. **Project.** `make -j1` builds the library `ReifiedRSpaces` from `_CoqProject`, and `rocqchk -o -Q theories ReifiedRSpaces` checks it.
-6. **Total.** The count of closed headlines is 115 over 11 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 67 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decision-46), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45)). `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)), and `LegacyCharges.v` has 2 (section [11.14](#1114-legacy-charges-of-decision-45)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
-7. **Negative controls.** The 75 mutants fail in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 29 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decision-46), [11.12](#1112-re-entry-of-decision-43), [11.13](#1113-peek-re-store-of-decision-45) and [11.14](#1114-legacy-charges-of-decision-45) hold 5, 1, 3, 3 and 5. The 11 pristine modules compile first.
+6. **Total.** The count of closed headlines is 115 over 11 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 67 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decisions-46-and-47), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45)). `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)), and `LegacyCharges.v` has 2 (section [11.14](#1114-legacy-charges-of-decision-45)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
+7. **Negative controls.** The 75 mutants fail in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 29 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decisions-46-and-47), [11.12](#1112-re-entry-of-decision-43), [11.13](#1113-peek-re-store-of-decision-45) and [11.14](#1114-legacy-charges-of-decision-45) hold 5, 1, 3, 3 and 5. Decision 47 later replaces the mutant of section [11.11](#1111-native-execution-of-decisions-46-and-47) with two (Table 47). The 11 pristine modules compile first.
 
 The last host run printed `reified-rspaces proofs: PASS=53 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d45/option-p-gates/proofs.log`).
 The `Print Assumptions` lines are [lines 7578 to 7594 of EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v#L7578-L7594) and [lines 1744 to 1749 of VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v#L1744-L1749).
@@ -446,7 +446,7 @@ It shows that a passing check depends on the rule that the control changes [[DLS
 
 The script `scripts/verify-reified/rocq-negative-controls.py` holds 75 mutants.
 Table 12 holds 29 and Table 39 of section [11.5](#115-negative-controls-of-p4) holds 29.
-Table 45 of section [11.10](#1110-metering-of-decision-42) holds 5, and Table 47 of section [11.11](#1111-native-execution-of-decision-46) holds 1.
+Table 45 of section [11.10](#1110-metering-of-decision-42) holds 5, and Table 47 of section [11.11](#1111-native-execution-of-decisions-46-and-47) held 1, and holds 2 since decision 47.
 Table 50 of section [11.12](#1112-re-entry-of-decision-43) and Table 55 of section [11.13](#1113-peek-re-store-of-decision-45) hold 3 each, and Table 59 of section [11.14](#1114-legacy-charges-of-decision-45) holds 5.
 Each mutant replaces text that must occur exactly once in a scratch copy of its module, so a stale mutant fails.
 The control passes only when the mutated copy fails to compile and the first error lies inside one of the expected declarations.
@@ -1351,7 +1351,7 @@ P4 proves eleven groups of claims, with 80 Rocq headlines (Q1 to Q80) and 13 TLA
 - **Factories and handles.** The family indices, the constructors, the space ids, and the creation are deterministic. A persistent call aborts, and handle calls merge like contract calls (Q48 to Q55, U5 to U8).
 - **The refresh of I-20.** The strict decode of a refreshed marker tuple is the decode of the model, and it commutes with substitution (Q56 to Q58).
 - **Metering.** An operation reserves each read and copy before it makes it, and no reservation follows its commit. Its charges do not depend on the list order of the store or on unread payloads (Q59 to Q66, section [11.10](#1110-metering-of-decision-42)).
-- **Native execution.** Native play and native replay reject a space deploy at one point, before any space work (Q67, section [11.11](#1111-native-execution-of-decision-46)).
+- **Native execution.** Native play and a bound native replay runtime run a space deploy. A native replay runtime that is not bound yet fails closed (Q67 as decision 47 amends it, section [11.11](#1111-native-execution-of-decisions-46-and-47)).
 - **Re-entry.** A re-issued persistent operation keeps the order of its first round and re-enters at its place (Q68 to Q77, U9 to U12, section [11.12](#1112-re-entry-of-decision-43)).
 - **Peek re-store.** A peek fire removes what the host removes, and the agent stores the record again (Q78, section [11.13](#1113-peek-re-store-of-decision-45)).
 - **Legacy charges.** A space job makes the legacy charges and the stop of its host program (Q79, Q80, U13, section [11.14](#1114-legacy-charges-of-decision-45)).
@@ -1720,16 +1720,16 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 | Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3782-4364` | Q68 to Q77, U1 to U3, and U9 to U12 |
 | Peek re-store (decision 45) | `prop_queue_restore_realizes_plan` (1) | `reified_p4_props.rs:4716` | Q78 |
 | Legacy charges (decision 45, Option P) | `prop_legacy_charges_equal_charging_rspace`, `prop_legacy_chain_log_is_host_order`, `prop_legacy_replay_stops_with_play` (3) | `reified_legacy_charges.rs:173-783` | Q79 and Q80, U13 for the last two |
-| Native execution | `reified_native_play_rejects_a_space_deploy_before_any_space_work`, `reified_native_replay_reproduces_the_rejection_of_play`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:287-320` | Q67 |
+| Native execution | `reified_native_play_runs_a_space_deploy`, `reified_native_replay_reproduces_a_space_deploy`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:338-412` | Q67 |
 | I-20 | `marker_forging_grants_no_capability` (`reified_marker_recognition.rs:660`), `reified_encoding_roundtrip` (`reified_encoding.rs:158`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1188`) (3) | Two test files of P2 | Q56 to Q58 |
 
 *Table 41. The 27 witness tests of phase P4.*
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1955` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1720` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1770` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1954` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1719` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1769` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:193` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:513` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
@@ -1779,7 +1779,7 @@ Each run printed `test result: ok` with 0 failures (`target/verification/reified
 | `rholang/tests/reified_queue_source.rs` | 1 | A source program end to end |
 | `rholang/tests/reified_p4_props.rs` | 78 | The properties of section [11.6](#116-property-based-tests) and of decisions 43 and 45 |
 | `rholang/tests/reified_p4_smoke.rs` | 1 | A smoke test of play and replay |
-| `rholang/tests/reified_native_fail_closed.rs` | 3 | Native play and native replay of a space deploy and of a host program (section [11.11](#1111-native-execution-of-decision-46)) |
+| `rholang/tests/reified_native_fail_closed.rs` | 3 | Native play and native replay of a space deploy and of a host program (section [11.11](#1111-native-execution-of-decisions-46-and-47)) |
 | `rholang/tests/reified_legacy_charges.rs` | 3 | The legacy charges of Option P against `ChargingRSpace` and in replay (section [11.14](#1114-legacy-charges-of-decision-45)) |
 
 The suite `reified_queue_replay.rs` also holds `space_queue_out_of_phlo_sweep_replays_equal`, the regression test of the [replay finding](findings/space-replay-out-of-phlo.md), so its last run printed 8 tests.
@@ -1898,33 +1898,41 @@ Decision 42 changes no state, no event, and no outcome of an operation.
 So the models of sections [11.3](#113-rocq-models-of-p4) and [11.4](#114-tla-models-of-p4) do not change.
 The suites of Table 42 pass with their earlier assertions.
 
-### 11.11 Native execution of decision 46
+### 11.11 Native execution of decisions 46 and 47
 
-[Decision 46](decision-register.md#decision-46) makes spaces fail closed in native execution.
-Native play and native replay reject the first space operation of a deploy with `SpacesUnsupportedInNativeExecution`, before any space work.
-The headline Q67, `native_execution_fails_closed` of `SpaceRefs.v`, states the rule.
-A space entry in native play equals the same entry in native replay, for every staged list and every replay state.
-Both stage no operation and give one error.
-Outside native execution, a host runtime runs the job unchanged.
+[Decision 46](decision-register.md#decision-46) made spaces fail closed in native execution: native play and native replay rejected the first space operation of a deploy with `SpacesUnsupportedInNativeExecution`.
+[Decision 47](decision-register.md#decision-47) replaces that rule, and native play and native replay now run spaces.
+Native play stages and commits a space operation with the metered reads of the substrate.
+Native replay runs each staged operation against its journal row through the native backend of the native replay session.
 
-*Table 47. The Rocq mutant of decision 46.*
+The headline Q67, `native_execution_runs_spaces` of `SpaceRefs.v`, states the availability rule of decision 47.
+Native play runs a space entry as legacy execution runs it, and a bound native replay runtime runs it as native play.
+A native replay runtime that is not bound yet, and a detached runtime, stage nothing and fail with `RuntimeUnavailable`.
+The headline `native_execution_fails_closed` of decision 46 stays in `SpaceRefs.v` as a comment.
+
+*Table 47. The Rocq mutants of decision 47.*
 
 | Id | What the mutant changes | Must fail in |
 |---|---|---|
-| `sr-native-play-runs-spaces` | A host runtime runs space jobs in native play, as before the decision. | `native_execution_fails_closed` |
+| `sr-native-play-rejects-spaces` | A host runtime rejects space jobs in native play, as decision 46 did. | `native_execution_runs_spaces` |
+| `sr-unbound-native-replay-runs` | A native replay runtime runs space jobs before its environment binds it. | `native_execution_runs_spaces` |
 
-*Table 48. The tests of decision 46.*
+The mutant of decision 46, `sr-native-play-runs-spaces`, is retired with its headline, because it states the rule of decision 47.
+
+*Table 48. The tests of native execution.*
 
 | Test | Location | What it checks |
 |---|---|---|
-| `reified_native_play_rejects_a_space_deploy_before_any_space_work` | `reified_native_fail_closed.rs:287` | A native play of a factory call fails with the code, and no channel of a space enters the hot store (Q67). |
-| `reified_native_replay_reproduces_the_rejection_of_play` | `reified_native_fail_closed.rs:297` | The native replay environment replays the play journal: the same error, a complete journal, the phlo usage of play, and equal authority events and byte observations (Q67). |
-| `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:320` | A program without spaces plays and replays natively without an error, with a complete journal and equal usage (Q67). |
-| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:520` | A host runtime runs space jobs when its budget runs no native deploy. |
+| `reified_native_play_runs_a_space_deploy` | `reified_native_fail_closed.rs:338` | A native play of a factory call runs without an error and stores the records of the config and of the space counter (Q67). |
+| `reified_native_replay_reproduces_a_space_deploy` | `reified_native_fail_closed.rs:384` | The native replay environment replays the play journal: no error, a complete journal, the phlo usage of play, equal authority events and byte observations, and the post-state root of play (Q67). |
+| `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:412` | A program without spaces plays and replays natively without an error, with a complete journal, equal usage and the post-state root of play (Q67). |
+| `native_replay_runtime_fails_closed` | `reified/runtime.rs:554` | A native replay runtime that is not bound yet fails every space entry with `RuntimeUnavailable`. |
+| `native_replay_runtime_binds_once_and_resets_its_scope` | `reified/runtime.rs:572` | The environment binds a native replay runtime once, and its evaluation scope resets the committed parents of its store. |
+| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:611` | A host runtime runs space jobs when its budget runs no native deploy. |
 
-**The hazard without the rule.** A run of the suite with the guard of `ReifiedRuntime::host` removed (`target/verification/reified-rspaces/d46/mutant-no-native-guard.log`) shows it.
+**The hazard of decision 46.** A run of the suite with the guard of `ReifiedRuntime::host` removed and without a native backend (`target/verification/reified-rspaces/d46/mutant-no-native-guard.log`) shows why decision 46 failed closed.
 Native play then ran the space operation without an error, and native replay failed with `native replay has incomplete operations`.
-That is the divergence that the proposer's self-certification turned into a quarantine before the decision.
+Decision 47 removes the guard and adds the native backend in one change, so native replay replays every journal row of native play.
 
 ### 11.12 Re-entry of decision 43
 
@@ -2561,7 +2569,7 @@ The 20 Rocq negative controls fail inside their expected lemmas, and the 6 contr
 
 ### 12.9 The receive queries and the allocation jobs
 
-`query_source_routes_inner_channel` (`SpaceRefs.v:1292`) states the route of a receive query.
+`query_source_routes_inner_channel` (`SpaceRefs.v:1344`) states the route of a receive query.
 `prop_query_bind_routes_inner_channel` (the hooks) and `prop_query_source_routes_inner_channel` (`rholang/tests/reified_hooks_p5.rs`) test it.
 `rholang/tests/reified_hooks_p5.rs` holds 9 tests and 1 property, and the five Rocq negative controls fail inside the headline.
 The test `reducer_space_routing_allocation_jobs_give_index_names` checks that each allocation job stamps the authority of the process that evaluates the `new` on the allocator record.

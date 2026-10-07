@@ -541,8 +541,7 @@ impl ReducerCore {
     ///    order of the first binder of each space (`BinderGroups`).
     /// 3. Each group runs one allocation job of `agent` (`ReifiedRuntime::allocate`), in group
     ///    order. The job reads the config of the space, so a missing space fails with
-    ///    `DanglingHandle`, and native execution fails with `SpacesUnsupportedInNativeExecution`
-    ///    (decision 46).
+    ///    `DanglingHandle`. Native play and native replay run the job too (decision 47).
     /// 4. A store without an allocator answers `Baseline`: each binder of the group keeps the
     ///    draw `r` of HEAD as its tail, and `GPrivate(r)` becomes `GPrivate(E0‖N‖sid‖r)`. An
     ///    Array or a Vector space gives one index `i` for each binder of the group, in binder
@@ -2358,7 +2357,7 @@ mod tests {
                     .reified_produce(name.clone(), datum(vec![int(1)]), false, authority())
                     .await
             ),
-            expected("SpacesUnsupportedInNativeExecution")
+            expected("RuntimeUnavailable")
         );
 
         let hosted = hosted().await;
@@ -3722,7 +3721,7 @@ mod tests {
         let mut replay = ReducerCore::clone(&detached.reducer);
         replay.reified = native_replay();
         let (names, _) = allocate_with(&replay, &[Some(counted)], b"fail", &authority()).await;
-        assert_eq!(code(names), expected("SpacesUnsupportedInNativeExecution"));
+        assert_eq!(code(names), expected("RuntimeUnavailable"));
         let (names, _) = allocate_with(&replay, &[None, None], b"fail", &authority()).await;
         assert!(names.is_ok(), "a new without a space runs no job");
     }

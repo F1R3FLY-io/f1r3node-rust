@@ -1,11 +1,13 @@
-// Decision 46 (post-merge Part B, Stage 1): spaces fail closed in native execution.
+// Spaces in native execution (decision 47).
 //
 // Since the merge of feature/cost-accounted-rho, `create_native_replay_env` is production code:
-// proposer self-certification and validator replay run every offered deploy in it, and its
-// Reified runtime rejects every space operation. Native play now rejects the first space
-// operation of a deploy with the same error, before any space work. So the deploy fails in play
-// with no space journal row, and native replay reproduces the failure: the same error, a complete
-// journal, and the same phlo usage. A program without spaces plays and replays natively as
+// proposer self-certification and validator replay run every offered deploy in it. Decision 46
+// made spaces fail closed there, and this file tested that rule. Decision 47 runs spaces in
+// native execution: native play stages and commits them with metered reads, and native replay
+// replays each staged operation against its journal row through the native backend of the
+// session. So a space deploy plays natively, and native replay reproduces it: no error, a
+// complete journal, the phlo usage of play, the same authority events and byte observations,
+// and the post-state root of play. A program without spaces plays and replays natively as
 // before.
 
 use std::collections::HashMap;
@@ -28,7 +30,6 @@ use rholang::rust::interpreter::accounting::{
     NativeRuntimeConfig, RuntimeBudget,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
@@ -38,6 +39,7 @@ use rholang::rust::interpreter::rho_runtime::{
     create_native_replay_env, create_rho_runtime, RhoRuntime,
 };
 use rholang::rust::interpreter::spaces::namespace::{self, ReifiedId};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -63,13 +65,18 @@ const SPACE_PROGRAM: &str =
 /// A deploy without spaces, the control.
 const HOST_PROGRAM: &str = r#"new ch in { ch!(1) | for (@x <- ch) { Nil } }"#;
 
-/// The error of a space operation in native execution, as a deploy reports it.
-fn native_execution_error() -> InterpreterError {
-    InterpreterError::ReduceError(
-        "reified:SpacesUnsupportedInNativeExecution: native execution does not support Reified RSpaces"
-            .to_owned(),
-    )
-}
+// Disabled by decision 47: native execution runs spaces, so no space operation fails with this
+// error.
+//
+// ```
+// /// The error of a space operation in native execution, as a deploy reports it.
+// fn native_execution_error() -> InterpreterError {
+//     InterpreterError::ReduceError(
+//         "reified:SpacesUnsupportedInNativeExecution: native execution does not support Reified RSpaces"
+//             .to_owned(),
+//     )
+// }
+// ```
 
 type RhoHistoryRepository = Arc<
     Box<
@@ -155,9 +162,13 @@ struct Played {
     result: EvaluateResult,
     log: Vec<Event>,
     history: RhoHistoryRepository,
-    /// The channels of the hot store that belong to a native space: every Reified id but the
-    /// 2-byte op channels, whose system processes the runtime installs.
-    space_channels: usize,
+    /// The kinds of the channels of the hot store that belong to a native space: every Reified
+    /// id but the 2-byte op channels, whose system processes the runtime installs. The hot
+    /// changes (`HotStore::to_map`) list only the channels with a data entry, so a channel that
+    /// holds only a continuation is absent.
+    space_channels: Vec<&'static str>,
+    /// The post-state root of play.
+    root: Blake2b256Hash,
 }
 
 /// Plays `term` as a native deploy on a fresh runtime over the empty state. The history stays at
@@ -188,29 +199,44 @@ async fn play(term: &str) -> Played {
         .await
         .expect("native play evaluates");
     let log = runtime.create_soft_checkpoint().await.log;
-    let space_channels = runtime
+    let mut space_channels: Vec<&'static str> = runtime
         .get_hot_changes()
         .await
         .keys()
         .flatten()
-        .filter(|channel| {
-            matches!(
-                namespace::reified_id_of(channel),
-                Some(id) if !matches!(id, ReifiedId::Op(_))
-            )
+        .filter_map(|channel| match namespace::reified_id_of(channel)? {
+            ReifiedId::Op(_) => None,
+            ReifiedId::Config(_) => Some("C"),
+            ReifiedId::SpaceCounter(_) => Some("S"),
+            ReifiedId::CollectionCounter(..) => Some("S(k)"),
+            ReifiedId::Data(..) => Some("D"),
+            ReifiedId::PathIndex(..) => Some("I"),
+            ReifiedId::Allocator(_) => Some("A"),
+            ReifiedId::Handle(_) => Some("H"),
+            ReifiedId::Name(..) => Some("N"),
+            ReifiedId::Matcher(..) => Some("X"),
+            ReifiedId::Body(..) => Some("B"),
+            ReifiedId::Reserved(..) => Some("reserved"),
         })
-        .count();
+        .collect();
+    space_channels.sort_unstable();
+    let root = runtime.create_checkpoint().await.root;
     Played {
         result,
         log: log.into_iter().collect(),
         history,
         space_channels,
+        root,
     }
 }
 
 /// Replays the play in the native replay environment, as proposer self-certification and
-/// validator replay do, and returns the replay result.
-async fn replay(played: &Played, term: &str) -> (EvaluateResult, Result<(), String>, u64) {
+/// validator replay do. Returns the replay result, the check of a complete journal, the
+/// completed phlo usage and the exported post-state root.
+async fn replay(
+    played: &Played,
+    term: &str,
+) -> (EvaluateResult, Result<(), String>, u64, Blake2b256Hash) {
     let recording = played
         .result
         .native_budget_recording
@@ -280,23 +306,85 @@ async fn replay(played: &Played, term: &str) -> (EvaluateResult, Result<(), Stri
         .await
         .map_err(|error| error.to_string());
     let usage = environment.completed_usage().await.unwrap_or(u64::MAX);
-    (replayed, complete, usage)
+    let root = environment
+        .export()
+        .await
+        .expect("the native replay environment exports its state")
+        .root()
+        .clone();
+    (replayed, complete, usage, root)
 }
 
+// Disabled by decision 47: native play runs the factory call of a space deploy, so it rejects
+// nothing. Its successor is `reified_native_play_runs_a_space_deploy`.
+//
+// ```
+// #[tokio::test]
+// async fn reified_native_play_rejects_a_space_deploy_before_any_space_work() {
+//     let played = play(SPACE_PROGRAM).await;
+//     assert_eq!(played.result.errors, vec![native_execution_error()]);
+//     assert_eq!(
+//         played.space_channels, 0,
+//         "native play staged no record on a channel of a space"
+//     );
+// }
+// ```
+
+/// Decision 47: native play runs the factory call. It stages the config record C(sid), the space
+/// counter S(sid) and the handle continuation on H(sid). The hot changes list the two channels
+/// with a record. H(sid) holds only the continuation, which the replay test checks through the
+/// complete journal and the post-state root.
 #[tokio::test]
-async fn reified_native_play_rejects_a_space_deploy_before_any_space_work() {
+async fn reified_native_play_runs_a_space_deploy() {
     let played = play(SPACE_PROGRAM).await;
-    assert_eq!(played.result.errors, vec![native_execution_error()]);
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
     assert_eq!(
-        played.space_channels, 0,
-        "native play staged no record on a channel of a space"
+        played.space_channels,
+        vec!["C", "S"],
+        "native play stored the records of C(sid) and S(sid)"
     );
 }
 
+// Disabled by decision 47: native replay no longer reproduces a rejection, because play rejects
+// nothing. Its successor is `reified_native_replay_reproduces_a_space_deploy`.
+//
+// ```
+// #[tokio::test]
+// async fn reified_native_replay_reproduces_the_rejection_of_play() {
+//     let played = play(SPACE_PROGRAM).await;
+//     let (replayed, complete, usage) = replay(&played, SPACE_PROGRAM).await;
+//     assert_eq!(replayed.errors, played.result.errors);
+//     assert_eq!(
+//         complete,
+//         Ok(()),
+//         "replay consumed every journal row of play"
+//     );
+//     let recording = played
+//         .result
+//         .native_budget_recording
+//         .as_ref()
+//         .expect("native play records its budget");
+//     assert_eq!(usage, recording.used, "replay used the phlo of play");
+//     assert_eq!(replayed.authority_events, played.result.authority_events);
+//     assert_eq!(
+//         replayed.byte_observations.rows,
+//         played.result.byte_observations.rows
+//     );
+// }
+// ```
+
+/// Decision 47: native replay replays each staged operation of the factory against its journal
+/// row. It reproduces play: no error, a complete journal, the phlo usage of play, the same
+/// authority events and byte observations, and the post-state root of play.
 #[tokio::test]
-async fn reified_native_replay_reproduces_the_rejection_of_play() {
+async fn reified_native_replay_reproduces_a_space_deploy() {
     let played = play(SPACE_PROGRAM).await;
-    let (replayed, complete, usage) = replay(&played, SPACE_PROGRAM).await;
+    let (replayed, complete, usage, root) = replay(&played, SPACE_PROGRAM).await;
+    assert!(replayed.errors.is_empty(), "{:?}", replayed.errors);
     assert_eq!(replayed.errors, played.result.errors);
     assert_eq!(
         complete,
@@ -314,6 +402,10 @@ async fn reified_native_replay_reproduces_the_rejection_of_play() {
         replayed.byte_observations.rows,
         played.result.byte_observations.rows
     );
+    assert_eq!(
+        root, played.root,
+        "replay reached the post-state root of play"
+    );
 }
 
 #[tokio::test]
@@ -324,9 +416,10 @@ async fn reified_native_host_program_plays_and_replays_unchanged() {
         "{:?}",
         played.result.errors
     );
-    let (replayed, complete, usage) = replay(&played, HOST_PROGRAM).await;
+    let (replayed, complete, usage, root) = replay(&played, HOST_PROGRAM).await;
     assert!(replayed.errors.is_empty(), "{:?}", replayed.errors);
     assert_eq!(complete, Ok(()));
+    assert_eq!(root, played.root);
     let recording = played
         .result
         .native_budget_recording

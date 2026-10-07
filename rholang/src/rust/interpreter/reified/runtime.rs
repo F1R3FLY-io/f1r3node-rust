@@ -2,16 +2,18 @@
 //!
 //! `create_rho_env` captures the concrete host space before the `DeterministicRSpace` wrap
 //! and makes a `Host` runtime with one [`ParSpaceStore`] (A17). Host clones share all state, so
-//! the handle sees the store that the reducer sees. `ReducerCore::new` and
-//! `DebruijnInterpreter::new` make a `Detached` runtime, and the native replay environment makes
-//! a `NativeReplay` runtime. In those modes every space operation fails closed. The runtime
-//! holds no cache, so nothing in it survives a reset.
+//! the handle sees the store that the reducer sees. A `Host` runtime runs spaces in legacy
+//! execution and in native play (decision 47). `ReducerCore::new` and
+//! `DebruijnInterpreter::new` make a `Detached` runtime, in which every space operation fails
+//! closed. The native replay environment makes a `NativeReplay` runtime and binds it to the
+//! store of its native replay session (decision 47). The runtime holds no cache, so nothing in
+//! it survives a reset.
 //!
 //! Each space operation runs as an `Intent::Space` job (readiness review S9) with one
 //! transaction and at most one commit (S3). The job gets the host-work budget that the
 //! scheduler captured before it submitted the job (S5).
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::space_store_handle::{SpaceStoreHandle, SpaceTxnHost};
@@ -37,8 +39,9 @@ pub enum ReifiedRuntimeMode {
     Host,
     /// A reducer without a host store: every space operation fails with `RuntimeUnavailable`.
     Detached,
-    /// The native replay environment: every space operation fails with
-    /// `SpacesUnsupportedInNativeReplay` (I-13).
+    /// The native replay environment (decision 47). The runtime runs spaces over the native
+    /// replay session after the environment binds it, and fails with `RuntimeUnavailable`
+    /// before.
     NativeReplay,
 }
 
@@ -48,7 +51,12 @@ enum RuntimeState {
         budget: RuntimeBudget,
     },
     Detached,
-    NativeReplay,
+    // The environment registers the runtime with its system processes before its native
+    // replay session exists, so it binds the store of the session and its budget once,
+    // right after it builds the session (decision 47, W2).
+    NativeReplay {
+        bound: OnceLock<(ParSpaceStore, RuntimeBudget)>,
+    },
 }
 
 /// The Reified RSpaces runtime of a reducer. The reducer holds it in `ReducerCore::reified`.
@@ -62,39 +70,75 @@ impl ReifiedRuntime {
         match self.state {
             RuntimeState::Host { .. } => ReifiedRuntimeMode::Host,
             RuntimeState::Detached => ReifiedRuntimeMode::Detached,
-            RuntimeState::NativeReplay => ReifiedRuntimeMode::NativeReplay,
+            RuntimeState::NativeReplay { .. } => ReifiedRuntimeMode::NativeReplay,
         }
     }
 
-    /// Starts a root evaluation (FR-5', readiness review S4). In the `Host` mode the handle
-    /// forgets the parent orders that committed before, so a deploy that the runtime evaluates
-    /// again commits under the same parent orders. The call only resets an in-memory tracker.
-    /// It makes no event, no charge and no random draw. The other modes do nothing.
+    /// Starts a root evaluation (FR-5', readiness review S4). In the `Host` mode and in a bound
+    /// `NativeReplay` mode the handle forgets the parent orders that committed before, so a
+    /// deploy that the runtime evaluates again commits under the same parent orders. A native
+    /// replay environment keeps its store when it restores a checkpoint, so it resets the
+    /// tracker here too (decision 47, W2). The call only resets an in-memory tracker. It makes
+    /// no event, no charge and no random draw. The other modes do nothing.
     pub fn begin_evaluation_scope(&self) {
         match &self.state {
             RuntimeState::Host { store, .. } => store.begin_evaluation_scope(),
-            RuntimeState::Detached | RuntimeState::NativeReplay => {}
+            RuntimeState::NativeReplay { bound } => {
+                if let Some((store, _)) = bound.get() {
+                    store.begin_evaluation_scope();
+                }
+            }
+            RuntimeState::Detached => {}
         }
     }
 
-    // The store and the budget of a host runtime. Native play and native replay both fail
-    // closed (decision 46): a host runtime whose budget runs a native deploy rejects a space
-    // operation with the code of the native replay runtime, before any space work, so a space
-    // deploy fails at one point in play and in replay.
+    // The store and the budget of a runtime that runs space jobs: a host runtime, in legacy
+    // execution and in native play, and a bound native replay runtime (decision 47).
     fn host(&self) -> Result<(ParSpaceStore, RuntimeBudget), SpaceError> {
         match &self.state {
-            RuntimeState::Host { budget, .. } if budget.native_execution_active() => {
-                Err(SpaceError::SpacesUnsupportedInNativeExecution)
-            }
+            // Disabled by decision 47: native play runs spaces, and its transactions read
+            // through the metered reads of the substrate (`SpaceEnv::begin`). Native replay
+            // runs them over the native replay session.
+            //
+            // ```
+            // RuntimeState::Host { budget, .. } if budget.native_execution_active() => {
+            //     Err(SpaceError::SpacesUnsupportedInNativeExecution)
+            // }
+            // ```
             RuntimeState::Host { store, budget } => Ok((store.clone(), budget.clone())),
             RuntimeState::Detached => Err(SpaceError::RuntimeUnavailable),
-            RuntimeState::NativeReplay => Err(SpaceError::SpacesUnsupportedInNativeExecution),
+            RuntimeState::NativeReplay { bound } => {
+                bound.get().cloned().ok_or(SpaceError::RuntimeUnavailable)
+            }
         }
     }
 
     /// Fails as every space entry point fails when this runtime cannot run a space job: in a
-    /// detached runtime, and in native play and native replay (decision 46).
+    /// detached runtime, and in a native replay runtime that is not bound yet.
     pub fn ensure_available(&self) -> Result<(), SpaceError> { self.host().map(drop) }
+
+    /// Binds a native replay runtime to the space store of its native replay session and to the
+    /// budget of its environment (decision 47, W2). The environment registers the runtime with
+    /// its system processes before the session exists, so it binds the runtime once, right
+    /// after it builds the session. A second bind, or the bind of another mode, is a bug.
+    pub fn bind_native_replay(
+        &self,
+        store: ParSpaceStore,
+        budget: RuntimeBudget,
+    ) -> Result<(), InterpreterError> {
+        match &self.state {
+            RuntimeState::NativeReplay { bound } => bound.set((store, budget)).map_err(|_| {
+                InterpreterError::BugFoundError(
+                    "the native replay runtime of Reified RSpaces is already bound".to_owned(),
+                )
+            }),
+            RuntimeState::Host { .. } | RuntimeState::Detached => {
+                Err(InterpreterError::BugFoundError(
+                    "only a native replay runtime binds a native replay session".to_owned(),
+                ))
+            }
+        }
+    }
 
     /// The environment of a space job. `host_work` is the host-work budget of the deploy that
     /// the scheduler captured for the job.
@@ -171,8 +215,8 @@ impl ReifiedRuntime {
     /// names of a `new` inside a `use` block of an Array or Vector space, or of its handle
     /// method `gensym`. An outer store without an allocator answers [`Allocation::Baseline`]:
     /// the job commits nothing, and the result is `None`, so the reducer draws the names as it
-    /// does for every `new`. Native play and native replay fail before any space work
-    /// (decision 46), as every space entry does.
+    /// does for every `new`. Native play and native replay run the job as every space entry
+    /// runs it (decision 47).
     pub async fn allocate(
         &self,
         agent: Arc<dyn SpaceAgent>,
@@ -253,10 +297,13 @@ pub fn unavailable() -> Arc<ReifiedRuntime> {
     })
 }
 
-/// A `NativeReplay` runtime (I-13).
+/// A `NativeReplay` runtime that is not bound yet (decision 47).
+/// [`ReifiedRuntime::bind_native_replay`] binds it to the store of the native replay session.
 pub fn native_replay() -> Arc<ReifiedRuntime> {
     Arc::new(ReifiedRuntime {
-        state: RuntimeState::NativeReplay,
+        state: RuntimeState::NativeReplay {
+            bound: OnceLock::new(),
+        },
     })
 }
 
@@ -501,19 +548,63 @@ mod tests {
         fails_closed(runtime, "RuntimeUnavailable").await;
     }
 
+    // Decision 47: a native replay runtime that is not bound yet has no store, so every space
+    // entry fails closed as in a detached runtime.
     #[tokio::test]
     async fn native_replay_runtime_fails_closed() {
         let runtime = native_replay();
         assert_eq!(runtime.mode(), ReifiedRuntimeMode::NativeReplay);
         assert_eq!(
             runtime.space_env(None).err(),
-            Some(SpaceError::SpacesUnsupportedInNativeExecution)
+            Some(SpaceError::RuntimeUnavailable)
         );
         assert_eq!(
             runtime.ensure_available(),
-            Err(SpaceError::SpacesUnsupportedInNativeExecution)
+            Err(SpaceError::RuntimeUnavailable)
         );
-        fails_closed(runtime, "SpacesUnsupportedInNativeExecution").await;
+        fails_closed(runtime, "RuntimeUnavailable").await;
+    }
+
+    // Decision 47, W2: the environment binds a native replay runtime once. The bound runtime
+    // runs space jobs over its store, and `begin_evaluation_scope` resets the committed parents
+    // of that store, because a restore of the environment keeps the store.
+    #[tokio::test]
+    async fn native_replay_runtime_binds_once_and_resets_its_scope() {
+        let runtime = native_replay();
+        let store = SpaceStoreHandle::new(rspace().await);
+        runtime
+            .bind_native_replay(store.clone(), budget())
+            .expect("the first bind succeeds");
+        assert!(matches!(
+            runtime.bind_native_replay(store, budget()),
+            Err(InterpreterError::BugFoundError(_))
+        ));
+        assert!(matches!(
+            unavailable().bind_native_replay(SpaceStoreHandle::new(rspace().await), budget()),
+            Err(InterpreterError::BugFoundError(_))
+        ));
+        assert_eq!(runtime.mode(), ReifiedRuntimeMode::NativeReplay);
+        assert_eq!(runtime.ensure_available(), Ok(()));
+        let env = runtime
+            .space_env(None)
+            .expect("a bound native replay runtime has a space environment");
+        let lock = namespace::gprivate(namespace::config_channel(space()));
+        let order = OperationOrder {
+            session: [5; 32],
+            path: CausalPath::from(vec![(0, 0)]),
+        };
+        let commit = || {
+            let store = env.store.clone();
+            let lock = lock.clone();
+            operation_context::scope(order.clone(), async move {
+                let mut txn = store.begin(std::slice::from_ref(&lock)).await?;
+                txn.commit().await.map(|receipt| receipt.ops.len())
+            })
+        };
+        assert_eq!(commit().await, Ok(0));
+        assert_eq!(commit().await, Err(SpaceTxnError::ParentOrderReused));
+        runtime.begin_evaluation_scope();
+        assert_eq!(commit().await, Ok(0));
     }
 
     #[tokio::test]

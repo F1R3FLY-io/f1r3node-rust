@@ -331,7 +331,7 @@ mod tests {
     async fn reified_factory_fails_closed_without_a_host_runtime() {
         for (runtime, code) in [
             (unavailable(), "RuntimeUnavailable"),
-            (native_replay(), "SpacesUnsupportedInNativeExecution"),
+            (native_replay(), "RuntimeUnavailable"),
         ] {
             let fixture = Fixture::with_runtime(runtime).await;
             let ret = reply_name(1);

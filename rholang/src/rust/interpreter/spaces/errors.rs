@@ -48,10 +48,13 @@ pub enum SpaceError {
     // /// A space operation in the native replay environment (I-13).
     // #[error("native replay does not support Reified RSpaces")]
     // SpacesUnsupportedInNativeReplay,
-    /// A space operation in native execution, native play or native replay (I-13 as amended by
-    /// decision 46). It fails before any space work, so play and replay fail at one point.
-    #[error("native execution does not support Reified RSpaces")]
-    SpacesUnsupportedInNativeExecution,
+    // Retired by decision 47: native play and native replay run spaces. A runtime that cannot
+    // run a space job, a detached runtime or a native replay runtime that is not bound yet,
+    // fails with `RuntimeUnavailable`.
+    // /// A space operation in native execution, native play or native replay (I-13 as amended
+    // /// by decision 46). It fails before any space work, so play and replay fail at one point.
+    // #[error("native execution does not support Reified RSpaces")]
+    // SpacesUnsupportedInNativeExecution,
     /// A handle whose space has no config record.
     #[error("the space of this handle does not exist")]
     DanglingHandle,
@@ -123,7 +126,8 @@ impl SpaceError {
             SpaceError::TheoryUnavailable(_) => "TheoryUnavailable",
             SpaceError::FamilyUnavailable { .. } => "FamilyUnavailable",
             SpaceError::RuntimeUnavailable => "RuntimeUnavailable",
-            SpaceError::SpacesUnsupportedInNativeExecution => "SpacesUnsupportedInNativeExecution",
+            // Retired by decision 47 with its variant.
+            // SpaceError::SpacesUnsupportedInNativeExecution => "SpacesUnsupportedInNativeExecution",
             SpaceError::DanglingHandle => "DanglingHandle",
             SpaceError::DanglingName => "DanglingName",
             SpaceError::CounterOverflow => "CounterOverflow",
@@ -245,7 +249,8 @@ mod tests {
                 inner: "bag".to_string(),
             },
             SpaceError::RuntimeUnavailable,
-            SpaceError::SpacesUnsupportedInNativeExecution,
+            // Retired by decision 47.
+            // SpaceError::SpacesUnsupportedInNativeExecution,
             SpaceError::DanglingHandle,
             SpaceError::DanglingName,
             SpaceError::CounterOverflow,

@@ -904,7 +904,7 @@
     },
     "P4": {
       "title": "P4: the hashmap:queue slice (namespace, record envelopes, counters and merges, the head-only queue, space references and routing, factories and native handles), the I-20 refresh of Encoding.v, and the metering rule of decision 42 (AgentReadCoverage.v), and the legacy charges of decision 45, Option P (LegacyCharges.v)",
-      "design": "p4-design-report E.1-E.3 with readiness review §4 and §6: persistent_op_call_aborts and space_already_exists_is_deterministic_abort replace space_already_exists_stops_reissue, and each of the four leaf extras covers a P4 entry (handle_dispatch_total, the family capability, the qualifier parse and the atomic commit). Plan revisions M-1, M-2 and I-20. Q# are Rocq headlines, U# are TLA+ invariants. The three I-20 headlines of Encoding.v map to the P2 tests that run the refresh. witness_tests lists deterministic unit tests of the P4 code. Decision 42 adds Q59 to Q66 (AgentReadCoverage.v), the three properties prop_agent_* and three witness tests, and prop_queue_plan_permutation_invariant also covers Q62 and Q63. Decision 46 adds Q67 (SpaceRefs.v) and the three tests of the native play and replay suite to the property table. Decision 45 (Option P) adds Q79 and Q80 (LegacyCharges.v), U13 (CheckpointReplay.tla), the three properties of reified_legacy_charges.rs, the unit tests of the legacy charges and of the chain, and the two legacy queue tests as witness tests.",
+      "design": "p4-design-report E.1-E.3 with readiness review §4 and §6: persistent_op_call_aborts and space_already_exists_is_deterministic_abort replace space_already_exists_stops_reissue, and each of the four leaf extras covers a P4 entry (handle_dispatch_total, the family capability, the qualifier parse and the atomic commit). Plan revisions M-1, M-2 and I-20. Q# are Rocq headlines, U# are TLA+ invariants. The three I-20 headlines of Encoding.v map to the P2 tests that run the refresh. witness_tests lists deterministic unit tests of the P4 code. Decision 42 adds Q59 to Q66 (AgentReadCoverage.v), the three properties prop_agent_* and three witness tests, and prop_queue_plan_permutation_invariant also covers Q62 and Q63. Decision 46 adds Q67 (SpaceRefs.v) and the three tests of the native play and replay suite to the property table. Decision 47 amends Q67 to native_execution_runs_spaces and renames two of those tests. Decision 45 (Option P) adds Q79 and Q80 (LegacyCharges.v), U13 (CheckpointReplay.tla), the three properties of reified_legacy_charges.rs, the unit tests of the legacy charges and of the chain, and the two legacy queue tests as witness tests.",
       "test_status": "required",
       "test_files": [
         "rholang/tests/reified_p4_props.rs",
@@ -1516,12 +1516,12 @@
         },
         "Q67": {
           "kind": "rocq",
-          "name": "native_execution_fails_closed",
+          "name": "native_execution_runs_spaces",
           "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
-          "statement": "Decision 46: native play and native replay reject a space entry at one point, with no staged operation and one error; outside native execution a host runtime runs the job unchanged.",
+          "statement": "Decision 47 (amends decision 46): native play runs a space entry as legacy execution runs it, and a native replay runtime that its environment bound runs it as native play, so play and replay stage the same operations; a native replay runtime that is not bound yet, and a detached runtime, stage nothing and fail with RuntimeUnavailable.",
           "tests": [
-            "reified_native_play_rejects_a_space_deploy_before_any_space_work",
-            "reified_native_replay_reproduces_the_rejection_of_play",
+            "reified_native_play_runs_a_space_deploy",
+            "reified_native_replay_reproduces_a_space_deploy",
             "reified_native_host_program_plays_and_replays_unchanged"
           ]
         },
@@ -2357,7 +2357,7 @@
         },
         {
           "number": 73,
-          "test": "reified_native_play_rejects_a_space_deploy_before_any_space_work",
+          "test": "reified_native_play_runs_a_space_deploy",
           "file": "rholang/tests/reified_native_fail_closed.rs",
           "covers": [
             "Q67"
@@ -2365,7 +2365,7 @@
         },
         {
           "number": 74,
-          "test": "reified_native_replay_reproduces_the_rejection_of_play",
+          "test": "reified_native_replay_reproduces_a_space_deploy",
           "file": "rholang/tests/reified_native_fail_closed.rs",
           "covers": [
             "Q67"
