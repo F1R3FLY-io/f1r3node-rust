@@ -309,4 +309,81 @@ mod tests {
         fn require_static_send_sync<T: Send + Sync + 'static>() {}
         require_static_send_sync::<FsHandlerEntry>();
     }
+
+    /// Every entry's `name` must be unique across FS_HANDLERS.
+    /// `migrated_handlers_match_registration_set` above checks
+    /// presence (every expected name appears) but not absence of
+    /// duplicates — two entries sharing a `name` would both pass the
+    /// presence check while silently masking that one of them has a
+    /// bug (wrong `urn_suffix` / `body_ref` / `dispatch` pointing at
+    /// the wrong handler).
+    #[test]
+    fn fs_handlers_names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                seen.insert(entry.name),
+                "duplicate FS_HANDLERS entry name `{}` — two \
+                 `#[distributed_slice(FS_HANDLERS)] static X_ENTRY: \
+                 FsHandlerEntry = FsHandlerEntry {{ name: \"{}\", \
+                 ... }}` declarations share the same canonical name. \
+                 Rename one or remove the duplicate.",
+                entry.name,
+                entry.name,
+            );
+        }
+    }
+
+    /// Every entry's `urn_suffix` must be unique across FS_HANDLERS.
+    /// Two entries sharing a `urn_suffix` would both produce the same
+    /// URN in `fs_handlers_to_definitions`, clobbering one entry's
+    /// Definition at `RhoDispatchMap` registration — a silent
+    /// dispatch regression.  (Slice 5.39's
+    /// `fs_handlers_to_definitions_urns_unique` catches this on the
+    /// Vec<Definition> output; pinning it on the FS_HANDLERS input
+    /// catches it one layer earlier with a clearer error message.)
+    #[test]
+    fn fs_handlers_urn_suffixes_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                seen.insert(entry.urn_suffix),
+                "duplicate FS_HANDLERS urn_suffix `{}` (entry name \
+                 `{}`).  Two handlers would register the same URN at \
+                 the dispatch_table; the second overwrites the first \
+                 silently.",
+                entry.urn_suffix,
+                entry.name,
+            );
+        }
+    }
+
+    /// Every entry's `body_ref` must be unique across FS_HANDLERS.
+    /// Two entries sharing a `body_ref` would collide in the
+    /// dispatcher's `HashMap<body_ref, handler>`, silently clobbering
+    /// one handler with the other depending on insertion order.
+    /// Analogous to the `fs_remove_dir_stays_trait_exempt` check in
+    /// `rho_runtime::tests` (which guards the stub's reserved
+    /// body_ref 58), but applied internally to FS_HANDLERS so a
+    /// typo in two handler entries' body_refs trips at test time
+    /// rather than at a hard-to-diagnose runtime dispatch mismatch.
+    #[test]
+    fn fs_handlers_body_refs_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                seen.insert(entry.body_ref),
+                "duplicate FS_HANDLERS body_ref {} — two entries \
+                 (one is `{}` / urn_suffix `{}`) share the same \
+                 body_ref value.  The dispatcher's `HashMap<i64, \
+                 handler>` would silently clobber one with the \
+                 other.  Pick an unused slot from the gaps in \
+                 `BodyRefs::FS_*` constants (see \
+                 `system_processes.rs`).",
+                entry.body_ref,
+                entry.name,
+                entry.urn_suffix,
+            );
+        }
+    }
 }
