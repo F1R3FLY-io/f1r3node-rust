@@ -260,6 +260,15 @@ pub struct RhoRuntimeImpl {
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
     pub(crate) merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    /// Per-runtime FS handle table — fds allocated by `fs_open` live
+    /// here, visible to downstream `fs_read` / `fs_close` / etc.
+    /// Shared with every FS native handler's `FsProcesses` dispatch
+    /// surface via `Arc` under the hood, so a single Arc-bump at
+    /// construction time threads the same table through every
+    /// handler.  Public so test harnesses + the (yet-to-land)
+    /// soft-checkpoint fd-snapshot wiring can inspect and manipulate
+    /// the table directly.
+    pub fs_handles: super::io::handle_table::FileHandleTable,
 }
 
 impl RhoRuntimeImpl {
@@ -270,6 +279,7 @@ impl RhoRuntimeImpl {
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
         merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+        fs_handles: super::io::handle_table::FileHandleTable,
     ) -> RhoRuntimeImpl {
         RhoRuntimeImpl {
             reducer,
@@ -278,6 +288,7 @@ impl RhoRuntimeImpl {
             invalid_blocks_param,
             deploy_data_ref,
             merge_chs,
+            fs_handles,
         }
     }
 
@@ -1102,14 +1113,16 @@ fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 /// (slice 5.32): user deploys get a `ReduceError`; genesis gets
 /// unfiltered access via the toggle in `play_deploys_for_genesis`
 /// (slice 5.33).
-fn fs_handlers_to_definitions(dispatcher: RhoDispatch, space: RhoISpace) -> Vec<Definition> {
+fn fs_handlers_to_definitions(
+    dispatcher: RhoDispatch,
+    space: RhoISpace,
+    fs_handles: super::io::handle_table::FileHandleTable,
+) -> Vec<Definition> {
     use super::accounting::noop::{Metering, NoopMetering};
-    use super::io::handle_table::FileHandleTable;
     use super::io::handler_trait::fs_processes::FsProcesses;
     use super::io::handler_trait::FS_HANDLERS;
     use super::io::{ConsensusMode, FS_NATIVE_URN_PREFIX_VERSIONED as FS_NATIVE_URN_PREFIX};
 
-    let fs_handles = FileHandleTable::new();
     let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
     let fs_processes = FsProcesses::new(
         dispatcher,
@@ -1151,6 +1164,7 @@ fn dispatch_table_creator(
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1179,6 +1193,7 @@ fn dispatch_table_creator(
     all_processes.extend(fs_handlers_to_definitions(
         dispatcher.clone(),
         space.clone(),
+        fs_handles,
     ));
 
     // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
@@ -1300,6 +1315,7 @@ async fn setup_reducer(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     cost: _cost,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> Arc<DebruijnInterpreter> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
@@ -1326,6 +1342,7 @@ async fn setup_reducer(
         ollama_service,
         grpc_client_service,
         chromadb_service,
+        fs_handles,
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1466,6 +1483,7 @@ pub async fn create_rho_env<T>(
     extra_system_processes: &mut Vec<Definition>,
     cost: _cost,
     external_services: ExternalServices,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> Result<
     (
         Arc<DebruijnInterpreter>,
@@ -1531,6 +1549,7 @@ where
         grpc_client_service,
         chromadb_service,
         cost,
+        fs_handles,
     )
     .await;
 
@@ -1570,6 +1589,13 @@ where
 {
     let cost = CostAccounting::empty_cost();
     let merge_chs = Arc::new(tokio::sync::RwLock::new(HashMap::<Par, MergeType>::new()));
+    // One FS handle table per runtime, shared by the dispatch-table-
+    // side `FsProcesses` (via a clone) and exposed as a public field
+    // on `RhoRuntimeImpl` for test harnesses + the (yet-to-land)
+    // soft-checkpoint fd-snapshot wiring.  FileHandleTable is
+    // Arc-backed internally so clones are cheap and point at the
+    // same underlying state.
+    let fs_handles = super::io::handle_table::FileHandleTable::new();
 
     let rho_env = create_rho_env(
         rspace,
@@ -1578,6 +1604,7 @@ where
         extra_system_processes,
         cost.clone(),
         external_services,
+        fs_handles.clone(),
     )
     .await?;
 
@@ -1589,6 +1616,7 @@ where
         invalid_blocks,
         deploy_ref,
         merge_chs,
+        fs_handles,
     );
 
     if init_registry {
@@ -1798,7 +1826,11 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_count_matches_registry() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let defs = fs_handlers_to_definitions(
+            dispatcher,
+            space,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
         assert_eq!(
             defs.len(),
             EXPECTED_MIGRATED_HANDLER_COUNT,
@@ -1818,7 +1850,11 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_unique() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let defs = fs_handlers_to_definitions(
+            dispatcher,
+            space,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
         let mut seen = std::collections::HashSet::new();
         for def in &defs {
             assert!(
@@ -1844,7 +1880,11 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let defs = fs_handlers_to_definitions(
+            dispatcher,
+            space,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
         for def in &defs {
             assert!(
                 def.urn.starts_with(FS_NATIVE_URN_FILTER_PREFIX),
@@ -1867,7 +1907,11 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_covers_every_registry_entry() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let defs = fs_handlers_to_definitions(
+            dispatcher,
+            space,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
         let def_urns: std::collections::HashSet<&str> =
             defs.iter().map(|d| d.urn.as_str()).collect();
         for entry in FS_HANDLERS.iter() {
