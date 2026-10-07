@@ -384,7 +384,7 @@ tasks:
     open:
       - "A soak that passes the preflight and gives the 24-hour test_load failure rate on master e6564599c or later."
       - "CLAIM-CASPER-BUFFER-001 discharge items 2 to 7, and maintainer acceptance of the soak and CbC evidence."
-      - "Follow-up outside this task: deploy inclusion latency in the test_load high phase."
+      - "Follow-up outside this task: deploy inclusion latency in the test_load high phase (TASK-021-13)."
     origin: "On 2026-10-07 the user chose to fix issue #24 on the #653 branch. Soak 37469364217 on dev 778cc6754 failed 8 of 49 iterations with test_load 'N deploy(s) not finalized within 45s'. The 2026-09-25 issue breakdown shows that 56% of blocks park on missing parents, 7.1 s median and 39.6 s p90. A code trace found three release-path causes."
     scope: "Release priority, the stale-link defect, and an incremental release scan, plus the round-length metrics. The recovery re-request for parents that the node already holds is out of scope."
     files:
@@ -407,6 +407,27 @@ tasks:
       - "The soak records park time, release queue wait, release scan duration, and recovery re-requests."
       - "A comparison soak against the scheduled dev soak on the same base reports sustained finalization p95, the test_load failure count, and the new metrics."
       - "The maintainer accepts the soak and CbC evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
+  - id: TASK-021-13
+    title: "Find why deploys wait for block inclusion in the test_load high phase (issue #24)"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    origin: "On 2026-10-07 two integration preflights on master e6564599c failed in the same test_load phase after PR #653 nearly stopped block parking. The user asked for a task that owns the deploy inclusion delay."
+    problem: "In the test_load high phase, deploys wait too long to get into a block. The unfinalized deploys come from that phase, while the sustained phase passes."
+    evidence:
+      - "Soak 37579803394, preflight: high phase inclusion p50 9.0 s and p95 21.9 s, finalization p95 33.2 s, 7 unfinalized. The other phases had inclusion p95 5.3 to 13.7 s. Sustained finalization p95 31.2 s, 0 unfinalized."
+      - "Scheduled soak 37598606554, preflight: high phase inclusion p50 8.9 s and p95 21.7 s, finalization p95 41.2 s, 7 unfinalized."
+      - "The 2026-09-16 issue #24 comment found every earlier failure in the sustained phase and none in the high phase. After PR #653 the failure moved to the high phase."
+      - "Fewer than 2% of the blocks parked on the failing test_load shard (issue #24 comment 6040401089), so parked blocks do not explain the delay."
+    hypothesis: "Deploy selection or the proposer cadence holds deploys under the high-phase submit rate (10 deploys/s for 15 s). This is not proven. The first step measures before any change."
+    scope: "Measurement first: the time from deploy submit to the first block that includes the deploy, split by stage (deploy pool wait, proposal trigger, block creation, block propagation). A fix starts only after a measurement names the stage. The fix needs its own TDD plan and, under the EPIC-021 cbc_policy, a pending claim before any code change."
+    acceptance:
+      - "A per-deploy timeline for the test_load high phase names the stage that holds the deploy, with evidence from two runs."
+      - "A pending CbC claim exists before any code change to proposal or deploy selection."
+      - "Each fix behavior has a test that fails before its change and passes after it."
+      - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in the high phase."
+      - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
 ---
 ```
 
