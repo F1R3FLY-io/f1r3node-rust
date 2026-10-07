@@ -620,10 +620,17 @@ const _: () = assert!(
 );
 
 /// URN prefix shared between the runtime's `fs_native_def` registrations
-/// and this module's composed FsGenesis source.  A future Phase 1 hotfix
-/// bumping to `1.0.1` must edit HERE only, and both the runtime
-/// (`rho_runtime.rs`) and the composed source rebuild from this constant.
-pub const FS_NATIVE_URN_PREFIX: &str = "rho:io:fs:native:1.0.0/";
+/// and this module's composed FsGenesis source.  Re-exported from
+/// `rholang::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED` —
+/// single source of truth across the two crates.  A future Phase 1
+/// hotfix bumping to `1.0.1` edits the rholang-side constant only;
+/// both the runtime (`rho_runtime::fs_handlers_to_definitions`) and
+/// the composed FsGenesis source rebuild from the re-export.  The
+/// cross-crate equality is still pinned at test time by
+/// `casper::tests::genesis::contracts::fs_genesis_spec::
+/// fs_native_urn_versioned_prefix_matches_rholang` as defense-in-
+/// depth against an accidental shadowing re-definition here.
+pub use rholang::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED as FS_NATIVE_URN_PREFIX;
 
 /// Native URN suffixes that this module binds into the FsGenesis
 /// new-scope.  Combined with `FS_NATIVE_URN_PREFIX` to form the full
