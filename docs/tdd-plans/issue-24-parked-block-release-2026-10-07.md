@@ -32,7 +32,7 @@ step_0:
   title: "Register the pending CbC claim and classify the files"
   done: true
   claim_registered: "2026-10-07: docs/claims/casper-buffer-release.md, CLAIM-CASPER-BUFFER-001, status pending."
-  cbc_identify: "2026-10-07: all four artifacts tagged cbc=mandatory in .gitattributes (three high, block_processor_instance.rs medium). The scanner proposed none of them."
+  cbc_identify: "2026-10-07: all four artifacts tagged cbc=mandatory in .gitattributes (three high, block_processor_instance.rs medium). The scanner proposed none of them. After the PR #653 review the maintainer tagged five more changed files: buffer_dag_transition.rs and block_admission.rs high, release_queue.rs, casper.rs, and block_retriever.rs medium."
   acceptance:
     - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 with status pending. The claim states three properties. Release liveness: a buffered block whose dependencies are all validated is released for processing. No stale hold: a released block is not dropped as already processed. Release order: a released block is processed before a gossip block that entered the queue after the release, and gossip still progresses."
     - "/cbc identify classifies the touched files. Each one is cbc=mandatory, or a maintainer decision records why it stays untagged."
@@ -284,6 +284,6 @@ verification:
 
 This plan follows the issue #24 evidence. The finalization tail is in finality rounds, and parked blocks stretch the rounds. The code trace of 2026-10-07 shows three release-path causes: queue position, the full release scan, and a stale-link hold.
 
-The order is deliberate. Step 0 registers the CbC claim. B1 to B4 add the measurements, so a soak can attribute the effect of each fix. B5 to B8 fix the release path, each with a failing test first. B9 connects the new metrics to the soak record.
+The order is deliberate. Step 0 registers the CbC claim. B1 to B4 add the measurements, so a soak can attribute the effect of each fix. B5 to B8, B10, and B11 fix the release path, each with a failing test first. The run order is the cycle_order list in the front matter: B9 connects the new metrics to the soak record before B8 and B11 run.
 
 The recovery re-request for parents that the node already holds (trace item D) is out of scope for this plan. It adds network load but does not delay a local release.

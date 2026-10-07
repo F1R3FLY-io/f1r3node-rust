@@ -7,6 +7,11 @@ artifacts:
   - casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs      # release scan (get_dependency_free_from_buffer)
   - node/src/rust/instances/block_processor_instance.rs                # block queue and release re-enqueue
   - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs  # buffer relations and pendants
+  - block-storage/src/rust/dag/buffer_dag_transition.rs              # atomic dependency commit (B6)
+  - casper/src/rust/engine/multi_parent_casper/block_admission.rs      # buffer_waits_on_dependency verdict (B5)
+  - node/src/rust/instances/release_queue.rs                           # release queue and scheduler (B7, B10, B11)
+  - casper/src/rust/casper.rs                                          # buffer_waits_on_dependency trait query (B5)
+  - casper/src/rust/engine/block_retriever.rs                          # recovery re-request counter (B4)
 status: pending
 adapter: agentic
 mechanization: none   # planned in the discharge plan below
@@ -52,7 +57,7 @@ TASK-021-12 changes the release path. This claim states the properties that the 
 
 The status of each item is recorded here as the TDD cycles complete.
 
-1. `/cbc identify` classifies the four artifacts. Each one is `cbc=mandatory`, or a maintainer decision records why it stays untagged. **Done 2026-10-07.** The scanner proposed none of the four, so the maintainer tagged all four in `.gitattributes`. `block_processor.rs`, `buffer_resolver.rs`, and `casper_buffer_key_value_storage.rs` are `cbc-weight=high`. `block_processor_instance.rs` is `cbc-weight=medium`.
+1. `/cbc identify` classifies the four artifacts. Each one is `cbc=mandatory`, or a maintainer decision records why it stays untagged. **Done 2026-10-07.** The scanner proposed none of the four, so the maintainer tagged all four in `.gitattributes`. `block_processor.rs`, `buffer_resolver.rs`, and `casper_buffer_key_value_storage.rs` are `cbc-weight=high`. `block_processor_instance.rs` is `cbc-weight=medium`. The multi-agent review of PR #653 found five more changed production files without a tag. On 2026-10-07 the maintainer tagged them too: `buffer_dag_transition.rs` and `block_admission.rs` at `cbc-weight=high`, and `release_queue.rs`, `casper.rs`, and `block_retriever.rs` at `cbc-weight=medium`.
 2. C2: a test reproduces the stale-link hold on the current code and passes after the fix (plan B5). A test forces the race between a dependency check and the dependency's validation through the public interfaces and shows that no stale link remains (plan B6). **Open.**
 3. C1: a test shows that the validation of the last missing dependency releases its waiting children. A second test shows that a chain of missing ancestors releases level by level without a timer (plans B5 and B8). **Open.**
 4. C3: the two-lane release queue has tests for release-first order and for the bounded gossip share (plan B7). A pipeline test asserts processing order through the block processing result channel. **Open.**

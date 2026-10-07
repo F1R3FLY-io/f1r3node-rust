@@ -151,3 +151,8 @@ casper/src/rust/blocks/block_processor.rs cbc=mandatory cbc-weight=high
 casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs cbc=mandatory cbc-weight=high
 block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs cbc=mandatory cbc-weight=high
 node/src/rust/instances/block_processor_instance.rs cbc=mandatory cbc-weight=medium
+block-storage/src/rust/dag/buffer_dag_transition.rs cbc=mandatory cbc-weight=high
+casper/src/rust/engine/multi_parent_casper/block_admission.rs cbc=mandatory cbc-weight=high
+node/src/rust/instances/release_queue.rs cbc=mandatory cbc-weight=medium
+casper/src/rust/casper.rs cbc=mandatory cbc-weight=medium
+casper/src/rust/engine/block_retriever.rs cbc=mandatory cbc-weight=medium
