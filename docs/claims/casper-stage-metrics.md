@@ -57,7 +57,7 @@ TASK-021-13 adds counters and histograms for both phases. They cover the deploy 
 ## Discharge plan
 
 1. Tag `finalization_runner.rs` and `proposer.rs` `cbc=mandatory cbc-weight=high` (decision of the maintainer on 2026-10-07). **Done 2026-10-07.**
-2. S3: each metric has a test with a `DebuggingRecorder`. The test asserts the counter value or the histogram sample for a known event. **Open.**
-3. S1 and S2: the review of the diff shows that each change adds metric calls only. The existing tests of each artifact pass without change. **Open.**
-4. S4: the existing tests of the named claims pass without change. **Open.**
-5. Record the evidence in `docs/casper/cbc-evidence/` for each changed `cbc=mandatory` artifact and cite this claim id. **Open.**
+2. S3: each metric has a test with a `DebuggingRecorder`. The test asserts the counter value or the histogram sample for a known event. **Done 2026-10-07** (commits e9e80f8bd and the empty-block build counter): 11 tests in finalization_runner.rs, block_creator.rs, and heartbeat_proposer.rs. Each test failed on the missing metric before its change and passed after it.
+3. S1 and S2: the review of the diff shows that each change adds metric calls only. The existing tests of each artifact pass without change. **Done 2026-10-07:** the diff adds metric calls, metric constants, and tests. The one restructure moves the queued-run loop of the finalizer into `drive_finalizer_runs`, with the same timeout, logs, and rerun rule. `cargo test --release -p casper -p node` passed: 1,896 tests, 0 failures, 21 ignored.
+4. S4: the existing tests of the named claims pass without change. **Done 2026-10-07:** the same run includes the heartbeat decision tests and the finalizer divergence tests, and all pass.
+5. Record the evidence in `docs/casper/cbc-evidence/` for each changed `cbc=mandatory` artifact and cite this claim id. **Open, after the soak.** The records of `dispatch.rs` (discharged), `heartbeat_proposer.rs` (discharged), and `block_creator.rs` (waived) pin the old file digests. New records for the four changed files supersede them.

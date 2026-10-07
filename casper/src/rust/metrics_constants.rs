@@ -317,6 +317,9 @@ pub const BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC: &str =
     "block-creator.ordinary-lane.disabled";
 // Counter: proposals skipped because the block would be empty.
 pub const BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC: &str = "block-creator.empty-block.skipped";
+// Counter: block builds that go ahead with no user deploys (heartbeat lane or
+// system deploys only).
+pub const BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC: &str = "block-creator.empty-block.built";
 // Histogram: age of each user deploy when a block selects it, from the deploy
 // timestamp to the block creation time, in seconds.
 pub const DEPLOY_SELECTION_AGE_TIME_METRIC: &str = "deploy.selection.age.time";

@@ -249,6 +249,15 @@ pub(crate) fn record_selected_deploy_ages(
     }
 }
 
+/// A block build that goes ahead with no user deploys.
+pub(crate) fn record_empty_block_build() {
+    metrics::counter!(
+        crate::rust::metrics_constants::BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+}
+
 /// A proposal that stopped because the block would be empty.
 pub(crate) fn record_empty_block_skip() {
     metrics::counter!(
@@ -3120,6 +3129,9 @@ pub async fn create(
         );
         record_empty_block_skip();
         return Ok(BlockCreatorResult::NoNewDeploys);
+    }
+    if !has_user_or_dummy_deploys {
+        record_empty_block_build();
     }
 
     // Make sure closeBlock is the last system Deploy
@@ -6564,7 +6576,8 @@ mod stage_metric_tests {
 
     use super::*;
     use crate::rust::metrics_constants::{
-        BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC, BLOCK_CREATOR_ORDINARY_DEPLOYS_DEFERRED_METRIC,
+        BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC, BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC,
+        BLOCK_CREATOR_ORDINARY_DEPLOYS_DEFERRED_METRIC,
         BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC, DEPLOY_SELECTION_AGE_TIME_METRIC,
     };
 
@@ -6639,6 +6652,23 @@ mod stage_metric_tests {
         record_empty_block_skip();
 
         let recorded = take(&snapshotter);
+        let skipped = recorded.get(BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC);
+        assert_eq!(skipped.map_or(0, |v| v.0), 1);
+    }
+
+    #[test]
+    fn an_empty_block_build_is_counted_apart_from_a_skip() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_empty_block_build();
+        record_empty_block_build();
+        record_empty_block_skip();
+
+        let recorded = take(&snapshotter);
+        let built = recorded.get(BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC);
+        assert_eq!(built.map_or(0, |v| v.0), 2);
         let skipped = recorded.get(BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC);
         assert_eq!(skipped.map_or(0, |v| v.0), 1);
     }

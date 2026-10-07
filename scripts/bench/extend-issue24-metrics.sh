@@ -13,7 +13,7 @@ counters+='|history_repository_roots_repository_reset_wait_ns|history_repository
 histograms+='|casper_buffer_park_time|block_processing_release_queue_wait_time|casper_buffer_release_scan_time'
 counters+='|block_requests_recovery|block_replay_runtime_reporting_deferred'
 histograms+='|finalizer_run_time|finalizer_api_lfb_time|deploy_selection_age_time'
-counters+='|finalizer_run_failures|finalizer_run_timeouts|finalizer_run_reruns|finalizer_run_queued|finalizer_api_lfb_calls|finalizer_api_lfb_overlaps|block_creator_ordinary_deploys_deferred|block_creator_ordinary_lane_disabled|block_creator_empty_block_skipped|heartbeat_checks|heartbeat_proposals'
+counters+='|finalizer_run_failures|finalizer_run_timeouts|finalizer_run_reruns|finalizer_run_queued|finalizer_api_lfb_calls|finalizer_api_lfb_overlaps|block_creator_ordinary_deploys_deferred|block_creator_ordinary_lane_disabled|block_creator_empty_block_skipped|block_creator_empty_block_built|heartbeat_checks|heartbeat_proposals'
 tmp="$(mktemp "${metrics_file}.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 

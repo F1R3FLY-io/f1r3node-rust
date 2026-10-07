@@ -41,6 +41,7 @@ for metric in \
     finalizer_api_lfb_overlaps \
     block_creator_ordinary_deploys_deferred \
     block_creator_empty_block_skipped \
+    block_creator_empty_block_built \
     heartbeat_proposals \
     dag_merge_rejection_selection_time \
     dag_merge_apply_trie_actions_time \
