@@ -111,8 +111,23 @@ impl Genesis {
             shard_id,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
+        // File I/O FIP MVP: shared-Fs model with empty static bundle +
+        // no snapshot cadence.  Config-driven bundle / cadence
+        // threading (fs_bundle / consensus_fs_snapshot_cadence on
+        // the Genesis struct) is a follow-up slice; the MVP posture
+        // is "the Fs cap exists at genesis but openFile / openDir
+        // return FSERR_UNSUPPORTED for every logical name — stdio
+        // methods work".  See fs_genesis module docstring.
+        //
+        // Safe to invoke now: slices 5.31-5.35 landed the fs-native
+        // URN registration behind a reducer-level filter (default
+        // true = reject user deploys) with per-play / per-replay
+        // toggles around genesis.  FsGenesis's composed source binds
+        // the raw fs_* primitives via the toggled-off filter; user
+        // deploys attempting the same get a ReduceError.
+        let fs_generator = standard_deploys::fs_generator(shard_id, &[], None);
 
-        let mut all_deploys = Vec::with_capacity(12 + vault_deploys.len());
+        let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
         all_deploys.push(registry);
         all_deploys.push(versioned_registry);
         all_deploys.push(list_ops);
@@ -126,6 +141,7 @@ impl Genesis {
         all_deploys.push(token_metadata);
         all_deploys.extend(vault_deploys);
         all_deploys.push(pos_generator);
+        all_deploys.push(fs_generator);
 
         all_deploys
     }
@@ -241,5 +257,58 @@ impl Genesis {
                 stake,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin that default_blessed_terms includes a deploy signed by
+    /// FS_GENERATOR_PK — the fs_generator deploy that publishes the
+    /// shared Fs cap at genesis.  A regression that silently drops
+    /// fs_generator from the deploy list would leave the Fs cap
+    /// unpublished at `fs_genesis_uri(FS_GENERATOR_PUB_KEY)` and
+    /// every deploy's `rl!(fs_genesis_uri)` lookup would stall.
+    #[test]
+    fn default_blessed_terms_includes_fs_generator_deploy() {
+        use super::super::contracts::standard_deploys;
+        use super::super::contracts::validator::Validator;
+
+        let pos_params = ProofOfStake {
+            minimum_bond: 1,
+            maximum_bond: i64::MAX,
+            validators: vec![Validator {
+                pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
+                stake: 100,
+            }],
+            epoch_length: 10,
+            quarantine_length: 20,
+            number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 100_000,
+            max_parent_depth: 1,
+            deploy_lifespan: 1,
+            min_phlo_price: 1,
+            pos_multi_sig_public_keys: vec![hex::encode(
+                &*standard_deploys::POS_GENERATOR_PUB_KEY.bytes,
+            )],
+            pos_multi_sig_quorum: 1,
+        };
+        let deploys =
+            Genesis::default_blessed_terms(&pos_params, &vec![], 0, "root", "F1R3CAP", "F1R3", 18);
+        let fs_pk = &*standard_deploys::FS_GENERATOR_PUB_KEY;
+        let found = deploys.iter().any(|d| d.pk.bytes == fs_pk.bytes);
+        assert!(
+            found,
+            "default_blessed_terms must include a deploy signed by \
+             FS_GENERATOR_PK; otherwise the Fs cap never gets published \
+             at genesis and every rl!(fs_genesis_uri) lookup stalls.  \
+             Found {} deploys with signer pubkeys: {:?}",
+            deploys.len(),
+            deploys
+                .iter()
+                .map(|d| hex::encode(&d.pk.bytes))
+                .collect::<Vec<_>>()
+        );
     }
 }
