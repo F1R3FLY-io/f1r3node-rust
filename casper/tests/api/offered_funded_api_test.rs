@@ -1439,3 +1439,21 @@ async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() 
         Some(true)
     );
 }
+
+/// DR-102: on a small offered block, the producer's self-replay and every
+/// validator replay charge the same usage, and each role charges its own
+/// acceptance work to a separate budget. The block fits the committed caps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offered_replay_usage_is_identical_across_roles_on_a_small_block() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let signer = genesis.genesis_vaults[0].clone();
+    crate::helper::offered_replay_usage::propose_offer_with_identical_replay_usage(
+        &mut nodes,
+        owner_direct_offer(&signer, 1, "new x in { x!(0) }".to_string()),
+        "small block",
+    )
+    .await;
+}

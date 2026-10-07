@@ -349,8 +349,9 @@ fn offered_gateway_call(
     OfferedFundedDeploy::to_proto(&signed).unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
+/// The three-node network with a funded gateway vault that the gateway tests
+/// share.
+async fn gateway_network() -> (crate::util::genesis_builder::GenesisContext, Vec<TestNode>) {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
     parameters.2.version = 6;
     parameters.2.proof_of_stake.min_phlo_price = 1;
@@ -368,13 +369,18 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
         .build_genesis_with_parameters(Some(parameters))
         .await
         .unwrap();
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
+    (genesis, nodes)
+}
+
+/// The installer's offer: an unsigned trigger that runs the gateway's signed
+/// `entry -o slot` body and publishes the entry and slot vault addresses.
+fn installer_offer(
+    genesis: &crate::util::genesis_builder::GenesisContext,
+) -> models::casper::DeployDataProto {
     let installer_secret = genesis.genesis_vaults[0].0.clone();
-    let sponsor_secret = genesis.genesis_vaults[2].0.clone();
-    let sponsor_address = VaultAddress::from_public_key(&genesis.genesis_vaults[2].1).unwrap();
-    let gateway_secret = genesis.genesis_vaults[3].0.clone();
     let gateway_public = &genesis.genesis_vaults[3].1;
     let installer_source = r#"new entry, slot, entryAddressCh, slotAddressCh,
       VaultAddress(`rho:vault:address`), DeployerIdOps(`rho:system:deployerId:ops`) in {
@@ -397,23 +403,100 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
       for (@slotAddress <- slotAddressCh) { @"agent-slot-address"!!(slotAddress) }
     }"#
     .replace("GATEWAY_PUBLIC_KEY", &hex::encode(&gateway_public.bytes));
-    let installer = signed_direct_offer(
+    signed_direct_offer(
         installer_source,
         1,
         0,
-        installer_secret.clone(),
+        installer_secret,
         &genesis.genesis_vaults[0].1,
+    )
+}
+
+/// The sponsor's offer that funds the entry and slot vaults with 100,000 each.
+fn funding_offer(
+    genesis: &crate::util::genesis_builder::GenesisContext,
+    entry_address: &VaultAddress,
+    slot_address: &VaultAddress,
+) -> models::casper::DeployDataProto {
+    let sponsor_secret = genesis.genesis_vaults[2].0.clone();
+    let sponsor_address = VaultAddress::from_public_key(&genesis.genesis_vaults[2].1).unwrap();
+    let funding_source = format!(
+        r#"new rl(`rho:registry:lookup`), systemVaultCh, payerCh, authKeyCh,
+          transferCh, deployerId(`rho:system:deployerId`) in {{
+          rl!(`rho:vault:system`, *systemVaultCh) |
+          for (@(_, systemVault) <- systemVaultCh) {{
+            @systemVault!("find", "{}", *payerCh) |
+            @systemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+            for (@(true, payer) <- payerCh & key <- authKeyCh) {{
+              @payer!("transferBatch", [("{}", 100000), ("{}", 100000)], *key, *transferCh) |
+              for (@result <- transferCh) {{ @"agent-slot-funded"!(result) }}
+            }}
+          }}
+        }}"#,
+        sponsor_address.to_base58(),
+        entry_address.to_base58(),
+        slot_address.to_base58(),
     );
-    let installed = propagate_offer(&mut nodes, installer, "installer").await;
-    let installed_root = &installed.body.state.post_state_hash;
+    signed_direct_offer(
+        funding_source,
+        2,
+        1,
+        sponsor_secret,
+        &genesis.genesis_vaults[2].1,
+    )
+}
+
+/// The entry and slot vault addresses that the installer published at `root`.
+async fn installed_addresses(
+    nodes: &[TestNode],
+    root: &models::rust::block::state_hash::StateHash,
+) -> (VaultAddress, VaultAddress) {
     let entry_address = VaultAddress::parse(
-        &RhoString::unapply(&data(&nodes, installed_root, "agent-entry-address").await[0]).unwrap(),
+        &RhoString::unapply(&data(nodes, root, "agent-entry-address").await[0]).unwrap(),
     )
     .unwrap();
     let slot_address = VaultAddress::parse(
-        &RhoString::unapply(&data(&nodes, installed_root, "agent-slot-address").await[0]).unwrap(),
+        &RhoString::unapply(&data(nodes, root, "agent-slot-address").await[0]).unwrap(),
     )
     .unwrap();
+    (entry_address, slot_address)
+}
+
+/// DR-102: the installer block and the gateway funding block each charge the
+/// same replay usage on the producer and on every validator, and each role
+/// charges its own acceptance work to a separate budget. The funding block
+/// needs the Phase D caps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offered_replay_usage_is_identical_across_roles() {
+    let (genesis, mut nodes) = gateway_network().await;
+    let installed = crate::helper::offered_replay_usage::propose_offer_with_identical_replay_usage(
+        &mut nodes,
+        installer_offer(&genesis),
+        "installer",
+    )
+    .await;
+    let (entry_address, slot_address) =
+        installed_addresses(&nodes, &installed.body.state.post_state_hash).await;
+    let funded = crate::helper::offered_replay_usage::propose_offer_with_identical_replay_usage(
+        &mut nodes,
+        funding_offer(&genesis, &entry_address, &slot_address),
+        "funding",
+    )
+    .await;
+    let funded_root = &funded.body.state.post_state_hash;
+    assert_eq!(balance(&nodes, funded_root, &entry_address).await, 100_000);
+    assert_eq!(balance(&nodes, funded_root, &slot_address).await, 100_000);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
+    let (genesis, mut nodes) = gateway_network().await;
+    let installer_secret = genesis.genesis_vaults[0].0.clone();
+    let gateway_secret = genesis.genesis_vaults[3].0.clone();
+    let gateway_public = &genesis.genesis_vaults[3].1;
+    let installed = propagate_offer(&mut nodes, installer_offer(&genesis), "installer").await;
+    let installed_root = &installed.body.state.post_state_hash;
+    let (entry_address, slot_address) = installed_addresses(&nodes, installed_root).await;
     let continuations = nodes[0]
         .runtime_manager
         .get_continuation(installed_root.clone(), vec![new_gstring_par(
@@ -437,30 +520,7 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
         .find(|signature| vault_payer(signature).unwrap().address == slot_address)
         .cloned()
         .expect("installed slot authority is rooted");
-    let funding_source = format!(
-        r#"new rl(`rho:registry:lookup`), systemVaultCh, payerCh, authKeyCh,
-          transferCh, deployerId(`rho:system:deployerId`) in {{
-          rl!(`rho:vault:system`, *systemVaultCh) |
-          for (@(_, systemVault) <- systemVaultCh) {{
-            @systemVault!("find", "{}", *payerCh) |
-            @systemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
-            for (@(true, payer) <- payerCh & key <- authKeyCh) {{
-              @payer!("transferBatch", [("{}", 100000), ("{}", 100000)], *key, *transferCh) |
-              for (@result <- transferCh) {{ @"agent-slot-funded"!(result) }}
-            }}
-          }}
-        }}"#,
-        sponsor_address.to_base58(),
-        entry_address.to_base58(),
-        slot_address.to_base58(),
-    );
-    let funding = signed_direct_offer(
-        funding_source,
-        2,
-        1,
-        sponsor_secret,
-        &genesis.genesis_vaults[2].1,
-    );
+    let funding = funding_offer(&genesis, &entry_address, &slot_address);
     let funded = propagate_offer(&mut nodes, funding, "funding").await;
     let funded_root = &funded.body.state.post_state_hash;
     assert_eq!(balance(&nodes, funded_root, &entry_address).await, 100_000);

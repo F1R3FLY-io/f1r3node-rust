@@ -76,6 +76,9 @@ use crate::rust::util::rholang::costacc::direct_wallet_funding::{
     NativeFundedExecutionContext, NativeGrantSettlementInput,
 };
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+use crate::rust::util::rholang::costacc::offered_acceptance::OfferedAcceptanceBudget;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::rust::util::rholang::costacc::offered_acceptance::OfferedUsageKind;
 use crate::rust::util::rholang::costacc::offered_grants::offered_grant_transition_limits;
 use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
 use crate::rust::util::rholang::costacc::prepaid_receipts::read_live_data_metered;
@@ -369,7 +372,10 @@ impl RuntimeOps {
                     "offered proposal requires a 32-byte original root".to_string(),
                 )
             })?;
-            let candidate = async {
+            // Changed by DR-102: the candidate step also returns the certified
+            // mergeable map, which the producer stores like every validator.
+            // let candidate = async {
+            let (candidate, certified_mergeable) = async {
                 let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
                     return Err(CasperError::RuntimeError(
                         "offered proposal has an unexpected envelope format".to_string(),
@@ -531,36 +537,72 @@ impl RuntimeOps {
                         budget,
                     )
                     .await?;
-                let replay_budget = HostWorkBudget::new(
-                    models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
-                );
-                replay_budget
-                    .reserve(
-                        HostWorkDimension::SearchStateBytes,
-                        HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
-                            CasperError::RuntimeError(
-                                "offered replay context copy overflows".to_string(),
-                            )
-                        })?),
-                    )
-                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                // Changed by DR-102: certify owns the replay budget and charges the
+                // block-context copy itself, so the producer's self-replay charges
+                // exactly what every validator's replay charges. The publication
+                // comparison is producer-only acceptance work.
+                // let replay_budget = HostWorkBudget::new(
+                //     models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
+                // );
+                // replay_budget
+                //     .reserve(
+                //         HostWorkDimension::SearchStateBytes,
+                //         HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
+                //             CasperError::RuntimeError(
+                //                 "offered replay context copy overflows".to_string(),
+                //             )
+                //         })?),
+                //     )
+                //     .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                // let certificate = manager
+                //     .certify_offered_draft(
+                //         &candidate.processed,
+                //         start_hash,
+                //         &block_data,
+                //         invalid_blocks.clone(),
+                //         adopted,
+                //         &replay_budget,
+                //     )
+                //     .await?;
+                // let _publication = prepared.authorize_publication_after_replay(
+                //     &candidate.processed,
+                //     candidate.final_root,
+                //     &certificate,
+                //     &replay_budget,
+                // )?;
+                // Ok(candidate)
                 let certificate = manager
                     .certify_offered_draft(
                         &candidate.processed,
                         start_hash,
                         &block_data,
-                        invalid_blocks.clone(),
+                        &invalid_blocks,
                         adopted,
-                        &replay_budget,
                     )
                     .await?;
+                let acceptance = OfferedAcceptanceBudget::new();
                 let _publication = prepared.authorize_publication_after_replay(
                     &candidate.processed,
                     candidate.final_root,
                     &certificate,
-                    &replay_budget,
+                    &acceptance,
                 )?;
-                Ok(candidate)
+                #[cfg(any(test, feature = "test-utils"))]
+                {
+                    manager.record_offered_budget_usage(
+                        OfferedUsageKind::ProducerSelfReplay,
+                        candidate.processed.identity_bytes(),
+                        start_hash,
+                        certificate.replay_usages(),
+                    );
+                    manager.record_offered_budget_usage(
+                        OfferedUsageKind::ProducerAcceptance,
+                        candidate.processed.identity_bytes(),
+                        start_hash,
+                        acceptance.meter().usages(),
+                    );
+                }
+                Ok((candidate, certificate.into_user_mergeable()))
             }
             .await
             .map_err(|error| offered_candidate_rejection(envelope, start_hash, error))?;
@@ -568,9 +610,13 @@ impl RuntimeOps {
             self.runtime
                 .reset(&Blake2b256Hash::from_bytes(candidate.final_root.to_vec()))
                 .await?;
-            let mergeable = self
-                .get_number_channels_data_metered(&candidate.mergeable, budget)
-                .await?;
+            // Changed by DR-102: the producer stores the certified mergeable map,
+            // the map that every validator stores, instead of reading the map of
+            // its own play again on the execution budget.
+            // let mergeable = self
+            //     .get_number_channels_data_metered(&candidate.mergeable, budget)
+            //     .await?;
+            let mergeable = certified_mergeable;
             let (post_root, extra_users, systems) = self
                 .compute_state(
                     &candidate_root,

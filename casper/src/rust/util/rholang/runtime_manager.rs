@@ -25,6 +25,7 @@ use models::rust::cost_protocol_limits::{
     offered_funded_v6_host_work_limits, offered_funded_v6_limits,
 };
 use models::rust::deploy_envelope::DeployEnvelopeRef;
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::native_cost_evidence::NativeCostEvidenceV1;
 use models::rust::phlo_intent::{PhloConversionCompositionV2, PhloFundingIntentV2Limits};
@@ -58,7 +59,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteVector;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::rust::errors::CasperError;
+use crate::rust::errors::{CasperError, OfferedCandidateRejection};
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
     BLOCK_INDEX_CACHE_SIZE_METRIC, BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC,
@@ -78,6 +79,13 @@ use crate::rust::util::rholang::costacc::direct_wallet_funding::{
 };
 use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, OFFERED_PRODUCTION_READY,
+};
+use crate::rust::util::rholang::costacc::offered_acceptance::{
+    offered_replay_context_copy_bytes, OfferedAcceptanceBudget,
+};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::rust::util::rholang::costacc::offered_acceptance::{
+    usage_delta, OfferedBudgetRecorder, OfferedBudgetUsage, OfferedUsageKind,
 };
 use crate::rust::util::rholang::costacc::offered_grants::{
     grant_issue_definition, offered_grant_issue_call_limits, offered_grant_transition_limits,
@@ -285,6 +293,9 @@ pub struct RuntimeManager {
     exploratory_deploy_phlo_limit: i64,
     exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
+    /// DR-102: test-only records of the final usage of each offered budget.
+    #[cfg(any(test, feature = "test-utils"))]
+    offered_budget_recorder: OfferedBudgetRecorder,
 }
 
 pub(crate) struct CertifiedOfferedDraft {
@@ -292,10 +303,22 @@ pub(crate) struct CertifiedOfferedDraft {
     envelope_identity: [u8; 32],
     candidate: OfferedProcessedDeploy,
     user_mergeable: NumberChannelsEndVal,
+    #[cfg(any(test, feature = "test-utils"))]
+    replay_usages: models::rust::host_work::HostWorkUsages,
 }
 
 impl CertifiedOfferedDraft {
     pub(crate) fn settled_root(&self) -> [u8; 32] { self.settled_root }
+
+    /// DR-102: the certified mergeable map, which the producer and every
+    /// validator store for this deploy.
+    pub(crate) fn into_user_mergeable(self) -> NumberChannelsEndVal { self.user_mergeable }
+
+    /// DR-102: the final usage of the replay budget that certify owns.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn replay_usages(&self) -> models::rust::host_work::HostWorkUsages {
+        self.replay_usages
+    }
 
     pub(crate) fn envelope_identity(&self) -> [u8; 32] { self.envelope_identity }
 
@@ -406,6 +429,24 @@ pub struct MergedPreState {
 pub type ParentsPostStateCacheVal = MergedPreState;
 
 impl RuntimeManager {
+    /// DR-102: test-only records of the final usage of each offered budget.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn offered_budget_usages(&self) -> Vec<OfferedBudgetUsage> {
+        self.offered_budget_recorder.records()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn record_offered_budget_usage(
+        &self,
+        kind: OfferedUsageKind,
+        deploy_id: &[u8],
+        pre_state_root: &[u8],
+        usages: models::rust::host_work::HostWorkUsages,
+    ) {
+        self.offered_budget_recorder
+            .record(kind, deploy_id, pre_state_root, usages);
+    }
+
     pub async fn read_direct_offered_wallet_snapshot<'a>(
         &self,
         envelope: &'a models::rust::deploy_envelope::DeployEnvelope,
@@ -873,6 +914,16 @@ impl RuntimeManager {
 
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
+        // DR-102 (DR-72): a host-work rejection of the execution budget after the
+        // candidate step is attributable to the candidate, so the proposer
+        // quarantines the envelope instead of failing every later proposal.
+        let candidate_id = match terms.as_slice() {
+            [PendingDeployCandidate::Envelope(envelope)] => match envelope.identity() {
+                DeployLookupId::V6(deploy_id) => Some(*deploy_id),
+                _ => None,
+            },
+            _ => None,
+        };
         let runtime = self
             .spawn_offered_runtime(offered_grant_issue_call_limits(), offered_budget.clone())
             .await?;
@@ -893,6 +944,18 @@ impl RuntimeManager {
         let (user_processed, user_mergeable): (Vec<_>, Vec<_>) = user_results.into_iter().unzip();
         let (system_processed, system_mergeable): (Vec<_>, Vec<_>) =
             system_results.into_iter().unzip();
+        let candidate_rejection = |error: CasperError| match candidate_id {
+            Some(deploy_id) if offered_budget.is_rejected() => {
+                CasperError::OfferedCandidateRejected(OfferedCandidateRejection {
+                    deploy_id,
+                    pre_state_root: start_hash.clone(),
+                    reason: error.to_string(),
+                })
+            }
+            _ => error,
+        };
+        #[cfg(any(test, feature = "test-utils"))]
+        let execution_before = offered_budget.usages();
         let mergeable_count = user_mergeable
             .len()
             .checked_add(system_mergeable.len())
@@ -913,7 +976,8 @@ impl RuntimeManager {
                     })?,
                 ),
             )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))
+            .map_err(candidate_rejection)?;
         let bonds = runtime_ops.compute_bonds(&state_hash).await?;
         self.save_mergeable_channels_metered(
             Blake2b256Hash::from_bytes_prost(&state_hash),
@@ -922,7 +986,17 @@ impl RuntimeManager {
             user_mergeable.into_iter().chain(system_mergeable).collect(),
             &Blake2b256Hash::from_bytes_prost(start_hash),
             &offered_budget,
-        )?;
+        )
+        .map_err(candidate_rejection)?;
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(deploy_id) = candidate_id {
+            self.offered_budget_recorder.record(
+                OfferedUsageKind::ProducerMergeableExecution,
+                deploy_id.as_ref(),
+                start_hash,
+                usage_delta(execution_before, offered_budget.usages()),
+            );
+        }
         Ok((state_hash, user_processed, system_processed, bonds))
     }
 
@@ -1192,15 +1266,27 @@ impl RuntimeManager {
         Ok(post_state)
     }
 
+    // Changed by DR-102: certify owns the replay budget, so every role charges
+    // exactly the certified replay to it, and it borrows the block context.
+    // pub(crate) async fn certify_offered_draft(
+    //     &self,
+    //     processed: &OfferedProcessedDeploy,
+    //     start_hash: &StateHash,
+    //     block_data: &BlockData,
+    //     invalid_blocks: HashMap<BlockHash, Validator>,
+    //     adopted: &AdoptedResourcePolicy,
+    //     budget: &HostWorkBudget,
+    // ) -> Result<CertifiedOfferedDraft, CasperError> {
     pub(crate) async fn certify_offered_draft(
         &self,
         processed: &OfferedProcessedDeploy,
         start_hash: &StateHash,
         block_data: &BlockData,
-        invalid_blocks: HashMap<BlockHash, Validator>,
+        invalid_blocks: &HashMap<BlockHash, Validator>,
         adopted: &AdoptedResourcePolicy,
-        budget: &HostWorkBudget,
     ) -> Result<CertifiedOfferedDraft, CasperError> {
+        let replay_budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+        let budget = &replay_budget;
         if !adopted.offered_funded_v6_active() {
             return Err(CasperError::RuntimeError(
                 "offered-funded replay is not active for this block".to_string(),
@@ -1361,6 +1447,25 @@ impl RuntimeManager {
                     .to_string(),
             ));
         }
+        // DR-102: every role charges the copy of the block context here, before
+        // the copy. The producer charged it before certify and the validator
+        // did not charge it.
+        budget
+            .reserve(
+                HostWorkDimension::SearchStateBytes,
+                HostWorkUnits::new(
+                    u64::try_from(offered_replay_context_copy_bytes(
+                        block_data,
+                        invalid_blocks,
+                    )?)
+                    .map_err(|_| {
+                        CasperError::RuntimeError(
+                            "offered replay context copy overflows".to_string(),
+                        )
+                    })?,
+                ),
+            )
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let witness = self
             .replay_native_offered_witness(
                 &prepared,
@@ -1369,7 +1474,9 @@ impl RuntimeManager {
                 &schedule,
                 NativeFundedExecutionContext {
                     block_data: block_data.clone(),
-                    invalid_blocks,
+                    // Changed by DR-102: certify borrows the block context.
+                    // invalid_blocks,
+                    invalid_blocks: invalid_blocks.clone(),
                     trace: offered_funded_v6_trace_limits(),
                     host_work: budget.clone(),
                 },
@@ -1501,6 +1608,8 @@ impl RuntimeManager {
             envelope_identity: prepared.envelope_identity,
             candidate: processed.clone(),
             user_mergeable,
+            #[cfg(any(test, feature = "test-utils"))]
+            replay_usages: replay_budget.usages(),
         })
     }
 
@@ -1579,17 +1688,35 @@ impl RuntimeManager {
                     "offered-funded replay requires one isolated user candidate".to_string(),
                 ));
             };
-            let budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+            // Changed by DR-102: certify owns the replay budget. The work that this
+            // validator does after the certified replay to accept the block is
+            // charged to its own acceptance budget, as the producer charges its
+            // counterpart to its execution budget.
+            // let budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+            // let certificate = self
+            //     .certify_offered_draft(
+            //         processed,
+            //         start_hash,
+            //         block_data,
+            //         invalid_blocks.clone().unwrap_or_default(),
+            //         adopted,
+            //         &budget,
+            //     )
+            //     .await?;
+            let acceptance = OfferedAcceptanceBudget::new();
+            let budget = acceptance.meter().clone();
+            let no_invalid_blocks = HashMap::new();
             let certificate = self
                 .certify_offered_draft(
                     processed,
                     start_hash,
                     block_data,
-                    invalid_blocks.clone().unwrap_or_default(),
+                    invalid_blocks.as_ref().unwrap_or(&no_invalid_blocks),
                     adopted,
-                    &budget,
                 )
                 .await?;
+            #[cfg(any(test, feature = "test-utils"))]
+            let replay_usages = certificate.replay_usages();
             let (post_root, system_mergeable) = self
                 .replay_offered_system_continuation(
                     &certificate,
@@ -1663,6 +1790,21 @@ impl RuntimeManager {
                     error
                 ))
             })?;
+            #[cfg(any(test, feature = "test-utils"))]
+            {
+                self.offered_budget_recorder.record(
+                    OfferedUsageKind::ValidatorReplay,
+                    processed.identity_bytes(),
+                    start_hash,
+                    replay_usages,
+                );
+                self.offered_budget_recorder.record(
+                    OfferedUsageKind::ValidatorAcceptance,
+                    processed.identity_bytes(),
+                    start_hash,
+                    budget.usages(),
+                );
+            }
             return Ok(post_root.to_bytes_prost());
         }
         let legacy = terms
@@ -2520,6 +2662,8 @@ impl RuntimeManager {
             exploratory_deploy_phlo_limit: exploratory_deploy_config.phlo_limit,
             exploratory_deploy_execution_timeout: exploratory_deploy_config.execution_timeout,
             external_services,
+            #[cfg(any(test, feature = "test-utils"))]
+            offered_budget_recorder: OfferedBudgetRecorder::default(),
         }
     }
 

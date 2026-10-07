@@ -4333,6 +4333,13 @@ It must not block other deployments.
 9. An envelope in an inactive format is quarantined at selection with no root,
    because the format decision does not depend on state.
 
+**Amendment (DR-102).** Item 2 still maps publication authorization to a
+candidate rejection, but the comparison now charges the producer's acceptance
+budget, not the replay budget. A host-work rejection of the execution budget
+in the producer's mergeable step, which runs after the candidate pipeline, is
+also a candidate rejection. Infrastructure errors in that step keep their own
+types. See DR-102.
+
 **Algorithm (literate form).** The loop has two named chunks. The function
 `next_offered_attempt` implements the second chunk, and both the checkpoint
 loop and its property test call it.
@@ -6918,6 +6925,11 @@ execution of the gateway block stays under both original caps. The other
 work categories changed by less than the spread between A1 and A2. That
 spread is up to 40 MB of hot-store write charges.
 
+**Amendment (DR-102).** A validator now charges
+`save_mergeable_channels_metered` to its acceptance budget, not to its replay
+budget. The producer charges the same function to its execution budget, on
+the same certified mergeable map. See DR-102.
+
 **Cross-refs.** DR-77. Leaves `ofp-2-cap-d-c1a-tree-set-tag`,
 `ofp-2-cap-d-c1b-exact-decode-model` and `ofp-2-cap-d-c1c-switch-decode-sites`.
 
@@ -7891,6 +7903,11 @@ VerificationBytes and 1.38 times SearchStateBytes.
 probe did not show. The user moved them to the follow-up campaign
 `followup-8946-d-c5-deferred-findings`.
 
+**Amendment (DR-102).** DR-102 closes the remaining difference between the
+producer's self-replay and the validator replays. The replay budget of every
+role now measures `certify_offered_draft` alone, and each role charges its
+acceptance work to a separate budget.
+
 **Cross-refs.** DR-79, DR-96, DR-98. Leaf `ofp-2-cap-d-c5a-trace-known-bounds`.
 
 ## DR-101 — System residue is never charged to an earlier deployment
@@ -8189,3 +8206,250 @@ code and on `unit_payer_keeps_its_region`.
 
 **Cross-refs.** DR-31, DR-41, DR-68, DR-98, DR-100. Bug 10056
 (`bug-after-one-signer-writes-the-registry-any-other-signer-s-registry-lookup-or-insert-is-unfundable-work-charged-to-the-earlier-writer-s-authority-51d630`).
+
+## DR-102 — One replay charge for every role, and acceptance work on its own budget
+
+**Status.** Implemented for Phase D item D-C5b of epic 8946 on 2026-10-07.
+The user chose to review the design before the implementation. A design
+pass and one independent review approved the design with changes. This
+record includes all of them.
+
+**Context.** The replay verdict of an offered deploy at a cap boundary
+decides consensus. After DR-100, the validator replays of a block agree
+exactly. The producer's self-replay still differed from them. On the gateway
+funding block of the probe, the producer charged 13,227,757 more
+VerificationBytes, 14,375,896 more VerificationOperations and 235,819 fewer
+SearchStateBytes than a validator.
+
+The replay budget of each role held more than the certified replay:
+
+| Site | Role that charged the replay budget | Work |
+| --- | --- | --- |
+| Context copy | producer only | The copy of the block context, 65 bytes in the probe. The validator made the same copy and charged nothing. |
+| Publication comparison | producer only | The comparison of the candidate with the certified replay: a constant $`C = 14{,}417{,}920`$ in VerificationBytes and in VerificationOperations. |
+| System continuation | validator only | The replay of close block and slashes, 0 in practice. The producer plays them on its execution budget. |
+| Mergeable result vector | validator only | The producer charges its counterpart to its execution budget. |
+| Mergeable pre-state read | validator only | Both roles do this read. The producer charges it to its execution budget. |
+
+With $`V`$ the validator's work at the last three sites, the producer minus
+the validator is $`C - V`$ in VerificationBytes and VerificationOperations,
+and $`65 - V`$ in SearchStateBytes. This decomposition explains the measured
+difference.
+
+The difference was a safety hazard. In SearchStateBytes a validator charged
+about 0.24 MB more than the producer's self-replay. The producer does not
+replay its own block again. A block within that margin of the SearchStateBytes
+cap therefore passed the producer and failed on every validator. The verdict
+`InvalidTransaction` is not slashable (`block_status.rs`), but every validator
+drops the block while the producer keeps it. The deploy is lost, and the
+producer builds on a block that no other node holds. The margin grows by about
+1 KB of SearchStateBytes for each mergeable entry, so a deploy can steer a
+block into it. In VerificationBytes and VerificationOperations the producer
+was stricter by about 13 MB, which only lost liveness.
+
+The independent review found two more defects. First, the producer stored the
+mergeable map of its own play, while every validator stored the certified
+replay map. Nothing compared the two maps. Second, a host-work rejection of
+the producer's execution budget in its mergeable step came after the DR-72
+candidate pipeline, so it failed every later proposal.
+
+**Definitions.**
+
+- The *replay budget* $`R`$ is the budget of `certify_offered_draft`.
+  $`U(B)`$ is its usage for block $`B`$. $`R_p`$ and $`R_v`$ are the producer's
+  and a validator's replay budgets.
+- An *acceptance budget* $`A`$ is a role-local budget for the work that one
+  role does after the certified replay to reach its own decision.
+  $`A_p`$ is the producer's, and $`A_v`$ is a validator's. This acceptance is
+  the decision of one role about a candidate or a block. It is not the P1
+  acceptance gate, which is the funding check before execution.
+- The *execution budget* $`E`$ is the producer's budget for its play.
+- $`V`$ is a validator's acceptance work, and $`V'`$ is its counterpart that
+  the producer charges to $`E`$.
+- $`L_R`$, $`L_E`$ and $`L_A`$ are the limits of $`R`$, $`E`$ and $`A`$.
+
+**Decision.**
+
+1. `certify_offered_draft` creates $`R`$ and is its only user. It borrows
+   the block context and charges the context copy before it copies. The copy
+   counts canonical bytes only (the sender key, and each slashed block hash
+   with its validator), with no `size_of` term (`host-work-budget.md`).
+2. The producer charges the publication comparison to $`A_p`$. It creates
+   $`A_p`$ once for each candidate attempt, inside the candidate step.
+3. The producer stores the certified mergeable map
+   (`CertifiedOfferedDraft::into_user_mergeable`), not the map of its own
+   play. The producer and every validator therefore store the same entry, and
+   $`V' = V`$ holds by construction.
+4. A validator charges the system continuation, the mergeable result vector
+   and the mergeable pre-state read to $`A_v`$. It creates $`A_v`$ once for
+   each replay call.
+5. The acceptance limits `offered_acceptance_host_work_limits()` equal the
+   execution limits. They are a protocol constant, never node configuration,
+   and they must stay at least the execution limits in every dimension.
+6. A validator acceptance exhaustion stays a block verdict: the replay is
+   retried and then the block is invalid. A producer acceptance exhaustion is
+   a DR-72 candidate rejection.
+7. A host-work rejection of $`E`$ in the producer's mergeable step is a DR-72
+   candidate rejection. Infrastructure errors keep their own types.
+8. No production function takes a role argument. The role appears only in
+   the test-only usage records.
+9. The replaced lines stay as comments with the reason.
+
+```math
+\begin{aligned}
+R_p &= R_v = U(B) \\
+A_p &= C \\
+A_v &= V = V' \le E \le L_E \le L_A
+\end{aligned}
+```
+
+**Safety.** Three premises hold:
+
+- S1: the limits of $`R`$ come from one protocol function, and $`U(B)`$ is the
+  same on every role. Certify takes the same inputs on every role: the block's
+  own slash targets, the block data, the genesis policy, and stateless history
+  readers.
+- S2: $`V = V'`$. Both roles run the same functions on the same certified map,
+  pre-state root and creator. The system continuation charges 0 on both.
+- S3: $`L_E \le L_A`$ in every dimension, $`C \le L_A`$, and $`L_A`$ is a
+  protocol constant.
+
+The results follow:
+
+- (a) Every role reaches the same replay verdict, from S1.
+- (b) A block that its producer publishes never exhausts a validator's
+  acceptance budget. The producer checks $`E \le L_E`$ before publication,
+  so $`V = V' \le L_E \le L_A`$.
+- (c) Validators never disagree about acceptance, because $`V`$ is a
+  function of the block alone.
+- (d) The producer's acceptance budget cannot stop a publication:
+  $`C`$ is 5.4 % of the VerificationBytes limit and 1.3 % of the
+  VerificationOperations limit.
+- (e) Acceptance work cannot reject the replay, because the budgets have
+  separate counters.
+
+Two residual premises are checked by tests, not by construction: the proto
+round trip of an offered deploy keeps its charges (the cross-role test
+decodes the block before the validators replay it), and every node stores
+history leaves in one key format.
+
+**Behavior changes.**
+
+- The producer's self-replay and every validator replay charge the same usage
+  in every dimension.
+- Verdicts change only at cap boundaries. No committed state, receipt or block
+  content changes. The stored mergeable entry is the certified map on every
+  role.
+- The worst-case work of a validator for one offered deploy grows from
+  $`L_R`$ plus the preflight to $`L_R + L_A`$ plus the preflight.
+- A candidate whose mergeable step exceeds $`E`$ is quarantined, so it no
+  longer fails every later proposal.
+- The producer no longer reads the mergeable channel values a second time on
+  $`E`$.
+- Rollout: verdicts at cap boundaries change, so every validator must upgrade
+  together. Protocol 6 requires a fresh genesis.
+
+![Sequence diagram with the actors Producer and Validator and the participants Execution budget E, certify_offered_draft with the replay budget R, Acceptance budget A_p and Acceptance budget A_v. In the proposal, the producer plays the candidate on E, then certifies it with a borrowed block context. Certify charges the canonical context copy and the certified replay, U(B), to R and returns a certificate with the certified mergeable map. The producer charges the publication comparison, C equal to 14,417,920 in verification bytes and operations, to A_p, then charges the system deploys, the mergeable vector and the save of the certified map, V prime, to E. A note states that a host-work rejection of E in this step quarantines the envelope under DR-72. In block processing, the validator runs its preflight, certifies the decoded block with the same inputs, which charges the same U(B) to R, and charges the system continuation, the mergeable vector and the save of the certified map, V equal to V prime, to A_v. A grey note states that R_p equals R_v equals U(B). A green note states that V equals V prime, which is at most E, at most L_E and at most L_A, so a published block never exhausts a validator's acceptance budget. A red note states that before DR-102 the producer's replay budget also held the comparison and the copy, the validator's held its acceptance work, and a block near the cap was published and then dropped by every validator.](diagrams/offered-replay-role-attribution.svg)
+
+(*Source: [`diagrams/offered-replay-role-attribution.puml`](diagrams/offered-replay-role-attribution.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-replay-role-attribution.puml`.*)
+
+**Rejected alternatives.**
+
+1. Charge the comparison to validators too. That adds 14.4 M units of work
+   that no validator does, against the goal of Phase D.
+2. Charge a validator's acceptance work to both replay budgets. The
+   producer's replay budget would then have to live past the DR-72 boundary,
+   and replay parity would depend on S2.
+3. Charge the comparison to $`E`$. That is equally safe, but $`E`$ would lose
+   14.4 M units of headroom for work that is not execution.
+4. Derive the acceptance limits from bounds that the block fixes. They would
+   then no longer cap the work of a validator.
+5. Acceptance limits smaller than the execution limits. The Rocq control
+   `smaller_acceptance_limit_rejects_an_honest_block` shows an honest block
+   rejected.
+6. Treat a validator acceptance exhaustion as an infrastructure error with no
+   verdict. Acceptance usage depends only on the block, so every validator
+   would leave the block undecided, and a dishonest producer would never be
+   dropped.
+7. Acceptance limits at the protocol maximum of $`V`$. They are not needed
+   once S2 holds by construction, and they raise the worst-case work of a
+   validator.
+8. One shared budget with a replay-only snapshot. Its sticky rejection still
+   ties the replay verdict to acceptance work.
+9. The producer runs the full validator replay of its own block. This is the
+   strongest choice by construction, but it costs a second full replay for
+   each offered block.
+
+**Out of scope.**
+
+- Two other validator replay entry points, `ensure_mergeable_entry` and the
+  replay during bootstrap from the last finalized state, pass no adopted
+  policy. They cannot replay an offered block today. When they replay offered
+  blocks, they must use the same replay and acceptance budgets.
+- The comment at `block_processor.rs:629-633` says that an
+  `InvalidTransaction` verdict goes through the slashing path. The verdict is
+  on the non-slashable list. The comment is stale, and it stays for the
+  Casper team.
+- Existing `size_of` terms in consensus charges, such as the mergeable result
+  vector, stay unchanged.
+
+**Verification.** `ReplayRoleAttribution.v` proves its results without
+axioms, parameters or admissions:
+
+- `accepts_iff_totals_fit` and `verdict_depends_only_on_totals`: a sticky
+  budget accepts exactly when every per-dimension total fits its limit.
+- `replay_usage_role_independent` and `replay_verdict_role_independent`.
+- `dr102_meters_every_performed_site`,
+  `validator_acceptance_is_producer_execution_work` and
+  `producer_acceptance_is_the_publication_comparison`.
+- `honest_block_never_exhausts_validator_acceptance` and
+  `publish_implies_accept`.
+- Negative controls `before_dr102_charges_roles_differently` (101 against 104
+  search-state bytes), `before_dr102_splits_the_verdict` (limit 102: the
+  producer accepts and a validator rejects),
+  `before_dr102_leaves_the_validator_context_copy_unmetered`,
+  `smaller_acceptance_limit_rejects_an_honest_block` and
+  `validator_acceptance_on_replay_splits_the_verdict`, with
+  `dr102_accepts_the_witness` as the positive case.
+
+No TLA+ model is needed. The attribution runs in sequence after certify on
+each node, and the DR-100 model covers the schedules inside certify.
+
+Tests:
+
+- Unit tests in `costacc/offered_acceptance/tests.rs`: the acceptance limits
+  dominate the execution limits, the comparison bound is pinned at
+  14,417,920 and fits, acceptance exhaustion leaves the replay budget
+  untouched, the validator preflight maxima fit, and the context copy counts
+  canonical bytes. A property test with 256 cases shows that the copy does not
+  depend on the order or hash seed of the map.
+- `offered_replay_usage_is_identical_across_roles` (the installer block and the
+  gateway funding block) and
+  `offered_replay_usage_is_identical_across_roles_on_a_small_block`. Node 0
+  proposes. The block is decoded from its wire form. The other nodes process
+  it first and node 0 last. The helper checks that every node stores the
+  producer's mergeable entry, that the producer's self-replay and every
+  validator replay agree in all 16 dimensions, that the producer's acceptance
+  is $`C`$ in VerificationBytes and VerificationOperations and 0 elsewhere,
+  and that every validator's acceptance equals the producer's mergeable step.
+  The small-block test passes under both the committed and the provisional
+  caps. The gateway funding block needs the Phase D caps.
+
+Negative controls in a scratch copy rebuild the old routing in the recorded
+usage, and the small-block test fails with the exact differences:
+
+- The comparison counted as replay work: the producer exceeds a validator by
+  14,417,920 in VerificationBytes and in VerificationOperations.
+- A validator's acceptance work counted as replay work: the validator exceeds
+  the producer by 223,220 SearchStateBytes, 36,577 VerificationOperations and
+  935,588 VerificationBytes.
+- The context copy charged by the producer only: the producer exceeds a
+  validator by 65 SearchStateBytes.
+
+**Measurement.** On the small block, every role charges about 23.1 MB of
+VerificationBytes, 8.73 M VerificationOperations and 4.37 MB of
+SearchStateBytes to its replay budget. The final probe measurement of Phase D
+(item D-R) records the gateway numbers.
+
+**Cross-refs.** DR-72, DR-95, DR-100, DR-101. Leaf
+`ofp-2-cap-d-c5b-acceptance-attribution-test`.
