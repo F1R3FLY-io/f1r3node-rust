@@ -36,6 +36,25 @@ pub struct Genesis {
     pub native_token_symbol: String,
     /// Number of decimal places for native token display (dust per token = 10^decimals).
     pub native_token_decimals: u32,
+    /// Static FsGenesis bundle entries — one per operator-provisioned
+    /// (file or directory, logical name) pair that user deploys can
+    /// resolve via `Fs.openFile(name, ...)` / `Fs.openDir(name, ...)`.
+    /// Empty by default (MVP posture: `openFile` / `openDir` return
+    /// `FSERR_UNSUPPORTED`); tests + production shards populate this
+    /// via `GenesisParameters` customization.  Threaded into
+    /// `standard_deploys::fs_generator`, which bakes the entries
+    /// into the composed FsGenesis Rholang source.  Different
+    /// bundles across leader and validators would produce
+    /// different fs_generator deploys → genesis diverges → peering
+    /// handshake rejects.
+    pub fs_bundle: Vec<super::contracts::fs_genesis::BundleEntry>,
+    /// Consensus-mode FsGenesis snapshot cadence — the deploy-count
+    /// interval at which the WAL-snapshot schedule fires under
+    /// `BundleConsensusMode::Consensus`.  `None` disables the
+    /// scheduler (MVP posture).  Baked into the composed FsGenesis
+    /// deploy term, so a cadence drift between leader and validator
+    /// surfaces as a genesis divergence at `validate_candidate`.
+    pub consensus_fs_snapshot_cadence: Option<u64>,
 }
 
 impl Genesis {
@@ -64,6 +83,8 @@ impl Genesis {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
@@ -125,7 +146,8 @@ impl Genesis {
         // toggles around genesis.  FsGenesis's composed source binds
         // the raw fs_* primitives via the toggled-off filter; user
         // deploys attempting the same get a ReduceError.
-        let fs_generator = standard_deploys::fs_generator(shard_id, &[], None);
+        let fs_generator =
+            standard_deploys::fs_generator(shard_id, fs_bundle, consensus_fs_snapshot_cadence);
 
         let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
         all_deploys.push(registry);
@@ -154,6 +176,8 @@ impl Genesis {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
@@ -166,6 +190,8 @@ impl Genesis {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence,
         )
     }
 
@@ -181,6 +207,8 @@ impl Genesis {
             &genesis.native_token_name,
             &genesis.native_token_symbol,
             genesis.native_token_decimals,
+            &genesis.fs_bundle,
+            genesis.consensus_fs_snapshot_cadence,
         );
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager
@@ -294,8 +322,17 @@ mod tests {
             )],
             pos_multi_sig_quorum: 1,
         };
-        let deploys =
-            Genesis::default_blessed_terms(&pos_params, &vec![], 0, "root", "F1R3CAP", "F1R3", 18);
+        let deploys = Genesis::default_blessed_terms(
+            &pos_params,
+            &vec![],
+            0,
+            "root",
+            "F1R3CAP",
+            "F1R3",
+            18,
+            &[],
+            None,
+        );
         let fs_pk = &*standard_deploys::FS_GENERATOR_PUB_KEY;
         let found = deploys.iter().any(|d| d.pk.bytes == fs_pk.bytes);
         assert!(

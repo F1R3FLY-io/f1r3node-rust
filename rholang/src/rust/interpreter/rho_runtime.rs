@@ -1119,6 +1119,31 @@ fn dispatch_table_creator(
         space.clone(),
     ));
 
+    // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
+    // URN + fixed_channel + proc_defs so FsGenesis composition could
+    // resolve the URN at genesis-time, but there was no dispatch_table
+    // entry — a user-held Dir cap that invoked removeDir at state-
+    // execution would send to the channel, trigger the body_ref=58
+    // reader, and hit "dispatch: no function for 58".  This stub
+    // replies with [false, "FSERR_UNSUPPORTED", "..."] so the caller
+    // gets a well-formed error reply.  The real handler (DD-RemoveDir
+    // ReplyShape) lands at a future Wave 4 handler slice.  See
+    // SystemProcesses::fs_remove_dir_stub for the body.
+    all_processes.push(Definition {
+        urn: format!("{}removeDir", super::io::FS_NATIVE_URN_PREFIX_VERSIONED),
+        fixed_channel: FixedChannels::fs_remove_dir(),
+        arity: 5,
+        body_ref: BodyRefs::FS_REMOVE_DIR,
+        handler: Box::new(|ctx| {
+            let sp = ctx.system_processes.clone();
+            Box::new(move |args| {
+                let sp = sp.clone();
+                Box::pin(async move { sp.fs_remove_dir_stub(args).await })
+            })
+        }),
+        remainder: None,
+    });
+
     all_processes.append(extra_system_processes);
 
     for def in all_processes.iter_mut() {
@@ -1794,6 +1819,162 @@ mod tests {
                 entry.name,
                 entry.urn_suffix,
                 expected_urn,
+            );
+        }
+    }
+
+    /// Trait-exempt `fs_remove_dir` URN must appear in `urn_map`
+    /// after `setup_maps_and_refs` runs.  Slice 5.43 added the
+    /// registration so FsGenesis composition can bind
+    /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)` without
+    /// tripping eval_new's "No value set for URN" check.  Pinning the
+    /// urn_map entry here catches a regression that removes the
+    /// explicit registration (which is NOT auto-generated from
+    /// FS_HANDLERS — the handler is trait-exempt).
+    #[test]
+    fn setup_maps_and_refs_registers_fs_remove_dir_urn() {
+        let (_, _, _, urn_map, _) = setup_maps_and_refs(&Vec::new());
+        let expected_urn = format!(
+            "{}removeDir",
+            crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED
+        );
+        assert!(
+            urn_map.contains_key(&expected_urn),
+            "urn_map missing `{expected_urn}`.  Trait-exempt fs_remove_dir \
+             registration (slice 5.43) was removed — FsGenesis composition \
+             will trip `BugFoundError` on `new fsRemoveDir(`...`)` at \
+             genesis-time.  See `setup_maps_and_refs` for the explicit \
+             registration site."
+        );
+    }
+
+    /// Trait-exempt `fs_remove_dir` proc_def must carry arity 5 (so
+    /// `fsRemoveDir!(rootCanon, rel, recursive, cmode, ack)` matches
+    /// the system-process reader) and `BodyRefs::FS_REMOVE_DIR` =
+    /// 58 (so the dispatcher routes to the stub handler registered
+    /// in `dispatch_table_creator`).  Slice 5.44 added the stub
+    /// handler to prevent a user-held Dir cap from hitting
+    /// "dispatch: no function for 58" when invoking `removeDir` at
+    /// state-execution; this test catches a regression that reverts
+    /// the proc_def entry or renumbers the body_ref.
+    #[test]
+    fn setup_maps_and_refs_registers_fs_remove_dir_proc_def() {
+        let (_, _, _, _, proc_defs) = setup_maps_and_refs(&Vec::new());
+        let expected_fixed_channel = FixedChannels::fs_remove_dir();
+        let found = proc_defs
+            .iter()
+            .find(|(fc, _, _, br)| *fc == expected_fixed_channel && *br == BodyRefs::FS_REMOVE_DIR);
+        let Some((_, arity, remainder, body_ref)) = found else {
+            panic!(
+                "proc_defs missing an entry with fixed_channel = \
+                 FixedChannels::fs_remove_dir() AND body_ref = \
+                 BodyRefs::FS_REMOVE_DIR ({}).  Trait-exempt \
+                 fs_remove_dir registration (slice 5.43) was removed; \
+                 Dir.rho's `fsRemoveDir!(...)` would hit \"dispatch: \
+                 no function for {}\".",
+                BodyRefs::FS_REMOVE_DIR,
+                BodyRefs::FS_REMOVE_DIR,
+            );
+        };
+        assert_eq!(
+            *arity, 5,
+            "fs_remove_dir proc_def arity must be 5 to match \
+             Dir.rho's `fsRemoveDir!(canonRoot, rel, recursive, \
+             cmode, *retCh)` call site; got {}",
+            arity
+        );
+        assert!(
+            remainder.is_none(),
+            "fs_remove_dir proc_def remainder must be None (no \
+             rest-pattern); got {remainder:?}"
+        );
+        assert_eq!(*body_ref, BodyRefs::FS_REMOVE_DIR);
+    }
+
+    /// Every `FS_HANDLERS` entry's `arity` (declared `usize`) must
+    /// fit in the `Arity` type (currently `i32`) WITHOUT truncation
+    /// on the `as Arity` cast performed by `fs_handlers_to_definitions`
+    /// (slice 5.31) and `setup_maps_and_refs` (slice 5.43).  Rust's
+    /// `as` conversion on an out-of-range `usize → i32` silently
+    /// wraps (two's-complement) rather than panicking.  Current
+    /// handler arities fall in `[1, 7]` — far from `i32::MAX` — but a
+    /// defensive pin keeps the compiler-silent wrap from surfacing as
+    /// a hard-to-diagnose "dispatcher mismatch on arity" at runtime.
+    ///
+    /// If this test fires, either the `FsHandlerEntry::arity` field
+    /// gained an entry out of `[0, i32::MAX]`, OR the `Arity` type
+    /// alias was renarrowed (e.g., `i16`).  In either case the
+    /// dispatcher's arity match would silently see the wrapped
+    /// value.  Fix: widen `Arity` to accommodate, or audit the new
+    /// entry.
+    #[test]
+    fn fs_handlers_arity_fits_in_arity_type() {
+        let max_arity: usize = Arity::MAX as usize;
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                entry.arity <= max_arity,
+                "FS_HANDLERS entry `{}` (urn_suffix = `{}`) has \
+                 arity = {}, which overflows the dispatcher's Arity \
+                 type (max = {}).  The `as Arity` cast in \
+                 fs_handlers_to_definitions + setup_maps_and_refs \
+                 would silently wrap this value, producing a \
+                 negative arity in the Definition.  Widen the Arity \
+                 type alias in system_processes.rs or correct the \
+                 entry.",
+                entry.name,
+                entry.urn_suffix,
+                entry.arity,
+                max_arity,
+            );
+        }
+    }
+
+    /// `fs_remove_dir` is trait-exempt — its four divergence reply
+    /// shapes don't fit the `FsHandler` trait (see
+    /// `handler_trait::fs_handler` docstring "Trait-exempt handler
+    /// (fs_remove_dir)").  It MUST NOT appear in `FS_HANDLERS`
+    /// because the trait-exempt stub (slice 5.44) is registered
+    /// separately in `dispatch_table_creator`.  If both were
+    /// registered, the dispatcher's `HashMap<body_ref, handler>`
+    /// insert would silently clobber one with the other — depending
+    /// on insertion order, callers might get either the stub's
+    /// FSERR_UNSUPPORTED reply or the (future) real handler's
+    /// response, with no compile-time or load-time warning.
+    ///
+    /// This test catches a regression where someone adds a
+    /// `fs_remove_dir` entry to `FS_HANDLERS` without first removing
+    /// the explicit stub registration in `dispatch_table_creator`.
+    /// Pins both axes: `urn_suffix == "removeDir"` AND `body_ref ==
+    /// BodyRefs::FS_REMOVE_DIR` — either match would collide.
+    #[test]
+    fn fs_remove_dir_stays_trait_exempt_in_fs_handlers() {
+        for entry in FS_HANDLERS.iter() {
+            assert_ne!(
+                entry.urn_suffix, "removeDir",
+                "FS_HANDLERS contains an entry with urn_suffix = \
+                 \"removeDir\" (name = `{}`).  fs_remove_dir is \
+                 trait-exempt; the explicit stub registration in \
+                 `dispatch_table_creator` would collide at the \
+                 dispatcher's body_ref HashMap, silently clobbering \
+                 one handler with the other.  Either (a) remove the \
+                 new FS_HANDLERS entry if fs_remove_dir still needs \
+                 the four divergence reply shapes, or (b) if the \
+                 real handler now fits the FsHandler trait, remove \
+                 the explicit stub registration in \
+                 `dispatch_table_creator` and this test.",
+                entry.name,
+            );
+            assert_ne!(
+                entry.body_ref,
+                BodyRefs::FS_REMOVE_DIR,
+                "FS_HANDLERS contains an entry with body_ref = \
+                 BodyRefs::FS_REMOVE_DIR ({}) (name = `{}`, \
+                 urn_suffix = `{}`).  fs_remove_dir is trait-exempt; \
+                 the body_ref slot is reserved for the explicit stub \
+                 registration (slice 5.44) and must not be reused.",
+                BodyRefs::FS_REMOVE_DIR,
+                entry.name,
+                entry.urn_suffix,
             );
         }
     }
