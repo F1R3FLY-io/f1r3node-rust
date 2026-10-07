@@ -34,8 +34,12 @@
 ///   - [`Stream`](Self::Stream) — per-fd directory-entries
 ///     streaming primitives.  `fs_entries_stream_open`,
 ///     `fs_entries_stream_next`, `fs_entries_stream_close`
-///     (3 handlers).  `fs_entries_stream_next` is the only
-///     verifying streaming handler (per-`next` reply verified).
+///     (3 handlers).  All three declare `const VERIFYING = false`
+///     — streaming replies depend on per-call host-fd state (which
+///     next-entry the kernel surfaces) so the leader/follower
+///     reply hashes aren't by-construction equal.  Pinned by
+///     `fs_handlers::EXPECTED_PER_FAMILY_VERIFYING_COUNTS[Stream]
+///     = 0`.
 ///
 ///   - [`Lock`](Self::Lock) — byte-range and sequential lock
 ///     helpers.  `fs_lock_range`, `fs_lock_sequential`,

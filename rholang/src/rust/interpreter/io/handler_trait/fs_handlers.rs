@@ -267,10 +267,7 @@ pub const EXPECTED_PER_FAMILY_HANDLER_COUNTS: [(super::family::HandlerFamily, us
 ///     are shape-only).
 ///   - Stream = 0 verifying out of 3 (every streaming handler on
 ///     this tree declares `const VERIFYING = false`, matching the
-///     per-stream-step host-fd dependency; the family-docstring's
-///     "fs_entries_stream_next verifying" claim is aspirational,
-///     not current — the handler module explicitly comments
-///     "Non-verifying stream" and asserts `!VERIFYING`).
+///     per-stream-step host-fd dependency).
 ///   - Lock = 0 verifying out of 4 (lock registry is host-local).
 ///   - Lifecycle = 0 verifying out of 3 (fs_open installs a
 ///     shadow fd via on_replay_side_effect, not reply verify).
