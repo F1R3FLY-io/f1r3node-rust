@@ -27,14 +27,13 @@ cat >"$work/bin/oci" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2 $3" in
 "compute instance list")
-	query=""
-	while [ $# -gt 0 ]; do [ "$1" = --query ] && query="$2"; shift; done
-	name="$(sed -E "s/.*display-name\"=='([^']+)'.*/\1/" <<<"$query")"
-	count="$(cat "$STUB_DIR/list.$name" 2>/dev/null || echo 0)"
-	echo $((count + 1)) >"$STUB_DIR/list.$name"
-	if [ -e "$STUB_DIR/missing.$name" ]; then echo null; exit 0; fi
-	if [ -e "$STUB_DIR/late.$name" ] && [ "$count" -lt 1 ]; then echo null; exit 0; fi
-	echo "ocid1.instance.oc1..$name"
+	count="$(cat "$STUB_DIR/lists" 2>/dev/null || echo 0)"
+	echo $((count + 1)) >"$STUB_DIR/lists"
+	while read -r name; do
+		[ -e "$STUB_DIR/missing.$name" ] && continue
+		if [ -e "$STUB_DIR/late.$name" ] && [ "$count" -lt 1 ]; then continue; fi
+		jq -cn --arg n "$name" '{"display-name":$n,"lifecycle-state":"PROVISIONING",id:("ocid1.instance.oc1..\($n)")}'
+	done <"$STUB_DIR/names" | jq -s '{data:.}'
 	;;
 "compute instance get")
 	echo '{"cost-center":"ci"}'
@@ -70,7 +69,7 @@ out="$(run_step)"
 grep -q 'nothing to tag' <<<"$out"
 [ ! -e "$work/updates" ]
 
-rm -f "$work/updates" "$work"/list.*
+rm -f "$work/updates" "$work/lists"
 printf '%s\n' ci-eph-f1r3node-rust-amd64-20261007-1-aa ci-eph-f1r3node-rust-arm64-20261007-1-bb >"$work/names"
 touch "$work/late.ci-eph-f1r3node-rust-arm64-20261007-1-bb"
 out="$(run_step)"
@@ -81,10 +80,10 @@ while IFS=$'\t' read -r iid tags; do
 	[ "$(jq -r '."cost-center"' <<<"$tags")" = ci ]
 	case "$iid" in ocid1.instance.oc1..ci-eph-*) ;; *) exit 1 ;; esac
 done <"$work/updates"
-[ "$(cat "$work/list.ci-eph-f1r3node-rust-arm64-20261007-1-bb")" -eq 2 ]
+[ "$(cat "$work/lists")" -eq 2 ]
 grep -q '0 untagged' <<<"$out"
 
-rm -f "$work/updates" "$work"/list.* "$work"/late.*
+rm -f "$work/updates" "$work/lists" "$work"/late.*
 printf '%s\n' "ci-eph-x'] | evil" ci-eph-f1r3node-rust-amd64-20261007-1-cc >"$work/names"
 touch "$work/missing.ci-eph-f1r3node-rust-amd64-20261007-1-cc"
 out="$(run_step)"
@@ -92,6 +91,6 @@ grep -q 'skip unexpected runner name' <<<"$out"
 grep -q 'could not tag ci-eph-f1r3node-rust-amd64-20261007-1-cc' <<<"$out"
 grep -q '1 untagged' <<<"$out"
 [ ! -e "$work/updates" ]
-[ "$(cat "$work/list.ci-eph-f1r3node-rust-amd64-20261007-1-cc")" -eq 6 ]
+[ "$(cat "$work/lists")" -eq 6 ]
 
 printf 'Ephemeral run tagging step tests passed\n'

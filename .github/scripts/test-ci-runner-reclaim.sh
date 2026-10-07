@@ -92,20 +92,40 @@ reset() {
 	rm -f "$work/terminated" "$work/output" "$work/summary" "$work/fail_for" "$work/gh.log"
 }
 
+jobs_with() {
+	local approval="$1" launch="$2"
+	{
+		printf 'Lint\tsuccess\n'
+		[ -z "$approval" ] || printf 'Heavy Pipeline / Await Launch Approval\t%s\n' "$approval"
+		[ -z "$launch" ] || printf 'Heavy Pipeline / Launch Ephemeral Runners\t%s\n' "$launch"
+		printf 'Heavy Pipeline / Launch Ephemeral Runners Report\tsuccess\n'
+	} >"$work/launch_states"
+}
+detect_gives() {
+	local expected="$1"
+	run env RUN_ID=500 RUN_ATTEMPT=1 bash -e detect.sh >/dev/null
+	grep -qx "launched=$expected" "$work/output"
+}
 for state in success failure cancelled timed_out; do
 	reset
-	printf '%s\n' "$state" >"$work/launch_states"
-	run env RUN_ID=500 RUN_ATTEMPT=1 bash -e detect.sh >/dev/null
-	grep -qx 'launched=true' "$work/output"
+	jobs_with success "$state"
+	detect_gives true
 	grep -qx 'run_id=500' "$work/output"
 	grep -q '/runs/500/attempts/1/jobs' "$work/gh.log"
 done
-for state in skipped ''; do
+for state in skipped in_progress ''; do
 	reset
-	printf '%s\n' "$state" >"$work/launch_states"
-	run env RUN_ID=500 RUN_ATTEMPT=1 bash -e detect.sh >/dev/null
-	grep -qx 'launched=false' "$work/output"
+	jobs_with success "$state"
+	detect_gives false
 done
+for approval in waiting failure cancelled skipped ''; do
+	reset
+	jobs_with "$approval" success
+	detect_gives false
+done
+reset
+printf 'Await Launch Approval\tsuccess\nLaunch Ephemeral Runners\tfailure\n' >"$work/launch_states"
+detect_gives true
 reset
 set +e
 run env RUN_ID='500;x' RUN_ATTEMPT=1 bash -e detect.sh >/dev/null 2>&1

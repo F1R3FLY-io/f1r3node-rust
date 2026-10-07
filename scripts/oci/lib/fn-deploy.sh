@@ -43,8 +43,7 @@ fn_active_application_id() {
 		--compartment-id "$OCI_COMPARTMENT_OCID" \
 		--all \
 		--output json |
-		jq -r --arg name "$name" '.data[] | select(."display-name" == $name and ."lifecycle-state" == "ACTIVE") | .id' |
-		head -1
+		jq -r --arg name "$name" 'first(.data[] | select(."display-name" == $name and ."lifecycle-state" == "ACTIVE") | .id) // empty'
 }
 
 fn_build_and_push_image() {
@@ -54,8 +53,7 @@ fn_build_and_push_image() {
 		--compartment-id "$OCI_COMPARTMENT_OCID" \
 		--all \
 		--output json |
-		jq -r --arg name "$repository" '.data.items[] | select(."display-name" == $name) | .id' |
-		head -1)"
+		jq -r --arg name "$repository" 'first(.data.items[] | select(."display-name" == $name) | .id) // empty')"
 	if [ -z "$repo_id" ]; then
 		oci artifacts container repository create \
 			--profile "$OCI_PROFILE" \
@@ -74,8 +72,7 @@ fn_upsert_function() {
 		--application-id "$application_id" \
 		--all \
 		--output json |
-		jq -r --arg name "$name" '.data[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED") | .id' |
-		head -1)"
+		jq -r --arg name "$name" 'first(.data[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED") | .id) // empty')"
 	if [ -z "$function_id" ]; then
 		function_id="$(oci fn function create \
 			--profile "$OCI_PROFILE" \
@@ -111,8 +108,7 @@ fn_upsert_schedule() {
 		--compartment-id "$OCI_COMPARTMENT_OCID" \
 		--all \
 		--output json |
-		jq -r --arg name "$name" '.data.items[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED") | .id' |
-		head -1)"
+		jq -r --arg name "$name" 'first(.data.items[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED") | .id) // empty')"
 	if [ -z "$schedule_id" ]; then
 		schedule_id="$(oci resource-scheduler schedule create \
 			--profile "$OCI_PROFILE" \
@@ -148,8 +144,7 @@ fn_upsert_dynamic_group() {
 		--compartment-id "$TENANCY_OCID" \
 		--all \
 		--output json |
-		jq -r --arg name "$name" '.data[] | select(.name == $name and ."lifecycle-state" != "DELETED") | .id' |
-		head -1)"
+		jq -r --arg name "$name" 'first(.data[] | select(.name == $name and ."lifecycle-state" != "DELETED") | .id) // empty')"
 	if [ -z "$id" ]; then
 		id="$(oci iam dynamic-group create \
 			--profile "$OCI_PROFILE" \
@@ -188,8 +183,7 @@ fn_upsert_policy() {
 		--compartment-id "$TENANCY_OCID" \
 		--all \
 		--output json |
-		jq -r --arg name "$name" '.data[] | select(.name == $name and ."lifecycle-state" != "DELETED") | .id' |
-		head -1)"
+		jq -r --arg name "$name" 'first(.data[] | select(.name == $name and ."lifecycle-state" != "DELETED") | .id) // empty')"
 	if [ -z "$policy_id" ]; then
 		policy_id="$(oci iam policy create \
 			--profile "$OCI_PROFILE" \

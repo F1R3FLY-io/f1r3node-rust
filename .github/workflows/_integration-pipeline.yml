@@ -408,47 +408,55 @@ jobs:
           fi
           . system-integration/ci/oci-runners/state.env
           run_key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          untagged=0
+          pending=""
           while read -r name; do
-            if ! [[ "$name" =~ ^ci-eph-[A-Za-z0-9._-]+$ ]]; then
+            if [[ "$name" =~ ^ci-eph-[A-Za-z0-9._-]+$ ]]; then
+              pending="$pending $name"
+            else
               echo "::warning::skip unexpected runner name: $name"
-              continue
             fi
-            tagged=""
-            for attempt in 1 2 3 4 5 6; do
-              iid="$(oci compute instance list -c "$COMP" --region "$REGION" --all \
-                --query "data[?\"display-name\"=='$name' && \"lifecycle-state\"!='TERMINATED'].id | [0]" \
-                --raw-output 2>/dev/null || true)"
+          done < "$RUNNER_NAMES_FILE"
+          # One compartment list per round resolves every pending name, so
+          # the step makes at most 6 list calls, however many VMs launched.
+          for round in 1 2 3 4 5 6; do
+            [ -n "$pending" ] || break
+            [ "$round" -eq 1 ] || sleep 10
+            listing="$(oci compute instance list -c "$COMP" --region "$REGION" --all --output json 2>/dev/null || true)"
+            still=""
+            for name in $pending; do
+              iid="$(jq -r --arg n "$name" \
+                'first((.data // [])[] | select(."display-name" == $n and ."lifecycle-state" != "TERMINATED") | .id) // empty' \
+                <<< "${listing:-{\}}" 2>/dev/null || true)"
               case "$iid" in
                 ocid1.instance.*) ;;
-                *) sleep 10; continue ;;
+                *) still="$still $name"; continue ;;
               esac
               if ! existing="$(oci compute instance get --instance-id "$iid" --region "$REGION" \
                    --query 'data."freeform-tags"' --raw-output 2>/dev/null)"; then
-                sleep 10
+                still="$still $name"
                 continue
               fi
               case "$existing" in ''|null) existing='{}' ;; esac
               if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
-                sleep 10
+                still="$still $name"
                 continue
               fi
               merged="$(jq -cn --argjson cur "$existing" --arg id "$GITHUB_RUN_ID" --arg key "$run_key" \
                 '$cur + {"github-run-id": $id, "github-run-key": $key}')"
               if oci compute instance update --instance-id "$iid" --region "$REGION" \
                    --force --freeform-tags "$merged" >/dev/null 2>&1; then
-                tagged=1
-                break
+                echo "Tagged $name with github-run-key=$run_key"
+              else
+                still="$still $name"
               fi
-              sleep 10
             done
-            if [ -n "$tagged" ]; then
-              echo "Tagged $name with github-run-key=$run_key"
-            else
-              echo "::warning::could not tag $name; the reaper removes it after its age limit"
-              untagged=$((untagged + 1))
-            fi
-          done < "$RUNNER_NAMES_FILE"
+            pending="$still"
+          done
+          untagged=0
+          for name in $pending; do
+            echo "::warning::could not tag $name; the reaper removes it after its age limit"
+            untagged=$((untagged + 1))
+          done
           echo "tag step finished with $untagged untagged VM(s)"
 
       - name: Remove OCI credentials
@@ -862,9 +870,9 @@ jobs:
               --raw-output 2>/dev/null || true)"
 
             if [ -n "$ocid" ] && [ "$ocid" != "null" ]; then
+              handled="$handled $ocid "
               if oci compute instance terminate --instance-id "$ocid" --force --region "$REGION"; then
                 echo "  terminated $ocid"
-                handled="$handled $ocid "
               else
                 echo "  ::warning::could not terminate $ocid"
                 failures=$((failures + 1))
@@ -883,8 +891,9 @@ jobs:
           done <<< "$runners"
 
           # Tagged VMs that the loop above did not reach, for example a VM that
-          # never registered. OCI can still report a VM that the loop just
-          # terminated as RUNNING, so the handled list skips those VMs.
+          # never registered. The handled list skips every VM the loop already
+          # tried: OCI can still report a just-terminated VM as RUNNING, and a
+          # failed attempt is already counted in failures.
           tagged="$(list_tagged)"
           while IFS=$'\t' read -r ocid name; do
             [ -n "$ocid" ] || continue

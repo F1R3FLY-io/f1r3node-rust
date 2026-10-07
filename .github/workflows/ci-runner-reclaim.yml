@@ -12,6 +12,10 @@ name: CI Runner Reclaim
 # re-run attempt keeps its own VMs. ci-runner-reaper and the OCI reaper Function
 # stay as the backstop for VMs that were never tagged.
 #
+# Fork pull requests use OCI only after a reviewer approves the run in the
+# ephemeral-launch environment. The detect job starts the credential job only
+# when Await Launch Approval succeeded and the launch job ran in that attempt.
+#
 # NOTE: workflow_run triggers only from the default branch (master). Until this
 # file reaches master, run it manually with workflow_dispatch.
 
@@ -72,15 +76,27 @@ jobs:
         run: |
           case "$RUN_ID" in ''|*[!0-9]*) echo "::error::run id must be numeric: $RUN_ID"; exit 1 ;; esac
           case "$RUN_ATTEMPT" in ''|*[!0-9]*) echo "::error::run attempt must be numeric: $RUN_ATTEMPT"; exit 1 ;; esac
-          launch="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" \
-            --jq '.jobs[] | select(.name | test("Launch Ephemeral Runners")) | .conclusion // .status')"
-          launched=false
+          jobs="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | "\(.name)\t\(.conclusion // .status)"')"
+          # A run uses OCI only after Await Launch Approval succeeds. For a fork
+          # pull request that job waits for a reviewer in the ephemeral-launch
+          # environment, so this job never starts the credential job for a run
+          # that nobody approved.
+          approval="$(awk -F'\t' '$1 ~ /^(Heavy Pipeline \/ )?Await Launch Approval$/ { print $2 }' <<< "$jobs")"
+          launch="$(awk -F'\t' '$1 ~ /^(Heavy Pipeline \/ )?Launch Ephemeral Runners$/ { print $2 }' <<< "$jobs")"
+          approved=false
           while read -r state; do
-            case "$state" in
-              success|failure|cancelled|timed_out|in_progress|queued) launched=true ;;
-            esac
-          done <<< "$launch"
-          echo "Run $RUN_ID attempt $RUN_ATTEMPT launch job: ${launch:-absent} -> launched=$launched"
+            [ "$state" = success ] && approved=true
+          done <<< "$approval"
+          launched=false
+          if [ "$approved" = true ]; then
+            while read -r state; do
+              case "$state" in
+                success|failure|cancelled|timed_out) launched=true ;;
+              esac
+            done <<< "$launch"
+          fi
+          echo "Run $RUN_ID attempt $RUN_ATTEMPT approval: ${approval:-absent}, launch job: ${launch:-absent} -> launched=$launched"
           {
             echo "launched=$launched"
             echo "run_id=$RUN_ID"
