@@ -15,10 +15,10 @@
  */
 new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`), uriOut in {
   contract NonNegativeNumber(@init, return) = {
-    new this, valueStore in {
+    new this, valueStore, abort(`rho:execution:abort`) in {
       // Values are stored as BigInt in the range [0, 2^256-1]. Int and BigInt
       // arguments are accepted and converted with toBigInt(); other argument
-      // types fail the deploy.
+      // types fail the deploy. An initial value above 2^256-1 aborts the deploy.
       contract this(@"add", @x, success) = {
         match x.toBigInt() {
           bx => {
@@ -59,10 +59,11 @@ new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`),
         }
       } |
       return!(bundle+{*this}) |
-      match init.toBigInt() { //Initial balance is zero if given is out of range
+      match init.toBigInt() { //Initial balance is zero if given is negative
         binit => {
-          if (binit >= 0n and binit <= 115792089237316195423570985008687907853269984665640564039457584007913129639935n) { @(*MergeableTag, *valueStore)!(binit) }
-          else             { @(*MergeableTag, *valueStore)!(0n) }
+          if (binit > 115792089237316195423570985008687907853269984665640564039457584007913129639935n) { abort!(("NonNegativeNumber: initial value above 2^256-1", binit)) }
+          else if (binit >= 0n) { @(*MergeableTag, *valueStore)!(binit) }
+          else { @(*MergeableTag, *valueStore)!(0n) }
         }
       }
     }
