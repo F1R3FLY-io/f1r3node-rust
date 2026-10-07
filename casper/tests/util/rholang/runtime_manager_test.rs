@@ -148,6 +148,100 @@ async fn comput_state_should_charge_for_deploys() {
     .unwrap()
 }
 
+fn bitmask_flags_deploy(body: &str) -> Signed<DeployData> {
+    construct_deploy::source_deploy_now_full(
+        format!(r#"new t(`rho:system:bitmaskMergeableTag`) in {{ {body} }}"#),
+        Some(100000),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+async fn play_and_replay_bitmask_deploy(
+    runtime_manager: &mut RuntimeManager,
+    genesis_context: &GenesisContext,
+    body: &str,
+    state_hash: &StateHash,
+) -> (StateHash, bool) {
+    let (new_state_hash, processed_deploy) = compute_state(
+        runtime_manager,
+        genesis_context,
+        bitmask_flags_deploy(body),
+        state_hash,
+    )
+    .await;
+    let is_failed = processed_deploy.is_failed;
+    let replay_state_hash = replay_compute_state(
+        runtime_manager,
+        genesis_context,
+        processed_deploy,
+        state_hash,
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay_state_hash, new_state_hash);
+    (new_state_hash, is_failed)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deploy_that_clears_bitmask_or_bits_fails_in_play_and_replay() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let rewrite = |value: i64| {
+                format!(r#"for (@_ <- @(*t, "flags-534")) {{ @(*t, "flags-534")!({value}) }}"#)
+            };
+
+            let (with_flags, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "flags-534")!(5)"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed);
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                &rewrite(4),
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "clearing bit 0 of a BitmaskOr channel must fail the deploy"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                &rewrite(7),
+                &with_flags,
+            )
+            .await;
+            assert!(
+                !failed,
+                "setting bits on a BitmaskOr channel must still succeed"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "own-534")!(5) | for (@_ <- @(*t, "own-534")) { @(*t, "own-534")!(4) }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(!failed, "a deploy may clear bits it set itself");
+        },
+    )
+    .await
+    .unwrap()
+}
+
 /// Builds three distinct, individually-cheap deploys for the play-budget tests.
 fn three_budget_probe_deploys() -> Vec<Signed<DeployData>> {
     [

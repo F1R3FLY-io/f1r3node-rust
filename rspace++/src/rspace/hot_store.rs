@@ -192,6 +192,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()>;
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
+    fn get_data_at(&self, state: &HotStoreState<C, P, A, K>, channel: &C) -> Vec<Datum<A>>;
     fn put_datum(&self, channel: &C, d: Datum<A>) -> ();
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError>;
 
@@ -634,6 +635,13 @@ where
             let data = self.get_data_from_history_store(channel);
             self.data.insert(channel.clone(), data.clone());
             data
+        }
+    }
+
+    fn get_data_at(&self, state: &HotStoreState<C, P, A, K>, channel: &C) -> Vec<Datum<A>> {
+        match state.data[shard_of(channel)].get(channel) {
+            Some(data) => data.clone(),
+            None => self.get_data_from_history_store(channel),
         }
     }
 
