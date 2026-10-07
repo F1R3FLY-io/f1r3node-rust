@@ -15,9 +15,12 @@ use super::block_admission::admit_dag_contains;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC, CASPER_METRICS_SOURCE,
+    CASPER_BUFFER_RELEASE_SCAN_CANDIDATES_METRIC, CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC,
+    CASPER_METRICS_SOURCE,
 };
 use crate::rust::util::proto_util;
+
+const RELEASE_FULL_SCAN_EVERY: u64 = 32;
 
 pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
@@ -51,18 +54,30 @@ fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
         .into_keys()
         .collect();
 
-    // Build candidate set from both pendants and buffered children.
+    let buffer = &this.casper_buffer_storage;
+    let released = buffer.take_released();
+    let full_scan = buffer
+        .count_release_scan()
+        .is_multiple_of(RELEASE_FULL_SCAN_EVERY);
     let mut candidate_hashes: HashSet<BlockHash> = HashSet::new();
 
-    let pendants = this.casper_buffer_storage.get_pendants();
-    for pendant_serde in pendants.iter() {
-        candidate_hashes.insert(BlockHash::from(pendant_serde.0.clone()));
+    if full_scan {
+        for pendant_serde in buffer.get_pendants().iter() {
+            candidate_hashes.insert(BlockHash::from(pendant_serde.0.clone()));
+        }
+        let buffer_dag = buffer.to_doubly_linked_dag();
+        for (child_hash, _) in buffer_dag.child_to_parent_adjacency_list.iter() {
+            candidate_hashes.insert(BlockHash::from(child_hash.0.clone()));
+        }
+    } else {
+        for hash in released {
+            if buffer.is_pendant(&hash) || buffer.contains(&hash) {
+                candidate_hashes.insert(BlockHash::from(hash.0.clone()));
+            }
+        }
     }
-
-    let buffer_dag = this.casper_buffer_storage.to_doubly_linked_dag();
-    for (child_hash, _) in buffer_dag.child_to_parent_adjacency_list.iter() {
-        candidate_hashes.insert(BlockHash::from(child_hash.0.clone()));
-    }
+    metrics::histogram!(CASPER_BUFFER_RELEASE_SCAN_CANDIDATES_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(candidate_hashes.len() as f64);
 
     // C14 / Perf-5: read each candidate block from store exactly once
     // and reuse the materialized `BlockMessage` across the dependency

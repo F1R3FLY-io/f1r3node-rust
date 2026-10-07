@@ -121,14 +121,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 gossip_queue.close();
             });
 
+            let release_processor = block_processor.clone();
             run_scheduler(queue, MAX_PARALLEL_BLOCKS, move |item: BlockQueueItem| {
                 let (casper, block, in_flight_guard) = item;
                 let block_processor = block_processor.clone();
-                let blocks_in_processing = blocks_in_processing.clone();
                 let result_tx = result_tx.clone();
 
                 async move {
-                    let mut released = Vec::new();
                     let _active_guard = ActiveBlockProcessingGuard::new();
                     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
                     // Process the block with all its validation steps
@@ -200,7 +199,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     // This avoids suppressing re-enqueue when another task resolves a dependency
                     // while this task is still in post-processing.
                     drop(in_flight_guard);
-
+                    (casper, block_str)
+                }
+            },
+            move |(casper, block_str): (Arc<dyn MultiParentCasper + Send + Sync>, String)| {
+                let block_processor = release_processor.clone();
+                let blocks_in_processing = blocks_in_processing.clone();
+                async move {
+                    let mut released = Vec::new();
                     // Step 6 (from Scala): Get dependency-free blocks from buffer and enqueue them
                     // Equivalent to: c.getDependencyFreeFromBuffer
                     match casper.get_dependency_free_from_buffer() {

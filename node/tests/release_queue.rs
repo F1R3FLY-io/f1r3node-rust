@@ -84,17 +84,22 @@ async fn a_block_released_while_gossip_waits_is_processed_before_that_gossip() {
 
     let processed = Arc::new(Mutex::new(Vec::new()));
     let handler_log = processed.clone();
-    let scheduler = tokio::spawn(run_scheduler(queue, 1, move |block: &'static str| {
-        let log = handler_log.clone();
-        async move {
-            log.lock().unwrap().push(block);
-            if block == "gossip-1" {
-                vec!["released-1"]
-            } else {
-                Vec::new()
+    let scheduler = tokio::spawn(run_scheduler(
+        queue,
+        1,
+        move |block: &'static str| {
+            let log = handler_log.clone();
+            async move {
+                log.lock().unwrap().push(block);
+                if block == "gossip-1" {
+                    vec!["released-1"]
+                } else {
+                    Vec::new()
+                }
             }
-        }
-    }));
+        },
+        std::future::ready,
+    ));
 
     let wait_for_all = async {
         while processed.lock().unwrap().len() < 4 {
@@ -113,5 +118,58 @@ async fn a_block_released_while_gossip_waits_is_processed_before_that_gossip() {
         *processed.lock().unwrap(),
         vec!["gossip-1", "released-1", "gossip-2", "gossip-3"],
         "with one processing slot, the block that gossip-1 releases runs before the gossip that was already waiting"
+    );
+}
+
+#[tokio::test]
+async fn the_processing_slot_is_free_while_a_processed_block_scans_for_released_blocks() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use node::rust::instances::release_queue::run_scheduler;
+    use tokio::sync::Notify;
+
+    let queue = Arc::new(ReleaseQueue::new(3, 16));
+    queue.push_gossip("gossip-1").unwrap();
+    queue.push_gossip("gossip-2").unwrap();
+
+    let processed = Arc::new(Mutex::new(Vec::new()));
+    let scan_gate = Arc::new(Notify::new());
+    let handler_log = processed.clone();
+    let handler_gate = scan_gate.clone();
+    let scheduler = tokio::spawn(run_scheduler(
+        queue,
+        1,
+        move |block: &'static str| {
+            let log = handler_log.clone();
+            async move {
+                log.lock().unwrap().push(block);
+                block
+            }
+        },
+        move |block: &'static str| {
+            let gate = handler_gate.clone();
+            async move {
+                if block == "gossip-1" {
+                    gate.notified().await;
+                }
+                Vec::<&'static str>::new()
+            }
+        },
+    ));
+
+    let second_started = async {
+        while !processed.lock().unwrap().contains(&"gossip-2") {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    let started = tokio::time::timeout(Duration::from_secs(2), second_started).await;
+    scan_gate.notify_one();
+    scheduler.abort();
+
+    assert!(
+        started.is_ok(),
+        "with one slot, gossip-2 must start while gossip-1 still scans for released blocks, processed {:?}",
+        processed.lock().unwrap()
     );
 }

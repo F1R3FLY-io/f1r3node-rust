@@ -117,14 +117,22 @@ enum Taken<T> {
     Closed,
 }
 
-pub async fn run_scheduler<T, F, Fut>(queue: Arc<ReleaseQueue<T>>, permits: usize, handler: F)
-where
+pub async fn run_scheduler<T, C, P, PFut, R, RFut>(
+    queue: Arc<ReleaseQueue<T>>,
+    permits: usize,
+    process: P,
+    release: R,
+) where
     T: Send + 'static,
-    F: Fn(T) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Vec<T>> + Send + 'static,
+    C: Send + 'static,
+    P: Fn(T) -> PFut + Send + Sync + 'static,
+    PFut: Future<Output = C> + Send + 'static,
+    R: Fn(C) -> RFut + Send + Sync + 'static,
+    RFut: Future<Output = Vec<T>> + Send + 'static,
 {
     let semaphore = Arc::new(Semaphore::new(permits));
-    let handler = Arc::new(handler);
+    let process = Arc::new(process);
+    let release = Arc::new(release);
     loop {
         let permit = match semaphore.clone().acquire_owned().await {
             Ok(permit) => permit,
@@ -134,12 +142,14 @@ where
             return;
         };
         let queue = queue.clone();
-        let handler = handler.clone();
+        let process = process.clone();
+        let release = release.clone();
         tokio::spawn(async move {
-            for released in handler(item).await {
+            let context = process(item).await;
+            drop(permit);
+            for released in release(context).await {
                 queue.push_released(released);
             }
-            drop(permit);
         });
     }
 }

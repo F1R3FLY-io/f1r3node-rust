@@ -36,7 +36,7 @@ step_0:
   acceptance:
     - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 with status pending. The claim states three properties. Release liveness: a buffered block whose dependencies are all validated is released for processing. No stale hold: a released block is not dropped as already processed. Release order: a released block is processed before a gossip block that entered the queue after the release, and gossip still progresses."
     - "/cbc identify classifies the touched files. Each one is cbc=mandatory, or a maintainer decision records why it stays untagged."
-cycle_order: [B1, B7, B2, B10, B3, B4, B5, B6, B8, B9]
+cycle_order: [B1, B7, B2, B10, B3, B4, B5, B6, B9, B8, B11]
 cycle_order_decision: "2026-10-07: the user chose to build the B7 release queue before B2. The node block queue has no test seam, so B2's release-wait metric becomes a behavior of the standalone queue module. Wiring the queue into BlockProcessorInstance follows as its own step."
 behaviors:
   - id: B1
@@ -214,12 +214,48 @@ behaviors:
           - "The release scan still holds the processing slot, as before. B8 moves it out."
           - "No test drives BlockProcessorInstance itself. The casper suites and the comparison soak cover the real validation path."
   - id: B8
-    statement: "After a block is processed, only its buffered descendants are considered for release, and the processing permit is free during that work"
+    statement: "After a block is processed, only the buffered blocks that it released are considered for release"
     priority: must
     deep_module: false
-    done: false
+    done: true
     notes: "Use the buffer parent-to-child links of the processed block. Keep the full scan for startup and for periodic reconciliation."
-    cycle_log: []
+    design_decision: "2026-10-07: the user chose the released set plus a periodic full scan. The buffer records each child that a parent removal frees, which includes the pendants that put_pendant creates. The release scan after a processed block examines only that set. A full scan runs on the first call and on every 32nd call (RELEASE_FULL_SCAN_EVERY), so a block released another way, such as an equivocating or invalid parent or a link from before B6, still leaves the buffer. The original B8 statement also named the free processing slot. That part is now B11, so each cycle has one test."
+    cycle_log:
+      - date: 2026-10-07
+        test: "casper --test mod sync::incremental_release_scan_spec::after_a_block_is_processed_only_the_blocks_it_released_are_examined"
+        red: "A candidates histogram (casper.buffer.release-scan.candidates) was added to the current full scan first, as instrumentation. Node 1 had B parked on a missing A and 20 unrelated parked relations. After one warm-up scan and the validation of A, the scan examined [41.0] candidates (B, 20 unrelated children, 20 unrelated parents as pendants). Expected [1.0]."
+        green: "CasperBufferKeyValueStorage gains a shared released set, fed in remove_unlocked_recording by the children that a removal frees, with take_released and a shared release-scan counter (count_release_scan). The resolver drains the released set on every scan. On a full-scan call it examines all pendants and buffered children as before. Otherwise it examines only released hashes that the buffer still holds."
+        files:
+          - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
+          - casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs
+          - casper/src/rust/metrics_constants.rs
+          - casper/tests/sync/incremental_release_scan_spec.rs
+          - casper/tests/sync/mod.rs
+        suite: "block-storage: every target passed. casper: mod 1003 passed (11 ignored), lib 500 passed, soak_observer 53 passed, the other targets passed. clippy then flagged manual_is_multiple_of in buffer_resolver.rs and useless_vec in the new spec. Both fixes keep the behavior; the 26 sync specs passed again on the final code. clippy -D warnings clean for the casper lib and mod target. cargo fmt clean."
+        observations:
+          - "The cadence counter and the released set live in the buffer storage, behind Arc, so every clone of the buffer shares them. MultiParentCasperImpl gets no new field, because many tests build it with a struct literal."
+          - "A stale link from before B6 is released only by the periodic full scan, at most 31 scans later. B5 makes that release work."
+          - "The new candidates histogram is the soak evidence for this change. B9 does not report it yet."
+  - id: B11
+    statement: "The processing slot is free while the release scan of a processed block runs"
+    priority: must
+    deep_module: false
+    done: true
+    notes: "Split from B8 on 2026-10-07. run_scheduler releases the slot before the handler scans for released blocks, so the scan no longer delays the next block."
+    cycle_log:
+      - date: 2026-10-07
+        test: "node --test release_queue::the_processing_slot_is_free_while_a_processed_block_scans_for_released_blocks"
+        red: "run_scheduler was first given its two-step form (the handler future returns a release future) with the current behavior: the slot is held through the release step. With one slot, gossip-1 release step waits on a gate. After 2 s only [\"gossip-1\"] had been processed; gossip-2 never started."
+        green: "run_scheduler takes two closures, process(item) -> context and release(context) -> released blocks, and drops the slot between them. The first version had the handler future return a release future, and clippy rejected it (async_yields_async), so the two steps became two closures. BlockProcessorInstance: process validates the block, drops the in-flight guard, and returns (casper, block_str). release runs the dependency-free scan and the pendant marking. The B10 test uses std::future::ready as its release step."
+        suite: "cargo test --release -p node: every target passed (258 lib tests, 4 release_queue tests, the other test files). clippy -D warnings clean for node, all targets. cargo fmt clean."
+        files:
+          - node/src/rust/instances/release_queue.rs
+          - node/src/rust/instances/block_processor_instance.rs
+          - node/tests/release_queue.rs
+        observations:
+          - "Release scans no longer count against MAX_PARALLEL_BLOCKS, so more than two scans can run at once. B8 makes each scan examine only released blocks, except the full scan on every 32nd call."
+          - "ActiveBlockProcessingGuard ends with the process step, so the block-processing.active gauge no longer includes scan time."
+          - "The B10 order test still sees released-1 before gossip-2, because its release future is ready and the test runtime is single-threaded. In the node a block released during a scan can come after the next gossip block. That is the cost of the free slot."
   - id: B9
     statement: "The soak ISSUE24_METRICS record includes the park, release queue wait, release scan, and recovery re-request metrics"
     priority: should

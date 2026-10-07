@@ -27,6 +27,8 @@ pub struct CasperBufferKeyValueStorage {
     block_dependency_dag: Arc<Mutex<BlockDependencyDag>>,
     first_seen_ms: Arc<dashmap::DashMap<BlockHashSerde, u64>>,
     last_prune_ms: Arc<AtomicU64>,
+    released: Arc<dashmap::DashSet<BlockHashSerde>>,
+    release_scans: Arc<AtomicU64>,
     state_lock: Arc<RwLock<()>>,
 }
 
@@ -59,6 +61,8 @@ impl CasperBufferKeyValueStorage {
             block_dependency_dag: Arc::new(Mutex::new(in_mem_store)),
             first_seen_ms: Arc::new(dashmap::DashMap::new()),
             last_prune_ms: Arc::new(AtomicU64::new(0)),
+            released: Arc::new(dashmap::DashSet::new()),
+            release_scans: Arc::new(AtomicU64::new(0)),
             state_lock: Arc::new(RwLock::new(())),
         })
     }
@@ -127,6 +131,9 @@ impl CasperBufferKeyValueStorage {
             (affected, removed, orphaned, affected_maps)
         };
         self.first_seen_ms.remove(&hash);
+        for released in &hashes_removed {
+            self.released.insert(released.clone());
+        }
         if record_release {
             let now_ms = Self::now_millis();
             for released in &hashes_removed {
@@ -161,6 +168,16 @@ impl CasperBufferKeyValueStorage {
         let _guard = self.write_guard();
         self.add_relation_unlocked(parent, child)
     }
+
+    pub fn take_released(&self) -> Vec<BlockHashSerde> {
+        let taken: Vec<BlockHashSerde> = self.released.iter().map(|h| h.clone()).collect();
+        for hash in &taken {
+            self.released.remove(hash);
+        }
+        taken
+    }
+
+    pub fn count_release_scan(&self) -> u64 { self.release_scans.fetch_add(1, Ordering::Relaxed) }
 
     pub fn put_pendant(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
