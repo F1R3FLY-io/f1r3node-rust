@@ -386,8 +386,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         block: &BlockMessage,
     ) -> Result<OfInterestVerdict, CasperError> {
         // TODO casper.dag_contains does not take into account equivocation tracker
-        let already_processed =
-            casper.dag_contains(&block.block_hash) || casper.buffer_contains(&block.block_hash);
+        let already_processed = casper.dag_contains(&block.block_hash)
+            || casper.buffer_waits_on_dependency(&block.block_hash);
 
         let shard_of_interest = casper.get_approved_block().map(|approved_block| {
             approved_block
@@ -1124,12 +1124,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 self.casper_buffer.put_pendant(block_hash_serde)?;
             }
             Some(dependencies) => {
-                let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-                dependencies.iter().try_for_each(|dep| {
-                    let dep_serde = BlockHashSerde(dep.clone());
-                    self.casper_buffer
-                        .add_relation(dep_serde, block_hash_serde.clone())
-                })?;
+                let dependencies: Vec<BlockHashSerde> =
+                    dependencies.into_iter().map(BlockHashSerde).collect();
+                block_storage::rust::dag::buffer_dag_transition::atomic_commit_dependencies(
+                    &self.block_dag_storage,
+                    &self.casper_buffer,
+                    BlockHashSerde(block.block_hash.clone()),
+                    &dependencies,
+                )?;
             }
         }
 
