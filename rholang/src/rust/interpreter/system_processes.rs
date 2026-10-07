@@ -439,6 +439,21 @@ impl FixedChannels {
     /// (POSIX pwrite doesn't move the OS-fd position).  Added by
     /// slice 4.39.  Mutation family 8/8 complete.
     pub fn fs_write_at() -> Par { byte_name(45) }
+
+    /// `rho:io:fs:native:1.0.0/removeDir` — trait-exempt handler
+    /// (see `handler_trait::fs_handler` module docstring, "trait-
+    /// exempt handler (fs_remove_dir)").  Four divergence reply
+    /// shapes that don't fit the `FsHandler` trait; the handler
+    /// implementation lands at a future Wave 4 handler slice with a
+    /// dedicated dispatcher.  The URN + fixed channel are registered
+    /// NOW so FsGenesis composition (slice 5.36) can `new fsRemoveDir(
+    /// `rho:io:fs:native:1.0.0/removeDir`)` without tripping
+    /// `eval_new`'s "No value set for URN" check.  No producer
+    /// listens on the fixed channel at genesis-time; the Dir.rho
+    /// contract's `fsRemoveDir!(...)` sends inside the removeDir
+    /// method only fire when a user-held Dir cap invokes removeDir,
+    /// which hasn't been exercised at genesis composition.
+    pub fn fs_remove_dir() -> Par { byte_name(58) }
 }
 
 pub struct BodyRefs;
@@ -569,6 +584,13 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/writeAt` body-ref (slice 4.39).
     pub const FS_WRITE_AT: i64 = 45;
+
+    /// `rho:io:fs:native:1.0.0/removeDir` body-ref — trait-exempt
+    /// handler.  Registered for URN resolution at genesis composition
+    /// time (slice 5.43); the real dispatcher wiring lands at a
+    /// future Wave 4 handler slice.  See `FixedChannels::
+    /// fs_remove_dir` above.
+    pub const FS_REMOVE_DIR: i64 = 58;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
