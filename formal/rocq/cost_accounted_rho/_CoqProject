@@ -640,6 +640,7 @@ theories/SystemResidueSeal.v
 theories/ReplayRoleAttribution.v
 theories/FreeMapBindings.v
 theories/MatcherReadsByReference.v
+theories/FreeVariableFastPath.v
 theories/DetachedPathCompaction.v
 theories/NativePathTrie.v
 theories/OfferedOnlyActivation.v

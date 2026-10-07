@@ -4,7 +4,7 @@ use models::rhoapi::{MatchCase, Par, Var};
 // Changed by D-D2 (D-M8, DR-104): the matcher tests its values by reference.
 // use super::has_locally_free::HasLocallyFree;
 use super::has_locally_free::HasLocallyFreeRef;
-use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
+use super::spatial_matcher::{free_variable_level, SpatialMatcher, SpatialMatcherContext};
 use crate::rust::interpreter::metrics_constants::{
     RHOLANG_MATCHER_FOLD_MATCH_CALLS_METRIC,
     RHOLANG_MATCHER_FOLD_MATCH_RECURSION_DEPTH_TOTAL_METRIC,
@@ -41,6 +41,15 @@ impl<'a> FoldMatch<Par, Par> for SpatialMatcherContext<'a> {
             if !plist[i].connective_used {
                 self.match_ground_par(&tlist[i], &plist[i])?;
                 continue;
+            }
+            // D-D3 (D-M9, DR-105): a pattern that is one free variable binds the
+            // target's fields directly, without copies of the pair.
+            if self.free_variable_fast_path() {
+                self.reserve_free_variable_test()?;
+                if let Some(level) = free_variable_level(&plist[i]) {
+                    self.bind_free_variable_by_reference(&tlist[i], level)?;
+                    continue;
+                }
             }
             self.reserve_clone(&tlist[i])?;
             self.reserve_clone(&plist[i])?;

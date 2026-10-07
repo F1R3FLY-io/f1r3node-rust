@@ -234,6 +234,82 @@ impl<'a> MatcherWork<'a> {
         };
         self.reserve(operations, scanned, 0)
     }
+
+    /// D-D3 (DR-105): the free-variable test reads the lengths of the eleven
+    /// other lists of a pattern, the pointer to its expressions and one `Expr`.
+    pub fn reserve_free_variable_test(&self) -> Option<()> {
+        self.reserve(
+            12,
+            12 * std::mem::size_of::<usize>() + std::mem::size_of::<Expr>(),
+            0,
+        )
+    }
+}
+
+/// D-D3 (DR-105): the level of a pattern that is exactly one free variable. The
+/// pattern uses connectives, its only expression is `EVar(FreeVar(level))`,
+/// and its other lists, its connectives and its cost terms are empty. The
+/// pattern's `locally_free` is not read.
+pub(super) fn free_variable_level(pattern: &Par) -> Option<i32> {
+    let Par {
+        sends,
+        receives,
+        news,
+        exprs,
+        matches,
+        unforgeables,
+        bundles,
+        connectives,
+        conditionals,
+        locally_free: _,
+        connective_used,
+        cost_signed_terms,
+        cost_stacks,
+    } = pattern;
+    if !*connective_used
+        || !sends.is_empty()
+        || !receives.is_empty()
+        || !news.is_empty()
+        || !matches.is_empty()
+        || !unforgeables.is_empty()
+        || !bundles.is_empty()
+        || !connectives.is_empty()
+        || !conditionals.is_empty()
+        || !cost_signed_terms.is_empty()
+        || !cost_stacks.is_empty()
+    {
+        return None;
+    }
+    match exprs.as_slice() {
+        [Expr {
+            expr_instance:
+                Some(EVarBody(EVar {
+                    v:
+                        Some(Var {
+                            var_instance: Some(FreeVar(level)),
+                        }),
+                })),
+        }] => Some(*level),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// D-D3 (DR-105): while the flag is set, matches on this thread take the
+    /// general path for a free-variable pattern, for the equality tests.
+    pub(super) static LEGACY_FREE_VARIABLE_PATH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn free_variable_fast_path() -> bool {
+    #[cfg(test)]
+    {
+        !LEGACY_FREE_VARIABLE_PATH.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
 }
 
 // D-D1a (DR-103): the per-level move bound of a free-map insert, as the Rocq
@@ -392,6 +468,192 @@ impl<'a> SpatialMatcherContext<'a> {
         guard(match_pars(target, pattern))
     }
 
+    pub(super) fn reserve_free_variable_test(&self) -> Option<()> {
+        self.work.reserve_free_variable_test()
+    }
+
+    pub(super) fn free_variable_fast_path(&self) -> bool { free_variable_fast_path() }
+
+    /// D-D3 (DR-105): binds an owned target to a free-variable pattern. It
+    /// makes the ten `list_match_single_` calls of the Par/Par matcher, in the
+    /// same order and with the same empty pattern lists, so the result and the
+    /// free map equal those of the general path, also on failure
+    /// (`FreeVariableFastPath.fast_path_equals_general`).
+    pub(super) fn bind_free_variable(&mut self, target: Par, level: i32) -> Option<()> {
+        let remainder = Some(level);
+        self.list_match_single_(
+            target.sends,
+            Vec::new(),
+            &|p, s, _| {
+                p.sends = s;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.receives,
+            Vec::new(),
+            &|p, s, _| {
+                p.receives = s;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.news,
+            Vec::new(),
+            &|p, s, _| {
+                p.news = s;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.exprs,
+            Vec::new(),
+            &|p, s, _| {
+                p.exprs = s;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.matches,
+            Vec::new(),
+            &|p, s, _| {
+                p.matches = s;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.bundles,
+            Vec::new(),
+            &|p, s, _| {
+                p.bundles = s;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.unforgeables,
+            Vec::new(),
+            &|p, s, _| {
+                p.unforgeables = s;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.conditionals,
+            Vec::new(),
+            &|p, values, _| {
+                p.conditionals = values;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.cost_signed_terms,
+            Vec::new(),
+            &|p, values, _| {
+                p.cost_signed_terms = values;
+                Some(())
+            },
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
+            target.cost_stacks,
+            Vec::new(),
+            &|p, values, _| {
+                p.cost_stacks = values;
+                Some(())
+            },
+            remainder,
+            false,
+        )
+    }
+
+    /// D-D3 (DR-105): binds a borrowed target to a free-variable pattern. Each
+    /// field is checked as `list_match_single_` checks it, then copied, with its
+    /// copy and cleanup reserved, and merged by `handle_remainder`, in the order
+    /// of the Par/Par matcher.
+    pub(super) fn bind_free_variable_by_reference(
+        &mut self,
+        target: &Par,
+        level: i32,
+    ) -> Option<()> {
+        self.bind_field_by_reference(&target.sends, level, &|p, s, _| {
+            p.sends = s;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.receives, level, &|p, s, _| {
+            p.receives = s;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.news, level, &|p, s, _| {
+            p.news = s;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.exprs, level, &|p, s, _| {
+            p.exprs = s;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.matches, level, &|p, s, _| {
+            p.matches = s;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.bundles, level, &|p, s, _| {
+            p.bundles = s;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.unforgeables, level, &|p, s, _| {
+            p.unforgeables = s;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.conditionals, level, &|p, values, _| {
+            p.conditionals = values;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.cost_signed_terms, level, &|p, values, _| {
+            p.cost_signed_terms = values;
+            Some(())
+        })?;
+        self.bind_field_by_reference(&target.cost_stacks, level, &|p, values, _| {
+            p.cost_stacks = values;
+            Some(())
+        })
+    }
+
+    fn bind_field_by_reference<T: Clone + CloneBacking>(
+        &mut self,
+        field: &[T],
+        level: i32,
+        merger: &dyn Fn(&mut Par, Vec<T>, &MatcherWork<'_>) -> Option<()>,
+    ) -> Option<()>
+    where
+        Self: ListMatch<T> + HasLocallyFreeRef<T>,
+    {
+        for element in field {
+            self.reserve_inspect(element)?;
+            if !self.locally_free_is_empty(element, 0) {
+                return None;
+            }
+        }
+        self.reserve_slice(field)?;
+        let copied = field.to_vec();
+        self.handle_remainder(copied, level, merger)
+    }
+
     pub(super) fn work(&self) -> Option<MatcherWork<'a>> {
         self.reserve(1, 0, 0)?;
         Some(self.work.clone())
@@ -523,8 +785,18 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
         if !pattern.connective_used {
             self.match_ground_par(&target, &pattern)
         } else {
-            self.reserve_inspect(&target)?;
+            // Changed by D-D3 (D-M9, DR-105): the inspection of the pattern comes
+            // first and prepays the free-variable test, so a free-variable pattern
+            // binds the target's fields without an inspection of the target.
+            // self.reserve_inspect(&target)?;
+            // self.reserve_inspect(&pattern)?;
             self.reserve_inspect(&pattern)?;
+            if self.free_variable_fast_path() {
+                if let Some(level) = free_variable_level(&pattern) {
+                    return self.bind_free_variable(target, level);
+                }
+            }
+            self.reserve_inspect(&target)?;
             let var_level: Option<i32> = pattern.exprs.iter().find_map(|expr| match expr {
                 Expr {
                     expr_instance:
@@ -1754,6 +2026,432 @@ mod metered_tests {
             })();
             proptest::prop_assert_eq!(folded, walked);
             proptest::prop_assert_eq!(by_reference.free_map, copied.free_map);
+        }
+    }
+
+    fn with_legacy_free_variable_path<R>(legacy: bool, action: impl FnOnce() -> R) -> R {
+        LEGACY_FREE_VARIABLE_PATH.with(|flag| flag.set(legacy));
+        let result = action();
+        LEGACY_FREE_VARIABLE_PATH.with(|flag| flag.set(false));
+        result
+    }
+
+    fn free_variable(level: i32, locally_free: Vec<u8>) -> Par {
+        let mut par = new_freevar_par(level, Vec::new());
+        par.connective_used = true;
+        par.locally_free = locally_free;
+        par
+    }
+
+    fn locally(open: bool) -> Vec<u8> {
+        if open {
+            vec![1]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn body(open: bool) -> Option<Par> {
+        Some(Par {
+            locally_free: locally(open),
+            ..Default::default()
+        })
+    }
+
+    fn open_or_closed_expr(open: bool) -> Expr {
+        if open {
+            new_boundvar_expr(0)
+        } else {
+            new_gint_expr(3)
+        }
+    }
+
+    /// A target whose ten fields hold closed or open elements, with a random
+    /// shell. An open element has a locally free variable.
+    fn free_variable_target() -> impl proptest::strategy::Strategy<Value = Par> {
+        use proptest::strategy::Strategy;
+
+        let field = || proptest::collection::vec(proptest::prelude::any::<bool>(), 0..3);
+        (
+            (field(), field(), field(), field(), field()),
+            (field(), field(), field(), field(), field()),
+            proptest::prelude::any::<bool>(),
+            proptest::collection::vec(0u8..2, 0..3),
+        )
+            .prop_map(
+                |(
+                    (sends, receives, news, exprs, matches),
+                    (bundles, unforgeables, conditionals, signed, stacks),
+                    connective_used,
+                    locally_free,
+                )| Par {
+                    sends: sends
+                        .into_iter()
+                        .map(|open| Send {
+                            locally_free: locally(open),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    receives: receives
+                        .into_iter()
+                        .map(|open| Receive {
+                            locally_free: locally(open),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    news: news
+                        .into_iter()
+                        .map(|open| New {
+                            locally_free: locally(open),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    exprs: exprs.into_iter().map(open_or_closed_expr).collect(),
+                    matches: matches
+                        .into_iter()
+                        .map(|open| Match {
+                            locally_free: locally(open),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    bundles: bundles
+                        .into_iter()
+                        .map(|open| Bundle {
+                            body: body(open),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    unforgeables: unforgeables
+                        .into_iter()
+                        .map(|_| GUnforgeable::default())
+                        .collect(),
+                    conditionals: conditionals
+                        .into_iter()
+                        .map(|open| If {
+                            condition: body(open),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    cost_signed_terms: signed
+                        .into_iter()
+                        .map(|open| CostSignedTerm {
+                            body: body(open),
+                            signature: None,
+                        })
+                        .collect(),
+                    cost_stacks: stacks
+                        .into_iter()
+                        .map(|open| CostStack {
+                            cells: if open {
+                                vec![CostSignature {
+                                    value: Some(models::rhoapi::cost_signature::Value::BoundLevel(
+                                        0,
+                                    )),
+                                }]
+                            } else {
+                                Vec::new()
+                            },
+                        })
+                        .collect(),
+                    locally_free,
+                    connective_used,
+                    ..Default::default()
+                },
+            )
+    }
+
+    /// A stored binding with a shell that the merge never writes.
+    fn shell_binding() -> Par {
+        Par {
+            exprs: vec![new_gint_expr(9)],
+            locally_free: vec![1, 0],
+            connective_used: true,
+            connectives: vec![Connective::default()],
+            ..Default::default()
+        }
+    }
+
+    fn run_owned(
+        target: &Par,
+        pattern: &Par,
+        free_map: &FreeMap,
+        legacy: bool,
+    ) -> (Option<()>, FreeMap) {
+        with_legacy_free_variable_path(legacy, || {
+            let mut context = SpatialMatcherContext::new();
+            context.free_map = free_map.clone();
+            let result = context.spatial_match(target.clone(), pattern.clone());
+            (result, context.free_map)
+        })
+    }
+
+    fn run_borrowed(
+        target: &Par,
+        pattern: &Par,
+        free_map: &FreeMap,
+        legacy: bool,
+    ) -> (Option<Vec<Par>>, FreeMap) {
+        with_legacy_free_variable_path(legacy, || {
+            let mut context = SpatialMatcherContext::new();
+            context.free_map = free_map.clone();
+            let result = context.fold_match(
+                std::slice::from_ref(target),
+                std::slice::from_ref(pattern),
+                None,
+            );
+            (result, context.free_map)
+        })
+    }
+
+    /// The result, the free map and whether a reservation was rejected, under
+    /// a meter that accepts everything.
+    fn run_borrowed_metered(
+        target: &Par,
+        pattern: &Par,
+        free_map: &FreeMap,
+    ) -> (Option<Vec<Par>>, FreeMap, bool) {
+        let meter = |_: usize, _: usize, _: usize| Ok(());
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        context.free_map = free_map.clone();
+        let result = context.fold_match(
+            std::slice::from_ref(target),
+            std::slice::from_ref(pattern),
+            None,
+        );
+        let rejected = context.take_error().is_some();
+        (result, context.free_map, rejected)
+    }
+
+    fn pair_charge(target: &Par, pattern: &Par, legacy: bool) -> [usize; 3] {
+        with_legacy_free_variable_path(legacy, || {
+            charge_during(|context| {
+                context.fold_match(
+                    std::slice::from_ref(target),
+                    std::slice::from_ref(pattern),
+                    None,
+                );
+            })
+        })
+    }
+
+    /// D-D3 (DR-105): the predicate accepts exactly one free variable.
+    #[test]
+    fn free_variable_level_accepts_only_one_free_variable() {
+        assert_eq!(free_variable_level(&free_variable(2, vec![1])), Some(2));
+        let mut not_connective = free_variable(2, Vec::new());
+        not_connective.connective_used = false;
+        assert_eq!(free_variable_level(&not_connective), None);
+        let mut wildcard = new_wildcard_par(Vec::new(), true);
+        wildcard.connective_used = true;
+        assert_eq!(free_variable_level(&wildcard), None);
+        let mut two = free_variable(0, Vec::new());
+        two.exprs.push(new_freevar_expr(1));
+        assert_eq!(free_variable_level(&two), None);
+        let mut with_wildcard = free_variable(0, Vec::new());
+        with_wildcard.exprs.push(new_wildcard_expr());
+        assert_eq!(free_variable_level(&with_wildcard), None);
+        let mut bound = free_variable(0, Vec::new());
+        bound.exprs = vec![new_boundvar_expr(0)];
+        assert_eq!(free_variable_level(&bound), None);
+        for extend in [
+            |p: &mut Par| p.sends.push(Send::default()),
+            |p: &mut Par| p.receives.push(Receive::default()),
+            |p: &mut Par| p.news.push(New::default()),
+            |p: &mut Par| p.matches.push(Match::default()),
+            |p: &mut Par| p.unforgeables.push(GUnforgeable::default()),
+            |p: &mut Par| p.bundles.push(Bundle::default()),
+            |p: &mut Par| p.connectives.push(Connective::default()),
+            |p: &mut Par| p.conditionals.push(If::default()),
+            |p: &mut Par| p.cost_signed_terms.push(CostSignedTerm::default()),
+            |p: &mut Par| p.cost_stacks.push(CostStack::default()),
+        ] {
+            let mut pattern = free_variable(0, Vec::new());
+            extend(&mut pattern);
+            assert_eq!(free_variable_level(&pattern), None);
+        }
+    }
+
+    /// D-D3 (DR-105): a field with a locally free element stops the binding,
+    /// and the fields before it stay merged, as on the general path. The
+    /// Par/Par order puts bundles before unforgeables.
+    #[test]
+    fn free_variable_failure_leaves_the_general_partial_binding() {
+        let level = 1;
+        let pattern = free_variable(level, Vec::new());
+        let target = Par {
+            sends: vec![Send::default()],
+            exprs: vec![new_gint_expr(4)],
+            bundles: vec![Bundle {
+                body: body(true),
+                ..Default::default()
+            }],
+            unforgeables: vec![GUnforgeable::default()],
+            ..Default::default()
+        };
+        let mut expected = vector_par(Vec::new(), false);
+        expected.sends = target.sends.clone();
+        expected.exprs = target.exprs.clone();
+        let expected_map: FreeMap = [(level, expected)].into_iter().collect();
+        for legacy in [true, false] {
+            let (result, free_map) = run_owned(&target, &pattern, &FreeMap::new(), legacy);
+            assert!(result.is_none());
+            assert_eq!(free_map, expected_map, "owned, legacy {legacy}");
+            let (result, free_map) = run_borrowed(&target, &pattern, &FreeMap::new(), legacy);
+            assert!(result.is_none());
+            assert_eq!(free_map, expected_map, "borrowed, legacy {legacy}");
+        }
+        let first_open = Par {
+            sends: vec![Send {
+                locally_free: vec![1],
+                ..Default::default()
+            }],
+            exprs: vec![new_gint_expr(4)],
+            ..Default::default()
+        };
+        let existing: FreeMap = [(level, shell_binding())].into_iter().collect();
+        for legacy in [true, false] {
+            assert_eq!(
+                run_owned(&first_open, &pattern, &existing, legacy),
+                (None, existing.clone())
+            );
+            assert_eq!(
+                run_borrowed(&first_open, &pattern, &existing, legacy),
+                (None, existing.clone())
+            );
+        }
+    }
+
+    /// D-D3 (DR-105): the free-variable pair accepts its exact charge and
+    /// rejects one unit less in any charged dimension.
+    #[test]
+    fn free_variable_pair_accepts_exact_credit() {
+        let pattern = free_variable(0, Vec::new());
+        let target = Par {
+            sends: vec![Send::default()],
+            exprs: vec![new_gint_expr(4), new_gint_expr(5)],
+            ..Default::default()
+        };
+        let required = pair_charge(&target, &pattern, false);
+        assert!(required.iter().all(|value| *value > 0));
+        for dimension in 0..3 {
+            let mut limit = required;
+            limit[dimension] -= 1;
+            let spent = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut totals = spent.lock().expect("totals lock");
+                let amounts = [operations, scanned, backing];
+                if totals
+                    .iter()
+                    .zip(amounts)
+                    .zip(limit)
+                    .any(|((used, add), max)| *used + add > max)
+                {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                for (used, add) in totals.iter_mut().zip(amounts) {
+                    *used += add;
+                }
+                Ok(())
+            };
+            let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+            assert!(context
+                .fold_match(
+                    std::slice::from_ref(&target),
+                    std::slice::from_ref(&pattern),
+                    None
+                )
+                .is_none());
+            assert!(matches!(
+                context.take_error(),
+                Some(RSpaceError::HostWorkRejected)
+            ));
+        }
+    }
+
+    /// Negative control: the general path charged a copy of the pattern and of
+    /// the whole target and an inspection of the target, so its charge exceeds
+    /// the fast path's, and the gap grows with the target.
+    #[test]
+    fn legacy_free_variable_charge_grew_with_target_size() {
+        let pattern = free_variable(0, Vec::new());
+        let gap = |size: usize| {
+            let target = ground_par(size);
+            let legacy = pair_charge(&target, &pattern, true);
+            let fast = pair_charge(&target, &pattern, false);
+            assert!(
+                legacy[0] > fast[0] && legacy[1] > fast[1],
+                "{size}: {legacy:?} {fast:?}"
+            );
+            legacy[1] - fast[1]
+        };
+        assert!(gap(4096) > gap(1));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// D-D3 (DR-105): on the owned and the borrowed entry, the fast path for
+        /// a free-variable pattern gives the result and the free map of the
+        /// general path, also when a field holds a locally free element, with
+        /// and without a stored binding at the level. Under a meter that
+        /// accepts everything it gives the same outcome and rejects nothing.
+        #[test]
+        fn free_variable_fast_path_equals_general_path(
+            level in 0i32..4,
+            target in free_variable_target(),
+            pattern_locally_free in proptest::collection::vec(0u8..2, 0..3),
+            existing in proptest::prelude::any::<bool>(),
+            others in proptest::collection::vec(0i64..3, 0..3),
+        ) {
+            let pattern = free_variable(level, pattern_locally_free);
+            let mut free_map = FreeMap::new();
+            for (offset, value) in others.into_iter().enumerate() {
+                free_map.insert(level + 1 + offset as i32, Par {
+                    exprs: vec![new_gint_expr(value)],
+                    ..Default::default()
+                });
+            }
+            if existing {
+                free_map.insert(level, shell_binding());
+            }
+            let general = run_owned(&target, &pattern, &free_map, true);
+            proptest::prop_assert_eq!(run_owned(&target, &pattern, &free_map, false), general.clone());
+            let general_fold = run_borrowed(&target, &pattern, &free_map, true);
+            proptest::prop_assert_eq!(run_borrowed(&target, &pattern, &free_map, false), general_fold.clone());
+            proptest::prop_assert_eq!(&general_fold.1, &general.1);
+            proptest::prop_assert_eq!(general_fold.0.is_some(), general.0.is_some());
+            let (result, metered_map, rejected) = run_borrowed_metered(&target, &pattern, &free_map);
+            proptest::prop_assert_eq!(result, general_fold.0);
+            proptest::prop_assert_eq!(metered_map, general_fold.1);
+            proptest::prop_assert!(!rejected);
+        }
+
+        /// D-D3 (DR-105): the copies of the borrowed fields fit the backing
+        /// that the fast path reserves (counting allocator). The test measures
+        /// the binding itself: `fold_match` also allocates the labels of its
+        /// metrics counters, which are outside the host-work model.
+        #[test]
+        fn free_variable_copies_fit_reserved_backing(target in free_variable_target()) {
+            let totals = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut sum = totals.lock().expect("totals lock");
+                for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                    *total += amount;
+                }
+                Ok(())
+            };
+            let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+            let start = totals.lock().expect("totals lock")[2];
+            let (_, allocated) = crate::rust::interpreter::accounting::measured_allocations(|| {
+                context.bind_free_variable_by_reference(&target, 0)
+            });
+            let reserved = totals.lock().expect("totals lock")[2] - start;
+            proptest::prop_assert!(
+                allocated <= reserved,
+                "allocated {} > reserved {}",
+                allocated,
+                reserved
+            );
         }
     }
 }

@@ -8846,6 +8846,10 @@ the copy that produced the target value reserved its cleanup. Those copies
 are the pair copies in `fold_match` and `maximum_bipartite_match`, the subset
 copies in `sub_pars`, and the copies in `list_match`.
 
+**Amendment (DR-105).** The field copies of
+`bind_free_variable_by_reference` also reserve the cleanup of the values
+that they bind.
+
 **Cross-refs.** DR-77, DR-78, DR-91. Leaves
 `ofp-2-cap-d-d1a-free-map-charges` and `ofp-2-cap-d-d1b-in-place-merge`.
 
@@ -9038,6 +9042,190 @@ of the plan, because inspections remain at the sites of the predicates. In
 multiples of the original caps, the replay falls to 4.60 in
 VerificationBytes and 1.07 in SearchStateBytes.
 
+**Amendment (DR-105).** The Par/Par matcher now inspects the pattern before
+it chooses its path, and it inspects the target only on the general path. A
+pattern that is one free variable binds the target directly (DR-105).
+
 **Cross-refs.** DR-79, DR-88, DR-91, DR-92, DR-94, DR-103. Phase D item D-E2
 moves the matcher's walker calls to block mode. Leaf
 `ofp-2-cap-d-d2-matcher-reads-by-reference`.
+
+## DR-105 — A free-variable pattern binds its target directly
+
+**Status.** Implemented 2026-10-07 for Phase D item D-D3 of epic 8946 (D-M9
+of the Phase D plan). A read-only design pass checked the approved design
+against the code after DR-103 and DR-104 and corrected it in five places.
+This record includes the corrections.
+
+**Context.** A receive argument `@x` is a pattern `Par` whose only
+expression is the free variable `x`. To match a target against it, the
+general path did this work:
+
+- `fold_match` copied the target and the pattern, with their copy and
+  cleanup reserved, and called `spatial_match`.
+- The Par/Par matcher inspected the target and the pattern, reserved the
+  bounds vector of the connectives (640 bytes) and filtered the pattern
+  expressions. It then made ten `list_match_single_` calls with empty
+  pattern lists. Each call checks every element of one field of the target
+  and merges the field into the binding at the variable's level.
+
+The copy of the pattern and the inspections did no work that the binding
+needs. The probe attributed about 10.7 MB of VerificationBytes to the
+pattern copies in `fold_match` and about 6.8 MB to the inspections at the
+Par/Par entry.
+
+A failed match leaves the fields before the first open field merged into
+the binding, and callers observe that partial binding:
+
+- A bipartite match reuses one context for every candidate.
+- `sub_pars` reuses the context for every subset.
+- A disjunction or a negation reuses the free map after a failed branch.
+
+A fast path must therefore reproduce the partial binding exactly.
+
+**Decision.**
+
+1. `free_variable_level(&Par)` recognizes a pattern that uses connectives,
+   whose only expression is `EVar(FreeVar(level))`, and whose other lists,
+   connectives and cost terms are empty. It destructures the `Par`
+   exhaustively, and it does not read `locally_free`.
+2. After the flag read, `fold_match` reserves the test: 12 operations, and
+   12 words and one `Expr` of scanned bytes. For a free-variable pattern it
+   binds the borrowed target through `bind_free_variable_by_reference`. For
+   each field, that function inspects and tests every element, copies the
+   field with its copy and cleanup reserved, and merges the field with
+   `handle_remainder`. It copies neither the pattern nor the whole target.
+3. The Par/Par matcher inspects the pattern first, and that inspection
+   prepays the test. For a free-variable pattern it binds the owned target
+   through `bind_free_variable`. That function makes the same ten
+   `list_match_single_` calls with empty pattern lists and moves the fields.
+   Other patterns then inspect the target and take the general path, as
+   before.
+4. The fields go in the Par/Par order: sends, receives, news, exprs, matches,
+   bundles, unforgeables, conditionals, cost_signed_terms, cost_stacks.
+5. A wildcard pattern and a pattern with more than one variable keep the
+   general path.
+6. A test-only switch (`LEGACY_FREE_VARIABLE_PATH`) selects the general path
+   for the equality tests.
+7. The replaced lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨free-variable test⟩ ≡                         -- at the fold site
+  reserve (12 operations, 12 words + size_of::<Expr>() scanned bytes, 0)
+  -- at the Par/Par site the inspection of the pattern prepays the test
+
+⟨bind one field⟩ ≡
+  for each element e of the field:
+    reserve inspect(e)
+    if e has a locally free variable: return None   -- earlier fields stay merged
+  owned target: move the field
+  borrowed target: reserve the copy and cleanup of the field; copy it
+  ⟨remainder merge⟩                                  -- DR-103 part 2
+
+⟨bind⟩ ≡
+  ⟨bind one field⟩ for sends, receives, news, exprs, matches, bundles,
+  unforgeables, conditionals, cost_signed_terms and cost_stacks, in order
+```
+
+**Soundness.**
+
+- *Same outcome.* For `@x`, every pattern list is empty after the
+  free-variable filter. So each general `list_match_single_` call takes the
+  remainder branch: it checks one field and merges it. The fast path makes
+  the same checks and the same merges in the same order. Thus the result and
+  the free map are the same, failure state included
+  (`FreeVariableFastPath.fast_path_equals_general`,
+  `fast_path_failure_state`), and no other level changes
+  (`fast_path_keeps_other_levels`). The steps that the fast path omits are
+  pure for this pattern: with no connectives the remainder is the target,
+  and the filtered expressions are empty.
+- *Rejections.* The fast path can reject at other points than the general
+  path. No caller observes where it rejects: the contexts share one error
+  slot, a rejected reservation fails every later reservation, and a metered
+  match then returns an error.
+- *Charges.* An inspection of each element comes before its predicate reads
+  it (DR-104). A borrowed field is copied with its copy and cleanup
+  reserved. The searches and the inserts are charged as in DR-103. A field
+  that a merge overwrites was created by a copy that reserved its cleanup.
+- *Determinism.* Every charge depends only on the shape of the values and on
+  compile-time sizes.
+
+**Corrections to the approved design.**
+
+- The approved predicate required every other field to be empty. It must
+  not read `locally_free`, which the general path never reads, and it must
+  include the connectives and both cost lists.
+- The Par/Par order puts bundles before unforgeables. An implementation in
+  struct order would leave another failure state
+  (`field_order_changes_failure_state`).
+- The test at the fold site reads the pattern, so it needs its own
+  reservation first (DR-88).
+- Only the borrowed fold site copies the fields. The Par/Par site moves
+  them.
+- The fast path also saves the bounds vector, the filter and the target's
+  shell, so the saving was measured again instead of taken from the plan.
+
+**Scope.** This change is cost-accounting work. The metered matcher exists
+only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. The matcher returns the same results and the
+same free maps. No encoding, root, event or receipt changes.
+
+**Verification.** `FreeVariableFastPath.v` proves these results without
+axioms:
+
+- `fast_path_equals_general`, `fast_path_failure_state`,
+  `merge_keeps_other_levels`, `fast_path_keeps_other_levels` and
+  `fast_fields_in_index_order`.
+- Negative controls: `check_all_first_loses_partial_binding`,
+  `field_order_changes_failure_state` (with `fresh_merge_is_stored`), and
+  `legacy_free_variable_charge_includes_pattern_copy` with
+  `legacy_free_variable_charge_example`.
+
+Tests in `spatial_matcher.rs`:
+
+- `free_variable_fast_path_equals_general_path` (256 cases): on the owned and
+  on the borrowed entry, with and without a stored binding at the level and
+  with open elements in any field, the fast path gives the result and the
+  free map of the general path. A metered run gives the same outcome and
+  rejects nothing. The stored binding has a shell that the merge never
+  writes.
+- `free_variable_failure_leaves_the_general_partial_binding`: a failure at
+  bundles leaves sends and exprs merged and unforgeables unmerged, and a
+  failure at the first field leaves the map unchanged.
+- `free_variable_level_accepts_only_one_free_variable`.
+- `free_variable_pair_accepts_exact_credit`.
+- `free_variable_copies_fit_reserved_backing` (counting allocator). The test
+  measures the binding itself, because `fold_match` also allocates the
+  labels of its metrics counters, outside the host-work model.
+- Negative control: `legacy_free_variable_charge_grew_with_target_size`.
+- The existing matcher tests and the 52 match tests pass.
+- Three mutations in a scratch copy make
+  `free_variable_fast_path_equals_general_path` and
+  `free_variable_failure_leaves_the_general_partial_binding` fail: the
+  struct order (unforgeables before bundles), a check of every field before
+  the first merge, and a fresh binding instead of the in-place merge.
+
+**Measurement.** The D-G0 probe ran the gateway test twice with DR-104 and
+twice with DR-105, under the provisional caps. Every role charged exactly
+the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-104, run 1 | 1,228,145,614 | 143,399,559 | 60,881,538 |
+| DR-104, run 2 | 1,239,660,953 | 143,389,150 | 60,887,498 |
+| DR-105, run 1 | 1,203,070,723 | 140,521,206 | 60,476,133 |
+| DR-105, run 2 | 1,189,831,318 | 140,325,579 | 60,457,440 |
+| Change of the means | −37.5 MB (−3.0 %) | −2.97 MB (−2.1 %) | −418 K (−0.7 %) |
+
+The runs of the two builds do not overlap. The change of VerificationBytes
+is about 2.8 times the largest difference between two runs of one build,
+and the changes of SearchStateBytes and VerificationOperations are about 15
+and 22 times it. The saving is about twice the 17.5 MB of the plan, because
+the fast path also skips the inspection of the target, the bounds vector
+and the filter. In multiples of the original caps, the replay falls to 4.46
+in VerificationBytes and 1.05 in SearchStateBytes.
+
+**Cross-refs.** DR-88, DR-103, DR-104. Leaf
+`ofp-2-cap-d-d3-free-variable-fast-path`.
