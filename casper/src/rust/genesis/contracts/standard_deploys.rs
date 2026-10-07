@@ -13,10 +13,10 @@ use rholang::rust::build::compile_rholang_source::{
     CompiledRholangSource, CompiledRholangTemplate,
 };
 
-use super::embedded_rho;
 use super::proof_of_stake::ProofOfStake;
 use super::vault::Vault;
 use super::vaults_generator::VaultsGenerator;
+use super::{embedded_rho, fs_genesis};
 
 /// Build a `CompiledRholangSource` from an embedded `.rho` constant. The
 /// `name` is preserved on the resulting source as identification metadata
@@ -230,6 +230,43 @@ pub fn stack(shard_id: &str) -> Signed<DeployData> {
     )
 }
 
+/// Composes the File I/O FIP library agents (File / Dir / Stream /
+/// Buffer / Stdin / Stdout / Fs) into a single genesis deploy that
+/// publishes a shared Fs cap at the registry URI derived from
+/// FS_GENERATOR_PK.  Source assembly happens in `fs_genesis`; the
+/// signature is derived deterministically from the well-known
+/// FS_GENERATOR_PK + FS_GENERATOR_TIMESTAMP + FS_NONCE triple.
+///
+/// See `fs_genesis` module docstring for the MVP simplifications
+/// (shared-Fs model, empty static bundle, hardwired stdio fds).
+pub fn fs_generator(
+    shard_id: &str,
+    bundle: &[fs_genesis::BundleEntry],
+    consensus_fs_snapshot_cadence: Option<u64>,
+) -> Signed<DeployData> {
+    let sk = PrivateKey::from_bytes(
+        &hex::decode(FS_GENERATOR_PK).expect("FS_GENERATOR_PK must be valid hex"),
+    );
+    let sig_hex = fs_genesis::fs_genesis_signature_hex(&sk, FS_GENERATOR_TIMESTAMP);
+    let pk_hex = hex::encode(FS_GENERATOR_PUB_KEY.bytes.clone());
+    // CRIT-2 fix (2026-08-06): forward cadence to the composed
+    // source.  The composed source embeds cadence as a Rholang
+    // literal so deploy-term diff at `BlockApproverProtocol::
+    // validate_candidate` catches leader/validator disagreement.
+    let source = fs_genesis::compose_fs_genesis_source(
+        &pk_hex,
+        &sig_hex,
+        bundle,
+        consensus_fs_snapshot_cadence,
+    );
+    to_deploy(
+        embedded_source("FsGenesis.rho", &source),
+        FS_GENERATOR_PK,
+        FS_GENERATOR_TIMESTAMP,
+        shard_id,
+    )
+}
+
 /// Deploys the `TokenMetadata` contract that stores the native token's
 /// name, symbol, and decimals. Values are substituted into the Rholang
 /// source at genesis time and registered at `rho:system:tokenMetadata`.
@@ -320,4 +357,40 @@ pub fn to_public(priv_key_hex: &str) -> PublicKey {
         PrivateKey::from_bytes(&hex::decode(priv_key_hex).expect("Invalid private key hex string"));
     let secp256k1 = Secp256k1;
     secp256k1.to_public(&private_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// fs_generator produces a Signed<DeployData> that compiles the
+    /// composed FsGenesis source + signs with FS_GENERATOR_PK.  A
+    /// panic here indicates either the composed source fails to
+    /// parse / normalize (fs_genesis.rs or embedded .rho divergence)
+    /// or the signature derivation drifted.
+    #[test]
+    fn fs_generator_empty_bundle_compiles() { let _ = fs_generator("root", &[], None); }
+
+    /// Deterministic signing: identical inputs produce identical
+    /// deploy signatures (required for consensus replay).
+    #[test]
+    fn fs_generator_is_deterministic() {
+        let a = fs_generator("root", &[], None);
+        let b = fs_generator("root", &[], None);
+        assert_eq!(a.sig, b.sig);
+    }
+
+    /// Cadence flows into the composed source → deploy term, so
+    /// different cadences produce different deploy terms (CRIT-2
+    /// 2026-08-06 fix for leader/validator cadence disagreement).
+    #[test]
+    fn fs_generator_cadence_affects_deploy_term() {
+        let a = fs_generator("root", &[], None);
+        let b = fs_generator("root", &[], Some(42));
+        assert_ne!(
+            a.data.term, b.data.term,
+            "cadence must appear in the deploy term so \
+             BlockApproverProtocol::validate_candidate catches drift"
+        );
+    }
 }
