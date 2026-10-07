@@ -196,6 +196,34 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.39: +1 (`fs_write_at`, MUTATION 8/8 — MIGRATION COMPLETE).  Count = 27.
 pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
 
+/// Expected count of trait-registered handlers whose
+/// `<H as FsHandler>::VERIFYING == true`.  Verifying handlers
+/// re-execute + verify reply hash on Consensus-cmode replay (see
+/// [`FsHandler::VERIFYING`](super::fs_handler::FsHandler::VERIFYING)
+/// docstring).  The 14/27 trait-registered split + 1 trait-exempt
+/// (`fs_remove_dir`) = 15 total verifying in the full verify
+/// matrix is called out in the module docstring and in
+/// `FsHandlerEntry::verifying`'s field doc.
+///
+/// Pinning the count catches a regression where someone adds a new
+/// trait-registered handler without explicitly setting
+/// `const VERIFYING: bool = true;` (so it falls to the trait
+/// default of `false` and the framework silently stops re-executing
+/// it on Consensus replay — a hazard class flagged in
+/// `FsHandler::VERIFYING`'s docstring).
+///
+/// # Trait-registered verifying handlers (14)
+///
+/// Observation (7): `fs_read`, `fs_read_at`, `fs_seek`, `fs_size`,
+/// `fs_stat`, `fs_exists`, `fs_entries`.
+///
+/// Mutation (7): `fs_truncate`, `fs_chmod`, `fs_rename`,
+/// `fs_remove_file`, `fs_copy_file`, `fs_write`, `fs_write_at`.
+///
+/// Trait-exempt verifying handler (NOT in FS_HANDLERS): `fs_remove_dir`
+/// (see `handler_trait::fs_handler` module docstring).
+pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 14;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,5 +413,104 @@ mod tests {
                 entry.urn_suffix,
             );
         }
+    }
+
+    /// Count pin for the verifying/non-verifying split across
+    /// FS_HANDLERS.  Addresses the hazard class flagged in
+    /// `FsHandler::VERIFYING`'s docstring: if a new trait-registered
+    /// handler is added without explicitly setting
+    /// `const VERIFYING: bool = true;`, the field falls to the trait
+    /// default of `false` and the framework silently stops
+    /// re-executing it on Consensus-cmode replay — a reply-hash
+    /// mismatch class that would surface at consensus time, not
+    /// test time.
+    ///
+    /// Current split (slice 5.44): 14 verifying + 13 non-verifying =
+    /// 27 trait-registered.  Plus the trait-exempt fs_remove_dir (1
+    /// verifying, not in FS_HANDLERS) = 15 total verifying in the
+    /// full verify matrix.  See `EXPECTED_VERIFYING_HANDLER_COUNT`.
+    #[test]
+    fn fs_handlers_verifying_count_matches_pinned() {
+        let verifying = FS_HANDLERS.iter().filter(|e| e.verifying).count();
+        assert_eq!(
+            verifying, EXPECTED_VERIFYING_HANDLER_COUNT,
+            "FS_HANDLERS has {} entries with `verifying = true` but \
+             EXPECTED_VERIFYING_HANDLER_COUNT is {}.  Either (a) a \
+             new trait-registered handler forgot to set \
+             `const VERIFYING: bool = true;` (fell to the trait \
+             default of false — Consensus replay silently stops \
+             re-executing it, a reply-hash mismatch hazard), or (b) \
+             an existing handler's VERIFYING constant was flipped \
+             without bumping EXPECTED_VERIFYING_HANDLER_COUNT.  \
+             Audit the per-handler `impl FsHandler for Fs*Handler {{ \
+             const VERIFYING: bool = true; ... }}` declarations and \
+             reconcile.",
+            verifying, EXPECTED_VERIFYING_HANDLER_COUNT,
+        );
+    }
+
+    /// Name-level pin for the 14 trait-registered verifying handlers.
+    /// Complementary to the count pin above: a count match + a name
+    /// mismatch means SOMEONE flipped one handler's VERIFYING while
+    /// flipping another's in the opposite direction (count stays
+    /// 14, but the set drifted).  The hardcoded list is the source
+    /// of truth; a slice that intentionally changes the verifying
+    /// set must update both the handler's `const VERIFYING` AND the
+    /// list below AND `EXPECTED_VERIFYING_HANDLER_COUNT` if the size
+    /// changed.
+    #[test]
+    fn fs_handlers_verifying_set_matches_pinned_names() {
+        const EXPECTED_VERIFYING_NAMES: &[&str] = &[
+            // Observation family (7).
+            "fs_seek",
+            "fs_size",
+            "fs_exists",
+            "fs_stat",
+            "fs_read",
+            "fs_read_at",
+            "fs_entries",
+            // Mutation family (7).
+            "fs_truncate",
+            "fs_chmod",
+            "fs_rename",
+            "fs_remove_file",
+            "fs_write",
+            "fs_write_at",
+            "fs_copy_file",
+        ];
+        assert_eq!(
+            EXPECTED_VERIFYING_NAMES.len(),
+            EXPECTED_VERIFYING_HANDLER_COUNT,
+            "EXPECTED_VERIFYING_NAMES.len() = {} but \
+             EXPECTED_VERIFYING_HANDLER_COUNT = {}.  Pin size and \
+             name list must agree; update both together.",
+            EXPECTED_VERIFYING_NAMES.len(),
+            EXPECTED_VERIFYING_HANDLER_COUNT,
+        );
+
+        let actual_verifying: std::collections::HashSet<&str> = FS_HANDLERS
+            .iter()
+            .filter(|e| e.verifying)
+            .map(|e| e.name)
+            .collect();
+        let expected_verifying: std::collections::HashSet<&str> =
+            EXPECTED_VERIFYING_NAMES.iter().copied().collect();
+
+        let unexpected: Vec<&&str> = actual_verifying.difference(&expected_verifying).collect();
+        assert!(
+            unexpected.is_empty(),
+            "FS_HANDLERS entries unexpectedly flagged verifying=true: \
+             {unexpected:?}.  Either flip the handler's \
+             `const VERIFYING` back to the default or add the name \
+             to EXPECTED_VERIFYING_NAMES."
+        );
+        let missing: Vec<&&str> = expected_verifying.difference(&actual_verifying).collect();
+        assert!(
+            missing.is_empty(),
+            "FS_HANDLERS entries expected to be verifying=true but \
+             aren't: {missing:?}.  Either add `const VERIFYING: \
+             bool = true;` to the handler's `impl FsHandler` block, \
+             or remove the name from EXPECTED_VERIFYING_NAMES."
+        );
     }
 }
