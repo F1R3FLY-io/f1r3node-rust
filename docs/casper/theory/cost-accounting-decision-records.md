@@ -8839,5 +8839,205 @@ the replay falls to 4.68 in VerificationBytes and 1.08 in SearchStateBytes.
 Parts 1 and 2 together remove 459.1 MB of VerificationBytes (−26.8 %) and
 45.4 MB of SearchStateBytes (−23.9 %) from this replay.
 
+**Amendment (DR-104).** The part 2 soundness says that `list_match_single_`
+reserves a copy and a cleanup for every remainder target. After DR-104 it
+reserves an inspection for its predicate instead. The argument still holds:
+the copy that produced the target value reserved its cleanup. Those copies
+are the pair copies in `fold_match` and `maximum_bipartite_match`, the subset
+copies in `sub_pars`, and the copies in `list_match`.
+
 **Cross-refs.** DR-77, DR-78, DR-91. Leaves
 `ofp-2-cap-d-d1a-free-map-charges` and `ofp-2-cap-d-d1b-in-place-merge`.
+
+## DR-104 — The matcher reads by reference instead of copying
+
+**Status.** Implemented 2026-10-07 for Phase D item D-D2 of epic 8946 (D-M8
+of the Phase D plan). A read-only design pass checked the approved design
+against the current code and corrected it in four places. This record
+includes the corrections.
+
+**Context.** The matcher copied values only to read a flag or to test a
+predicate:
+
+- The owned predicates of `HasLocallyFree` take their argument by value. So
+  `list_match_single_` (for each remainder target), the term case of
+  `match_function` (for each pattern) and `free_check` in `fold_match.rs`
+  (for each remainder item) copied a value, and charged the copy and its
+  cleanup, only to test it. The owned predicates also built union bitsets,
+  and a bit vector for a bound variable, without a charge.
+- The Par/Par matcher copied the pattern expressions (`reserve_slice` and
+  `no_frees_exprs`) to remove the free variables and the wildcards.
+- The fold over the pairs of a receive copied each target and each pattern
+  before `spatial_match`, also when the pattern was ground and the
+  comparison only read both values.
+- The Par/Par matcher inspected the whole target before a ground
+  comparison, which reads no more of the target than of the pattern.
+
+The probe of the gateway funding block attributed about 10.5 MB of
+VerificationBytes to the copy in `list_match_single_` and 15.7 MB to the
+copy of the pattern expressions.
+
+**Decision.**
+
+1. A sibling trait `HasLocallyFreeRef<T>` gives `connective_used_ref(&x)`
+   and `locally_free_is_empty(&x, depth)` for the 13 element types of
+   `list_match!` and for `MatchCase`. Each mirrors the owned predicate. It
+   calls `expect` where the owned version unwraps, it evaluates both
+   operands where the owned version evaluates both, and it panics on a
+   negative bound variable at depth 0. It allocates nothing.
+2. An inspection (`reserve_inspect`) precedes each predicate by reference.
+   It prepays the walk and one traversal. `list_match_single_`, the term case
+   of `match_function` and `free_check` (for `Par` and for `MatchCase`)
+   reserve that inspection instead of a copy. The remainder case of
+   `match_function` keeps its inspection and stops building the union.
+3. `retain_no_frees` filters the owned pattern expressions in place. It
+   charges $`2n`$ operations, $`n\,(2S + 3w)`$ scanned bytes and no backing,
+   where $`S`$ is `size_of::<Expr>()` and $`w`$ is the size of a word.
+4. `fold_match` reserves the read of the pattern's `connective_used` flag (1
+   operation and 8 bytes) before it reads the flag. It compares a ground pair
+   by reference through `match_ground_par`. Other pairs keep the copy and
+   `spatial_match`.
+5. The Par/Par matcher reserves the same flag read. For a ground pattern it
+   charges two inspections of the pattern and compares by reference
+   (`match_ground_par`). For a pattern with connectives it inspects the
+   target and the pattern, as before.
+6. The arity prefilter stays rejected. `fold_match` walks the pairs before it
+   compares the lengths, and the host-work budget must still reject a
+   malformed collection.
+7. The replaced lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨predicate by reference⟩ ≡
+  reserve inspect(x)                          -- the walk and one traversal
+  b ← predicate_ref(x)                        -- expect where the owned version unwraps
+
+⟨in-place filter⟩ ≡
+  reserve (2n operations, n · (2S + 3w) scanned bytes, 0 backing)
+  retain the expressions that are not free variables or wildcards
+
+⟨ground pair⟩ ≡
+  reserve (1 operation, 8 scanned bytes, 0)   -- the connective_used flag
+  if the pattern uses no connective:
+    reserve inspect(pattern) twice            -- the lockstep bound
+    guard match_pars(target, pattern)         -- by reference
+  else:
+    copy the pair and call spatial_match, as before
+```
+
+**Soundness.**
+
+- *Predicates.* The owned predicate builds a union of the bitsets of the
+  parts. A union has the length of its longer argument, so it is empty
+  exactly when every part is empty
+  (`MatcherReadsByReference.union_empty_iff`,
+  `fold_union_empty_iff_all_empty`). A predicate reads a part of one
+  traversal of its value, which the inspection before it prepays.
+- *Partiality.* The predicates by reference panic exactly where the owned
+  predicates panic, so every node keeps the same outcome on a malformed
+  term.
+- *Filter.* `Vec::retain` keeps the elements before the first removal in
+  place, moves each later element that it keeps, and drops each removed
+  element in place. The predicate reads each element, and each element is
+  then moved or dropped at most once. Thus the work fits $`n\,(2S + 3w)`$
+  when $`3w \le 2S`$ (`retain_work_within_charge`). The filter allocates
+  nothing.
+- *Lockstep.* `match_pars` and the `PartialEq` implementations that it calls
+  compare field by field and element by element, compare lengths before
+  contents, and stop at the first difference. They read as much of the
+  target as of the pattern, and never more than one traversal of the
+  pattern (`lockstep_reads_equal`, `lockstep_reads_bounded_by_pattern`). Two
+  inspections of the pattern therefore cover both sides
+  (`two_pattern_inspections_cover_lockstep_reads`).
+- *Reservation first.* `fold_match` can reach a pattern's flag without an
+  earlier inspection, so the flag read is reserved before the flag is read
+  (DR-88).
+- *Releases.* A target or a pattern that the matcher owns comes from a copy
+  that reserved its cleanup (see the DR-104 amendment to DR-103). A ground
+  comparison by reference creates no owned value.
+- *Determinism.* Every charge depends only on the shape of the values and on
+  compile-time sizes.
+
+**Corrections to the approved design.**
+
+- The approved charge of the filter, $`(n, nS, 0)`$, undercounts `retain`.
+  Removing the first of $`n`$ elements moves the other $`n - 1`$, which reads
+  and writes $`2(n - 1)S`$ bytes (`one_pass_charge_undercounts_retain`).
+- The ground-pair path read the `connective_used` flag before any
+  reservation. It now reserves that read first.
+- The approved design gave no charge for the predicates by reference. Each
+  one now follows an inspection.
+- The remainder case of `match_function` made no copy. It keeps its
+  inspection and only stops building the union.
+
+**Scope.** This change is cost-accounting work. The metered matcher exists
+only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. The matcher returns the same results and the
+same free maps. No encoding, root, event or receipt changes.
+
+**Verification.** `MatcherReadsByReference.v` proves these results without
+axioms:
+
+- `union_length`, `union_empty_iff` and `fold_union_empty_iff_all_empty`.
+- `lockstep_reads_equal`, `lockstep_reads_bounded_by_pattern`,
+  `two_pattern_inspections_cover_lockstep_reads` and `prefix_reads_decide`
+  (the elements that the comparison reads decide
+  `MeteredComparison.compare_prefix`).
+- `retain_equals_filter`, `retain_moves_and_drops` and
+  `retain_work_within_charge`.
+- Negative controls: `target_inspection_grows_with_unread_target`, with
+  `legacy_ground_charge_example` (4,098 elements charged when the comparison
+  reads 2), and `one_pass_charge_undercounts_retain`.
+
+Tests:
+
+- `predicates_by_reference_equal_owned_predicates` (256 cases, in
+  `has_locally_free.rs`): for the 13 element types and `MatchCase`, at depths
+  0 and 1, with missing fields and with bound variables and levels from −3
+  to 63, the predicates by reference return the values of the owned
+  predicates and panic exactly when they panic.
+  `negative_bound_variable_panics_in_both_predicates` pins the panic.
+- In `spatial_matcher.rs`:
+  - `retained_no_frees_equals_cloned_filter` (256 cases).
+  - `retain_no_frees_charge_is_exact` and `retain_no_frees_allocates_nothing`
+    (counting allocator).
+  - `fold_match_by_reference_equals_cloned_pair_walk` (256 cases): the
+    results and the free maps equal those of the walk that copies every pair
+    into `spatial_match`.
+  - `ground_comparison_charge_is_independent_of_target_size` (1 against
+    4,096 expressions), with the negative control
+    `legacy_ground_charge_grew_with_target_size`.
+  - `ground_pair_by_reference_accepts_exact_credit`: one unit less in any
+    charged dimension rejects.
+- The existing matcher tests and the 52 match tests pass.
+- Three mutations in a scratch copy fail the property tests. A binary
+  predicate that requires only one empty operand fails
+  `predicates_by_reference_equal_owned_predicates`. A filter that keeps the
+  wildcards fails `retained_no_frees_equals_cloned_filter`. A fold that
+  ignores a ground mismatch fails
+  `fold_match_by_reference_equals_cloned_pair_walk`.
+
+**Measurement.** The D-G0 probe ran the gateway test twice with DR-103 part
+2 and twice with DR-104, under the provisional caps. Every role charged
+exactly the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-103, run 1 | 1,249,206,436 | 144,836,209 | 61,016,038 |
+| DR-103, run 2 | 1,261,584,846 | 144,887,478 | 61,026,598 |
+| DR-104, run 1 | 1,228,145,614 | 143,399,559 | 60,881,538 |
+| DR-104, run 2 | 1,239,660,953 | 143,389,150 | 60,887,498 |
+| Change of the means | −21.5 MB (−1.7 %) | −1.47 MB (−1.0 %) | −137 K (−0.2 %) |
+
+The change of VerificationBytes is about 1.8 times the largest difference
+between two runs of one build, and the runs of the two builds do not
+overlap. The changes of SearchStateBytes and VerificationOperations are
+about 29 and 13 times that difference. The saving is smaller than the 38 MB
+of the plan, because inspections remain at the sites of the predicates. In
+multiples of the original caps, the replay falls to 4.60 in
+VerificationBytes and 1.07 in SearchStateBytes.
+
+**Cross-refs.** DR-79, DR-88, DR-91, DR-92, DR-94, DR-103. Phase D item D-E2
+moves the matcher's walker calls to block mode. Leaf
+`ofp-2-cap-d-d2-matcher-reads-by-reference`.

@@ -1,7 +1,9 @@
 use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
 use models::rhoapi::{MatchCase, Par, Var};
 
-use super::has_locally_free::HasLocallyFree;
+// Changed by D-D2 (D-M8, DR-104): the matcher tests its values by reference.
+// use super::has_locally_free::HasLocallyFree;
+use super::has_locally_free::HasLocallyFreeRef;
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use crate::rust::interpreter::metrics_constants::{
     RHOLANG_MATCHER_FOLD_MATCH_CALLS_METRIC,
@@ -33,6 +35,13 @@ impl<'a> FoldMatch<Par, Par> for SpatialMatcherContext<'a> {
 
         let n = tlist.len().min(plist.len());
         for i in 0..n {
+            // Changed by D-D2 (D-M8, DR-104): a ground pattern is compared by
+            // reference, without copies of the pair.
+            self.reserve_flag_read()?;
+            if !plist[i].connective_used {
+                self.match_ground_par(&tlist[i], &plist[i])?;
+                continue;
+            }
             self.reserve_clone(&tlist[i])?;
             self.reserve_clone(&plist[i])?;
             let __clone_start = std::time::Instant::now();
@@ -67,8 +76,12 @@ impl<'a> FoldMatch<Par, Par> for SpatialMatcherContext<'a> {
 
     fn free_check(&self, trem: &[Par], _level: i32, mut acc: Vec<Par>) -> Option<Vec<Par>> {
         for item in trem {
-            self.reserve_clone(item)?;
-            if !self.locally_free(item.to_owned(), 0).is_empty() {
+            // Changed by D-D2 (D-M8, DR-104): the predicate reads the item by
+            // reference, so an inspection replaces the copy.
+            // self.reserve_clone(item)?;
+            // if !self.locally_free(item.to_owned(), 0).is_empty() {
+            self.reserve_inspect(item)?;
+            if !self.locally_free_is_empty(item, 0) {
                 return None;
             }
             self.reserve_clone(item)?;
@@ -120,8 +133,12 @@ impl<'a> FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext<'a> {
         mut acc: Vec<MatchCase>,
     ) -> Option<Vec<MatchCase>> {
         for item in trem {
-            self.reserve_clone(item)?;
-            if !self.locally_free(item.to_owned(), 0).is_empty() {
+            // Changed by D-D2 (D-M8, DR-104): the predicate reads the item by
+            // reference, so an inspection replaces the copy.
+            // self.reserve_clone(item)?;
+            // if !self.locally_free(item.to_owned(), 0).is_empty() {
+            self.reserve_inspect(item)?;
+            if !self.locally_free_is_empty(item, 0) {
                 return None;
             }
             self.reserve_clone(item)?;

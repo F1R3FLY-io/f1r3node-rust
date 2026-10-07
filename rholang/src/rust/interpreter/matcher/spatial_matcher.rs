@@ -13,7 +13,9 @@ use shared::rust::collection_backing::{tree_growth, tree_insert_moves, tree_sear
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
-use super::has_locally_free::HasLocallyFree;
+// Changed by D-D2 (D-M8, DR-104): the matcher tests its values by reference.
+// use super::has_locally_free::HasLocallyFree;
+use super::has_locally_free::HasLocallyFreeRef;
 use super::list_match::{aggregate_updates, ListMatch, Pattern};
 use super::match_pars::match_pars;
 use super::par_count::ParCount;
@@ -211,6 +213,27 @@ impl<'a> MatcherWork<'a> {
         };
         self.reserve(operations, moves, growth)
     }
+
+    /// D-D2 (DR-104): `retain_no_frees` on `entries` expressions. The
+    /// predicate reads at most three words of each expression. Each
+    /// expression is then kept in place, moved, which reads and writes it, or
+    /// dropped in place, which reads at most three words
+    /// (`MatcherReadsByReference.retain_work_within_charge`).
+    pub fn reserve_retain_no_frees(&self, entries: usize) -> Option<()> {
+        if self.meter.is_none() {
+            return self.reserve(0, 0, 0);
+        }
+        let per_entry = std::mem::size_of::<Expr>()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(3 * std::mem::size_of::<usize>()));
+        let (Some(operations), Some(scanned)) = (
+            entries.checked_mul(2),
+            per_entry.and_then(|bytes| bytes.checked_mul(entries)),
+        ) else {
+            return self.reject(RSpaceError::HostWorkRejected);
+        };
+        self.reserve(operations, scanned, 0)
+    }
 }
 
 // D-D1a (DR-103): the per-level move bound of a free-map insert, as the Rocq
@@ -351,6 +374,24 @@ impl<'a> SpatialMatcherContext<'a> {
         self.work.reserve_free_map_insert(entries)
     }
 
+    pub(super) fn reserve_retain_no_frees(&self, entries: usize) -> Option<()> {
+        self.work.reserve_retain_no_frees(entries)
+    }
+
+    /// D-D2 (DR-104): the read of one `connective_used` flag before any
+    /// inspection of the value that holds it.
+    pub(super) fn reserve_flag_read(&self) -> Option<()> { self.reserve(1, 8, 0) }
+
+    /// D-D2 (DR-104): compares a target with a ground pattern by reference.
+    /// `match_pars` reads both sides in lockstep, so it reads no more of the
+    /// target than of the pattern, and two inspections of the pattern cover
+    /// both sides (`MatcherReadsByReference.two_pattern_inspections_cover_lockstep_reads`).
+    pub(super) fn match_ground_par(&self, target: &Par, pattern: &Par) -> Option<()> {
+        self.reserve_inspect(pattern)?;
+        self.reserve_inspect(pattern)?;
+        guard(match_pars(target, pattern))
+    }
+
     pub(super) fn work(&self) -> Option<MatcherWork<'a>> {
         self.reserve(1, 0, 0)?;
         Some(self.work.clone())
@@ -469,12 +510,21 @@ impl<'a> SpatialMatcher<Par, Connective> for SpatialMatcherContext<'a> {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - parSpatialMatcher
 impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-D2 (D-M8, DR-104): a ground pattern charges the lockstep
+        // bound of match_ground_par, not an inspection of the target. A pattern
+        // with connectives still inspects both values.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        // if !pattern.connective_used {
+        //     // guard(pattern == target)
+        //     guard(match_pars(&target, &pattern))
+        // } else {
+        self.reserve_flag_read()?;
         if !pattern.connective_used {
-            // guard(pattern == target)
-            guard(match_pars(&target, &pattern))
+            self.match_ground_par(&target, &pattern)
         } else {
+            self.reserve_inspect(&target)?;
+            self.reserve_inspect(&pattern)?;
             let var_level: Option<i32> = pattern.exprs.iter().find_map(|expr| match expr {
                 Expr {
                     expr_instance:
@@ -601,10 +651,16 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 )
             })
             .and_then(|_| {
-                self.reserve_slice(&pattern.exprs)?;
+                // Changed by D-D2 (D-M8, DR-104): the owned pattern expressions are
+                // filtered in place, without a copy of the slice.
+                // self.reserve_slice(&pattern.exprs)?;
+                let mut exprs = pattern.exprs;
+                self.reserve_retain_no_frees(exprs.len())?;
+                retain_no_frees(&mut exprs);
                 self.list_match_single_(
                     remainder.exprs,
-                    no_frees_exprs(&pattern.exprs),
+                    // no_frees_exprs(&pattern.exprs),
+                    exprs,
                     &|p, s, _| {
                         p.exprs = s;
                         Some(())
@@ -1470,6 +1526,234 @@ mod metered_tests {
                     Some(RSpaceError::HostWorkRejected)
                 ));
             }
+        }
+    }
+
+    /// The three totals that a metered closure receives during `action`.
+    fn charge_during(action: impl FnOnce(&mut SpatialMatcherContext<'_>)) -> [usize; 3] {
+        let totals = Mutex::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut sum = totals.lock().expect("totals lock");
+            for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let before = *totals.lock().expect("totals lock");
+        action(&mut context);
+        let after = *totals.lock().expect("totals lock");
+        [
+            after[0] - before[0],
+            after[1] - before[1],
+            after[2] - before[2],
+        ]
+    }
+
+    fn free_or_ground_expr() -> impl proptest::strategy::Strategy<Value = Expr> {
+        use proptest::strategy::Strategy;
+
+        (0usize..6, 0i32..4).prop_map(|(variant, index)| {
+            let v = match variant {
+                0 => {
+                    return Expr {
+                        expr_instance: Some(GInt(index as i64)),
+                    }
+                }
+                1 => None,
+                2 => Some(Var { var_instance: None }),
+                3 => Some(Var {
+                    var_instance: Some(BoundVar(index)),
+                }),
+                4 => Some(Var {
+                    var_instance: Some(FreeVar(index)),
+                }),
+                _ => Some(Var {
+                    var_instance: Some(Wildcard(WildcardMsg {})),
+                }),
+            };
+            Expr {
+                expr_instance: Some(EVarBody(EVar { v })),
+            }
+        })
+    }
+
+    fn ground_par(size: usize) -> Par {
+        Par {
+            exprs: vec![new_gint_expr(7); size],
+            ..Default::default()
+        }
+    }
+
+    /// D-D2 (DR-104): the in-place filter charges `2n` operations and
+    /// `n * (2 * size_of::<Expr>() + 3 words)` scanned bytes, and no backing.
+    #[test]
+    fn retain_no_frees_charge_is_exact() {
+        let per_entry = 2 * std::mem::size_of::<Expr>() + 3 * std::mem::size_of::<usize>();
+        for entries in [0usize, 1, 7, 64] {
+            assert_eq!(
+                charge_during(|context| context
+                    .reserve_retain_no_frees(entries)
+                    .expect("filter charge")),
+                [2 * entries, entries * per_entry, 0],
+                "{entries} entries"
+            );
+        }
+    }
+
+    /// D-D2 (DR-104): the in-place filter allocates nothing.
+    #[test]
+    fn retain_no_frees_allocates_nothing() {
+        let mut exprs: Vec<Expr> = (0..32)
+            .map(|index| {
+                if index % 3 == 0 {
+                    new_gint_expr(index)
+                } else {
+                    Expr {
+                        expr_instance: Some(EVarBody(EVar {
+                            v: Some(Var {
+                                var_instance: Some(FreeVar(index as i32)),
+                            }),
+                        })),
+                    }
+                }
+            })
+            .collect();
+        let ((), allocated) = crate::rust::interpreter::accounting::measured_allocations(|| {
+            retain_no_frees(&mut exprs)
+        });
+        assert_eq!(allocated, 0);
+        assert_eq!(exprs.len(), 11);
+    }
+
+    /// D-D2 (DR-104): comparing a ground pattern charges the same for a small
+    /// and for a large target.
+    #[test]
+    fn ground_comparison_charge_is_independent_of_target_size() {
+        let pattern = ground_par(1);
+        let charges = [1usize, 4096].map(|size| {
+            charge_during(|context| {
+                context.spatial_match(ground_par(size), pattern.clone());
+            })
+        });
+        assert_eq!(charges[0], charges[1]);
+    }
+
+    /// Negative control: the charge before D-D2 inspected the whole target, so
+    /// it grew with the target.
+    #[test]
+    fn legacy_ground_charge_grew_with_target_size() {
+        let pattern = ground_par(1);
+        let legacy = |target: Par| {
+            charge_during(|context| {
+                context.reserve_inspect(&target).expect("target inspection");
+                context
+                    .reserve_inspect(&pattern)
+                    .expect("pattern inspection");
+            })
+        };
+        let small = legacy(ground_par(1));
+        let large = legacy(ground_par(4096));
+        assert!(large[0] > small[0]);
+        assert!(large[1] > small[1]);
+    }
+
+    /// D-D2 (DR-104): the ground-pair path accepts its exact charge and
+    /// rejects one unit less in any dimension.
+    #[test]
+    fn ground_pair_by_reference_accepts_exact_credit() {
+        let targets = vec![ground_par(3), ground_par(2)];
+        let patterns = vec![ground_par(3), ground_par(2)];
+        let required = charge_during(|context| {
+            assert!(context.fold_match(&targets, &patterns, None).is_some());
+        });
+        assert!(required.iter().take(2).all(|value| *value > 0));
+        for dimension in 0..2 {
+            let mut limit = required;
+            limit[dimension] -= 1;
+            let spent = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut totals = spent.lock().expect("totals lock");
+                let amounts = [operations, scanned, backing];
+                if totals
+                    .iter()
+                    .zip(amounts)
+                    .zip(limit)
+                    .any(|((used, add), max)| *used + add > max)
+                {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                for (used, add) in totals.iter_mut().zip(amounts) {
+                    *used += add;
+                }
+                Ok(())
+            };
+            let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+            assert!(context.fold_match(&targets, &patterns, None).is_none());
+            assert!(matches!(
+                context.take_error(),
+                Some(RSpaceError::HostWorkRejected)
+            ));
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// D-D2 (DR-104): the in-place filter keeps the expressions that
+        /// `no_frees_exprs` keeps, in the same order.
+        #[test]
+        fn retained_no_frees_equals_cloned_filter(
+            exprs in proptest::collection::vec(free_or_ground_expr(), 0..12),
+        ) {
+            let expected = no_frees_exprs(&exprs);
+            let mut retained = exprs;
+            retain_no_frees(&mut retained);
+            proptest::prop_assert_eq!(retained, expected);
+        }
+
+        /// D-D2 (DR-104): a fold that compares ground pairs by reference gives
+        /// the result and the free map of the walk that copies every pair into
+        /// `spatial_match`.
+        #[test]
+        fn fold_match_by_reference_equals_cloned_pair_walk(
+            targets in proptest::collection::vec((0i64..3, 1usize..3), 0..5),
+            patterns in proptest::collection::vec((proptest::prelude::any::<bool>(), 0i64..3, 1usize..3), 0..5),
+        ) {
+            let targets: Vec<Par> = targets
+                .into_iter()
+                .map(|(value, size)| Par {
+                    exprs: vec![new_gint_expr(value); size],
+                    ..Default::default()
+                })
+                .collect();
+            let patterns: Vec<Par> = patterns
+                .into_iter()
+                .enumerate()
+                .map(|(level, (free, value, size))| {
+                    if free {
+                        let mut par = new_freevar_par(level as i32, Vec::new());
+                        par.connective_used = true;
+                        par
+                    } else {
+                        Par {
+                            exprs: vec![new_gint_expr(value); size],
+                            ..Default::default()
+                        }
+                    }
+                })
+                .collect();
+            let mut by_reference = SpatialMatcherContext::new();
+            let folded = by_reference.fold_match(&targets, &patterns, None);
+            let mut copied = SpatialMatcherContext::new();
+            let walked = (|| {
+                for (target, pattern) in targets.iter().zip(&patterns) {
+                    copied.spatial_match(target.clone(), pattern.clone())?;
+                }
+                (targets.len() == patterns.len()).then(Vec::new)
+            })();
+            proptest::prop_assert_eq!(folded, walked);
+            proptest::prop_assert_eq!(by_reference.free_map, copied.free_map);
         }
     }
 }

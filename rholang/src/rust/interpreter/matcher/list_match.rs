@@ -93,8 +93,12 @@ macro_rules! list_match {
                     Some(())
                 } else if plen == 0 && remainder.is_some() {
                     for target in &tlist {
-                        self.reserve_clone(target)?;
-                        if !self.locally_free(target.to_owned(), 0).is_empty() {
+                        // Changed by D-D2 (D-M8, DR-104): the predicate reads the target
+                        // by reference, so an inspection replaces the copy.
+                        // self.reserve_clone(target)?;
+                        // if !self.locally_free(target.to_owned(), 0).is_empty() {
+                        self.reserve_inspect(target)?;
+                        if !self.locally_free_is_empty(target, 0) {
                             return None;
                         }
                     }
@@ -237,8 +241,12 @@ macro_rules! list_match {
               fn match_function(&mut self, pattern: Pattern<$type>, t: $type) -> Option<FreeMap> {
                 let match_effect: Option<()> = match pattern {
                   Pattern::Term(p) => {
-                     self.reserve_clone(&p)?;
-                     if !self.connective_used(p.clone()) {
+                     // Changed by D-D2 (D-M8, DR-104): the predicate reads the pattern
+                     // by reference, so an inspection replaces the copy.
+                     // self.reserve_clone(&p)?;
+                     // if !self.connective_used(p.clone()) {
+                     self.reserve_inspect(&p)?;
+                     if !self.connective_used_ref(&p) {
                          self.reserve_inspect(&t)?;
                          self.reserve_inspect(&p)?;
                          guard(t == p)
@@ -248,7 +256,10 @@ macro_rules! list_match {
                   }
                   Pattern::Remainder(_) => {
                       self.reserve_inspect(&t)?;
-                      guard(self.locally_free(t, 0).is_empty())
+                      // Changed by D-D2 (D-M8, DR-104): the predicate reads the target
+                      // by reference and builds no union bitset.
+                      // guard(self.locally_free(t, 0).is_empty())
+                      guard(self.locally_free_is_empty(&t, 0))
                   }
                 };
 

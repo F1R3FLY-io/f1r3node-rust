@@ -270,6 +270,20 @@ pub fn no_frees_exprs(exprs: &[Expr]) -> Vec<Expr> {
         .collect()
 }
 
+/// D-D2 (DR-104): [`no_frees_exprs`] in place. It keeps the same expressions in
+/// the same order without copying them (`MatcherReadsByReference.retain_equals_filter`).
+pub fn retain_no_frees(exprs: &mut Vec<Expr>) {
+    exprs.retain(|expr| match &expr.expr_instance {
+        Some(EVarBody(EVar { v: Some(v) })) => match &v.var_instance {
+            Some(FreeVar(_)) => false,
+            Some(Wildcard(_)) => false,
+            _ => true,
+        },
+
+        _ => true,
+    });
+}
+
 // See shared/src/main/scala/coop/rchain/catscontrib/Alternative_.scala - guard
 pub fn guard(condition: bool) -> Option<()> {
     if condition {
