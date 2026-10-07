@@ -5,6 +5,7 @@ mod crypto_channels_spec;
 mod demo_verification;
 mod deploy_data_spec;
 mod external_services;
+mod fs_native_urn_filter_spec;
 mod getsubtrie_spec;
 mod interpreter_spec;
 mod matcher;
