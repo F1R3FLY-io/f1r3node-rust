@@ -31,6 +31,7 @@ evidence:
 step_0:
   title: "Register the pending CbC claim and classify the files"
   done: false
+  claim_registered: "2026-10-07: docs/claims/casper-buffer-release.md, CLAIM-CASPER-BUFFER-001, status pending. /cbc identify is still open."
   acceptance:
     - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 with status pending. The claim states three properties. Release liveness: a buffered block whose dependencies are all validated is released for processing. No stale hold: a released block is not dropped as already processed. Release order: a released block is processed before a gossip block that entered the queue after the release, and gossip still progresses."
     - "/cbc identify classifies the touched files. Each one is cbc=mandatory, or a maintainer decision records why it stays untagged."
