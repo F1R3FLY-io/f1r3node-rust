@@ -41,9 +41,23 @@ behaviors:
     statement: "Releasing a parked block records the time that the block was parked"
     priority: must
     deep_module: false
-    done: false
+    done: true
     notes: "Histogram casper.buffer.park.time, observed when a parked block is released. Tracer bullet: it proves the release path end to end and gives the soak its first missing measurement."
-    cycle_log: []
+    cycle_log:
+      - date: 2026-10-07
+        tracer: true
+        test: "block-storage atomic_buffer_dag_transition::releasing_a_parked_block_records_its_park_time"
+        red: "left: 0, right: 1. Removing the last missing parent released the child but recorded no park time."
+        green: "CasperBufferKeyValueStorage records casper.buffer.park.time (seconds, source f1r3fly.casper.casper-buffer) for each child that a parent removal releases, from the child's existing first_seen_ms entry, before that entry is deleted. put_pendant uses a non-recording removal, so a block that never parked records nothing."
+        files:
+          - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
+          - block-storage/tests/atomic_buffer_dag_transition.rs
+          - block-storage/Cargo.toml
+        suite: "block-storage: every target passed (201 tests). clippy -D warnings clean. casper --test mod blocks:: and sync::recovery_purge_race: 36 passed."
+        observations:
+          - "The park time starts at first_seen_ms, which add_relation already sets for the child, so the change adds no clock."
+          - "The release point is the buffer, not the processing queue. B2 measures the queue wait that follows the release."
+          - "A release through buffer_dag_transition (the atomic DAG insert and buffer removal) records the park time too, because it calls remove_unlocked."
   - id: B2
     statement: "A released block records the time from its release to the start of its processing"
     priority: must

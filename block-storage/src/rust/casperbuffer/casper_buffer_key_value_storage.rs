@@ -14,6 +14,9 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use crate::rust::util::doubly_linked_dag_operations::BlockDependencyDag;
 
+pub const CASPER_BUFFER_PARK_TIME_METRIC: &str = "casper.buffer.park.time";
+const CASPER_BUFFER_METRICS_SOURCE: &str = "f1r3fly.casper.casper-buffer";
+
 /**
  * @param parentsStore - persistent map {hash -> parents set}
  * @param blockDependencyDag - in-memory dependency DAG, recreated from parentsStore on node startup
@@ -95,6 +98,14 @@ impl CasperBufferKeyValueStorage {
     /// half of the (dag.insert, buffer.remove) pair under a shared
     /// critical section.
     pub(crate) fn remove_unlocked(&self, hash: BlockHashSerde) -> Result<(), KvStoreError> {
+        self.remove_unlocked_recording(hash, true)
+    }
+
+    fn remove_unlocked_recording(
+        &self,
+        hash: BlockHashSerde,
+        record_release: bool,
+    ) -> Result<(), KvStoreError> {
         let (_hashes_affected, hashes_removed, orphaned_hashes, affected_parent_maps) = {
             let mut dag = self
                 .block_dependency_dag
@@ -116,6 +127,15 @@ impl CasperBufferKeyValueStorage {
             (affected, removed, orphaned, affected_maps)
         };
         self.first_seen_ms.remove(&hash);
+        if record_release {
+            let now_ms = Self::now_millis();
+            for released in &hashes_removed {
+                if let Some(parked_at) = self.first_seen_ms.get(released) {
+                    metrics::histogram!(CASPER_BUFFER_PARK_TIME_METRIC, "source" => CASPER_BUFFER_METRICS_SOURCE)
+                        .record(now_ms.saturating_sub(*parked_at) as f64 / 1000.0);
+                }
+            }
+        }
 
         // Process each affected hash
         let changes = affected_parent_maps;
@@ -146,7 +166,7 @@ impl CasperBufferKeyValueStorage {
         let _guard = self.write_guard();
         let temp_block = BlockHashSerde(prost::bytes::Bytes::from_static(b"tempblock"));
         self.add_relation_unlocked(temp_block.clone(), block)?;
-        self.remove_unlocked(temp_block)?;
+        self.remove_unlocked_recording(temp_block, false)?;
         Ok(())
     }
 
