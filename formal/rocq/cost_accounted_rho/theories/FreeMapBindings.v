@@ -1,5 +1,7 @@
 (* D-D1a (epic 8946, Phase D; decision record DR-103, part 1): a free-variable
-   binding charges B-tree bounds instead of whole-map walks.
+   binding charges B-tree bounds instead of whole-map walks. Part 2 (D-D1b),
+   at the end of this file, proves that a remainder binding can merge in
+   place.
 
    The matcher binds each free variable in a free map, a standard BTreeMap
    from i32 levels to Par bindings. Before DR-103, each binding charged a walk
@@ -443,3 +445,155 @@ Proof. vm_compute. lia. Qed.
 Theorem twelve_byte_header_undercounts_internal_split :
   12 * slot_bytes + 12 * edge_bytes + 12 * link_bytes + 12 < level_work (level true 11 0).
 Proof. vm_compute. lia. Qed.
+
+(* Part 2 (D-D1b; DR-103, part 2): a remainder binding merges in place.
+
+   handle_remainder merges the remainder of a pattern into the binding at its
+   level. Before D-D1b it copied the binding, or started a new one, merged the
+   copy, reserved the insert and inserted the copy, so a rejected merge left
+   the free map unchanged. The in-place merge changes the stored binding, and
+   only a new binding is inserted, after its merge and its insert
+   reservation. A merger is a sequence of reservations, each of which the
+   meter can reject, and assignments to the binding.
+
+   - If every merger assigns after all its reservations (assigns_last) and
+     the budget admits the insert, the in-place merge gives the free map of
+     the copy merge (in_place_merge_equals_copy_merge).
+   - A rejected in-place merge leaves the free map unchanged
+     (rejected_merge_leaves_map).
+   - Negative control: a merger that assigns before a rejected reservation
+     changes the stored binding in place, while the copy merge leaves it
+     (assign_first_merge_changes_map_on_rejection).
+
+   Rust correspondence: handle_remainder in list_match.rs; the ten field
+   mergers of a Par remainder, merge_set_remainder and merge_map_remainder in
+   spatial_matcher.rs. *)
+
+Section InPlaceMerge.
+  Variable K V : Type.
+  Variable key_eq_dec : forall a b : K, {a = b} + {a <> b}.
+
+  Inductive merge_step :=
+  | Reserve (accepted : bool)
+  | Assign (update : V -> V).
+
+  (* The value after the steps that ran, and whether every reservation was
+     accepted. A rejected reservation stops the merger. *)
+  Fixpoint run (steps : list merge_step) (value : V) : V * bool :=
+    match steps with
+    | [] => (value, true)
+    | Reserve true :: rest => run rest value
+    | Reserve false :: _ => (value, false)
+    | Assign update :: rest => run rest (update value)
+    end.
+
+  Definition is_assign (step : merge_step) : Prop :=
+    match step with Assign _ => True | Reserve _ => False end.
+
+  Fixpoint assigns_last (steps : list merge_step) : Prop :=
+    match steps with
+    | [] => True
+    | Reserve _ :: rest => assigns_last rest
+    | Assign _ :: rest => Forall is_assign rest
+    end.
+
+  Lemma assigns_only_accept : forall steps value,
+    Forall is_assign steps -> snd (run steps value) = true.
+  Proof.
+    induction steps as [| [[|] | update] rest IH]; intros value Hall; cbn [run].
+    - reflexivity.
+    - inversion Hall as [| ? ? Hstep]; contradiction.
+    - inversion Hall as [| ? ? Hstep]; contradiction.
+    - inversion Hall as [| ? ? Hstep Hrest]; subst. apply IH. exact Hrest.
+  Qed.
+
+  Lemma rejected_run_keeps_value : forall steps value,
+    assigns_last steps -> snd (run steps value) = false -> fst (run steps value) = value.
+  Proof.
+    induction steps as [| [[|] | update] rest IH]; intros value Hlast Hrejected; cbn [run] in *.
+    - discriminate.
+    - apply IH; assumption.
+    - reflexivity.
+    - rewrite (assigns_only_accept rest (update value) Hlast) in Hrejected. discriminate.
+  Qed.
+
+  Lemma run_accepted_insert : forall steps value,
+    run (steps ++ [Reserve true]) value = run steps value.
+  Proof.
+    induction steps as [| [[|] | update] rest IH]; intros value; cbn [run app]; auto.
+  Qed.
+
+  Definition update_map (map : K -> option V) (key : K) (value : V) : K -> option V :=
+    fun other => if key_eq_dec key other then Some value else map other.
+
+  (* Before D-D1b: merge a copy, reserve the insert, then insert. *)
+  Definition copy_merge (steps : list merge_step) (insert_accepted : bool)
+    (map : K -> option V) (key : K) (fresh : V) : K -> option V :=
+    let start := match map key with Some value => value | None => fresh end in
+    let (merged, accepted) := run (steps ++ [Reserve insert_accepted]) start in
+    if accepted then update_map map key merged else map.
+
+  (* D-D1b: merge an existing binding in place; merge a new binding, reserve
+     its insert, then insert it. *)
+  Definition in_place_merge (steps : list merge_step) (insert_accepted : bool)
+    (map : K -> option V) (key : K) (fresh : V) : K -> option V :=
+    match map key with
+    | Some value => update_map map key (fst (run steps value))
+    | None =>
+        let (merged, accepted) := run (steps ++ [Reserve insert_accepted]) fresh in
+        if accepted then update_map map key merged else map
+    end.
+
+  Definition in_place_accepted (steps : list merge_step) (insert_accepted : bool)
+    (map : K -> option V) (key : K) (fresh : V) : bool :=
+    match map key with
+    | Some value => snd (run steps value)
+    | None => snd (run (steps ++ [Reserve insert_accepted]) fresh)
+    end.
+
+  Theorem in_place_merge_equals_copy_merge : forall steps map key fresh other,
+    assigns_last steps ->
+    in_place_merge steps true map key fresh other = copy_merge steps true map key fresh other.
+  Proof.
+    intros steps map key fresh other Hlast.
+    unfold in_place_merge, copy_merge.
+    destruct (map key) as [value |] eqn:Hstored; [| reflexivity].
+    rewrite run_accepted_insert.
+    destruct (run steps value) as [merged accepted] eqn:Hrun. cbn [fst].
+    destruct accepted; [reflexivity |].
+    pose proof (rejected_run_keeps_value steps value Hlast) as Hkeep.
+    rewrite Hrun in Hkeep. cbn [fst snd] in Hkeep. specialize (Hkeep eq_refl). subst merged.
+    unfold update_map. destruct (key_eq_dec key other) as [Hsame | Hdiff].
+    - subst other. symmetry. exact Hstored.
+    - reflexivity.
+  Qed.
+
+  Theorem rejected_merge_leaves_map : forall steps insert_accepted map key fresh other,
+    assigns_last steps ->
+    in_place_accepted steps insert_accepted map key fresh = false ->
+    in_place_merge steps insert_accepted map key fresh other = map other.
+  Proof.
+    intros steps insert_accepted map key fresh other Hlast Hrejected.
+    unfold in_place_accepted in Hrejected. unfold in_place_merge.
+    destruct (map key) as [value |] eqn:Hstored.
+    - rewrite (rejected_run_keeps_value steps value Hlast Hrejected).
+      unfold update_map. destruct (key_eq_dec key other) as [Hsame | Hdiff].
+      + subst other. symmetry. exact Hstored.
+      + reflexivity.
+    - destruct (run (steps ++ [Reserve insert_accepted]) fresh) as [merged accepted] eqn:Hrun.
+      cbn [snd] in Hrejected. subst accepted. reflexivity.
+  Qed.
+End InPlaceMerge.
+
+Arguments Reserve {V} accepted.
+Arguments Assign {V} update.
+
+(* Negative control: a merger that assigns before a rejected reservation
+   changes the stored binding in place, while the copy merge leaves it. *)
+Theorem assign_first_merge_changes_map_on_rejection :
+  let steps := [Assign S; Reserve false] in
+  let map := fun key : nat => if Nat.eqb key 0 then Some 0 else None in
+  in_place_accepted nat nat steps true map 0 0 = false
+  /\ in_place_merge nat nat Nat.eq_dec steps true map 0 0 0 = Some 1
+  /\ copy_merge nat nat Nat.eq_dec steps true map 0 0 0 = Some 0.
+Proof. vm_compute. repeat split; reflexivity. Qed.

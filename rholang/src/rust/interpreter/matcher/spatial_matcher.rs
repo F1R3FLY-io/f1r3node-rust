@@ -225,6 +225,77 @@ const _: () = assert!(
         == 3_832
 );
 
+/// D-D1b (DR-103): merges the remainder of a set pattern into its binding in
+/// place. Every reservation comes before the one assignment, so a rejected
+/// merge leaves the binding unchanged (`FreeMapBindings.rejected_merge_leaves_map`).
+pub(super) fn merge_set_remainder(p: &mut Par, r: Vec<Par>, work: &MatcherWork<'_>) -> Option<()> {
+    let mut unique = Vec::new();
+    for element in r {
+        work.reserve_inspect(&element)?;
+        work.reserve_inspect(&unique)?;
+        if !unique.contains(&element) {
+            work.reserve_vec(&mut unique, 1)?;
+            unique.push(element);
+        }
+    }
+    let mut exprs = Vec::new();
+    work.reserve_vec(&mut exprs, 1)?;
+    exprs.push(Expr {
+        expr_instance: Some(ESetBody(ESet {
+            ps: unique,
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+    });
+    p.exprs = exprs;
+    Some(())
+}
+
+/// D-D1b (DR-103): merges the remainder of a map pattern into its binding in
+/// place. Every reservation comes before the one assignment, so a rejected
+/// merge leaves the binding unchanged (`FreeMapBindings.rejected_merge_leaves_map`).
+pub(super) fn merge_map_remainder(
+    p: &mut Par,
+    r: Vec<(Par, Par)>,
+    work: &MatcherWork<'_>,
+) -> Option<()> {
+    let mut unique = Vec::new();
+    for (key, value) in r {
+        work.reserve_inspect(&key)?;
+        work.reserve_inspect(&unique)?;
+        if let Some(index) = unique
+            .iter()
+            .position(|(existing, _): &(Par, Par)| existing == &key)
+        {
+            unique[index].1 = value;
+        } else {
+            work.reserve_vec(&mut unique, 1)?;
+            unique.push((key, value));
+        }
+    }
+    let mut kvs = Vec::new();
+    work.reserve_vec(&mut kvs, unique.len())?;
+    for (key, value) in unique {
+        kvs.push(KeyValuePair {
+            key: Some(key),
+            value: Some(value),
+        });
+    }
+    let mut exprs = Vec::new();
+    work.reserve_vec(&mut exprs, 1)?;
+    exprs.push(Expr {
+        expr_instance: Some(EMapBody(EMap {
+            kvs,
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+    });
+    p.exprs = exprs;
+    Some(())
+}
+
 #[derive(Clone)]
 pub struct SpatialMatcherContext<'a> {
     pub free_map: FreeMap,
@@ -498,9 +569,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
             self.list_match_single_(
                 remainder.sends,
                 pattern.sends,
-                &|mut p, s, _| {
+                &|p, s, _| {
                     p.sends = s;
-                    Some(p)
+                    Some(())
                 },
                 var_level,
                 wildcard,
@@ -509,9 +580,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.receives,
                     pattern.receives,
-                    &|mut p, s, _| {
+                    &|p, s, _| {
                         p.receives = s;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -521,9 +592,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.news,
                     pattern.news,
-                    &|mut p, s, _| {
+                    &|p, s, _| {
                         p.news = s;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -534,9 +605,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.exprs,
                     no_frees_exprs(&pattern.exprs),
-                    &|mut p, s, _| {
+                    &|p, s, _| {
                         p.exprs = s;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -546,9 +617,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.matches,
                     pattern.matches,
-                    &|mut p, s, _| {
+                    &|p, s, _| {
                         p.matches = s;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -558,9 +629,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.bundles,
                     pattern.bundles,
-                    &|mut p, s, _| {
+                    &|p, s, _| {
                         p.bundles = s;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -570,9 +641,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.unforgeables,
                     pattern.unforgeables,
-                    &|mut p, s, _| {
+                    &|p, s, _| {
                         p.unforgeables = s;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -582,9 +653,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.conditionals,
                     pattern.conditionals,
-                    &|mut p, values, _| {
+                    &|p, values, _| {
                         p.conditionals = values;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -594,9 +665,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.cost_signed_terms,
                     pattern.cost_signed_terms,
-                    &|mut p, values, _| {
+                    &|p, values, _| {
                         p.cost_signed_terms = values;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -606,9 +677,9 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 self.list_match_single_(
                     remainder.cost_stacks,
                     pattern.cost_stacks,
-                    &|mut p, values, _| {
+                    &|p, values, _| {
                         p.cost_stacks = values;
-                        Some(p)
+                        Some(())
                     },
                     var_level,
                     wildcard,
@@ -788,34 +859,36 @@ impl<'a> SpatialMatcher<Expr, Expr> for SpatialMatcherContext<'a> {
                     Err(_) => return self.reject(RSpaceError::HostWorkRejected),
                 };
 
-                let merger = |mut p: Par, r: Vec<Par>, work: &MatcherWork<'_>| {
-                    let mut unique = Vec::new();
-                    for element in r {
-                        work.reserve_inspect(&element)?;
-                        work.reserve_inspect(&unique)?;
-                        if !unique.contains(&element) {
-                            work.reserve_vec(&mut unique, 1)?;
-                            unique.push(element);
-                        }
-                    }
-                    let mut exprs = Vec::new();
-                    work.reserve_vec(&mut exprs, 1)?;
-                    exprs.push(Expr {
-                        expr_instance: Some(ESetBody(ESet {
-                            ps: unique,
-                            locally_free: Vec::new(),
-                            connective_used: false,
-                            remainder: None,
-                        })),
-                    });
-                    p.exprs = exprs;
-                    Some(p)
-                };
+                // Changed by D-D1b (D-M2, DR-103): the merger takes the binding by
+                // reference and merges it in place (merge_set_remainder).
+                // let merger = |mut p: Par, r: Vec<Par>, work: &MatcherWork<'_>| {
+                //     let mut unique = Vec::new();
+                //     for element in r {
+                //         work.reserve_inspect(&element)?;
+                //         work.reserve_inspect(&unique)?;
+                //         if !unique.contains(&element) {
+                //             work.reserve_vec(&mut unique, 1)?;
+                //             unique.push(element);
+                //         }
+                //     }
+                //     let mut exprs = Vec::new();
+                //     work.reserve_vec(&mut exprs, 1)?;
+                //     exprs.push(Expr {
+                //         expr_instance: Some(ESetBody(ESet {
+                //             ps: unique,
+                //             locally_free: Vec::new(),
+                //             connective_used: false,
+                //             remainder: None,
+                //         })),
+                //     });
+                //     p.exprs = exprs;
+                //     Some(p)
+                // };
 
                 self.list_match_single_(
                     tlist.sorted_pars,
                     plist.sorted_pars,
-                    &merger,
+                    &merge_set_remainder,
                     remainder_var_opt,
                     is_wildcard,
                 )
@@ -849,47 +922,49 @@ impl<'a> SpatialMatcher<Expr, Expr> for SpatialMatcherContext<'a> {
                     Err(_) => return self.reject(RSpaceError::HostWorkRejected),
                 };
 
-                let merger = |mut p: Par, r: Vec<(Par, Par)>, work: &MatcherWork<'_>| {
-                    let mut unique = Vec::new();
-                    for (key, value) in r {
-                        work.reserve_inspect(&key)?;
-                        work.reserve_inspect(&unique)?;
-                        if let Some(index) = unique
-                            .iter()
-                            .position(|(existing, _): &(Par, Par)| existing == &key)
-                        {
-                            unique[index].1 = value;
-                        } else {
-                            work.reserve_vec(&mut unique, 1)?;
-                            unique.push((key, value));
-                        }
-                    }
-                    let mut kvs = Vec::new();
-                    work.reserve_vec(&mut kvs, unique.len())?;
-                    for (key, value) in unique {
-                        kvs.push(KeyValuePair {
-                            key: Some(key),
-                            value: Some(value),
-                        });
-                    }
-                    let mut exprs = Vec::new();
-                    work.reserve_vec(&mut exprs, 1)?;
-                    exprs.push(Expr {
-                        expr_instance: Some(EMapBody(EMap {
-                            kvs,
-                            locally_free: Vec::new(),
-                            connective_used: false,
-                            remainder: None,
-                        })),
-                    });
-                    p.exprs = exprs;
-                    Some(p)
-                };
+                // Changed by D-D1b (D-M2, DR-103): the merger takes the binding by
+                // reference and merges it in place (merge_map_remainder).
+                // let merger = |mut p: Par, r: Vec<(Par, Par)>, work: &MatcherWork<'_>| {
+                //     let mut unique = Vec::new();
+                //     for (key, value) in r {
+                //         work.reserve_inspect(&key)?;
+                //         work.reserve_inspect(&unique)?;
+                //         if let Some(index) = unique
+                //             .iter()
+                //             .position(|(existing, _): &(Par, Par)| existing == &key)
+                //         {
+                //             unique[index].1 = value;
+                //         } else {
+                //             work.reserve_vec(&mut unique, 1)?;
+                //             unique.push((key, value));
+                //         }
+                //     }
+                //     let mut kvs = Vec::new();
+                //     work.reserve_vec(&mut kvs, unique.len())?;
+                //     for (key, value) in unique {
+                //         kvs.push(KeyValuePair {
+                //             key: Some(key),
+                //             value: Some(value),
+                //         });
+                //     }
+                //     let mut exprs = Vec::new();
+                //     work.reserve_vec(&mut exprs, 1)?;
+                //     exprs.push(Expr {
+                //         expr_instance: Some(EMapBody(EMap {
+                //             kvs,
+                //             locally_free: Vec::new(),
+                //             connective_used: false,
+                //             remainder: None,
+                //         })),
+                //     });
+                //     p.exprs = exprs;
+                //     Some(p)
+                // };
 
                 self.list_match_single_(
                     tlist.sorted_list,
                     plist.sorted_list,
-                    &merger,
+                    &merge_map_remainder,
                     remainder_var_opt,
                     is_wildcard,
                 )

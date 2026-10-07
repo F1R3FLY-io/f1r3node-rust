@@ -33,7 +33,7 @@ pub(super) trait ListMatch<T: Clone> {
         &mut self,
         tlist: Vec<T>,
         plist: Vec<T>,
-        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
+        merger: &dyn Fn(&mut Par, Vec<T>, &MatcherWork<'_>) -> Option<()>,
         remainder: Option<i32>,
         wildcard: bool,
     ) -> Option<()>;
@@ -43,7 +43,7 @@ pub(super) trait ListMatch<T: Clone> {
         &mut self,
         targets: Vec<T>,
         patterns: Vec<T>,
-        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
+        merger: &dyn Fn(&mut Par, Vec<T>, &MatcherWork<'_>) -> Option<()>,
         remainder: Option<i32>,
         wildcard: bool,
     ) -> Option<()>;
@@ -53,7 +53,7 @@ pub(super) trait ListMatch<T: Clone> {
         &mut self,
         remainder_targets: Vec<T>,
         level: i32,
-        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
+        merger: &dyn Fn(&mut Par, Vec<T>, &MatcherWork<'_>) -> Option<()>,
     ) -> Option<()>;
 
     fn match_function(&mut self, pattern: Pattern<T>, t: T) -> Option<FreeMap>;
@@ -67,7 +67,7 @@ macro_rules! list_match {
           impl<'a> ListMatch<$type> for SpatialMatcherContext<'a> {
               // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - listMatchSingle
               fn list_match_single(&mut self, tlist: Vec<$type>, plist: Vec<$type>) -> Option<()> {
-                let _merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par> = &|p, _, _| Some(p);
+                let _merger: &dyn Fn(&mut Par, Vec<$type>, &MatcherWork<'_>) -> Option<()> = &|_, _, _| Some(());
 
                 self.list_match_single_(tlist, plist, _merger, None, false)
               }
@@ -77,7 +77,7 @@ macro_rules! list_match {
                   &mut self,
                   tlist: Vec<$type>,
                   plist: Vec<$type>,
-                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
+                  merger: &dyn Fn(&mut Par, Vec<$type>, &MatcherWork<'_>) -> Option<()>,
                   remainder: Option<i32>,
                   wildcard: bool,
               ) -> Option<()> {
@@ -109,7 +109,7 @@ macro_rules! list_match {
                   &mut self,
                   targets: Vec<$type>,
                   patterns: Vec<$type>,
-                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
+                  merger: &dyn Fn(&mut Par, Vec<$type>, &MatcherWork<'_>) -> Option<()>,
                   remainder: Option<i32>,
                   wildcard: bool,
               ) -> Option<()> {
@@ -181,22 +181,26 @@ macro_rules! list_match {
                   &mut self,
                   remainder_targets: Vec<$type>,
                   level: i32,
-                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
+                  merger: &dyn Fn(&mut Par, Vec<$type>, &MatcherWork<'_>) -> Option<()>,
               ) -> Option<()> {
                 // Changed by D-D1a (D-M2, DR-103): one B-tree search reads one
                 // root-to-leaf path of i32 keys, not the whole map.
                 // self.reserve_inspect(&self.free_map)?;
                 self.reserve_free_map_search(self.free_map.len())?;
-                let remainder_par = match self.free_map.get(&level) {
-                    Some(par) => {
-                        self.reserve_clone(par)?;
-                        par.clone()
-                    }
-                    None => vector_par(Vec::new(), false),
-                };
-
-                let work = self.work()?;
-                let remainder_par_updated = merger(remainder_par, remainder_targets, &work)?;
+                // Changed by D-D1b (D-M2, DR-103): an existing binding is merged in
+                // place, without a copy, and a new binding is inserted only after its
+                // merge. Each merger assigns after all its reservations, so a rejected
+                // merge leaves the free map unchanged.
+                // let remainder_par = match self.free_map.get(&level) {
+                //     Some(par) => {
+                //         self.reserve_clone(par)?;
+                //         par.clone()
+                //     }
+                //     None => vector_par(Vec::new(), false),
+                // };
+                //
+                // let work = self.work()?;
+                // let remainder_par_updated = merger(remainder_par, remainder_targets, &work)?;
 
                 // Changed by D-D1a (D-M2, DR-103): whole-tree backing on every insert,
                 // the pattern DR-77 replaced; the insert now charges its search, its
@@ -208,8 +212,19 @@ macro_rules! list_match {
                 //     return self.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
                 // };
                 // self.reserve(operations, bytes, bytes)?;
-                self.reserve_free_map_insert(self.free_map.len())?;
-                self.free_map.insert(level, remainder_par_updated);
+                // Changed by D-D1b (D-M2, DR-103): only a new binding is inserted.
+                // self.reserve_free_map_insert(self.free_map.len())?;
+                // self.free_map.insert(level, remainder_par_updated);
+                let work = self.work()?;
+                match self.free_map.get_mut(&level) {
+                    Some(par) => merger(par, remainder_targets, &work)?,
+                    None => {
+                        let mut par = vector_par(Vec::new(), false);
+                        merger(&mut par, remainder_targets, &work)?;
+                        self.reserve_free_map_insert(self.free_map.len())?;
+                        self.free_map.insert(level, par);
+                    }
+                }
 
                 Some(())
               }
@@ -278,18 +293,27 @@ pub(super) fn aggregate_updates(
 #[cfg(test)]
 mod metered_tests {
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
+    use models::rhoapi::expr::ExprInstance::{EMapBody, ESetBody};
+    use models::rhoapi::{
+        Bundle, CostSignedTerm, CostStack, EMap, ESet, Expr, GUnforgeable, If, KeyValuePair, Match,
+        Receive,
+    };
     use rspace_plus_plus::rspace::errors::RSpaceError;
 
-    use super::super::spatial_matcher::SpatialMatcherContext;
+    use super::super::spatial_matcher::{
+        merge_map_remainder, merge_set_remainder, SpatialMatcherContext,
+    };
     use super::*;
+    use crate::rust::interpreter::accounting::random_par_term as term;
 
     fn run(context: &mut SpatialMatcherContext<'_>) -> Option<()> {
         context.list_match_single_(
             vec![Par::default(); 2],
             vec![Par::default()],
-            &|par, _, _| Some(par),
+            &|_, _, _| Some(()),
             Some(0),
             false,
         )
@@ -359,10 +383,10 @@ mod metered_tests {
         };
         let mut context = SpatialMatcherContext::with_meter(&meter).unwrap();
         let materialized = Cell::new(false);
-        let merger = |par: Par, _: Vec<Par>, work: &MatcherWork<'_>| {
+        let merger = |_: &mut Par, _: Vec<Par>, work: &MatcherWork<'_>| {
             work.reserve(1, 0, 4096)?;
             materialized.set(true);
-            Some(par)
+            Some(())
         };
         assert!(context
             .handle_remainder(vec![Par::default()], 0, &merger)
@@ -412,7 +436,7 @@ mod metered_tests {
         charge_of(|context| {
             context.free_map = free_map;
             context
-                .handle_remainder(vec![Par::default()], 0, &|par, _, _| Some(par))
+                .handle_remainder(vec![Par::default()], 0, &|_, _, _| Some(()))
                 .expect("the remainder binds");
         })
     }
@@ -545,6 +569,334 @@ mod metered_tests {
                 );
             }
             proptest::prop_assert!(allocated > 0, "the counting allocator saw the nodes");
+        }
+    }
+
+    /// D-D1b (DR-103): merging into an existing binding charges no copy of
+    /// that binding.
+    #[test]
+    fn in_place_merge_charge_is_independent_of_the_existing_binding() {
+        let charges = [8usize, 512].map(|size| {
+            let mut free_map = bindings(&[1, 2], 8);
+            free_map.insert(0, payload(size));
+            remainder_charge(free_map)
+        });
+        assert_eq!(charges[0], charges[1]);
+    }
+
+    /// Negative control: the copy merge before D-D1b charged a copy and a
+    /// cleanup of the existing binding, so its charge grew with the binding.
+    #[test]
+    fn legacy_copy_merge_charge_grew_with_the_existing_binding() {
+        let copy_charge = |par: &Par| {
+            let totals = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut sum = totals.lock().expect("totals lock");
+                for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                    *total += amount;
+                }
+                Ok::<(), BackingError>(())
+            };
+            shared::rust::clone_backing::reserve_copy_and_cleanup(par, &meter)
+                .expect("legacy copy charge");
+            totals.into_inner().expect("totals lock")
+        };
+        let small = copy_charge(&payload(8));
+        let large = copy_charge(&payload(512));
+        assert!(large[1] > small[1]);
+        assert!(large[2] > small[2]);
+    }
+
+    /// Negative control (`FreeMapBindings.assign_first_merge_changes_map_on_rejection`):
+    /// a merger that assigns before a rejected reservation changes the binding
+    /// in place, so the in-place merge needs every merger to assign last.
+    #[test]
+    fn assign_first_merger_changes_the_binding_on_rejection() {
+        let meter = |_: usize, _: usize, backing: usize| {
+            if backing >= 4096 {
+                Err(RSpaceError::HostWorkRejected)
+            } else {
+                Ok(())
+            }
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let existing = payload(2);
+        context.free_map.insert(0, existing.clone());
+        let assign_first = |par: &mut Par, _: Vec<Par>, work: &MatcherWork<'_>| {
+            par.exprs = Vec::new();
+            work.reserve(1, 0, 4096)?;
+            Some(())
+        };
+        assert!(context
+            .handle_remainder(vec![Par::default()], 0, &assign_first)
+            .is_none());
+        assert_ne!(context.free_map.get(&0), Some(&existing));
+        let assign_last = |par: &mut Par, _: Vec<Par>, work: &MatcherWork<'_>| {
+            work.reserve(1, 0, 4096)?;
+            par.exprs = Vec::new();
+            Some(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        context.free_map.insert(0, existing.clone());
+        assert!(context
+            .handle_remainder(vec![Par::default()], 0, &assign_last)
+            .is_none());
+        assert_eq!(context.free_map.get(&0), Some(&existing));
+    }
+
+    /// The remainder merge before D-D1b, frozen as the oracle: copy the binding
+    /// at the level, or start a new one, merge the copy, then insert it.
+    fn legacy_copy_merge<T>(
+        free_map: &FreeMap,
+        targets: Vec<T>,
+        level: i32,
+        merger: &dyn Fn(Par, Vec<T>) -> Option<Par>,
+    ) -> Option<FreeMap> {
+        let start = match free_map.get(&level) {
+            Some(par) => par.clone(),
+            None => models::rust::rholang::implicits::vector_par(Vec::new(), false),
+        };
+        let merged = merger(start, targets)?;
+        let mut result = free_map.clone();
+        result.insert(level, merged);
+        Some(result)
+    }
+
+    /// The set merger before D-D1b, frozen as the oracle.
+    fn legacy_merge_set_remainder(mut p: Par, r: Vec<Par>, work: &MatcherWork<'_>) -> Option<Par> {
+        let mut unique = Vec::new();
+        for element in r {
+            work.reserve_inspect(&element)?;
+            work.reserve_inspect(&unique)?;
+            if !unique.contains(&element) {
+                work.reserve_vec(&mut unique, 1)?;
+                unique.push(element);
+            }
+        }
+        let mut exprs = Vec::new();
+        work.reserve_vec(&mut exprs, 1)?;
+        exprs.push(Expr {
+            expr_instance: Some(ESetBody(ESet {
+                ps: unique,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        });
+        p.exprs = exprs;
+        Some(p)
+    }
+
+    /// The map merger before D-D1b, frozen as the oracle.
+    fn legacy_merge_map_remainder(
+        mut p: Par,
+        r: Vec<(Par, Par)>,
+        work: &MatcherWork<'_>,
+    ) -> Option<Par> {
+        let mut unique = Vec::new();
+        for (key, value) in r {
+            work.reserve_inspect(&key)?;
+            work.reserve_inspect(&unique)?;
+            if let Some(index) = unique
+                .iter()
+                .position(|(existing, _): &(Par, Par)| existing == &key)
+            {
+                unique[index].1 = value;
+            } else {
+                work.reserve_vec(&mut unique, 1)?;
+                unique.push((key, value));
+            }
+        }
+        let mut kvs = Vec::new();
+        work.reserve_vec(&mut kvs, unique.len())?;
+        for (key, value) in unique {
+            kvs.push(KeyValuePair {
+                key: Some(key),
+                value: Some(value),
+            });
+        }
+        let mut exprs = Vec::new();
+        work.reserve_vec(&mut exprs, 1)?;
+        exprs.push(Expr {
+            expr_instance: Some(EMapBody(EMap {
+                kvs,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        });
+        p.exprs = exprs;
+        Some(p)
+    }
+
+    fn merged_in_place<T: Clone>(
+        free_map: &FreeMap,
+        targets: Vec<T>,
+        merger: &dyn Fn(&mut Par, Vec<T>, &MatcherWork<'_>) -> Option<()>,
+    ) -> FreeMap
+    where
+        for<'a> SpatialMatcherContext<'a>: ListMatch<T>,
+    {
+        let mut context = SpatialMatcherContext::new();
+        context.free_map = free_map.clone();
+        context
+            .handle_remainder(targets, 0, merger)
+            .expect("the remainder binds");
+        context.free_map
+    }
+
+    fn field_merge_matches_copy<T: Clone>(
+        free_map: &FreeMap,
+        targets: Vec<T>,
+        assign: fn(&mut Par, Vec<T>),
+    ) -> Result<(), proptest::test_runner::TestCaseError>
+    where
+        for<'a> SpatialMatcherContext<'a>: ListMatch<T>,
+    {
+        let in_place = merged_in_place(free_map, targets.clone(), &|par, values, _| {
+            assign(par, values);
+            Some(())
+        });
+        let copy = legacy_copy_merge(free_map, targets, 0, &|mut par, values| {
+            assign(&mut par, values);
+            Some(par)
+        })
+        .expect("the copy merge binds");
+        proptest::prop_assert_eq!(in_place, copy);
+        Ok(())
+    }
+
+    fn set_targets(elements: &[Par]) -> Vec<Par> {
+        let mut targets = elements.to_vec();
+        targets.extend(elements.first().cloned());
+        targets
+    }
+
+    fn map_targets(elements: &[Par]) -> Vec<(Par, Par)> {
+        let mut targets: Vec<(Par, Par)> = elements
+            .iter()
+            .cloned()
+            .zip(elements.iter().rev().cloned())
+            .collect();
+        targets.extend(elements.first().cloned().map(|key| (key, Par::default())));
+        targets
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+        /// D-D1b (DR-103): for each of the ten field mergers of a Par remainder,
+        /// the set merger and the map merger, the in-place merge gives the free
+        /// map of the copy merge, with and without an existing binding.
+        #[test]
+        fn remainder_merge_matches_legacy_copy_merge(
+            existing in proptest::option::of(term()),
+            others in proptest::collection::vec((1i32..6, term()), 0..3),
+            source in term(),
+            elements in proptest::collection::vec(term(), 0..4),
+            count in 0usize..3,
+        ) {
+            let mut free_map: FreeMap = others.into_iter().collect();
+            if let Some(existing) = existing {
+                free_map.insert(0, existing);
+            }
+            field_merge_matches_copy(&free_map, source.sends.clone(), |p, values| p.sends = values)?;
+            field_merge_matches_copy(&free_map, vec![Receive::default(); count], |p, values| p.receives = values)?;
+            field_merge_matches_copy(&free_map, source.news.clone(), |p, values| p.news = values)?;
+            field_merge_matches_copy(&free_map, source.exprs.clone(), |p, values| p.exprs = values)?;
+            field_merge_matches_copy(&free_map, vec![Match::default(); count], |p, values| p.matches = values)?;
+            field_merge_matches_copy(&free_map, vec![Bundle::default(); count], |p, values| p.bundles = values)?;
+            field_merge_matches_copy(&free_map, vec![GUnforgeable::default(); count], |p, values| p.unforgeables = values)?;
+            field_merge_matches_copy(&free_map, vec![If::default(); count], |p, values| p.conditionals = values)?;
+            field_merge_matches_copy(&free_map, vec![CostSignedTerm::default(); count], |p, values| p.cost_signed_terms = values)?;
+            field_merge_matches_copy(&free_map, vec![CostStack::default(); count], |p, values| p.cost_stacks = values)?;
+
+            let unmetered = SpatialMatcherContext::new();
+            let work = unmetered.work().expect("unmetered work");
+            let in_place = merged_in_place(&free_map, set_targets(&elements), &merge_set_remainder);
+            let copy = legacy_copy_merge(&free_map, set_targets(&elements), 0, &|par, values| {
+                legacy_merge_set_remainder(par, values, &work)
+            })
+            .expect("the copy merge binds");
+            proptest::prop_assert_eq!(in_place, copy);
+            let in_place = merged_in_place(&free_map, map_targets(&elements), &merge_map_remainder);
+            let copy = legacy_copy_merge(&free_map, map_targets(&elements), 0, &|par, values| {
+                legacy_merge_map_remainder(par, values, &work)
+            })
+            .expect("the copy merge binds");
+            proptest::prop_assert_eq!(in_place, copy);
+        }
+
+        /// D-D1b (DR-103): a set or map merge that the meter rejects at a
+        /// reservation leaves the free map unchanged, and an accepted one gives
+        /// the copy merge (`FreeMapBindings.rejected_merge_leaves_map`). Each
+        /// case counts the reservations of the whole merge, rejects at the
+        /// first 16, the last 16 and one random reservation, and then accepts
+        /// with the whole budget, so both outcomes occur in every case.
+        #[test]
+        fn rejected_remainder_merge_leaves_the_free_map(
+            existing in proptest::option::of(term()),
+            elements in proptest::collection::vec(term(), 0..4),
+            map_merge in proptest::prelude::any::<bool>(),
+            probe in proptest::prelude::any::<usize>(),
+        ) {
+            let mut free_map = FreeMap::new();
+            if let Some(existing) = existing {
+                free_map.insert(0, existing);
+            }
+            let unmetered = SpatialMatcherContext::new();
+            let work = unmetered.work().expect("unmetered work");
+            let copy = if map_merge {
+                legacy_copy_merge(&free_map, map_targets(&elements), 0, &|par, values| {
+                    legacy_merge_map_remainder(par, values, &work)
+                })
+            } else {
+                legacy_copy_merge(&free_map, set_targets(&elements), 0, &|par, values| {
+                    legacy_merge_set_remainder(par, values, &work)
+                })
+            }
+            .expect("the copy merge binds");
+            let run = |allowed: usize| {
+                let calls = AtomicUsize::new(0);
+                let meter = |_: usize, _: usize, _: usize| {
+                    if calls.fetch_add(1, Ordering::Relaxed) >= allowed {
+                        Err(RSpaceError::HostWorkRejected)
+                    } else {
+                        Ok(())
+                    }
+                };
+                let outcome = SpatialMatcherContext::with_meter(&meter).ok().map(|mut context| {
+                    context.free_map = free_map.clone();
+                    let merged = if map_merge {
+                        context.handle_remainder(map_targets(&elements), 0, &merge_map_remainder)
+                    } else {
+                        context.handle_remainder(set_targets(&elements), 0, &merge_set_remainder)
+                    };
+                    let error = context.take_error();
+                    (merged, context.free_map, error)
+                });
+                (outcome, calls.load(Ordering::Relaxed))
+            };
+            let (whole, needed) = run(usize::MAX);
+            let (merged, merged_map, _) = whole.expect("an unlimited meter admits the context");
+            proptest::prop_assert!(merged.is_some());
+            proptest::prop_assert_eq!(&merged_map, &copy);
+            let mut points: Vec<usize> = (0..needed.min(16)).collect();
+            points.extend(needed.saturating_sub(16)..needed);
+            points.push(probe % needed.max(1));
+            points.sort_unstable();
+            points.dedup();
+            let mut rejections = 0usize;
+            for allowed in points {
+                let (outcome, _) = run(allowed);
+                if let Some((merged, rejected_map, error)) = outcome {
+                    proptest::prop_assert!(merged.is_none(), "allowed {} of {}", allowed, needed);
+                    proptest::prop_assert_eq!(&rejected_map, &free_map);
+                    proptest::prop_assert!(matches!(error, Some(RSpaceError::HostWorkRejected)));
+                    rejections += 1;
+                }
+            }
+            proptest::prop_assert!(rejections > 0, "a short budget rejects the merge");
         }
     }
 }

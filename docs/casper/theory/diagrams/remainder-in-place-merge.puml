@@ -1,0 +1,78 @@
+' One remainder binding merges in place, all or nothing (DR-103 part 2,
+' Phase D item D-D1b). handle_remainder charges one search, then merges the
+' binding at the level. An existing binding is merged in place. A new binding
+' starts as an empty Par; it is inserted only after its merge and its insert
+' reservation succeed. Every merger reserves before it assigns, so each
+' rejection leaves the free map unchanged, and the callers can backtrack.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-103);
+'                  rholang/src/rust/interpreter/matcher/list_match.rs
+'                  (handle_remainder); spatial_matcher.rs (merge_set_remainder,
+'                  merge_map_remainder).
+' Formal model:    formal/rocq/cost_accounted_rho/theories/FreeMapBindings.v
+'                  (part 2: in_place_merge_equals_copy_merge,
+'                  rejected_merge_leaves_map).
+' Palette:  charges = gate teal · merger = process lilac · new binding = delta amber
+'           accepted state = pool green · rejection = reject red · input = supply blue
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/remainder-in-place-merge.puml
+'          (or: ./render.sh remainder-in-place-merge.puml)
+
+@startuml remainder-in-place-merge
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+skinparam NoteBackgroundColor $ca_note_red
+skinparam NoteBorderColor #666666
+title One remainder binding merges in place, all or nothing (DR-103 part 2)
+
+start
+:handle_remainder(targets, level, merger)\nthe targets come from charged copies with their cleanup; <<$ca_supply>>
+:reserve one free-map search\n<latex>S(n) = 11 \cdot h(n)</latex> operations and <latex>8\,S(n)</latex> scanned bytes; <<$ca_gate>>
+:reserve one operation for the merger's work context; <<$ca_gate>>
+if (is a binding b stored at the level?) then (yes)
+  :merger(b, targets) changes b in place:\nall reservations first, then the assignments; <<$ca_process>>
+  if (does a reservation reject?) then (yes)
+    :return None\nb is unchanged, so the free map is unchanged; <<$ca_rejectfill>>
+    stop
+  else (no)
+    :b holds the merged binding\nno copy of b and no drop of b; <<$ca_pool>>
+  endif
+else (no)
+  :b ← an empty Par; <<$ca_delta>>
+  :merger(b, targets); <<$ca_process>>
+  if (does a reservation reject?) then (yes)
+    :return None\nb is dropped, and the free map is unchanged; <<$ca_rejectfill>>
+    stop
+  else (no)
+    :reserve the insert (DR-103 part 1):\nthe search, <latex>h(n+1) \cdot L</latex> moves and the growth <latex>B(n+1) - B(n)</latex>; <<$ca_gate>>
+    if (does the insert reservation reject?) then (yes)
+      :return None\nthe free map is unchanged; <<$ca_rejectfill>>
+      stop
+    else (no)
+      :insert b at the level; <<$ca_pool>>
+    endif
+  endif
+endif
+:return Some(()); <<$ca_pool>>
+note right
+  Before DR-103 part 2: copy b with a charged copy and
+  cleanup of the whole binding, merge the copy, reserve
+  the insert and insert the copy again. A Par remainder
+  merges ten field lists into one binding, so its growing
+  binding was copied up to ten times.
+end note
+stop
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| input of the merge |
+  |<$ca_gate>| host-work reservation |
+  |<$ca_process>| merger (reservations, then assignments) |
+  |<$ca_delta>| new binding |
+  |<$ca_pool>| accepted state |
+  |<$ca_rejectfill>| rejection: the free map is unchanged |
+endlegend
+@enduml

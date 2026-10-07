@@ -48,7 +48,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 268 modules and 98,819 lines of development, and
+in **Rocq 9.1.1** across 268 modules and 98,973 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -70,7 +70,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 5,183 `Qed.`/`Defined.` proof terms belong to the current source inventory.
+All 5,189 `Qed.`/`Defined.` proof terms belong to the current source inventory.
 Source counts alone do not establish that an aggregate verification run passed.
 The [economic failure observation](cost-accounting-impl/economic-failure-observation.md) connects failure-summary proofs to concurrent recorder tests and preserves the legacy public error contract.
 The [observed outcome matcher](cost-accounting-impl/observed-funding-outcome.md) binds complete execution evidence to one equivalent prepared settlement and rejects ambiguous captures.
@@ -555,7 +555,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 268 modules and 98,819 lines, with 5,183 `Qed.` or
+   development spans 268 modules and 98,973 lines, with 5,189 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -721,8 +721,8 @@ the proof context.
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
 | Rocq source files                                | 268 modules                                                |
-| Total lines of Rocq                              | 98,819                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 5,183                                                      |
+| Total lines of Rocq                              | 98,973                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 5,189                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |

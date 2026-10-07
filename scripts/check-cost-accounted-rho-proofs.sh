@@ -3233,6 +3233,10 @@ Print Assumptions FreeMapBindings.legacy_remainder_example.
 Print Assumptions FreeMapBindings.kv_area_undercounts_internal_split.
 Print Assumptions FreeMapBindings.eleven_slot_level_undercounts_leaf_split.
 Print Assumptions FreeMapBindings.twelve_byte_header_undercounts_internal_split.
+Print Assumptions FreeMapBindings.rejected_run_keeps_value.
+Print Assumptions FreeMapBindings.in_place_merge_equals_copy_merge.
+Print Assumptions FreeMapBindings.rejected_merge_leaves_map.
+Print Assumptions FreeMapBindings.assign_first_merge_changes_map_on_rejection.
 Quit.
 EOF
 then

@@ -8468,9 +8468,9 @@ SearchStateBytes to its replay budget. The final probe measurement of Phase D
 
 **Status.** Part 1 implemented 2026-10-07 for Phase D item D-D1a of epic
 8946 (D-D1 of the Phase D plan). Part 2, the in-place merge of a remainder
-binding (item D-D1b), is a separate change. A design pass made two
-corrections to the planned bound, and the implementation review made two
-more. This record includes all four.
+binding, implemented 2026-10-07 for item D-D1b. A design pass made two
+corrections to the planned bound of part 1, and the implementation review
+made two more. This record includes all four.
 
 **Terms.**
 
@@ -8722,5 +8722,122 @@ Under the committed caps, the Casper suite now passes
 `a_process_that_a_system_contract_runs_keeps_its_callers_seal`, one of the
 seven DR-101 tests that those caps rejected at their first deployment.
 
-**Cross-refs.** DR-77, DR-78, DR-91. Leaf
-`ofp-2-cap-d-d1a-free-map-charges`.
+**Part 2: the in-place merge (D-D1b).** The rest of this record before the
+cross-references describes part 2.
+
+**Part 2 context.** Before part 2, `handle_remainder` copied the binding at its
+level, merged the copy and inserted it again, which dropped the old binding.
+The copy charged a copy and a cleanup of the whole binding
+(`reserve_clone`). A `Par` pattern with a remainder variable merges its ten
+field lists into one binding, so each such variable copied its growing
+binding up to ten times. The copy made a rejected merge harmless: the
+callers backtrack when a merge returns `None`, and the stored binding stayed
+unchanged.
+
+**Part 2 decision.**
+
+1. A merger has the type
+   `&dyn Fn(&mut Par, Vec<T>, &MatcherWork<'_>) -> Option<()>`. It changes
+   the binding in place.
+2. Every merger assigns after all its reservations. The ten field mergers
+   of a `Par` remainder make one assignment and no reservation.
+   `merge_set_remainder` and `merge_map_remainder` reserve their
+   deduplication work and then assign the new `Expr` once. These two
+   functions replace the set and map closures, which stay in the source as
+   comments.
+3. `handle_remainder` merges an existing binding in place through
+   `get_mut`. A new binding starts as an empty `Par`. It is merged, its
+   insert is reserved, and then it is inserted. Only a new binding charges
+   an insert.
+4. The replaced lines stay in the source, commented out with their reason.
+
+**Part 2 algorithm (literate form).**
+
+```text
+⟨remainder merge⟩ ≡
+  ⟨free-map search charge⟩
+  reserve 1 operation                   -- the merger's work context
+  if the map holds a binding b at the level:
+    merger(b, targets)                  -- in place, assignments last
+  else:
+    b ← an empty Par
+    merger(b, targets)
+    ⟨free-map insert charge⟩
+    insert b at the level
+```
+
+![Activity diagram of one remainder merge. handle_remainder receives the targets, which come from charged copies with their cleanup. It reserves one free-map search, S of n equal to 11 times h of n operations and 8 S of n scanned bytes, and one operation for the merger's work context. If a binding b is stored at the level, the merger changes b in place, with all its reservations first and its assignments last. If a reservation rejects, the merge returns None and b and the free map are unchanged. Otherwise b holds the merged binding, with no copy and no drop of b. If no binding is stored, b starts as an empty Par and the merger runs on it. A rejected reservation returns None, drops b and leaves the free map unchanged. Otherwise the insert is reserved: the search, h of n plus 1 times L moves and the growth B of n plus 1 minus B of n. A rejected insert reservation returns None and leaves the free map unchanged. Otherwise b is inserted at the level. Both accepted paths return Some. A red note states that before part 2 the binding was copied with a charged copy and cleanup of the whole binding, merged, reserved and inserted again, so a Par remainder copied its growing binding up to ten times. A legend maps the colours: input, host-work reservation, merger, new binding, accepted state, and rejection with an unchanged free map.](diagrams/remainder-in-place-merge.svg)
+
+(*Source: [`diagrams/remainder-in-place-merge.puml`](diagrams/remainder-in-place-merge.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/remainder-in-place-merge.puml`.*)
+
+**Part 2 soundness.**
+
+- *All or nothing.* A merger that assigns after all its reservations has
+  not changed the binding when a reservation rejects. A new binding enters
+  the map only after its merge and its insert reservation succeed. Thus a
+  rejected merge leaves the free map unchanged
+  (`FreeMapBindings.rejected_merge_leaves_map`).
+- *Same result.* When the budget admits the work, the in-place merge gives
+  the free map of the copy merge
+  (`FreeMapBindings.in_place_merge_equals_copy_merge`).
+- *Charges.* The in-place merge makes no copy of the binding and drops no
+  binding, so it charges neither. An assignment drops the old value of one
+  field. The matcher charged the cleanup of that value with the copy that
+  created it: `list_match_single_` and `list_match` reserve a copy and a
+  cleanup (`reserve_clone`) for every remainder target before the merge.
+- *Determinism.* The charge depends on the targets and on the size of the
+  map, not on the size of the existing binding.
+
+**Part 2 verification.** `FreeMapBindings.v` part 2 proves without axioms:
+
+- `rejected_run_keeps_value`: a rejected merger that assigns last leaves
+  its value unchanged.
+- `in_place_merge_equals_copy_merge` and `rejected_merge_leaves_map`.
+- Negative control: `assign_first_merge_changes_map_on_rejection`. A
+  merger that assigns before a rejected reservation changes the stored
+  binding in place, while the copy merge leaves it.
+
+Tests in the `metered_tests` module of `list_match.rs`:
+
+- `remainder_merge_matches_legacy_copy_merge` (128 cases): for each of the
+  ten field mergers, the set merger and the map merger, with and without an
+  existing binding, the in-place merge gives the free map of a frozen copy
+  of the old copy merge. The set and map targets contain duplicates.
+- `rejected_remainder_merge_leaves_the_free_map` (128 cases): each case
+  counts the reservations of a whole set or map merge, rejects at the first
+  16, the last 16 and one random reservation, and then accepts with the
+  whole budget. Every rejection leaves the free map unchanged, and the
+  acceptance gives the copy merge.
+- `in_place_merge_charge_is_independent_of_the_existing_binding`: an
+  existing binding of 8 or of 512 expressions gives the same charge.
+- Negative controls: `legacy_copy_merge_charge_grew_with_the_existing_binding`
+  and `assign_first_merger_changes_the_binding_on_rejection`.
+- Two mutations in a scratch copy make
+  `rejected_remainder_merge_leaves_the_free_map` fail. A set merger that
+  assigns before its reservations fails with an existing binding. An insert
+  before its reservation fails with no binding.
+- The existing tests `remainder_assignment_preserves_free_map_and_rejects_short_credit`
+  and `remainder_merger_rejects_before_payload_materialization_or_publication`
+  use the new merger type. The 52 match tests in
+  `rholang/tests/matcher/match_test.rs` pass.
+
+**Part 2 measurement.** The D-G0 probe ran the gateway test twice with part
+1 and twice with part 2, again under the provisional caps. Every role still
+charged exactly the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| Part 1, run 1 | 1,414,843,614 | 157,578,002 | 62,780,899 |
+| Part 1, run 2 | 1,404,389,055 | 157,707,790 | 62,786,462 |
+| Part 2, run 1 | 1,249,206,436 | 144,836,209 | 61,016,038 |
+| Part 2, run 2 | 1,261,584,846 | 144,887,478 | 61,026,598 |
+| Change of the means | −154.2 MB (−10.9 %) | −12.8 MB (−8.1 %) | −1.76 M (−2.8 %) |
+
+Two runs of one build differ by up to 12.4 MB of VerificationBytes, so the
+change is about 12 times that spread. In multiples of the original caps,
+the replay falls to 4.68 in VerificationBytes and 1.08 in SearchStateBytes.
+Parts 1 and 2 together remove 459.1 MB of VerificationBytes (−26.8 %) and
+45.4 MB of SearchStateBytes (−23.9 %) from this replay.
+
+**Cross-refs.** DR-77, DR-78, DR-91. Leaves
+`ofp-2-cap-d-d1a-free-map-charges` and `ofp-2-cap-d-d1b-in-place-merge`.
