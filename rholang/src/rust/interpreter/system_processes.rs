@@ -309,6 +309,136 @@ impl FixedChannels {
     /// (`lseek(off, whence)`).  Verifying observation; advances
     /// shadow position via the `journal` hook (slice 4.16).
     pub fn fs_seek() -> Par { byte_name(46) }
+
+    /// `rho:io:fs:native:1.0.0/size` — fd-based size via
+    /// `fstat`.  Verifying observation (slice 4.17).
+    pub fn fs_size() -> Par { byte_name(48) }
+
+    /// `rho:io:fs:native:1.0.0/exists` — path-based existence check
+    /// via `openat(O_NOFOLLOW)` + metadata.  Verifying observation
+    /// (slice 4.18).
+    pub fn fs_exists() -> Par { byte_name(52) }
+
+    /// `rho:io:fs:native:1.0.0/stat` — path-based file/dir metadata
+    /// via `openat(O_NOFOLLOW)` + metadata.  Returns a stat record
+    /// with cmode-gated host-transient field stripping.  Verifying
+    /// observation (slice 4.19).
+    pub fn fs_stat() -> Par { byte_name(51) }
+
+    /// `rho:io:fs:native:1.0.0/read` — sequential fd-based read via
+    /// `libc::read`.  Verifying observation with
+    /// length-parameterized cost; advances shadow position by
+    /// bytes returned on all paths (slice 4.20).
+    pub fn fs_read() -> Par { byte_name(42) }
+
+    /// `rho:io:fs:native:1.0.0/readAt` — positional fd-based read
+    /// via `libc::pread`.  Verifying observation with
+    /// length-parameterized cost; does NOT advance shadow
+    /// position per POSIX pread semantics (slice 4.21).
+    pub fn fs_read_at() -> Par { byte_name(43) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` — release a
+    /// directory-entries stream fd + Phase-2 shadow-remove on
+    /// replay.  Non-verifying stream lifecycle (slice 4.22).
+    pub fn fs_entries_stream_close() -> Par { byte_name(68) }
+
+    /// `rho:io:fs:native:1.0.0/truncate` — fd-based truncate via
+    /// `libc::ftruncate`.  Verifying mutation; constant cost.
+    /// First Mutation-family handler on dev (slice 4.24).
+    pub fn fs_truncate() -> Par { byte_name(49) }
+
+    /// `rho:io:fs:native:1.0.0/chmod` — path-based chmod via
+    /// `safe_descend_verified` + `fchmodat` (AT_SYMLINK_NOFOLLOW).
+    /// Verifying mutation; constant cost.  First path-mutation
+    /// handler on dev (slice 4.25).
+    pub fn fs_chmod() -> Par { byte_name(59) }
+
+    /// `rho:io:fs:native:1.0.0/rename` — two-endpoint path rename
+    /// via `safe_descend_verified` × 2 + `renameat`.  Verifying
+    /// mutation; cross-device moves surface as FSERR_CROSS_DEVICE.
+    /// First two-endpoint mutation handler on dev (slice 4.26).
+    pub fn fs_rename() -> Par { byte_name(55) }
+
+    /// `rho:io:fs:native:1.0.0/chown` — path-based chown via
+    /// `safe_descend_verified` + `fchownat` (AT_SYMLINK_NOFOLLOW).
+    /// NON-verifying mutation; Consensus caps rejected at
+    /// parse_content (NSS mapping host-local).  Added by slice 4.27.
+    pub fn fs_chown() -> Par { byte_name(60) }
+
+    /// `rho:io:fs:native:1.0.0/removeFile` — path-based unlink via
+    /// `safe_descend_verified` + `unlinkat` under the LockRegistry
+    /// unlink gate.  Verifying mutation; Consensus + locked
+    /// returns `FSERR_BUSY`.  Added by slice 4.28.
+    pub fn fs_remove_file() -> Par { byte_name(57) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamOpen` — allocate a
+    /// stream fd, `openat` + `fdopendir` under
+    /// `safe_descend_verified`.  Non-verifying stream lifecycle;
+    /// Consensus caps rejected at parse_content (Phase-2 ban:
+    /// readdir order fs-dependent).  Added by slice 4.29.
+    pub fn fs_entries_stream_open() -> Par { byte_name(66) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamNext` — advance a
+    /// stream fd one entry via `readdir`; two-event cost (setup
+    /// + per-entry supplement).  First handler on dev to
+    /// activate `post_reply_supplement`.  Added by slice 4.30.
+    pub fn fs_entries_stream_next() -> Par { byte_name(67) }
+
+    /// `rho:io:fs:native:1.0.0/entries` — bulk directory
+    /// enumeration (sorted, deterministic).  Verifying
+    /// observation with two-event cost (setup + per-entry).
+    /// Added by slice 4.31.
+    pub fn fs_entries() -> Par { byte_name(53) }
+
+    /// `rho:io:fs:native:1.0.0/open` — allocate a FileHandle via
+    /// `safe_open_verified` + Phase-2 real-open on Consensus
+    /// caps.  Non-verifying lifecycle.  Shadow-insert on replay
+    /// at leader's cached fd (load-bearing for Phase-2 fd-based
+    /// re-execute ops).  Added by slice 4.32.
+    pub fn fs_open() -> Par { byte_name(40) }
+
+    /// `rho:io:fs:native:1.0.0/copyFile` — two-endpoint byte-count
+    /// copy via `safe_open_verified` + `std::io::copy`.  Verifying
+    /// mutation; reply carries bytes-copied via `ok_u64`.  Added
+    /// by slice 4.33.
+    pub fn fs_copy_file() -> Par { byte_name(56) }
+
+    /// `rho:io:fs:native:1.0.0/lockRange` — range-based advisory
+    /// lock acquire via `LockRegistry::try_acquire_range_wait`.
+    /// Non-verifying lock lifecycle; minted LockId is consensus-
+    /// observable.  First Lock-family handler on dev (slice 4.34).
+    pub fn fs_lock_range() -> Par { byte_name(62) }
+
+    /// `rho:io:fs:native:1.0.0/lockSequential` — whole-file
+    /// sequential (exclusive) lock acquire via
+    /// `LockRegistry::try_acquire_sequential_wait`.  Non-verifying;
+    /// LockId consensus-observable.  Added by slice 4.35.
+    pub fn fs_lock_sequential() -> Par { byte_name(63) }
+
+    /// `rho:io:fs:native:1.0.0/releaseLock` — release a held
+    /// lock by `LockId` with holder-identity check.  Non-
+    /// verifying; pure LockRegistry op.  Added by slice 4.36.
+    pub fn fs_release_lock() -> Par { byte_name(64) }
+
+    /// `rho:io:fs:native:1.0.0/releaseAllForHolder` — deploy-end
+    /// sweep: cancel all parked waiters for this holder, then
+    /// release all held locks.  Non-verifying.  Added by slice
+    /// 4.37.
+    pub fn fs_release_all_for_holder() -> Par { byte_name(65) }
+
+    /// `rho:io:fs:native:1.0.0/write` — fd + ByteArray; libc::write
+    /// to the shadow fd under spawn_blocking.  Verifying length-
+    /// parameterized mutation (single-event incremental cost +
+    /// H-6 reserve-then-finalize with partial-write patch).  Added
+    /// by slice 4.38.
+    pub fn fs_write() -> Par { byte_name(44) }
+
+    /// `rho:io:fs:native:1.0.0/writeAt` — fd + offset + ByteArray;
+    /// libc::pwrite under spawn_blocking.  Same shape as fs_write
+    /// but with positional semantics: no shadow position advance
+    /// (POSIX pwrite doesn't move the OS-fd position).  Added by
+    /// slice 4.39.  Mutation family 8/8 complete.
+    pub fn fs_write_at() -> Par { byte_name(45) }
 }
 
 pub struct BodyRefs;
@@ -367,6 +497,78 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/seek` body-ref (slice 4.16).
     pub const FS_SEEK: i64 = 46;
+
+    /// `rho:io:fs:native:1.0.0/size` body-ref (slice 4.17).
+    pub const FS_SIZE: i64 = 48;
+
+    /// `rho:io:fs:native:1.0.0/exists` body-ref (slice 4.18).
+    pub const FS_EXISTS: i64 = 52;
+
+    /// `rho:io:fs:native:1.0.0/stat` body-ref (slice 4.19).
+    pub const FS_STAT: i64 = 51;
+
+    /// `rho:io:fs:native:1.0.0/read` body-ref (slice 4.20).
+    pub const FS_READ: i64 = 42;
+
+    /// `rho:io:fs:native:1.0.0/readAt` body-ref (slice 4.21).
+    pub const FS_READ_AT: i64 = 43;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` body-ref
+    /// (slice 4.22).
+    pub const FS_ENTRIES_STREAM_CLOSE: i64 = 68;
+
+    /// `rho:io:fs:native:1.0.0/truncate` body-ref (slice 4.24).
+    pub const FS_TRUNCATE: i64 = 49;
+
+    /// `rho:io:fs:native:1.0.0/chmod` body-ref (slice 4.25).
+    pub const FS_CHMOD: i64 = 59;
+
+    /// `rho:io:fs:native:1.0.0/rename` body-ref (slice 4.26).
+    pub const FS_RENAME: i64 = 55;
+
+    /// `rho:io:fs:native:1.0.0/chown` body-ref (slice 4.27).
+    pub const FS_CHOWN: i64 = 60;
+
+    /// `rho:io:fs:native:1.0.0/removeFile` body-ref (slice 4.28).
+    pub const FS_REMOVE_FILE: i64 = 57;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamOpen` body-ref
+    /// (slice 4.29).
+    pub const FS_ENTRIES_STREAM_OPEN: i64 = 66;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamNext` body-ref
+    /// (slice 4.30).
+    pub const FS_ENTRIES_STREAM_NEXT: i64 = 67;
+
+    /// `rho:io:fs:native:1.0.0/entries` body-ref (slice 4.31).
+    pub const FS_ENTRIES: i64 = 53;
+
+    /// `rho:io:fs:native:1.0.0/open` body-ref (slice 4.32).
+    pub const FS_OPEN: i64 = 40;
+
+    /// `rho:io:fs:native:1.0.0/copyFile` body-ref (slice 4.33).
+    pub const FS_COPY_FILE: i64 = 56;
+
+    /// `rho:io:fs:native:1.0.0/lockRange` body-ref (slice 4.34).
+    pub const FS_LOCK_RANGE: i64 = 62;
+
+    /// `rho:io:fs:native:1.0.0/lockSequential` body-ref
+    /// (slice 4.35).
+    pub const FS_LOCK_SEQUENTIAL: i64 = 63;
+
+    /// `rho:io:fs:native:1.0.0/releaseLock` body-ref
+    /// (slice 4.36).
+    pub const FS_RELEASE_LOCK: i64 = 64;
+
+    /// `rho:io:fs:native:1.0.0/releaseAllForHolder` body-ref
+    /// (slice 4.37).
+    pub const FS_RELEASE_ALL_FOR_HOLDER: i64 = 65;
+
+    /// `rho:io:fs:native:1.0.0/write` body-ref (slice 4.38).
+    pub const FS_WRITE: i64 = 44;
+
+    /// `rho:io:fs:native:1.0.0/writeAt` body-ref (slice 4.39).
+    pub const FS_WRITE_AT: i64 = 45;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
