@@ -184,3 +184,57 @@ fn metered_resolution_matches_and_rejects_before_hashing() {
     );
     assert_eq!(calls.get(), 1);
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+    /// The invariants of `SystemResidueAuthority.tla` over arbitrary payers,
+    /// deployments and entropies: `InDeployChargeRefinesInheritance`,
+    /// `NoForeignSystemResidueDemand`, `WriterIndependentCost`,
+    /// `GenesisSealUnchanged`, `UserTermResidueStillCharged` and the metered
+    /// and unmetered agreement behind `ReplayAgreement`.
+    #[test]
+    fn residue_resolution_keeps_the_model_invariants(
+        writer in proptest::collection::vec(proptest::prelude::any::<u8>(), 33),
+        other in proptest::collection::vec(proptest::prelude::any::<u8>(), 33),
+        written_in in proptest::prelude::any::<[u8; 32]>(),
+        other_deploy in proptest::prelude::any::<[u8; 32]>(),
+        same_payer in proptest::prelude::any::<bool>(),
+        same_deploy in proptest::prelude::any::<bool>(),
+        entropy in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..64),
+    ) {
+        let writer = Sig::Ground(writer);
+        let reader = if same_payer { writer.clone() } else { Sig::Ground(other) };
+        let read_in = if same_deploy { written_in } else { other_deploy };
+        let paid = payer_region(&writer, &entropy);
+        let stored = residue_seal(&writer, &entropy, written_in);
+        let context = ResidueContext::new(&reader, read_in).expect("ground context");
+        let resolved = resolve_system_residue(&stored, &entropy, &context).expect("resolution");
+        let unbounded = |_: usize, _: usize, _: usize| Ok(());
+        proptest::prop_assert_eq!(
+            resolve_system_residue_metered(&stored, &entropy, &context, &unbounded)
+                .expect("metered resolution"),
+            resolved.clone()
+        );
+        if reader == writer && read_in == written_in {
+            proptest::prop_assert_eq!(resolved.into_owned(), seal(vec![paid.clone()]));
+        } else {
+            proptest::prop_assert!(authority_demand(resolved.as_ref())
+                .expect("demand")
+                .0
+                .is_empty());
+        }
+        let genesis = payer_region(&Sig::Unit, &entropy);
+        proptest::prop_assert_eq!(
+            system_residue_region(&genesis, &written_in).expect("unit region"),
+            genesis
+        );
+        let user_written = seal(vec![paid]);
+        proptest::prop_assert_eq!(
+            resolve_system_residue(&user_written, &entropy, &context)
+                .expect("user seal")
+                .into_owned(),
+            user_written
+        );
+    }
+}

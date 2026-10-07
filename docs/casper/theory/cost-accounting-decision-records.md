@@ -8137,6 +8137,10 @@ Tests:
   resolution only inside the deployment, mixed seals, the system-seal
   classification and metered parity. With an exhausted meter, the metered
   resolution rejects before it hashes.
+- `residue_resolution_keeps_the_model_invariants`: a property test with 256
+  cases over random payers, deployments and entropies checks the six TLA+
+  invariants on the Rust functions. With resolution disabled (a negative
+  control), the test fails.
 - `a_replay_in_another_residue_context_observes_another_comm`: play and
   replay with the same context build the same observation. A replay with
   another deployment, another payer or no binding builds another
