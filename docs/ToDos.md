@@ -381,8 +381,9 @@ tasks:
       - "Soak 37579803394 on master e6564599c failed in the integration preflight: test_load had 7 deploys not finalized within 45s in the high phase, with inclusion p95 21.9 s. The sustained phase passed with 0 unfinalized. The 24-hour soak did not start."
       - "On the test_load shard, each node parked 0 to 5 of 271 to 364 processed blocks, and each park had one release. The 2026-09-25 breakdown measured 56% on a saturated local host, so the values do not compare directly."
       - "Issue #24 comment 6040401089 records the phase table, the park counts, and the attribution limits."
+      - "Soak 37640235959 (daily-24h without the integration preflight, target 1381ecbe9, the node code of dev 31b228604): segment 1 failed with 6 test_load failures in 32 iterations (19%). Each failure was N deploy(s) not finalized within 45s. On 2026-10-07 at 21:50 UTC the final segment was running with 4 more failures. The rate did not change materially after PR #653: soak 37224478325 segment 2 had 19 failures in 91 iterations (21%), and dev 778cc6754 had 8 in 49 (16%)."
     open:
-      - "A soak that passes the preflight and gives the 24-hour test_load failure rate on master e6564599c or later."
+      - "A soak that passes the integration preflight. Soak 37640235959 gave the 24-hour test_load failure rate without the preflight."
       - "CLAIM-CASPER-BUFFER-001 discharge items 2 to 7, and maintainer acceptance of the soak and CbC evidence."
       - "Follow-up outside this task: deploy inclusion latency in the test_load high phase (TASK-021-13)."
     origin: "On 2026-10-07 the user chose to fix issue #24 on the #653 branch. Soak 37469364217 on dev 778cc6754 failed 8 of 49 iterations with test_load 'N deploy(s) not finalized within 45s'. The 2026-09-25 issue breakdown shows that 56% of blocks park on missing parents, 7.1 s median and 39.6 s p90. A code trace found three release-path causes."
@@ -408,20 +409,24 @@ tasks:
       - "A comparison soak against the scheduled dev soak on the same base reports sustained finalization p95, the test_load failure count, and the new metrics."
       - "The maintainer accepts the soak and CbC evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
   - id: TASK-021-13
-    title: "Find why deploys wait for block inclusion in the test_load high phase (issue #24)"
+    title: "Find why test_load deploys are not finalized within 45 s in the high and sustained phases (issue #24)"
     status: pending
     priority: p0
     claimed_by: null
     blocked_by: []
     origin: "On 2026-10-07 two integration preflights on master e6564599c failed in the same test_load phase after PR #653 nearly stopped block parking. The user asked for a task that owns the deploy inclusion delay."
-    problem: "In the test_load high phase, deploys wait too long to get into a block. The unfinalized deploys come from that phase, while the sustained phase passes."
+    problem: "test_load fails in two phases with two different signatures. In the high phase, deploys wait too long to get into a block. In the sustained phase, included deploys wait too long for finalization. The two preflights of 2026-10-07 showed only the high phase. The 24-hour soak 37640235959 shows both phases, and the sustained phase fails more often."
     evidence:
       - "Soak 37579803394, preflight: high phase inclusion p50 9.0 s and p95 21.9 s, finalization p95 33.2 s, 7 unfinalized. The other phases had inclusion p95 5.3 to 13.7 s. Sustained finalization p95 31.2 s, 0 unfinalized."
       - "Scheduled soak 37598606554, preflight: high phase inclusion p50 8.9 s and p95 21.7 s, finalization p95 41.2 s, 7 unfinalized."
-      - "The 2026-09-16 issue #24 comment found every earlier failure in the sustained phase and none in the high phase. After PR #653 the failure moved to the high phase."
+      - "The 2026-09-16 issue #24 comment found every earlier failure in the sustained phase and none in the high phase. Correction of 2026-10-07: the failure did not move to the high phase after PR #653. The preflights sampled one iteration each. Soak 37640235959 shows both phases."
+      - "Soak 37640235959 (daily-24h without the integration preflight, target 1381ecbe9, the node code of dev 31b228604): segment 1 failed with 6 test_load failures in 32 iterations (19%). Each failure was N deploy(s) not finalized within 45s. On 2026-10-07 at 21:50 UTC the final segment was running with 4 more failures."
+      - "Soak 37640235959 by phase, 41 iterations: sustained phase failed 7 times (40, 45, 11, 12, 147, 11, and 43 unfinalized), high phase 4 times (13, 14, 15, 8), burst phase never."
+      - "Soak 37640235959 latency, failing against passing iterations. High phase: inclusion p95 mean 21.6 s against 13.2 s, finalization p95 mean 38.5 s against 30.2 s. Sustained phase: inclusion p95 mean 18.0 s against 11.7 s, finalization p95 mean 60.7 s against 38.4 s."
       - "Fewer than 2% of the blocks parked on the failing test_load shard (issue #24 comment 6040401089), so parked blocks do not explain the delay."
       - "Issue #24 comment 6043103631 (2026-10-07) records the state of every optimization in the issue. Fixed: settled-signature probes (PR #362), prior_rejection_counts (PR #366), and parked blocks (PR #653). Open: the bonds query, the precharge and refund cost, the heartbeat wait, the deploy admission cap, and the suppression of empty heartbeat blocks."
-    hypothesis: "Deploy selection or the proposer cadence holds deploys under the high-phase submit rate (10 deploys/s for 15 s). This is not proven. The first step measures before any change."
+    evidence_gap: "The soak cannot give the cause yet. Its ISSUE24_METRICS cover block replay, repeat-deploy validation, and merge selection only. No metric covers the deploy pool wait, the proposal trigger, block creation, propagation, admission cap hits, heartbeat waits, empty heartbeat blocks, the finalizer runs, or the API-driven LFB computation. More soak iterations improve the failure rate and the phase split, but not the cause. In soak 37640235959, segment 1 ran its full window to the 13:00 Pacific checkpoint and the final segment continued to the 24-hour end. Segments 2 to 5 were skipped for a reason that is not confirmed yet. A run with the new metrics must give data from at least two segments."
+    hypothesis: "Two causes, not proven. High phase: deploy selection or the proposer cadence holds deploys under the high-phase submit rate (10 deploys/s for 15 s). Sustained phase: finalization lags after inclusion, so the finalizer metrics and the API-driven LFB computation apply there first. The first step measures before any change."
     first_suspects:
       - "Deploy admission cap. block_creator.rs caps ordinary user deploys per block at 4, 8, or 16 in the non-leader fallback (NON_LEADER_FALLBACK_*_ORDINARY_DEPLOY_CAP). In the 2026-09-25 breakdown the cap held at 4 under sustained load, and about 484 of 1512 deploys were never included. At 10 deploys/s, a cap of 4 or 8 per block can hold deploys for several blocks."
       - "Heartbeat wait. The 2026-09-25 breakdown measured 5.6 s of each 7 s idle round as validators waiting for their next heartbeat tick before they propose (casper.heartbeat check-interval 5 s). Each wait adds directly to inclusion time."
@@ -438,11 +443,11 @@ tasks:
       - "Block parking: below 2% after PR #653."
     scope: "Measurement first: the time from deploy submit to the first block that includes the deploy, split by stage (deploy pool wait, proposal trigger, block creation, block propagation). Add finalizer metrics to ISSUE24_METRICS: finalizer run duration, queued reruns, 15 s timeouts, and API-triggered LFB computations with their overlap with a background run. Check whether the system-integration test_load calls exploratory_deploy or bond_status during its load phases. A fix starts only after a measurement names the stage. The fix needs its own TDD plan and, under the EPIC-021 cbc_policy, a pending claim before any code change."
     acceptance:
-      - "A per-deploy timeline for the test_load high phase names the stage that holds the deploy, with evidence from two runs."
+      - "A per-deploy timeline for failing high-phase and sustained-phase iterations names the stage that holds the deploy, with evidence from two runs."
       - "A pending CbC claim exists before any code change to proposal or deploy selection."
       - "The soak record reports the finalizer metrics and the API-triggered LFB computations."
       - "Each fix behavior has a test that fails before its change and passes after it."
-      - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in the high phase."
+      - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in every phase."
       - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
     candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
 ---
