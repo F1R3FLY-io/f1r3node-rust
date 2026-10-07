@@ -64,13 +64,25 @@ behaviors:
     statement: "A released block records the time from its release to the start of its processing"
     priority: must
     deep_module: false
-    done: false
+    done: true
     notes: "Histogram block-processing.release.queue-wait.time. This measures the queue position cost that the trace ranks first."
     cycle_log:
       - date: 2026-10-07
         blocked: true
         reason: "The wait lives in the BlockProcessorInstance queue (node). The instance is built only in node_runtime.rs from a real BlockProcessor, and each queue item carries a live Arc<dyn Casper>. No node test builds one, and the casper BlockProcessor fixture is in casper/tests, out of reach of node. A pipeline test for this metric would need a full Casper engine."
         proposal: "Do B7 first as a standalone two-lane release queue module in node. The queue records the release wait when it hands out a released block, so B2 becomes a queue behavior with a direct test. Wiring the queue into BlockProcessorInstance is a separate step, covered by the casper suites and the soak."
+      - date: 2026-10-07
+        test: "node --test release_queue::a_released_block_records_its_wait_from_release_to_processing"
+        red: "left: 0, right: 1. The queue handed out a released block and a gossip block and recorded no wait. A first run failed to compile on the missing metric name, so the name was added alone before the behavior RED."
+        green: "The released lane keeps the release Instant with each item. pop records block-processing.release.queue-wait.time (seconds, source f1r3fly.casper.block-processor) when it hands out a released block. A gossip block records nothing."
+        files:
+          - node/src/rust/instances/release_queue.rs
+          - node/tests/release_queue.rs
+          - node/Cargo.toml
+        suite: "node --test release_queue: 2 passed. clippy -D warnings clean for node, all targets. cargo fmt clean."
+        observations:
+          - "The wait covers the time in the queue only. The time from a pop to the start of validation (the permit wait) stays out of this metric. B10 decides where the pipeline pops."
+          - "B10 is ratified (2026-10-07) and runs next."
   - id: B3
     statement: "The release scan records its duration"
     priority: should

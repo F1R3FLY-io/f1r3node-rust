@@ -1,7 +1,11 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::time::Instant;
 
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use tokio::sync::Notify;
+
+pub const RELEASE_QUEUE_WAIT_METRIC: &str = "block-processing.release.queue-wait.time";
 
 pub struct ReleaseQueue<T> {
     state: Mutex<Lanes<T>>,
@@ -11,7 +15,7 @@ pub struct ReleaseQueue<T> {
 }
 
 struct Lanes<T> {
-    released: VecDeque<T>,
+    released: VecDeque<(Instant, T)>,
     gossip: VecDeque<T>,
     released_streak: usize,
 }
@@ -46,7 +50,7 @@ impl<T> ReleaseQueue<T> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .released
-            .push_back(item);
+            .push_back((Instant::now(), item));
         self.available.notify_one();
     }
 
@@ -64,8 +68,10 @@ impl<T> ReleaseQueue<T> {
         let gossip_turn =
             state.released_streak >= self.gossip_share_after && !state.gossip.is_empty();
         if !gossip_turn {
-            if let Some(item) = state.released.pop_front() {
+            if let Some((released_at, item)) = state.released.pop_front() {
                 state.released_streak += 1;
+                metrics::histogram!(RELEASE_QUEUE_WAIT_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+                    .record(released_at.elapsed().as_secs_f64());
                 return Some(item);
             }
         }
