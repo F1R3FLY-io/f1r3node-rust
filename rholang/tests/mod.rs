@@ -1,5 +1,6 @@
 mod abort_spec;
 mod accounting;
+mod fileio_bounds_spec;
 mod cli_smoke_spec;
 mod crypto_channels_spec;
 mod demo_verification;

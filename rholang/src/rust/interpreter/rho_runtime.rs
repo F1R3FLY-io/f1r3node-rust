@@ -285,6 +285,51 @@ impl RhoRuntimeImpl {
 
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
 
+    /// Enable the rho:io:fs:native:* URN filter.  Every subsequent
+    /// `new x(`rho:io:fs:native:...`)` inside a deploy returns
+    /// `ReduceError` from `eval_new`.  This is the default state.
+    /// Idempotent.
+    pub fn enable_fs_native_urn_filter(&self) {
+        self.reducer
+            .filter_fs_native_urns
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Disable the rho:io:fs:native:* URN filter for the duration
+    /// of a genesis-composition run (or a test harness).  MUST be
+    /// re-enabled via `enable_fs_native_urn_filter` after the
+    /// scope exits — leaving it disabled would expose raw fs
+    /// syscalls to every subsequent user deploy on this runtime.
+    /// Prefer [`exempt_fs_native_urn_filter`] when a lexical scope
+    /// bounds the exemption; it uses RAII to re-enable on Drop.
+    pub fn disable_fs_native_urn_filter(&self) {
+        self.reducer
+            .filter_fs_native_urns
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// RAII exemption guard for the `rho:io:fs:native:*` URN
+    /// filter.  Disables the filter on construction and re-enables
+    /// on Drop — including panics and tokio-task cancellation.
+    /// Caller holds the returned guard for the lifetime of the
+    /// exemption scope; dropping it immediately after construction
+    /// re-enables the filter before any enclosed code sees it off.
+    pub fn exempt_fs_native_urn_filter(&self) -> FsNativeUrnFilterExemption {
+        self.disable_fs_native_urn_filter();
+        FsNativeUrnFilterExemption {
+            flag: self.reducer.filter_fs_native_urns.clone(),
+        }
+    }
+
+    /// Introspection helper for tests and diagnostics.  Returns
+    /// `true` iff `rho:io:fs:native:*` URN resolution is blocked
+    /// in `eval_new`.
+    pub fn fs_native_urn_filter_enabled(&self) -> bool {
+        self.reducer
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub async fn set_report_phase(
         &self,
         phase: rspace_plus_plus::rspace::reporting_rspace::ReportPhase,
@@ -461,6 +506,23 @@ impl RhoRuntime for RhoRuntimeImpl {
 
 impl HasCost for RhoRuntimeImpl {
     fn cost(&self) -> &_cost { &self.cost }
+}
+
+/// RAII guard returned by
+/// [`RhoRuntimeImpl::exempt_fs_native_urn_filter`].  Owns an Arc
+/// clone of the filter flag (not a borrow of the runtime) so the
+/// caller can still exercise `&mut self` on the runtime during the
+/// exemption.  The filter re-enables on Drop — including panics
+/// and tokio-task cancellation.
+#[must_use = "the exemption ends when the guard is dropped; letting it drop \
+              immediately after construction re-enables the filter and \
+              the enclosed code sees the filter ON"]
+pub struct FsNativeUrnFilterExemption {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for FsNativeUrnFilterExemption {
+    fn drop(&mut self) { self.flag.store(true, std::sync::atomic::Ordering::Release); }
 }
 
 pub type RhoTuplespace =
