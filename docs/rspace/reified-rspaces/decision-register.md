@@ -98,6 +98,16 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 49](#decision-49) | One fire count for each space transaction | 2026-10-06 | In force. Implemented in P5 wave W2 |
 | [Decision 50](#decision-50) | Joined set collections cascade | 2026-10-07 | In force. Implemented in P5 wave W3 |
 | [Decision 51](#decision-51) | A PathMap bag or set peek bumps the token when its second send changes state | 2026-10-07 | In force. Implemented in P5 wave W3 (Phase 2 of the PathMap engine) |
+| [Decision 52](#decision-52) | Tensor logic and the ChromaDB backend join the VectorDB phase P6 | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 53](#decision-53) | The tensor-logic fragment TL_V | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 54](#decision-54) | The number model of tensor logic | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 55](#decision-55) | The tensor-logic syntax | 2026-10-07 | In force. Implementation in P6, typed form at P12 |
+| [Decision 56](#decision-56) | The VectorDB vocabulary | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 57](#decision-57) | The recorded processes `embed` and `ann` | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 58](#decision-58) | The ChromaDB mirror is a hint index | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 59](#decision-59) | The test policy for live services | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 60](#decision-60) | The VectorDB tie-break follows decision 41 | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 61](#decision-61) | Footprint exceptions for the ChromaDB mirror | 2026-10-07 | In force. Implementation in P6 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -1453,6 +1463,230 @@ So each lift of a set has an identity of its own.
 - The token keeps two deploys of one block that write under one shared index channel in one chain ([M-1](#m-1)). A rejected chain then leaves no orphan marker and no missing marker.
 - A peek whose marker returns changes no state, so it needs no bump.
 - So concurrent pure reads of a bag or a set stay free of conflicts.
+
+## User decisions 52 to 61
+
+Decisions 53 to 61 come from the P6 design pass of decision 52. The report is the design record of these entries.
+Its main terms are these:
+
+- **TL_V** is the fragment of tensor logic that VectorDB spaces implement.
+- **TEL** is the tensor equation language, the index notation of the paper, written as text.
+- A **correctly rounded** value of a function is the exact real value, rounded to the nearest number with a declared precision.
+
+### <a id="decision-52"></a>Decision 52: Tensor logic and the ChromaDB backend join the VectorDB phase P6
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6, after [decision 47](#decision-47) |
+| Amends | The deferred follow-ups `rrs-fu-tensor-ops` and `rrs-fu-external-backends` (ChromaDB part) of the design ledger |
+| Related | [Decision 40](#decision-40), [decision 41](#decision-41), [decision 48](#decision-48), decisions 53 to 61 |
+
+**Statement.**
+
+- P6 implements tensor logic for VectorDB spaces, with a syntax and semantics that the user approved for intuition and familiarity.
+- P6 also integrates ChromaDB, the third-party vector database of the node (`rho:chroma:*`).
+- ChromaDB mirrors the records of a VectorDB space and answers advisory queries. The native engine decides every match.
+- Text embeddings are computed once by the proposer and recorded with the datum. Replay reuses the recorded values.
+- The legacy tensor support of the old feature branch is rewritten, not ported.
+
+**User's words.**
+
+- "for the vectordb reified rspace, there is the built-in vectordb and there's integration with a 3rd-party vectordb in f1r3node -- let's include support for the third-party vectordb (I don't recall the name) in the vectordb reified rspace support and tests including syntax and such."
+- "I wasn't happy with the legacy support for tensor logic in the old feature branch."
+- "if applicable, keep f1r3lang/gslt/oslf integration in mind."
+- The user chose "Design pass now (Recommended)", "Mirror + recorded embeddings (Recommended)" and, for the design, "Approve all (Recommended)".
+
+**Reason.**
+
+- The FIPS asks to look into tensor logic for a vector database, and the paper is "Tensor Logic: The Language of AI" (Domingos, arXiv 2510.12269).
+- A similarity match inside a COMM changes consensus state, so it must be deterministic. ChromaDB search is approximate and differs between nodes.
+- So ChromaDB can only mirror records and give advisory answers, which replay reuses as recorded outputs.
+
+### <a id="decision-53"></a>Decision 53: The tensor-logic fragment TL_V
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6 |
+| Amends | none |
+| Related | [Decision 52](#decision-52), [decision 37](#decision-37), [decision 29](#decision-29) |
+
+**Statement.**
+
+- TL-0: one tensor equation scores each record of one VectorDB collection. A selection projection (top-k, threshold or radius) picks the records of the COMM.
+- TL-1: pure tensor programs run through `rho:lang:vector` (`eval`). They have no space effect.
+- TL-2: a Boolean rule runs as a join within one space, or as a set-at-a-time program over an atomic snapshot of its relations.
+- TL-3: embedding-space reasoning (superposition, embedded relations, similarity and a temperature) is built from TL-0 and TL-1.
+- The inner collection picks the semiring of a rule: a set gives the step function, and a bag counts derivations.
+- Excluded: learning and gradients, Tucker decomposition and GPU scaling, sampling, virtual indices, file tensors, and recursion inside one COMM.
+
+**Reason.**
+
+- A COMM must be atomic, bounded and deterministic. One non-recursive equation for each receive is all three.
+- Each exclusion needs state between COMMs, randomness, input and output, or unbounded work, or it is a performance technique.
+- A join rule is complete only under the F1r3lang guard rule of [decision 37](#decision-37), so TL-2 joins are complete at P12.
+
+### <a id="decision-54"></a>Decision 54: The number model of tensor logic
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6 |
+| Amends | The wording of ledger item D-5 (exact mode) |
+| Related | [I-9](#i-9), [decision 40](#decision-40) |
+
+**Statement.**
+
+- Every consensus decision of a VectorDB space uses exact rational arithmetic.
+- Every supported number enters exactly. A float becomes its exact dyadic value, and NaN or an infinity fails with `NonFiniteValue`.
+- A dot product of floats uses an exact long accumulator, and a cosine comparison uses exact squared forms.
+- `exp`, `log`, `sqrt`, `tanh`, `cos`, `dist`, `sig` and `softmax` are correctly rounded at a declared precision (default 64 bits, from 8 to 256).
+- A metered Ziv loop computes these values. A working width above $`4p+128`$ bits fails with `PrecisionExhausted`.
+- Exact substitutes (`hardsig`, `relu`, `step` and others) stay available.
+- Kernels are sequential slice kernels, with no ndarray ([I-9](#i-9)).
+
+**Reason.**
+
+- Exact arithmetic gives the same decision on every node.
+- A correctly rounded value is deterministic by definition and monotone, and its implementation can change without a fork.
+- The loop terminates, because these functions give irrational values at rational inputs other than the exact cases.
+
+### <a id="decision-55"></a>Decision 55: The tensor-logic syntax
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6, typed form at P12 |
+| Amends | none |
+| Related | [Decision 18](#decision-18), [decision 21](#decision-21), [decision 24](#decision-24), [decision 17](#decision-17) |
+
+**Statement.**
+
+- A score query writes its equation in TEL, as the `score` param of the existing query form `~ (payload; params)`.
+- `tensors` binds other names in an equation to values.
+- Pure programs use the same language through `rho:lang:vector`, for example `vec!eval("B[i] maj= V[n, i]", {"V": vs})`.
+- The Rholang grammar does not change, and no new marker tuple is needed.
+- A literal equation is checked at normalization, with the offset of each error. A computed equation is checked at run time.
+- At P12, TEL becomes an installed F1r3lang language with a typed form that lowers to the same syntax tree.
+
+**Reason.**
+
+- The approved query form keeps atomic and deterministic selection in the space agent.
+- One language serves queries and programs. It follows the paper, and it contains einsum.
+- An unchanged parser keeps decisions 23 and 24 and the dual-frontend corpus intact.
+- The other options were index notation in the grammar, einsum signatures, Datalog strings, and capability methods only. The design report compares them on seven use cases.
+
+### <a id="decision-56"></a>Decision 56: The VectorDB vocabulary
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6 |
+| Amends | The query-param table of the [syntax contract](syntax-contract.md) |
+| Related | [Decision 21](#decision-21), [decision 55](#decision-55) |
+
+**Statement.**
+
+- Query keys: `score`, `tensors`, `radius`, `scores`, `ids` and `precision`.
+- Send key: `embedding`.
+- Factory keys: `dimensions` (required, 1 to 4,096), `capacity` (required, 1 to 1,000,000), `precision` and `mirror`.
+- Exclusive pairs: `metric` with `score`, and `threshold` with `radius`. They join the pair of `k` and `results`.
+- `threshold` keeps its range from 0 to 1, except when the query has `score`. `threshold` also accepts fixed-point literals.
+
+**Reason.** Each key serves one use case of the design, and each bound limits state or expression size, not a scan ([decision 40](#decision-40)).
+
+### <a id="decision-57"></a>Decision 57: The recorded processes `embed` and `ann`
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6 |
+| Amends | The op table of the namespace (two new ops) |
+| Related | [Decision 52](#decision-52), [decision 46](#decision-46) |
+
+**Statement.**
+
+- `rho:vectordb:embed` uses the op `[0xE0, 0x24]` and the body reference 236. It replies `[true, vector, model]` or `[false, code, detail]`.
+- `rho:vectordb:ann` uses the op `[0xE0, 0x25]` and the body reference 237. It replies `[true, ids, distances, watermark]` or `[false, code, detail]`.
+- Both processes are in `non_deterministic_ops()`, so replay reuses their recorded outputs.
+- Both exist in every build, and both fail in native execution.
+- Every new reply has the reply channel first and the shape `[ok, ...]`, so `!?` and `try` apply.
+- The marker range `0xD5` to `0xDF` is reserved for future syntax markers.
+
+**Reason.**
+
+- A recorded output gives replay the proposer's answer. A process that exists in every build lets every validator replay that answer.
+- `ann` returns ids, never payloads. Only the exact query param `ids=` can turn them into a decision, and the exact order still decides.
+
+### <a id="decision-58"></a>Decision 58: The ChromaDB mirror is a hint index
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6 |
+| Amends | none |
+| Related | [Decision 52](#decision-52), [decision 45](#decision-45) |
+
+**Statement.**
+
+- The mirror of a VectorDB space is node-local and is never consensus state.
+- The factory param `mirror="chroma"` turns it on. Temp and seq spaces cannot have a mirror.
+- At the end of a successful deploy, the node publishes the writes of the deploy to the mirror. A failed deploy publishes nothing.
+- A peek re-store of Rule E writes nothing to the mirror.
+- A reconciler reads the finalized state and repairs the mirror. It removes orphan records and adds missing ones.
+- When ChromaDB is unavailable, writes wait in a bounded buffer, and a deploy never waits. `ann` then replies `MirrorUnavailable`, and replay reuses that reply.
+
+**Reason.** The native engine decides every match, so a stale mirror can only give weaker advice. It can never change consensus state.
+
+### <a id="decision-59"></a>Decision 59: The test policy for live services
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6 |
+| Amends | none |
+| Related | [Decision 58](#decision-58) |
+
+**Statement.**
+
+- Sandbox tests use a fake ChromaDB backend with programmed faults, and a fake embedding model.
+- A host-side live leg runs against a pinned ChromaDB image.
+- When `RRS_LIVE_CHROMA=1` is set, an unreachable server fails the live leg. It never skips silently.
+
+**Reason.** The verification sandbox has no network and no Docker. A silent skip would hide a broken integration, as the existing ChromaDB tests can.
+
+### <a id="decision-60"></a>Decision 60: The VectorDB tie-break follows decision 41
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6 |
+| Amends | The VectorDB row of the discipline table ("Blake2b256(record), then full bytes") |
+| Related | [Decision 41](#decision-41) |
+
+**Statement.** Two VectorDB records with equal scores are ordered by the hash of their source produce, then by their full digest.
+
+**Reason.** Bag and set spaces already use this order ([decision 41](#decision-41)), so one order serves every unordered discipline.
+
+### <a id="decision-61"></a>Decision 61: Footprint exceptions for the ChromaDB mirror
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation in P6 |
+| Amends | The plan statement "node: no change expected" |
+| Related | [Decision 58](#decision-58) |
+
+**Statement.**
+
+- `node/src/rust/runtime/setup.rs` gains one task spawn for the mirror reconciler.
+- `docker/shard.yml` pins the ChromaDB image by digest and passes its environment to the nodes.
+
+**Reason.** The reconciler runs on finalized blocks, and the node starts the existing tasks of that kind. A pinned image makes the live leg reproducible.
+
+**Findings for other owners.** The design found ten defects in the existing `rho:chroma:*` integration (C-1 to C-10 of the design report).
+The campaign records them as findings for their owner.
 
 ## Minimal-footprint revision: M-1 to M-5
 
