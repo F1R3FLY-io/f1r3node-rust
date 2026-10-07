@@ -25,9 +25,14 @@ use crate::rust::interpreter::host_work::HostWorkBudget;
 
 mod fallback_metered;
 mod monetary;
+mod residue;
 mod valuation;
 pub use fallback_metered::{cost_region_metered, sig_to_cost_signature_metered};
 pub use monetary::monetary_funding_signatures_with_host_work;
+pub use residue::{
+    is_system_seal, is_unit_cost_signature, resolve_system_residue, resolve_system_residue_metered,
+    system_residue_authority, system_residue_region, ResidueContext,
+};
 pub use valuation::AuthorityResourceDemand;
 
 const CERTIFICATE_DOMAIN: &[u8] = b"f1r3node:authority-funding-certificate:v9";

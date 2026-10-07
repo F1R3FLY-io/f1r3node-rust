@@ -798,12 +798,19 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 backing,
             )
         };
+        // DR-101: the deployment that resolves residue seals.
+        let residue = super::accounting::authority::ResidueContext::new(
+            &self.budget.signature(),
+            self.budget.deploy_id(),
+        )
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         let observed = match host.as_ref() {
             Some(_) => super::accounting::observation_construction::comm_metered(
                 comm,
                 continuation,
                 continuation_persistent,
                 data,
+                &residue,
                 &meter,
             )?,
             None => super::accounting::observation_construction::comm(
@@ -811,6 +818,7 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 continuation,
                 continuation_persistent,
                 data,
+                &residue,
             )?,
         };
         self.budget
@@ -1536,6 +1544,7 @@ async fn setup_reducer(
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
         reduction_coordinator,
+        residue_seal: false,
     });
 
     reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();

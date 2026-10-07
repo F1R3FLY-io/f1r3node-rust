@@ -44,7 +44,8 @@ use tokio::sync::RwLock;
 use super::accounting::authority::{
     cost_region, cost_region_metered, cost_signature_to_sig, cost_signature_to_sig_metered,
     extend_authority, funding_sig_channel_metered, merge_authorities_metered,
-    sig_to_cost_signature, sig_to_cost_signature_metered, AuthorityError,
+    resolve_system_residue, sig_to_cost_signature, sig_to_cost_signature_metered,
+    system_residue_authority, AuthorityError, ResidueContext,
 };
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
@@ -184,6 +185,8 @@ pub struct ReducerCore {
     pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
     pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
     pub(crate) reduction_coordinator: ReductionCoordinator,
+    /// DR-101: set while a system body runs, so its residue keeps the system seal.
+    pub(crate) residue_seal: bool,
 }
 
 type Application = Option<(
@@ -219,6 +222,18 @@ impl ReducerCore {
         self.yielded_single_term_evaluations
             .store(0, Ordering::Relaxed);
         self.spawned_eval_tasks.store(0, Ordering::Relaxed);
+    }
+
+    /// DR-101: this reducer outside a system body.
+    fn without_residue_seal(&self) -> std::borrow::Cow<'_, Self> {
+        if self.residue_seal {
+            std::borrow::Cow::Owned(ReducerCore {
+                residue_seal: false,
+                ..self.clone()
+            })
+        } else {
+            std::borrow::Cow::Borrowed(self)
+        }
     }
 
     fn with_metering_child(&self, component: usize) -> Self {
@@ -328,11 +343,19 @@ impl ReducerCore {
         par: Par,
         env: Env<Par>,
         rand: Blake2b512Random,
+        system_body: bool,
     ) -> Result<(), InterpreterError> {
+        let reducer = if system_body == self.residue_seal {
+            self.clone()
+        } else {
+            Arc::new(ReducerCore {
+                residue_seal: system_body,
+                ..(**self).clone()
+            })
+        };
         if deterministic_reduction::current().is_none() {
-            return self.eval(par, &env, rand).await;
+            return reducer.eval(par, &env, rand).await;
         }
-        let reducer = self.clone();
         deterministic_reduction::spawn_detached(async move {
             reducer
                 .eval_inner(par, &env, rand, CostAuthority::default())
@@ -992,9 +1015,25 @@ impl ReducerCore {
             .enumerate()
             .map(|(index, (chan, _, removed_data, _))| {
                 let self_clone = self.with_metering_child(start_component + index);
-                let introduction_authority =
-                    removed_data.cost_authority.clone().unwrap_or_default();
                 Box::pin(async move {
+                    // Changed by DR-101: a restored datum charges its seal as this
+                    // deployment resolves it, so earlier system residue stays free.
+                    // let introduction_authority =
+                    //     removed_data.cost_authority.clone().unwrap_or_default();
+                    let introduction_authority = match removed_data.cost_authority.as_ref() {
+                        Some(seal) => {
+                            let budget = self_clone.metering.budget();
+                            let context =
+                                ResidueContext::new(&budget.signature(), budget.deploy_id())
+                                    .map_err(|error| {
+                                        InterpreterError::ReduceError(error.to_string())
+                                    })?;
+                            resolve_system_residue(seal, &removed_data.random_state, &context)
+                                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+                                .into_owned()
+                        }
+                        None => CostAuthority::default(),
+                    };
                     self_clone
                         .produce(chan, removed_data, false, introduction_authority)
                         .await
@@ -1213,9 +1252,12 @@ impl ReducerCore {
             }
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
+                    // DR-101 (P1 rem:signed-subst): a process held in a variable
+                    // keeps its sender's provenance, so it never runs as a system body.
                     ExprInstance::EVarBody(e) => {
                         let res = self.eval_var(&e.clone().v.unwrap(), env)?;
-                        self.eval_with_authority(res, env, rand, authority.clone())
+                        self.without_residue_seal()
+                            .eval_with_authority(res, env, rand, authority.clone())
                             .await
                     }
                     ExprInstance::EMethodBody(e) => {
@@ -1225,7 +1267,8 @@ impl ReducerCore {
                             },
                             env,
                         )?;
-                        self.eval_with_authority(res, env, rand, authority.clone())
+                        self.without_residue_seal()
+                            .eval_with_authority(res, env, rand, authority.clone())
                             .await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
@@ -1260,17 +1303,25 @@ impl ReducerCore {
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         self.metering.reserve_primitive(send_eval_cost())?;
-        let authority =
-            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
-                let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                let region = cost_region(&signature, &rand.to_bytes(), 0)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                extend_authority(authority, region)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
-            } else {
-                authority.clone()
-            };
+        let opens_region =
+            authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope();
+        let authority = if opens_region {
+            let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = cost_region(&signature, &rand.to_bytes(), 0)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            extend_authority(authority, region)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            authority.clone()
+        };
+        // DR-101: a system body pays through its payer region but stores system residue.
+        let seal = if opens_region && self.residue_seal {
+            system_residue_authority(&authority, &self.metering.budget().deploy_id())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            authority.clone()
+        };
         let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
         let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
@@ -1300,7 +1351,7 @@ impl ReducerCore {
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
-                cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
+                cost_authority: (!seal.regions.is_empty()).then_some(seal),
                 cost_stack: None,
             },
             send.persistent,
@@ -1329,21 +1380,26 @@ impl ReducerCore {
                 "cost-accounting: a join must sign either every receive clause or none".to_string(),
             ));
         }
-        let introduction_authority =
-            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
-                let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                let region = cost_region(&signature, &entropy, 0)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                extend_authority(authority, region)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
-            } else {
-                authority.clone()
-            };
-        let authority = if signed_binds == 0 {
-            introduction_authority.clone()
+        let opens_region =
+            authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope();
+        let introduction_authority = if opens_region {
+            let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = cost_region(&signature, &entropy, 0)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            extend_authority(authority, region)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
         } else {
             authority.clone()
+        };
+        let authority = if signed_binds != 0 {
+            authority.clone()
+        } else if opens_region && self.residue_seal {
+            // DR-101: a system body pays through its payer region but stores system residue.
+            system_residue_authority(&introduction_authority, &self.metering.budget().deploy_id())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            introduction_authority.clone()
         };
         let receive_authority =
             receive
@@ -7996,6 +8052,7 @@ impl ReducerCore {
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
             reduction_coordinator,
+            residue_seal: false,
         });
 
         reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();

@@ -302,6 +302,13 @@ successful `COMM` is charged once per distinct participating region, so a whole
 redex whose send and receive share one region realizes one unit even when the
 structural certificate conservatively reserved two. The difference is refunded.
 
+The participating regions of a `COMM` are the stored seals after resolution
+([DR-101](../cost-accounting-decision-records.md#dr-101--system-residue-is-never-charged-to-an-earlier-deployment)).
+A system body stores a residue region, which is a Unit region bound to the
+paying deployment. Inside that deployment, the residue region resolves to the
+payer region. In every later deployment, it stays a Unit region with no
+demand, so no deployment pays for the system residue of another.
+
 An unresolved dequotation or another state-dependent call is
 `DemandBound::Unprovable`; submitted syntax alone cannot bound a continuation
 already resident in RSpace.

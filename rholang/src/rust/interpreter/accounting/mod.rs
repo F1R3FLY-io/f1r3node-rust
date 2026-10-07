@@ -2552,9 +2552,28 @@ impl RuntimeBudget {
         *self.signature.lock().expect("signature lock") = funding_sig;
     }
 
-    pub fn set_deploy_id_funded(&self, deploy_id: [u8; 32], funding_sig: Sig) {
+    /// DR-101: a funded deployment never pays as system authority. A `Unit`
+    /// payer would make its own regions, and the residue of its system bodies,
+    /// cost nothing.
+    pub fn set_deploy_id_funded(
+        &self,
+        deploy_id: [u8; 32],
+        funding_sig: Sig,
+    ) -> Result<(), InterpreterError> {
+        if funding_sig == Sig::Unit {
+            return Err(InterpreterError::BugFoundError(
+                "a funded deployment cannot pay as system authority".to_string(),
+            ));
+        }
         *self.deploy_id.lock().expect("deploy id lock") = deploy_id;
         *self.signature.lock().expect("signature lock") = funding_sig;
+        Ok(())
+    }
+
+    /// I3/DR-101: system deploys pay as system authority with no deployment.
+    pub fn set_system_payer(&self) {
+        *self.deploy_id.lock().expect("deploy id lock") = [0; 32];
+        *self.signature.lock().expect("signature lock") = Sig::Unit;
     }
 
     pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }
@@ -3776,7 +3795,9 @@ mod runtime_budget_tests {
             Box::new(Sig::Ground(vec![11; 37])),
             Box::new(Sig::Quote(vec![23; 41])),
         );
-        budget.set_deploy_id_funded([19; 32], signature.clone());
+        budget
+            .set_deploy_id_funded([19; 32], signature.clone())
+            .expect("a ground payer funds the deployment");
         let unlimited = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
         assert_eq!(
             budget.signature_with_host_work(&unlimited).unwrap(),

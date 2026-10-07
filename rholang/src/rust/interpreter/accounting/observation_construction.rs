@@ -271,6 +271,7 @@ pub(crate) fn comm(
     continuation: &TaggedContinuation,
     continuation_persistent: bool,
     data: &[(&ListParWithRandom, bool)],
+    residue: &authority::ResidueContext,
 ) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
     let identity: [u8; 32] = comm
         .cost_identity()
@@ -284,6 +285,7 @@ pub(crate) fn comm(
         continuation_persistent,
         data,
         identity,
+        residue,
         None,
     )
 }
@@ -293,6 +295,7 @@ pub(crate) fn comm_metered(
     continuation: &TaggedContinuation,
     continuation_persistent: bool,
     data: &[(&ListParWithRandom, bool)],
+    residue: &authority::ResidueContext,
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
     // Disabled by C12 (DR-76): cost_identity_metered inspects the consume,
@@ -322,6 +325,7 @@ pub(crate) fn comm_metered(
         continuation_persistent,
         data,
         identity,
+        residue,
         Some(meter),
     )
 }
@@ -363,40 +367,105 @@ fn extend_persistent_regions(
     Ok(())
 }
 
+/// DR-101: the authority that a stored seal charges in the deployment of `residue`.
+fn resolved_seal<'a>(
+    seal: &'a CostAuthority,
+    entropy: &[u8],
+    residue: &authority::ResidueContext,
+    meter: Option<&dyn SourceMeter>,
+) -> Result<Cow<'a, CostAuthority>, RSpaceError> {
+    match meter {
+        Some(meter) => authority_metered(meter, |backing| {
+            authority::resolve_system_residue_metered(seal, entropy, residue, backing)
+        }),
+        None => {
+            authority::resolve_system_residue(seal, entropy, residue).map_err(construction_error)
+        }
+    }
+}
+
+fn continuation_entropy(continuation: &TaggedContinuation) -> &[u8] {
+    match continuation.tagged_cont.as_ref() {
+        Some(models::rhoapi::tagged_continuation::TaggedCont::ParBody(body)) => &body.random_state,
+        _ => &[],
+    }
+}
+
 fn comm_with_identity(
     comm: &COMM,
     continuation: &TaggedContinuation,
     continuation_persistent: bool,
     data: &[(&ListParWithRandom, bool)],
     identity: [u8; 32],
+    residue: &authority::ResidueContext,
     meter: Option<&dyn SourceMeter>,
 ) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
     let mut authorities = Vec::<&CostAuthority>::new();
+    let mut datum_seals = Vec::<Option<Cow<'_, CostAuthority>>>::new();
     if let Some(meter) = meter {
         let capacity = data
             .len()
             .checked_add(1)
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(
-            capacity,
+            capacity
+                .checked_mul(2)
+                .ok_or(RSpaceError::HostWorkRejected)?,
             0,
             capacity
-                .checked_mul(std::mem::size_of::<&CostAuthority>())
+                .checked_mul(
+                    std::mem::size_of::<&CostAuthority>()
+                        + std::mem::size_of::<Option<Cow<'_, CostAuthority>>>(),
+                )
                 .ok_or(RSpaceError::HostWorkRejected)?,
         )?;
         authorities
             .try_reserve_exact(capacity)
             .map_err(|_| RSpaceError::HostWorkRejected)?;
+        datum_seals
+            .try_reserve_exact(data.len())
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+    }
+    // Changed by DR-101: every participant's seal, the incoming one included,
+    // is charged as this deployment resolves it, so a COMM never charges the
+    // payer of an earlier deployment for system residue.
+    // if let Some(authority) = continuation.cost_authority.as_ref() {
+    //     authorities.push(authority);
+    //     if continuation_persistent {
+    //         extend_persistent_regions(&mut persistent_regions, authority, meter)?;
+    //     }
+    // }
+    // for (datum, persistent) in data {
+    //     if let Some(authority) = datum.cost_authority.as_ref() {
+    //         authorities.push(authority);
+    //         if *persistent {
+    //             extend_persistent_regions(&mut persistent_regions, authority, meter)?;
+    //         }
+    //     }
+    // }
+    let continuation_seal = continuation
+        .cost_authority
+        .as_ref()
+        .map(|seal| resolved_seal(seal, continuation_entropy(continuation), residue, meter))
+        .transpose()?;
+    for (datum, _) in data {
+        datum_seals.push(
+            datum
+                .cost_authority
+                .as_ref()
+                .map(|seal| resolved_seal(seal, &datum.random_state, residue, meter))
+                .transpose()?,
+        );
     }
     let mut persistent_regions = BTreeSet::new();
-    if let Some(authority) = continuation.cost_authority.as_ref() {
+    if let Some(authority) = continuation_seal.as_deref() {
         authorities.push(authority);
         if continuation_persistent {
             extend_persistent_regions(&mut persistent_regions, authority, meter)?;
         }
     }
-    for (datum, persistent) in data {
-        if let Some(authority) = datum.cost_authority.as_ref() {
+    for ((_, persistent), seal) in data.iter().zip(&datum_seals) {
+        if let Some(authority) = seal.as_deref() {
             authorities.push(authority);
             if *persistent {
                 extend_persistent_regions(&mut persistent_regions, authority, meter)?;

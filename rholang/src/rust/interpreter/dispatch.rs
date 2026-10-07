@@ -47,6 +47,11 @@ impl RholangAndScalaDispatcher {
         is_replay: bool,
         previous_output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        // DR-101: a continuation sealed by system authority alone runs a system body.
+        let system_body = continuation
+            .cost_authority
+            .as_ref()
+            .is_some_and(crate::rust::interpreter::accounting::authority::is_system_seal);
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -68,7 +73,9 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    reducer.eval_continuation(body, env, merged_rand).await?;
+                    reducer
+                        .eval_continuation(body, env, merged_rand, system_body)
+                        .await?;
 
                     Ok(DispatchType::DeterministicCall)
                 }

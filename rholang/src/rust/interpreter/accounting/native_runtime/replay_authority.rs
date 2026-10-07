@@ -85,6 +85,12 @@ fn metered_demand(
 }
 
 impl ReplayAuthorityBinding {
+    /// DR-101: the payer and deployment that resolve residue seals.
+    pub(super) fn residue_context(&self) -> Result<authority::ResidueContext, InterpreterError> {
+        authority::ResidueContext::new(&self.budget.signature(), self.budget.deploy_id())
+            .map_err(|error| recording_error(&error.to_string()))
+    }
+
     pub(super) fn new(budget: RuntimeBudget, session: [u8; 32]) -> Result<Self, InterpreterError> {
         let mut state = budget.authority_state.lock().expect("authority state");
         let native = state.native.as_ref().ok_or_else(invalid)?;

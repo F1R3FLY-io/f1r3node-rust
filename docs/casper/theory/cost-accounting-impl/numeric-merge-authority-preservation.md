@@ -103,6 +103,13 @@ The user approved that economic consequence because numeric aggregation requires
 The existing COMM authority combiner supports this representation.
 The aggregation policy depends on the explicit user approval recorded above, not solely on that implementation mechanism.
 
+**Amendment (DR-101).** A numeric datum that a system body writes, such as a vault balance, carries residue regions.
+A residue region is a Unit region whose identity is bound to the paying deployment.
+The union rule retains it like any other Unit region (`UnitProvenance`).
+A later deployment never resolves it, because its deployment identity differs, so it adds no demand.
+The economic consequence above therefore applies only to non-Unit regions, which come from data that user code writes.
+See [DR-101](../cost-accounting-decision-records.md#dr-101--system-residue-is-never-charged-to-an-earlier-deployment).
+
 Native resource-stack outputs have an empty `pars` list and a populated `cost_stack` field.
 They are not numeric outputs.
 Reject malformed numeric/resource-stack hybrids instead of deleting, sorting, or combining their linear cells.

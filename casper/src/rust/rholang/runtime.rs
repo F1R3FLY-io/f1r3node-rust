@@ -159,7 +159,8 @@ impl RuntimeOps {
         self.runtime.cost.set_unmetered(false);
         self.runtime
             .cost
-            .set_deploy_id_funded(identity, accounting::funding_sig(signed));
+            .set_deploy_id_funded(identity, accounting::funding_sig(signed))
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         self.runtime
             .evaluate_with_native_phlo(
                 &envelope.body().term,
@@ -1674,6 +1675,9 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_runtime_evaluate", rss_kb);
         }
         let wrapper_pre = wrapper_pre_start.elapsed();
+        // I3/DR-101: a system deploy pays as system authority, never as the
+        // payer of a deployment that this runtime evaluated earlier.
+        self.runtime.cost.set_system_payer();
         let result = self
             .runtime
             .evaluate(

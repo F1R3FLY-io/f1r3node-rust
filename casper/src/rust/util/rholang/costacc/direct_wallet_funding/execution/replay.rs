@@ -1447,7 +1447,8 @@ impl RuntimeManager {
             .bind_trace(events.clone(), replay_limits.trace, &host)
             .map_err(invalid)?;
         let cost = RuntimeBudget::new(Cost::unsafe_max());
-        cost.set_deploy_id_funded(identity, funding_sig(signed));
+        cost.set_deploy_id_funded(identity, funding_sig(signed))
+            .map_err(|error| invalid(error.to_string()))?;
         cost.reset_for_native_execution(config)?;
         let before = Blake2b256Hash::from_bytes(prepared.execution_root.to_vec());
         let history = Arc::new(self.history_repo.reset(&before).map_err(invalid)?);
@@ -1633,7 +1634,8 @@ impl RuntimeManager {
             return Err(invalid("native replay requires an offered funded envelope"));
         };
         let cost = RuntimeBudget::new(Cost::unsafe_max());
-        cost.set_deploy_id_funded(identity, funding_sig(signed));
+        cost.set_deploy_id_funded(identity, funding_sig(signed))
+            .map_err(|error| invalid(error.to_string()))?;
         cost.reset_for_native_execution(config)?;
         let before =
             Blake2b256Hash::from_bytes(policy.snapshot().wallets().pre_state_root().to_vec());

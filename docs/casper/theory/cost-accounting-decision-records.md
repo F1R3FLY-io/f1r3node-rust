@@ -2142,6 +2142,12 @@ consensus storage design.
   the complete authority of each committed atomic COMM. Play and replay bind
   the same selection to the certificate, witness, and adjacent state roots.
 
+**Amendment (DR-101).** The first item still sets who pays. An unsigned
+surface in a system body charges the payer of the deployment that fires the
+body. The seal that such a surface stores is a residue region. The residue
+region charges that payer only inside the same deployment, and it has no
+demand in any later deployment. See DR-101.
+
 The production invariant for a committed event $`e`$ and an unrelated ambient
 purse $`p_a`$ is:
 
@@ -4204,6 +4210,13 @@ Funding eligibility admitted only the sources of the triggering envelope
 5. The gateway test uses its intended P1 funding-slot form
    `[gateway ⊸ slot]`. Clients read installed names through the public
    `listenForContinuationAtName`.
+
+**Amendment (DR-101).** Item 4 also covers the residue of a system body. A
+genesis contract body that runs for a funded deployment stores a residue
+region. That region charges the deployment's own payer inside the deployment
+and maps to no purse in any later deployment. The installer rule of items 1
+to 3 applies only to stored terms that user code signs, never to system
+residue.
 
 **Verification obligations.** The three-node gateway flow passes. A TLA+
 control shows that a trigger with no stored signature cannot draw an installer
@@ -7879,3 +7892,296 @@ probe did not show. The user moved them to the follow-up campaign
 `followup-8946-d-c5-deferred-findings`.
 
 **Cross-refs.** DR-79, DR-96, DR-98. Leaf `ofp-2-cap-d-c5a-trace-known-bounds`.
+
+## DR-101 — System residue is never charged to an earlier deployment
+
+**Status.** Implemented for bug 10056 in Phase D of epic 8946 on 2026-10-06.
+The user chose to review the design before the implementation. One
+independent review approved the design with changes. This record includes
+all of them.
+
+**Context.** The Embers agent reported that a rebuilt protocol 6 node
+rejects the Embers testnet log initializer with "measured funding case has
+no feasible signed assignment". A tenfold phlo ceiling gave the same result.
+The same initializer is funded on a fresh genesis. It is rejected after
+another signer inserts into the registry.
+
+The cause is the seal that a system body stores. A fired continuation runs
+its body with an empty authority (`eval_continuation`). Each unsigned send
+or receive in the body then opens a region of the current payer
+(`eval_send`, `eval_receive`). This is the inheritance rule of DR-41, which
+follows P1 uniform signing (`def:sugar-uniform`).
+
+Before this record, the reducer also stored that payer region as the
+permanent seal of the datum or continuation. Genesis contracts therefore
+sealed shared state with the principal of the deployment that wrote it last.
+The registry, `TreeHashMap`, `SystemVault` and the versioned registry all
+store state in this way. A later deployment that consumes such state must
+fund the stored seal:
+
+- The COMM authority merges the stored seals of all participants
+  (`comm_with_identity`).
+- A peek introduces the datum again under its stored seal (`produce_peeks`).
+
+Funding eligibility requires an exact key match on the location of the
+region (`family_selection.rs:163-186`). An owner-direct intent permits only
+the keys of its own signer. A deployment of signer B therefore cannot fund
+a region of signer A. Every signer except the last writer gets "no feasible
+signed assignment".
+
+**Paper basis.** The papers do not let the writer of shared state charge a
+later reader:
+
+- P1 `ex:cross-party` (`cost-accounted-rho.tex` 1295-1315): "Neither party
+  can impose costs on the other beyond what the sugar makes explicit."
+- P1 `def:funding-proof` (2047-2058): a deployment is fully funded when
+  $`\Sigma_s \geq \Delta_s`$ for every signature $`s`$ that appears in the
+  deployment. The signature of A does not appear in the deployment of B.
+- P1 `def:token-demand` (2002-2027): the demand $`\Delta_s`$ counts the
+  layers signed by $`s`$ in the deployment term and in the processes that the
+  term reaches through `?!` or dequotation. Shared system state is not such
+  a layer.
+- P1 (3367-3373): an unsigned process "is free infrastructure, analogous to
+  the operating system's process scheduler".
+- P1 Rule 4 (892-906): input and output are signed separately, and each
+  signer supplies its own token.
+- P2 R2 and R3 (`continued-gslt-cost-v2.tex` 469-500): the surface seals fund
+  the cut, and the continuation keys pass through `compute` unchanged.
+  P2 `cor:noleak` (525-530): "There is no dynamic wrapping operation."
+
+The papers give no representation for the residue of a system body. This
+record fills that gap with the smallest rule that keeps every charge inside
+the deployment that pays for the body.
+
+![Sequence diagram with the actors Signer A (writer) and Signer B (reader) and the participants Proposer and validators, Reducer, Seal resolution, Shared system state, and Funding family selection. In deployment A, with identity d_A, the send of A matches a genesis contract whose seal has only Unit regions, so the reducer runs the body in residue mode. The body's work is charged to the payer region P_A, which is cost_region(A, e, 0). The node is stored with the residue seal R_A, a Unit region whose identity is the hash of the domain, d_A and the identity of P_A. A COMM of deployment A that consumes the node resolves R_A to P_A, so A is charged as under the inheritance rule of DR-41. In deployment B, with identity d_B, a COMM consumes the node that deployment A stored. R_A does not match B, d_B and the entropy, so it stays a Unit region with no demand. Funding selection receives obligations only in the regions of B and finds a feasible assignment from the sources of B. Settlement debits only the purse of B. A red note states that before DR-101 the node kept P_A, so B had demand in the lane of A and got "measured funding case has no feasible signed assignment". An amber note states that a process held in a variable or produced by a method runs outside residue mode, so its residue keeps the caller's region. A grey note states that genesis and system deploys run with the Unit payer and store R equal to P.](diagrams/system-residue-seal-sequence.svg)
+
+(*Source: [`diagrams/system-residue-seal-sequence.puml`](diagrams/system-residue-seal-sequence.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/system-residue-seal-sequence.puml`.*)
+
+**Definitions.**
+
+- A *system seal* is a non-empty seal whose regions all have the `Unit`
+  signature (`is_system_seal`). Genesis continuations have system seals.
+- A *system body* is the body of a continuation that has a system seal.
+- $`p`$ is the payer of the current deployment, and $`d`$ is its 32-byte
+  deployment identity.
+- $`e`$ is the entropy of an item, which is its stored `random_state`.
+- The *payer region* is $`P = \mathrm{cost\_region}(p, e, 0)`$, the region
+  that $`p`$ opens for an item with entropy $`e`$.
+- $`\delta`$ is the domain `f1r3node:cost-accounted-rho:system-residue:v1`,
+  and $`\Vert`$ is byte concatenation.
+
+**Decision.**
+
+1. `dispatch` computes the mode from the seal of the fired continuation.
+   `eval_continuation` runs a system body in residue mode
+   (`ReducerCore::residue_seal`).
+2. In residue mode, an unsigned send or receive with an empty ambient
+   authority still opens and charges $`P`$. The deployment that fires the
+   body pays for the work of the body, as before.
+3. The datum or continuation stores the residue region $`R`$ instead of
+   $`P`$ (`system_residue_region`). A `Unit` payer stores $`R = P`$, so
+   genesis and system deploys store the same seal as before.
+4. A COMM or a peek resolves a stored seal before it charges the seal
+   (`resolve_system_residue`). A `Unit` region whose identity equals the
+   residue identity for the current payer, the current deployment and the
+   entropy of the item becomes $`P`$ again. Every other region stays as
+   stored. A `Unit` region has no demand.
+5. A process held in a variable (`EVar`) or produced by a method (`EMethod`)
+   runs outside residue mode (`without_residue_seal`). It is the code of the
+   caller, and a received term keeps its provenance (P1 `rem:signed-subst`,
+   816-825). Its residue keeps $`P`$.
+6. Guards:
+   - An offered deployment cannot be funded with a `Unit` payer:
+     `set_deploy_id_funded` rejects `Sig::Unit`.
+   - System deploys, such as close block and slashing, run with the `Unit`
+     payer and deployment identity 0 (`set_system_payer`). This also closes
+     the stale signature case I3 of the Phase D plan.
+   - Native replay resolves seals with the context of its bound deployment
+     (`ReplayAuthorityBinding::residue_context`). An unbound replay resolves
+     no seal, so a replay of a play that resolved a seal fails the
+     recorded-observation check.
+   - `only_either_runs_a_process_held_in_a_variable` lists every genesis site
+     that runs a variable as a process. Today only `Either.map2` and
+     `Either.map2Clean` do. A new site fails the test until a reviewer
+     accepts it.
+7. The replaced lines stay as comments with the reason.
+
+```math
+\begin{aligned}
+R(d, P) &= \bigl\{\, \mathit{id} = \mathrm{Blake2b256}(\delta \,\Vert\, d \,\Vert\, P.\mathit{id}),\ \ \mathit{sig} = \mathsf{Unit} \,\bigr\}
+  \qquad (P.\mathit{sig} \neq \mathsf{Unit}) \\
+R(d, P) &= P \qquad (P.\mathit{sig} = \mathsf{Unit}) \\
+\mathrm{stored}(x) &=
+  \begin{cases}
+    R(d, P) & \text{if } x \text{ runs in residue mode} \\
+    P & \text{otherwise}
+  \end{cases} \\
+\mathrm{resolve}_{p,d}(r, e) &=
+  \begin{cases}
+    \mathrm{cost\_region}(p, e, 0) & \text{if } r.\mathit{sig} = \mathsf{Unit},\ p \neq \mathsf{Unit} \text{ and } r = R\bigl(d, \mathrm{cost\_region}(p, e, 0)\bigr) \\
+    r & \text{otherwise}
+  \end{cases}
+\end{aligned}
+```
+
+**Soundness.**
+
+- Inside its own deployment, $`R`$ resolves to $`P`$. Every COMM count and
+  every lane is the same as under the inheritance rule
+  (`in_deploy_charge_refines_inheritance`).
+- In every other deployment, $`R`$ stays a `Unit` region with no demand. The
+  deployment that created the residue paid for its creation. A later reader
+  pays for its own participants (Rule 4).
+- A charge goes only to the current payer or to the non-`Unit` signer of a
+  region (`no_foreign_lane`, `comm_charges_only_payer_or_user_signers`). The
+  demand of system residue does not depend on its writer
+  (`demand_is_writer_independent`).
+- A user seal keeps the lane of its writer. Data that user code stores still
+  needs the token of its writer (DR-68, D5, `user_term_still_charged`).
+- The identity of $`R`$ is a Blake2b-256 hash with domain separation over
+  $`d`$ and $`P.\mathit{id}`$. $`P.\mathit{id}`$ is itself a hash over the
+  payer and the entropy. A residue region that resolves for another
+  deployment or another payer needs a hash collision.
+- The creating deployment pays the introduction of every residue item, so
+  there is no free storage. The review found no free work except a COMM whose
+  participants all carry unresolved system seals. Genesis residue already
+  had this property.
+
+**Behavior changes.**
+
+- After one signer writes shared system state, every other signer reads and
+  writes it with its own token. This includes the registry, `TreeHashMap`,
+  the versioned registry and vault balances, for example a deposit by
+  another signer.
+- The price of a deployment does not depend on who wrote the shared system
+  state last.
+- Inside one deployment, the COMM counts and lanes stay the same. The stored
+  seals are smaller, because a `Unit` signature replaces a principal, so the
+  byte charges decrease. On a fresh genesis, the Embers initializer uses
+  514,743 phlo instead of 548,184 (6.1 % less). A vault transfer uses about
+  451,330 phlo instead of about 485,345 (7.0 % less).
+- Consensus: the post-state of a block changes when a funded deployment in the
+  block runs a system body. Genesis does not change. A genesis deploy runs on
+  a fresh budget, whose signature is `Unit` (`accounting/mod.rs:862`), and a
+  `Unit` payer stores $`R = P`$.
+- Protocol 6 requires a fresh genesis. A running protocol 6 network must
+  restart from a new genesis to use this rule.
+- Host work: the metered resolution reserves its region scans, both hashes
+  and the canonical form before the work runs
+  (`resolve_system_residue_metered`).
+
+**Rejected alternatives.**
+
+1. The installer pays (G3 or D5 applied to system residue). The purse of A
+   would pay for the registry work of every later signer. That is an
+   open-ended charge across parties (`ex:cross-party`), and A does not sign
+   the deployment of B (`def:funding-proof`). G3 and D5 stay limited to
+   stored terms that user code signs.
+2. The writer pays for later reads (`resolveByStoredSigner`). The same
+   objections apply. The TLA+ mutation refutes `NoForeignSystemResidueDemand`.
+3. Residue bound to the payer only, not to the deployment (`payerOnly`). A
+   payer would pay again for its own earlier residue, so the price of a read
+   would depend on the last writer. The mutation refutes
+   `WriterIndependentCost`.
+4. Plain `Unit` residue that never resolves (`noInDeploy`). The creating
+   deployment would get the COMMs on its own residue free, which changes the
+   charges of the inheritance rule. The mutation refutes
+   `InDeployChargeRefinesInheritance`, and the Rocq theorem
+   `never_resolving_loses_in_deploy_charges` shows the lost charge.
+5. An activation flag in the genesis resource policy. The review declined it
+   for spec minimalism. Protocol 6 requires a fresh genesis, and a fresh
+   genesis activates the rule.
+
+**Out of scope (follow-up).** A user contract has the same last-writer
+pattern. Its body also runs in a fresh scope, so its residue keeps the payer
+region of the deployment that fired it. A third signer that consumes that
+residue cannot fund it. Under P1 uniform signing, the body belongs to the
+signed term of the installer (Rule 4, D5). The G3 installer-funding work must
+decide this case. The limit is recorded as a follow-up note on bug 10056.
+
+**Verification.** `SystemResidueSeal.v` proves its results without axioms,
+parameters or admissions. Hashes are free constructors of `region_id`, so
+constructor injectivity models collision resistance, and distinct
+constructors model domain separation.
+
+- `unit_payer_keeps_its_region`: genesis and system deploys store the same
+  seal as before.
+- `in_deploy_resolution_returns_the_payer_region` and
+  `in_deploy_charge_refines_inheritance`: inside the creating deployment the
+  charge equals the charge of the old rule.
+- `cross_deploy_residue_has_no_demand`, `another_payer_never_resolves` and
+  `other_entropy_never_resolves`: residue never resolves for another
+  deployment, another payer or another entropy.
+- `signed_regions_never_resolve` and `user_term_still_charged`: a user seal
+  keeps the lane of its writer.
+- `no_foreign_lane`, `system_residue_charges_only_the_current_payer` and
+  `comm_charges_only_payer_or_user_signers`: a charge never goes to an
+  earlier payer of system residue.
+- `demand_is_writer_independent` and
+  `held_process_residue_keeps_its_senders_lane`.
+- Negative controls `last_writer_seal_charges_a_foreign_payer` (the old rule)
+  and `never_resolving_loses_in_deploy_charges` (no resolution).
+
+`SystemResidueAuthority.tla` models deployments that write and read one
+system node and one user datum, with merged entropy and replay. TLC checks
+`TypeOK`, `NoForeignSystemResidueDemand`, `InDeployChargeRefinesInheritance`,
+`WriterIndependentCost`, `GenesisSealUnchanged`, `UserTermResidueStillCharged`
+and `ReplayAgreement` for two payers and three deployments: 2,513 states,
+1,757 distinct, depth 4. Each of the five mutations `lastWriterSeal`,
+`payerOnly`, `noInDeploy`, `resolveByStoredSigner` and `replayWithoutContext`
+is refuted. Both models are registered in the proof gate and the TLA+ gate.
+
+Tests:
+
+- Rholang unit tests in `authority/residue/tests.rs`: the residue region,
+  resolution only inside the deployment, mixed seals, the system-seal
+  classification and metered parity. With an exhausted meter, the metered
+  resolution rejects before it hashes.
+- `a_replay_in_another_residue_context_observes_another_comm`: play and
+  replay with the same context build the same observation. A replay with
+  another deployment, another payer or no binding builds another
+  observation, which the recorded-observation check rejects.
+- Casper, three nodes, each block replayed by every node with equal receipts:
+  `registry_initializer_is_funded_on_a_fresh_genesis`,
+  `another_signer_initializes_a_registry_environment_after_a_registry_insert`
+  (the Embers initializer),
+  `another_signer_looks_up_the_registry_after_a_registry_insert`,
+  `another_signer_inserts_into_the_registry_after_a_registry_insert`,
+  `a_registry_lookup_costs_the_same_whoever_wrote_the_registry_last`,
+  `another_signer_inserts_a_version_after_a_version_insert`,
+  `a_signer_spends_a_deposit_that_another_signer_made`,
+  `user_written_data_still_needs_its_writers_token` and
+  `a_process_that_a_system_contract_runs_keeps_its_callers_seal`.
+- Genesis: `only_either_runs_a_process_held_in_a_variable` and its control
+  `the_check_finds_a_received_process_that_runs`.
+- `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` is
+  ignored until gap G6 of the Phase D plan lands. The merge of two offered
+  sibling blocks rejects a deploy of the carrier that the proposer owns.
+  Offered recovery then fails with "offered-funded recovery requires an
+  envelope buffer" (`interpreter_util.rs`) before the merge block executes.
+  The TLA+ merge action covers merged residue until then.
+
+Negative controls in a scratch copy:
+
+- With the old last-writer seal, the six tests that another signer runs
+  after a write fail with "measured funding case has no feasible signed
+  assignment". The tests for a fresh genesis, for user data and for a held
+  process still pass.
+- With the residue mode kept for a held process, the test
+  `a_process_that_a_system_contract_runs_keeps_its_callers_seal` fails.
+
+The Casper tests use the provisional Phase D caps. Under the committed caps,
+seven of the nine fail at their first deployment, before DR-101 applies: the
+host-work budget rejects the system work of that deployment. DR-98 and
+DR-100 measure the same kind of excess, and Phase D item S11 sets the final
+caps. `another_signer_inserts_a_version_after_a_version_insert` and
+`user_written_data_still_needs_its_writers_token` pass under both sets of
+caps.
+
+The review also asked for a test that pins the genesis state root. It is not
+possible with the test genesis builder: four runs with one fixed validator
+gave four different roots. The genesis argument above therefore rests on the
+code and on `unit_payer_keeps_its_region`.
+
+**Cross-refs.** DR-31, DR-41, DR-68, DR-98, DR-100. Bug 10056
+(`bug-after-one-signer-writes-the-registry-any-other-signer-s-registry-lookup-or-insert-is-unfundable-work-charged-to-the-earlier-writer-s-authority-51d630`).
