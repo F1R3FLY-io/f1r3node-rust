@@ -22,7 +22,12 @@ const EMBEDDED_DEFAULTS: &str = include_str!("../../main/resources/defaults.conf
 const DEFAULT_CONFIG_FILE_NAME: &str = "f1r3fly.conf";
 
 /// Legacy config file name from before the F1R3FLY rename. Used only as a
-/// one-release fallback when the default file is absent.
+/// fallback when the default file is absent.
+///
+/// TODO(#246): remove this fallback once `asi-chain-testbed` and
+/// `system-integration` stop mounting `rnode.conf` — both still hardcode
+/// that path as of this writing, so dropping it today would silently
+/// strand every container built from either repo on embedded defaults.
 const LEGACY_CONFIG_FILE_NAME: &str = "rnode.conf";
 
 /// Configuration building and parsing functionality
@@ -68,14 +73,7 @@ pub mod builder {
             })
             .unwrap_or_else(|| (profile.data_dir.0.clone(), None));
 
-        let (config_file_path, mut warnings) =
-            resolve_config_file_path(&data_dir, explicit_config_file);
-
-        let config_file: Option<PathBuf> = if config_file_path.exists() {
-            Some(config_file_path)
-        } else {
-            None
-        };
+        let (config_file, mut warnings) = resolve_config_file_path(&data_dir, explicit_config_file);
 
         // Build configuration from multiple sources with proper precedence:
         // 1. CLI options (highest priority)
@@ -379,29 +377,39 @@ pub mod builder {
         Ok(warnings)
     }
 
-    /// Resolves the config file path. An explicit `--config-file` wins
+    /// Resolves the config file path, checking existence exactly once so
+    /// the caller never re-checks it. An explicit `--config-file` wins
     /// outright. Otherwise, defaults to `<data-dir>/f1r3fly.conf`, falling
     /// back to the legacy `<data-dir>/rnode.conf` (with a warning) when the
-    /// default is absent but the legacy file exists.
+    /// default is absent but the legacy file exists. Returns `None` when
+    /// no file was found at the resolved location, in which case the
+    /// caller loads embedded defaults only.
     fn resolve_config_file_path(
         data_dir: &std::path::Path,
         explicit_config_file: Option<PathBuf>,
-    ) -> (PathBuf, Vec<String>) {
+    ) -> (Option<PathBuf>, Vec<String>) {
         if let Some(path) = explicit_config_file {
-            let warnings = if path.exists() {
-                Vec::new()
-            } else {
-                vec![format!(
-                    "Config file {} not found; starting from embedded defaults only.",
-                    path.display(),
-                )]
-            };
-            return (path, warnings);
+            if path.exists() {
+                return (Some(path), Vec::new());
+            }
+            // An operator asked for this exact file by name, so its
+            // absence is worth a warning even though embedded defaults
+            // are not themselves wrong — unlike the "nothing mounted at
+            // all" case below, this is never a normal supported startup.
+            let warning = format!(
+                "Config file {} not found; starting from embedded defaults only.",
+                path.display(),
+            );
+            return (None, vec![warning]);
         }
 
         let default_path = data_dir.join(DEFAULT_CONFIG_FILE_NAME);
+        if default_path.exists() {
+            return (Some(default_path), Vec::new());
+        }
+
         let legacy_path = data_dir.join(LEGACY_CONFIG_FILE_NAME);
-        if !default_path.exists() && legacy_path.exists() {
+        if legacy_path.exists() {
             let warning = format!(
                 "{} not found; falling back to legacy {}. Rename it to {} — the \
                 fallback will be removed once every deployment that still mounts \
@@ -410,20 +418,15 @@ pub mod builder {
                 legacy_path.display(),
                 DEFAULT_CONFIG_FILE_NAME,
             );
-            return (legacy_path, vec![warning]);
+            return (Some(legacy_path), vec![warning]);
         }
 
-        let warnings = if default_path.exists() {
-            Vec::new()
-        } else {
-            vec![format!(
-                "No config file found at {} (or legacy {}); starting from embedded \
-                defaults only.",
-                default_path.display(),
-                legacy_path.display(),
-            )]
-        };
-        (default_path, warnings)
+        // Neither name is mounted and nothing was asked for explicitly.
+        // Running on embedded defaults alone is a normal, supported mode
+        // (a fresh dev run, a container that intentionally ships no
+        // config) rather than a sign of misconfiguration, so this stays
+        // silent instead of warning on every such start.
+        (None, Vec::new())
     }
 
     /// Check dev mode and adjust configuration accordingly. Returns the
@@ -485,55 +488,64 @@ pub mod builder {
     mod resolve_config_file_path_tests {
         use super::*;
 
+        /// Every test gets its own UUID-suffixed directory, even the ones
+        /// that never create files, so a stale or concurrently-running
+        /// checkout (this repo's CI and local runs both land under the
+        /// shared system temp dir) can never collide with another run's
+        /// leftovers.
+        fn fresh_test_dir(label: &str) -> PathBuf {
+            std::env::temp_dir()
+                .join(label)
+                .join(uuid::Uuid::new_v4().to_string())
+        }
+
         #[test]
         fn explicit_path_wins_but_warns_if_absent() {
-            let data_dir = std::env::temp_dir().join("f1r3fly-config-path-test-explicit");
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-explicit");
             let explicit = data_dir.join("custom.conf");
             let (path, warnings) = resolve_config_file_path(&data_dir, Some(explicit.clone()));
-            assert_eq!(path, explicit);
+            assert_eq!(path, None);
             assert_eq!(warnings.len(), 1);
             assert!(warnings[0].contains(&explicit.display().to_string()));
         }
 
         #[test]
         fn explicit_path_present_emits_no_warning() {
-            let data_dir = std::env::temp_dir()
-                .join("f1r3fly-config-path-test-explicit-present")
-                .join(uuid::Uuid::new_v4().to_string());
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-explicit-present");
             std::fs::create_dir_all(&data_dir).expect("create test data dir");
             let explicit = data_dir.join("custom.conf");
             std::fs::write(&explicit, "").expect("write explicit config file");
 
             let (path, warnings) = resolve_config_file_path(&data_dir, Some(explicit.clone()));
 
-            assert_eq!(path, explicit);
+            assert_eq!(path, Some(explicit));
             assert!(warnings.is_empty());
 
             std::fs::remove_dir_all(&data_dir).expect("clean up test data dir");
         }
 
         #[test]
-        fn warns_when_neither_default_nor_legacy_file_exists() {
-            let data_dir = std::env::temp_dir().join("f1r3fly-config-path-test-neither");
+        fn is_silent_when_neither_default_nor_legacy_file_exists() {
+            // Embedded-defaults-only is a normal, supported startup (a
+            // fresh dev run, a container that ships no config on
+            // purpose) rather than a misconfiguration, so this must not
+            // warn on every such start.
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-neither");
             let (path, warnings) = resolve_config_file_path(&data_dir, None);
-            assert_eq!(path, data_dir.join(DEFAULT_CONFIG_FILE_NAME));
-            assert_eq!(warnings.len(), 1);
-            assert!(warnings[0].contains(DEFAULT_CONFIG_FILE_NAME));
-            assert!(warnings[0].contains(LEGACY_CONFIG_FILE_NAME));
+            assert_eq!(path, None);
+            assert!(warnings.is_empty());
         }
 
         #[test]
         fn falls_back_to_legacy_rnode_conf_with_a_warning() {
-            let data_dir = std::env::temp_dir()
-                .join("f1r3fly-config-path-test-legacy")
-                .join(uuid::Uuid::new_v4().to_string());
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-legacy");
             std::fs::create_dir_all(&data_dir).expect("create test data dir");
             let legacy_path = data_dir.join(LEGACY_CONFIG_FILE_NAME);
             std::fs::write(&legacy_path, "").expect("write legacy config file");
 
             let (path, warnings) = resolve_config_file_path(&data_dir, None);
 
-            assert_eq!(path, legacy_path);
+            assert_eq!(path, Some(legacy_path));
             assert_eq!(warnings.len(), 1);
             assert!(warnings[0].contains(LEGACY_CONFIG_FILE_NAME));
             assert!(warnings[0].contains(DEFAULT_CONFIG_FILE_NAME));
@@ -543,18 +555,16 @@ pub mod builder {
 
         #[test]
         fn prefers_the_default_over_the_legacy_file_when_both_exist() {
-            let data_dir = std::env::temp_dir()
-                .join("f1r3fly-config-path-test-both")
-                .join(uuid::Uuid::new_v4().to_string());
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-both");
             std::fs::create_dir_all(&data_dir).expect("create test data dir");
-            std::fs::write(data_dir.join(DEFAULT_CONFIG_FILE_NAME), "")
-                .expect("write default config file");
+            let default_path = data_dir.join(DEFAULT_CONFIG_FILE_NAME);
+            std::fs::write(&default_path, "").expect("write default config file");
             std::fs::write(data_dir.join(LEGACY_CONFIG_FILE_NAME), "")
                 .expect("write legacy config file");
 
             let (path, warnings) = resolve_config_file_path(&data_dir, None);
 
-            assert_eq!(path, data_dir.join(DEFAULT_CONFIG_FILE_NAME));
+            assert_eq!(path, Some(default_path));
             assert!(warnings.is_empty());
 
             std::fs::remove_dir_all(&data_dir).expect("clean up test data dir");
