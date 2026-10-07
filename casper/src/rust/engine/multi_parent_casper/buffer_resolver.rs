@@ -5,6 +5,7 @@
 //! reference; the trait method is a one-line delegate in `traits.rs`.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
@@ -13,9 +14,22 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use super::block_admission::admit_dag_contains;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{
+    CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC, CASPER_METRICS_SOURCE,
+};
 use crate::rust::util::proto_util;
 
 pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+) -> Result<Vec<BlockMessage>, CasperError> {
+    let started = Instant::now();
+    let result = scan_dependency_free_from_buffer(this);
+    metrics::histogram!(CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(started.elapsed().as_secs_f64());
+    result
+}
+
+fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<Vec<BlockMessage>, CasperError> {
     let equivocation_hashes: HashSet<BlockHash> = this

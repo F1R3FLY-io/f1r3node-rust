@@ -59,6 +59,7 @@ pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
 pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
+pub const CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC: &str = "casper.buffer.release-scan.time";
 pub const BLOCK_PROCESSING_IN_FLIGHT_METRIC: &str = "block-processing.in-flight";
 pub const BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC: &str =
     "block-processing.in-flight.oldest-age-seconds";

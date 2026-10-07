@@ -87,9 +87,23 @@ behaviors:
     statement: "The release scan records its duration"
     priority: should
     deep_module: false
-    done: false
+    done: true
     notes: "Histogram casper.buffer.release-scan.time."
-    cycle_log: []
+    cycle_log:
+      - date: 2026-10-07
+        test: "casper --test mod sync::buffer_release_scan_spec::the_release_scan_records_its_duration"
+        red: "left: 0, right: 1. A release scan on a one-node TestNode network recorded no duration. The first runs failed to compile (a missing metric name, then the wrong trait import), so the name and the import were fixed before the behavior RED."
+        green: "buffer_get_dependency_free_from_buffer times the scan, now in the private scan_dependency_free_from_buffer, and records casper.buffer.release-scan.time (seconds, source f1r3fly.casper). The time is recorded on the error paths too."
+        files:
+          - casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs
+          - casper/src/rust/metrics_constants.rs
+          - casper/tests/sync/buffer_release_scan_spec.rs
+          - casper/tests/sync/mod.rs
+        suite: "cargo test --release -p casper: every target passed (mod 1000 passed, 11 ignored; lib 500 passed; the other targets passed). clippy -D warnings clean for the casper lib and the mod test target. cargo fmt clean."
+        observations:
+          - "cargo clippy -p casper --all-targets fails on wal_payload_retriever.rs:537 (assert_eq with a literal bool, lib test build). The file is the same as origin/dev, so the failure comes from dev and is out of scope for this branch."
+          - "The test uses the real MultiParentCasperImpl through the Casper trait. No internal part is mocked."
+          - "With B10, the scan runs inside the scheduler handler and still holds the processing slot. This metric is the baseline for B8."
   - id: B4
     statement: "A recovery re-request for a dependency is counted apart from ordinary request retries"
     priority: should
