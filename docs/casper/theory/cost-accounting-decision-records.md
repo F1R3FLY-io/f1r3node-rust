@@ -5553,6 +5553,10 @@ Tests in `hot_store/native/tests.rs`:
 - `every_data_view_cut_rejects_without_filling_the_cache`. This test found
   a first draft that reserved the snapshot after the insert.
 
+**Amendment (DR-106).** The entries of the channel data also borrow their
+channels, and the selection reads the position of each channel's entry,
+which the build of the entries records (DR-106).
+
 **Cross-refs.** DR-81. Leaf `ofp-2-cap-c2-data-views`.
 
 ## DR-83 — Continuation-shard replaces count store-owned pointers inline
@@ -9229,3 +9233,206 @@ in VerificationBytes and 1.05 in SearchStateBytes.
 
 **Cross-refs.** DR-88, DR-103, DR-104. Leaf
 `ofp-2-cap-d-d3-free-variable-fast-path`.
+
+## DR-106 — The selection reads recorded channel positions, and the entries borrow their channels
+
+**Status.** Implemented 2026-10-07 for Phase D item D-D4 of epic 8946 (D-M7
+of the Phase D plan). A read-only design pass checked the approved design
+against the code after DR-105 and refined it in three places. This record
+includes the refinements.
+
+**Context.** Native replay prepares a candidate in two steps
+(`native_candidate/metered.rs`):
+
+- `metered_channel_data` builds one entry for each distinct channel of a
+  join. For each channel it searches the entries built so far for an equal
+  channel (`channel_position`). A found entry takes the channel's values.
+  Otherwise the channel is copied into a new entry, with its copy and
+  cleanup reserved.
+- `metered_match_data` selects one datum for each pattern. For each pattern
+  it searched the finished entries again for the entry of the pattern's
+  channel. Each visited entry charged an inspection of both channels and one
+  comparison.
+
+The entry's channel is only compared, so its copy did no work that the
+selection needs. The positions are fixed when the entries are built, so the
+second search found what the first search had found. The produce path runs
+the selection once for each waiting continuation of a join, so these
+searches repeat. The probe attributed about 14.7 MB of VerificationBytes and
+1 MB of SearchStateBytes to the channel copies, and about 11.5 MB of
+VerificationBytes to the searches of the selection.
+
+**Decision.**
+
+1. An entry borrows its channel (`ChannelData { channel: &'v C, .. }`) from
+   the channel slice of the join, as its values borrow the data views
+   (DR-82).
+2. `metered_channel_data` returns the entries and one position for each
+   channel: the position of the found entry, or the position of the new
+   entry. The position buffer reserves $`n + 1`$ operations and $`8n`$
+   scanned and backing bytes (`POSITION_BYTES`). A compile-time assertion
+   keeps `size_of::<usize>()` at or below 8. So the charge does not depend on
+   the platform's layout (`host-work-budget.md`), and it covers the
+   allocation.
+3. `metered_match_data` takes the positions. For each pattern it reserves
+   one operation and 8 scanned bytes, and then it reads the position. A
+   position list whose length differs from the number of channels, or a
+   position outside the entries, rejects the match with
+   `HostWorkRejected`. The callers produce neither.
+4. The search in `metered_match_data` and the copy in `metered_channel_data`
+   stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨build the entries⟩ ≡
+  reserve the entry buffer (n slots) and the position buffer (n + 1, 8n, 8n)
+  for each channel c of the join, in order:
+    ⟨prepare the values of c⟩                -- unchanged (DR-75, DR-82)
+    j ← channel_position(entries, c)         -- the search of the build, unchanged
+    if j was found:
+      entries[j].values ← values
+      record j
+    else:
+      record |entries|
+      append (a borrow of c, values)
+
+⟨select⟩ ≡
+  for each pair (channel c_i, pattern p_i) with its recorded position k_i:
+    reserve (1 operation, 8 scanned bytes, 0)
+    reject if k_i is outside the entries
+    ⟨match p_i against the values of entries[k_i]⟩   -- unchanged (DR-88)
+```
+
+**Soundness.**
+
+- *Same positions.* An entry never moves after it is appended, and its
+  channel never changes. When the build finds the first equal entry $`j`$
+  for channel $`c_i`$, the entries before $`j`$ stay unequal to $`c_i`$. So
+  the search in the finished entries also finds $`j`$. When the build
+  appends $`c_i`$ at position $`k`$, the entries before $`k`$ are unequal to
+  $`c_i`$, and entry $`k`$ holds $`c_i`$ itself. A reflexive equality finds
+  it. So the recorded position equals the first-equal search in the
+  finished entries (`ChannelPositions.recorded_position_equals_first_equal_search`,
+  `first_equal_search_equals_recorded_positions`).
+- *Same selection.* The selection reads the same (channel, pattern, entry)
+  inputs from the recorded positions as from the searches
+  (`selection_inputs_equal`). The selected candidate copies its channel from
+  the join's channel slice, as before. So the candidates and the COMM do not
+  change.
+- *Reflexivity.* The proof needs only a reflexive equality on channels.
+  `Par` compares its fields and stores floats as raw bits, so its equality
+  is reflexive, also for a NaN payload. The equality ignores
+  `locally_free`, so equal channels need not be identical, and the proof
+  does not need that. A non-reflexive equality breaks the result
+  (`non_reflexive_equality_breaks_recorded_positions`).
+- *Charges.* The position read is reserved before the read
+  (`recorded_attempt_trace_covered`). The legacy search visited $`j + 1`$
+  entries for the entry at position $`j`$, and each visit charged an
+  inspection of both channels and one comparison
+  (`legacy_search_visits_position_plus_one`, `legacy_attempt_charge_uniform`).
+  When one word is at most the charge of one visit, the read charges no more
+  than the search (`recorded_charge_le_legacy`). An inspection reserves
+  three times the size of each node that it visits. So an inspection of a
+  `Par` channel (296 bytes) charges at least 888 bytes, and the premise
+  holds. The `u8` channels of the test spaces have an inspection charge of 3
+  bytes. For them, a search at position 0 charges 6 bytes, 2 bytes less than
+  the word (`small_channel_search_cheaper_than_word_example`).
+- *Buffers.* The entry buffer charges `size_of` of an entry for each slot,
+  as before. An entry over `Par` channels falls from 320 to 32 bytes. The
+  position buffer adds 8 bytes for each slot.
+- *Determinism.* Every charge depends only on the shape of the values, on
+  compile-time sizes and on the constant `POSITION_BYTES`.
+
+**Refinements of the approved design.**
+
+- The approved design did not charge the position buffer or the position
+  reads. The buffer now reserves its slots, and each read reserves one word
+  before it reads.
+- The word is the constant `POSITION_BYTES`, not `size_of::<usize>()`, so a
+  new SearchStateBytes term does not depend on the platform's layout.
+- The selection rejects an inconsistent position list instead of a missing
+  entry. The legacy search marked a missing entry as a failed pattern, but
+  the build gives every channel an entry.
+
+**Scope.** This change is cost-accounting work. Native replay exists only on
+this branch. The change alters host-work charges of protocol 6, which is not
+yet released. Native replay selects the same candidates and builds the same
+COMM. No encoding, root, event or receipt changes.
+
+**Verification.** `ChannelPositions.v` proves these results without axioms:
+
+- `positions_length`, `recorded_position_equals_first_equal_search`,
+  `first_equal_search_equals_recorded_positions`, `selection_inputs_equal`,
+  `recorded_position_names_equal_entry` and `entries_pairwise_unequal`.
+- `legacy_search_visits_position_plus_one`, `legacy_attempt_charge_uniform`,
+  `legacy_trace_reserves_search_charge`, `legacy_attempt_trace_covered`,
+  `recorded_attempt_trace_covered`, `recorded_attempt_charge` and
+  `recorded_charge_le_legacy`.
+- Negative controls: `read_before_reservation_is_not_covered`,
+  `legacy_position_search_charge_example`,
+  `small_channel_search_cheaper_than_word_example`,
+  `pattern_index_names_another_channel_example` and
+  `non_reflexive_equality_breaks_recorded_positions`.
+
+Tests in rspace++ `native_candidate/metered/tests.rs`, against a frozen copy
+of the legacy selection (`legacy_match_data`):
+
+- `recorded_positions_equal_first_equal_search` (128 cases): on repeated
+  channels, with stored data and an incoming datum, each recorded position
+  is the first-equal search in the entries. The entries are pairwise
+  unequal, one for each distinct channel, and each borrows the first
+  occurrence of its channel.
+- `repeated_channel_selection_matches_frozen_legacy_selection` (128 cases):
+  the selection equals the legacy selection on repeated channels,
+  persistent data, an incoming datum and a failed commit. The charges differ
+  by exactly the legacy searches less one word for each pattern. A first
+  version of this test selected data in 1 case of 128. Its values and
+  patterns now come from a small range, so 27 cases of 128 select data.
+- `match_data_position_charge_is_one_word_per_pattern`: over entries without
+  data, the charge is the two selection buffers and one word for each
+  pattern, at positions 0 and 7 and for channels of 2 and 4,097 bytes.
+- `legacy_position_search_charge_grew_with_position_and_channel_size`: the
+  negative control. The legacy charge grows by exactly seven visits from
+  position 0 to position 7, and by two inspections of the larger channels.
+- `channel_data_charge_excludes_channel_copies`: the channel data of one
+  channel charge the same for 2 and for 4,097 bytes.
+- `repeated_channel_consume_accepts_exact_credit_and_rejects_each_smaller_dimension`
+  and `position_buffer_charges_one_word_per_slot_and_prepays_it` (counting
+  allocator).
+- `match_data_rejects_inconsistent_positions`.
+- `models/tests/par_equality_test.rs`: the premise. `Par` equality is
+  reflexive (256 cases, with NaN payloads), and it ignores `locally_free`.
+- The existing every-cut and differential tests of candidate selection pass.
+- Five mutations in a scratch copy fail tests. A wrong position for a found
+  channel and the pattern's own index instead of its position fail seven
+  tests each. A missing position charge fails two. A position buffer without
+  its backing charge fails only `position_buffer_charges_one_word_per_slot_and_prepays_it`,
+  because the cumulative allocation checks of the other tests do not see 8
+  bytes for each slot. A missing length check fails
+  `match_data_rejects_inconsistent_positions`.
+
+**Measurement.** The D-G0 probe ran the gateway test twice with DR-105 and
+twice with DR-106, under the provisional caps. Every role charged exactly
+the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-105, run 1 | 1,203,070,723 | 140,521,206 | 60,476,133 |
+| DR-105, run 2 | 1,189,831,318 | 140,325,579 | 60,457,440 |
+| DR-106, run 1 | 1,181,480,379 | 139,070,263 | 60,004,315 |
+| DR-106, run 2 | 1,169,835,253 | 138,834,641 | 59,988,090 |
+| Change of the means | −20.8 MB (−1.7 %) | −1.47 MB (−1.0 %) | −471 K (−0.8 %) |
+
+The runs of the two builds do not overlap. The change of VerificationBytes
+is about 1.6 times the largest difference between two runs of one build,
+and the changes of SearchStateBytes and VerificationOperations are about 6
+and 25 times it. The sampled call sites, averaged over the two runs of each
+build, put the saving at the channel copies in `metered_channel_data`
+(about −10.5 MB) and at the searches in `channel_position` (about
+−8.9 MB). The samples resolve steps of 1 MiB. The saving is about 80 % of
+the 26 MB of the plan. In multiples of the original caps, the replay falls
+to 4.38 in VerificationBytes and 1.04 in SearchStateBytes.
+
+**Cross-refs.** DR-75, DR-82, DR-88. Leaf
+`ofp-2-cap-d-d4-channel-positions`.

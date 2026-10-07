@@ -47,6 +47,26 @@ fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>> {
     Ok(values)
 }
 
+/// D-D4 (DR-106): the bytes charged for one recorded channel position. The
+/// constant keeps the charge independent of the platform's layout, and the
+/// assertion keeps the charge at or above the allocation.
+const POSITION_BYTES: usize = 8;
+const _: () = assert!(size_of::<usize>() <= POSITION_BYTES);
+
+/// D-D4 (DR-106): a buffer for `length` channel positions. It charges one
+/// operation for each slot plus one, and `POSITION_BYTES` for each slot.
+fn position_buffer(length: usize, meter: &dyn SourceMeter) -> Result<Vec<usize>> {
+    let bytes = length
+        .checked_mul(POSITION_BYTES)
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve(length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
+    let mut positions = Vec::new();
+    positions
+        .try_reserve_exact(length)
+        .map_err(|_| RSpaceError::HostWorkRejected)?;
+    Ok(positions)
+}
+
 // Legacy metered (digest, index) order: it inspected and hashed every candidate
 // on every operation. Disabled by I1 (DR-75); the canonical order below
 // digests only tie runs and matches play's
@@ -180,8 +200,14 @@ fn sort<T>(
 //     channel: C,
 //     values: Vec<(Datum<A>, i32)>,
 // }
+// Changed by D-D4 (DR-106): the entry borrows its channel, which is only
+// compared, so the channel is not copied.
+// struct ChannelData<'v, C, A: Clone> {
+//     channel: C,
+//     values: Vec<(Cow<'v, Datum<A>>, i32)>,
+// }
 struct ChannelData<'v, C, A: Clone> {
-    channel: C,
+    channel: &'v C,
     values: Vec<(Cow<'v, Datum<A>>, i32)>,
 }
 
@@ -205,9 +231,12 @@ fn channel_position<C: Eq + CloneBacking, A: Clone>(
 ) -> Result<Option<usize>> {
     for (position, existing) in channels.iter().enumerate() {
         native_backing::inspect(channel, meter)?;
-        native_backing::inspect(&existing.channel, meter)?;
+        // Changed by D-D4 (DR-106): the entry borrows its channel.
+        // native_backing::inspect(&existing.channel, meter)?;
+        native_backing::inspect(existing.channel, meter)?;
         meter.reserve(1, 0, 0)?;
-        if channel == &existing.channel {
+        // if channel == &existing.channel {
+        if channel == existing.channel {
             return Ok(Some(position));
         }
     }
@@ -379,15 +408,19 @@ where
         Ok(views)
     }
 
+    /// One entry for each distinct channel, and for each channel of
+    /// `channels` the position of its entry (D-D4, DR-106). The entries
+    /// borrow the channels.
     fn metered_channel_data<'v>(
         &self,
-        channels: &[C],
+        channels: &'v [C],
         views: &'v [NativeDataView<C, A>],
         incoming: Option<(&C, &A, bool, &Produce)>,
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
-    ) -> Result<Vec<ChannelData<'v, C, A>>> {
+    ) -> Result<(Vec<ChannelData<'v, C, A>>, Vec<usize>)> {
         let mut result = buffer(channels.len(), reader.meter)?;
+        let mut positions = position_buffer(channels.len(), reader.meter)?;
         for (channel, view) in channels.iter().zip(views) {
             // Changed by C2 (DR-82): the candidates borrow the cached data.
             // let mut values = sorted((reader.data)(channel)?, reader.meter)?;
@@ -443,38 +476,70 @@ where
                     values.remove(position);
                 }
             }
-            if let Some(position) = channel_position(&result, channel, reader.meter)? {
-                result[position].values = values;
-            } else {
-                native_backing::reserve_copy_and_cleanup(channel, reader.meter)?;
-                result.push(ChannelData {
-                    channel: channel.clone(),
-                    values,
-                });
+            // Changed by D-D4 (DR-106): the entry borrows its channel, which
+            // is only compared, and the position of the channel's entry is
+            // recorded for the match.
+            // if let Some(position) = channel_position(&result, channel, reader.meter)? {
+            //     result[position].values = values;
+            // } else {
+            //     native_backing::reserve_copy_and_cleanup(channel, reader.meter)?;
+            //     result.push(ChannelData {
+            //         channel: channel.clone(),
+            //         values,
+            //     });
+            // }
+            match channel_position(&result, channel, reader.meter)? {
+                Some(position) => {
+                    result[position].values = values;
+                    positions.push(position);
+                }
+                None => {
+                    positions.push(result.len());
+                    result.push(ChannelData { channel, values });
+                }
             }
         }
-        Ok(result)
+        // Ok(result)
+        Ok((result, positions))
     }
 
+    /// Selects one datum for each pattern. `positions[i]` is the position in
+    /// `data` of the entry of `channels[i]`, as `metered_channel_data`
+    /// recorded it (D-D4, DR-106).
     fn metered_match_data(
         &self,
         channels: &[C],
+        positions: &[usize],
         patterns: &[P],
         continuation: &K,
         data: &[ChannelData<'_, C, A>],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<Option<Vec<ConsumeCandidate<C, A>>>> {
+        if positions.len() != channels.len() {
+            return Err(RSpaceError::HostWorkRejected);
+        }
         let count = channels.len().min(patterns.len());
         let mut chosen = buffer::<(usize, usize)>(count, meter)?;
         let mut candidates = buffer(count, meter)?;
         let mut complete = true;
-        for (channel, pattern) in channels.iter().zip(patterns) {
-            let Some(channel_index) = channel_position(data, channel, meter)? else {
-                complete = false;
-                continue;
-            };
+        // Changed by D-D4 (DR-106): the position of each channel's entry is
+        // read, one word for each pattern, instead of searched.
+        // for (channel, pattern) in channels.iter().zip(patterns) {
+        //     let Some(channel_index) = channel_position(data, channel, meter)? else {
+        //         complete = false;
+        //         continue;
+        //     };
+        for ((channel, pattern), recorded) in channels.iter().zip(patterns).zip(positions) {
+            meter.reserve(1, POSITION_BYTES, 0)?;
+            let channel_index = *recorded;
+            let entry = data
+                .get(channel_index)
+                .ok_or(RSpaceError::HostWorkRejected)?;
             let mut found = false;
-            for (position, (datum, index)) in data[channel_index].values.iter().enumerate() {
+            // for (position, (datum, index)) in
+            //     data[channel_index].values.iter().enumerate()
+            // {
+            for (position, (datum, index)) in entry.values.iter().enumerate() {
                 meter.reserve(
                     chosen
                         .len()
@@ -671,9 +736,29 @@ where
         // Changed by C2 (DR-82): the channel data borrow copy-free views.
         // let data = self.metered_channel_data(channels, None, expected, reader)?;
         let views = self.metered_data_views(channels, keys, reader)?;
-        let data = self.metered_channel_data(channels, &views, None, expected, reader)?;
-        let Some(data) =
-            self.metered_match_data(channels, patterns, continuation, &data, reader.meter)?
+        // Changed by D-D4 (DR-106): the match reads the recorded positions.
+        // let data =
+        //     self.metered_channel_data(channels, &views, None, expected, reader)?;
+        // let Some(data) = self.metered_match_data(
+        //     channels,
+        //     patterns,
+        //     continuation,
+        //     &data,
+        //     reader.meter,
+        // )?
+        // else {
+        //     return Ok(None);
+        // };
+        let (data, positions) =
+            self.metered_channel_data(channels, &views, None, expected, reader)?;
+        let Some(data) = self.metered_match_data(
+            channels,
+            &positions,
+            patterns,
+            continuation,
+            &data,
+            reader.meter,
+        )?
         else {
             return Ok(None);
         };
@@ -722,7 +807,9 @@ where
                 sorted((reader.continuations)(&channels, group_keys)?, reader.meter)?;
             // Changed by C2 (DR-82): the channel data borrow copy-free views.
             let views = self.metered_data_views(&channels, &group_keys.channels, reader)?;
-            let data = self.metered_channel_data(
+            // Changed by D-D4 (DR-106): the match reads the recorded positions.
+            // let data = self.metered_channel_data(
+            let (data, positions) = self.metered_channel_data(
                 &channels,
                 &views,
                 Some((channel, value, persist, source)),
@@ -738,6 +825,7 @@ where
                 }
                 let Some(data_candidates) = self.metered_match_data(
                     &channels,
+                    &positions,
                     &continuation.patterns,
                     &continuation.continuation,
                     &data,

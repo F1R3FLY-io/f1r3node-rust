@@ -806,13 +806,16 @@ fn match_data_charge(
 ) -> (bool, [usize; 3]) {
     let channel = "channel".to_string();
     let data = vec![ChannelData {
-        channel: channel.clone(),
+        // Changed by D-D4 (DR-106): the entry borrows its channel.
+        // channel: channel.clone(),
+        channel: &channel,
         values: vec![(Cow::Borrowed(datum), 0)],
     }];
     let meter = Meter::default();
     let matched = space
         .metered_match_data(
             std::slice::from_ref(&channel),
+            &[0],
             &[pattern.to_string()],
             &continuation.to_string(),
             &data,
@@ -874,4 +877,482 @@ async fn legacy_selection_charge_grew_with_unread_values() {
         match_data_charge(&space, &format!("a{}", "x".repeat(4_096)), &datum, &"k".repeat(4_096));
     assert_eq!(current_short, current_long);
     assert!(long[1] > short[1] + 8_000, "{short:?} vs {long:?}");
+}
+
+/// D-D4 (DR-106) fixtures: the keys of string channels on an unlimited meter.
+fn string_channel_keys(channels: &[String]) -> Vec<StoreKey> {
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    channels
+        .iter()
+        .map(|channel| native_source::channel_key(channel, &free).expect("an unlimited meter"))
+        .collect()
+}
+
+/// D-D4 (DR-106) fixtures: `with_reader` for the string space.
+fn with_string_reader<T>(
+    space: &StringSpace,
+    meter: &Meter,
+    action: impl FnOnce(&CandidateReader<'_, String, String, String, String>) -> T,
+) -> T {
+    let data = |channel: &String, _key: StoreKey| {
+        space
+            .get_store()
+            .get_data_view_with_reader(channel, &|| Ok(Vec::new()), meter)
+    };
+    let continuations = |channels: &[String], _keys: &GroupKeys| {
+        space
+            .get_store()
+            .get_continuation_views_with_reader(channels, &|| Ok(Vec::new()), meter)
+    };
+    action(&CandidateReader {
+        meter,
+        data: &data,
+        continuations: &continuations,
+    })
+}
+
+/// D-D4 (DR-106): a frozen copy of the selection before D-D4. For each
+/// pattern it searched the channel data for the first entry equal to the
+/// pattern's channel, so its charge grew with the position of that entry and
+/// with the sizes of the channels. It is the oracle of the selection tests
+/// and of the charge controls.
+fn legacy_match_data<C, P, A, K>(
+    space: &ReplayRSpace<C, P, A, K>,
+    channels: &[C],
+    patterns: &[P],
+    continuation: &K,
+    data: &[ChannelData<'_, C, A>],
+    meter: &(dyn SourceMeter + Send + Sync),
+) -> Result<Option<Vec<ConsumeCandidate<C, A>>>>
+where
+    C: Clone + Eq + CloneBacking,
+    A: Clone + CloneBacking,
+{
+    let count = channels.len().min(patterns.len());
+    let mut chosen = buffer::<(usize, usize)>(count, meter)?;
+    let mut candidates = buffer(count, meter)?;
+    let mut complete = true;
+    for (channel, pattern) in channels.iter().zip(patterns) {
+        let Some(channel_index) = channel_position(data, channel, meter)? else {
+            complete = false;
+            continue;
+        };
+        let mut found = false;
+        for (position, (datum, index)) in data[channel_index].values.iter().enumerate() {
+            meter.reserve(
+                chosen
+                    .len()
+                    .checked_add(1)
+                    .ok_or(RSpaceError::HostWorkRejected)?,
+                chosen
+                    .len()
+                    .checked_mul(size_of::<(usize, usize)>())
+                    .ok_or(RSpaceError::HostWorkRejected)?,
+                0,
+            )?;
+            if !datum.persist && chosen.contains(&(channel_index, position)) {
+                continue;
+            }
+            let Some(matched) = space.matcher.get_metered(pattern, &datum.a, meter)? else {
+                continue;
+            };
+            native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
+            native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+            candidates.push(ConsumeCandidate {
+                channel: channel.clone(),
+                datum: Datum {
+                    a: matched,
+                    persist: datum.persist,
+                    source: datum.source.clone(),
+                },
+                removed_datum: datum.a.clone(),
+                datum_index: *index,
+            });
+            if !datum.persist {
+                chosen.push((channel_index, position));
+            }
+            found = true;
+            break;
+        }
+        if !found {
+            complete = false;
+        }
+    }
+    if !complete {
+        return Ok(None);
+    }
+    let mut matched = buffer::<&A>(candidates.len(), meter)?;
+    for candidate in &candidates {
+        matched.push(&candidate.datum.a);
+    }
+    if !space
+        .matcher
+        .check_commit_metered(continuation, &matched, meter)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(candidates))
+}
+
+/// D-D4 (DR-106) fixtures: stores `stored` on a fresh space, then builds the
+/// channel data of `channels` with an optional incoming datum on channel 1,
+/// and passes the space, the entries and the recorded positions to `check`.
+fn with_channel_data(
+    channels: &[u8],
+    stored: &[(u8, u8, bool)],
+    incoming: Option<(u8, bool)>,
+    check: impl FnOnce(&Space, &[ChannelData<'_, u8, u8>], &[usize]),
+) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime")
+        .block_on(async {
+            let space = space().await;
+            for (channel, value, persistent) in stored {
+                put(&space, *channel, *value, *persistent);
+            }
+            let keys = channel_keys(channels);
+            let source = incoming.map(|(value, persistent)| {
+                (value, persistent, Produce::create(&1u8, &value, persistent))
+            });
+            let meter = Meter::default();
+            with_reader(&space, &meter, |reader| {
+                let views = space
+                    .metered_data_views(channels, &keys, reader)
+                    .expect("data views");
+                let incoming = source
+                    .as_ref()
+                    .map(|(value, persistent, source)| (&1u8, value, *persistent, source));
+                let (data, positions) = space
+                    .metered_channel_data(channels, &views, incoming, None, reader)
+                    .expect("channel data");
+                check(&space, &data, &positions);
+            });
+        });
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// D-D4 (DR-106; `ChannelPositions.recorded_position_equals_first_equal_search`,
+    /// `entries_pairwise_unequal`): the position recorded for each channel is
+    /// the position that the first-equal search finds in the finished entries.
+    /// The entries are pairwise unequal, one for each distinct channel, and
+    /// each borrows the first occurrence of its channel.
+    #[test]
+    fn recorded_positions_equal_first_equal_search(
+        channels in prop::collection::vec(1u8..5, 0..10),
+        stored in prop::collection::vec((1u8..5, 1u8..64, any::<bool>()), 0..12),
+        incoming in prop::option::of((1u8..64, any::<bool>())),
+    ) {
+        with_channel_data(&channels, &stored, incoming, |_, data, positions| {
+            assert_eq!(positions.len(), channels.len());
+            for (channel, position) in channels.iter().zip(positions) {
+                let first = data.iter().position(|entry| entry.channel == channel);
+                assert_eq!(Some(*position), first);
+            }
+            for (later, entry) in data.iter().enumerate() {
+                for earlier in &data[..later] {
+                    assert_ne!(entry.channel, earlier.channel);
+                }
+                let first = channels
+                    .iter()
+                    .position(|channel| channel == entry.channel)
+                    .expect("an entry has a channel");
+                assert!(std::ptr::eq(entry.channel, &channels[first]));
+            }
+            assert_eq!(data.len(), channels.iter().collect::<BTreeSet<_>>().len());
+        });
+    }
+
+    /// D-D4 (DR-106; `ChannelPositions.first_equal_search_equals_recorded_positions`):
+    /// the selection that reads the recorded positions equals the frozen
+    /// legacy selection on repeated channels, persistent data, an incoming
+    /// datum and a failed commit. The charges differ by exactly the legacy
+    /// searches less one position word for each pattern. The values and the
+    /// patterns come from a small range, so that about a fifth of the cases
+    /// select data (measured: 27 of 128).
+    #[test]
+    fn repeated_channel_selection_matches_frozen_legacy_selection(
+        channels in prop::collection::vec(1u8..4, 0..8),
+        patterns in prop::collection::vec(0u8..4, 0..8),
+        stored in prop::collection::vec((1u8..4, 1u8..4, any::<bool>()), 0..16),
+        incoming in prop::option::of((1u8..4, any::<bool>())),
+        commits in prop::bool::weighted(0.75),
+    ) {
+        let continuation = if commits { 9u8 } else { 255u8 };
+        with_channel_data(&channels, &stored, incoming, |space, data, positions| {
+            let current = Meter::default();
+            let actual = space
+                .metered_match_data(&channels, positions, &patterns, &continuation, data, &current)
+                .expect("current selection");
+            let legacy = Meter::default();
+            let expected = legacy_match_data(space, &channels, &patterns, &continuation, data, &legacy)
+                .expect("legacy selection");
+            assert_eq!(actual.is_some(), expected.is_some());
+            if let (Some(actual), Some(expected)) = (&actual, &expected) {
+                same_data(actual, expected);
+            }
+            let searches = Meter::default();
+            for channel in channels.iter().take(patterns.len()) {
+                channel_position(data, channel, &searches).expect("legacy search");
+            }
+            let pairs = channels.len().min(patterns.len());
+            let word = [1, POSITION_BYTES, 0];
+            for dimension in 0..3 {
+                assert_eq!(
+                    current.used.get()[dimension] + searches.used.get()[dimension],
+                    legacy.used.get()[dimension] + pairs * word[dimension],
+                    "dimension {dimension}"
+                );
+            }
+        });
+    }
+}
+
+/// D-D4 (DR-106) fixtures: eight string channels of `size` bytes after a
+/// one-digit prefix, so each holds `size + 1` bytes.
+fn sized_channels(size: usize) -> Vec<String> {
+    (0..8)
+        .map(|index| format!("{index}{}", "c".repeat(size)))
+        .collect()
+}
+
+/// D-D4 (DR-106; `ChannelPositions.recorded_attempt_charge`): the match reads
+/// one recorded position for each pattern. Over entries without data, the
+/// charge is the two selection buffers and one word for each pattern, so it
+/// does not depend on the position of the entry or on the sizes of the
+/// channels.
+#[tokio::test]
+async fn match_data_position_charge_is_one_word_per_pattern() {
+    let space = string_space().await;
+    let charge = |count: usize, position: usize, size: usize| {
+        let channels = sized_channels(size);
+        let data: Vec<_> = channels
+            .iter()
+            .map(|channel| ChannelData {
+                channel,
+                values: Vec::new(),
+            })
+            .collect();
+        let meter = Meter::default();
+        let matched = space
+            .metered_match_data(
+                &vec![channels[position].clone(); count],
+                &vec![position; count],
+                &vec!["a".to_string(); count],
+                &"k".to_string(),
+                &data,
+                &meter,
+            )
+            .expect("metered match data");
+        assert!(matched.is_none());
+        meter.used.get()
+    };
+    for count in 1..4 {
+        let expected = Meter::default();
+        buffer::<(usize, usize)>(count, &expected).expect("chosen buffer");
+        buffer::<ConsumeCandidate<String, String>>(count, &expected).expect("candidate buffer");
+        expected
+            .reserve(count, count * POSITION_BYTES, 0)
+            .expect("position words");
+        for (position, size) in [(0, 1), (7, 1), (0, 4_096), (7, 4_096)] {
+            assert_eq!(
+                charge(count, position, size),
+                expected.used.get(),
+                "{count} patterns, position {position}, size {size}"
+            );
+        }
+    }
+}
+
+/// Negative control for D-D4 (DR-106;
+/// `ChannelPositions.legacy_position_search_charge_example`): the frozen
+/// legacy selection searched for the entry of each pattern's channel. Each
+/// visited entry charged an inspection of both channels and one comparison,
+/// so the charge grew with the position of the entry and with the sizes of
+/// the channels.
+#[tokio::test]
+async fn legacy_position_search_charge_grew_with_position_and_channel_size() {
+    let space = string_space().await;
+    let charge = |position: usize, size: usize| {
+        let channels = sized_channels(size);
+        let data: Vec<_> = channels
+            .iter()
+            .map(|channel| ChannelData {
+                channel,
+                values: Vec::new(),
+            })
+            .collect();
+        let meter = Meter::default();
+        let matched = legacy_match_data(
+            &space,
+            std::slice::from_ref(&channels[position]),
+            &["a".to_string()],
+            &"k".to_string(),
+            &data,
+            &meter,
+        )
+        .expect("legacy match data");
+        assert!(matched.is_none());
+        meter.used.get()
+    };
+    let inspection = |size: usize| {
+        let meter = Meter::default();
+        native_backing::inspect(&sized_channels(size)[0], &meter).expect("channel inspection");
+        meter.used.get()
+    };
+    for size in [1, 4_096] {
+        let near = charge(0, size);
+        let far = charge(7, size);
+        let visit = inspection(size);
+        for dimension in 0..3 {
+            let comparison = usize::from(dimension == 0);
+            assert_eq!(
+                far[dimension],
+                near[dimension] + 7 * (2 * visit[dimension] + comparison),
+                "size {size}, dimension {dimension}"
+            );
+        }
+    }
+    let small = charge(0, 1);
+    let large = charge(0, 4_096);
+    assert_eq!(large[1], small[1] + 2 * (inspection(4_096)[1] - inspection(1)[1]));
+    assert!(large[1] >= small[1] + 2 * 4_095, "{small:?} vs {large:?}");
+}
+
+/// D-D4 (DR-106): the entries borrow their channels, so building the channel
+/// data of one channel charges the same for a channel of 2 bytes and one of
+/// 4,097 bytes. The legacy entries copied each new channel and charged its
+/// copy and cleanup.
+#[tokio::test]
+async fn channel_data_charge_excludes_channel_copies() {
+    let space = string_space().await;
+    let charge = |size: usize| {
+        let channels = vec![sized_channels(size)[0].clone()];
+        space
+            .get_store()
+            .put_datum(&channels[0], Datum::create(&channels[0], "a".to_string(), false));
+        let keys = string_channel_keys(&channels);
+        let meter = Meter::default();
+        with_string_reader(&space, &meter, |reader| {
+            let views = space
+                .metered_data_views(&channels, &keys, reader)
+                .expect("data views");
+            let before = meter.used.get();
+            let (data, positions) = space
+                .metered_channel_data(&channels, &views, None, None, reader)
+                .expect("channel data");
+            assert_eq!(positions, [0]);
+            assert_eq!(data.len(), 1);
+            assert_eq!(data[0].values.len(), 1);
+            let after = meter.used.get();
+            [after[0] - before[0], after[1] - before[1], after[2] - before[2]]
+        })
+    };
+    assert_eq!(charge(1), charge(4_096));
+    let copy = Meter::default();
+    native_backing::reserve_copy_and_cleanup(&sized_channels(4_096)[0], &copy)
+        .expect("legacy channel copy");
+    assert!(copy.used.get()[1] >= 2 * 4_097, "{:?}", copy.used.get());
+}
+
+/// D-D4 (DR-106): the consume selection over repeated channels succeeds with
+/// exactly the credit that it reserves. A credit one unit short in any
+/// dimension rejects it before an unpaid allocation and leaves the state
+/// unchanged.
+#[tokio::test]
+async fn repeated_channel_consume_accepts_exact_credit_and_rejects_each_smaller_dimension() {
+    let space = space().await;
+    for (channel, value) in [(1, 7), (2, 8), (1, 9), (2, 10)] {
+        put(&space, channel, value, false);
+    }
+    let channels = [1, 2, 1, 2];
+    let patterns = [0, 0, 0, 0];
+    let source = Consume::create(&channels.to_vec(), &patterns.to_vec(), &9u8, false);
+    let keys = channel_keys(&channels);
+    let peeks = BTreeSet::new();
+    let run = |meter: &Meter| {
+        with_reader(&space, meter, |reader| {
+            space.prepare_metered_consume_candidate(
+                &channels, &keys, &patterns, &9, &source, &peeks, None, reader,
+            )
+        })
+    };
+    let baseline = Meter::default();
+    let expected = run(&baseline)
+        .expect("baseline selection")
+        .expect("a candidate");
+    assert_eq!(expected.data.len(), 4);
+    let before = state(&space);
+    let exact = Meter {
+        limit: Some(baseline.used.get()),
+        ..Meter::default()
+    };
+    let actual = run(&exact).expect("exact credit").expect("a candidate");
+    same_data(&actual.data, &expected.data);
+    assert_eq!(
+        bincode::serialize(&actual.comm).expect("comm encoding"),
+        bincode::serialize(&expected.comm).expect("comm encoding")
+    );
+    for dimension in 0..3 {
+        let mut limit = baseline.used.get();
+        limit[dimension] -= 1;
+        let meter = Meter {
+            limit: Some(limit),
+            ..Meter::default()
+        };
+        let (result, bytes) = measure_allocations(|| run(&meter));
+        assert!(matches!(result, Err(RSpaceError::HostWorkRejected)), "dimension {dimension}");
+        assert!(bytes <= meter.used.get()[2], "dimension {dimension}");
+        assert_eq!(state(&space), before);
+    }
+}
+
+/// D-D4 (DR-106): a position list whose length differs from the channels', or
+/// a position outside the entries, rejects the match.
+#[tokio::test]
+async fn match_data_rejects_inconsistent_positions() {
+    let space = string_space().await;
+    let channel = "channel".to_string();
+    let datum = Datum::create(&channel, "a".to_string(), false);
+    let data = vec![ChannelData {
+        channel: &channel,
+        values: vec![(Cow::Borrowed(&datum), 0)],
+    }];
+    let run = |positions: &[usize]| {
+        space.metered_match_data(
+            std::slice::from_ref(&channel),
+            positions,
+            &["a".to_string()],
+            &"k".to_string(),
+            &data,
+            &Meter::default(),
+        )
+    };
+    assert!(matches!(run(&[0]), Ok(Some(_))));
+    for positions in [&[][..], &[0, 0], &[1]] {
+        assert!(matches!(run(positions), Err(RSpaceError::HostWorkRejected)), "{positions:?}");
+    }
+}
+
+/// D-D4 (DR-106): the positions buffer charges one operation for each slot
+/// plus one, and one word for each slot in scanned and in backing bytes. The
+/// reservation covers the allocation.
+#[test]
+fn position_buffer_charges_one_word_per_slot_and_prepays_it() {
+    for length in [0, 1, 7, 64] {
+        let meter = Meter::default();
+        let (positions, bytes) = measure_allocations(|| position_buffer(length, &meter));
+        let positions = positions.expect("position buffer");
+        assert!(positions.capacity() >= length);
+        assert_eq!(meter.used.get(), [
+            length + 1,
+            length * POSITION_BYTES,
+            length * POSITION_BYTES
+        ]);
+        assert!(bytes <= meter.used.get()[2], "length {length}: requested {bytes}");
+    }
 }
