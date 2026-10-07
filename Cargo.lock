@@ -3644,6 +3644,7 @@ dependencies = [
  "metrics 0.23.1",
  "metrics-exporter-influx",
  "metrics-exporter-prometheus",
+ "metrics-util 0.17.0",
  "models",
  "num-bigint",
  "parking_lot",

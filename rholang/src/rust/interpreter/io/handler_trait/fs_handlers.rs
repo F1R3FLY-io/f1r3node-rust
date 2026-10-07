@@ -193,7 +193,8 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.36: +1 (`fs_release_lock`).  Count = 24.
 ///   - 4.37: +1 (`fs_release_all_for_holder`, LOCK 4/4).  Count = 25.
 ///   - 4.38: +1 (`fs_write`, FIRST LENGTH-PARAMETERIZED MUTATION).  Count = 26.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 26;
+///   - 4.39: +1 (`fs_write_at`, MUTATION 8/8 — MIGRATION COMPLETE).  Count = 27.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
 
 #[cfg(test)]
 mod tests {
@@ -275,6 +276,7 @@ mod tests {
             "fs_release_lock",           // slice 4.36
             "fs_release_all_for_holder", // slice 4.37 (lock 4/4)
             "fs_write",                  // slice 4.38 (first length-parameterized mutation)
+            "fs_write_at",               // slice 4.39 (mutation 8/8 — migration complete)
         ];
 
         assert_eq!(
