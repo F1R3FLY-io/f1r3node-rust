@@ -1,0 +1,63 @@
+@startuml mergeable-evidence-authentication
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontColor #0F172A
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #334155
+  LifeLineBorderColor #475569
+  LifeLineBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+}
+
+actor "Peer validator" as Peer #FDE68A
+participant "Initializing node" as Init #BFDBFE
+database "Authenticated\nblock store" as Blocks #C4B5FD
+participant "Local replay" as Replay #A7F3D0
+database "Merge-evidence\ncache" as Cache #FBCFE8
+participant "Multi-parent\nmerge" as Merge #FED7AA
+database "Block DAG" as Dag #BAE6FD
+participant "Finalized-evidence\ncollector" as GC #D9F99D
+
+Peer -> Init : synchronized BlockMessage
+Init -> Blocks : validate and persist block
+Peer -> Init : legacy nonempty evidence response
+Init -> Init : ignore unauthenticated bytes
+
+Init -> Replay : replay from recorded pre-state
+Replay -> Replay : validate executed payload and every effect
+Replay -> Replay : compare computed and recorded final post-state
+
+alt final state or evidence mismatch
+  Replay -> Replay : reset active root to block pre-state
+  Replay --> Init : objective rejection; no cache write
+else complete replay accepted
+  Replay -> Cache : publish under (pre, post, creator, sequence, payload digest)
+  Cache --> Replay : locally derived evidence retained
+end
+
+Merge -> Cache : lookup exact block execution
+Cache --> Merge : matching per-deploy merge vectors
+
+GC -> Dag : snapshot finalized blocks, children, latest messages
+Dag --> GC : authenticated parent graph
+GC -> GC : require every latest message to DAG-descend from a child
+GC -> Cache : delete the finalized block's exact execution key
+
+note over Cache,Merge #DCFCE7
+Equivocations with one legacy triple but different
+pre-states or payloads occupy different keys.
+Insertion and arrival order cannot change lookup.
+end note
+
+note over Peer,Init #FEE2E2
+Peer traffic supplies availability data only.
+It never authorizes auxiliary merge evidence.
+end note
+
+note over Dag,GC #E0F2FE
+A child integrated only as a secondary parent still proves advancement.
+Following only the main-parent spine is incomplete and leaks evidence.
+end note
+@enduml

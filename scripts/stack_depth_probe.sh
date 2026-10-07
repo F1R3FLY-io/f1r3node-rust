@@ -2,18 +2,25 @@
 # ===========================================================================
 # stack_depth_probe.sh — bisect the minimum thread stack a traversal needs.
 #
-# For each traversal T and each nesting depth N, binary-searches the smallest
-# `stack_size` S for which `rholang/tests/stack_depth_probe.rs` survives, then
-# reports the least-squares fit S(N) = a + b*N.  A materially non-zero b proves
-# T is Theta(depth) in NATIVE STACK; b ~= 0 proves it is heap-bounded.
+# For each traversal T and each size parameter N (depth or width, depending on
+# the selected probe), binary-searches the smallest
+# `stack_size` S for which the selected ignored libtest probe survives, then
+# reports the least-squares fit S(N) = a + b*N. A materially non-zero b is
+# evidence of native-stack growth with N; b near zero supports heap-bounded
+# traversal over the sampled range.
 #
 # Usage:
 #   scripts/stack_depth_probe.sh <probe-binary> "<what ...>" "<depth ...>"
+#   PROBE_TEST_NAME=<exact ignored test name> scripts/stack_depth_probe.sh ...
 #
 # Example:
 #   cargo test -p rholang --test stack_depth_probe --no-run
 #   scripts/stack_depth_probe.sh target/debug/deps/stack_depth_probe-XXXX \
 #       "subst sort clone drop" "10 20 40 80"
+# The default test is the integration test named `probe`. For the internal
+# `sub_pars` width probe, pass its rholang lib-test binary instead:
+#   PROBE_TEST_NAME=rust::interpreter::matcher::sub_pars::tests::sub_pars_width_stack_probe \
+#     scripts/stack_depth_probe.sh <rholang-libtest-binary> "sub_pars_width" "10 20 40 80"
 #
 # NOTE: `ulimit -c 0` is set below.  Without it every faulting run writes a
 # ~300 MB core file and the bisection takes ~30 s per probe point instead of
@@ -24,6 +31,19 @@ set -u
 BIN="${1:?probe binary}"
 WHATS="${2:-subst}"
 DEPTHS="${3:-10 20 40 80}"
+TEST_NAME="${PROBE_TEST_NAME:-probe}"
+
+# A misspelled test filter makes libtest exit successfully after running zero
+# tests. Reject that case before bisection, or the script would report a false
+# constant-stack fit. The default preserves the original integration probe.
+if ! listing=$("$BIN" --ignored --exact "$TEST_NAME" --list 2>&1); then
+  printf 'Cannot list ignored probe %s: %s\n' "$TEST_NAME" "$listing" >&2
+  exit 2
+fi
+if ! printf '%s\n' "$listing" | grep -Fqx -- "$TEST_NAME: test"; then
+  printf 'Ignored probe %s is absent from %s\n' "$TEST_NAME" "$BIN" >&2
+  exit 2
+fi
 
 ulimit -c 0
 
@@ -41,7 +61,7 @@ LAST_MODE=""
 try() {
   local what="$1" depth="$2" stack="$3" err
   err=$(PROBE_WHAT="$what" PROBE_DEPTH="$depth" PROBE_STACK="$stack" \
-          "$BIN" --ignored --exact probe 2>&1 >/dev/null)
+          "$BIN" --ignored --exact "$TEST_NAME" 2>&1 >/dev/null)
   local rc=$?
   if [ $rc -eq 0 ]; then LAST_MODE="ok"; return 0; fi
   case "$err" in

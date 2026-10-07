@@ -45,19 +45,6 @@ use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
-/// Cosigner metadata for an in-flight multi-signature deploy, held in the
-/// `pending_cosigner_metadata` sidecar map keyed by primary signature.
-///
-/// `cosigners` is the canonical-order list of cosigners EXCLUDING the
-/// primary (primary lives in the legacy `Signed<DeployData>` already stored
-/// in `deploy_storage`). It round-trips the wire `CompoundSigner` data
-/// (proto field 14) from `DeployDataProto`. D3 (DR-9): no per-signer
-/// phlo_share.
-#[derive(Clone, Debug)]
-pub struct PendingCosignerMetadata {
-    pub cosigners: Vec<models::casper::CompoundSigner>,
-}
-
 // Phase 13 (TC-2): the previous `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES`
 // constant is now `CasperShardConf::active_validators_cache_max_entries`;
 // `snapshot::compute_snapshot` reads it from
@@ -88,37 +75,29 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<PlMutex<KeyValueDeployStorage>>,
-    /// In-memory side-map of cosigner metadata for in-flight multi-signature
-    /// deploys, keyed by the primary signer's signature bytes (the same key
-    /// `KeyValueDeployStorage` uses for the legacy `Signed<DeployData>` pool).
-    /// Populated by `block_admission::admit_deploy_cosigned` when a compound
-    /// `Cosigned<DeployData>` deploy is submitted; consulted by
-    /// `block_creator` (proposer-side) to reconstruct the full Cosigned
-    /// envelope when handing deploys off to the runtime fan-out. Drained
-    /// alongside `deploy_storage.remove(...)` when blocks finalize, by
-    /// `admit_handle_valid_block`. Empty for single-signature deploys.
-    ///
-    /// The side-map design (per §1.9.5) deliberately preserves the legacy
-    /// `KeyValueDeployStorage` shape — selection-by-primary-signer is the
-    /// right semantics for the proposer, so cosigner data lives in this
-    /// memory-resident sidecar rather than forcing a full storage migration.
-    /// Node restarts lose in-flight cosigner metadata (clients resubmit
-    /// unfinalized deploys); this matches the §1.9.5 greenfield policy.
-    pub pending_cosigner_metadata:
-        Arc<PlMutex<std::collections::HashMap<Bytes, PendingCosignerMetadata>>>,
     /// Persistence buffer for in-scope-but-rejected deploys, surfaced from
     /// dev (EPOCH-004). Held under `std::sync::Mutex` because all accesses
     /// happen synchronously inside the proposer (block_creator) and
     /// validator (validate.rs::repeat_deploy) — never across `.await`.
     pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    /// The deploy-lifecycle register's volatile half (threshold schedule +
+    /// clocks); persisted state lives in the DAG storage's lifecycle
+    /// tables. Driven from block admission.
+    pub deploy_lifecycle: Arc<crate::rust::finality::deploy_lifecycle::DeployLifecycle>,
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub validator_id: Option<ValidatorIdentity>,
     // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
     pub approved_block: BlockMessage,
+    pub offered_funded_active: bool,
     /// Flag to track finalization status - block proposals fail fast if finalization is running.
     /// This prevents validators from creating blocks with stale snapshots during finalization.
     pub finalization_in_progress: Arc<AtomicBool>,
+    /// Escalates a persistent containment hold (the shard finalizing floors
+    /// this node's LFB is not contained in) to a finality-divergence ERROR
+    /// and metric. See `finalization_runner::DivergenceMonitor`.
+    pub divergence_monitor:
+        Arc<crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor>,
     /// Single-flight guard for background finalizer scheduling from propose path.
     pub finalizer_task_in_progress: Arc<AtomicBool>,
     /// Indicates a finalizer run was requested while another run was still in progress.
@@ -126,8 +105,8 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub finalizer_task_queued: Arc<AtomicBool>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
-    /// Cache for deploys_in_scope BFS result keyed by DAG generation and snapshot LFB.
-    /// Including LFB in the key avoids stale scope reuse across finalization advances.
+    /// Cache for deploys_in_scope BFS result keyed by DAG generation, snapshot LFB, and selected parents.
+    /// Including LFB and parents in the key avoids stale scope reuse across finalization and parent selection changes.
     /// C16: migrated from `Arc<std::sync::Mutex<...>>` to
     /// `Arc<parking_lot::Mutex<...>>` so all three non-async mutex
     /// types on this struct are uniform (`deploy_storage` already
@@ -136,7 +115,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// at the call sites in `snapshot.rs`. The lock is held purely
     /// synchronously across read-modify-write of the cache cell.
     ///
-    /// Merge of dev: tuple grew to 4 elements — the trailing
+    /// Merge of dev: tuple carries both scope sets — the trailing
     /// `Arc<DashSet<Bytes>>` is the `rejected_in_scope` companion set
     /// to `deploys_in_scope`, used by `validate.rs::repeat_deploy` and
     /// `block_creator.rs` to distinguish in-scope deploys that were
@@ -147,6 +126,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
             Option<(
                 u64,
                 BlockHash,
+                Vec<BlockHash>,
                 Arc<dashmap::DashSet<Bytes>>,
                 Arc<dashmap::DashSet<Bytes>>,
             )>,

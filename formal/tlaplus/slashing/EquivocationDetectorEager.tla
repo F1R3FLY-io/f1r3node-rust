@@ -2,18 +2,19 @@
 (****************************************************************************)
 (* Memory-efficient rewrite of EquivocationDetector.tla.                    *)
 (*                                                                          *)
-(* Equivalence-preserving optimizations versus the original:                *)
+(* Property-preserving abstractions of the production detector:             *)
 (*                                                                          *)
 (* 1. EAGER DETECTION                                                       *)
 (*    SignBlock + DetectArrival are combined into one atomic action         *)
 (*    (SignAndDetect). This eliminates the spurious intermediate states     *)
 (*    where a block is in the DAG but not yet classified. The rewrite is    *)
-(*    a stutter-equivalent quotient: every observable trace of the          *)
-(*    original is realized by exactly one trace here, and vice-versa.       *)
+(*    an invariant-preserving quotient for the detector safety and          *)
+(*    completion properties checked below. Pending-classification timing    *)
+(*    and exact admissible/ignorable histories are intentionally hidden.    *)
 (*                                                                          *)
-(*    Justification: no observable barb depends on the detector NOT having  *)
-(*    fired yet. The Rust/Scala implementations always classify a block     *)
-(*    in the same atomic step that adds it to the DAG.                      *)
+(*    Justification: the Rust implementation classifies an arrival before   *)
+(*    publishing it as admitted detector state. The original local model    *)
+(*    remains the authority for scheduler-visible pending interleavings.     *)
 (*                                                                          *)
 (* 2. SAFETY-FIED LIVENESS                                                  *)
 (*    The temporal property [](real-equivocation ~> non-valid) has 8        *)
@@ -31,15 +32,16 @@
 (* 3. DEPENDENCY-AS-PARAMETER                                               *)
 (*    Instead of MarkAsDependency as an independent action, the dependency  *)
 (*    flag is chosen non-deterministically as a parameter to SignAndDetect. *)
-(*    This is sound because nothing in the original spec constrains WHEN    *)
-(*    a block becomes a dependency relative to its own classification.      *)
+(*    This preserves the checked detector properties because both outcomes  *)
+(*    denote a real, slashable equivocation; the exact dependency-timing     *)
+(*    taxonomy remains covered by the local original-state model.            *)
 (*                                                                          *)
 (* 4. SYMMETRY                                                              *)
 (*    TLC SYMMETRY over Validators is exposed (declared in the .cfg).       *)
 (*    With 2 validators this halves the explored state space; with 3 it    *)
 (*    is a 6× reduction.                                                    *)
 (*                                                                          *)
-(* Reference: docs/theory/slashing/slashing-verification.md §10.            *)
+(* Reference: docs/casper/theory/slashing/slashing-verification.md §10.            *)
 (****************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC
@@ -53,9 +55,16 @@ VARIABLES
     blocks,                  \* DAG: per validator, per seq, set of distinct block IDs
     detectableInView,        \* (v, s, b) -> Rust latest-message detectability
     detectedStatus,          \* (v, s, b) → status
-    equivocationRecords      \* set of (v, s-1) pairs
+    equivocationRecords,     \* set of (v, s-1) pairs
+    \* FV audit #6 (unbonded-window record pollution fork). This EAGER model is
+    \* the POST-FIX safe model: `bonded` is static all-TRUE and `recordWitness`
+    \* is static empty (there is no StampWitness action — the fix), so the two
+    \* FV-audit-#6 invariants hold and are inductive (see the apalache wrapper).
+    bonded,                  \* offender bond status (static all-TRUE here)
+    recordWitness            \* record witness set (static empty here — the fix)
 
-vars == <<blocks, detectableInView, detectedStatus, equivocationRecords>>
+vars == <<blocks, detectableInView, detectedStatus, equivocationRecords,
+          bonded, recordWitness>>
 
 (****************************************************************************)
 (* TypeOK                                                                    *)
@@ -70,6 +79,8 @@ TypeOK ==
     /\ detectedStatus \in [Validators \X (1..MaxSeqNum) \X (1..MaxBlocksPerSeq) ->
                             {"none", "valid", "admissible", "ignorable", "neglected"}]
     /\ equivocationRecords \subseteq (Validators \X (0..MaxSeqNum))
+    /\ bonded \in [Validators -> BOOLEAN]
+    /\ recordWitness \in [(Validators \X (0..MaxSeqNum)) -> SUBSET (1..MaxBlocksPerSeq)]
 
 (****************************************************************************)
 (* IsRealEquivocation: (v, s) has more than one distinct block.             *)
@@ -87,6 +98,8 @@ Init ==
     /\ detectedStatus =
             [t \in Validators \X (1..MaxSeqNum) \X (1..MaxBlocksPerSeq) |-> "none"]
     /\ equivocationRecords = {}
+    /\ bonded = [v \in Validators |-> TRUE]
+    /\ recordWitness = [k \in (Validators \X (0..MaxSeqNum)) |-> {}]
 
 (****************************************************************************)
 (* SignAndDetect: atomically sign a block and classify it.                  *)
@@ -127,7 +140,7 @@ SignAndDetect(v, s, b, dependencyFlag) ==
            /\ IF newStatus = "admissible"
               THEN equivocationRecords' = equivocationRecords \cup {<<v, s - 1>>}
               ELSE equivocationRecords' = equivocationRecords
-           /\ UNCHANGED detectableInView
+           /\ UNCHANGED <<detectableInView, bonded, recordWitness>>
 
 (****************************************************************************)
 (* Re-detection action: when a SECOND distinct block at (v, s) is signed,  *)
@@ -150,7 +163,7 @@ ReclassifySibling(v, s, b, dependencyFlag) ==
             THEN equivocationRecords' = equivocationRecords \cup {<<v, s - 1>>}
             ELSE equivocationRecords' = equivocationRecords
     /\ UNCHANGED blocks
-    /\ UNCHANGED detectableInView
+    /\ UNCHANGED <<detectableInView, bonded, recordWitness>>
 
 (****************************************************************************)
 (* Mark that a block's latest-message view detects a recorded equivocation. *)
@@ -162,20 +175,28 @@ MarkDetectableInView(v, s, b) ==
     /\ detectableInView[<<v, s, b>>] = FALSE
     /\ detectableInView' =
             [detectableInView EXCEPT ![<<v, s, b>>] = TRUE]
-    /\ UNCHANGED <<blocks, detectedStatus, equivocationRecords>>
+    /\ UNCHANGED <<blocks, detectedStatus, equivocationRecords, bonded, recordWitness>>
 
 (****************************************************************************)
 (* Detect a neglected equivocation from a Rust-detectable latest view.      *)
+(*                                                                          *)
+(* FV audit #6: guarded by `bonded[v]` (neglect only for a bonded offender) *)
+(* with the witness disjunct `b \in recordWitness[<<v, s-1>>]`.  Here bonded *)
+(* is static all-TRUE and recordWitness static empty, so this reduces to the *)
+(* original detectableInView condition — the enrichment is a conservative    *)
+(* refinement whose new invariants hold and are inductive (apalache).        *)
 (****************************************************************************)
 DetectNeglected(v, s, b) ==
     /\ v \in Validators
     /\ s \in 1..MaxSeqNum
     /\ b \in blocks[v][s]
     /\ <<v, s - 1>> \in equivocationRecords
-    /\ detectableInView[<<v, s, b>>] = TRUE
+    /\ bonded[v]
+    /\ ( detectableInView[<<v, s, b>>] = TRUE
+         \/ b \in recordWitness[<<v, s - 1>>] )
     /\ detectedStatus[<<v, s, b>>] # "neglected"
     /\ detectedStatus' = [detectedStatus EXCEPT ![<<v, s, b>>] = "neglected"]
-    /\ UNCHANGED <<blocks, detectableInView, equivocationRecords>>
+    /\ UNCHANGED <<blocks, detectableInView, equivocationRecords, bonded, recordWitness>>
 
 (****************************************************************************)
 (* Next                                                                     *)
@@ -207,11 +228,45 @@ Inv_DetectionSound ==
         (detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable"})
             => IsRealEquivocation(v, s)
 
-\* T-3 (taxonomy): the status set is closed.
+\* T-3 (taxonomy): ranges over the real 27-variant InvalidBlock enum and pins
+\* the 19-element is_slashable set (casper/src/rust/block_status.rs); every
+\* non-valid detector status maps to a slashable variant.
+InvalidBlockVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy",
+      "InvalidFormat", "InvalidSignature", "InvalidSender", "InvalidVersion",
+      "InvalidTimestamp", "InvalidRejectedDeploy", "NotOfInterest",
+      "LowDeployCost" }
+
+SlashableVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy" }
+
+StatusInvalidBlock(st) ==
+    CASE st = "admissible" -> "AdmissibleEquivocation"
+      [] st = "ignorable"  -> "IgnorableEquivocation"
+      [] st = "neglected"  -> "NeglectedEquivocation"
+      [] OTHER             -> "AdmissibleEquivocation"
+
 Inv_TaxonomyCorrect ==
-    \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
-        detectedStatus[<<v, s, b>>] \in
-            {"none", "valid", "admissible", "ignorable", "neglected"}
+    /\ Cardinality(InvalidBlockVariants) = 27
+    /\ Cardinality(SlashableVariants) = 19
+    /\ SlashableVariants \subseteq InvalidBlockVariants
+    /\ \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
+         /\ detectedStatus[<<v, s, b>>] \in
+              {"none", "valid", "admissible", "ignorable", "neglected"}
+         /\ ( detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable", "neglected"}
+              => StatusInvalidBlock(detectedStatus[<<v, s, b>>]) \in SlashableVariants )
 
 Inv_NeglectedHasDetectableView ==
     \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
@@ -321,8 +376,32 @@ Inv_LivenessAsSafety ==
         (b \in blocks[v][s] /\ IsRealEquivocation(v, s))
         => detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable", "neglected"}
 
-\* The above invariant holds trivially if at least one of the equivocating
-\* siblings has been classified. ReclassifySibling fairness ensures
-\* eventually all siblings are classified.
+(****************************************************************************)
+(* FV audit #6 invariants (unbonded-window record pollution fork).          *)
+(* In this POST-FIX eager model bonded is static all-TRUE and recordWitness  *)
+(* static empty, so all three hold; they are the conjuncts the apalache      *)
+(* wrapper proves INDUCTIVE. Inv_WitnessEmpty is the strengthening that makes *)
+(* Inv_NoStampAgainstUnbonded / Inv_NeglectNotFromUnbondedPollution inductive *)
+(* under an arbitrary IndInv start state (see EquivocationDetectorEager_apalache).*)
+(****************************************************************************)
+
+\* The witness set is empty on every reachable state (there is NO StampWitness
+\* action in the post-fix model — the fix).
+Inv_WitnessEmpty ==
+    \A vk \in DOMAIN recordWitness : recordWitness[vk] = {}
+
+\* No witness hash is ever recorded against an UNBONDED offender (follows from
+\* Inv_WitnessEmpty here; a genuine constraint in the pre-fix demonstration
+\* model EquivocationDetector.tla).
+Inv_NoStampAgainstUnbonded ==
+    \A vk \in DOMAIN recordWitness :
+        ~bonded[vk[1]] => recordWitness[vk] = {}
+
+\* A "neglected" verdict is backed by a genuine detectable-in-view equivocation
+\* AND a currently-bonded offender — never by unbonded-window pollution.
+Inv_NeglectNotFromUnbondedPollution ==
+    \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
+        detectedStatus[<<v, s, b>>] = "neglected" =>
+            (bonded[v] /\ detectableInView[<<v, s, b>>] = TRUE)
 
 ============================================================================

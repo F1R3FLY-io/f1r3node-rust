@@ -395,7 +395,7 @@ mod tests {
         assert!(result.is_ok());
 
         let expected_result = Par::default().prepend_match(Match {
-            target: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+            target: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
             cases: vec![
                 MatchCase {
                     pattern: Some(new_elist_par(
@@ -420,7 +420,7 @@ mod tests {
                     guard: None,
                 },
             ],
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
         });
 
@@ -515,9 +515,10 @@ mod tests {
                     source: Some(Par::default()),
                     remainder: None,
                     free_count: 1,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default().prepend_match(Match {
-                    target: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                    target: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                     cases: vec![
                         MatchCase {
                             pattern: Some(new_gint_par(42, Vec::new(), false)),
@@ -532,7 +533,7 @@ mod tests {
                             guard: None,
                         },
                     ],
-                    locally_free: create_bit_vector(&vec![0]),
+                    locally_free: create_bit_vector(&[0]),
                     connective_used: false,
                 })),
                 persistent: false,
@@ -635,6 +636,7 @@ mod tests {
                 }],
                 source: Some(Par::default()),
                 remainder: None,
+                cost_signature: None,
                 free_count: 2,
             }],
             body: Some(Par::default()),

@@ -70,10 +70,10 @@ use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{
-    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
-    ETuple, EVar, EZipper, Expr, GBigRational, GFixedPoint, GUnforgeable, If, Match, MatchCase,
-    New, Par, Receive, ReceiveBind, Send, Var,
+    Bundle, Connective, CostSignature, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
+    EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GBigRational,
+    GFixedPoint, GUnforgeable, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
 };
 use crate::rust::canonical_path::encode_trie_path_with_stability;
 use crate::rust::epathmap_trie_codec::EPathMapMode;
@@ -207,6 +207,19 @@ pub fn sort_unforgeable(unf: &GUnforgeable) -> ScoredTerm<GUnforgeable> {
                 },
                 score: Tree::<ScoreAtom>::create_node_from_i32(Score::SYS_AUTH_TOKEN, vec![]),
             },
+            UnfInstance::GAuthorityIdBody(id) => ScoredTerm {
+                term: unf.clone(),
+                score: Tree::<ScoreAtom>::create_node_from_i32(Score::AUTHORITY_ID, vec![
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(id.id.clone()),
+                ]),
+            },
+            UnfInstance::GPrincipalIdBody(id) => ScoredTerm {
+                term: unf.clone(),
+                score: Tree::<ScoreAtom>::create_node_from_i32(Score::PRINCIPAL_ID, vec![
+                    Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(id.key_family)),
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(id.public_key.clone()),
+                ]),
+            },
         },
         None => ScoredTerm {
             term: unf.clone(),
@@ -245,6 +258,7 @@ pub fn expr_child_pars<'t>(e: &'t Expr, out: &mut Vec<&'t Par>) {
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GFloat32(_)
         | ExprInstance::EVarBody(_) => {}
 
         ExprInstance::ESetBody(eset) => extend_eset_children(eset, out),
@@ -404,7 +418,7 @@ pub fn connective_child_pars<'t>(c: &'t Connective, out: &mut Vec<&'t Par>) {
 // COMBINE — how each node is rebuilt from its children's `ScoredTerm`s
 // ===========================================================================
 
-/// The nine category vectors of a `Par`, already sorted individually.
+/// The eleven category vectors of a `Par`, already sorted individually.
 pub struct ParParts {
     pub sends: Vec<ScoredTerm<Send>>,
     pub receives: Vec<ScoredTerm<Receive>>,
@@ -415,6 +429,8 @@ pub struct ParParts {
     pub connectives: Vec<ScoredTerm<Connective>>,
     pub unforgeables: Vec<ScoredTerm<GUnforgeable>>,
     pub conditionals: Vec<ScoredTerm<If>>,
+    pub cost_signed_terms: Vec<ScoredTerm<CostSignedTerm>>,
+    pub cost_stacks: Vec<ScoredTerm<CostStack>>,
 }
 
 /// `ParSortMatcher::sort_match`'s post-order half.
@@ -434,6 +450,8 @@ pub fn combine_par(par: &Par, parts: ParParts) -> ScoredTerm<Par> {
         mut connectives,
         mut unforgeables,
         mut conditionals,
+        mut cost_signed_terms,
+        mut cost_stacks,
     } = parts;
 
     ScoredTerm::sort_vec(&mut sends);
@@ -445,6 +463,8 @@ pub fn combine_par(par: &Par, parts: ParParts) -> ScoredTerm<Par> {
     ScoredTerm::sort_vec(&mut connectives);
     ScoredTerm::sort_vec(&mut unforgeables);
     ScoredTerm::sort_vec(&mut conditionals);
+    ScoredTerm::sort_vec(&mut cost_signed_terms);
+    ScoredTerm::sort_vec(&mut cost_stacks);
 
     let (send_terms, send_scores) = split_scored_terms(sends);
     let (receive_terms, receive_scores) = split_scored_terms(receives);
@@ -455,6 +475,8 @@ pub fn combine_par(par: &Par, parts: ParParts) -> ScoredTerm<Par> {
     let (connective_terms, connective_scores) = split_scored_terms(connectives);
     let (unforgeable_terms, unforgeable_scores) = split_scored_terms(unforgeables);
     let (conditional_terms, conditional_scores) = split_scored_terms(conditionals);
+    let (cost_signed_terms, cost_signed_scores) = split_scored_terms(cost_signed_terms);
+    let (cost_stacks, cost_stack_scores) = split_scored_terms(cost_stacks);
 
     let sorted_par = Par {
         sends: send_terms,
@@ -468,6 +490,8 @@ pub fn combine_par(par: &Par, parts: ParParts) -> ScoredTerm<Par> {
         conditionals: conditional_terms,
         locally_free: par.locally_free.clone(),
         connective_used: par.connective_used,
+        cost_signed_terms,
+        cost_stacks,
     };
 
     // ⚠ The score's child order is NOT the term's field order: it is
@@ -485,6 +509,8 @@ pub fn combine_par(par: &Par, parts: ParParts) -> ScoredTerm<Par> {
             .chain(connective_scores)
             .chain(unforgeable_scores)
             .chain(conditional_scores)
+            .chain(cost_signed_scores)
+            .chain(cost_stack_scores)
             .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
                 flag_score(par.connective_used),
             )))
@@ -544,6 +570,7 @@ pub fn combine_bind(
     bind: &ReceiveBind,
     patterns: Vec<ScoredTerm<Par>>,
     channel: ScoredTerm<Par>,
+    cost_signature: Option<ScoredTerm<CostSignature>>,
 ) -> ScoredTerm<ReceiveBind> {
     let sorted_remainder_score = match &bind.remainder {
         Some(bind_remainder) => sort_var(bind_remainder).score,
@@ -551,6 +578,10 @@ pub fn combine_bind(
     };
 
     let (pattern_terms, pattern_scores) = split_scored_terms(patterns);
+    let (cost_signature_term, cost_signature_score) = match cost_signature {
+        Some(scored) => (Some(scored.term), Some(scored.score)),
+        None => (None, None),
+    };
 
     ScoredTerm {
         term: ReceiveBind {
@@ -558,11 +589,13 @@ pub fn combine_bind(
             source: Some(channel.term),
             remainder: bind.remainder.clone(),
             free_count: bind.free_count,
+            cost_signature: cost_signature_term,
         },
         score: Tree::Node(
             std::iter::once(channel.score)
                 .chain(pattern_scores)
                 .chain(std::iter::once(sorted_remainder_score))
+                .chain(cost_signature_score)
                 .collect(),
         ),
     }
@@ -1124,7 +1157,7 @@ fn combine_etuple(tuple: &ETuple, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr
 /// Canonical terms are inserted directly into the specialized EntryTrie. A
 /// companion PathMap keyed by the same canonical bytes carries scores until the
 /// final trie-order walk; no set-member or key/value Vec projection is built.
-fn canonicalize_scored_pathmap(
+pub(super) fn canonicalize_scored_pathmap(
     pathmap: &EPathMap,
     kids: Vec<ScoredTerm<Par>>,
     preserve_stable_storage: bool,
@@ -1458,6 +1491,13 @@ pub fn combine_expr(e: &Expr, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
             ExprInstance::GUri(gu) => combine_guri(e, gu),
             ExprInstance::GByteArray(ba) => combine_gbytearray(e, ba),
             ExprInstance::GDouble(bits) => combine_gdouble(e, *bits),
+            ExprInstance::GFloat32(bits) => ScoredTerm {
+                term: e.clone(),
+                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                    Score::FLOAT32 as i64,
+                    *bits as i64,
+                ]),
+            },
             ExprInstance::GBigInt(bytes) => combine_gbigint(e, bytes),
             ExprInstance::GBigRat(rat) => combine_gbigrat(e, rat),
             ExprInstance::GFixedPoint(fp) => combine_gfixedpoint(e, fp),

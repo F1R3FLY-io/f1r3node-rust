@@ -4,13 +4,13 @@ use p256::pkcs8::EncodePrivateKey;
 
 #[test]
 fn test_generate_key_pair() {
-    let (_secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+    let (_secret_key, public_key) = CertificateHelper::generate_key_pair();
     assert!(CertificateHelper::is_expected_elliptic_curve(&public_key));
 }
 
 #[test]
 fn test_public_address_computation() {
-    let (_secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+    let (_secret_key, public_key) = CertificateHelper::generate_key_pair();
     let address = CertificateHelper::public_address(&public_key);
     assert!(address.is_some());
     let addr = address.unwrap();
@@ -66,7 +66,7 @@ fn test_private_key_printing() {
 
 #[test]
 fn test_certificate_generation() {
-    let (secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+    let (secret_key, public_key) = CertificateHelper::generate_key_pair();
     let cert_result = CertificateHelper::generate_certificate(&secret_key, &public_key);
 
     // Certificate generation might fail due to dependencies, but should not panic
@@ -85,44 +85,8 @@ fn test_certificate_generation() {
 }
 
 #[test]
-fn test_generate_key_pair_blocking_and_non_blocking() {
-    // Test non-blocking key generation (should be fast)
-    let start = std::time::Instant::now();
-    let (_secret_key1, public_key1) = CertificateHelper::generate_key_pair(true);
-    let non_blocking_duration = start.elapsed();
-
-    // Test blocking key generation
-    let start = std::time::Instant::now();
-    let (_secret_key2, public_key2) = CertificateHelper::generate_key_pair(false);
-    let blocking_duration = start.elapsed();
-
-    // Both should produce valid keys
-    assert!(CertificateHelper::is_expected_elliptic_curve(&public_key1));
-    assert!(CertificateHelper::is_expected_elliptic_curve(&public_key2));
-
-    // Both should be able to compute addresses
-    let address1 = CertificateHelper::public_address(&public_key1);
-    let address2 = CertificateHelper::public_address(&public_key2);
-    assert!(address1.is_some());
-    assert!(address2.is_some());
-    assert_eq!(address1.unwrap().len(), 20);
-    assert_eq!(address2.unwrap().len(), 20);
-
-    // Keys should be different (extremely unlikely to be the same)
-    assert_ne!(
-        public_key1.to_encoded_point(false),
-        public_key2.to_encoded_point(false)
-    );
-
-    // Both operations should complete reasonably quickly
-    // (This is just a basic sanity check - actual timing may vary)
-    assert!(non_blocking_duration.as_millis() < 1000);
-    assert!(blocking_duration.as_millis() < 1000);
-}
-
-#[test]
 fn test_public_address_coordinate_extraction() {
-    let (_, public_key) = CertificateHelper::generate_key_pair(false);
+    let (_, public_key) = CertificateHelper::generate_key_pair();
 
     // Get the SEC1 uncompressed point (what our Rust implementation uses)
     let encoded_point = public_key.to_encoded_point(false);
@@ -157,7 +121,7 @@ fn test_public_address_coordinate_extraction() {
 #[test]
 fn test_from_file_method() {
     // Generate a test certificate
-    let (secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+    let (secret_key, public_key) = CertificateHelper::generate_key_pair();
 
     // Create a temporary certificate
     match CertificateHelper::generate_certificate(&secret_key, &public_key) {
@@ -202,14 +166,230 @@ fn test_from_file_method() {
 }
 
 #[test]
+fn test_encode_signature_rejects_empty_and_short_input() {
+    let empty_err = CertificateHelper::encode_signature_rs_to_der(&[]).unwrap_err();
+    assert!(empty_err.to_string().contains("must not be empty"));
+
+    let short_err = CertificateHelper::encode_signature_rs_to_der(&[0x01; 63]).unwrap_err();
+    assert!(short_err.to_string().contains("64 bytes"));
+
+    let oversized_err = CertificateHelper::encode_signature_rs_to_der(&[0x01; 128]).unwrap_err();
+    assert!(oversized_err.to_string().contains("64 bytes"));
+}
+
+#[test]
+fn test_decode_signature_rejects_empty_and_invalid_der() {
+    let empty_err = CertificateHelper::decode_signature_der_to_rs(&[]).unwrap_err();
+    assert!(empty_err.to_string().contains("must not be empty"));
+
+    let invalid_err =
+        CertificateHelper::decode_signature_der_to_rs(&[0xAA, 0xBB, 0xCC]).unwrap_err();
+    assert!(invalid_err.to_string().contains("DER decode failed"));
+}
+
+#[test]
+fn test_signature_encoding_exact_roundtrip_values() {
+    let mut rs = vec![0u8; 64];
+    rs[0] = 0x80;
+    rs[31] = 0x01;
+    rs[32] = 0x00;
+    rs[62] = 0x02;
+    rs[63] = 0x03;
+
+    let der = CertificateHelper::encode_signature_rs_to_der(&rs).unwrap();
+    assert_eq!(der[0], 0x30);
+
+    let decoded = CertificateHelper::decode_signature_der_to_rs(&der).unwrap();
+    assert_eq!(decoded, rs);
+}
+
+#[test]
+fn test_signature_encoding_with_leading_zero_components() {
+    let mut rs = vec![0u8; 64];
+    rs[31] = 0x7F;
+    rs[63] = 0x05;
+
+    let der = CertificateHelper::encode_signature_rs_to_der(&rs).unwrap();
+    let decoded = CertificateHelper::decode_signature_der_to_rs(&der).unwrap();
+    assert_eq!(decoded, rs);
+}
+
+#[test]
+fn test_normalize_public_key_coordinates() {
+    let empty_err = CertificateHelper::normalize_public_key_coordinates(vec![]).unwrap_err();
+    assert!(empty_err.to_string().contains("empty"));
+
+    let (_, public_key) = CertificateHelper::generate_key_pair();
+    let sec1_bytes = public_key.to_encoded_point(false).as_bytes().to_vec();
+    assert_eq!(sec1_bytes.len(), 65);
+
+    let normalized =
+        CertificateHelper::normalize_public_key_coordinates(sec1_bytes.clone()).unwrap();
+    assert_eq!(normalized.len(), 64);
+    assert_eq!(normalized, sec1_bytes[1..].to_vec());
+
+    let mut der_style = vec![0u8];
+    der_style.extend_from_slice(&sec1_bytes);
+    let normalized_der = CertificateHelper::normalize_public_key_coordinates(der_style).unwrap();
+    assert_eq!(normalized_der, sec1_bytes[1..].to_vec());
+
+    let passthrough =
+        CertificateHelper::normalize_public_key_coordinates(sec1_bytes[1..].to_vec()).unwrap();
+    assert_eq!(passthrough, sec1_bytes[1..].to_vec());
+
+    let wrong_len_err =
+        CertificateHelper::normalize_public_key_coordinates(vec![1u8; 30]).unwrap_err();
+    assert!(wrong_len_err
+        .to_string()
+        .contains("Unexpected public key length"));
+}
+
+#[test]
+fn test_normalize_public_key_coordinates_keeps_leading_zero_coordinate_byte() {
+    let mut coordinates = vec![0u8; 64];
+    coordinates[63] = 1;
+
+    let passthrough =
+        CertificateHelper::normalize_public_key_coordinates(coordinates.clone()).unwrap();
+    assert_eq!(passthrough, coordinates);
+
+    let mut sec1 = vec![0x04u8];
+    sec1.extend_from_slice(&coordinates);
+    let normalized = CertificateHelper::normalize_public_key_coordinates(sec1.clone()).unwrap();
+    assert_eq!(normalized, coordinates);
+
+    let mut der_style = vec![0u8];
+    der_style.extend_from_slice(&sec1);
+    let normalized_der = CertificateHelper::normalize_public_key_coordinates(der_style).unwrap();
+    assert_eq!(normalized_der, coordinates);
+
+    let mut unused_bits_only = vec![0u8];
+    unused_bits_only.extend_from_slice(&coordinates);
+    let normalized_raw =
+        CertificateHelper::normalize_public_key_coordinates(unused_bits_only).unwrap();
+    assert_eq!(normalized_raw, coordinates);
+}
+
+#[test]
+fn test_generated_certificate_parses_from_der_and_pem() {
+    let (secret_key, public_key) = CertificateHelper::generate_key_pair();
+    let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
+        .expect("certificate generation should succeed");
+    assert!(!cert_der.is_empty());
+
+    let parsed = CertificateHelper::parse_certificate(&cert_der);
+    assert!(parsed.is_ok());
+
+    let pem = CertificatePrinter::print_certificate(&cert_der);
+    let parsed_pem = CertificateHelper::parse_certificate_pem(&pem);
+    assert!(parsed_pem.is_ok());
+
+    assert!(CertificateHelper::parse_certificate(b"not a certificate").is_err());
+    assert!(CertificateHelper::parse_certificate_pem("not a certificate").is_err());
+}
+
+#[test]
+fn test_from_file_reads_pem_certificates_and_reports_missing_files() {
+    let (secret_key, public_key) = CertificateHelper::generate_key_pair();
+    let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
+        .expect("certificate generation should succeed");
+    let pem = CertificatePrinter::print_certificate(&cert_der);
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let pem_path = temp_dir.path().join("cert.pem");
+    std::fs::write(&pem_path, &pem).expect("failed to write pem file");
+
+    let parsed = CertificateHelper::from_file(pem_path.to_str().unwrap());
+    assert!(parsed.is_ok());
+
+    let missing = CertificateHelper::from_file("/nonexistent/path/cert.der");
+    assert!(missing.is_err());
+}
+
+#[test]
+fn test_print_private_key_from_secret_roundtrips_through_read_key_pair() {
+    let (secret_key, public_key) = CertificateHelper::generate_key_pair();
+    let pem = CertificatePrinter::print_private_key_from_secret(&secret_key)
+        .expect("private key printing should succeed");
+    assert!(pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let key_path = temp_dir.path().join("key.pem");
+    std::fs::write(&key_path, &pem).expect("failed to write key file");
+
+    let (parsed_secret, parsed_public) =
+        CertificateHelper::read_key_pair(key_path.to_str().unwrap())
+            .expect("key pair should parse back");
+    assert_eq!(parsed_secret.to_bytes(), secret_key.to_bytes());
+    assert_eq!(
+        parsed_public.to_encoded_point(false),
+        public_key.to_encoded_point(false)
+    );
+}
+
+#[test]
+fn test_read_key_pair_keeps_base64_body_lines_containing_key() {
+    let pem = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgBTKEY6yp79c5dbNy\n\
+hUWSBmo9phQ452/PK1BotDnn9MihRANCAAQZMJSYyZI8LFWGt9m1i3iG32JY+rFv\n\
+tWB90bq4vpoJJMbKQl6ZoXhmeTtpOFxgJ9KMY7lfUz+MKa88M8XSn7Y5\n\
+-----END PRIVATE KEY-----";
+    assert!(pem
+        .lines()
+        .any(|line| !line.starts_with("-----") && line.contains("KEY")));
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let key_path = temp_dir.path().join("key.pem");
+    std::fs::write(&key_path, pem).expect("failed to write key file");
+
+    let (parsed_secret, _) = CertificateHelper::read_key_pair(key_path.to_str().unwrap())
+        .expect("body lines containing KEY must not be dropped");
+    let reprinted = CertificatePrinter::print_private_key_from_secret(&parsed_secret)
+        .expect("private key printing should succeed");
+    assert_eq!(reprinted, pem);
+}
+
+#[test]
+fn test_read_key_pair_error_paths() {
+    let missing = CertificateHelper::read_key_pair("/nonexistent/path/key.pem");
+    assert!(missing.is_err());
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+
+    let bad_base64_path = temp_dir.path().join("bad_base64.pem");
+    std::fs::write(
+        &bad_base64_path,
+        "-----BEGIN PRIVATE KEY-----\n!!!not base64!!!\n-----END PRIVATE KEY-----",
+    )
+    .expect("failed to write file");
+    let bad_base64 = CertificateHelper::read_key_pair(bad_base64_path.to_str().unwrap());
+    assert!(bad_base64
+        .unwrap_err()
+        .to_string()
+        .contains("Base64 decode failed"));
+
+    let bad_der_path = temp_dir.path().join("bad_der.pem");
+    std::fs::write(
+        &bad_der_path,
+        "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----",
+    )
+    .expect("failed to write file");
+    let bad_der = CertificateHelper::read_key_pair(bad_der_path.to_str().unwrap());
+    assert!(bad_der
+        .unwrap_err()
+        .to_string()
+        .contains("PKCS8 parse failed"));
+}
+
+#[test]
 fn test_read_key_pair_from_file() {
     // Generate a test key pair
-    let (secret_key, _public_key) = CertificateHelper::generate_key_pair(false);
+    let (secret_key, _public_key) = CertificateHelper::generate_key_pair();
 
     // Convert to PEM format
     match secret_key.to_pkcs8_der() {
         Ok(der_bytes) => {
-            let pem_content = CertificatePrinter::print_private_key(&der_bytes.as_bytes());
+            let pem_content = CertificatePrinter::print_private_key(der_bytes.as_bytes());
 
             // Write to a temporary file
             let temp_dir = std::env::temp_dir();

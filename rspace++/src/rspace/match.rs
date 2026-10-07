@@ -22,6 +22,7 @@
 use std::sync::Arc;
 
 use super::errors::RSpaceError;
+use super::hashing::native_source::SourceMeter;
 use super::rspace_interface::{ProduceCommitGuard, commit_produce};
 
 /// Fresh candidate evidence retained from selection until the actual mutation.
@@ -57,7 +58,20 @@ impl PreparedCommit {
 }
 
 pub trait Match<P, A, K>: Send + Sync {
+    // Probe by reference; only the matched result is allocated on success.
     fn get(&self, p: &P, a: &A) -> Option<A>;
+
+    /// Metered `get`. D-M1 (DR-88): an implementation reserves every read of
+    /// the pattern and the datum on `meter` before it performs the read, so
+    /// a caller does not inspect either value first.
+    fn get_metered(
+        &self,
+        _p: &P,
+        _a: &A,
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<A>, RSpaceError> {
+        Err(RSpaceError::HostWorkRejected)
+    }
 
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is
@@ -70,5 +84,19 @@ pub trait Match<P, A, K>: Send + Sync {
     /// this instead of turning check_commit's Boolean into a lease.
     fn prepare_commit(&self, k: &K, matched: &[&A]) -> Option<PreparedCommit> {
         self.check_commit(k, matched).then(PreparedCommit::default)
+    }
+
+    /// Metered `check_commit`. D-M1 (DR-88): an implementation reserves every
+    /// read of the continuation (in practice its guard) and of the matched
+    /// data on `meter` before it performs the read, so a caller does not
+    /// inspect the continuation first. D-M6 (DR-88): the matched data are
+    /// passed by reference, so a caller does not copy them.
+    fn check_commit_metered(
+        &self,
+        _k: &K,
+        _matched: &[&A],
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        Err(RSpaceError::HostWorkRejected)
     }
 }

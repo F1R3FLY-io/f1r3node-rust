@@ -22,6 +22,7 @@ impl SystemDeployUserError {
 pub enum SystemDeployPlatformFailure {
     UnexpectedResult(Vec<Par>),
     UnexpectedSystemErrors(Vec<InterpreterError>),
+    GasPaymentFailure(String),
     GasRefundFailure(String),
     ConsumeFailed,
 }
@@ -76,6 +77,9 @@ impl fmt::Display for SystemDeployPlatformFailure {
             }
             SystemDeployPlatformFailure::UnexpectedSystemErrors(errors) => {
                 write!(f, "Caught errors in Rholang interpreter {:?}", errors)
+            }
+            SystemDeployPlatformFailure::GasPaymentFailure(msg) => {
+                write!(f, "Unable to charge gas ({})", msg)
             }
             SystemDeployPlatformFailure::GasRefundFailure(msg) => {
                 write!(f, "Unable to refund remaining gas ({})", msg)

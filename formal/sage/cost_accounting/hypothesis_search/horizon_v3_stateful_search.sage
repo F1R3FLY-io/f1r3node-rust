@@ -127,26 +127,6 @@ def event_from_seed(seed, index):
     return canonical_event("source", weight, descriptor=descriptor[:512], deploy=int(index % 4), path=[int(index), int(lines % 512)])
 
 
-def expected_fixture_values(scenario):
-    events = scenario.get("events", [])
-    invalid = [
-        event
-        for event in events
-        if int(event.get("weight", 0)) <= 0
-        or len(event.get("path", [])) > 1024
-        or (
-            str(event.get("kind", "")) == "primitive"
-            and len(str(event.get("primitive_descriptor", event.get("descriptor", "")))) > 512
-        )
-    ]
-    positive = [event for event in events if int(event.get("weight", 0)) > 0 and event not in invalid]
-    total = sum(int(event.get("weight", 0)) for event in positive)
-    budget = int(scenario.get("initial_budget", 0))
-    if invalid:
-        return (0, 0, True, False)
-    return (min(total, budget), len(positive), False, bool(events and total > budget and budget >= 0))
-
-
 def stateful_campaign_records(profile, search_mode, objectives):
     if not (objective_enabled(objectives, "stateful") or objective_enabled(objectives, "security")):
         return []
@@ -183,10 +163,7 @@ def stateful_campaign_records(profile, search_mode, objectives):
         events=events,
         lifecycle=campaign,
         initial_budget=6,
-        phlo_limit=6,
-        phlo_price=2,
-        token_cost=3,
-        settlement={"escrow": 12, "token_cost": 6, "refund": 6, "authority": "casper"},
+        settlement=vault_settlement(12, 12, 0, 0, 6, 0),
         replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "failed"]},
         replay_mutations=["cost_trace_digest", "cost_trace_event_count"],
         concurrency={"campaign_steps": campaign, "finalize_after_reserve": True},
@@ -264,33 +241,30 @@ def production_path_diff_records(profile, search_mode, objectives):
     cfg = hypothesis_settings(profile, search_mode)
     mutation = find_or_none(
         st.lists(
-            st.sampled_from(["cost", "cost_trace_digest", "cost_trace_event_count", "failed", "system_error", "block_hash"]),
+            st.sampled_from(authenticated_replay_fields(["failed", "system_error", "block_hash"])),
             min_size=int(2),
             max_size=int(4),
             unique=True,
         ),
-        lambda xs: "cost_trace_digest" in xs and ("cost_trace_event_count" in xs or "block_hash" in xs),
+        lambda xs: "authority_cost_witness" in xs and ("authority_byte_events" in xs or "block_hash" in xs),
         cfg,
-    ) or ["cost_trace_digest", "cost_trace_event_count"]
+    ) or ["authority_cost_witness", "authority_byte_events"]
     events = [canonical_event("source", 1, descriptor="prod-path", deploy=1, path=[0])]
     scenario = canonical_scenario(
         "horizon_v3_replay_settlement_production_diff",
         events=events,
         initial_budget=4,
-        phlo_limit=4,
-        phlo_price=3,
-        token_cost=1,
-        settlement={"escrow": 12, "token_cost": 3, "refund": 9, "authority": "casper"},
+        settlement=vault_settlement(12, 12, 0, 0, 3, 0),
         replay_fields={"fields": mutation, "mode": "cost_accounted"},
         replay_mutations=mutation,
         oracle_kind="production_path_differential",
-        production_path="ProcessedDeploy::to_proto/from_proto + DeployData::refund_amount_for_token_cost",
-        campaign_steps=["precharge", "reserve", "finalize", "serialize", "replay", "settle"],
+        production_path="ProcessedDeploy::to_proto/from_proto + authority::verify_with_allocation + acceptance::settle_candidate",
+        campaign_steps=["reserve_vault_authority", "reserve", "finalize", "serialize", "replay", "settle"],
         minimized_input_digest=digest_value(mutation),
         reproducer_command="COST_ACCOUNTING_FRONTIER_FIXTURES_JSON=<fixtures> cargo nextest run -p rholang generated_frontier_stateful_campaign_fixtures_hold",
         attack_campaign="replay_settlement_differential",
         threat_family="production_path_diff",
-        expected_invariants=["cost_fields_survive_wire_roundtrip", "uc_ca_009_refund_is_bounded_by_escrow"],
+        expected_invariants=["cost_fields_survive_wire_roundtrip", "uc_ca_009_refund_is_bounded_by_reservation"],
         rust_reproducer={"test": "generated_frontier_stateful_campaign_fixtures_hold"},
         promotion_target="rust:fuzz",
         expected_classification="confirmed_safe",
@@ -353,23 +327,20 @@ def exploit_cross_product_records(objectives):
         events=events,
         deploy_count=2,
         initial_budget=7,
-        phlo_limit=7,
-        phlo_price=2,
-        token_cost=3,
-        settlement={"escrow": 14, "token_cost": 6, "refund": 8, "kind": "slash_after_evaluation"},
-        replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "signature", "slash_fields", "genesis"]},
-        replay_mutations=["cost_trace_digest", "cost_trace_event_count"],
+        settlement=vault_settlement(14, 14, 0, 0, 6, 0, kind="slash_after_evaluation"),
+        replay_fields={"fields": authenticated_replay_fields(["signature", "slash_fields", "genesis"])},
+        replay_mutations=authenticated_replay_fields(),
         resource_bounds={"max_descriptor_bytes": 512},
         oracle_kind="exploit_cross_product_oracle",
         production_path="runtime budget + processed deploy wire payload + settlement projection",
-        campaign_steps=["precharge", "reserve", "finalize", "replay", "settle", "slash"],
+        campaign_steps=["reserve_vault_authority", "reserve", "finalize", "replay", "settle", "slash"],
         minimized_input_digest=digest_value(events),
         reproducer_command="COST_ACCOUNTING_FRONTIER_FIXTURES_JSON=<fixtures> cargo nextest run -p rholang generated_frontier_stateful_campaign_fixtures_hold",
         attack_campaign="slashing_refund_replay_cross_product",
         threat_family="exploit_cross_product",
         expected_invariants=[
             "slash_system_effect_is_unmetered_for_user_budget",
-            "replay_payload_authenticates_cost_trace_payload",
+            "replay_payload_authenticates_authority_cost_payload",
             "uc_ca_058_refund_cannot_replenish_runtime_fuel",
         ],
         rust_reproducer={"test": "generated_frontier_stateful_campaign_fixtures_hold"},
@@ -381,12 +352,12 @@ def exploit_cross_product_records(objectives):
             "horizon_v3_exploit_cross_product",
             "confirmed_safe",
             "horizon_v3_exploit_cross_product_campaign",
-            "A cross-product exploit campaign combines slashing/refund confusion with replay authentication and resource bounds, and production replay/block hashing now authenticates every composed field.",
+            "A cross-product exploit campaign combines slashing/refund confusion with replay authentication and resource bounds; production replay binds the processed cost, authority witness, byte events, and slashing fields.",
             scenario,
             {"exploit_cross_product": True, "slashing": "post_evaluation", "refund": 8, "block_hash": "cost_fields"},
             [
-                "Sage guard: cross_product_replay_payload_and_block_hash_authenticates_user_cost_trace_and_slash_fields",
-                "Sage guard: refund_uses_scalar_cost_without_mutating_authenticated_trace_fields",
+                "Sage guard: cross_product_replay_payload_and_block_hash_authenticates_authority_cost_and_slash_fields",
+                "Sage guard: refund_uses_verified_settlement_without_mutating_authenticated_authority_fields",
                 "Rust: generated_frontier_stateful_campaign_fixtures_hold",
                 "TLA+: CostAccountingSearchFrontier metadata invariants",
             ],

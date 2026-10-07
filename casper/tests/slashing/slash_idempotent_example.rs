@@ -1,6 +1,6 @@
 // T-Idem (worked example): double-slashing a validator is idempotent.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14 T-Idem.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14 T-Idem.
 // Reference: design/11-worked-examples.md.
 //
 // Scenario: slash v0 once (bond 100 → 0, coop vault 0 → 100). Slash v0

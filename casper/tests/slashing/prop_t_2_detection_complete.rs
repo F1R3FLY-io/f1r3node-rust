@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-2 (detection completeness).
 //
 // Theorem: T-2 (`detection_complete`,
 // formal/rocq/slashing/theories/EquivocationDetector.v:111).
-// Reference: docs/theory/slashing/slashing-specification.md §4
+// Reference: docs/casper/theory/slashing/slashing-specification.md §4
 // (Theorem 4.2).
 //
 // Property: for every DAG state where two distinct blocks share the

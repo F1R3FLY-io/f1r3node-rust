@@ -294,22 +294,21 @@ fn oop_truncation_keeps_consumed_clamped_under_every_schedule() {
     });
 }
 
-/// D0 — per-signature TOKEN POOL: two DISJOINT signatures each get their own
-/// `ToyBudget` lane (mirroring the production `RuntimeBudget::lanes`
-/// `DashMap<[u8;32], Lane>`, where disjoint signatures key disjoint entries
-/// per the `lane_pool_disjoint` corollary in `ChannelSeparation.v`). Two
-/// threads race reservations into the two lanes concurrently; the pool's
-/// `total_cost` is the SUM over per-lane canonical reconciliations.
+/// Per-signature settlement composition: two DISJOINT signatures each get an
+/// independent abstract `ToyBudget`, matching the purse separation proved by
+/// the `lane_pool_disjoint` corollary in `ChannelSeparation.v`. Two threads race
+/// reservations into the two purse models concurrently; the abstract pool's
+/// `total_cost` is their sum.
 ///
 /// The headline invariant, verified across every loom-explored schedule: the
-/// per-lane reconciliations are INDEPENDENT (a CAS race within one lane never
-/// touches the other lane's counter or log), and the pool total — the sum of
-/// the two per-lane `consumed_units` — is the SAME under every interleaving of
-/// the two threads. This is the concurrency face of spec §7.6 ("no
-/// interleaving" is PER-SIGNATURE, not global) and of
+/// per-purse reconciliations are INDEPENDENT (a CAS race within one purse never
+/// touches the other purse's counter or log), and the pool total is the SAME
+/// under every interleaving of the two threads. This is the concurrency face
+/// of spec §7.6 ("no interleaving" is PER-SIGNATURE, not global) and of
 /// `rb_pool_total_cost = Σ rb_total_cost` in `RuntimeBudgetRefinement.v`:
-/// disjoint signatures contend on nothing, so the order in which lanes are
-/// driven and summed is irrelevant.
+/// disjoint signatures contend on nothing, so purse settlement order is
+/// irrelevant. Production obtains these partitions from native authority
+/// evidence; `RuntimeBudget` itself remains one aggregate execution ceiling.
 #[test]
 fn reconcile_two_disjoint_lanes_sum_is_schedule_independent() {
     loom::model(|| {

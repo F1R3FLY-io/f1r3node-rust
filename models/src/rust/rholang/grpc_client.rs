@@ -72,14 +72,14 @@ impl GrpcClient {
 
         let request = Request::new(notification);
 
-        println!("Waiting for response from gRPC server...");
+        tracing::debug!("Waiting for response from gRPC server...");
 
         let response = client
             .send_notification(request)
             .await
             .map_err(|e| GrpcClientError::RequestError(e.to_string()))?;
 
-        println!("Response from gRPC server: {:?}", response);
+        tracing::debug!("Response from gRPC server: {:?}", response);
 
         Ok(())
     }

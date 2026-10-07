@@ -53,7 +53,7 @@ impl TransportLayerTestRuntime {
     pub async fn create_environment(&self, port: u16) -> Result<TlsEnvironment, CommError> {
         let host = "127.0.0.1".to_string();
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
 
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .map_err(|e| CommError::ConfigError(format!("Certificate generation failed: {}", e)))?;
@@ -103,8 +103,10 @@ impl TransportLayerTestRuntime {
 
     /// Create transport layer server
     pub fn create_transport_layer_server(&self, env: &TlsEnvironment) -> TransportServer {
-        // Create RP configuration for the server
-        let rp_config = create_rp_conf_ask(env.peer.clone(), None, None);
+        // Create RP configuration for the server. The explicit timeout also
+        // bounds the server-side TLS handshake; the 1ms fallback inside
+        // create_rp_conf_ask aborts handshakes under load (flaky specs).
+        let rp_config = create_rp_conf_ask(env.peer.clone(), Some(Duration::from_secs(5)), None);
 
         let transport_server = GrpcTransportServer::new(
             rp_config,
@@ -151,15 +153,14 @@ impl TransportLayerTestRuntime {
         let remote = env2.peer.clone();
 
         // Use provided dispatchers or create defaults
-        let protocol_dispatcher =
-            protocol_dispatcher.unwrap_or_else(|| TestProtocolDispatcher::new());
-        let stream_dispatcher = stream_dispatcher.unwrap_or_else(|| TestStreamDispatcher::new());
+        let protocol_dispatcher = protocol_dispatcher.unwrap_or_default();
+        let stream_dispatcher = stream_dispatcher.unwrap_or_default();
 
         // Create dispatcher callback
         let callback = DispatcherCallback::new();
 
         // Start the remote server
-        let _server_handle = remote_transport_server
+        remote_transport_server
             .start(
                 protocol_dispatcher.to_handler(remote.clone(), Some(callback.clone())),
                 stream_dispatcher.to_handler(remote.clone(), Some(callback.clone())),
@@ -233,23 +234,22 @@ impl TransportLayerTestRuntime {
         let remote2 = env3.peer.clone();
 
         // Use provided dispatchers or create defaults
-        let protocol_dispatcher =
-            protocol_dispatcher.unwrap_or_else(|| TestProtocolDispatcher::new());
-        let stream_dispatcher = stream_dispatcher.unwrap_or_else(|| TestStreamDispatcher::new());
+        let protocol_dispatcher = protocol_dispatcher.unwrap_or_default();
+        let stream_dispatcher = stream_dispatcher.unwrap_or_default();
 
         // Create dispatcher callbacks
         let callback1 = DispatcherCallback::new();
         let callback2 = DispatcherCallback::new();
 
         // Start both remote servers
-        let _server_handle1 = remote_transport_server1
+        remote_transport_server1
             .start(
                 protocol_dispatcher.to_handler(remote1.clone(), Some(callback1.clone())),
                 stream_dispatcher.to_handler(remote1.clone(), Some(callback1.clone())),
             )
             .await?;
 
-        let _server_handle2 = remote_transport_server2
+        remote_transport_server2
             .start(
                 protocol_dispatcher.to_handler(remote2.clone(), Some(callback2.clone())),
                 stream_dispatcher.to_handler(remote2.clone(), Some(callback2.clone())),
@@ -351,6 +351,10 @@ pub enum ResponseType {
     InternalError(String),
 }
 
+impl Default for TestProtocolDispatcher {
+    fn default() -> Self { Self::new() }
+}
+
 impl TestProtocolDispatcher {
     pub fn new() -> Self {
         Self {
@@ -434,6 +438,10 @@ pub struct TestStreamDispatcher {
     delay: Option<Duration>,
 }
 
+impl Default for TestStreamDispatcher {
+    fn default() -> Self { Self::new() }
+}
+
 impl TestStreamDispatcher {
     pub fn new() -> Self {
         Self {
@@ -497,6 +505,10 @@ impl TestStreamDispatcher {
 pub struct DispatcherCallback {
     notified: Arc<tokio::sync::Mutex<bool>>,
     notify: Arc<tokio::sync::Notify>,
+}
+
+impl Default for DispatcherCallback {
+    fn default() -> Self { Self::new() }
 }
 
 impl DispatcherCallback {

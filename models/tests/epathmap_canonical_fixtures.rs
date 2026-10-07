@@ -41,8 +41,11 @@ use fixtures::{
 use models::create_bit_vector;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, EPathMap, ListParWithRandom, ParWithRandom, TaggedContinuation};
+use models::rust::rholang::bincode_encoder::encode_legacy;
 use models::rust::utils::new_freevar_par;
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -410,6 +413,8 @@ fn event_hash_goldens_produce() {
     let datum1 = ListParWithRandom {
         pars: vec![epathmap_par(e6a_index_epathmap())],
         random_state: rs1.clone(),
+        cost_authority: None,
+        cost_stack: None,
     };
     let produce1 = Produce::create(&channel, &datum1, true);
 
@@ -433,6 +438,8 @@ fn event_hash_goldens_produce() {
     let datum2 = ListParWithRandom {
         pars: datum1.pars.clone(),
         random_state: rs2,
+        cost_authority: None,
+        cost_stack: None,
     };
     let produce2 = Produce::create(&channel, &datum2, true);
     assert_ne!(
@@ -465,6 +472,8 @@ fn event_hash_goldens_produce() {
         &ListParWithRandom {
             pars: vec![map_tagged_par],
             random_state: rs1.clone(),
+            cost_authority: None,
+            cost_stack: None,
         },
         true,
     );
@@ -506,6 +515,8 @@ fn event_hash_goldens_produce() {
         &ListParWithRandom {
             pars: vec![epathmap_par(entry_tagged_map)],
             random_state: rs1,
+            cost_authority: None,
+            cost_stack: None,
         },
         true,
     );
@@ -532,6 +543,7 @@ fn event_hash_goldens_consume() {
             random_state: fixture_random_state(),
         })),
         guard: None,
+        cost_authority: None,
     };
     let consume = Consume::create(&vec![channel.clone()], &patterns, &continuation, false);
 
@@ -547,6 +559,102 @@ fn event_hash_goldens_consume() {
         "INDEX_CHANNEL_HASH_HEX (consume leg)",
         pinned::INDEX_CHANNEL_HASH_HEX,
         &hex::encode(&consume.channel_hashes[0].bytes()),
+    );
+}
+
+#[test]
+fn pre_cost_positional_codec_reproduces_committed_produce_and_consume_hashes() {
+    // The constants were captured at pre-cost target 52217b94a. This is an
+    // independent historical oracle, unlike a comparison with the merged
+    // schema's derived `bincode::serialize` (which includes new None fields).
+    let channel = gstring_par("e6a:idx:site0");
+    let channel_hash = Blake2b256Hash::new(&encode_legacy(&channel));
+    check_pinned_hex(
+        "pre-cost channel key",
+        pinned::INDEX_CHANNEL_HASH_HEX,
+        &hex::encode(channel_hash.bytes()),
+    );
+
+    let datum = ListParWithRandom {
+        pars: vec![epathmap_par(e6a_index_epathmap())],
+        random_state: fixture_random_state(),
+        cost_authority: None,
+        cost_stack: None,
+    };
+    let produce_preimage = bincode::serialize(&vec![
+        channel_hash.bytes(),
+        encode_legacy(&datum),
+        bincode::serialize(&true).unwrap(),
+    ])
+    .unwrap();
+    check_pinned_hex(
+        "pre-cost produce event",
+        pinned::PRODUCE_INDEX_RS1_HASH_HEX,
+        &hex::encode(Blake2b256Hash::new(&produce_preimage).bytes()),
+    );
+    let routed_produce = Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &datum, true)
+        .expect("ordinary historical produce must remain admissible");
+    check_pinned_hex(
+        "routed pre-cost produce event",
+        pinned::PRODUCE_INDEX_RS1_HASH_HEX,
+        &hex::encode(routed_produce.hash.bytes()),
+    );
+    assert_ne!(
+        Produce::create_for_epoch(EventCodecEpoch::CostV1, &channel, &datum, true)
+            .expect("ordinary CostV1 produce")
+            .hash,
+        routed_produce.hash,
+    );
+
+    let pattern = BindPattern {
+        patterns: vec![new_freevar_par(0, Vec::new())],
+        remainder: None,
+        free_count: 1,
+    };
+    let continuation = TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(gstring_par("continuation-body")),
+            random_state: fixture_random_state(),
+        })),
+        guard: None,
+        cost_authority: None,
+    };
+    let consume_preimage = bincode::serialize(&vec![
+        channel_hash.bytes(),
+        encode_legacy(&pattern),
+        encode_legacy(&continuation),
+        bincode::serialize(&false).unwrap(),
+    ])
+    .unwrap();
+    check_pinned_hex(
+        "pre-cost consume event",
+        pinned::CONSUME_DISCOVERY_HASH_HEX,
+        &hex::encode(Blake2b256Hash::new(&consume_preimage).bytes()),
+    );
+    let routed_consume = Consume::create_for_epoch(
+        EventCodecEpoch::Legacy,
+        &[channel.clone()],
+        &[pattern.clone()],
+        &continuation,
+        false,
+    )
+    .expect("ordinary historical consume must remain admissible");
+    check_pinned_hex(
+        "routed pre-cost consume event",
+        pinned::CONSUME_DISCOVERY_HASH_HEX,
+        &hex::encode(routed_consume.hash.bytes()),
+    );
+    assert_ne!(
+        Consume::create_for_epoch(
+            EventCodecEpoch::CostV1,
+            &[channel],
+            &[pattern],
+            &continuation,
+            false,
+        )
+        .expect("ordinary CostV1 consume")
+        .hash,
+        routed_consume.hash,
     );
 }
 
@@ -566,6 +674,8 @@ fn event_hash_goldens_produce_with_filled_cell_splices_identically() {
     let datum = ListParWithRandom {
         pars: vec![epathmap_par(interned_map)],
         random_state: rs1,
+        cost_authority: None,
+        cost_stack: None,
     };
     // Sanity: the spliced path is ACTIVE for this datum.
     assert_ne!(
@@ -608,6 +718,7 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
             random_state: fixture_random_state(),
         })),
         guard: None,
+        cost_authority: None,
     };
     let consume = Consume::create(&vec![channel.clone()], &patterns, &continuation, false);
     check_pinned_hex(
@@ -629,6 +740,7 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
             random_state: fixture_random_state(),
         })),
         guard: None,
+        cost_authority: None,
     };
     let spliced = Consume::create(
         &vec![channel.clone()],
@@ -650,6 +762,7 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
             random_state: fixture_random_state(),
         })),
         guard: None,
+        cost_authority: None,
     };
     let direct = Consume::create(&vec![channel], &direct_pattern, &direct_continuation, false);
     assert_eq!(

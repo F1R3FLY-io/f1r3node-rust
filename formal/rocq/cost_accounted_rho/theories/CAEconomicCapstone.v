@@ -36,17 +36,20 @@ From CostAccountedRho Require Import CAMintingInjection.
 Theorem ca_economic_conservation : forall S S',
   HF S -> ca_reachable S S' ->
   st_total_fuel S' <= st_total_fuel S
-  /\ (forall price,
-        settled_amount {| settlement_limit := st_total_fuel S;
-                          settlement_price := price;
-                          settlement_token_cost := ca_consumed S S' |}
-        = escrowed_amount {| settlement_limit := st_total_fuel S;
-                             settlement_price := price;
-                             settlement_token_cost := ca_consumed S S' |})
+  /\ settled_amount {| settlement_physical_bound := st_total_fuel S;
+                       settlement_byte_bound := 0;
+                       settlement_fee := 0;
+                       settlement_physical_cost := ca_consumed S S';
+                       settlement_byte_cost := 0 |}
+     = reserved_amount {| settlement_physical_bound := st_total_fuel S;
+                          settlement_byte_bound := 0;
+                          settlement_fee := 0;
+                          settlement_physical_cost := ca_consumed S S';
+                          settlement_byte_cost := 0 |}
   /\ (forall t, token_size t > 0 -> ~ ca_step S (mint_inject_st S t)).
 Proof.
   intros S S' HFS Hreach. repeat split.
   - apply ca_funded_reachable_monotone; assumption.
-  - intro price. apply ca_post_evaluation_settlement_no_mint; assumption.
+  - apply ca_post_evaluation_settlement_no_mint; assumption.
   - intros t Hpos. apply mint_inject_st_not_ca_step; [ apply HF_funded; assumption | assumption ].
 Qed.

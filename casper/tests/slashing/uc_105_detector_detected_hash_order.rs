@@ -1,6 +1,6 @@
 // UC-105 — `equivocation_detected_block_hashes` membership is order-independent.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-105.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-105.
 // Theorems: T-9.11.
 //
 // Scenario: when a record already contains a detected-hash entry, the
@@ -34,7 +34,7 @@ async fn uc_105_detected_hash_evidence_is_order_independent() {
     );
     fixture.add_block(&missing_pointer);
     fixture.add_block(&detector);
-    fixture.add_record(0, 0, &[detector.block_hash.clone()]);
+    fixture.add_record(0, 0, std::slice::from_ref(&detector.block_hash));
 
     let current = block(
         20,

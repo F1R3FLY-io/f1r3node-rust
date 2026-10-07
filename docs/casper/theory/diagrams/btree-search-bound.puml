@@ -1,0 +1,51 @@
+' Search bound of one produce-counter lookup (DR-78, cap root cause C3).
+' The smallest standard BTreeMap of height 3 has a root with one key and two
+' children, and every other node holds the minimum of five keys. Its size,
+' 71 = 2 * 6^2 - 1, is the least size of any B-tree of height 3, so a map with
+' n entries has height at most h(n). One search scans the keys of one node
+' per level, at most 11 (the node capacity), and descends one level. The
+' metered replay charges that bound, not one comparison per entry.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-78);
+'                  shared/src/rust/collection_backing.rs (tree_height_bound,
+'                  tree_search_bound); rspace++/src/rspace/replay_rspace/
+'                  native_candidate/metered.rs (reserve_ordered_lookup).
+' Formal model:    formal/rocq/cost_accounted_rho/theories/OrderedLookupBound.v.
+' Palette:  root = control amber · internal nodes = process lilac · leaves = pool green
+'           search path = instantiate blue · charge = supply blue · legacy charge = reject red
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/btree-search-bound.puml
+'          (or: ./render.sh btree-search-bound.puml)
+
+@startuml btree-search-bound
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam RectangleBorderColor #333333
+skinparam RectangleFontSize 11
+title Smallest BTreeMap of height 3 and the search bound of one lookup (DR-78)
+
+rectangle "**root** (level 1)\n1 key, 2 children\n(a root holds at least 1 key)" as Root $ca_control
+rectangle "**internal node** (level 2)\n5 keys, 6 children" as LeftInner $ca_process
+rectangle "**internal node** (level 2)\n5 keys, 6 children" as RightInner $ca_process
+rectangle "**leaf** (level 3)\n5 keys" as SearchedLeaf $ca_pool
+rectangle "**5 more leaves**\n5 keys each" as LeftLeaves $ca_pool
+rectangle "**6 leaves**\n5 keys each" as RightLeaves $ca_pool
+
+Root -[$ca_instantiate,bold]-> LeftInner : search path:\n<latex>\le 11</latex> comparisons\nin the root
+Root -[$ca_neutral]-> RightInner
+LeftInner -[$ca_instantiate,bold]-> SearchedLeaf : <latex>\le 11</latex> comparisons\nin this node
+LeftInner -[$ca_neutral]-> LeftLeaves
+RightInner -[$ca_neutral]-> RightLeaves
+
+rectangle "**Size of the smallest tree of height <latex>h</latex>**\n<latex>N_{\min}(h) = 2 \cdot 6^{h-1} - 1</latex>\nhere: <latex>1 + 2\,(5 + 6 \cdot 5) = 71 = 2 \cdot 6^{2} - 1</latex>\nso a map with <latex>n</latex> entries has height at most\n<latex>h(n) = \left\lfloor \log_6 \frac{n+1}{2} \right\rfloor + 1</latex>" as Size $ca_note_indigo
+
+rectangle "**Charge of one lookup** (reserve_ordered_lookup)\n<latex>c(n) = 11 \cdot h(n)</latex> comparisons: at most 11 on each of <latex>h(n)</latex> levels\nreserve <latex>c(n)</latex> operations and <latex>2 \cdot 32 \cdot c(n)</latex> scanned bytes, no backing\neach comparison reads two 32-byte Produce hashes\n<latex>n = 2000</latex>: <latex>h = 4</latex>, <latex>c = 44</latex> comparisons" as Charge $ca_supply
+
+rectangle "**Legacy charge** (commented out)\none step per entry: <latex>32\,(n+1) + n</latex> operations\n<latex>n = 2000</latex>: 66,032 operations per lookup\na replay with <latex>n</latex> sources charged <latex>\Theta(n^{2})</latex> in total" as Legacy $ca_rejectfill
+
+SearchedLeaf -[hidden]-> Size
+LeftLeaves -[hidden]-> Charge
+Size -[hidden]right-> Charge
+RightLeaves -[hidden]-> Legacy
+Charge -[hidden]right-> Legacy
+@enduml

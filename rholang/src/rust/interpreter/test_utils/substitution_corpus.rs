@@ -458,6 +458,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                         var_instance: Some(VarInstance::Wildcard(WildcardMsg {})),
                     }),
                     free_count: 2,
+                    cost_signature: None,
                 }],
                 body: Some(models::par_from_default! {
                     exprs: vec![Expr {
@@ -636,6 +637,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                     source: Some(gint(0)),
                     remainder: None,
                     free_count: 1,
+                    cost_signature: None,
                 }],
                 body: Some(bound_var(0)),
                 bind_count: 1,
@@ -665,6 +667,8 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
             locally_free: vec![0xff, 0xff, 0xff, 0xff],
             connective_used: true,
             unforgeables: vec![],
+            cost_signed_terms: vec![],
+            cost_stacks: vec![],
         },
         0,
     ));
@@ -683,6 +687,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                             source: Some(bound_var(level)),
                             remainder: None,
                             free_count: 1,
+                            cost_signature: None,
                         }],
                         body: Some(binders),
                         persistent: false,

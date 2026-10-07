@@ -80,6 +80,7 @@ impl InitializingSpec {
 
             ApprovedBlock {
                 candidate: approved_block_candidate,
+                floor_seed: None,
                 sigs: vec![Signature {
                     public_key: validator_pk.bytes.clone(),
                     algorithm: "secp256k1".to_string(),
@@ -94,6 +95,7 @@ impl InitializingSpec {
 
         let chunk_size = lfs_tuple_space_requester::PAGE_SIZE;
 
+        #[allow(clippy::type_complexity)]
         fn genesis_export(
             genesis_exporter: Arc<dyn RSpaceExporter>,
             start_path: Vec<(Blake2b256Hash, Option<u8>)>,
@@ -207,20 +209,8 @@ impl InitializingSpec {
             .as_ref()
             .unwrap()
             .clone();
-        // Tests must feed a MergeableEntryResponse for every block they enqueue;
-        // otherwise the stream's per-block mergeable_pending state never clears
-        // and is_finished() never returns true.
-        let mergeable_message_tx = initializing_engine
-            .mergeable_message_tx
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .clone();
-
         let store_msgs_clone = store_response_messages.clone();
         let genesis_clone = genesis.clone();
-        let genesis_hash_for_mergeable = genesis.block_hash.clone();
 
         let enqueue_responses = async move {
             // Write directly to tuple space channel (equivalent to stateResponseQueue.enqueue1)
@@ -235,24 +225,6 @@ impl InitializingSpec {
                 .send(genesis_clone)
                 .await
                 .expect("Failed to enqueue block response");
-            // Brief yield so the LFS stream processes the genesis BlockMessage
-            // (running save_block → mergeable_pending(genesis)) before the
-            // mergeable response below is delivered. Without this, the select
-            // loop may consume the response first and reject it as unsolicited
-            // (was_pending=false), leaving mergeable_d non-empty forever and
-            // the stream blocked waiting for a response that already arrived.
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            // Empty serialized_entry signals "peer has no entry"; this test
-            // doesn't exercise actual entry import, just the done-on-response gate.
-            mergeable_message_tx
-                .send(
-                    models::rust::casper::protocol::casper_message::MergeableEntryResponse {
-                        block_hash: genesis_hash_for_mergeable,
-                        serialized_entry: prost::bytes::Bytes::new(),
-                    },
-                )
-                .await
-                .expect("Failed to enqueue mergeable response");
         };
 
         let local_for_expected = fixture.local.clone();
@@ -406,6 +378,7 @@ impl InitializingSpec {
 //
 // CRITICAL: Using fixture's stores ensures genesis data exported from fixture.rspace_store
 // is imported into the SAME rspace_store instance, preventing storage isolation bugs.
+#[allow(clippy::type_complexity)]
 async fn create_initializing_engine(
     fixture: &TestFixture,
     the_init: Arc<
@@ -452,6 +425,7 @@ async fn create_initializing_engine(
         fixture.runtime_manager.clone(),
         fixture.estimator.clone(),
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+        None,
     )))
 }
 
@@ -530,6 +504,78 @@ async fn proactively_request_approved_block_on_init() {
     InitializingSpec::after_each(&fixture);
 }
 
+/// An LFS restore that fails must ask again, not go quiet.
+///
+/// The restore runs inside a per-message task the transport layer spawned; when
+/// it returns an error, that task logs and drops it. Nothing tells the engine,
+/// the ApprovedBlock it was handed is already consumed, and `start_requester` is
+/// false, so no later ApprovedBlock is accepted either. The node then sits in
+/// Initializing indefinitely, answering heartbeats, looking alive. Observed: a
+/// joiner whose replay hit a missing rspace root at 04:55:38 was still idle two
+/// hours later, having reported nothing since.
+#[tokio::test]
+async fn a_failed_restore_requests_the_approved_block_again() {
+    use casper::rust::engine::engine::Engine;
+    use models::casper::ApprovedBlockRequestProto;
+    use models::routing::protocol::Message as ProtocolMessage;
+    use prost::Message;
+
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine_cell = Arc::new(EngineCell::init());
+    let initializing_engine = create_initializing_engine(&fixture, the_init, engine_cell.clone())
+        .await
+        .expect("Failed to create Initializing engine");
+
+    initializing_engine
+        .init()
+        .await
+        .expect("init should succeed");
+
+    // Only the retry should be visible from here on.
+    fixture.transport_layer.reset();
+    fixture
+        .transport_layer
+        .set_responses(|_peer, _protocol| Ok(()));
+
+    initializing_engine
+        .recover_from_restore_failure(CasperError::RuntimeError(
+            "simulated restore failure".to_string(),
+        ))
+        .await
+        .expect("a restore failure must be handled, not propagated into the void");
+
+    let expected_content = prost::bytes::Bytes::from(
+        ApprovedBlockRequestProto {
+            identifier: "".to_string(),
+            trim_state: true,
+        }
+        .encode_to_vec(),
+    );
+    let requests = fixture.transport_layer.get_all_requests();
+    let asked_again = requests.iter().any(|req| {
+        if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
+            packet.content == expected_content
+        } else {
+            false
+        }
+    });
+
+    assert!(
+        asked_again,
+        "a failed restore must re-request the approved state so the node can try \
+         again; staying silent leaves it wedged in Initializing forever. Requests \
+         sent: {:?}",
+        requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
 #[test]
 fn transition_to_initializing_invokes_init_immediately() {
     use models::casper::ApprovedBlockRequestProto;
@@ -586,6 +632,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.runtime_manager,
                     &fixture.estimator,
                     &heartbeat_signal_ref,
+                    None,
                 )
                 .await
                 .expect("transition_to_initializing should succeed");

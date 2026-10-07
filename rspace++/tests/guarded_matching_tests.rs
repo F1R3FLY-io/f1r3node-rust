@@ -1557,31 +1557,32 @@ async fn selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds() {
     let channels: Vec<String> = (0..BINDS).map(|index| format!("c{index}")).collect();
     let patterns = vec![Pattern::Wildcard; BINDS];
     let continuation = GuardedContinuation::unguarded("deep");
-    let make_state = || {
-        let mut state: HotStoreState<String, Pattern, String, GuardedContinuation> =
-            HotStoreState::default();
+    let make_state = |with_continuation: bool| {
+        let mut data = HashMap::with_capacity(BINDS);
         for (index, channel) in channels.iter().enumerate() {
-            state.data.insert(channel.clone(), vec![Datum::create(
-                channel,
-                index.to_string(),
+            data.insert(channel.clone(), vec![Datum::create(channel, index.to_string(), false)]);
+        }
+        let mut continuations = HashMap::new();
+        if with_continuation {
+            continuations.insert(channels.clone(), vec![WaitingContinuation::create(
+                &channels,
+                &patterns,
+                &continuation,
                 false,
+                BTreeSet::new(),
             )]);
         }
-        state
+        HotStoreState::from_flat_maps(
+            continuations,
+            HashMap::new(),
+            data,
+            HashMap::new(),
+            HashMap::new(),
+        )
     };
 
-    let selector_space = space_with_state(make_state()).await;
-    let mut enumeration_state = make_state();
-    enumeration_state
-        .continuations
-        .insert(channels.clone(), vec![WaitingContinuation::create(
-            &channels,
-            &patterns,
-            &continuation,
-            false,
-            BTreeSet::new(),
-        )]);
-    let enumeration_space = space_with_state(enumeration_state).await;
+    let selector_space = space_with_state(make_state(false)).await;
+    let enumeration_space = space_with_state(make_state(true)).await;
 
     std::thread::Builder::new()
         .name("candidate-walk-small-stack".to_string())

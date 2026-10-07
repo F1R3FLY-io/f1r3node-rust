@@ -36,7 +36,6 @@ CONSTANTS
     Weight,
     Rank,
     InitialBudget,
-    MaxTraceEvents,
     MaxSourcePathComponents,
     MaxPrimitiveDescriptor,
     NoOop
@@ -89,7 +88,6 @@ TypeOK ==
     /\ reconciledConsumed <= InitialBudget
     /\ reconciledOop \in Events \cup {NoOop}
     /\ reconciledCommitted \subseteq Events
-    /\ MaxTraceEvents \in Nat
     /\ \A e \in Events : DeployId[e] \in Nat
     /\ \A e \in Events : SourcePath[e] \in Seq(Nat)
     /\ \A e \in Events : RedexId[e] \in Nat
@@ -105,7 +103,7 @@ ValidEvent(e) ==
     /\ Weight[e] > 0
     /\ Len(SourcePath[e]) <= MaxSourcePathComponents
     /\ (KindId[e] # 1 \/ PrimitiveDescriptor[e] <= MaxPrimitiveDescriptor)
-    /\ Len(successTrace) + (IF oop = NoOop THEN 0 ELSE 1) < MaxTraceEvents
+    /\ Len(successTrace) + (IF oop = NoOop THEN 0 ELSE 1) < InitialBudget + 1
 
 PrimitiveDescriptorValue(e) ==
     IF KindId[e] = 1 THEN PrimitiveDescriptor[e] ELSE 0
@@ -195,8 +193,8 @@ FinalizedDigestEntries ==
 (* The state-independent ("intrinsic") part of ValidEvent: the runtime      *)
 (* admission checks that gate an event into the attempt log (positive       *)
 (* weight, bounded source path, bounded primitive descriptor). The          *)
-(* MaxTraceEvents clause of ValidEvent is a live-state retention bound and  *)
-(* is handled separately by the bounded-K cap below, so it is excluded here.*)
+(* The live-state capacity clause of ValidEvent is handled separately by    *)
+(* the capacity-derived bounded-K window, so it is excluded here.           *)
 IntrinsicallyValid(e) ==
     /\ Weight[e] > 0
     /\ Len(SourcePath[e]) <= MaxSourcePathComponents
@@ -215,12 +213,9 @@ RankSortSeq(S) ==
 
 CanonicalSeq == RankSortSeq(ValidEventSet)
 
-(* The bounded-K window. weights >= 1, so the canonical walk commits at most *)
-(* InitialBudget events before the OOP boundary; MAX_COST_TRACE_EVENTS       *)
-(* (MaxTraceEvents here) is the hard retention cap. K is their min — the     *)
-(* Milestone-3 bounded-K reconciliation reads only the lowest-K events.      *)
-BoundedK == IF MaxTraceEvents < InitialBudget + 1 THEN MaxTraceEvents
-            ELSE InitialBudget + 1
+(* The bounded-K window is derived from authenticated execution capacity.    *)
+(* Positive weights allow at most InitialBudget commits plus one OOP witness.*)
+BoundedK == InitialBudget + 1
 
 KWindow == IF Len(CanonicalSeq) <= BoundedK THEN CanonicalSeq
            ELSE SubSeq(CanonicalSeq, 1, BoundedK)
@@ -351,8 +346,8 @@ FinalizeTrace ==
 (*                                                                           *)
 (* Runs after FinalizeTrace (frontier = 1) and before ResetDeploy            *)
 (* (frontier 2). It populates the reconciled-output slot from the BOUNDED-K  *)
-(* canonical walk: only the lowest-K canonical events (K = BoundedK =        *)
-(* min(MaxTraceEvents, InitialBudget+1)) are read. This is the consensus     *)
+(* canonical walk: only the lowest-K canonical events                        *)
+(* (K = BoundedK = InitialBudget+1) are read. This is the consensus          *)
 (* answer: `consumed`/`total_cost`, the OOP verdict, and the committed set.  *)
 (*                                                                           *)
 (* Crucially, reconciledConsumed/reconciledOop/reconciledCommitted are set   *)
@@ -448,7 +443,7 @@ LoggedEventsAreValidated ==
         /\ (KindId[oop] # 1 \/ PrimitiveDescriptor[oop] <= MaxPrimitiveDescriptor)
 
 TraceWithinRetentionBound ==
-    Len(successTrace) + (IF oop = NoOop THEN 0 ELSE 1) <= MaxTraceEvents
+    Len(successTrace) + (IF oop = NoOop THEN 0 ELSE 1) <= BoundedK
 
 ResetClearsActiveTraceAfterFinalization ==
     frontier = 0 /\ finalizedTrace # <<>> /\ consumed = 0 => successTrace = <<>> /\ oop = NoOop
@@ -456,7 +451,7 @@ ResetClearsActiveTraceAfterFinalization ==
 PostOopRejectionsPreserveSingleBoundary ==
     postOopRejects > 0 =>
         /\ oop # NoOop
-        /\ Len(TraceWithOop(successTrace, oop)) <= MaxTraceEvents
+        /\ Len(TraceWithOop(successTrace, oop)) <= BoundedK
 
 CanonicalDigestEventCountMatches ==
     Cardinality(CanonicalDigestEntries(successTrace, oop)) =
@@ -510,10 +505,9 @@ CanonicalDigestStableAfterFinalization ==
 (* InitialBudget) — never successTrace, the firing order, or truncatedAtOop *)
 (* — so installing them at Merge proves schedule-independence: every        *)
 (* behavior TLC explores reaches the SAME reconciled values. The threshold  *)
-(* clause is guarded by ~CapTruncates because the bounded-K window only      *)
-(* changes the answer when there are more valid events than the cap admits  *)
-(* (a DoS backstop, not the budget decision); the clamp law below holds     *)
-(* unconditionally.                                                         *)
+(* The capacity-derived window cannot change the answer: if it truncates,   *)
+(* every retained event has positive weight and the window contains enough  *)
+(* events to preserve the first OOP boundary.                               *)
 CapTruncates == Len(CanonicalSeq) > BoundedK
 
 ConsumedAndVerdictScheduleIndependent ==
@@ -521,10 +515,9 @@ ConsumedAndVerdictScheduleIndependent ==
         /\ reconciledConsumed = RecConsumed
         /\ reconciledOop = RecOop
         /\ reconciledConsumed <= InitialBudget
-        /\ (~CapTruncates =>
-              IF TotalValidWeight > InitialBudget
-              THEN reconciledOop # NoOop /\ reconciledConsumed = InitialBudget
-              ELSE reconciledOop = NoOop /\ reconciledConsumed = TotalValidWeight)
+        /\ (IF TotalValidWeight > InitialBudget
+            THEN reconciledOop # NoOop /\ reconciledConsumed = InitialBudget
+            ELSE reconciledOop = NoOop /\ reconciledConsumed = TotalValidWeight)
 
 (* ---- WD-D2: admission_decision_schedule_independent -------------------- *)
 (*                                                                          *)
@@ -553,24 +546,21 @@ admission_decision_schedule_independent ==
         /\ reconciledOop = RecOop
         \* The admitted demand never oversubscribes the pool (Σ_s = InitialBudget).
         /\ reconciledConsumed <= InitialBudget
-        /\ (~CapTruncates =>
-              IF TotalValidWeight <= InitialBudget
-              THEN reconciledConsumed = TotalValidWeight  \* all admitted, exact ΣΔ
-              ELSE reconciledConsumed = InitialBudget)     \* prefix capped at the pool
+        /\ (IF TotalValidWeight <= InitialBudget
+            THEN reconciledConsumed = TotalValidWeight
+            ELSE reconciledConsumed = InitialBudget)
 
-(* total_cost is the clamped sum: min(InitialBudget, Σ valid weights) in the *)
-(* common (non-cap-truncated) case. Always reconciledConsumed <= both bounds.*)
+(* total_cost is the clamped sum: min(InitialBudget, Σ valid weights).       *)
 TotalCostMatchesClampedSum ==
     frontier = 2 =>
         /\ reconciledConsumed <= InitialBudget
         /\ reconciledConsumed <= TotalValidWeight
-        /\ (~CapTruncates =>
-              reconciledConsumed =
-                (IF TotalValidWeight < InitialBudget THEN TotalValidWeight ELSE InitialBudget))
+        /\ reconciledConsumed =
+             (IF TotalValidWeight < InitialBudget THEN TotalValidWeight ELSE InitialBudget)
 
 (* ---- NON-OOP COMMITTED MULTISET COMPLETENESS --------------------------- *)
 (*                                                                          *)
-(* When the deploy does NOT go OOP AND the bounded-K cap does not bite, the  *)
+(* When the deploy does NOT go OOP, the capacity window cannot have bitten:  *)
 (* reconciled committed set is exactly the set of all intrinsically-valid    *)
 (* events — complete, and (being a pure function of the constants)           *)
 (* schedule-independent. This is the property that survives for the non-OOP  *)
@@ -578,16 +568,8 @@ TotalCostMatchesClampedSum ==
 (* deterministic, so the recorded multiset is identical across schedules and *)
 (* play/replay.                                                              *)
 (*                                                                          *)
-(* The ~CapTruncates guard is essential and faithful: when more than         *)
-(* MAX_COST_TRACE_EVENTS distinct valid events exist, `reconcile()`          *)
-(* truncates the canonical log to the lowest K, so the committed set is the  *)
-(* lowest-K window, not the full valid set (see CapTruncatedCommittedIsLowest*)
-(* K). In production MAX_COST_TRACE_EVENTS = 1,000,000, so for any realistic *)
-(* non-OOP deploy the cap does not bite and completeness holds; the cap arm  *)
-(* is a DoS backstop. The MCRuntimeBudgetReplayCap instance deliberately     *)
-(* shrinks the cap below the valid-event count to exercise the guard.        *)
 NonOopCommittedMultisetComplete ==
-    frontier = 2 /\ reconciledOop = NoOop /\ ~CapTruncates =>
+    frontier = 2 /\ reconciledOop = NoOop =>
         reconciledCommitted = ValidEventSet
 
 (* When the bounded-K cap DOES bite, the reconciled committed set is the     *)
@@ -622,9 +604,8 @@ MergeReadsBoundedKWindow ==
 
 (* ---- ConsumedFollowsReconciliationContract (retained, generalized) ----- *)
 (* On the LIVE finalized state, consumed clamps to InitialBudget on OOP and  *)
-(* stays <= InitialBudget otherwise. (Note: the live consumed may be < the   *)
-(* reconciled total_cost when the trace cap bites — which is exactly why     *)
-(* consensus reads the RECONCILED value, not the live one.)                  *)
+(* stays <= InitialBudget otherwise. Consensus reads the canonical          *)
+(* reconciled value rather than schedule-dependent live ordering.            *)
 ConsumedFollowsReconciliationContract ==
     frontier >= 1 =>
         ((oop = NoOop /\ consumed <= InitialBudget) \/

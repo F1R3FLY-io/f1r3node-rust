@@ -14,7 +14,6 @@ use rholang::rust::interpreter::frontend::{
 };
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
-use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
 const PROVIDER_SOURCE: &str = "this is deliberately not a Rholang program";
 
@@ -148,11 +147,6 @@ async fn establish_prior_state(runtime: &RhoRuntimeImpl) {
         .expect("prior deployment completes");
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     assert_eq!(result.cost.value, 1);
-    runtime
-        .merge_chs
-        .write()
-        .await
-        .insert(scalar(99), MergeType::IntegerAdd);
 }
 
 #[tokio::test]
@@ -163,7 +157,6 @@ async fn preparation_and_version_failures_do_not_reset_or_charge_prior_state() {
         let prior_remaining = runtime.cost.get();
         let prior_signature = runtime.cost.signature();
         let prior_log = runtime.get_cost_log();
-        let prior_merge = runtime.merge_chs.read().await.clone();
         let prior_root = runtime.create_checkpoint().await.root;
 
         for (version, expected_calls, diagnostic) in [
@@ -193,7 +186,6 @@ async fn preparation_and_version_failures_do_not_reset_or_charge_prior_state() {
             assert_eq!(runtime.cost.get(), prior_remaining);
             assert_eq!(runtime.cost.signature(), prior_signature);
             assert_eq!(runtime.get_cost_log(), prior_log);
-            assert_eq!(*runtime.merge_chs.read().await, prior_merge);
             assert_eq!(runtime.create_checkpoint().await.root, prior_root);
         }
     })
@@ -206,7 +198,6 @@ async fn negative_budget_rejects_before_frontend_access_and_prepared_execution()
         establish_prior_state(&runtime).await;
         let prior_cost = runtime.cost.total_cost();
         let prior_remaining = runtime.cost.get();
-        let prior_merge = runtime.merge_chs.read().await.clone();
         let prior_root = runtime.create_checkpoint().await.root;
         let frontend = CountingFrontend::new(0, Ok(prepared("@1!(2)")));
         for initial in [-1, i64::MIN] {
@@ -238,7 +229,6 @@ async fn negative_budget_rejects_before_frontend_access_and_prepared_execution()
             frontend.assert_calls(0, 0);
             assert_eq!(runtime.cost.total_cost(), prior_cost);
             assert_eq!(runtime.cost.get(), prior_remaining);
-            assert_eq!(*runtime.merge_chs.read().await, prior_merge);
             assert_eq!(runtime.create_checkpoint().await.root, prior_root);
         }
     })
@@ -274,17 +264,12 @@ async fn explicit_frontend_does_not_reparse_source_and_uses_real_metering() {
 }
 
 #[tokio::test]
-async fn successful_prepared_admission_resets_budget_and_merge_tracking() {
+async fn successful_prepared_admission_resets_budget() {
     with_runtime("prepared-reset-", |mut runtime| async move {
         establish_prior_state(&runtime).await;
         let signature = runtime.cost.signature();
         let root = runtime.create_checkpoint().await.root;
         for initial in [0, 11, i64::MAX] {
-            runtime
-                .merge_chs
-                .write()
-                .await
-                .insert(scalar(99), MergeType::IntegerAdd);
             let result = runtime
                 .evaluate_prepared(prepared("Nil"), Cost::create(initial, "reset"), random())
                 .await
@@ -294,7 +279,6 @@ async fn successful_prepared_admission_resets_budget_and_merge_tracking() {
             assert_eq!(runtime.cost.get().value, initial);
             assert_eq!(runtime.cost.signature(), signature);
             assert!(result.mergeable.is_empty());
-            assert!(runtime.merge_chs.read().await.is_empty());
             assert_eq!(runtime.create_checkpoint().await.root, root);
         }
     })
@@ -390,7 +374,6 @@ async fn raw_prepared_failure_and_source_wrapper_keep_distinct_checkpoint_owners
             assert!(result.cost.value > 0);
             let after = runtime.create_checkpoint().await.root;
             assert_eq!(before == after, !raw_prepared);
-            assert!(runtime.merge_chs.read().await.is_empty());
         })
         .await;
     }

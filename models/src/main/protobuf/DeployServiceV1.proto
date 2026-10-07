@@ -47,10 +47,14 @@ service DeployService {
   rpc getDataAtName(DataAtNameByBlockQuery) returns (RhoDataResponse) {}
   // Find processes receiving on a name.
   rpc listenForContinuationAtName(ContinuationAtNameQuery) returns (ContinuationAtNameResponse) {}
-  // Find block containing a deploy.
+  // Find block containing a deploy. The response's blockInfo.isFinalized is
+  // block-level; for deploy effect-finality use finalizationState or
+  // deployFinalizationStatus.
   rpc findDeploy(FindDeployQuery) returns (FindDeployResponse) {}
-  // Preview new top-level unforgeable names (for example, to compute signatures over them).
-  rpc previewPrivateNames(PrivateNamePreviewQuery) returns (PrivateNamePreviewResponse) {}
+  // Preview legacy top-level unforgeable names. Protocol 6 returns an error.
+  rpc previewPrivateNames(PrivateNamePreviewQuery) returns (PrivateNamePreviewResponse) {
+    option deprecated = true;
+  }
   // Get details about a particular block.
   rpc lastFinalizedBlock(LastFinalizedBlockQuery) returns (LastFinalizedBlockResponse) {}
   // Check if a given block is finalized.
@@ -70,6 +74,10 @@ service DeployService {
   rpc getEventByHash(ReportQuery) returns (EventInfoResponse){}
   // Get node status
   rpc status(google.protobuf.Empty) returns (StatusResponse){}
+  // Bulk list of pending deploys (deploy_storage + rejected-recovery buffer),
+  // optionally filtered by deployer public key. Empty response on read-only
+  // nodes (Casper not initialised).
+  rpc getPendingDeploys(PendingDeploysQuery) returns (PendingDeploysResponse){}
 }
 
 message EventInfoResponse{
@@ -159,6 +167,8 @@ message FindDeployResponse {
     servicemodelapi.ServiceError error        = 1;
     LightBlockInfo blockInfo  = 2;
   }
+  DeployFinalizationStateProto finalizationState = 3;
+  uint32 rejectionCount = 4;
 }
 
 // previewPrivateNames
@@ -208,5 +218,13 @@ message StatusResponse {
   oneof message {
     servicemodelapi.ServiceError error  = 1;
     Status status = 2;
+  }
+}
+
+// getPendingDeploys
+message PendingDeploysResponse {
+  oneof message {
+    servicemodelapi.ServiceError error        = 1;
+    PendingDeploysResponsePayload payload     = 2;
   }
 }

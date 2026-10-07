@@ -1,0 +1,80 @@
+' Set-inclusion Diagram 05 — Conflict-detector removal soundness (GAP-3).
+'
+' Removing the single-value-cell (consume-then-produce-by-channel) conflict
+' predicate is SOUND: everything it would have flagged is a SUBSET of what the
+' RETAINED double-consume / same-IO-event race detector already catches, UNION
+' the number/foldable channels (which are intrinsically mergeable and safe to
+' leave unflagged):
+'
+'     removed_fires(a,b)  ⊆  retained_conflict(a,b)  ∪  is_number_channel(a,b)
+'
+' Reason: updating a single-value cell DEFINITIONALLY consumes the cell's base
+' datum, so "both branches consume-then-produce on ch" implies "both consumed the
+' same base datum on ch" — exactly the retained produces_consumed race (Check #1,
+' minus both-mergeable) when ch is a non-number channel; when ch IS a number
+' channel it is in produces_mergeable, so neither detector flags it (correct).
+'
+' Depicted as nested set regions (⊆ by containment). Mirrors Rocq
+' ConflictSoundness.removed_subset_retained / conflict_removal_sound and Rust
+' merging_logic.rs test removed_predicate_is_subsumed_by_retained_or_number_channel.
+'
+' Render:
+'   plantuml -tsvg docs/theory/merge-algebra/diagrams/05-conflict-detector-venn.puml
+
+@startuml 05-conflict-detector-venn
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam rectangle {
+  FontName "monospace"
+  FontSize 10
+}
+skinparam package {
+  BackgroundColor<<Retained>> #F3E5F5
+  BackgroundColor<<Number>>   #EEFAF1
+  BorderColor #444444
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Conflict-detector removal soundness (GAP-3): removed ⊆ retained ∪ number-ch
+
+' Node color legend:
+'   lavender (#E1BEE7)  = RETAINED detector universe (Check #1 double-consume)
+'   gold     (#FFE082)  = the removed check's NON-number part (⊆ retained)
+'   mint     (#C8E6C9)  = number/foldable channels — intrinsically mergeable
+'   green    (#A5D6A7)  = the soundness conclusion (nothing lost)
+' Edge color legend:
+'   purple (#6A1B9A) = subsumption (removed ⟹ retained on non-number channels)
+'   green  (#2E7D32) = number-channel exemption (safe to leave unflagged)
+
+package "RETAINED detector — races_for_same_io_event (Check #1)\n  produces_consumed ∩ (non-mergeable): both branches destroyed\n  the SAME base Produce in COMM on a non-number channel" <<Retained>> {
+  rectangle "retained_conflict(a,b)\n= ∃ ch. consumes a ch ∧ consumes b ch\n         ∧ ¬ is_number_ch ch" as RET #E1BEE7
+  rectangle "removed single-value-cell check ∩ NON-number:\n  svc_update = consume-then-produce on ch\n  ⟹ base datum consumed in BOTH branches\n  ⟹ a produces_consumed race  ⊆  retained ✓" as SUB #FFE082
+  RET -[hidden]-> SUB
+}
+
+package "Number / foldable channels (IntegerAdd, BitmaskOr)" <<Number>> {
+  rectangle "is_number_channel(a,b)\n= ∃ ch. svc_update a ch ∧ svc_update b ch\n         ∧ is_number_ch ch\nintrinsically mergeable (they FOLD):\nneither detector flags them — CORRECT" as NUM #C8E6C9
+}
+
+rectangle "removed_fires(a,b)\n= ∃ ch. svc_update a ch ∧ svc_update b ch\n──────────────────────────────────────\nSOUND to drop:  removed_fires  ⊆\n   retained_conflict  ∪  is_number_channel\n(nothing lost — removed_subset_retained)" as CONC #A5D6A7
+
+SUB  -[#6A1B9A,bold]-> CONC : non-number\ncase (subsumed)
+NUM  -[#2E7D32,bold]-> CONC : number\ncase (exempt)
+
+legend bottom
+  The removed predicate fires only inside RETAINED ∪ NUMBER. On a non-number
+  single-value cell, updating consumes the base datum in both branches — the exact
+  produces_consumed race Check #1 keeps (the gold subset ⊆ the lavender universe).
+  On a number channel both branches are in produces_mergeable, so the "minus
+  both-mergeable" filter correctly leaves it unflagged. Rocq removed_subset_retained
+  needs NO hidden hypothesis (the consume conjunct is definitional, via andb_prop);
+  is_number_ch is an abstract parameter, so the result holds for ANY classifier.
+endlegend
+
+@enduml

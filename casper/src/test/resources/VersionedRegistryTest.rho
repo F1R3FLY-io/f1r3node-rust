@@ -77,6 +77,7 @@ in {
       // parallel tests each see the same published value.
       for (@pkHex <<- pkHexCh) {
 
+  // 1. lib rejects an unforgeable name before the registry store is touched.
   v1Api!("insertVersion", "lib", "projA", "1.0.0", *unsafe1, *ins1) |
   for (@r1 <- ins1) {
     assert!("insertVersion_lib_rejected", 1, (false, "==", r1),
@@ -176,8 +177,7 @@ in {
   // deployer's authenticated pubKey hex. URNs constructed by these
   // tests interpolate `pkHex` in the `<pk>` slot so the resolver's
   // parseVersionedUri output matches the store key. All resolver
-  // tests run under `serve`; `lib` registration is disabled until
-  // the temp-name enforcement lands.
+  // tests run under `serve`; `lib` accepts only closed, inert values.
 
   // 12. exact-version lookup returns the inserted code
   v1Api!("insertVersion", "serve", "p12", "1.0.0", "code12", *lk12a) |
@@ -416,6 +416,7 @@ in {
               "for(@x <- registry_lookup!?(URN)) binds x to the resolved code", *ack27)
     }
   } |
+  // 28. A nested closed literal is the only kind of lib payload admitted.
   v1Api!("insertVersion", "lib", "p28", "1.0.0",
          {"schema": "demo", "values": [1, true, Nil]}, *ins28) |
   for (@accepted <- ins28) {

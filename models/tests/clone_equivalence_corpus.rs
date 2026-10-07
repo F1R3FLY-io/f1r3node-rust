@@ -756,6 +756,7 @@ fn corpus() -> Vec<(String, Par)> {
         let cont = TaggedContinuation {
             tagged_cont: Some(tagged),
             guard: Some(marked(gstr("guard"))),
+            cost_authority: None,
         };
         let driven = cont.clone();
         assert_eq!(
@@ -803,6 +804,7 @@ fn corpus() -> Vec<(String, Par)> {
                         var_instance: Some(VarInstance::FreeVar(-1)),
                     }),
                     free_count: 2,
+                    cost_signature: None,
                 }],
                 body: Some(gint(1)),
                 persistent: false,
@@ -879,6 +881,8 @@ fn corpus() -> Vec<(String, Par)> {
             }],
             locally_free: vec![0xff, 0x00, 0x7f],
             connective_used: true,
+            cost_signed_terms: vec![],
+            cost_stacks: vec![],
         }),
     ));
 
@@ -1250,6 +1254,8 @@ fn the_field_wise_impls_that_par_cannot_reach_are_faithful() {
     let datum = ListParWithRandom {
         pars: vec![marked(gint(1)), marked(gstr("two"))],
         random_state: vec![0x5a; 32],
+        cost_authority: None,
+        cost_stack: None,
     };
 
     for (label, before, after) in [

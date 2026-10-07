@@ -26,7 +26,7 @@ async fn ping_remote_peer_send_and_receive_positive_response() {
     .expect("Test should succeed");
 
     let received = ping_handler.received();
-    assert_eq!(test_result.result, true);
+    assert!(test_result.result);
     assert_eq!(received.len(), 1);
 
     let (receiver, sender) = &received[0];
@@ -85,7 +85,7 @@ async fn ping_remote_peer_response_takes_too_long_get_negative_result() {
     .expect("Test should succeed");
 
     let received = ping_handler.received();
-    assert_eq!(test_result.result, false);
+    assert!(!test_result.result);
     assert_eq!(received.len(), 1);
 
     let (receiver, sender) = &received[0];
@@ -110,7 +110,7 @@ async fn ping_remote_peer_peer_is_not_listening_get_negative_result() {
     .await
     .expect("Test should succeed");
 
-    assert_eq!(test_result.result, false);
+    assert!(!test_result.result);
 }
 
 #[tokio::test]
@@ -128,7 +128,7 @@ async fn lookup_remote_peer_send_and_receive_list_of_peers() {
     };
 
     let execute_fn = |kademlia_rpc: GrpcKademliaRPC, _local: PeerNode, remote: PeerNode| {
-        let key = key.clone();
+        let key = key;
         async move { kademlia_rpc.lookup(&key, &remote).await.unwrap_or_default() }
     };
 
@@ -175,7 +175,7 @@ async fn lookup_remote_peer_filter_out_invalid_address() {
     };
 
     let execute_fn = |kademlia_rpc: GrpcKademliaRPC, _local: PeerNode, remote: PeerNode| {
-        let key = key.clone();
+        let key = key;
         async move { kademlia_rpc.lookup(&key, &remote).await.unwrap_or_default() }
     };
 
@@ -208,7 +208,7 @@ async fn lookup_remote_peer_response_takes_too_long_get_empty_list() {
     rand::rng().fill_bytes(&mut key);
 
     let execute_fn = |kademlia_rpc: GrpcKademliaRPC, _local: PeerNode, remote: PeerNode| {
-        let key = key.clone();
+        let key = key;
         async move { kademlia_rpc.lookup(&key, &remote).await.unwrap_or_default() }
     };
 
@@ -241,7 +241,7 @@ async fn lookup_remote_peer_peer_is_not_listening_get_empty_list() {
     rand::rng().fill_bytes(&mut key);
 
     let execute_fn = |kademlia_rpc: GrpcKademliaRPC, _local: PeerNode, remote: PeerNode| {
-        let key = key.clone();
+        let key = key;
         async move { kademlia_rpc.lookup(&key, &remote).await.unwrap_or_default() }
     };
 

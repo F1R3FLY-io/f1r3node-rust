@@ -10,7 +10,7 @@ load(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "scenario_schem
 # TM-CA-151 — DIAGNOSTIC-REFINEMENT LEVEL (not the production consensus surface).
 # This model authenticates a *digest-inclusive* replay payload: FIELDS includes
 # `digest`, `digest_present`, and `event_count`. Per TM-CA-151
-# (docs/theory/cost-accounting-threat-model.md) those per-operation cost-trace
+# (docs/casper/theory/cost-accounting-threat-model.md) those per-operation cost-trace
 # quantities are DIAGNOSTIC/TELEMETRY ONLY and were removed from production
 # consensus (the replay comparison and the signed block-hash preimage). The
 # production consensus surface is total_cost (clamped to initial on OOP) +
@@ -90,7 +90,7 @@ def records():
             "A post-activation payload with no cost-trace digest remains replay-invalid at the digest-inclusive diagnostic-refinement level even when the event count is zero (TM-CA-151: this is NOT a production consensus rejection; production replay does not reject on digest presence).",
             canonical_scenario("missing_digest", replay_fields=missing, projection={"activation": "cost_accounted"}, expected_classification="confirmed_safe"),
             {"payload": missing, "replay_valid": False},
-            ["Rocq: rb_cost_accounted_replay_rejects_absent_commitment (diagnostic-refinement)", "Rust: consensus commitment test removed with TM-CA-151"],
+            ["Rocq: rb_diagnostic_refinement_rejects_absent_commitment (diagnostic-refinement)", "Rust: consensus commitment test removed with TM-CA-151"],
         ),
     ]
 

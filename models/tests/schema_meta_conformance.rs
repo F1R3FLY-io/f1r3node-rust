@@ -15,7 +15,7 @@
 //! |---|---|---|
 //! | 1 | the prost order IS ascending minimum tag, per message | reusing the bincode order table for the protobuf driver |
 //! | 2 | `Par` and `TaggedContinuation` differ from declaration order — and no other message does | "the two orders are the same in practice" |
-//! | 3 | `Par` is a feedback vertex set of size 1, and the `Par`-free chain is 3 edges | "one `impl Drop` is probably enough" |
+//! | 3 | the generated cut set breaks every cycle, and the cut-free chain is bounded | "one `impl Drop` is probably enough" |
 //! | 4 | every derive surface is dispositioned and the registry is not degenerate | a hand-picked driver list that missed `Hash` |
 //!
 //! ⚠ None of these is a byte-level claim, so none of them can fork consensus by
@@ -401,26 +401,25 @@ fn cyclic_components(nodes: &BTreeSet<&'static str>) -> Vec<Vec<&'static str>> {
     out
 }
 
-/// ★★★ **`Par` alone suffices, and this is the proof — not the assumption.**
+/// ★★★ **The generated cut set suffices, and this is the proof — not the assumption.**
 ///
-/// The question is whether a single `impl Drop for Par` (forwarding into the
-/// existing iterative teardown, `par_children::dismantle`) bounds the schema's
-/// recursion, or whether other types need one too. It does **iff every cycle in
-/// the containment graph passes through `Par`** — i.e. iff `{Par}` is a feedback
-/// vertex set.
+/// The question is whether the generated clone cut set and its iterative
+/// teardowns bound all recursion in the current schema. This holds iff every
+/// containment cycle passes through a member of that set.
 ///
-/// The test is direct: remove `Par` from the graph and recompute the strongly
-/// connected components. If none of them is cyclic, no cycle avoided `Par`.
+/// The test removes the cut set and recomputes strongly connected components.
 ///
-/// ⚠ It was NOT assumed. The claim arrived as "the cycle is
-/// `Par → Expr → ExprInstance → Par`, so ~3 frames"; the schema in fact has ONE
-/// cyclic component of **37 members**, and a 37-member component can perfectly
-/// well contain sub-cycles that avoid any given vertex. It does not — but that is
-/// a computation, and this is where it is computed.
+/// The cost-signature compound cycle is independent of `Par`, so the old
+/// singleton `{Par}` proof is no longer sufficient.
 #[test]
-fn par_is_a_feedback_vertex_set_of_size_one() {
+fn generated_clone_cut_set_breaks_every_recursive_cycle() {
+    use models::rust::rholang::term_ops::CLONE_CUT_SET;
+
     let all: BTreeSet<&str> = SCHEMA_CHILDREN.iter().map(|(n, _)| *n).collect();
     assert!(all.contains("Par"), "the child relation must contain `Par`");
+    let cut: BTreeSet<&str> = CLONE_CUT_SET.iter().copied().collect();
+    assert!(cut.contains("Par"));
+    assert!(cut.contains("CostSignature") || cut.contains("CostSignatureCompound"));
 
     // ── the whole graph: exactly ONE cyclic component, and `Par` is in it ──
     let whole = cyclic_components(&all);
@@ -444,14 +443,14 @@ fn par_is_a_feedback_vertex_set_of_size_one() {
         whole[0].len()
     );
 
-    // ── ★ THE PROPERTY: remove `Par` and nothing cyclic remains ──
-    let without_par: BTreeSet<&str> = all.iter().copied().filter(|n| *n != "Par").collect();
-    let remaining = cyclic_components(&without_par);
+    // ── ★ THE PROPERTY: remove the generated cut and nothing cyclic remains ──
+    let without_cut: BTreeSet<&str> = all.iter().copied().filter(|n| !cut.contains(n)).collect();
+    let remaining = cyclic_components(&without_cut);
     assert!(
         remaining.is_empty(),
-        "REMOVING `Par` LEFT {} CYCLIC COMPONENT(S): {:?}.\n\
+        "REMOVING the generated cut LEFT {} CYCLIC COMPONENT(S): {:?}.\n\
          \n\
-         `{{Par}}` is therefore NOT a feedback vertex set, and a single `impl Drop for Par` \
+         the generated cut set {cut:?} is therefore NOT a feedback vertex set, and its iterative teardowns \
          would leave those cycles recursive — a term nested through them would still consume \
          native stack proportional to its depth. Each listed component needs a member with \
          its own `Drop`, and the count is what it is.",
@@ -462,12 +461,12 @@ fn par_is_a_feedback_vertex_set_of_size_one() {
 
 /// How much DERIVED recursion runs before the iterative teardown is reached.
 ///
-/// With `Drop` on `Par` alone, dropping a bare `Expr` (say) descends through
-/// rustc's derived glue until it reaches a `Par`, at which point the whole
+/// With `Drop` on each cut member, dropping a bare `Expr` (say) descends through
+/// rustc's derived glue until it reaches a cut member, at which point the whole
 /// remaining subtree unwinds iteratively. The depth of that prelude is a
 /// property of the **type graph**, not of the term — and this is the number.
 ///
-/// ## ⚠★ The quantity is "longest path that ENDS AT a `Par`", not "longest path"
+/// ## ⚠★ The quantity is "longest path that ENDS AT a cut member", not "longest path"
 ///
 /// The first version of this test computed the latter, and got the right answer
 /// for the wrong reason: it scored `Receive → ReceiveBind → Var → WildcardMsg`
@@ -476,31 +475,34 @@ fn par_is_a_feedback_vertex_set_of_size_one() {
 /// silently scored an uncomputed child as zero. Two defects, one of which
 /// happened to cancel the other on this schema.
 ///
-/// So the recurrence is stated with an explicit "does not reach `Par`" case:
+/// So the recurrence is stated with an explicit "does not reach the cut" case:
 ///
 /// ```math
 /// D(v) \;=\; \max_{w \,\in\, \mathrm{children}(v)}
 ///   \begin{cases}
-///     1        & w = \texttt{Par} \\
-///     1 + D(w) & w \neq \texttt{Par},\; D(w) \text{ defined} \\
+///     1        & w \in \texttt{cut} \\
+///     1 + D(w) & w \notin \texttt{cut},\; D(w) \text{ defined} \\
 ///     \text{undefined} & \text{otherwise}
 ///   \end{cases}
 /// ```
 ///
 /// and a node with no defined `` $D$ `` is *excluded* rather than scored zero.
-/// Sixteen of the 57 types are in that class — `Var`, `GUnforgeable`, `EZipper`
-/// and friends contain no `Par` on any path — and scoring them at all is what
+/// `Var`, `GUnforgeable`, `EZipper` and friends contain no cut member on any
+/// path — and scoring them at all is what
 /// produced the wrong attribution.
 ///
 /// ★ The bound is asserted against the graph rather than transcribed: a `.proto`
 /// edit that lengthens the chain fails here with the new number and the new
 /// witness.
 #[test]
-fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
-    let adjacency: BTreeMap<&str, &[&str]> = SCHEMA_CHILDREN.iter().copied().collect();
+fn the_derived_prelude_before_reaching_a_cut_member_is_bounded_by_the_schema() {
+    use models::rust::rholang::term_ops::CLONE_CUT_SET;
 
-    // Reverse-topological order over the `Par`-free subgraph, which
-    // `par_is_a_feedback_vertex_set_of_size_one` proves is a DAG.
+    let adjacency: BTreeMap<&str, &[&str]> = SCHEMA_CHILDREN.iter().copied().collect();
+    let cut: BTreeSet<&str> = CLONE_CUT_SET.iter().copied().collect();
+
+    // Reverse-topological order over the cut-free subgraph, which
+    // `generated_clone_cut_set_breaks_every_recursive_cycle` proves is a DAG.
     //
     // ⚠ Iterative, again: the checker must not be the thing it is measuring.
     let mut order: Vec<&str> = Vec::new();
@@ -509,7 +511,7 @@ fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
     let mut work: Vec<(&str, bool)> = SCHEMA_CHILDREN
         .iter()
         .map(|(n, _)| *n)
-        .filter(|n| *n != "Par")
+        .filter(|n| !cut.contains(n))
         .map(|n| (n, false))
         .collect();
     while let Some((v, expanded)) = work.pop() {
@@ -524,19 +526,19 @@ fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
         }
         work.push((v, true));
         for child in adjacency.get(v).copied().unwrap_or(&[]) {
-            if *child != "Par" && !opened.contains(child) {
+            if !cut.contains(child) && !opened.contains(child) {
                 work.push((child, false));
             }
         }
     }
 
-    // `None` = this type contains no `Par` on ANY path, so it is not a prelude
+    // `None` = this type contains no cut member on ANY path, so it is not a prelude
     // at all. It is EXCLUDED, never scored zero.
     let mut reach: BTreeMap<&str, Option<usize>> = BTreeMap::new();
     for v in &order {
         let mut best: Option<usize> = None;
         for child in adjacency.get(v).copied().unwrap_or(&[]) {
-            let candidate = if *child == "Par" {
+            let candidate = if cut.contains(child) {
                 Some(1)
             } else {
                 // ⚠ LOUD, not defaulted. Reverse-topological order guarantees a
@@ -545,8 +547,8 @@ fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
                 let scored = reach.get(child).unwrap_or_else(|| {
                     panic!(
                         "`{v}`'s child `{child}` was not scored before it. The reverse \
-                         topological order is broken, which means the `Par`-free subgraph is \
-                         not the DAG `par_is_a_feedback_vertex_set_of_size_one` proves it is."
+                         topological order is broken, which means the cut-free subgraph is \
+                         not the DAG the generated-cut proof establishes."
                     )
                 });
                 scored.map(|d| d + 1)
@@ -566,7 +568,7 @@ fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
         .collect();
     assert!(
         !reaching.is_empty(),
-        "no type reaches a `Par`, so this measurement is about nothing"
+        "no type reaches a cut member, so this measurement is about nothing"
     );
 
     let worst = reaching.iter().map(|(_, d)| *d).max().expect("non-empty");
@@ -577,20 +579,10 @@ fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
         .collect();
 
     assert_eq!(
-        (worst, witnesses.as_slice()),
-        (3, ["Expr"].as_slice()),
-        "the longest `Par`-terminating containment chain is {worst} edges, attained by {:?}.\n\
-         \n\
-         This is the derived recursion an `impl Drop for Par` does NOT bound: dropping a bare \
-         value of one of those types runs that many levels of rustc's derived glue before it \
-         reaches a `Par` and the iterative teardown takes over. It is bounded by the SCHEMA \
-         and not by the input — which is why one `Drop` suffices — but the constant is worth \
-         knowing, and a `.proto` edit that lengthens it should say so here rather than in a \
-         stack trace.\n\
-         \n\
-         The expected witness is `Expr`, via `Expr -> EMap -> KeyValuePair -> Par`.",
-        witnesses
+        worst, 3,
+        "the longest cut-terminating chain is {worst} edges: {witnesses:?}"
     );
+    assert!(witnesses.contains(&"Expr"));
 
     // ⚠ And the excluded class is real, not empty — if every type reached a
     // `Par`, the `None` case above would be dead code and the recurrence's

@@ -1,7 +1,52 @@
+use std::io::Write;
+
 use bincode;
 use serde::Serialize;
 
 use super::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::errors::RSpaceError;
+use crate::rspace::hashing::native_source::SourceMeter;
+
+/// Authenticated consensus context supplied by the caller. This is never
+/// selected by inspecting a payload or by trying one decoder after another.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventCodecEpoch {
+    Legacy,
+    CostV1,
+}
+
+pub const COST_EVENT_DOMAIN_V1: &[u8] = b"f1r3node:rspace-event-cost:v1";
+pub const COST_CHANNEL_KEY_DOMAIN_V1: &[u8] = b"f1r3node:rspace-channel-key-cost:v1";
+
+/// One bincode output chunk, charged by the native source meter before it is
+/// observed by a hash or stored in a vector. The generated models trampoline
+/// and bounded serde test-double fallback both write through this interface;
+/// neither may build an unmetered whole-leg buffer first.
+pub trait BincodeByteSink {
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), RSpaceError>;
+}
+
+struct SerdeSinkAdapter<'a> {
+    sink: &'a mut dyn BincodeByteSink,
+    error: Option<RSpaceError>,
+}
+
+impl Write for SerdeSinkAdapter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.error.is_some() {
+            return Err(std::io::ErrorKind::Other.into());
+        }
+        match self.sink.write_bytes(bytes) {
+            Ok(()) => Ok(bytes.len()),
+            Err(error) => {
+                self.error = Some(error);
+                Err(std::io::ErrorKind::Other.into())
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
 
 /// The serialization contract of EPathMap-bearing event hashing.
 ///
@@ -24,6 +69,44 @@ pub trait StableHashSerialize: Serialize {
     fn stable_hash_bytes(&self) -> Vec<u8> {
         bincode::serialize(self).expect("StableHashSerialize: bincode serialization must not fail")
     }
+
+    /// Exact pre-cost positional bytes. Schema extensions must override this;
+    /// the default is correct only for types whose layout never changed.
+    fn stable_hash_legacy_bytes(&self) -> Vec<u8> { self.stable_hash_bytes() }
+
+    /// Cost fields anywhere in this canonical event leg. An invalid encoded
+    /// key is an error, not evidence that the value is ordinary.
+    fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> { Ok(false) }
+
+    /// Native validation hook. Bounded historical/test values need no extra
+    /// traversal; models overrides for canonical Par and its event wrappers.
+    fn stable_hash_contains_cost_metered(
+        &self,
+        _meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        self.stable_hash_contains_cost()
+    }
+
+    /// Emit bincode's exact write chunks into a charge-before-write sink.
+    /// Bounded test doubles keep serde's native chunk trace; recursive rhoapi
+    /// roots override this with the generated explicit-stack machine.
+    fn stable_hash_write_metered(&self, sink: &mut dyn BincodeByteSink) -> Result<(), RSpaceError> {
+        let mut adapter = SerdeSinkAdapter { sink, error: None };
+        let result = bincode::serialize_into(&mut adapter, self);
+        if let Some(error) = adapter.error {
+            return Err(error);
+        }
+        result.map_err(|error| RSpaceError::InterpreterError(error.to_string()))
+    }
+
+    /// Pre-cost positional layout through the same sink. Schema-extended
+    /// models roots override this; unchanged bounded types use the default.
+    fn stable_hash_write_legacy_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        self.stable_hash_write_metered(sink)
+    }
 }
 
 // Reference forwarding: `&T` hashes as `T` (serde serializes through
@@ -32,15 +115,162 @@ pub trait StableHashSerialize: Serialize {
 // reached through references too).
 impl<T: StableHashSerialize + ?Sized> StableHashSerialize for &T {
     fn stable_hash_bytes(&self) -> Vec<u8> { (**self).stable_hash_bytes() }
+
+    fn stable_hash_legacy_bytes(&self) -> Vec<u8> { (**self).stable_hash_legacy_bytes() }
+
+    fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> {
+        (**self).stable_hash_contains_cost()
+    }
+
+    fn stable_hash_contains_cost_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        (**self).stable_hash_contains_cost_metered(meter)
+    }
+
+    fn stable_hash_write_metered(&self, sink: &mut dyn BincodeByteSink) -> Result<(), RSpaceError> {
+        (**self).stable_hash_write_metered(sink)
+    }
+
+    fn stable_hash_write_legacy_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        (**self).stable_hash_write_legacy_metered(sink)
+    }
+}
+
+/// Selected bytes for one event leg. Legacy is fail-closed even if the caller
+/// hands in a populated cost field; the omission codec may never be lossy.
+pub fn event_leg_bytes_for_epoch<T: StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    value: &T,
+) -> Result<Vec<u8>, RSpaceError> {
+    // Validate the complete canonical tree in both epochs. A malformed raw
+    // EPathMap key must not become an apparently valid CostV1 event leg.
+    let cost_present = value.stable_hash_contains_cost()?;
+    match epoch {
+        EventCodecEpoch::Legacy => {
+            if cost_present {
+                return Err(RSpaceError::InterpreterError(
+                    "cost-bearing event leg is invalid in the Legacy codec epoch".into(),
+                ));
+            }
+            Ok(value.stable_hash_legacy_bytes())
+        }
+        EventCodecEpoch::CostV1 => Ok(value.stable_hash_bytes()),
+    }
+}
+
+/// Route A channel identity. Ordinary channels retain the exact historical
+/// key in both epochs; any cost-bearing channel gets a disjoint domain-tagged
+/// preimage only in CostV1. The caller provides the authenticated epoch.
+pub fn channel_hash_for_epoch<C: StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    channel: &C,
+) -> Result<Blake2b256Hash, RSpaceError> {
+    let cost_present = channel.stable_hash_contains_cost()?;
+    if cost_present && epoch == EventCodecEpoch::Legacy {
+        return Err(RSpaceError::InterpreterError(
+            "cost-bearing channel is invalid in the Legacy codec epoch".into(),
+        ));
+    }
+    if !cost_present {
+        return Ok(Blake2b256Hash::new(&channel.stable_hash_legacy_bytes()));
+    }
+    let tagged =
+        bincode::serialize(&vec![COST_CHANNEL_KEY_DOMAIN_V1.to_vec(), channel.stable_hash_bytes()])
+            .expect("channel key domain preimage serialization");
+    Ok(Blake2b256Hash::new(&tagged))
+}
+
+pub fn channel_hashes_for_epoch<C: StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    channels: &[C],
+) -> Result<Vec<Blake2b256Hash>, RSpaceError> {
+    let mut hashes = channels
+        .iter()
+        .map(|channel| channel_hash_for_epoch(epoch, channel))
+        .collect::<Result<Vec<_>, _>>()?;
+    hashes.sort();
+    Ok(hashes)
+}
+
+/// The channel-tuple key used for continuations. It is built from precisely
+/// the same routed channel keys as produce and consume event identities.
+/// Keeping this operation here prevents history readers and checkpoint writers
+/// from independently choosing a different channel-key namespace.
+pub fn channel_tuple_hash_for_epoch<C: StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    channels: &[C],
+) -> Result<Blake2b256Hash, RSpaceError> {
+    let hashes = channel_hashes_for_epoch(epoch, channels)?;
+    Ok(hash_from_hashes(&hashes))
+}
+
+fn event_preimage_for_epoch(epoch: EventCodecEpoch, mut legs: Vec<Vec<u8>>) -> Vec<u8> {
+    if epoch == EventCodecEpoch::CostV1 {
+        legs.insert(0, COST_EVENT_DOMAIN_V1.to_vec());
+    }
+    bincode::serialize(&legs).expect("event-domain preimage serialization")
+}
+
+/// Epoch-aware counterpart of `hash_produce`; not used by the unversioned
+/// production path until live, native replay, and history all pass one context.
+pub fn hash_produce_for_epoch<A: StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    channel_hash: &Blake2b256Hash,
+    datum: &A,
+    persist: bool,
+) -> Result<Blake2b256Hash, RSpaceError> {
+    let legs = vec![
+        channel_hash.bytes(),
+        event_leg_bytes_for_epoch(epoch, datum)?,
+        bincode::serialize(&persist).expect("bool serialization"),
+    ];
+    Ok(Blake2b256Hash::new(&event_preimage_for_epoch(epoch, legs)))
+}
+
+/// Epoch-aware counterpart of `hash_consume`, preserving the historical sort
+/// over encoded patterns before the optional CostV1 outer domain member.
+pub fn hash_consume_for_epoch<P: StableHashSerialize, K: StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    channels: &[Blake2b256Hash],
+    patterns: &[P],
+    continuation: &K,
+    persist: bool,
+) -> Result<Blake2b256Hash, RSpaceError> {
+    let mut encoded_patterns = patterns
+        .iter()
+        .map(|pattern| event_leg_bytes_for_epoch(epoch, pattern))
+        .collect::<Result<Vec<_>, _>>()?;
+    encoded_patterns.sort();
+    let mut ordered_channels = channels.to_vec();
+    ordered_channels.sort();
+    let mut legs = ordered_channels
+        .iter()
+        .map(Blake2b256Hash::bytes)
+        .collect::<Vec<_>>();
+    legs.extend(encoded_patterns);
+    legs.push(event_leg_bytes_for_epoch(epoch, continuation)?);
+    legs.push(bincode::serialize(&persist).expect("bool serialization"));
+    Ok(Blake2b256Hash::new(&event_preimage_for_epoch(epoch, legs)))
 }
 
 // Default-body impls for the rspace++ test-double instantiations (no
 // blanket impl: coherence must leave room for models' overriding impls).
 impl StableHashSerialize for String {}
+impl StableHashSerialize for str {}
+impl StableHashSerialize for () {}
+impl StableHashSerialize for u8 {}
+impl StableHashSerialize for u32 {}
 impl StableHashSerialize for i32 {}
 impl StableHashSerialize for u64 {}
 impl StableHashSerialize for bool {}
 impl StableHashSerialize for Vec<u8> {}
+// Two-level byte vectors are used only by the native-source hash corpus.
+impl StableHashSerialize for Vec<Vec<u8>> {}
 // The state-root key type, hashed as a channel by the exporter/importer paths.
 impl StableHashSerialize for Blake2b256Hash {}
 

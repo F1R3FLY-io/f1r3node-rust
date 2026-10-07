@@ -1,7 +1,7 @@
 use models::rhoapi::Expr;
 use models::rust::utils::{
-    new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,
-    new_gint_expr, new_gstring_expr, new_guri_expr,
+    new_etuple_expr, new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr,
+    new_gfixedpoint_expr, new_gfloat32_expr, new_gint_expr, new_gstring_expr, new_guri_expr,
 };
 use rholang_parser::ast::Proc as NewProc;
 
@@ -9,6 +9,9 @@ use crate::rust::interpreter::errors::InterpreterError;
 
 pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterError> {
     match proc {
+        // `()` is the unit value (an empty tuple), distinct from process Nil.
+        NewProc::Unit => Ok(new_etuple_expr(Vec::new(), Vec::new(), false)),
+
         NewProc::BoolLiteral(value) => Ok(new_gbool_expr(*value)),
 
         NewProc::LongLiteral(value) => Ok(new_gint_expr(*value)),
@@ -55,12 +58,30 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
             Ok(new_gbigrat_expr(num_bytes, den_bytes))
         }
 
-        NewProc::FloatLiteral { value, .. } => {
-            let f: f64 = value.parse().map_err(|_| {
-                InterpreterError::NormalizerError(format!("Invalid float literal: {}", value))
-            })?;
-            Ok(new_gdouble_expr(f))
-        }
+        NewProc::FloatLiteral { value, bits } => match bits {
+            64 => {
+                let f: f64 = value.parse().map_err(|_| {
+                    InterpreterError::NormalizerError(format!("Invalid float literal: {}", value))
+                })?;
+                Ok(new_gdouble_expr(f))
+            }
+            32 => {
+                let f: f32 = value.parse().map_err(|_| {
+                    InterpreterError::NormalizerError(format!("Invalid float literal: {}", value))
+                })?;
+                if f.is_infinite() {
+                    return Err(InterpreterError::NormalizerError(format!(
+                        "Float literal {}f32 is out of range for f32",
+                        value
+                    )));
+                }
+                Ok(new_gfloat32_expr(f))
+            }
+            _ => Err(InterpreterError::NormalizerError(format!(
+                "Float width f{} is not supported: only f32 and f64 floats are supported, found {}f{}",
+                bits, value, bits
+            ))),
+        },
 
         NewProc::FixedPointLiteral { value, scale } => {
             let unscaled_bytes = decimal_str_to_unscaled(value, *scale)?;
@@ -245,6 +266,21 @@ mod tests {
     }
 
     #[test]
+    fn unit_compiles_as_empty_tuple_and_not_nil() {
+        let expr = normalize_ground(&Proc::Unit).unwrap();
+        let Some(ExprInstance::ETupleBody(tuple)) = expr.expr_instance else {
+            panic!("unit must normalize to ETupleBody");
+        };
+        assert!(tuple.ps.is_empty());
+        assert!(tuple.locally_free.is_empty());
+        assert!(!tuple.connective_used);
+        assert!(matches!(
+            normalize_ground(&Proc::Nil),
+            Err(InterpreterError::BugFoundError(_))
+        ));
+    }
+
+    #[test]
     fn bool_false_should_compile_as_gbool_false() {
         let proc = Proc::BoolLiteral(false);
         let result = normalize_ground(&proc);
@@ -282,5 +318,184 @@ mod tests {
         let proc = Proc::Nil;
         let result = normalize_ground(&proc);
         assert!(matches!(result, Err(InterpreterError::BugFoundError(_))));
+    }
+
+    #[test]
+    fn signed_int_within_64_bits_compiles_as_gint() {
+        let proc = Proc::SignedIntLiteral {
+            value: "-42",
+            bits: 32,
+        };
+        let expr = normalize_ground(&proc).unwrap();
+        assert_eq!(expr.expr_instance, Some(ExprInstance::GInt(-42)));
+    }
+
+    #[test]
+    fn signed_int_beyond_64_bits_compiles_as_gbigint() {
+        let proc = Proc::SignedIntLiteral {
+            value: "5",
+            bits: 128,
+        };
+        let expr = normalize_ground(&proc).unwrap();
+        assert_eq!(expr.expr_instance, Some(ExprInstance::GBigInt(vec![5])));
+    }
+
+    #[test]
+    fn invalid_signed_int_is_a_normalizer_error() {
+        let proc = Proc::SignedIntLiteral {
+            value: "not-a-number",
+            bits: 64,
+        };
+        assert!(matches!(
+            normalize_ground(&proc),
+            Err(InterpreterError::NormalizerError(_))
+        ));
+    }
+
+    #[test]
+    fn unsigned_int_within_i64_compiles_as_gint() {
+        let proc = Proc::UnsignedIntLiteral {
+            value: "42",
+            bits: 32,
+        };
+        let expr = normalize_ground(&proc).unwrap();
+        assert_eq!(expr.expr_instance, Some(ExprInstance::GInt(42)));
+    }
+
+    #[test]
+    fn unsigned_int_beyond_i64_compiles_as_gbigint() {
+        let value = u64::MAX.to_string();
+        let proc = Proc::UnsignedIntLiteral {
+            value: &value,
+            bits: 64,
+        };
+        let expr = normalize_ground(&proc).unwrap();
+        assert!(matches!(expr.expr_instance, Some(ExprInstance::GBigInt(_))));
+    }
+
+    #[test]
+    fn invalid_unsigned_int_is_a_normalizer_error() {
+        let proc = Proc::UnsignedIntLiteral {
+            value: "-1",
+            bits: 64,
+        };
+        assert!(matches!(
+            normalize_ground(&proc),
+            Err(InterpreterError::NormalizerError(_))
+        ));
+    }
+
+    #[test]
+    fn big_int_literals_compile_to_twos_complement_bytes() {
+        let cases = vec![
+            ("255n", vec![0x00, 0xFF]),
+            ("-1", vec![0xFF]),
+            ("0", vec![0x00]),
+            ("+7", vec![0x07]),
+        ];
+        for (literal, expected) in cases {
+            let expr = normalize_ground(&Proc::BigIntLiteral(literal)).unwrap();
+            assert_eq!(
+                expr.expr_instance,
+                Some(ExprInstance::GBigInt(expected)),
+                "literal {literal}"
+            );
+        }
+
+        assert!(matches!(
+            normalize_ground(&Proc::BigIntLiteral("12x")),
+            Err(InterpreterError::NormalizerError(_))
+        ));
+    }
+
+    #[test]
+    fn big_rat_literals_compile_with_denominator_one() {
+        let expr = normalize_ground(&Proc::BigRatLiteral("7")).unwrap();
+        match expr.expr_instance {
+            Some(ExprInstance::GBigRat(rat)) => {
+                assert_eq!(rat.numerator, vec![7]);
+                assert_eq!(rat.denominator, vec![1]);
+            }
+            other => panic!("expected GBigRat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn float_literals_compile_as_gdouble() {
+        let proc = Proc::FloatLiteral {
+            value: "2.5",
+            bits: 64,
+        };
+        let expr = normalize_ground(&proc).unwrap();
+        assert_eq!(
+            expr.expr_instance,
+            Some(ExprInstance::GDouble(2.5f64.to_bits()))
+        );
+
+        assert!(matches!(
+            normalize_ground(&Proc::FloatLiteral {
+                value: "not-a-float",
+                bits: 64,
+            }),
+            Err(InterpreterError::NormalizerError(_))
+        ));
+    }
+
+    #[test]
+    fn f32_float_literals_compile_as_gfloat32() {
+        let expr = normalize_ground(&Proc::FloatLiteral {
+            value: "2.5",
+            bits: 32,
+        })
+        .unwrap();
+        assert_eq!(
+            expr.expr_instance,
+            Some(ExprInstance::GFloat32(2.5f32.to_bits()))
+        );
+
+        assert!(matches!(
+            normalize_ground(&Proc::FloatLiteral {
+                value: "1e39",
+                bits: 32,
+            }),
+            Err(InterpreterError::NormalizerError(_))
+        ));
+    }
+
+    #[test]
+    fn float_literals_with_unsupported_width_are_rejected() {
+        for bits in [16u16, 128] {
+            let result = normalize_ground(&Proc::FloatLiteral { value: "1.0", bits });
+            match result {
+                Err(InterpreterError::NormalizerError(ref msg)) => {
+                    assert!(msg.contains(&format!("f{bits}")), "bits {bits}: {msg}")
+                }
+                other => panic!("expected NormalizerError for f{bits}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_point_literals_compile_with_scaled_unscaled_bytes() {
+        let cases = vec![
+            ("1.23", 2u32, vec![0x7B]),
+            ("5", 0u32, vec![0x05]),
+            ("-0.05", 2u32, vec![0xFB]),
+            ("1.2", 2u32, vec![0x78]),
+        ];
+        for (literal, scale, expected_unscaled) in cases {
+            let proc = Proc::FixedPointLiteral {
+                value: literal,
+                scale,
+            };
+            let expr = normalize_ground(&proc).unwrap();
+            match expr.expr_instance {
+                Some(ExprInstance::GFixedPoint(fp)) => {
+                    assert_eq!(fp.unscaled, expected_unscaled, "literal {literal}");
+                    assert_eq!(fp.scale, scale, "literal {literal}");
+                }
+                other => panic!("expected GFixedPoint for {literal}, got {other:?}"),
+            }
+        }
     }
 }

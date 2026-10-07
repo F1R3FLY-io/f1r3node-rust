@@ -618,6 +618,9 @@ fn the_clone_steady_state_allocates_nothing_for_the_driver_itself() {
                 .expect("the clone traversal is infallible")
                 {
                     CloneVal::Par(p) => p,
+                    CloneVal::CostSignature(_) => {
+                        panic!("a Par-rooted clone walk produced a CostSignature root")
+                    }
                 }
             });
             models::rust::rholang::par_children::dismantle(w);

@@ -10,7 +10,7 @@
    It is the bisimulation that holds CLEANLY: a single gate fires (gate-unwrap
    COMM + the inert unit-token residue), and there is NO inner substitution of a
    signed term into a force position (the *x dereference) — so the force-collapse obstruction
-   (docs/theory/cost-accounting-native-faithfulness-design.md §3a), which blocks a
+   (docs/casper/theory/cost-accounting-native-faithfulness-design.md §3a), which blocks a
    strong bisimulation across an arbitrary multi-COMM ca_step, does not arise
    here. The residue PPar (p_tr P) (T_tr TUnit) is bisimilar to p_tr P because the
    unit-token image is the stuck inert PNil (multi_stuck_residue_bisim). The

@@ -55,7 +55,6 @@ use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 use rholang::rust::interpreter::matcher::par_count::ParCount;
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
-use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
 use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
@@ -239,6 +238,7 @@ fn nested_binders(depth: usize) -> Par {
                 source: Some(new_gint_par(0, vec![], false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             }],
             body: Some(p),
             persistent: false,
@@ -857,28 +857,6 @@ fn run_probe(what: &str, depth: usize) {
             let (lo, hi) = pc.min_max_par(t);
             std::mem::forget(lo);
             std::mem::forget(hi);
-        }
-        "sub_pars_width" => {
-            // Force the old `worker` down one call per sibling while keeping
-            // the result population to exactly one subset: choose all `N`
-            // expressions, with minimum == maximum == N.
-            let mut par = Par::default();
-            par.exprs = (0..depth)
-                .map(|i| {
-                    new_gint_par(i as i64, Vec::new(), false)
-                        .exprs
-                        .pop()
-                        .expect("a GInt Par carries one Expr")
-                })
-                .collect();
-            let zero = ParCount::new(&Par::default());
-            let mut exact = zero.clone();
-            exact.exprs = depth;
-            let subsets = sub_pars(&par, &exact, &exact, &zero, &zero).collect::<Vec<_>>();
-            assert_eq!(subsets.len(), 1, "the exact-width subset is unique");
-            assert_eq!(subsets[0].0.exprs.len(), depth);
-            std::mem::forget(subsets);
-            std::mem::forget(par);
         }
         "free_check" => {
             // WIDTH axis: `free_check` recurses on the slice TAIL, so its

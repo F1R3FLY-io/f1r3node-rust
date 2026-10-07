@@ -21,13 +21,13 @@ From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lists.List.
 From Slashing Require Import
   Validator ValidatorLifetime Block InvalidBlock EquivocationRecord DAGState
-  EquivocationDetector PoSContract SlashDeploy BlockCreator ForkChoice
+  EquivocationDetector DetectorProduct PoSContract SlashDeploy BlockCreator ForkChoice
   TwoLevelSlashing
   BugFixIgnorable BugFixAtomicTracker BugFixDispatcher
   BugFixTransferFailure BugFixStakeZero BugFixSelfRegression
   BugFixSeqNumDensity BugFixSeqArithmetic BugFixDuplicateJustifications
   BugFixSlashAuthorization BugFixUnbondedProposer
-  BugFixWithdrawTransferFailure.
+  BugFixWithdrawTransferFailure Bisimulation.
 
 Import ListNotations.
 
@@ -38,17 +38,36 @@ Set Implicit Arguments.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Theorem main_T1_detection_sound :
-  forall st v n d s,
-    detect st v n d = s ->
+  forall cj lm d s,
+    detect cj lm d = s ->
     s = DSAdmissible \/ s = DSIgnorable ->
-    equivocates st v n.
+    equivocates_ptr cj lm = true.
 Proof. exact detection_sound. Qed.
 
 Theorem main_T2_detection_complete :
-  forall st v n d,
-    equivocates st v n ->
-    detect st v n d = DSAdmissible \/ detect st v n d = DSIgnorable.
+  forall cj lm d,
+    equivocates_ptr cj lm = true ->
+    detect cj lm d = DSAdmissible \/ detect cj lm d = DSIgnorable.
 Proof. exact detection_complete. Qed.
+
+Theorem main_T2_detector_product_locality :
+  forall (Validator LocalState : Type)
+         (validator_eq_dec : forall x y : Validator, {x = y} + {x <> y})
+         (local_step : LocalState -> LocalState -> Prop)
+         (local_invariant : LocalState -> Prop),
+    (forall before after,
+        local_invariant before ->
+        local_step before after ->
+        local_invariant after) ->
+    forall before after,
+      @detector_product_invariant Validator LocalState local_invariant before ->
+      @detector_product_steps Validator LocalState local_step before after ->
+      @detector_product_invariant Validator LocalState local_invariant after.
+Proof.
+  intros Validator LocalState validator_eq_dec local_step local_invariant.
+  exact (@detector_product_steps_preserve_pointwise_invariant
+           Validator LocalState validator_eq_dec local_step local_invariant).
+Qed.
 
 Theorem main_T3_slashable_taxonomy :
   forall ib,
@@ -106,10 +125,61 @@ Proof. exact fork_choice_exclusion. Qed.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Theorem main_T9_1_ignorable :
-  forall st v n d,
-    detect st v n d = DSIgnorable ->
-    is_slashable IBIgnorableEquivocation = true /\ equivocates st v n.
+  forall cj lm d,
+    detect cj lm d = DSIgnorable ->
+    is_slashable IBIgnorableEquivocation = true /\ equivocates_ptr cj lm = true.
 Proof. exact post_fix_ignorable_implies_equivocation. Qed.
+
+(* Bug fix #1 — honest restatement of T-9.1: every variant that is slashable
+   under the real current predicate is attributable, i.e. it was slashable in
+   the historical pre-fix taxonomy, or is IgnorableEquivocation (fix #1), or is
+   UnauthorizedSlashDeploy (the 27th Rust variant). Adding the 27th slashable
+   variant is precisely what forces the third disjunct. *)
+Theorem main_T9_1_slashable_attributable :
+  forall ib,
+    is_slashable ib = true ->
+    is_slashable_pre_fix ib = true
+    \/ ib = IBIgnorableEquivocation
+    \/ ib = IBUnauthorizedSlashDeploy.
+Proof. exact bug_fix_ignorable_safety. Qed.
+
+(* Bug fix #1 no-corruption: the empty-witness record minted for an
+   UnauthorizedSlashDeploy resolves to EquivocationOblivious for an honest
+   bonded sender — it never spuriously drives NeglectedEquivocation. *)
+Theorem main_T9_1_unauth_record_oblivious :
+  forall stake xs,
+    stake > 0 ->
+    detected_hash_seen xs = false ->
+    Nat.leb 2 (length (nodup Nat.eq_dec (child_hashes xs))) = false ->
+    discovery_status_bonded stake (fixed_detectable_view xs) = EDOblivious.
+Proof. exact unauth_record_honest_oblivious. Qed.
+
+(* FV audit #6 remediation — unbonded-window record pollution fork.
+   The stake-0 / unbonded offender now resolves to EquivocationOblivious
+   (equivocation_detector.rs:280,311), which makes the caller's stamping arm
+   unreachable, so an unbonded offender's witness set can never be polluted and
+   the fork cannot arise. These three capstones pin the fix:
+
+   (1a-i)   the unbonded discovery status is always Oblivious;
+   (1a-ii)  stamping an unbonded offender's record is a no-op (empty witness);
+   (1a-iii) two nodes stamping candidate hashes in EITHER order reach the SAME
+            record (= the original r), so the observation-order-dependent
+            NeglectedEquivocation divergence is impossible. *)
+Theorem main_T9_1a_unbonded_oblivious :
+  forall d, discovery_status_bonded 0 d = EDOblivious.
+Proof. exact unbonded_offender_oblivious. Qed.
+
+Theorem main_T9_1a_unbonded_no_stamp :
+  forall r d h, stamp_on_status r (discovery_status_bonded 0 d) h = r.
+Proof. exact unbonded_stamp_noop. Qed.
+
+Theorem main_T9_1a_unbonded_order_independent :
+  forall r d h1 h2,
+    let st := discovery_status_bonded 0 d in
+    stamp_on_status (stamp_on_status r st h1) st h2
+    = stamp_on_status (stamp_on_status r st h2) st h1
+    /\ stamp_on_status (stamp_on_status r st h1) st h2 = r.
+Proof. exact unbonded_witness_order_independent. Qed.
 
 Theorem main_T9_2_atomic :
   forall s k h,
@@ -121,6 +191,10 @@ Theorem main_T9_3_dispatch :
     is_slashable ib = true ->
     has_key (dispatch_post_fix ib offender baseSeq s) (offender, baseSeq) = true.
 Proof. exact t_9_3_dispatch_complete. Qed.
+
+Theorem main_T9_3_block_exception_is_local_fault :
+  classify_block_outcome BOException = None.
+Proof. exact block_exception_is_not_objective_invalidity. Qed.
 
 Theorem main_T9_4_transfer :
   forall ps v transfer_ok,
@@ -221,65 +295,148 @@ Theorem main_T9_13_unknown_slash_evidence_noop :
     execute_slash_deploy ps sd current_epoch (evidence_lookup evidence) = (ps, false).
 Proof. exact unauthorized_unknown_execution_noop. Qed.
 
-Theorem main_T9_13_zero_parent_bond_not_authorized :
-  forall current_epoch parent_bonds sd evidence offender evidence_epoch,
+Theorem main_T9_13_zero_canonical_bond_not_authorized :
+  forall current_epoch canonical_bonds sd evidence offender evidence_epoch,
     evidence_lookup evidence (sd_target_hash sd) = Some (offender, evidence_epoch) ->
-    bm_lookup parent_bonds offender = 0 ->
-    authorized_slash_candidate current_epoch parent_bonds sd evidence = false.
-Proof. exact zero_parent_bond_not_authorized_candidate. Qed.
+    bm_lookup canonical_bonds offender = 0 ->
+    authorized_slash_candidate current_epoch canonical_bonds sd evidence = false.
+Proof. exact zero_canonical_bond_not_authorized_candidate. Qed.
 
-Theorem main_T9_13_positive_parent_bond_authorizes_matching_candidate :
-  forall current_epoch parent_bonds sd evidence offender,
+Theorem main_T9_13_positive_canonical_bond_authorizes_matching_candidate :
+  forall current_epoch canonical_bonds sd evidence offender,
     evidence_lookup evidence (sd_target_hash sd) = Some (offender, current_epoch) ->
     sd_target_epoch sd = current_epoch ->
-    bm_lookup parent_bonds offender > 0 ->
-    authorized_slash_candidate current_epoch parent_bonds sd evidence = true.
-Proof. exact positive_parent_bond_authorizes_matching_candidate. Qed.
+    bm_lookup canonical_bonds offender > 0 ->
+    authorized_slash_candidate current_epoch canonical_bonds sd evidence = true.
+Proof. exact positive_canonical_bond_authorizes_matching_candidate. Qed.
 
-Theorem main_T9_13_parent_pre_state_authorizes_when_ambient_zero :
-  forall current_epoch ambient_bonds parent_bonds sd evidence offender,
+Theorem main_T9_13_canonical_pre_state_authorizes_when_ambient_zero :
+  forall current_epoch ambient_bonds canonical_bonds sd evidence offender,
     evidence_lookup evidence (sd_target_hash sd) = Some (offender, current_epoch) ->
     sd_target_epoch sd = current_epoch ->
     bm_lookup ambient_bonds offender = 0 ->
-    bm_lookup parent_bonds offender > 0 ->
+    bm_lookup canonical_bonds offender > 0 ->
     authorized_slash_candidate_with_ambient
-      current_epoch ambient_bonds parent_bonds sd evidence = true.
-Proof. exact parent_pre_state_authorizes_when_ambient_zero. Qed.
+      current_epoch ambient_bonds canonical_bonds sd evidence = true.
+Proof. exact canonical_pre_state_authorizes_when_ambient_zero. Qed.
 
-Theorem main_T9_13_parent_zero_rejects_even_if_ambient_positive :
-  forall current_epoch ambient_bonds parent_bonds sd evidence offender evidence_epoch,
+Theorem main_T9_13_canonical_zero_rejects_even_if_ambient_positive :
+  forall current_epoch ambient_bonds canonical_bonds sd evidence offender evidence_epoch,
     evidence_lookup evidence (sd_target_hash sd) = Some (offender, evidence_epoch) ->
     bm_lookup ambient_bonds offender > 0 ->
-    bm_lookup parent_bonds offender = 0 ->
+    bm_lookup canonical_bonds offender = 0 ->
     authorized_slash_candidate_with_ambient
-      current_epoch ambient_bonds parent_bonds sd evidence = false.
-Proof. exact parent_zero_rejects_even_if_ambient_positive. Qed.
+      current_epoch ambient_bonds canonical_bonds sd evidence = false.
+Proof. exact canonical_zero_rejects_even_if_ambient_positive. Qed.
 
-Theorem main_T9_13_recoverable_rejected_slash_hashes_nodup :
-  forall rejected own_invalid_hashes,
-    NoDup (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
-Proof. exact recoverable_rejected_slash_hashes_nodup. Qed.
+Theorem main_T9_13_proposer_receiver_authorization_parity :
+  forall current_epoch proposer_ambient receiver_ambient canonical_bonds sd evidence,
+    authorized_slash_candidate_for_origin
+      OriginProposer current_epoch proposer_ambient canonical_bonds sd evidence =
+    authorized_slash_candidate_for_origin
+      OriginReceiver current_epoch receiver_ambient canonical_bonds sd evidence.
+Proof. exact proposer_receiver_authorization_parity. Qed.
 
-Theorem main_T9_13_own_detected_hash_not_recovered :
-  forall rejected own_invalid_hashes h,
-    In h own_invalid_hashes ->
-    ~ In h (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
-Proof. exact own_detected_hash_not_recovered. Qed.
+Theorem main_T9_13_same_pre_state_root_same_authorization :
+  forall current_epoch proposer_ambient receiver_ambient bond_state
+         proposer_root receiver_root sd evidence,
+    proposer_root = receiver_root ->
+    authorized_slash_candidate_at_root
+      OriginProposer current_epoch proposer_ambient bond_state proposer_root sd evidence =
+    authorized_slash_candidate_at_root
+      OriginReceiver current_epoch receiver_ambient bond_state receiver_root sd evidence.
+Proof. exact same_pre_state_root_same_authorization. Qed.
 
-Theorem main_T9_13_uncovered_rejected_hash_recovered :
-  forall rejected own_invalid_hashes rs,
-    In rs rejected ->
-    ~ In (rejected_slash_hash rs) own_invalid_hashes ->
-    In (rejected_slash_hash rs)
-       (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
-Proof. exact uncovered_rejected_hash_recovered. Qed.
+Theorem main_T9_13_merge_rejected_hint_subsumed_by_authorized_scan :
+  forall rejectedHints candidates bonds currentEpoch candidate,
+    In candidate rejectedHints ->
+    In candidate candidates ->
+    candidate_authorized bonds currentEpoch candidate = true ->
+    In candidate (selected_slash_candidates candidates bonds currentEpoch).
+Proof. exact merge_rejected_hint_subsumed_by_authorized_scan. Qed.
 
-Theorem main_T9_13_recoverable_rejected_slash_requires_current_evidence :
-  forall rejected own_invalid_hashes current_evidence_hashes h,
-    In h (recoverable_current_rejected_slash_hashes
-            rejected own_invalid_hashes current_evidence_hashes) ->
-    In h current_evidence_hashes.
-Proof. exact recoverable_rejected_slash_requires_current_evidence. Qed.
+Theorem main_T9_13_zero_bond_candidate_not_selected :
+  forall candidates bonds currentEpoch validator hash targetEpoch,
+    bm_lookup bonds validator = 0 ->
+    ~ In (validator, hash, targetEpoch)
+        (selected_slash_candidates candidates bonds currentEpoch).
+Proof. exact zero_bond_candidate_not_selected. Qed.
+
+Theorem main_T9_13_selected_target_keys_nodup :
+  forall candidates bonds currentEpoch,
+    NoDup (map candidate_key candidates) ->
+    NoDup
+      (map candidate_key
+        (selected_slash_candidates candidates bonds currentEpoch)).
+Proof. exact selected_target_keys_nodup. Qed.
+
+(* Bug fix #3 — the FULL §9.8 seven-rule receive gate. The core three-conjunct
+   `authorized_slash_candidate` above (evidence/target epoch = current, positive
+   bond; unknown/valid evidence folded into evidence_lookup) is completed by the
+   issuer==sender rule (1) and the block-level (offender,epoch) NoDup rule (7),
+   faithfully mirroring validate_received_slash_deploys (slashing_authorization.rs
+   :342-508). *)
+Theorem main_T9_13_issuer_mismatch_rejected :
+  forall block_sender current_epoch canonical_bonds sd evidence,
+    sd_issuer sd <> block_sender ->
+    received_slash_deploy_authorized block_sender current_epoch canonical_bonds sd evidence = false.
+Proof. exact issuer_mismatch_not_authorized. Qed.
+
+Theorem main_T9_13_duplicate_target_rejected :
+  forall block_sender current_epoch canonical_bonds evidence sd1 sd2 rest k,
+    received_slash_deploy_authorized block_sender current_epoch canonical_bonds sd1 evidence = true ->
+    received_slash_deploy_authorized block_sender current_epoch canonical_bonds sd2 evidence = true ->
+    slash_target_key evidence sd1 = Some k ->
+    slash_target_key evidence sd2 = Some k ->
+    validate_block_slash_deploys block_sender current_epoch canonical_bonds evidence
+      (sd1 :: sd2 :: rest) = false.
+Proof. exact duplicate_target_rejected. Qed.
+
+Theorem main_T9_13_authorized_block_validates :
+  forall block_sender current_epoch canonical_bonds evidence sd k,
+    received_slash_deploy_authorized block_sender current_epoch canonical_bonds sd evidence = true ->
+    slash_target_key evidence sd = Some k ->
+    validate_block_slash_deploys block_sender current_epoch canonical_bonds evidence [sd] = true.
+Proof. exact single_authorized_deploy_validates. Qed.
+
+Theorem main_T9_13_slash_target_is_dependency :
+  forall deploys sd,
+    In sd deploys ->
+    In (sd_target_hash sd) (slash_evidence_dependencies deploys).
+Proof. exact every_slash_target_is_a_dependency. Qed.
+
+Theorem main_T9_13_missing_local_evidence_waits :
+  forall available deploys sd,
+    In sd deploys ->
+    ~ In (sd_target_hash sd) available ->
+    receive_slash_dependency available deploys sd = SlashDependencyWaiting.
+Proof. exact unavailable_declared_slash_waits_for_evidence. Qed.
+
+Theorem main_T9_13_missing_local_evidence_not_unauthorized :
+  forall available deploys sd,
+    In sd deploys ->
+    ~ In (sd_target_hash sd) available ->
+    receive_slash_dependency available deploys sd <>
+      SlashDependencyRejectedForLocalAbsence.
+Proof. exact unavailable_declared_slash_not_rejected_as_unauthorized. Qed.
+
+Theorem main_T9_13_tracker_witness_not_slash_evidence :
+  forall available tracker_witnesses deploys sd,
+    In sd deploys ->
+    In (sd_target_hash sd) tracker_witnesses ->
+    ~ In (sd_target_hash sd) available ->
+    receive_slash_dependency_with_tracker
+      available tracker_witnesses deploys sd = SlashDependencyWaiting.
+Proof. exact tracker_witness_does_not_satisfy_slash_evidence_dependency. Qed.
+
+Theorem main_T9_13_tracker_witness_not_processed_block :
+  forall dag buffered tracker_witnesses hash,
+    In hash tracker_witnesses ->
+    ~ In hash dag ->
+    ~ In hash buffered ->
+    block_is_processed_with_tracker
+      dag buffered tracker_witnesses hash = false.
+Proof. exact tracker_witness_does_not_mark_block_processed. Qed.
 
 Theorem main_TAuth_invalid_token_noop :
   forall ps sd lookup current_epoch,
@@ -476,21 +633,21 @@ Proof. exact detect_neglected_complete. Qed.
    in §4) hold of the components composed here. *)
 
 Theorem main_slashing_algorithm_correct :
-  forall st v n d status ps lm records witness,
-    detect st v n d = status ->
+  forall cj lmh d status v n ps lm records witness,
+    detect cj lmh d = status ->
     status = DSAdmissible \/ status = DSIgnorable ->
     let result := slash ps v in
     let ps' := fst result in
     let records' := atomic_record_or_update records (v, pred n) witness in
-    equivocates st v n
+    equivocates_ptr cj lmh = true
     /\ In witness (hashes_at_key records' (v, pred n))
     /\ bm_lookup (ps_allBonds ps') v = 0
     /\ fc_lookup (filter_slashed lm (ps_allBonds ps')) v = None
     /\ (bm_lookup (ps_allBonds ps) v > 0 ->
         ps_coopVault ps' = ps_coopVault ps + bm_lookup (ps_allBonds ps) v).
 Proof.
-  intros st v n d status ps lm records witness Hd Hstatus.
-  pose proof (@detection_sound st v n d status Hd Hstatus) as Heq.
+  intros cj lmh d status v n ps lm records witness Hd Hstatus.
+  pose proof (@detection_sound cj lmh d status Hd Hstatus) as Heq.
   pose proof (slash_zeros_bond ps v) as Hzero.
   pose proof (slash_transfers_stake ps v) as Htransfer.
   destruct (slash ps v) as [ps' ok] eqn:Hslash.
@@ -501,4 +658,88 @@ Proof.
   - assumption.
   - apply fork_choice_exclusion. assumption.
   - intro Hbond. apply Htransfer. assumption.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   §6 — Headline composition
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The headline composition: under the ten bug fixes, every pipeline
+   transition preserves the bonds, records, slashed-set, and Coop-vault
+   bisimulation relations. *)
+
+Theorem main_bisimilarity_theorem :
+  forall (b1 b2 : BondMap) (s1 s2 : EqStore) (sl1 sl2 : list Validator)
+         (v1 v2 : nat) (offender : Validator),
+    bonds_bisim b1 b2 ->
+    records_bisim s1 s2 ->
+    slashed_bisim sl1 sl2 ->
+    vault_bisim v1 v2 ->
+    let b1'  := bm_slash b1 offender in
+    let b2'  := bm_slash b2 offender in
+    let sl1' := offender :: sl1 in
+    let sl2' := offender :: sl2 in
+    let v1'  := v1 + bm_lookup b1 offender in
+    let v2'  := v2 + bm_lookup b2 offender in
+    bonds_bisim b1' b2'
+    /\ slashed_bisim sl1' sl2'
+    /\ vault_bisim v1' v2'.
+Proof.
+  intros b1 b2 s1 s2 sl1 sl2 v1 v2 offender Hb Hr Hsl Hv. simpl.
+  split; [|split].
+  - apply t_13_bm_slash_preserves_bonds_bisim. assumption.
+  - apply t_15_slashed_append_consistent. assumption.
+  - unfold vault_bisim. rewrite Hv. f_equal. apply Hb.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   §7 — Closure-strengthened bisimilarity (Gaps 1, 2, 8)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The strong bisimilarity theorem closing Gaps 1 and 2: under
+   records_bisim_strong (with key alignment) and forkchoice_bisim, applying
+   the same slash, record-update, and filter operations on both sides
+   preserves all five components of R. *)
+
+(* The five-component bisimilarity theorem: applies slash, record update,
+   slashed-set update, vault increment, and fork-choice filter consistently
+   on both sides, preserving the full strong record relation. *)
+
+Theorem main_bisimilarity_strong :
+  forall (b1 b2 : BondMap) (rs1 rs2 : EqStore) (sl1 sl2 : list Validator)
+         (v1 v2 : nat) (lm1 lm2 : LatestMessages)
+         (offender : Validator) (k : Validator * nat) (h : BlockHash),
+    bonds_bisim b1 b2 ->
+    records_bisim_strong rs1 rs2 ->
+    slashed_bisim sl1 sl2 ->
+    vault_bisim v1 v2 ->
+    forkchoice_bisim lm1 lm2 ->
+    let b1' := bm_slash b1 offender in
+    let b2' := bm_slash b2 offender in
+    let rs1' := update_record rs1 k h in
+    let rs2' := update_record rs2 k h in
+    let sl1' := offender :: sl1 in
+    let sl2' := offender :: sl2 in
+    let v1' := v1 + bm_lookup b1 offender in
+    let v2' := v2 + bm_lookup b2 offender in
+    let lm1' := filter_slashed lm1 b1' in
+    let lm2' := filter_slashed lm2 b2' in
+    bonds_bisim b1' b2'
+    /\ records_bisim_strong rs1' rs2'
+    /\ slashed_bisim sl1' sl2'
+    /\ vault_bisim v1' v2'
+    /\ forkchoice_bisim lm1' lm2'.
+Proof.
+  intros b1 b2 rs1 rs2 sl1 sl2 v1 v2 lm1 lm2 offender k h
+         Hb Hr Hsl Hv Hfc.
+  simpl.
+  split; [|split; [|split; [|split]]].
+  - apply t_13_bm_slash_preserves_bonds_bisim. assumption.
+  - apply records_bisim_strong_preserved_update. assumption.
+  - apply t_15_slashed_append_consistent. assumption.
+  - unfold vault_bisim in *.
+    rewrite Hv. f_equal. apply Hb.
+  - unfold forkchoice_bisim.
+    apply forkchoice_bisim_preserves_filter; [assumption|].
+    apply t_13_bm_slash_preserves_bonds_bisim. assumption.
 Qed.

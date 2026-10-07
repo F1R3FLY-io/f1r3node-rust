@@ -65,7 +65,6 @@ impl Blake2b512Random {
             result.digest.update(&init_i8, base);
         }
 
-        // println!("\nresult.digest: {:?}", result.digest);
         let partial_base = if range.is_empty() {
             offset
         } else {
@@ -78,7 +77,6 @@ impl Blake2b512Random {
             let remainder_length = (offset + length) - partial_base;
             padded[..remainder_length]
                 .copy_from_slice(&init_i8[partial_base..(partial_base + remainder_length)]);
-            // println!("\npadded: {:?}", padded);
             result.digest.update(&padded, 0);
         }
 
@@ -88,15 +86,18 @@ impl Blake2b512Random {
 
     pub fn create_from_length(length: i32) -> Blake2b512Random {
         let mut bytes = vec![0u8; length as usize];
-        rand::thread_rng().fill(&mut bytes[..]);
+        rand::rng().fill(&mut bytes[..]);
         Self::create(&bytes, 0, length as usize)
     }
 
     pub fn create_from_bytes(init: &[u8]) -> Blake2b512Random { Self::create(init, 0, init.len()) }
 
-    pub fn split_byte(&self, index: i8) -> Blake2b512Random {
+    pub fn split_byte(&self, index: u8) -> Blake2b512Random {
         let mut split = self.copy();
-        split.add_byte(index);
+        // Deliberate two's-complement reinterpretation, not a lossy narrowing:
+        // add_byte takes i8, and indices 128..=255 must land on the same byte
+        // pattern Scala produces via `id.toByte`. Do not drop this cast.
+        split.add_byte(index as i8);
         split
     }
 
@@ -104,7 +105,6 @@ impl Blake2b512Random {
         let mut split = self.copy();
         let packed: [u8; 2] = index.to_le_bytes();
         let packed_signed: [i8; 2] = [packed[0] as i8, packed[1] as i8];
-        // println!("\npacked: {:?}", packed_signed);
         split.add_byte(packed_signed[0]);
         split.add_byte(packed_signed[1]);
         split
@@ -112,7 +112,6 @@ impl Blake2b512Random {
 
     fn add_byte(&mut self, index: i8) {
         if self.path_position == 112 {
-            // println!("\npath_position is 112");
             self.digest.update(&self.last_block, 0);
             self.last_block.fill(0);
             self.path_position = 0;
@@ -136,7 +135,6 @@ impl Blake2b512Random {
             clone_block,
         );
         result.path_position = self.path_position;
-        // println!("\nresult in copy");
         // result.debug_str();
         result
     }
@@ -172,11 +170,9 @@ impl Blake2b512Random {
         if self.position == 0 {
             self.hash();
             self.position = 32;
-            // println!("\nhash_array 0-32: {:?}", self.hash_array);
             self.hash_array[0..32].to_vec()
         } else {
             self.position = 0;
-            // println!("\nhash_array 32-64: {:?}", self.hash_array);
             self.hash_array[32..64].to_vec()
         }
     }
@@ -240,7 +236,6 @@ impl Blake2b512Random {
         self.digest.debug_str();
         println!("last_block: {:?}", self.last_block);
         println!("path_position: {:?}", self.path_position);
-        // println!("count_view: {:?}", self.count_view);
         println!("position: {}", self.position);
         println!("rot_position: {}", rot_position);
         println!(
@@ -396,6 +391,25 @@ impl Blake2b512Random {
     }
 }
 
+// Serde implementation to match Scala JsonEncoder behavior
+// Blake2b512Random is encoded/decoded as unit (like Scala's FIXME comment)
+impl serde::Serialize for Blake2b512Random {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        // Serialize as unit (like Scala's encodeBlake2b512Random)
+        serializer.serialize_unit()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Blake2b512Random {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        // Deserialize unit and return default Blake2b512Random (like Scala's decodeDummyBlake2b512Random)
+        let _: () = <()>::deserialize(deserializer)?;
+        Ok(Blake2b512Random::create_from_bytes(&[1]))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,8 +437,6 @@ mod tests {
 
         let res1 = split.next();
         let res2 = split.next();
-        // println!("\nres1: {:?}", res1);
-        // println!("\nres2: {:?}", res2);
 
         assert_eq!(res1, [
             116, 92, -32, -11, -102, -89, -21, -83, -61, 28, 9, 113, 38, -84, -123, -121, 12, 51,
@@ -433,6 +445,31 @@ mod tests {
         assert_eq!(res2, [
             45, 123, -46, 25, -28, -50, 30, 24, -29, -116, 6, -18, -51, -15, 112, -104, -19, 73,
             -42, 104, -112, 8, 109, 25, 84, 58, -124, -2, -120, -40, 13, 103
+        ]);
+    }
+
+    #[test]
+    fn blake2b512_random_split_byte_covers_full_unsigned_range() {
+        use std::collections::BTreeSet;
+
+        let base = Blake2b512Random::create_from_bytes(&[]);
+        let mut seen = BTreeSet::new();
+        for index in 0u8..=255 {
+            let mut split = base.split_byte(index);
+            assert!(
+                seen.insert(split.next()),
+                "duplicate stream for index {index}"
+            );
+        }
+        assert_eq!(seen.len(), 256);
+
+        // Indices 128..=255 previously panicked on the i8 conversion. They now
+        // hash as the two's-complement byte pattern of the index (200 -> -56),
+        // the same value the historical i8 path fed to add_byte. This golden
+        // vector locks that encoding against future refactors of split_byte.
+        assert_eq!(base.split_byte(200).next(), [
+            63, 124, 112, -114, 99, -48, -30, -57, -63, -102, 36, -21, 75, -46, 41, 42, -52, 116,
+            -105, 24, -31, 0, 85, 3, 111, 107, 14, -128, 75, 81, 73, -116
         ]);
     }
 
@@ -448,8 +485,6 @@ mod tests {
 
         let res1 = single_merge_random.next();
         let res2 = single_merge_random.next();
-        // println!("\nres1: {:?}", res1);
-        // println!("\nres2: {:?}", res2);
 
         assert_eq!(res1, [
             -50, 25, 15, 66, -125, -44, -79, 22, 83, -53, 120, -18, -113, -68, 104, -91, -72, -53,
@@ -465,7 +500,6 @@ mod tests {
     fn blake2b512_random_should_correctly_implement_wraparound() {
         let mut rand = Blake2b512Random::create_from_bytes(&[]);
         let res1 = rand.next();
-        // println!("\nres1: {:?}", res1);
         // rand.debug_str();
         assert_eq!(res1, [
             82, -120, 78, -100, -6, -9, 56, 112, -99, 39, 30, -100, 2, 104, -16, 89, 100, 57, 86,
@@ -473,7 +507,6 @@ mod tests {
         ]);
 
         let res2 = rand.next();
-        // println!("\nres2: {:?}", res2);
         // rand.debug_str();
         assert_eq!(res2, [
             -49, -94, -21, -71, 17, -123, -23, 118, 74, 90, -17, 108, 127, 90, 103, 86, -49, -32,
@@ -481,18 +514,121 @@ mod tests {
         ]);
 
         let res3 = rand.next();
-        // println!("\nres3: {:?}", res3);
         assert_eq!(res3, [
             -92, 36, -34, 33, 10, 100, -106, 105, -1, -111, -105, 111, -35, -127, -27, 89, -77,
             -75, -64, -38, 118, -116, -68, -68, 48, -46, 94, -24, 110, 62, 7, -77
         ]);
 
         let res4 = rand.next();
-        // println!("\nres4: {:?}", res4);
         assert_eq!(res4, [
             12, 5, -2, -6, 45, 30, -53, -102, -12, 120, -73, 79, 94, -103, 112, 60, 66, -64, 124,
             -75, 89, -90, -96, -114, 24, -2, 77, -7, -120, -24, -108, 96
         ]);
+    }
+
+    #[test]
+    fn blake2b512_random_should_create_from_length() {
+        let mut rand = Blake2b512Random::create_from_length(32);
+        let res1 = rand.next();
+        let res2 = rand.next();
+        assert_eq!(res1.len(), 32);
+        assert_eq!(res2.len(), 32);
+        assert_ne!(res1, res2);
+    }
+
+    #[test]
+    fn blake2b512_random_create_should_handle_multi_block_input() {
+        let long_input: Vec<u8> = (0..300u16).map(|i| (i % 251) as u8).collect();
+        let mut a = Blake2b512Random::create_from_bytes(&long_input);
+        let mut b = Blake2b512Random::create_from_bytes(&long_input);
+        assert_eq!(a.next(), b.next());
+
+        let mut truncated = Blake2b512Random::create_from_bytes(&long_input[..299]);
+        let mut full = Blake2b512Random::create_from_bytes(&long_input);
+        assert_ne!(full.next(), truncated.next());
+    }
+
+    #[test]
+    fn blake2b512_random_create_should_handle_exact_block_multiple() {
+        let input = vec![7u8; 256];
+        let mut a = Blake2b512Random::create_from_bytes(&input);
+        let mut b = Blake2b512Random::create_from_bytes(&input);
+        assert_eq!(a.next(), b.next());
+    }
+
+    #[test]
+    fn blake2b512_random_split_bytes_should_diverge_by_index() {
+        let base = Blake2b512Random::create_from_bytes(b"seed");
+        let mut split0 = base.split_byte(0);
+        let mut split1 = base.split_byte(1);
+        let mut split0_again = base.split_byte(0);
+
+        let res0 = split0.next();
+        assert_ne!(res0, split1.next());
+        assert_eq!(res0, split0_again.next());
+    }
+
+    #[test]
+    fn blake2b512_random_deep_split_chain_should_be_deterministic() {
+        fn chain() -> Blake2b512Random {
+            let mut rand = Blake2b512Random::create_from_bytes(b"deep");
+            for i in 0..130 {
+                rand = rand.split_byte((i % 127) as u8);
+            }
+            rand
+        }
+        let mut a = chain();
+        let mut b = chain();
+        assert_eq!(a.next(), b.next());
+
+        let mut shallower = Blake2b512Random::create_from_bytes(b"deep").split_byte(0);
+        assert_ne!(chain().next(), shallower.next());
+    }
+
+    #[test]
+    fn blake2b512_random_merge_should_handle_three_children() {
+        let base = Blake2b512Random::create_from_bytes(&[]);
+        let children = || vec![base.split_byte(0), base.split_byte(1), base.split_byte(2)];
+        let mut merged_a = Blake2b512Random::merge(children());
+        let mut merged_b = Blake2b512Random::merge(children());
+        assert_eq!(merged_a.next(), merged_b.next());
+
+        let mut merged_two = Blake2b512Random::merge(vec![base.split_byte(0), base.split_byte(1)]);
+        let mut merged_three = Blake2b512Random::merge(children());
+        assert_ne!(merged_three.next(), merged_two.next());
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 2 inputs")]
+    fn blake2b512_random_merge_should_reject_single_child() {
+        Blake2b512Random::merge(vec![Blake2b512Random::create_from_bytes(&[])]);
+    }
+
+    #[test]
+    fn blake2b512_random_from_bytes_should_fall_back_to_default_on_truncated_input() {
+        let full_bytes = Blake2b512Random::create_from_bytes(b"round trip").to_bytes();
+        let default = Blake2b512Random::create_from_bytes(&[]);
+
+        assert_eq!(Blake2b512Random::from_bytes(&[]), default);
+        for truncate_at in [1, 79, 82, 90, 220, 300, full_bytes.len() - 1] {
+            let truncated = &full_bytes[..truncate_at.min(full_bytes.len() - 1)];
+            assert_eq!(Blake2b512Random::from_bytes(truncated), default);
+        }
+
+        assert_eq!(
+            Blake2b512Random::from_bytes(&full_bytes),
+            Blake2b512Random::create_from_bytes(b"round trip")
+        );
+    }
+
+    #[test]
+    fn blake2b512_random_serde_should_encode_as_unit_and_decode_as_default() {
+        let rand = Blake2b512Random::create_from_bytes(b"whatever");
+        let encoded = bincode::serialize(&rand).unwrap();
+        assert!(encoded.is_empty());
+
+        let decoded: Blake2b512Random = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded, Blake2b512Random::create_from_bytes(&[1]));
     }
 
     #[test]
@@ -510,24 +646,5 @@ mod tests {
         // from_bytes.debug_str();
 
         assert_eq!(merge_rand, from_bytes);
-    }
-}
-
-// Serde implementation to match Scala JsonEncoder behavior
-// Blake2b512Random is encoded/decoded as unit (like Scala's FIXME comment)
-impl serde::Serialize for Blake2b512Random {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer {
-        // Serialize as unit (like Scala's encodeBlake2b512Random)
-        serializer.serialize_unit()
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Blake2b512Random {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: serde::Deserializer<'de> {
-        // Deserialize unit and return default Blake2b512Random (like Scala's decodeDummyBlake2b512Random)
-        let _: () = <()>::deserialize(deserializer)?;
-        Ok(Blake2b512Random::create_from_bytes(&[1]))
     }
 }

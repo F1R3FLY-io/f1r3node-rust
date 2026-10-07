@@ -104,6 +104,8 @@ fn render_diagnostic_event(kind: &BillableKind, weight: u64) -> String {
             format!("{class}({operation})={weight}")
         }
         BillableKind::Comm => format!("comm={weight}"),
+        BillableKind::RSpaceProduce => format!("rspace-produce={weight}"),
+        BillableKind::RSpaceConsume => format!("rspace-consume={weight}"),
         BillableKind::Reduction => format!("reduction={weight}"),
         BillableKind::Substitution => format!("subst={weight}"),
     }

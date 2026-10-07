@@ -686,7 +686,7 @@ proptest! {
     /// corpus.
     #[test]
     fn round_trip_through_every_root(par in generate_par(2)) {
-        let a = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2] };
+        let a = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2], cost_authority: None, cost_stack: None };
         prop_assert!(ListParWithRandom::cold_decode(
             &bincode::serialize(&a).expect("serialize")).expect("machine") == a);
 
@@ -696,6 +696,7 @@ proptest! {
 
         let k = TaggedContinuation {
             guard: Some(par),
+            cost_authority: None,
             tagged_cont: Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(5)),
         };
         prop_assert!(TaggedContinuation::cold_decode(
@@ -805,4 +806,147 @@ fn decoded_epathmaps_reconstruct_the_canonical_trie_snapshot() {
         }
         other => panic!("expected EPathmapBody, got {:?}", other.is_some()),
     }
+}
+
+#[test]
+fn cost_schema_fields_match_derived_bincode_decoder() {
+    use models::rhoapi::cost_signature::Value;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{
+        CostAuthority, CostRegion, CostSignature, CostSignatureCompound, CostSignedTerm, CostStack,
+        Expr, GAuthorityId, GPrincipalId, GUnforgeable, Receive, ReceiveBind,
+    };
+
+    let unit = CostSignature {
+        value: Some(Value::Unit(true)),
+    };
+    let compound = CostSignature {
+        value: Some(Value::Compound(CostSignatureCompound {
+            elements: vec![
+                CostSignature {
+                    value: Some(Value::Ground(vec![0, 255])),
+                },
+                CostSignature {
+                    value: Some(Value::BoundLevel(-7)),
+                },
+                CostSignature {
+                    value: Some(Value::Quote(Par::default())),
+                },
+                CostSignature {
+                    value: Some(Value::Name(Par::default())),
+                },
+                unit.clone(),
+            ],
+        })),
+    };
+    let authority = CostAuthority {
+        regions: vec![CostRegion {
+            instance_id: vec![1, 2, 3],
+            signature: Some(compound.clone()),
+        }],
+    };
+    let stack = CostStack {
+        cells: vec![CostSignature { value: None }, unit, compound.clone()],
+    };
+    let par = models::par_from_default! {
+        receives: vec![Receive {
+            binds: vec![ReceiveBind {
+                patterns: vec![Par::default()],
+                source: Some(Par::default()),
+                remainder: None,
+                free_count: 1,
+                cost_signature: Some(compound.clone()),
+            }],
+            ..Default::default()
+        }],
+        exprs: vec![Expr { expr_instance: Some(ExprInstance::GFloat32(0x7fc0_dead)) }],
+        unforgeables: vec![
+            GUnforgeable { unf_instance: Some(UnfInstance::GAuthorityIdBody(GAuthorityId { id: vec![8] })) },
+            GUnforgeable { unf_instance: Some(UnfInstance::GPrincipalIdBody(GPrincipalId { key_family: 2, public_key: vec![9] })) },
+        ],
+        cost_signed_terms: vec![CostSignedTerm {
+            body: Some(Par::default()),
+            signature: Some(compound),
+        }],
+        cost_stacks: vec![stack.clone()],
+        ..Default::default()
+    };
+    let continuation = TaggedContinuation {
+        guard: Some(par.clone()),
+        tagged_cont: None,
+        cost_authority: Some(authority.clone()),
+    };
+    let list = ListParWithRandom {
+        pars: vec![par.clone()],
+        random_state: vec![4, 5],
+        cost_authority: Some(authority),
+        cost_stack: Some(stack),
+    };
+
+    agree("cost Par", &par);
+    agree("cost TaggedContinuation", &continuation);
+    agree("cost ListParWithRandom", &list);
+    agree_with_trailing("cost Par trailing", &par);
+    agree_with_trailing("cost TaggedContinuation trailing", &continuation);
+    agree_with_trailing("cost ListParWithRandom trailing", &list);
+
+    fn truncations_agree<T>(value: &T)
+    where T: ColdStoreDecode
+            + serde::Serialize
+            + for<'de> Deserialize<'de>
+            + PartialEq
+            + std::fmt::Debug {
+        let bytes = bincode::serialize(value).expect("serialize");
+        for end in 0..bytes.len() {
+            let prefix = &bytes[..end];
+            assert_eq!(
+                T::cold_decode_prefix(prefix).is_ok(),
+                bincode::deserialize::<T>(prefix).is_ok(),
+                "truncation at {end} of {} bytes",
+                bytes.len(),
+            );
+        }
+    }
+    truncations_agree(&par);
+    truncations_agree(&continuation);
+    truncations_agree(&list);
+}
+
+#[test]
+fn deeply_nested_cost_signature_decodes_and_tears_down_on_small_stack() {
+    fn encoded_par_with_compound_depth(depth: usize) -> Vec<u8> {
+        let mut bytes = bincode::serialize(&Par::default()).expect("empty Par");
+        let stack_count = bytes.len() - 8;
+        bytes[stack_count..].copy_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        for _ in 0..depth {
+            bytes.push(1);
+            bytes.extend_from_slice(&3u32.to_le_bytes());
+            bytes.extend_from_slice(&1u64.to_le_bytes());
+        }
+        bytes.push(1);
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.push(1);
+        bytes
+    }
+
+    let shallow = encoded_par_with_compound_depth(3);
+    let oracle: Par = bincode::deserialize(&shallow).expect("derived shallow decode");
+    let (machine, consumed) = Par::cold_decode_prefix(&shallow).expect("machine shallow decode");
+    assert_eq!(machine, oracle);
+    assert_eq!(consumed, shallow.len());
+
+    let deep = encoded_par_with_compound_depth(4096);
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let (value, consumed) = Par::cold_decode_prefix(&deep).expect("deep decode");
+            assert_eq!(consumed, deep.len());
+            drop(value);
+            assert!(Par::cold_decode_prefix(&deep[..deep.len() - 1]).is_err());
+        })
+        .expect("spawn")
+        .join()
+        .expect("small-stack decoder thread");
 }

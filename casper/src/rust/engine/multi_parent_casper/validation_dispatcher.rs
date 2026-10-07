@@ -16,7 +16,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHashSerde;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedUserDeploy};
 use models::rust::equivocation_record::EquivocationRecord;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -29,15 +29,18 @@ use crate::rust::casper::CasperSnapshot;
 use crate::rust::equivocation_detector::EquivocationDetector;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
+    BLOCK_ARRIVAL_DEPTH_METRIC, BLOCK_ARRIVED_UNCITABLE_METRIC,
     BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC, BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
 use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::proto_util;
-use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint_with_policy;
 use crate::rust::validate::Validate;
 
 async fn timed_step<A, Fut>(
@@ -69,12 +72,29 @@ where
 ///
 /// Returns the outcome of `check_equivocations`. A `Left` from any
 /// intermediate validator short-circuits and is returned directly.
+fn violates_offered_only_activation<D>(
+    active: bool,
+    deploys: &[D],
+    is_offered: impl Fn(&D) -> bool,
+) -> bool {
+    active && deploys.iter().any(|deploy| !is_offered(deploy))
+}
+
 async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
     skip_checkpoint_and_bonds: bool,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    // The per-validate derivation slot: block_summary fills it at the first
+    // floor-consuming step; the checkpoint and bonds steps below reuse it.
+    let mut floor_ctx: Option<crate::rust::finality::floor_context::FloorContext> = None;
+    // This node's identity for the owner-scoped buffer populate inside the
+    // checkpoint recompute; observers pass None and buffer nothing.
+    let local_validator: Option<models::rust::validator::Validator> = this
+        .validator_id
+        .as_ref()
+        .map(|id| prost::bytes::Bytes::copy_from_slice(&id.public_key.bytes));
     let (block_summary_result, t1) = timed_step(
         "block-summary",
         BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
@@ -87,9 +107,9 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 this.casper_shard_conf.deploy_lifespan as i32,
                 this.casper_shard_conf.max_number_of_parents,
                 this.casper_shard_conf.max_parent_depth,
-                this.casper_shard_conf.mergeable_channels_gc_depth_buffer,
                 &this.block_store,
                 this.casper_shard_conf.disable_validator_progress_check,
+                &mut floor_ctx,
             )
             .await)
         },
@@ -100,16 +120,71 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
+    if violates_offered_only_activation(this.offered_funded_active, &block.body.deploys, |deploy| {
+        matches!(deploy, ProcessedUserDeploy::Offered(_))
+    }) {
+        return Ok(Either::Left(BlockError::Invalid(
+            InvalidBlock::InvalidTransaction,
+        )));
+    }
+
     let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds {
+        // Reuse the floor derived by block_summary's fill; a deploy-less
+        // block never filled it, so derive here — same frozen inputs, same
+        // result, same BlockException class on failure.
+        if floor_ctx.is_none() && !block.header.parents_hash_list.is_empty() {
+            let latest_messages: std::collections::BTreeMap<
+                models::rust::validator::Validator,
+                models::rust::block_hash::BlockHash,
+            > = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &snapshot.dag,
+                &this.block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    this.casper_shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => floor_ctx = Some(ctx),
+                Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
+            }
+        }
+        let offered_policy = if block
+            .body
+            .deploys
+            .iter()
+            .any(|term| matches!(term, ProcessedUserDeploy::Offered(_)))
+        {
+            Some(
+                AdoptedResourcePolicy::load(
+                    &this.runtime_manager,
+                    &this.approved_block,
+                    &this.casper_shard_conf,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let (validate_block_checkpoint_result, t2) = timed_step(
             "checkpoint",
             BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-            validate_block_checkpoint(
+            validate_block_checkpoint_with_policy(
                 block,
                 &this.block_store,
                 snapshot,
                 &this.runtime_manager,
                 Some(&this.rejected_deploy_buffer),
+                floor_ctx.as_ref(),
+                local_validator.as_ref(),
+                offered_policy.as_ref(),
             ),
         )
         .await?;
@@ -121,7 +196,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         // landing site with the BlockException arm at block_processor.rs:358 —
         // both flow through dispatch_handle_invalid_block's is_slashable()
         // catch-all, which mints an EquivocationRecord per T-9.3. See
-        // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
+        // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
         if let Either::Right(None) = validate_block_checkpoint_result {
             return Ok(Either::Left(BlockError::Invalid(
                 InvalidBlock::InvalidTransaction,
@@ -131,7 +206,16 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         let (bonds_cache_result, t3) = timed_step(
             "bonds-cache",
             BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-            async { Ok(Validate::bonds_cache(block, &this.runtime_manager).await) },
+            async {
+                Ok(Validate::bonds_cache_from_floor(
+                    block,
+                    &this.block_store,
+                    snapshot,
+                    &this.runtime_manager,
+                    floor_ctx.as_ref(),
+                )
+                .await)
+            },
         )
         .await?;
         tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
@@ -175,11 +259,28 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
-    // D3 (DR-9, D.5): the per-block `phlo-price` validation step is REMOVED —
-    // deploys carry no phlo price/limit. Per-signature funding is settled at
-    // block assembly by the acceptance gate (against Σ⟦s⟧); replay re-derives
-    // the same settlement debits, and an over-admitting proposer underflows the
-    // pool (a detectable invalid block) — no separate price rule is needed.
+    let (phlo_price_result, t6) = timed_step(
+        "phlo-price",
+        BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
+        async {
+            Ok(Validate::phlo_price(
+                block,
+                this.casper_shard_conf.min_phlo_price,
+            ))
+        },
+    )
+    .await?;
+    tracing::debug!(target: "f1r3fly.casper", "phlogiston-price-validated");
+    // Enforced, not warned: the floor is a chain-adopted consensus value, so
+    // every validator reaches this verdict identically (LowDeployCost is
+    // deliberately non-slashable — admission-only).
+    if let Either::Left(block_error) = phlo_price_result {
+        tracing::warn!(
+            "One or more deploys has phloPrice lower than {}",
+            this.casper_shard_conf.min_phlo_price
+        );
+        return Ok(Either::Left(block_error));
+    }
 
     let requested_as_dependency = this
         .casper_buffer_storage
@@ -200,13 +301,13 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     let timing_breakdown = match (t2_opt, t3_opt) {
         (Some(t2), Some(t3)) => format!(
             "summary={}, checkpoint={}, bonds={}, neglected-invalid={}, \
-             neglected-equiv={}, simple-equiv={}",
-            t1, t2, t3, t4, t5, t7
+             neglected-equiv={}, phlo={}, simple-equiv={}",
+            t1, t2, t3, t4, t5, t6, t7
         ),
         _ => format!(
-            "summary={}, neglected-invalid={}, neglected-equiv={}, \
+            "summary={}, neglected-invalid={}, neglected-equiv={}, phlo={}, \
              simple-equiv={} (checkpoint and bonds-cache skipped — self-created)",
-            t1, t4, t5, t7
+            t1, t4, t5, t6, t7
         ),
     };
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);
@@ -290,10 +391,46 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
             status,
             elapsed
         );
+        record_arrival_depth(this, block);
         update_mergeable_cache_after_validation(this, block, "block").await;
     }
 
     Ok(val_result)
+}
+
+/// Measured against the live frontier after replay, not the pre-replay
+/// snapshot: a slow replay is what carries a block past the parent-depth limit.
+fn record_arrival_depth<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    block: &BlockMessage,
+) {
+    let frontier = match this.block_dag_storage.get_representation() {
+        Ok(dag) => dag.latest_block_number(),
+        Err(error) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.recovery",
+                %error,
+                "arrival depth not recorded: DAG representation unavailable"
+            );
+            return;
+        }
+    };
+    let depth = frontier - block.body.state.block_number;
+    metrics::histogram!(BLOCK_ARRIVAL_DEPTH_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(depth as f64);
+    let max_parent_depth = this.casper_shard_conf.max_parent_depth;
+    if depth > i64::from(max_parent_depth) {
+        metrics::counter!(BLOCK_ARRIVED_UNCITABLE_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+        tracing::warn!(
+            target: "f1r3fly.casper.recovery",
+            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            block_number = block.body.state.block_number,
+            depth,
+            max_parent_depth,
+            "block validated beyond the parent-depth horizon: this node can no longer cite it"
+        );
+    }
 }
 
 pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sync>(
@@ -316,8 +453,13 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
             PrettyPrinter::build_string_bytes(&block.block_hash),
         );
-        tracing::error!("{}", msg);
-        return Ok(Either::Left(BlockError::BlockException(
+        tracing::error!(
+            block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            expected = %PrettyPrinter::build_string_no_limit(&pre_state_hash),
+            actual = %PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
+            "self-created block pre_state_hash mismatch"
+        );
+        return Ok(Either::Left(BlockError::from_validation_error(
             CasperError::RuntimeError(msg),
         )));
     }
@@ -328,8 +470,13 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
             PrettyPrinter::build_string_bytes(&block.block_hash),
         );
-        tracing::error!("{}", msg);
-        return Ok(Either::Left(BlockError::BlockException(
+        tracing::error!(
+            block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            expected = %PrettyPrinter::build_string_no_limit(&post_state_hash),
+            actual = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
+            "self-created block post_state_hash mismatch"
+        );
+        return Ok(Either::Left(BlockError::from_validation_error(
             CasperError::RuntimeError(msg),
         )));
     }
@@ -392,7 +539,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         // documents the lock-order contract (DAG global_lock A,
         // buffer state_lock B) and the on-resume reconciliation
         // closes any crash-window drift. See
-        // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+        // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         let updated_dag =
             block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
@@ -409,7 +556,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     };
 
     // Atomic read-modify-write on the equivocation tracker. See
-    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
+    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
     let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
                            block: &BlockMessage|
      -> Result<(), CasperError> {
@@ -457,7 +604,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         InvalidBlock::IgnorableEquivocation => {
             // Record evidence and apply the standard invalid-block effect,
             // mirroring AdmissibleEquivocation. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+            // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
             record_evidence(&this.block_dag_storage, block)?;
             handle_invalid_block_effect(
                 &this.block_dag_storage,
@@ -469,7 +616,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
 
         status if status.is_slashable() => {
             // Every slashable status mints an EquivocationRecord. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
+            // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
             record_evidence(&this.block_dag_storage, block)?;
             handle_invalid_block_effect(
                 &this.block_dag_storage,
@@ -488,6 +635,38 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                 status
             );
             Ok(dag.clone())
+        }
+    }
+}
+
+#[cfg(test)]
+mod offered_only_activation_tests {
+    use super::violates_offered_only_activation;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// Extracted from `OfferedOnlyActivation.v`: `active_validation_rejects_body_only`
+        /// (an active block with any body-only deploy is invalid), and the `validate`
+        /// definition (inactive validation imposes no format rule; an active block of
+        /// offered deploys only is valid).
+        #[test]
+        fn active_validation_rejects_exactly_blocks_with_a_body_only_deploy(
+            before in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..8),
+            after in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..8),
+            offered_only in proptest::collection::vec(proptest::strategy::Just(true), 0..8),
+        ) {
+            let mut with_body_only = before.clone();
+            with_body_only.push(false);
+            with_body_only.extend(after.iter().copied());
+            let is_offered = |offered: &bool| *offered;
+            proptest::prop_assert!(violates_offered_only_activation(true, &with_body_only, is_offered));
+            proptest::prop_assert!(!violates_offered_only_activation(false, &with_body_only, is_offered));
+            proptest::prop_assert!(!violates_offered_only_activation(true, &offered_only, is_offered));
+            proptest::prop_assert_eq!(
+                violates_offered_only_activation(true, &before, is_offered),
+                before.iter().any(|offered| !offered)
+            );
         }
     }
 }

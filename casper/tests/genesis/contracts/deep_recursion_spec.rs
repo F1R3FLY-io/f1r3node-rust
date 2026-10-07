@@ -192,18 +192,22 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
         .await
         .map_err(|e| format!("Failed to create RSpaceStore: {}", e))?;
 
-    let matcher = Arc::new(Box::new(Matcher::default())
-        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
+    let matcher =
+        Arc::new(Box::new(Matcher)
+            as Box<
+                dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>,
+            >);
 
     let runtime = create_runtime_from_kv_store(
         r_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         true,
         &mut vec![],
         matcher,
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let rand = Blake2b512Random::create_from_length(128);
 

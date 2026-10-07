@@ -4,10 +4,11 @@ use prost::Message;
 
 use crate::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
-    HasBlockRequestProto, MergeableEntryRequestProto, MergeableEntryResponseProto,
-    NoApprovedBlockAvailableProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto,
+    BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
+    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, HasBlockProto, HasBlockRequestProto,
+    HasSnapshotProto, HasSnapshotRequestProto, MergeableEntryRequestProto,
+    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, SnapshotChunkResponseProto,
+    StoreItemsMessageProto, StoreItemsMessageRequestProto, UnapprovedBlockProto,
 };
 use crate::routing::Packet;
 
@@ -51,3 +52,10 @@ impl_packet!(StoreItemsMessageRequestProto, "StoreItemsMessageRequest");
 impl_packet!(StoreItemsMessageProto, "StoreItemsMessage");
 impl_packet!(MergeableEntryRequestProto, "MergeableEntryRequest");
 impl_packet!(MergeableEntryResponseProto, "MergeableEntryResponse");
+impl_packet!(FloorCacheRequestProto, "FloorCacheRequest");
+impl_packet!(FloorCacheResponseProto, "FloorCacheResponse");
+// Snapshot chunk-fetch (Wave 3, Phase 7b-1).
+impl_packet!(GetSnapshotChunkRequestProto, "GetSnapshotChunkRequest");
+impl_packet!(SnapshotChunkResponseProto, "SnapshotChunkResponse");
+impl_packet!(HasSnapshotRequestProto, "HasSnapshotRequest");
+impl_packet!(HasSnapshotProto, "HasSnapshot");

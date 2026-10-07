@@ -1,7 +1,7 @@
 // UC-07 — InvalidRepeatDeploy variant flows through the post-fix
 // dispatcher's catch-all.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-07.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-07.
 // Theorem: T-9.3 (catch-all dispatcher records every slashable
 // variant).
 //

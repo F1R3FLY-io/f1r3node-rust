@@ -1,4 +1,30 @@
-> Last updated: 2026-04-29
+> Last updated: 2026-08-20
+
+# Casper Consensus Documentation
+
+This directory is the consolidated home of the Casper consensus
+documentation. The tree travels with the Casper consensus when the
+consensus code moves to an independent repository. The f1r3node-rust
+platform itself stays neutral about consensus and state-machine
+replication.
+
+## Documentation Map
+
+| Area | Documents |
+|---|---|
+| Protocol | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) (11-stage walkthrough) · the implementation walkthrough below |
+| Safety | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) · [Synchrony Constraint](./SYNC_CONSTRAINT.md) |
+| Philosophy | [Consensus Philosophy](./CONSENSUS_PHILOSOPHY.md) (principles P1–P6, remedy ladder, CBC relation) |
+| Vocabulary | [Casper Glossary](./GLOSSARY.md) (canonical casper-domain terms; repo-wide terms stay in [docs/Glossary.md](../Glossary.md)) |
+| Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
+| Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
+| Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) · [Cost-accounting CbC and FV reconciliation](./design/cost-accounting-cbc-fv-reconciliation.md) · [Decision ledger](./design/decision-ledger/README.md) (decided 2026-09-16) |
+| CbC claims | [Repeat-deploy carrier-index equivalence](../claims/repeat-deploy-carrier-index-equivalence.md) · [Replay liveness bound](../claims/replay-liveness-bound.md) |
+| Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |
+
+Related documentation that stays platform-owned: [formal-verification.md](../formal-verification.md) (umbrella for `formal/**` artifacts), [data-flows](../data-flows/README.md), [docs index](../README.md).
+
+---
 
 # Crate: casper (Consensus Layer)
 
@@ -192,7 +218,7 @@ Not every overlapping channel touch is a conflict. Some channels carry data with
 
 When the conflict-set merger inspects a shared channel, it looks up the channel's tag against this table. If a `MergeType` is found, the deploys are merged rather than treated as conflicting. If not, ordinary conflict resolution applies (one deploy is kept, the other rejected).
 
-`BitmaskOr` was added to handle a class of failure where two registry inserts from sibling blocks both touched the same `TreeHashMap` interior node. Without bitmask merging, one of the inserts would be rejected at multi-parent merge — even though the inserts were at different keys and logically commute. The regression is captured at unit level by `casper/tests/multi_node/bridge_contract_concurrent_merge.rs`.
+`BitmaskOr` exists for a specific class of channel: two writes to the same channel can each set distinct bits in a bitmap and combine without conflict. The motivating case is the registry's `TreeHashMap` interior nodes, where two inserts at different keys race on the parent's child-bitmap update. `casper/tests/multi_node/registry_key_merge.rs` covers this case directly: writes to different keys merge, and writes to the same key conflict. `casper/tests/multi_node/bridge_contract_concurrent_merge.rs` covers it through the bridge contract.
 
 To diagnose a suspected merge rejection, run with `RUST_LOG=f1r3fly.merge.tag_check=trace` to see which channels match a `MergeType` and which do not.
 
@@ -236,6 +262,6 @@ All interpreter-level tests use `#[tokio::test(flavor = "multi_thread", worker_t
 to match the production multi-threaded runtime, ensuring parallel `tokio::spawn` evaluation
 of Rholang Par branches is exercised during testing.
 
-**See also:** [casper/ crate README](../../casper/README.md) | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) | [Synchrony Constraint](./SYNC_CONSTRAINT.md)
+**See also:** [casper/ crate README](../../casper/README.md) | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) | [Synchrony Constraint](./SYNC_CONSTRAINT.md) | [Consensus Philosophy](./CONSENSUS_PHILOSOPHY.md)
 
 [← Back to docs index](../README.md)

@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-60 — A neglect cycle with no path to a direct offender is
 // not slashed.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-60.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-60.
 // Theorem: T-12 reachability (`no_reachability_no_level2_slash`,
 // formal/rocq/slashing/theories/TwoLevelSlashing.v).
 // Reference: formal/sage/slashing/FINDINGS.md row 7 — "a cycle

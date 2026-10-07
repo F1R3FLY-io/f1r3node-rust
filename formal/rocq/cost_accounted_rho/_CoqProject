@@ -5,9 +5,9 @@
 # control a first-class citizen of computation.
 #
 # Source: cost-accounted-rho.pdf (Meredith)
-# Companion doc: docs/theory/cost-accounted-rho-verification.md
+# Companion doc: docs/casper/theory/cost-accounted-rho-verification.md
 #
-# 32 modules with kernel-checked theorem bodies. The development is
+# 132 modules with kernel-checked theorem bodies. The development is
 # parameterized over a single
 # hash_process function and 3 structural/cryptographic hypotheses on
 # it; all consensus-critical results (ca_cost_deterministic,
@@ -174,6 +174,12 @@ theories/MergeableChannelAccounting.v
 # Level 4a4: Bounded-memory runtime-budget refinement (depends on syntax)
 theories/RuntimeBudgetRefinement.v
 
+# Atomic RSpace COMM accounting refinement: only committed matches are
+# billable, producer/consumer trigger side and join arity do not alter the
+# single debit, rejection is state-atomic, and play/replay trace cost agrees.
+theories/AtomicCommAccounting.v
+theories/LocatedAuthoritySettlement.v
+
 # Level 4b: Fuel event decomposition (depends on CostAccountedReduction)
 theories/FuelEventDecomposition.v
 
@@ -213,6 +219,8 @@ theories/Replication.v
 # RuntimeBudgetRefinement; Qed-closed Map-in-MVar PoS-refinement +
 # FIFO drain conservation theorems).
 theories/MultiSignerRefinement.v
+theories/ThresholdEnvelopeAuthority.v
+theories/ReplayAdmissionPublication.v
 
 # Level 4a6: Publication-derived linear-resource calculus (depends on
 # CostAccountedSyntax). Mechanizes the mixed unrestricted/linear resource
@@ -240,10 +248,10 @@ theories/SyntacticSugar.v
 # Level 8: Use-case adequacy corollaries over the proof stack.
 theories/UseCaseAdequacy.v
 
-# Level 0d: Per-validator wallet @W_v naming (Cost-Accounted Rho Stage A;
-# DR-13). Depends only on RhoSyntax. Proves wallet-name injectivity in the
-# validator public key (distinct validators ⇒ distinct draw wallets) and
-# pairwise disjointness of the wallet / quarantine / funding-slot seed
+# Level 0d: Canonical SystemVault address naming and domain separation
+# (DR-13). Depends only on RhoSyntax. Proves address injectivity in the
+# validator public key (distinct validators ⇒ distinct vaults) and
+# pairwise disjointness of the SystemVault / quarantine / funding-slot seed
 # DOMAINS. Axiom- and hypothesis-free (concrete injective bit-encoder), so
 # its headline theorems are Closed under the global context.
 theories/WalletNaming.v
@@ -256,6 +264,11 @@ theories/WalletNaming.v
 # headline theorems are Closed under the global context.
 theories/MintingHalt.v
 
+# Level 4a1b: genesis-only initial allocation and ordinary epoch issuance.
+# The lifecycle model proves that bond, rebond, withdrawal, and slash do not
+# create custody. It also proves active, boundary, halt, and receipt guards.
+theories/BondIssuanceLifecycle.v
+
 # Level 4a8: Stage-D blessed Exchange — the conserving 1:1 token swap (spec
 # "Fee conversion" tex:3061-3084 / DR-4). Depends on TokenConservation +
 # MintingInjection. Proves per-channel + total conservation of the swap, the
@@ -263,6 +276,16 @@ theories/MintingHalt.v
 # step (fuel-non-increasing) never an exogenous mint. Concrete, so its headline
 # theorems are Closed under the global context.
 theories/Exchange.v
+
+# Level 4a9: the i64-bounded ledger (item 2505 re-modeling + item 2494 FV mirror).
+# Depends on TokenConservation + MintingInjection. Re-models the phlogiston pool
+# balance in Z bounded to the i64 non-negative range so the over/underflow branches
+# the checked_add/checked_sub runtime code guards are REPRESENTABLE and PROVEN
+# (conserved OR deterministically rejected), rather than domain-excluded by nat.
+# The nat conservation is recovered as the in-range restriction (checked_add_i64_
+# matches_nat), so no existing guarantee is weakened. Concrete; Closed under the
+# global context.
+theories/BoundedLedger.v
 
 # GSLT/OSLF capstone — discharges spec §6.1 (the calculus is a well-formed
 # GSLT: Types / Equations / Rewrites) and §7.7 (the OSLF-generated linear
@@ -370,6 +393,7 @@ theories/CAAdjunctions.v
 # whynot + the threshold quorum. Carrier-independent (LinearLogicResources holds
 # for native verbatim); re-exported here under native names.
 theories/CATypeDiscipline.v
+theories/CAOSLFSpatialModal.v
 
 # CL6 foundation — image-finiteness of the graded LTS: an explicit successor
 # enumeration graded_succ with graded_step S g S' <-> In S' (graded_succ S g).
@@ -410,6 +434,49 @@ theories/CAForceSeparation.v
 # compound funding key under regrouping, the reverse-currying iso, partition
 # invariance, and the no-weakening corollary. Up to Permutation (SAnd is free).
 theories/CAJoinConservation.v
+theories/AuthorityResourceValuation.v
+theories/PrepaidResourceDischarge.v
+theories/EligibleFundingAssignment.v
+theories/LexicographicMinimax.v
+theories/CompleteFundingCandidates.v
+theories/FundingDeficitCertificate.v
+theories/FundingResidualCut.v
+theories/FundingResidualTransfer.v
+theories/FundingResidualReachability.v
+theories/FundingResidualGraph.v
+theories/FundingParentPath.v
+theories/FundingNetworkAugmentation.v
+theories/FundingNetworkProjection.v
+theories/FundingGraphInitialization.v
+theories/FundingPathEncoding.v
+theories/FundingDiscovery.v
+theories/FundingSearchOutcome.v
+theories/FundingDomainCuts.v
+theories/FundingDomainWitness.v
+theories/FundingPairRealization.v
+theories/FundingFlowCompleteness.v
+theories/FundingBox.v
+theories/FundingMinimaxCertificate.v
+theories/FundingOptimalDomain.v
+theories/FundingCyclicTie.v
+theories/FundingCellBound.v
+theories/FundingWitnessPrefix.v
+theories/FundingPolicyComposition.v
+theories/FundingFamilyFeasibility.v
+theories/FundingFamilyPriority.v
+theories/FundingFamilyOptimization.v
+theories/FundingFamilyCanonicalization.v
+theories/FundingFamilyCursor.v
+theories/FundingFamilyCapture.v
+theories/NativeFundingSnapshot.v
+theories/NPayerFundingSolver.v
+theories/FundingIdentityOrder.v
+theories/FundingAdjacency.v
+theories/FundingAdjacencyCoverage.v
+theories/FundingNativeAdjacency.v
+theories/FundingFifoQueue.v
+theories/FundingFifoSearch.v
+theories/FundingParentEdges.v
 theories/CategoryInterface.v
 theories/CACategory.v
 theories/CACostFunctor.v
@@ -426,6 +493,75 @@ theories/CASimulationBicat.v
 theories/CAAdjunctionII.v
 theories/CAProperSubcategory.v
 theories/CAAbstractCapstone.v
+theories/EndToEndAuthority.v
+theories/AuthorityPresentation.v
+theories/ForcedRedexAccounting.v
+theories/StructuralAuthorityBound.v
+theories/CausalStackOrder.v
+theories/ParallelStackMaterialization.v
+theories/TransactionalAdmission.v
+theories/StateBoundCandidateFunding.v
+theories/SerializedNativeFrontier.v
+theories/NativeFrontierArrival.v
+theories/SelectedNativeWitness.v
+theories/RuntimeBoundAuthority.v
+theories/PayloadSortPersistence.v
+theories/SettlementMergeVisibility.v
+theories/RuntimeAuthorityScope.v
+theories/StackTransferConservation.v
+theories/OrderedStackMaterialization.v
+theories/LocatedStackConsumption.v
+theories/PersistentActivation.v
+theories/StateBoundFrontierExpansion.v
+theories/RotatingMonetaryAllocation.v
+theories/FeeCohortEligibility.v
+theories/FeeCursorTransition.v
+theories/ContributionCursor.v
+theories/FundingPriceConsent.v
+theories/FundingConsentHistory.v
+theories/PersistentFundingAllowance.v
+theories/ConsentedFundingAllowance.v
+theories/GradedStackWitness.v
+theories/SignedPhloControls.v
+theories/AdoptedPhloContext.v
+theories/EconomicFailureSummary.v
+theories/ObservedPhloFamilyMatch.v
+theories/SignedPhloFunding.v
+theories/SignedPhloCapture.v
+theories/SignedPhloWire.v
+theories/SignedPhloSchedule.v
+theories/SignedPhloControlsWire.v
+theories/SignedPhloResource.v
+theories/SignedPhloObligationKey.v
+theories/SignedPhloSource.v
+theories/SignedPhloIntentWire.v
+theories/NumericMergeAuthority.v
+theories/VaultBackedCostLifecycle.v
+theories/AtomicVaultSettlementRefinement.v
+theories/WalletFundedLollipop.v
+theories/FundingSlotBootstrap.v
+theories/PoSVaultAuthority.v
+theories/PhysicalSettlementWorklist.v
+theories/ReplayRootMaterialization.v
+theories/CanonicalRevRedemption.v
+theories/RedemptionCustodyAtomicity.v
+theories/RedemptionMintResumption.v
+theories/VaultBackedByteAccounting.v
+theories/PairedByteReceipts.v
+theories/StackIntroductionAtomicity.v
+theories/EvaluationTransactionIsolation.v
+theories/MergeableEvidenceAuthentication.v
+theories/BlockHeapLifecycle.v
+theories/MultiShardConcurrency.v
+theories/DeterministicParallelReduction.v
+theories/CountedDetachedBisimulation.v
+theories/CanonicalCustodyAliasing.v
+theories/EpochMintAtomicity.v
+theories/MintedEpochRetention.v
+theories/ValidatorEconomicsLifecycle.v
+theories/ValidatorEconomicsRefinement.v
+theories/ValidatorEconomicsReplay.v
+theories/CheckpointAdmissionRecertification.v
 
 # CA-P-178 — the generic nearness gate near(I,J) on the rho object
 # (continued-gslt-cost-v2 §"The nominal surface" + the R1/R2/R3 premise
@@ -450,3 +586,61 @@ theories/CAAmbientAuthority.v
 # no_leak_stack_inert. Depends on SignatureMonoid + WrappingSubjectReduction.
 # Axiom-free.
 theories/CASection.v
+theories/StateImportClosure.v
+theories/StateImportStorage.v
+theories/StateImportPage.v
+theories/StateImportCodec.v
+theories/StateImportCursor.v
+theories/StateImportTraversal.v
+theories/StateImportStack.v
+theories/StateImportExport.v
+theories/StateImportExecution.v
+theories/StateImportWire.v
+theories/StateImportCold.v
+theories/StateImportEncodedCold.v
+theories/StateImportOccurrence.v
+theories/StateImportOverlay.v
+theories/StateImportReceivedCold.v
+theories/StateImportObservations.v
+theories/StateImportHistoryObservations.v
+theories/StateImportReadTape.v
+theories/StateImportOwnedPage.v
+theories/StateImportScan.v
+theories/StateImportCheckpoint.v
+theories/StateImportRetry.v
+theories/CountedFundingProjection.v
+theories/AggregatedAcquisitionDemand.v
+theories/PrepaidReceiptStorage.v
+theories/NativeAttemptReplay.v
+theories/NativeIndexBounds.v
+theories/NativeOperationJournal.v
+theories/NativeReplayDirective.v
+theories/NativeTraceOwnership.v
+theories/NativeDatumRetirement.v
+theories/NativeCheckpointBacking.v
+theories/NativeSourceEncoding.v
+theories/NativeLockPreparation.v
+theories/CheckpointLocalHandoff.v
+theories/NativeBorrowedHistory.v
+theories/NativeReplayAccounting.v
+theories/NativeReplayAuthentication.v
+theories/NativeCandidateDigestCache.v
+theories/CandidateSourceOrder.v
+theories/ObservationReadCoverage.v
+theories/CandidateReadCoverage.v
+theories/ReplayAuthorityPrepareCoverage.v
+theories/ResultBackingCoverage.v
+theories/NativeDuplicatePrefilter.v
+theories/FreeMapExtraction.v
+theories/WalkerBlockCharge.v
+theories/IncrementalTreeBacking.v
+theories/OrderedLookupBound.v
+theories/NativeSharedReads.v
+theories/DetachedPathCompaction.v
+theories/NativePathTrie.v
+theories/OfferedOnlyActivation.v
+theories/GenesisVersionAdoption.v
+theories/NativePathDeltaCodec.v
+theories/MeteredComparison.v
+theories/QuoteExactOutput.v
+theories/PureEvalMeterSchedule.v

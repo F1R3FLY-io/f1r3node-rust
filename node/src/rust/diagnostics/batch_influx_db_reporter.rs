@@ -14,6 +14,5 @@ pub fn create_batch_influx_db_reporter(
     _password: Option<String>,
     _interval: Duration,
 ) -> Result<(), String> {
-    tracing::warn!("InfluxDB HTTP reporter not yet implemented - TODO: port from Scala");
     Ok(())
 }

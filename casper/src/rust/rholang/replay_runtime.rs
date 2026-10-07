@@ -8,35 +8,46 @@ use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    Event, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy, SystemDeployData,
 };
+use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
+use models::rust::cost_protocol_limits::{
+    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
+};
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::validator::Validator;
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
+use rspace_plus_plus::rspace::reporting_rspace::ReportPhase;
 
 use super::runtime::{RuntimeOps, SysEvalResult};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC,
     BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC,
-    BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC,
+    BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC, BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC,
+    BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC,
+    BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, BLOCK_REPLAY_PHASE_RESET_CALLS_METRIC,
     BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC,
-    BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
+    BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_WORK_METRIC, BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
+    BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC,
     BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC,
     BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC,
     BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use crate::rust::util::rholang::costacc::redeem_deploy::{
-    RedeemDeploy, RedemptionAuthorization, RedemptionOutcome,
-};
+use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::replay_failure::ReplayFailure;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
@@ -44,6 +55,129 @@ use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 
 pub struct ReplayRuntimeOps {
     pub runtime_ops: RuntimeOps,
+}
+
+struct OfferedReplayPreflight {
+    candidate_count: usize,
+}
+
+fn inspect_offered_replay_preflight(
+    start_hash: &StateHash,
+    terms: &[ProcessedUserDeploy],
+) -> Result<Option<OfferedReplayPreflight>, CasperError> {
+    let limits = offered_funded_v6_limits();
+    let mut count = 0usize;
+    for (index, term) in terms.iter().enumerate() {
+        let ProcessedUserDeploy::Offered(processed) = term else {
+            continue;
+        };
+        let host = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+        let evidence_bytes = processed.native_cost_evidence_bytes().len();
+        if evidence_bytes > limits.evidence.total_bytes
+            || processed.deploy_log().len() > limits.deploy_log_events
+        {
+            return Err(CasperError::RuntimeError(
+                "offered replay candidate exceeds protocol limits".to_string(),
+            ));
+        }
+        let estimated_allocation = evidence_bytes.checked_mul(8).ok_or_else(|| {
+            CasperError::RuntimeError("offered replay evidence allocation overflows".to_string())
+        })?;
+        for (dimension, amount) in [
+            (HostWorkDimension::VerificationBytes, evidence_bytes),
+            (HostWorkDimension::VerificationOperations, evidence_bytes),
+            (HostWorkDimension::SearchStateBytes, estimated_allocation),
+            (
+                HostWorkDimension::VerificationOperations,
+                processed.deploy_log().len(),
+            ),
+        ] {
+            host.reserve(
+                dimension,
+                HostWorkUnits::new(u64::try_from(amount).map_err(|_| {
+                    CasperError::RuntimeError("offered replay work overflows".to_string())
+                })?),
+            )
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        }
+        processed
+            .validate(limits.evidence)
+            .map_err(CasperError::RuntimeError)?;
+        let evidence = processed
+            .evidence(limits.evidence)
+            .map_err(CasperError::RuntimeError)?;
+        if index == 0 && evidence.original_funding_root.as_slice() != start_hash.as_ref() {
+            return Err(CasperError::RuntimeError(
+                "first offered deploy funding root differs from block pre-state".to_string(),
+            ));
+        }
+        count = count.checked_add(1).ok_or_else(|| {
+            CasperError::RuntimeError("offered replay candidate count overflows".to_string())
+        })?;
+    }
+    Ok((count > 0).then_some(OfferedReplayPreflight {
+        candidate_count: count,
+    }))
+}
+
+pub(crate) fn validate_offered_replay_preflight(
+    start_hash: &StateHash,
+    terms: &[ProcessedUserDeploy],
+) -> Result<bool, CasperError> {
+    Ok(inspect_offered_replay_preflight(start_hash, terms)?.is_some())
+}
+
+fn check_offered_log_completion(
+    expected: &[Event],
+    user_events: usize,
+    grant_events: usize,
+    settlement_events: &[Event],
+) -> Result<(), CasperError> {
+    let boundary = user_events.checked_add(grant_events).ok_or_else(|| {
+        CasperError::RuntimeError("offered replay event boundary overflows".to_string())
+    })?;
+    let tail = expected.get(boundary..).ok_or_else(|| {
+        CasperError::RuntimeError("offered replay event boundary exceeds deploy log".to_string())
+    })?;
+    if tail != settlement_events {
+        return Err(CasperError::RuntimeError(
+            "offered replay did not consume the complete settlement log".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn verify_offered_replay_completion(
+    processed: &OfferedProcessedDeploy,
+    user_events: usize,
+    grant_events: usize,
+    settlement_events: &[Event],
+    final_root: &[u8],
+    wallet_receipt: &[u8],
+    resource_rev: u128,
+    fee_rev: u128,
+) -> Result<(), CasperError> {
+    let evidence = processed
+        .evidence(offered_funded_v6_limits().evidence)
+        .map_err(CasperError::RuntimeError)?;
+    if final_root != evidence.post_state_root
+        || wallet_receipt != evidence.wallet_settlement
+        || resource_rev
+            != evidence
+                .resource_rev()
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+        || fee_rev != evidence.fee_rev
+    {
+        return Err(CasperError::RuntimeError(
+            "offered replay settlement differs from committed cost evidence".to_string(),
+        ));
+    }
+    check_offered_log_completion(
+        processed.deploy_log(),
+        user_events,
+        grant_events,
+        settlement_events,
+    )
 }
 
 impl ReplayRuntimeOps {
@@ -59,7 +193,7 @@ impl ReplayRuntimeOps {
         let drained = self.runtime_ops.runtime.take_event_log().await;
         if error_path {
             tracing::warn!(
-                target: "f1r3fly.casper.replay-rho-runtime",
+                target: "f1r3fly.casper.replay_rho_runtime",
                 "Discarded {} replay events during {} error path",
                 drained.len(),
                 phase
@@ -84,16 +218,48 @@ impl ReplayRuntimeOps {
         system_deploys: Vec<ProcessedSystemDeploy>,
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
-        is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
-        // Task #13a: shard-genesis spec-strict acceptance-gate mode, threaded
-        // verbatim into the replay-side recompute (same constant as play).
-        strict_funding_enforcement: bool,
-        // Task #13b: shard-genesis client funding-slot allocations, threaded
-        // verbatim onto the reconstructed block-1 close deploy (same constant as
-        // the play-side proposer used).
-        client_fuel_allocations: &[(Vec<u8>, i64)],
+        is_genesis: bool,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        self.replay_compute_state_envelopes(
+            start_hash,
+            terms.into_iter().map(ProcessedUserDeploy::Legacy).collect(),
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            is_genesis,
+        )
+        .await
+    }
+
+    pub async fn replay_compute_state_envelopes(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedUserDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        block_data: &BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
+    ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        if let Some(preflight) = inspect_offered_replay_preflight(start_hash, &terms)? {
+            return Err(CasperError::RuntimeError(format!(
+                "offered-funded replay of {} candidates requires complete independent native settlement validation",
+                preflight.candidate_count,
+            )));
+        }
         let invalid_blocks = invalid_blocks.unwrap_or_default();
+        if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
+            let entries: Vec<String> = invalid_blocks
+                .iter()
+                .map(|(bh, v)| {
+                    format!(
+                        "{}=>{}",
+                        hex::encode(&bh[..8.min(bh.len())]),
+                        hex::encode(&v[..8.min(v.len())])
+                    )
+                })
+                .collect();
+            tracing::debug!(target: "f1r3fly.casper.invalid_blocks", n = invalid_blocks.len(), seq = block_data.seq_num, "REPLAY compute_state invalid_blocks: [{}]", entries.join(", "));
+        }
 
         self.runtime_ops
             .runtime
@@ -104,16 +270,8 @@ impl ReplayRuntimeOps {
             .set_invalid_blocks(invalid_blocks)
             .await;
 
-        self.replay_deploys(
-            start_hash,
-            terms,
-            system_deploys,
-            !is_genesis,
-            block_data,
-            strict_funding_enforcement,
-            client_fuel_allocations,
-        )
-        .await
+        self.replay_deploys_envelopes(start_hash, terms, system_deploys, !is_genesis, block_data)
+            .await
     }
 
     /* REPLAY Deploy evaluators */
@@ -128,68 +286,55 @@ impl ReplayRuntimeOps {
         system_deploys: Vec<ProcessedSystemDeploy>,
         with_cost_accounting: bool,
         block_data: &BlockData,
-        // Task #13a: the shard-genesis spec-strict acceptance-gate mode
-        // (`CasperShardConf::strict_funding_enforcement`), threaded from the
-        // validation caller so the replay-side recompute + re-verification use
-        // the SAME constant as the play-side gate (replay determinism).
-        strict_funding_enforcement: bool,
-        // Task #13b: the shard-genesis client funding-slot allocations
-        // (`CasperShardConf::client_fuel_allocations`, lowered to raw pk bytes),
-        // threaded from the validation caller onto the reconstructed block-1
-        // `CloseBlockDeploy` so its `Σ⟦c⟧` seed is byte-identical to the play
-        // side. Same shard constant as the proposer used (replay determinism);
-        // empty on default shards.
-        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        self.replay_deploys_envelopes(
+            start_hash,
+            terms.into_iter().map(ProcessedUserDeploy::Legacy).collect(),
+            system_deploys,
+            with_cost_accounting,
+            block_data,
+        )
+        .await
+    }
+
+    pub async fn replay_deploys_envelopes(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedUserDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        with_cost_accounting: bool,
+        block_data: &BlockData,
+    ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        if let Some(preflight) = inspect_offered_replay_preflight(start_hash, &terms)? {
+            return Err(CasperError::RuntimeError(format!(
+                "offered-funded replay of {} candidates requires complete independent native settlement validation",
+                preflight.candidate_count,
+            )));
+        }
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", start_hash = %hex::encode(&start_hash[..8.min(start_hash.len())]), n_user = terms.len(), n_system = system_deploys.len(), "replay.replay_deploys ENTER (reset to pre-state, then replay deploys vs recorded COMMs)");
+        metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(terms.len() as f64);
+        metrics::histogram!(BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_WORK_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(system_deploys.len() as f64);
         // Time reset phase - Span[F].traceI("reset") from Scala
         let reset_start = Instant::now();
         self.runtime_ops
             .runtime
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
             .await?;
+        metrics::counter!(BLOCK_REPLAY_PHASE_RESET_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
         metrics::histogram!(BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(reset_start.elapsed().as_secs_f64());
 
-        // ── WD-D2 replay-side acceptance recompute (CONSENSUS-CRITICAL) ──────
-        // After the reset (the live store is now at `start_hash`, the block's
-        // pre-state) and BEFORE any deploy executes, recompute the settlement-
-        // debit map from `terms` (= `block.body.deploys`, the ADMITTED set) and
-        // re-verify admission. The debit map is fed to `post_eval_replay` so the
-        // close-block settlement debit is byte-identical to the play side; the
-        // re-verification asserts that for every PRESENT pool the admitted
-        // cumulative Δ_s does not exceed Σ_s (an over-admitting proposer ⇒
-        // double-spend, TM-CA-153). The reject direction is intentionally NOT
-        // re-derived here (rejected-deploy bodies are not in the block, only
-        // sigs) — a wrongly-rejected fundable deploy changes the admitted set and
-        // is caught by the post-state root check (wd-d2 §D2.4(b)).
-        // Cost-Accounted Rho WD-D2 + Stage D: RECOMPUTE the per-client COST debits
-        // AND the conserving FEE carve from the block alone — a single
-        // `recompute_and_verify_admission` pass over `terms` (= `block.body.deploys`,
-        // the ADMITTED set) that re-verifies admission. The COST debits feed the
-        // close-block settlement; the FEE debits (per-client, against each post-cost
-        // `Σ⟦c⟧`) build the FeeExtract carve credited to the proposing validator
-        // (`block_data.sender`). ONLY admitted CLIENT deploys are charged — the
-        // proposer's gate-exempt dummies carve no fee. Neither is serialized into
-        // the block; recomputing them here makes the closeBlock settlement debit +
-        // F_v carve byte-identical to the play side. Genesis / non-cost-accounted
-        // replay: no gate ran ⇒ empty debits, no carve.
-        let (replay_debits, replay_fee_carve) = if with_cost_accounting {
-            let recomputed = self
-                .recompute_and_verify_admission(&terms, strict_funding_enforcement)
-                .await?;
-            let fee_carve = crate::rust::util::rholang::acceptance::fee_carve(
-                block_data.sender.bytes.to_vec(),
-                recomputed.fee,
-            );
-            (recomputed.settlement, fee_carve)
-        } else {
-            (std::collections::BTreeMap::new(), None)
-        };
-
         // Time user deploys phase
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_user = terms.len(), "replay.replay_deploys: USER-deploy phase");
         let user_deploys_start = Instant::now();
         let mut deploy_results = Vec::new();
         for term in terms {
+            let ProcessedUserDeploy::Legacy(term) = term else {
+                unreachable!("offered replay rejected before state reset")
+            };
             let result = self.replay_deploy_e(with_cost_accounting, &term).await?;
             deploy_results.push(result);
         }
@@ -197,17 +342,12 @@ impl ReplayRuntimeOps {
             .record(user_deploys_start.elapsed().as_secs_f64());
 
         // Time system deploys phase
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_system = system_deploys.len(), "replay.replay_deploys: SYSTEM-deploy phase (closeBlock etc.)");
         let system_deploys_start = Instant::now();
         let mut system_deploy_results = Vec::new();
         for system_deploy in system_deploys {
             let result = self
-                .replay_block_system_deploy(
-                    block_data,
-                    &system_deploy,
-                    &replay_debits,
-                    &replay_fee_carve,
-                    client_fuel_allocations,
-                )
+                .replay_block_system_deploy(block_data, &system_deploy)
                 .await?;
             system_deploy_results.push(result);
         }
@@ -220,87 +360,16 @@ impl ReplayRuntimeOps {
 
         // Time create-checkpoint phase - Span[F].traceI("create-checkpoint") from Scala
         let checkpoint_start = Instant::now();
-        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "create-checkpoint-started");
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "create-checkpoint-started");
         let checkpoint = self.runtime_ops.runtime.create_checkpoint().await;
-        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "create-checkpoint-finished");
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "create-checkpoint-finished");
+        metrics::counter!(BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
         metrics::histogram!(BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(checkpoint_start.elapsed().as_secs_f64());
 
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", computed_root = %hex::encode(&checkpoint.root.bytes()[..8.min(checkpoint.root.bytes().len())]), "replay.replay_deploys DONE (computed final replay root)");
         Ok((checkpoint.root, all_mergeable))
-    }
-
-    /// WD-D2 replay-side acceptance recompute + verification (CONSENSUS-CRITICAL).
-    ///
-    /// Reconstructs the ADMITTED deploy envelopes from `terms`
-    /// (= `block.body.deploys`) via the SAME `ProcessedDeploy::to_cosigned` the
-    /// runtime install uses, recomputes the per-pool settlement-debit map from
-    /// the live store (already `reset` to the block's pre-state) via
-    /// [`acceptance::recompute_settlement_debits`], and re-verifies admission:
-    /// for every PRESENT pool, the admitted cumulative `Σ Δ_s` (= the recomputed
-    /// debit) MUST be `≤ Σ_s` (the pre-state balance). A proposer that admitted
-    /// more than a pool funds (a double-spend / oversubscription, TM-CA-153)
-    /// fails this check with a [`ReplayFailure::ReplayAdmissionMismatch`] — the
-    /// replay-side counterpart of the play-side in-pass residual.
-    ///
-    /// Returns the recomputed COST + FEE debits (a [`RecomputedDebits`]), fed to
-    /// `post_eval_replay` so the close-block settlement debit AND the conserving
-    /// FeeExtract carve are byte-identical to the play side.
-    async fn recompute_and_verify_admission(
-        &self,
-        terms: &[ProcessedDeploy],
-        strict_funding_enforcement: bool,
-    ) -> Result<crate::rust::util::rholang::acceptance::RecomputedDebits, CasperError> {
-        // Reconstruct the admitted envelopes (canonical pk-ascending per signer,
-        // identical to the play-side reconstruction and the runtime install).
-        let mut admitted = Vec::with_capacity(terms.len());
-        for term in terms {
-            admitted.push(term.to_cosigned().map_err(CasperError::RuntimeError)?);
-        }
-
-        let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
-            runtime_ops: &self.runtime_ops,
-        };
-        // Task #13a: thread the shard-genesis strict flag (same constant as the
-        // play side) into the recompute. Under `strict`, the recompute ALSO
-        // re-verifies that no admitted `Δ > 0` deploy targets an absent pool
-        // (a proposer that bypassed the spec-strict gate ⇒ invalid block).
-        let recomputed = crate::rust::util::rholang::acceptance::recompute_settlement_debits(
-            admitted,
-            &reader,
-            strict_funding_enforcement,
-        )
-        .await?;
-
-        // Re-verify admission: each PRESENT pool's admitted ΣΔ_s ≤ Σ_s. The
-        // recompute already restricted `debits` to present pools, so reading the
-        // present balance here and comparing catches an over-admitting proposer
-        // before the close-block settlement debit's `checked_sub` would (clearer
-        // diagnostic + fails the block at the gate boundary, not deep in
-        // closeBlock).
-        for (sig_key, debit) in &recomputed.settlement {
-            let balance =
-                crate::rust::util::rholang::supply::read_balance(&self.runtime_ops, &debit.channel)
-                    .await;
-            if debit.amount > balance {
-                return Err(CasperError::ReplayFailure(
-                    ReplayFailure::replay_admission_mismatch(
-                        terms.len(),
-                        terms.len(),
-                        0,
-                        0,
-                        format!(
-                            "admitted ΣΔ_s={} exceeds Σ_s={} for pool {} — proposer over-admitted \
-                             (double-spend / oversubscription)",
-                            debit.amount,
-                            balance,
-                            hex::encode(sig_key)
-                        ),
-                    ),
-                ));
-            }
-        }
-
-        Ok(recomputed)
     }
 
     /**
@@ -328,7 +397,39 @@ impl ReplayRuntimeOps {
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
 
+        let dsig = if tracing::enabled!(target: "f1r3fly.casper.replay_rho_runtime", tracing::Level::DEBUG)
+        {
+            hex::encode(
+                &processed_deploy.identity_bytes()
+                    [..8.min(processed_deploy.identity_bytes().len())],
+            )
+        } else {
+            String::new()
+        };
+        tracing::debug!(
+            target: "f1r3fly.casper.replay_rho_runtime",
+            deploy = %dsig,
+            "replay.deploy ENTER (rig recorded COMMs)"
+        );
         let rig_start = Instant::now();
+        // Set the initial reporting phase before rig so the recorded
+        // (rigged) events are tagged with the deploy's first phase,
+        // matching the old positional batch shape where rig and
+        // precharge shared the first segment. Cost-accounted deploys
+        // start in Precharge, so the rig segment is tagged PRECHARGE
+        // and dropped wholesale by the marked path in
+        // `extract_transfers_from_report`. Genesis (no cost accounting)
+        // starts in User. The trait default is a no-op on plain replay
+        // spaces.
+        let initial_phase = if with_cost_accounting {
+            ReportPhase::Precharge
+        } else {
+            ReportPhase::User
+        };
+        self.runtime_ops
+            .runtime
+            .set_report_phase(initial_phase)
+            .await;
         self.rig(processed_deploy).await?;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(rig_start.elapsed().as_secs_f64());
@@ -340,9 +441,13 @@ impl ReplayRuntimeOps {
             self.process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
                 .await?
         };
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, eval_successful, "replay.deploy eval done");
 
         let check_start = Instant::now();
-        self.check_replay_data_with_fix(eval_successful).await?;
+        if let Err(e) = self.check_replay_data_with_fix(eval_successful).await {
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, "replay.deploy check_replay_data FAILED -> {}", e);
+            return Err(e.into());
+        }
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(check_start.elapsed().as_secs_f64());
 
@@ -358,41 +463,112 @@ impl ReplayRuntimeOps {
         Ok(channels_data)
     }
 
-    /// Replay path mirror of [`RuntimeOps::play_deploy_with_cost_accounting_cosigned`].
-    ///
-    /// D3 (DR-9, OD-1/OD-2): the escrow pre-charge / refund replay fan-out is
-    /// REMOVED. A deploy's fundedness was settled once against Σ⟦s⟧ by the
-    /// block's acceptance gate (recomputed deterministically on replay by
-    /// `recompute_settlement_debits`); there is no per-cosigner charge/refund to
-    /// re-run here. Replay simply re-evaluates the user deploy and asserts the
-    /// per-COMM cost matches the stored `processed_deploy.cost` (the
-    /// `replay_cost_mismatch` consensus check inside [`Self::run_user_deploy`]).
-    /// The user deploy runs UNMETERED-FOR-LIVENESS via `evaluate` (which the
-    /// play path's `evaluate_cosigned` mirrors with an `unsafe_max` budget), so
-    /// play and replay observe the same per-COMM `total_cost()`.
     async fn process_deploy_with_cost_accounting(
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
+        // The processed record has already verified its complete flat signer
+        // envelope. The historical runtime derives body-context seeds from
+        // the primary signed view; it must not use this view as payer authority.
+        let deploy = processed_deploy.legacy_execution_projection();
+        let mut pre_charge_deploy = PreChargeDeploy {
+            charge_amount: deploy.data.total_phlo_charge(),
+            pk: deploy.pk.clone(),
+            rand: system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy),
+        };
+
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-started");
+        let precharge_start = Instant::now();
+        // The precharge phase was set before rig in `replay_deploy_e`.
+        // No marker call is needed here.
+        let precharge_result = self
+            .replay_system_deploy_internal(
+                &mut pre_charge_deploy,
+                &processed_deploy.system_deploy_error,
+            )
+            .await;
+
+        match precharge_result {
+            Ok((_, mut system_eval_result)) => {
+                let discard_start = Instant::now();
+                self.discard_event_log("precharge", false).await;
+                metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "precharge")
+                    .record(discard_start.elapsed().as_secs_f64());
+                if system_eval_result.errors.is_empty() {
+                    mergeable_channels.extend(system_eval_result.mergeable.drain());
+                }
+                tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-done");
+            }
+            Err(err) => {
+                self.discard_event_log("precharge", true).await;
+                return Err(err);
+            }
+        };
+        metrics::histogram!(BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(precharge_start.elapsed().as_secs_f64());
+
         let eval_successful = if processed_deploy.system_deploy_error.is_none() {
-            // Re-evaluate the user deploy. `run_user_deploy` owns the
-            // soft-checkpoint rollback for a failed deploy and the per-COMM
-            // `replay_cost_mismatch` consensus check.
+            // Mark the user phase. This flushes the precharge segment
+            // (tagging it `Precharge`) and sets the phase for the user
+            // deploy's events.
+            self.runtime_ops
+                .runtime
+                .set_report_phase(ReportPhase::User)
+                .await;
+            // Run the user deploy in a transaction
             let evaluate_start = Instant::now();
             let (_, successful) = self
                 .run_user_deploy(processed_deploy, mergeable_channels)
                 .await?;
             metrics::histogram!(BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(evaluate_start.elapsed().as_secs_f64());
-            tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "deploy-eval-done");
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "deploy-eval-done");
+
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "refund-started");
+            let refund_start = Instant::now();
+            let mut refund_deploy = RefundDeploy {
+                refund_amount: processed_deploy.refund_amount(),
+                rand: system_deploy_util::generate_refund_deploy_random_seed(&deploy),
+            };
+
+            // Mark the refund phase. This flushes the user segment
+            // (tagging it `User`) and sets the phase for the refund's
+            // events.
+            self.runtime_ops
+                .runtime
+                .set_report_phase(ReportPhase::Refund)
+                .await;
+            let refund_result = self
+                .replay_system_deploy_internal(&mut refund_deploy, &None)
+                .await;
+
+            match refund_result {
+                Ok((_, mut system_eval_result)) => {
+                    let discard_start = Instant::now();
+                    self.discard_event_log("refund", false).await;
+                    metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "refund")
+                        .record(discard_start.elapsed().as_secs_f64());
+                    if system_eval_result.errors.is_empty() {
+                        mergeable_channels.extend(system_eval_result.mergeable.drain());
+                    }
+                    tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "refund-done");
+                }
+                Err(err) => {
+                    self.discard_event_log("refund", true).await;
+                    return Err(err);
+                }
+            }
+            metrics::histogram!(BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(refund_start.elapsed().as_secs_f64());
+
             successful
         } else {
             // If there was an expected failure in the system deploy, skip user deploy execution
             true
         };
 
-        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "deploy-done");
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "deploy-done");
         Ok(eval_successful)
     }
 
@@ -401,6 +577,9 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
+        // Genesis deploys run without cost accounting, so there is no
+        // precharge or refund phase. The user phase was set before rig
+        // in `replay_deploy_e`. No marker call is needed here.
         self.run_user_deploy(processed_deploy, mergeable_channels)
             .await
             .map(|(_, eval_successful)| eval_successful)
@@ -415,10 +594,11 @@ impl ReplayRuntimeOps {
         // so pre-charge context remains available for refund replay.
         let fallback = self.runtime_ops.runtime.create_soft_checkpoint().await;
 
-        let deploy_data = SystemProcessDeployData::from_deploy(&processed_deploy.deploy);
+        let deploy = processed_deploy.legacy_execution_projection();
+        let deploy_data = SystemProcessDeployData::from_deploy(&deploy);
         self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
-        let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
+        let mut user_eval_result = self.runtime_ops.evaluate(&deploy).await?;
         let discard_start = Instant::now();
         self.discard_event_log("user-deploy", false).await;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "user-deploy")
@@ -428,7 +608,7 @@ impl ReplayRuntimeOps {
 
         if !eval_successful {
             interpreter_util::print_deploy_errors(
-                &processed_deploy.deploy.sig,
+                processed_deploy.identity_bytes(),
                 &user_eval_result.errors,
             );
             self.runtime_ops
@@ -455,11 +635,6 @@ impl ReplayRuntimeOps {
             ));
         }
 
-        // The per-operation cost-trace digest is intentionally NOT compared
-        // in replay: it is diagnostic-only, not a consensus quantity. Consensus
-        // cost integrity is the conserved total cost (compared above) plus the
-        // failed/OOP status (compared above) plus the post-state hash. See the
-        // cost-accounting threat model (TM-CA-151) and the design doc.
         Ok((user_eval_result, eval_successful))
     }
 
@@ -477,18 +652,6 @@ impl ReplayRuntimeOps {
         &mut self,
         block_data: &BlockData,
         processed_system_deploy: &ProcessedSystemDeploy,
-        settlement_debits: &std::collections::BTreeMap<
-            crate::rust::util::rholang::acceptance::SigKey,
-            crate::rust::util::rholang::acceptance::SettlementDebit,
-        >,
-        fee_carve: &Option<crate::rust::util::rholang::acceptance::FeeCarve>,
-        // Task #13b: the genesis client funding-slot allocations
-        // `[(client_pk_bytes, amount)]` reconstructed from the shard-genesis conf
-        // (the SAME constant the play-side proposer used), threaded onto the
-        // reconstructed `CloseBlockDeploy` so its block-1 `Σ⟦c⟧` seed is
-        // byte-identical to play. Empty on default shards (back-compat) and on
-        // every non-block-1 block (the credit is gated on `block_number == 1`).
-        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let system_deploy = match processed_system_deploy {
             ProcessedSystemDeploy::Succeeded {
@@ -503,7 +666,7 @@ impl ReplayRuntimeOps {
                 issuer_public_key,
                 target_activation_epoch,
             } => {
-                let slash_deploy = SlashDeploy {
+                let mut slash_deploy = SlashDeploy {
                     invalid_block_hash: invalid_block_hash.clone(),
                     pk: issuer_public_key.clone(),
                     target_activation_epoch: *target_activation_epoch,
@@ -514,16 +677,9 @@ impl ReplayRuntimeOps {
                     ),
                 };
 
-                // Capture the pre-slash store root for the Stage-C supply
-                // `Σ⟦v⟧`-zero context (diagnostics / mismatch reporting); the
-                // supply read/write themselves target the live store.
-                let pre_state_hash: StateHash =
-                    self.runtime_ops.runtime.get_root().await.to_bytes_prost();
-
                 self.rig_system_deploy(processed_system_deploy).await?;
-                let mut slash_deploy_mut = slash_deploy.clone();
                 let (_, eval_result) = self
-                    .replay_system_deploy_internal(&mut slash_deploy_mut, &None)
+                    .replay_system_deploy_internal(&mut slash_deploy, &None)
                     .await?;
 
                 self.discard_event_log("slash-system-deploy", false).await;
@@ -539,167 +695,28 @@ impl ReplayRuntimeOps {
 
                 self.check_replay_data_with_fix(eval_result.errors.is_empty())
                     .await?;
-
-                // Cost-Accounted Rho Stage-C (Decision 4 + 6.3): zero the
-                // offender's supply pool `Σ⟦offender⟧`, SYMMETRIC with the
-                // play-side `post_eval` auto-call in
-                // `RuntimeOps::play_system_deploy`. The offender pk is the one
-                // the Rholang `slash` contract published on `sys:casper:slashedPk`
-                // (re-resolved from the SAME `invalid_block_hash` on replay), so
-                // the zeroed datum is byte-identical play↔replay. Run AFTER the
-                // rig/replay-data check so the bare supply-produce event never
-                // enters the rigged event set; the write is captured by the final
-                // replay checkpoint. The replay path enables the
-                // `ReplaySupplyMismatch` write-readback guard.
-                slash_deploy
-                    .post_eval_replay(&mut self.runtime_ops, block_data, &pre_state_hash)
-                    .await?;
-
                 Ok(map)
             }
 
             SystemDeployData::CloseBlockSystemDeployData => {
-                let close_block_deploy = CloseBlockDeploy {
+                let mut close_block_deploy = CloseBlockDeploy {
                     initial_rand:
                         system_deploy_util::generate_close_deploy_random_seed_from_validator(
                             block_data.sender.bytes.clone(),
                             block_data.seq_num,
                         ),
-                    // Replay does NOT thread the play-side debit map (debits are
-                    // not serialized into the block); the settlement debit is
-                    // applied on replay via the RECOMPUTED map fed directly to
-                    // `post_eval_replay` (WD-D2, replay symmetry). The struct
-                    // field is left empty here.
-                    settlement_debits: Default::default(),
-                    // Cost-Accounted Rho Stage D: the conserving FeeExtract carve
-                    // RECOMPUTED in `replay_deploys` from `block.body.deploys` (the
-                    // per-client fee debits against each post-cost `Σ⟦c⟧`) + the
-                    // proposing validator (`block_data.sender`) as the recipient.
-                    // Threaded here so the closeBlock carve (client `Σ⟦c⟧` → `F_v`)
-                    // is byte-identical play↔replay.
-                    fee_carve: fee_carve.clone(),
-                    // Task #13b: the genesis client funding-slot allocations,
-                    // reconstructed from the shard-genesis conf (the SAME constant
-                    // the play-side proposer read). `dual_write_supply` credits
-                    // each `Σ⟦c⟧` ONLY at the block-1 close (gated on
-                    // `block_number == 1`); the per-allocation `random_state` is
-                    // derived from this close deploy's replay-stable `initial_rand`
-                    // advanced by the SORTED-pk index — so the block-1 `Σ⟦c⟧` seed
-                    // is byte-identical to the play side. Empty ⇒ no credit.
-                    client_fuel_allocations: client_fuel_allocations.to_vec(),
                 };
-
-                // Capture the pre-close store root for the Stage-B supply
-                // dual-write context (diagnostics / mismatch reporting); the
-                // supply read/write themselves target the live store.
-                let pre_state_hash: StateHash =
-                    self.runtime_ops.runtime.get_root().await.to_bytes_prost();
 
                 self.rig_system_deploy(processed_system_deploy).await?;
 
-                // (Stage D: the `fee_carve` set on `close_block_deploy` above —
-                // RECOMPUTED from `block.body.deploys` — is read by `post_eval_replay`
-                // below for the byte-identical conserving FeeExtract carve: each
-                // client's post-cost `Σ⟦c⟧` is debited and the total credited to the
-                // proposer's Rust fee pool `F_v`. No pre-eval Rholang seeding is
-                // involved. The protocol fee→`Σ⟦v⟧` conversion is removed (F-C).)
-                let mut close_block_deploy_mut = close_block_deploy.clone();
                 let (_, eval_result) = self
-                    .replay_system_deploy_internal(&mut close_block_deploy_mut, &None)
+                    .replay_system_deploy_internal(&mut close_block_deploy, &None)
                     .await?;
 
                 self.discard_event_log("close-block-system-deploy", false)
                     .await;
 
                 // Time checkpoint-mergeable operation for close block deploy
-                let checkpoint_mergeable_start = Instant::now();
-                let map = self
-                    .runtime_ops
-                    .get_number_channels_data(&eval_result.mergeable)
-                    .await?;
-                metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .record(checkpoint_mergeable_start.elapsed().as_secs_f64());
-
-                self.check_replay_data_with_fix(eval_result.errors.is_empty())
-                    .await?;
-
-                // Cost-Accounted Rho Stage B (Decision 2.5/6.3) + WD-D2: mirror
-                // the closeBlock-published epoch/genesis-block-1 mint into `Σ⟦v⟧`
-                // AND apply the WD-D2 settlement debits (`post Σ⟦s⟧ = pre − ΣΔ`),
-                // SYMMETRIC with the play-side `post_eval` in
-                // `RuntimeOps::play_system_deploy`. The debit map is the one
-                // RECOMPUTED in `replay_deploys` from `block.body.deploys` (the
-                // play-side `settlement_debits` are not serialized into the
-                // block) — same map ⇒ byte-identical writes. Run AFTER the
-                // rig/replay-data check so the bare supply-produce events never
-                // enter the rigged event set; the writes are captured by the
-                // final replay checkpoint in `replay_deploys`. The replay path
-                // enables the `ReplaySupplyMismatch` write-readback guard.
-                close_block_deploy
-                    .post_eval_replay(
-                        &mut self.runtime_ops,
-                        block_data,
-                        &pre_state_hash,
-                        settlement_debits,
-                    )
-                    .await?;
-
-                Ok(map)
-            }
-
-            SystemDeployData::Redeem {
-                validator_pk,
-                outcome_tag,
-                penalty,
-                pos_multi_sig_public_keys,
-                pos_multi_sig_quorum,
-                authorizations,
-            } => {
-                // Cost-Accounted Rho Stage-C redemption replay (DR-7/DR-12).
-                // Reconstruct the RedeemDeploy from the block-body authorization
-                // material and re-run it. The DR-12 multisig-quorum verification
-                // (RedeemDeploy::verify_multisig_quorum, invoked from `env()`) is a
-                // DETERMINISTIC pure function of these fields, so replay re-derives
-                // the SAME `multiSigVerified` verdict as play — and the Rholang
-                // state transition replays via `replay_system_deploy_internal`.
-                // Redemption has NO supply `post_eval` (writes neither Σ⟦v⟧ nor
-                // @W_v), so there is no post-eval call here.
-                let outcome = match outcome_tag.as_str() {
-                    "Vindicated" => RedemptionOutcome::Vindicated,
-                    "Guilty" => RedemptionOutcome::Guilty { penalty: *penalty },
-                    "Burned" => RedemptionOutcome::Burned,
-                    other => {
-                        return Err(CasperError::ReplayFailure(ReplayFailure::internal_error(
-                            format!("unknown redemption outcome tag on replay: {}", other),
-                        )));
-                    }
-                };
-                let mut redeem_deploy = RedeemDeploy {
-                    validator_pk: validator_pk.to_vec(),
-                    outcome,
-                    pos_multi_sig_public_keys: pos_multi_sig_public_keys.clone(),
-                    pos_multi_sig_quorum: *pos_multi_sig_quorum,
-                    authorizations: authorizations
-                        .iter()
-                        .map(|a| RedemptionAuthorization {
-                            public_key: a.public_key.to_vec(),
-                            signature: a.signature.to_vec(),
-                        })
-                        .collect(),
-                    initial_rand: system_deploy_util::generate_redeem_deploy_random_seed(
-                        block_data.sender.bytes.clone(),
-                        block_data.seq_num,
-                        outcome_tag,
-                    ),
-                };
-
-                self.rig_system_deploy(processed_system_deploy).await?;
-                let (_, eval_result) = self
-                    .replay_system_deploy_internal(&mut redeem_deploy, &None)
-                    .await?;
-
-                self.discard_event_log("redeem-system-deploy", false).await;
-
                 let checkpoint_mergeable_start = Instant::now();
                 let map = self
                     .runtime_ops
@@ -857,31 +874,61 @@ impl ReplayRuntimeOps {
 
     pub async fn check_replay_data_with_fix(
         &self,
-        // https://f1r3fly.atlassian.net/browse/RCHAIN-3505
         eval_successful: bool,
     ) -> Result<(), ReplayFailure> {
         let check_start = Instant::now();
         let result = match self.runtime_ops.runtime.check_replay_data().await {
             Ok(()) => Ok(()),
-            Err(err) => {
-                let err_msg = err.to_string();
-                if err_msg.contains("unused") && err_msg.contains("COMM") {
-                    if !eval_successful {
-                        // Suppress UnusedCOMMEvent when eval was not successful
-                        Ok(())
-                    } else {
-                        Err(ReplayFailure::unused_comm_event(err_msg))
-                    }
-                } else {
-                    Err(ReplayFailure::internal_error(format!(
-                        "Replay check failed: {}",
-                        err
-                    )))
-                }
+            // A deploy whose evaluation failed is allowed to leave recorded COMM events
+            // unconsumed: the rollback restores the hot store, event log and produce counter, but
+            // not the replay-data multimap, so leftover entries are expected rather than a
+            // divergence. Matched on the variant — an earlier form compared rendered text and
+            // never fired, because the message renders "Unused COMM event" while the guard tested
+            // for a lowercase "unused".
+            Err(InterpreterError::RSpaceError(RSpaceError::UnusedCommEvent { .. }))
+                if !eval_successful =>
+            {
+                Ok(())
             }
+            Err(err @ InterpreterError::RSpaceError(RSpaceError::UnusedCommEvent { .. })) => {
+                Err(ReplayFailure::unused_comm_event(err.to_string()))
+            }
+            Err(err) => Err(ReplayFailure::internal_error(format!(
+                "Replay check failed: {}",
+                err
+            ))),
         };
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(check_start.elapsed().as_secs_f64());
         result
+    }
+}
+
+#[cfg(test)]
+mod offered_replay_tests {
+    use models::rust::casper::protocol::casper_message::ProduceEvent;
+
+    use super::*;
+
+    fn event(value: u8) -> Event {
+        Event::Produce(ProduceEvent {
+            channels_hash: vec![value].into(),
+            hash: Default::default(),
+            persistent: false,
+            times_repeated: 0,
+            is_deterministic: true,
+            output_value: Vec::new(),
+            failed: false,
+        })
+    }
+
+    #[test]
+    fn offered_replay_completion_requires_exact_settlement_suffix() {
+        let expected = vec![event(1), event(2), event(3)];
+        assert!(check_offered_log_completion(&expected, 1, 1, &expected[2..]).is_ok());
+        assert!(check_offered_log_completion(&expected, 1, 1, &[]).is_err());
+        assert!(check_offered_log_completion(&expected, 1, 1, &[event(2)]).is_err());
+        assert!(check_offered_log_completion(&expected, 2, 2, &[]).is_err());
+        assert!(check_offered_log_completion(&expected, usize::MAX, 1, &[]).is_err());
     }
 }

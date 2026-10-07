@@ -132,6 +132,8 @@ pub fn generate_par(depth: usize) -> BoxedStrategy<Par> {
             locally_free: vec![],
             connective_used: false,
             unforgeables: vec![],
+            cost_signed_terms: vec![],
+            cost_stacks: vec![],
         })
         .boxed();
     }
@@ -170,6 +172,8 @@ pub fn generate_par(depth: usize) -> BoxedStrategy<Par> {
                 locally_free,
                 connective_used,
                 unforgeables: vec![],
+                cost_signed_terms: vec![],
+                cost_stacks: vec![],
             },
         )
         .boxed()
@@ -246,6 +250,7 @@ pub fn generate_receive(depth: usize) -> BoxedStrategy<Receive> {
                     source: Some(source),
                     remainder,
                     free_count,
+                    cost_signature: None,
                 }),
             0..=2,
         ),

@@ -1,6 +1,6 @@
 // UC-45 — Replay attack on a slash deploy.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-45.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-45.
 // Theorems: T-Idem, T-9.8.
 // Reference: design/06-proposing-and-effect.md §6.5.
 //

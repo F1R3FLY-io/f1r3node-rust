@@ -1,0 +1,117 @@
+' Sequence Diagram 02 — Estimator::tips deterministic fork-choice pipeline.
+'
+' The tips() call chain in casper/src/rust/estimator.rs, in order:
+'   collect latest_message_hashes
+'   → filter invalid latest messages (T-10; slashed ⟹ zero weight)
+'   → calculate_lca (with the LATEST_MESSAGE_MAX_DEPTH = 1000 depth filter)
+'   → build_scores_map (BFS down each supporting chain to the LCA, += weight)
+'   → rank_forkchoices (replace block with scored children; sort score desc,
+'                       hash asc; recurse to still_same)
+'   → filter_deep_parents (max_parent_depth)
+'   → take(max_number_of_parents)
+'
+' Every step is a PURE function of (DAG, latest_messages), so all honest nodes
+' compute a node-identical ForkChoice (Rocq fork_choice_determinism_correct).
+'
+' Render:
+'   plantuml -tsvg docs/theory/fork-choice/diagrams/02-seq-tips-pipeline.puml
+
+@startuml 02-seq-tips-pipeline
+!theme plain
+
+skinparam sequence {
+  ArrowColor            #444444
+  LifeLineBorderColor   #666666
+  LifeLineBackgroundColor #F5F5F5
+  ParticipantBorderColor #333333
+  ParticipantFontName   "monospace"
+  ParticipantFontSize   10
+  NoteBackgroundColor   #FFF7E0
+  NoteBorderColor       #E65100
+}
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Estimator::tips pipeline (deterministic fork-choice)
+
+' Participant color legend:
+'   Estimator      = gold      (#FFE082)  the pure fork-choice driver
+'   DAG            = sky blue  (#BBDEFB)  block metadata + children reads
+'   Clique/bonds   = mint      (#C8E6C9)  bonded-weight source
+'
+' Arrow color legend:
+'   blue   (#1565C0) = read query to the DAG
+'   green  (#2E7D32) = bonded-weight lookup
+'   gray   (#546E7A) = self-step (pure transform)
+'   orange (#E65100) = final result
+
+participant "Estimator" as EST #FFE082
+participant "DAG" as DAG #BBDEFB
+participant "Clique / bonds" as BND #C8E6C9
+
+activate EST
+
+EST -[#1565C0]> DAG : latest_message_hashes()
+activate DAG
+DAG --[#1565C0]> EST : validator ▶ latest hash
+deactivate DAG
+
+EST -[#1565C0]> DAG : invalid_latest_messages_from_hashes(..)
+activate DAG
+DAG --[#1565C0]> EST : invalid set (T-10)
+deactivate DAG
+note over EST
+  retain: DROP invalid validators
+  slashed ⟹ 0 weight in fork choice
+end note
+
+EST -[#1565C0]> DAG : calculate_lca(..)
+activate DAG
+note over DAG
+  depth filter: keep tips with
+  block_number > top − 1000
+  (LATEST_MESSAGE_MAX_DEPTH);
+  lowest_universal_common_ancestor_many
+end note
+DAG --[#1565C0]> EST : LCA hash
+deactivate DAG
+
+EST -[#546E7A]> EST : build_scores_map — BFS to LCA
+activate EST #C8E6C9
+loop per surviving validator, down supporting chain
+  EST -[#2E7D32]> BND : weight_from_validator_by_dag(block, v)
+  activate BND
+  BND --[#2E7D32]> EST : bonded i64 weight (B1: typed Err if missing)
+  deactivate BND
+  EST -[#546E7A]> EST : score[block] += weight (checked_add, B3)
+end
+deactivate EST
+
+EST -[#546E7A]> EST : rank_forkchoices({lca})
+activate EST #FFE0B2
+loop until still_same
+  EST -[#1565C0]> DAG : children(block)
+  activate DAG
+  DAG --[#1565C0]> EST : scored children
+  deactivate DAG
+  EST -[#546E7A]> EST : sort_by_with_decreasing_order\n(score DESC, hash ASC) ── UNIQUE order
+end
+deactivate EST
+
+EST -[#1565C0]> DAG : filter_deep_parents(ranked)
+activate DAG
+DAG --[#1565C0]> EST : block_number(main) − p ≤ max_parent_depth
+deactivate DAG
+
+EST -[#546E7A]> EST : take(max_number_of_parents)\n(B2 cast-safe: < 0 or i32::MAX ⟹ all)
+
+EST -[#E65100]>o EST : ForkChoice { tips, lca }
+deactivate EST
+
+note over EST, BND
+  Every step is a PURE function of (DAG, latest_messages)
+  ⟹ node-identical result on every honest node.
+  Rocq fork_choice_determinism_correct (axiom-free).
+end note
+
+@enduml

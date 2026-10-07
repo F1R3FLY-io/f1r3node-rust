@@ -1,0 +1,4 @@
+-------------- MODULE MCAtomicCommAccountingIntroductionUnsafe --------------
+EXTENDS AtomicCommAccounting
+
+=============================================================================

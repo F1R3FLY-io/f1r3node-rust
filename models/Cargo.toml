@@ -44,19 +44,23 @@ pathmap = { version = "0.2.2", features = ["arena_compact"] }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-uuid = { version = "1.2", features = ["v4"] }
+uuid = { workspace = true }
 itertools = { workspace = true }
-proptest-derive = "0.5.1"
-proptest = "1.4.0"
-rand = "0.9.0"
+proptest-derive = { workspace = true }
+proptest = { workspace = true }
+rand = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 tonic-prost = { workspace = true }
-utoipa = "5"
+utoipa = { workspace = true }
 tracing = { workspace = true }
 typed-arena = "2.0.2"
+thiserror = { workspace = true }
+
+[dev-dependencies]
 # Generated event-hash encoding and serde use the workspace's bincode format.
 bincode = { workspace = true }
+blake2 = "0.10.6"
 
 # EPM1's canonical ACTree03 inspector reproduces PathMap 0.2.2's deterministic
 # line-reuse decision without rebuilding a PathMap. Keep this target predicate
@@ -99,6 +103,18 @@ path = "tests/clone_descend_budget.rs"
 [[test]]
 name = "cold_store_records"
 path = "tests/cold_store_records.rs"
+
+[[test]]
+name = "cost_bincode_stack_safety"
+path = "tests/cost_bincode_stack_safety.rs"
+
+[[test]]
+name = "cost_protobuf_stack_safety"
+path = "tests/cost_protobuf_stack_safety.rs"
+
+[[test]]
+name = "deploy_envelope_v61_vectors"
+path = "tests/deploy_envelope_v61_vectors.rs"
 
 [[test]]
 name = "drive_configuration_gate"
@@ -144,6 +160,10 @@ path = "tests/epathmap_identity_is_epm1_snapshot.rs"
 name = "event_hash_bytes_differential"
 path = "tests/event_hash_bytes_differential.rs"
 
+[[test]]
+name = "event_codec_epoch_cold_store"
+path = "tests/event_codec_epoch_cold_store.rs"
+
 # ★ Work item #124 — the byte-identity obligation of routing the datum, pattern
 # and continuation event-hash legs through `ColdStoreEncode::cold_encode`. The
 # question it settles is a CONSENSUS one (event hashes enter the block Merkle
@@ -170,6 +190,10 @@ path = "tests/epathmap_global_intern_store_absence.rs"
 [[test]]
 name = "json_encoder_test"
 path = "tests/json_encoder_test.rs"
+
+[[test]]
+name = "legacy_deploy_authorization_boundary"
+path = "tests/legacy_deploy_authorization_boundary.rs"
 
 [[test]]
 name = "mixed_algorithm_cosigned_test"
@@ -303,9 +327,6 @@ harness = false
 name = "bincode_encoder_massif"
 path = "benches/bincode_encoder_massif.rs"
 harness = false
-
-[dev-dependencies]
-blake2 = "0.10.6"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

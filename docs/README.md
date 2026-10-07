@@ -2,7 +2,7 @@
 
 ## Workspace Overview
 
-The Cargo workspace contains 11 crates:
+The Cargo workspace contains 10 crates:
 
 | Crate | Role | Docs |
 |-------|------|------|
@@ -90,6 +90,10 @@ Code-grounded analyses with measured evidence and an explicit proof standard.
 | [Consensus Protocol](./casper/CONSENSUS_PROTOCOL.md) | End-to-end protocol walkthrough, abstraction boundaries for adding new consensus |
 | [Byzantine Fault Tolerance](./casper/BYZANTINE_FAULT_TOLERANCE.md) | BFT architecture, clique oracle, equivocation detection, slashing |
 | [Synchrony Constraint](./casper/SYNC_CONSTRAINT.md) | Synchrony constraint mechanism, configuration, troubleshooting |
+| [Consensus Philosophy](./casper/CONSENSUS_PHILOSOPHY.md) | Design principles, deploy-fairness remedy ladder, CBC Casper relation |
+| [Casper Glossary](./casper/GLOSSARY.md) | Canonical casper-domain terms (split from the central glossary) |
+| [Theory dossiers](./casper/theory/README.md) | Fork choice, finalized floor, merge algebra, and slashing dossiers |
+| [Validation](./casper/validation/) | FV campaign gap analysis, merge-recovery validation plan |
 | [Consensus Configuration](https://github.com/F1R3FLY-io/system-integration/blob/main/docs/consensus-configuration.md) | FTT and synchrony threshold semantics, recommended values |
 
 ### Rholang Language
@@ -98,6 +102,8 @@ Code-grounded analyses with measured evidence and an explicit proof standard.
 |----------|-------------|
 | [Rholang Evaluator](../rholang/README.md) | Language overview, CLI usage, known issues |
 | [Rholang Module Docs](./rholang/) | Interpreter internals, reducer, system processes |
+| [End-to-End Cost Accounting](./rholang/20-wallet-funded-processes.md) | Wallet and purse deposits, process funding, refill, cryptographic authority, settlement, replay, and finality |
+| [Cost Model](./rholang/13-cost-model.md) | Integrated compute-authority and quantitative-byte accounting |
 | [Rholang Tutorial](./rholang/rholangtut.md) | Language tutorial |
 | [Pattern Matching](./rholang/rholangmatchingtut.md) | Pattern matching guide |
 | [Ollama Integration](./rholang/ollama.md) | Local LLM integration via Ollama |
@@ -111,13 +117,24 @@ Code-grounded analyses with measured evidence and an explicit proof standard.
 | [Schnorr/FROST Design](./schnorr-frost-secp256k1-design.md) | Schnorr and FROST signature scheme design |
 | [Schnorr/FROST Status](./schnorr-frost-secp256k1-status.md) | Implementation status |
 
+### Cost Accounting and Formal Verification
+
+| Document | Description |
+|----------|-------------|
+| [Implementation Guide](./casper/theory/cost-accounting-impl/) | Cost-accounting design and subsystem ownership; Casper integration is tracked separately |
+| [Parallel Runtime and Shard Isolation](./casper/theory/cost-accounting-impl/parallel-runtime-and-shard-isolation.md) | Node-local root authority, independent validator transitions, and arbitrary-shard resource frames |
+| [Deterministic Host-Work Budget](./casper/theory/host-work-budget.md) | Canonical node-work units, checked limits, rollback, replay, and economic separation |
+| [Formal Verification Catalog](./casper/theory/cost-accounted-rho-verification.md) | Rocq, TLA+, Apalache, Sage, Verus, Loom, property, and integration evidence |
+| [Conformance Properties](./casper/theory/cost-accounting-conformance-properties.md) | Publication-to-implementation obligation ledger |
+| [Threat Model](./casper/theory/cost-accounting-threat-model.md) | Consensus, replay, custody, resource, and cryptographic failure analysis |
+
 ### Architecture & Design
 
 | Document | Description |
 |----------|-------------|
 | [F1r3fly Architecture](./f1r3fly_architecture.md) | High-level architecture overview |
 | [F1r3fly State Diagram](./f1r3fly_state_diagram.md) | Node lifecycle state diagrams |
-| [Namespaces & Scaling](./namespaces-scaling-mercury.md) | Namespace organization, regional namespaces |
+| [Namespaces & Scaling](./archive/namespaces-scaling-mercury.md) | Namespace organization, regional namespaces |
 | [Features](./features.md) | Feature requirements and status |
 
 ### Genesis & Token Identity
@@ -132,9 +149,14 @@ The native token's name, symbol, and decimals are configured before genesis and 
 
 | Document | Description |
 |----------|-------------|
+| [Joining an Existing Network](./node/joining-a-network.md) | Attaching a node to a shard it did not start with: bootstrap address, required flags, what a completed join looks like, and bonding it as a validator |
 | [API Reference](./node/api-reference.md) | Complete HTTP REST + gRPC endpoint reference with parameters and curl examples |
 | [WebSocket Events](./node/websocket-events.md) | `/ws/events` endpoint: 10 event types, startup replay, payload schemas |
 | [Docker Setup](../docker/README.md) | Docker compose for shard, standalone, monitoring |
+| [Formal Verification](./formal-verification.md) | Verification method, verified areas, implementation obligations, and local tool runs |
+| [CbC Verification Tiers](./cbc-verification-tiers.md) | Refutation with TLC, construction with Rocq, binding with Rust tests, and the promotion rule between them |
+| [Consensus-Neutral Execution](./artifacts/f1r3fly-consensus-neutral-sm.md) | Two execution machines, four ordering media, and the verification split by machine and medium |
+| [Release Process](./release-process.md) | Exact-SHA canary, stable release, and Deployment Train strategy |
 | [RNode API](./rnode-api/) | Protocol Buffer API documentation (legacy Scala reference) |
 | [LFS Requester Architecture](./plans/lfs_tuple_space_requester_concurrency_architecture.md) | LFS tuple space concurrency design |
 | [Whiteblock Test Plan](./whiteblock/whiteblock-test-plan.md) | Network testing plan |

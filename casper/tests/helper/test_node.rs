@@ -79,6 +79,12 @@ pub struct TestNode {
     pub engine_cell: EngineCell,
     // Packet handler for receiving messages (matches Scala line 178)
     pub packet_handler: CasperPacketHandler,
+    /// Heartbeat / liveness mode. When true, `create_block` emits an empty
+    /// (CloseBlock-only) block instead of returning `NoNewDeploys` when the
+    /// proposer has no user deploys — matching a production heartbeat-enabled
+    /// shard, where a validator always proposes to keep the chain advancing.
+    /// Defaults to false (the historic manual-propose test behavior).
+    pub allow_empty_blocks: bool,
 }
 
 impl TestNode {
@@ -109,16 +115,21 @@ impl TestNode {
         })?;
 
         // Create block using block_creator
-        block_creator::create(
+        block_creator::create_with_approved_genesis(
+            self.casper.get_approved_block()?,
+            self.casper.offered_funded_active,
             &snapshot,
             &validator,
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
-            &mut self.runtime_manager.clone(),
+            &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
-            false,
+            if self.allow_empty_blocks {
+                casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty
+            } else {
+                casper::rust::blocks::proposer::proposer::DeploySelection::Standard
+            },
         )
         .await
     }
@@ -163,14 +174,14 @@ impl TestNode {
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
-        casper: Arc<dyn Casper + Send + Sync + 'static>,
+        casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
         // Check if block is of interest
-        let is_of_interest = block_processor.check_if_of_interest(casper.clone(), &block)?;
+        let verdict = block_processor.check_if_of_interest(casper.clone(), &block)?;
 
-        if !is_of_interest {
+        if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
@@ -287,14 +298,29 @@ impl TestNode {
         // Create and add block
         let block = self.add_block_from_deploys(deploy_datums).await?;
 
-        // Trigger handleReceive on all other nodes (excluding self)
+        // Trigger handleReceive on all other nodes (excluding self); the hash
+        // announce is spawned by the creator, so pump until it has landed.
         for node in nodes.iter_mut() {
             if node.local != self.local {
-                node.handle_receive().await?;
+                node.pump_until_knows(&block.block_hash).await?;
             }
         }
 
         Ok(block)
+    }
+
+    /// Pumps handle_receive until this node knows the block or a bounded
+    /// deadline passes — the announce arrives from a detached task, so a
+    /// single pump can run before it is enqueued.
+    pub async fn pump_until_knows(&mut self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            self.handle_receive().await?;
+            if self.knows_about(block_hash) || std::time::Instant::now() >= deadline {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     /// Helper method to propagate a block from a node at a specific index in a nodes array.
@@ -329,6 +355,23 @@ impl TestNode {
         current[0]
             .propagate_block(deploy_datums, &mut all_others)
             .await
+    }
+
+    /// Makes every node receive the blocks of every other node. `sync_with_one`
+    /// makes its caller the receiver, so each pair is synced in both directions.
+    pub async fn sync_all(nodes: &mut [TestNode]) -> Result<(), CasperError> {
+        for sender_idx in 0..nodes.len() {
+            for receiver_idx in 0..nodes.len() {
+                if sender_idx == receiver_idx {
+                    continue;
+                }
+                let [receiver, sender] = nodes
+                    .get_disjoint_mut([receiver_idx, sender_idx])
+                    .expect("receiver and sender are different nodes");
+                receiver.sync_with_one(sender).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Helper method to propagate a block from one node to another specific node.
@@ -506,8 +549,22 @@ impl TestNode {
             .map(|(idx, node)| (node.local.clone(), idx))
             .collect();
 
-        // Initial handleReceive
-        self.handle_receive().await?;
+        // Initial handleReceive; a detached announce may still be in flight,
+        // so give it a bounded window before reading empty request state as
+        // already-synced.
+        let mut settle_rounds = 0;
+        loop {
+            self.handle_receive().await?;
+            let has_pending = {
+                let requested = self.requested_blocks.lock().unwrap();
+                requested.values().any(|req| !req.received)
+            };
+            if has_pending || settle_rounds >= 5 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            settle_rounds += 1;
+        }
 
         // Check if all synced
         let mut done = {
@@ -654,7 +711,9 @@ impl TestNode {
 
                             // Convert Node to PeerNode
                             let peer = PeerNode {
-                                id: NodeIdentifier::new(hex::encode(&sender_node.id)),
+                                id: NodeIdentifier {
+                                    key: sender_node.id.clone(),
+                                },
                                 endpoint: Endpoint::new(
                                     String::from_utf8_lossy(&sender_node.host).to_string(),
                                     sender_node.tcp_port,
@@ -722,7 +781,7 @@ impl TestNode {
             > { Box::pin(async move { Ok(()) }) },
         );
 
-        let _ = self.tls.handle_receive(dispatch, handle_streamed).await?;
+        drop(self.tls.handle_receive(dispatch, handle_streamed).await?);
 
         Ok(())
     }
@@ -742,6 +801,31 @@ impl TestNode {
         max_number_of_parents: Option<i32>,
         max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_network_with_deploy_lifespan(
+            genesis,
+            network_size,
+            synchrony_constraint_threshold,
+            max_number_of_parents,
+            max_parent_depth,
+            with_read_only_size,
+            None,
+        )
+        .await
+    }
+
+    /// `create_network` with a shard `deploy_lifespan` override (default 50).
+    /// A short lifespan lets a spec close deploy validity windows within a
+    /// handful of blocks — required to exercise window-boundary behavior
+    /// (block-expiry, the merge-time window rule) without ~50 filler blocks.
+    pub async fn create_network_with_deploy_lifespan(
+        genesis: GenesisContext,
+        network_size: usize,
+        synchrony_constraint_threshold: Option<f64>,
+        max_number_of_parents: Option<i32>,
+        max_parent_depth: Option<i32>,
+        with_read_only_size: Option<usize>,
+        deploy_lifespan: Option<i64>,
     ) -> Result<Vec<TestNode>, CasperError> {
         // Initialize the shared tracing subscriber once per test process.
         // Without this, tracing calls in production code are silently
@@ -765,12 +849,43 @@ impl TestNode {
             max_number_of_parents.unwrap_or(Estimator::UNLIMITED_PARENTS),
             max_parent_depth,
             with_read_only_size.unwrap_or(0),
+            None,
             test_network,
+            deploy_lifespan,
+        )
+        .await
+    }
+
+    pub async fn create_network_with_bootstrap_index(
+        genesis: GenesisContext,
+        network_size: usize,
+        bootstrap_index: usize,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        crate::init_logger();
+
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis
+            .validator_sks()
+            .into_iter()
+            .take(network_size)
+            .collect();
+
+        Self::network(
+            sks_to_use,
+            genesis,
+            0.0,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+            0,
+            Some(bootstrap_index),
+            test_network,
+            None,
         )
         .await
     }
 
     /// Creates a network of TestNodes
+    #[allow(clippy::too_many_arguments)]
     async fn network(
         sks: Vec<PrivateKey>,
         genesis_context: GenesisContext,
@@ -778,7 +893,9 @@ impl TestNode {
         max_number_of_parents: i32,
         max_parent_depth: Option<i32>,
         with_read_only_size: usize,
+        bootstrap_index: Option<usize>,
         test_network: TestNetwork,
+        deploy_lifespan: Option<i64>,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
@@ -802,6 +919,7 @@ impl TestNode {
             .iter()
             .map(|name| Self::peer_node(name, 40400))
             .collect();
+        let bootstrap_peer = bootstrap_index.and_then(|index| peers.get(index).cloned());
 
         // Create nodes
         let mut nodes = Vec::new();
@@ -822,6 +940,8 @@ impl TestNode {
                 is_readonly,
                 test_network.clone(),
                 &genesis_context,
+                bootstrap_peer.clone(),
+                deploy_lifespan,
             )
             .await;
             nodes.push(node);
@@ -845,6 +965,7 @@ impl TestNode {
         Ok(nodes)
     }
 
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     async fn create_node(
         name: String,
         current_peer_node: PeerNode,
@@ -857,6 +978,8 @@ impl TestNode {
         is_read_only: bool,
         test_network: TestNetwork,
         genesis_context: &GenesisContext,
+        bootstrap_peer: Option<PeerNode>,
+        deploy_lifespan: Option<i64>,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -912,22 +1035,24 @@ impl TestNode {
             .await
             .unwrap();
 
-        let rspace_store = (&mut *kvm).r_space_stores().await.unwrap();
+        let rspace_store = (*kvm).r_space_stores().await.unwrap();
         let mergeable_store = resources::mergeable_store_from_dyn(&mut *kvm)
             .await
             .unwrap();
         // Use create_with_history to ensure tests can reset to genesis state root hash
-        let (runtime_manager, _rho_history_repository) = RuntimeManager::create_with_history(
+        let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
-
         let connections_cell = ConnectionsCell::new();
         let _clique_oracle = CliqueOracleImpl;
-        let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
-        let rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
+        let estimator = Estimator::apply();
+        let mut rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
+        if let Some(bootstrap_peer) = bootstrap_peer {
+            rp_conf.bootstrap = Some(bootstrap_peer);
+        }
         let event_publisher = F1r3flyEvents::new();
         // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F, Map[BlockHash, RequestState]](Map.empty)
         let requested_blocks = Arc::new(Mutex::new(HashMap::<BlockHash, RequestState>::new()));
@@ -948,24 +1073,22 @@ impl TestNode {
             Some(ValidatorIdentity::new(&sk))
         };
 
-        let _proposer_opt = match validator_id_opt {
-            Some(ref vi) => Some(new_proposer(
+        let _proposer_opt = validator_id_opt.as_ref().map(|vi| {
+            new_proposer(
                 vi.clone(),
                 None,
                 runtime_manager.clone(),
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
                 rp_conf.clone(),
                 event_publisher.clone(),
                 false, // allow_empty_blocks - disabled for tests
-            )),
-            None => None,
-        };
+            )
+        });
 
         let bp_dependencies = BlockProcessorDependencies::new(
             block_store.clone(),
@@ -975,6 +1098,7 @@ impl TestNode {
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
+            None,
         );
 
         let block_processor = BlockProcessor::new(bp_dependencies);
@@ -999,29 +1123,31 @@ impl TestNode {
                 block: genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: vec![],
         };
-
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
             finalization_rate,
             max_number_of_parents,
-            max_parent_depth: max_parent_depth.unwrap_or(i32::MAX),
+            // Realistic depth bound by default: i32::MAX disabled the depth
+            // check entirely, so fixtures could lean on unbounded parent
+            // spread that no configured shard permits. Specs that need the
+            // check off pass an explicit override.
+            max_parent_depth: max_parent_depth.unwrap_or(30),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
-            deploy_lifespan: 50,
-            casper_version: 1,
-            config_version: 1,
+            deploy_lifespan: deploy_lifespan.unwrap_or(50),
+            casper_version: genesis.header.version,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
             epoch_length: 10000,
             quarantine_length: 20000,
             min_phlo_price: 1,
-            disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
@@ -1030,6 +1156,9 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            divergence_monitor: std::sync::Arc::new(
+                casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
+            ),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),
@@ -1037,14 +1166,19 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
-            pending_cosigner_metadata: std::sync::Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+            deploy_lifecycle: Arc::new(
+                casper::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
+            offered_funded_active: runtime_manager
+                .find_genesis_resource_policy(&genesis.body.state.post_state_hash)
+                .await
+                .expect("test genesis resource policy query must succeed")
+                .is_some_and(|policy| policy.offered_funded_v6_active()),
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
@@ -1071,6 +1205,8 @@ impl TestNode {
                 + Sync,
         > = Arc::new(|| Box::pin(async { Ok(()) }));
 
+        let engine_cell = EngineCell::init();
+
         let running_engine = Running::new(
             block_processor_queue.0.clone(), // block_processing_queue_tx
             Arc::new(DashSet::new()),        // blocks_in_processing
@@ -1081,10 +1217,8 @@ impl TestNode {
             tle.clone(),                     // transport
             rp_conf.clone(),                 // conf
             block_retriever.clone(),         // block_retriever
+            None,
         );
-
-        // Create EngineCell
-        let engine_cell = EngineCell::init();
         engine_cell.set(Arc::new(running_engine)).await;
 
         // Create CasperPacketHandler
@@ -1109,14 +1243,18 @@ impl TestNode {
             casper,
             engine_cell,
             packet_handler,
+            allow_empty_blocks: false,
         }
     }
 
     /// Creates a PeerNode with the given name and port
     fn peer_node(name: &str, port: u32) -> PeerNode {
-        // Convert name bytes to hex string for NodeIdentifier
-        let name_hex = hex::encode(name.as_bytes());
-        let node_id = NodeIdentifier::new(name_hex);
+        // Node IDs are a fixed 20 bytes; the name seeds the leading ones.
+        let mut key = [0u8; 20];
+        let seed = name.as_bytes();
+        let taken = seed.len().min(key.len());
+        key[..taken].copy_from_slice(&seed[..taken]);
+        let node_id = NodeIdentifier::new(&hex::encode(key)).expect("a padded name is a valid ID");
         let endpoint = Self::endpoint(port);
 
         PeerNode {

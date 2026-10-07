@@ -3,18 +3,14 @@
 //! The singular-phlo escrow refund model is REMOVED. D3's settlement is the
 //! per-COMM token count debited ONCE from the per-signature supply pool Σ⟦s⟧:
 //! the block-assembly gate (`delta_sigma::is_funded`) admits a deploy iff its
-//! EFFECTIVE supply meets the demand `Δ_s` (the COMM count) plus the genesis
-//! safety margin, and the settlement write `post = pre − Δ_s` must never
-//! underflow for an admitted deploy.
+//! EFFECTIVE supply meets a certified finite upper bound `Δ_s`. Unprovable
+//! demand is rejected, and realized settlement must never exceed reservation.
 //!
 //! Fuzzed invariants:
-//!   * NO-UNDERFLOW: if `is_funded(Δ, Σ, margin)` then `Σ − Δ ≥ 0` (the settlement
-//!     debit = Δ, the COMM count, leaves a non-negative pool); for an
-//!     over-approximated (`unknown`) demand it additionally leaves `Σ − Δ ≥ margin`.
+//!   * NO-UNDERFLOW: if `is_funded(Δ, Σ)` then `Σ − Δ ≥ 0`.
 //!   * MONOTONICITY: raising the supply can only keep a funded deploy funded;
 //!     raising the demand can only keep an unfunded deploy unfunded.
-//!   * REJECT-DIRECTION (F-B two-regime): a deploy with `Σ < Δ` (resolvable) — or
-//!     `Σ < Δ + margin` (over-approximated `unknown`) — is NOT funded.
+//!   * REJECT-DIRECTION: `Σ < Δ` and every unprovable demand are rejected.
 
 #![no_main]
 
@@ -24,50 +20,35 @@ use rholang::rust::interpreter::accounting::delta_sigma::{is_funded, DemandEntry
 
 #[derive(Arbitrary, Debug)]
 struct Input {
-    /// `Δ_s` known lower bound (the per-COMM demand). Bounded to a sane range
+    /// `Δ_s` certified upper bound. Bounded to a sane range
     /// so the i128 funding comparison stays in-domain while still exercising
     /// the boundary arithmetic.
     demand: i64,
-    /// Whether the demand is an over-approximation (Thm 20 `unknown` flag).
+    /// Whether the demand lacks a finite proof (Thm 20 `unknown` flag).
     unknown: bool,
     /// `Σ_s` effective supply (a balance).
     supply: i64,
-    /// The genesis safety margin (`min_phlo_price`). Non-negative in practice;
-    /// fuzzed across i64 to defend the comparison.
-    margin: i64,
 }
 
 fuzz_target!(|input: Input| {
     let analysis = DemandEntry {
-        known_lower_bound: input.demand,
+        certified_upper_bound: input.demand,
         unknown: input.unknown,
     };
-    let margin = input.margin;
     let supply = input.supply;
 
-    let funded = is_funded(&analysis, supply, margin);
+    let funded = is_funded(&analysis, supply);
 
-    // NO-UNDERFLOW: a funded deploy with a non-negative margin leaves a
+    // NO-UNDERFLOW: a funded deploy leaves a
     // non-negative residual after the settlement debit (= the COMM demand).
     // Computed in i128 to mirror the gate and avoid wrap.
-    if funded && margin >= 0 {
-        let residual = i128::from(supply) - i128::from(analysis.known_lower_bound);
+    if funded {
+        let residual = i128::from(supply) - i128::from(analysis.certified_upper_bound);
         assert!(residual >= 0, "funded ⇒ settlement debit never underflows the pool");
-        // Thm 20 headroom applies ONLY to over-approximated (`unknown`) demand
-        // (F-B: the margin is inert for resolvable demand — Def 19 `Σ ≥ Δ`).
-        if analysis.unknown {
-            assert!(
-                residual >= i128::from(margin),
-                "funded over-approximated demand ⇒ Σ − Δ ({residual}) ≥ margin ({margin})"
-            );
-        }
+        assert!(!analysis.unknown);
     }
 
-    // REJECT-DIRECTION (F-B two-regime): resolvable ⇒ Σ < Δ rejected; over-
-    // approximated ⇒ Σ < Δ + margin rejected. Mirrors `is_funded` exactly.
-    let applied_margin = if analysis.unknown { i128::from(margin) } else { 0 };
-    let required = i128::from(analysis.known_lower_bound) + applied_margin;
-    if i128::from(supply) < required {
+    if analysis.unknown || i128::from(supply) < i128::from(analysis.certified_upper_bound) {
         assert!(!funded, "Σ below the regime threshold must be rejected by the gate");
     }
 
@@ -75,7 +56,7 @@ fuzz_target!(|input: Input| {
     if funded {
         if let Some(more) = supply.checked_add(1) {
             assert!(
-                is_funded(&analysis, more, margin),
+                is_funded(&analysis, more),
                 "raising the supply must keep a funded deploy funded"
             );
         }
@@ -83,13 +64,13 @@ fuzz_target!(|input: Input| {
 
     // MONOTONICITY in demand: more demand cannot fund an unfunded deploy.
     if !funded {
-        if let Some(more_demand) = analysis.known_lower_bound.checked_add(1) {
+        if let Some(more_demand) = analysis.certified_upper_bound.checked_add(1) {
             let harder = DemandEntry {
-                known_lower_bound: more_demand,
+                certified_upper_bound: more_demand,
                 unknown: analysis.unknown,
             };
             assert!(
-                !is_funded(&harder, supply, margin),
+                !is_funded(&harder, supply),
                 "raising the demand must keep an unfunded deploy unfunded"
             );
         }

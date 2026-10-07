@@ -1,0 +1,68 @@
+@startuml evaluation-transaction-isolation
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam shadowing false
+skinparam activity {
+  BorderColor #37474F
+  FontColor #102027
+  DiamondBorderColor #37474F
+  DiamondBackgroundColor #FFF3E0
+  StartColor #2E7D32
+  EndColor #455A64
+}
+title Failure-atomic evaluation: witness freshness, state rollback, and replay-root isolation
+
+start
+:Authenticate base root and envelope; <<#BBDEFB>>
+:Parse source before execution; <<#FFF59D>>
+if (Parse succeeds?) then (no)
+  :Return empty current witness; <<#FFCCBC>>
+  :Keep active root at base; <<#B2DFDB>>
+  stop
+else (yes)
+  :Clear current witness and install fixed budget; <<#FFE082>>
+endif
+
+:Execute reducer and RSpace operations; <<#FFCCBC>>
+if (Reducer succeeds?) then (no)
+  :Remove every current-deploy stack debit and birth; <<#EF9A9A>>
+  :Restore RSpace transaction base; <<#B2DFDB>>
+  :Return exact attempted-work witness; <<#CE93D8>>
+  stop
+else (yes)
+  :Resolve authority, births, settlement, cost, and status; <<#D1C4E9>>
+endif
+
+if (Replay path?) then (yes)
+  :Materialize candidate checkpoint; <<#80CBC4>>
+else (no)
+  :Retain play candidate under soft checkpoint; <<#90CAF9>>
+endif
+
+:Validate evidence and adjacent post-state root; <<#FFE082>>
+if (Validation succeeds?) then (no)
+  if (History root advanced?) then (yes)
+    :Reset active history root to authenticated base; <<#EF9A9A>>
+  else (no)
+    :Revert soft checkpoint to base; <<#EF9A9A>>
+  endif
+  :Reject without promoting candidate state; <<#FFCCBC>>
+  stop
+else (yes)
+  :Promote validated state and witness; <<#A5D6A7>>
+  stop
+endif
+
+legend bottom
+|= Color |= Meaning |
+|<#BBDEFB> blue | authenticated transaction base |
+|<#FFF59D> yellow | parse and validation decision |
+|<#FFE082> amber | fixed accounting boundary |
+|<#FFCCBC> orange | execution or rejection result |
+|<#D1C4E9> lavender | authority and settlement evidence |
+|<#80CBC4> teal | replay candidate checkpoint |
+|<#90CAF9> light blue | play candidate state |
+|<#EF9A9A> red | mandatory rollback |
+|<#A5D6A7> green | validated promotion |
+endlegend
+@enduml

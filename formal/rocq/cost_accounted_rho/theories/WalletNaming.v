@@ -1,44 +1,45 @@
 (* ═══════════════════════════════════════════════════════════════════════════
-   WalletNaming.v — Per-validator wallet @W_v naming: injectivity + domain
-                    disjointness (Cost-Accounted Rho Stage A; DR-13)
+   WalletNaming.v — Canonical SystemVault address injectivity and domain
+                    disjointness (Cost-Accounted Rho; DR-13)
    ═══════════════════════════════════════════════════════════════════════════
 
-   The validator economic layer realizes the spec's per-validator phlogiston
-   DRAW wallet (spec Appendix B eq:38) as a content-addressed Rholang channel
+   F1R3node realizes the paper's per-validator purse and supply notation through
+   the existing canonical SystemVault address selected by the validator key:
 
-       @W_v  :=  @( *walletTag, validatorPk )
+       SystemVault(v) := @( *systemVaultTag, validatorPk )
 
-   where [walletTag] is a fresh, genesis-scoped UNFORGEABLE name (minted by
+   where [systemVaultTag] is a fresh, genesis-scoped UNFORGEABLE name (minted by
    [new] in PoS.rho, never derivable from a public key or a string). Two
    consensus-critical properties of this naming scheme must hold:
 
    (1) INJECTIVITY in the validator public key. Distinct validators must get
-       DISTINCT wallets, so a mint authorized for one validator can never land
-       in another's wallet and one validator's draw can never starve another.
-       This is [wallet_name_injective].
+       DISTINCT vaults, so a mint authorized for one validator can never land
+       in another's vault and one validator's reservation cannot starve another.
+       This is [system_vault_name_injective].
 
    (2) DOMAIN DISJOINTNESS. The validator economic layer derives several
        families of content-addressed names / deterministic seeds from a public
        key, each in its OWN domain:
-         - the wallet draw channel       (this file's [Wallet] domain),
+         - the canonical SystemVault     (this file's [SystemVault] domain),
          - the quarantine channel        ([Quarantine]; Stage C slashing,
                                           spec Appendix B "Slashing"),
          - the funding-slot seed         ([FundingSlot]; spec §4.7),
        mirrored on the Rust side by the domain-tagged
        [generate_epoch_mint_deploy_random_seed] / quarantine / funding-slot
        seed constructors (system_deploy_util.rs). A name in one domain must
-       NEVER collide with a name in another — otherwise a wallet draw could be
+       NEVER collide with a name in another — otherwise a vault operation could be
        confused with a quarantine move or a funding-slot deposit. These are
-       [wallet_quarantine_domain_disjoint],
-       [wallet_funding_slot_domain_disjoint], and
+       [system_vault_quarantine_domain_disjoint],
+       [system_vault_funding_slot_domain_disjoint], and
        [quarantine_funding_slot_domain_disjoint].
 
-   MODELLING. We model @W_v as a [name] (RhoSyntax.v): [@(...)] is [Quote], and
+   MODELLING. We model a canonical SystemVault address as a [name]
+   (RhoSyntax.v): [@(...)] is [Quote], and
    the channel is the quotation of a process that injectively encodes the pair
    (domain-tag, public-key). The public key is a [list bool] (matching the
    ground-axis carrier [SGround : list bool -> sig], CostAccountedSyntax.v).
-   The unforgeable [walletTag] is realized as a fixed closed marker process
-   shared by all wallet names of a shard; because injectivity and disjointness
+   The unforgeable [systemVaultTag] is realized as a fixed closed marker process
+   shared by all vault names of a shard; because injectivity and disjointness
    are properties of the (tag, pk) encoding — NOT of tag secrecy — we do not
    need to model the GPrivate unforgeable namespace here (unforgeability is the
    substrate guarantee discharged at the Rust/runtime layer; see
@@ -53,10 +54,10 @@
    ─────────────────────────────────────────────────────────────────────────
    Rocq Theorem                          │ Property
    ───────────────────────────────────────┼─────────────────────────────────
-   wallet_name_injective                  │ distinct pk ⇒ distinct @W_v
+   system_vault_name_injective             │ distinct pk ⇒ distinct vault
                                           │   (spec App. B eq:38; DR-13)
-   wallet_quarantine_domain_disjoint      │ wallet ≠ quarantine name
-   wallet_funding_slot_domain_disjoint    │ wallet ≠ funding-slot name
+   system_vault_quarantine_domain_disjoint │ vault ≠ quarantine name
+   system_vault_funding_slot_domain_disjoint│ vault ≠ funding-slot name
    quarantine_funding_slot_domain_disjoint│ quarantine ≠ funding-slot name
    domain_name_injective                  │ per-domain pk-injectivity
    ─────────────────────────────────────────────────────────────────────────
@@ -81,7 +82,7 @@ From CostAccountedRho Require Import RhoSyntax.
 Definition pubkey : Type := list bool.
 
 Inductive seed_domain : Type :=
-  | Wallet      : seed_domain   (* the validator draw wallet @W_v (spec App. B eq:38) *)
+  | SystemVault : seed_domain   (* canonical native vault selected by public key *)
   | Quarantine  : seed_domain   (* slashed-stake quarantine channel (Stage C) *)
   | FundingSlot : seed_domain.  (* funding-slot seed (spec §4.7) *)
 
@@ -171,19 +172,19 @@ Qed.
 
 Definition domain_marker (d : seed_domain) : proc :=
   match d with
-  | Wallet      => PReplicate PNil
+  | SystemVault => PReplicate PNil
   | Quarantine  => PReplicate (PReplicate PNil)
   | FundingSlot => PReplicate (PReplicate (PReplicate PNil))
   end.
 
 (* The domain markers are pairwise distinct (distinct [PReplicate] nesting
    depths). Stated as the three needed inequalities. *)
-Lemma domain_marker_wallet_quarantine :
-  domain_marker Wallet <> domain_marker Quarantine.
+Lemma domain_marker_system_vault_quarantine :
+  domain_marker SystemVault <> domain_marker Quarantine.
 Proof. simpl. discriminate. Qed.
 
-Lemma domain_marker_wallet_funding_slot :
-  domain_marker Wallet <> domain_marker FundingSlot.
+Lemma domain_marker_system_vault_funding_slot :
+  domain_marker SystemVault <> domain_marker FundingSlot.
 Proof. simpl. discriminate. Qed.
 
 Lemma domain_marker_quarantine_funding_slot :
@@ -192,15 +193,13 @@ Proof. simpl. discriminate. Qed.
 
 (* The content-addressed name for (domain, pubkey). This models the Rholang
    channel @( *tag_d, pk ): a quotation of a process pairing the domain marker
-   (which encodes BOTH the unforgeable [walletTag]-style tag AND the domain
+   (which encodes BOTH the unforgeable [systemVaultTag]-style tag AND the domain
    discriminator) with the injective bit-encoding of the public key. *)
 Definition domain_name (d : seed_domain) (pk : pubkey) : name :=
   Quote (PPar (domain_marker d) (encode_bits pk)).
 
-(* The validator draw wallet @W_v := @( *walletTag, validatorPk ) is the
-   [Wallet]-domain name. *)
-Definition wallet_name (pk : pubkey) : name :=
-  domain_name Wallet pk.
+Definition system_vault_name (pk : pubkey) : name :=
+  domain_name SystemVault pk.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 4: Per-domain injectivity
@@ -224,30 +223,30 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Section 5: Headline theorem — wallet-name injectivity (DR-13)
+   Section 5: Headline theorem — SystemVault-address injectivity (DR-13)
    ═══════════════════════════════════════════════════════════════════════════
 
-   Distinct validator public keys yield distinct draw wallets @W_v. This is
+   Distinct validator public keys yield distinct canonical SystemVaults. This is
    the consensus-critical property that a mint authorized for validator [pk1]
-   cannot land in validator [pk2]'s wallet, and that independent validators'
-   wallet Produces have distinct content-addressed identities (so the
+   cannot land in validator [pk2]'s vault, and that independent validators'
+   vault state has distinct content-addressed identities (so the
    multi-parent merge engine never conflates them). The contrapositive of
-   [domain_name_injective] at the [Wallet] domain.                            *)
+   [domain_name_injective] at the [SystemVault] domain.                       *)
 
-Theorem wallet_name_injective : forall pk1 pk2,
-  wallet_name pk1 = wallet_name pk2 -> pk1 = pk2.
+Theorem system_vault_name_injective : forall pk1 pk2,
+  system_vault_name pk1 = system_vault_name pk2 -> pk1 = pk2.
 Proof.
   intros pk1 pk2 Heq.
-  unfold wallet_name in Heq.
-  apply (domain_name_injective Wallet). exact Heq.
+  unfold system_vault_name in Heq.
+  apply (domain_name_injective SystemVault). exact Heq.
 Qed.
 
-(* Equivalent inequality form: distinct keys ⇒ distinct wallets. *)
-Corollary wallet_name_distinct : forall pk1 pk2,
-  pk1 <> pk2 -> wallet_name pk1 <> wallet_name pk2.
+(* Equivalent inequality form: distinct keys ⇒ distinct vaults. *)
+Corollary system_vault_name_distinct : forall pk1 pk2,
+  pk1 <> pk2 -> system_vault_name pk1 <> system_vault_name pk2.
 Proof.
   intros pk1 pk2 Hne Heq.
-  apply Hne. apply wallet_name_injective. exact Heq.
+  apply Hne. apply system_vault_name_injective. exact Heq.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
@@ -257,8 +256,8 @@ Qed.
    Names in different domains are NEVER equal, for ANY public keys. Because the
    domain marker sits in the left component of the [PPar] under the [Quote],
    equality of two cross-domain names would force equality of their domain
-   markers, which the [domain_marker_*] lemmas refute. This guarantees a wallet
-   draw can never be confused with a quarantine move or a funding-slot deposit
+   markers, which the [domain_marker_*] lemmas refute. This guarantees a vault
+   operation cannot be confused with a quarantine move or funding-slot deposit
    — the disjointness mirrored on the Rust side by the domain-tagged seed
    constructors (system_deploy_util.rs).                                       *)
 
@@ -276,20 +275,20 @@ Proof.
   exact Hm.
 Qed.
 
-Theorem wallet_quarantine_domain_disjoint : forall pk1 pk2,
-  domain_name Wallet pk1 <> domain_name Quarantine pk2.
+Theorem system_vault_quarantine_domain_disjoint : forall pk1 pk2,
+  domain_name SystemVault pk1 <> domain_name Quarantine pk2.
 Proof.
   intros pk1 pk2.
   apply domain_name_disjoint.
-  apply domain_marker_wallet_quarantine.
+  apply domain_marker_system_vault_quarantine.
 Qed.
 
-Theorem wallet_funding_slot_domain_disjoint : forall pk1 pk2,
-  domain_name Wallet pk1 <> domain_name FundingSlot pk2.
+Theorem system_vault_funding_slot_domain_disjoint : forall pk1 pk2,
+  domain_name SystemVault pk1 <> domain_name FundingSlot pk2.
 Proof.
   intros pk1 pk2.
   apply domain_name_disjoint.
-  apply domain_marker_wallet_funding_slot.
+  apply domain_marker_system_vault_funding_slot.
 Qed.
 
 Theorem quarantine_funding_slot_domain_disjoint : forall pk1 pk2,
@@ -300,14 +299,14 @@ Proof.
   apply domain_marker_quarantine_funding_slot.
 Qed.
 
-(* In particular the wallet domain is disjoint from BOTH other domains for any
-   keys — the wallet's unforgeable, injective, domain-separated identity is
+(* In particular the SystemVault domain is disjoint from both other domains for
+   any keys — the vault's unforgeable, injective, domain-separated identity is
    complete. *)
-Corollary wallet_domain_separated : forall pk1 pk2,
-  domain_name Wallet pk1 <> domain_name Quarantine pk2 /\
-  domain_name Wallet pk1 <> domain_name FundingSlot pk2.
+Corollary system_vault_domain_separated : forall pk1 pk2,
+  domain_name SystemVault pk1 <> domain_name Quarantine pk2 /\
+  domain_name SystemVault pk1 <> domain_name FundingSlot pk2.
 Proof.
   intros pk1 pk2. split.
-  - apply wallet_quarantine_domain_disjoint.
-  - apply wallet_funding_slot_domain_disjoint.
+  - apply system_vault_quarantine_domain_disjoint.
+  - apply system_vault_funding_slot_domain_disjoint.
 Qed.

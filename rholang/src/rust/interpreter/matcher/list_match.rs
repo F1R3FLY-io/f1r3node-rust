@@ -2,11 +2,24 @@ use std::collections::HashSet;
 
 use models::rhoapi::Par;
 use models::rust::utils::FreeMap;
+use shared::rust::clone_backing::{BackingError, CloneBacking, Walker};
+use shared::rust::collection_backing::tree_backing;
+
+use super::spatial_matcher::MatcherWork;
 
 #[derive(Clone, Debug)]
 pub enum Pattern<T: Clone> {
     Term(T),
     Remainder(i32),
+}
+
+impl<T: Clone + CloneBacking> CloneBacking for Pattern<T> {
+    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
+        match self {
+            Self::Term(value) => walker.push(value),
+            Self::Remainder(level) => walker.push(level),
+        }
+    }
 }
 
 pub trait ListMatch<T: Clone> {
@@ -18,7 +31,7 @@ pub trait ListMatch<T: Clone> {
         &mut self,
         tlist: Vec<T>,
         plist: Vec<T>,
-        merger: &dyn Fn(Par, Vec<T>) -> Par,
+        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
         remainder: Option<i32>,
         wildcard: bool,
     ) -> Option<()>;
@@ -28,7 +41,7 @@ pub trait ListMatch<T: Clone> {
         &mut self,
         targets: Vec<T>,
         patterns: Vec<T>,
-        merger: &dyn Fn(Par, Vec<T>) -> Par,
+        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
         remainder: Option<i32>,
         wildcard: bool,
     ) -> Option<()>;
@@ -38,7 +51,7 @@ pub trait ListMatch<T: Clone> {
         &mut self,
         remainder_targets: Vec<T>,
         level: i32,
-        merger: &dyn Fn(Par, Vec<T>) -> Par,
+        merger: &dyn Fn(Par, Vec<T>, &MatcherWork<'_>) -> Option<Par>,
     ) -> Option<()>;
 
     fn match_function(&mut self, pattern: Pattern<T>, t: T) -> Option<FreeMap>;
@@ -53,10 +66,10 @@ pub trait ListMatch<T: Clone> {
 macro_rules! list_match {
   ($($type:ty),*) => {
       $(
-          impl ListMatch<$type> for SpatialMatcherContext {
+          impl<'a> ListMatch<$type> for SpatialMatcherContext<'a> {
               // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - listMatchSingle
               fn list_match_single(&mut self, tlist: Vec<$type>, plist: Vec<$type>) -> Option<()> {
-                let _merger: &dyn Fn(Par, Vec<$type>) -> Par = &|p, _| p;
+                let _merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par> = &|p, _, _| Some(p);
 
                 self.list_match_single_(tlist, plist, _merger, None, false)
               }
@@ -66,7 +79,7 @@ macro_rules! list_match {
                   &mut self,
                   tlist: Vec<$type>,
                   plist: Vec<$type>,
-                  merger: &dyn Fn(Par, Vec<$type>) -> Par,
+                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
                   remainder: Option<i32>,
                   wildcard: bool,
               ) -> Option<()> {
@@ -94,15 +107,13 @@ macro_rules! list_match {
                     // println!("\nreturning Some in list_match_single_");
                     Some(())
                 } else if plen == 0 && remainder.is_some() {
-                    if tlist
-                        .iter()
-                        .all(|t| self.locally_free(t.to_owned(), 0).is_empty())
-                    {
-                        self.handle_remainder(tlist, remainder.unwrap(), merger)
-                    } else {
-                        // println!("\nreturning None in list_match_single_");
-                        None
+                    for target in &tlist {
+                        self.reserve_clone(target)?;
+                        if !self.locally_free(target.to_owned(), 0).is_empty() {
+                            return None;
+                        }
                     }
+                    self.handle_remainder(tlist, remainder.unwrap(), merger)
                 } else {
                     // println!("calling list_match");
                     self.list_match(tlist, plist, merger, remainder, wildcard)
@@ -116,7 +127,7 @@ macro_rules! list_match {
                   &mut self,
                   targets: Vec<$type>,
                   patterns: Vec<$type>,
-                  merger: &dyn Fn(Par, Vec<$type>) -> Par,
+                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
                   remainder: Option<i32>,
                   wildcard: bool,
               ) -> Option<()> {
@@ -124,20 +135,26 @@ macro_rules! list_match {
                 // println!("\nlist_match targets: {:?}", targets);
                 // println!("\nlist_match patterns: {:?}", patterns);
 
-                let remainder_patterns: Vec<Pattern<$type>> = remainder
-                    .map(|level| vec![Pattern::Remainder(level); targets.len() - patterns.len()])
-                    .unwrap_or(Vec::new());
-                let mut all_patterns: Vec<Pattern<$type>> = remainder_patterns;
-                all_patterns.extend(patterns.clone().into_iter().map(Pattern::Term));
+                let remainder_count = targets.len().checked_sub(patterns.len())?;
+                let mut all_patterns: Vec<Pattern<$type>> = Vec::new();
+                self.reserve_vec(&mut all_patterns, targets.len())?;
+                if let Some(level) = remainder {
+                    for _ in 0..remainder_count {
+                        all_patterns.push(Pattern::Remainder(level));
+                    }
+                }
+                all_patterns.extend(patterns.into_iter().map(Pattern::Term));
 
                 // println!("\nlist_match all_patterns: {:?}", all_patterns);
 
+                self.reserve_clone(&self.free_map)?;
                 let mut cloned_self = self.clone();
+                self.reserve(1, 0, std::mem::size_of::<SpatialMatcherContext<'_>>() + 2 * std::mem::size_of::<usize>())?;
                 let _match_function: Box<
                     dyn for<'pattern, 'target> FnMut(
                         &'pattern Pattern<$type>,
                         &'target $type,
-                    ) -> Option<FreeMap>,
+                    ) -> Option<FreeMap> + 'a,
                 > = Box::new(
                     move |pattern: &Pattern<$type>, t: &$type| {
                         cloned_self.match_function_ref(pattern, t)
@@ -153,7 +170,7 @@ macro_rules! list_match {
                 let _cache_structural_term = Box::new(|pattern: &Pattern<$type>| {
                     matches!(pattern, Pattern::Term(_))
                 });
-                let mut maximum_bipartite_match: MaximumBipartiteMatch<Pattern<$type>, $type, FreeMap> =
+                let mut maximum_bipartite_match: MaximumBipartiteMatch<'a, Pattern<$type>, $type, FreeMap> =
                     MaximumBipartiteMatch::new_with_cache_policy(
                         _match_function,
                         _cache_structural_term,
@@ -161,22 +178,28 @@ macro_rules! list_match {
 
                 // println!("\ncurrent free_map: {:?}", self.free_map);
 
+                self.reserve_clone(&targets)?;
+                let work = self.work()?;
                 let matches = maximum_bipartite_match
-                    .find_indexed_matches(all_patterns, targets.clone())?;
+                    .find_indexed_matches_metered(all_patterns, targets.clone(), &work)?;
 
                 // println!("\nfree_map after MBM: {:?}", self.free_map);
                 // println!("\nmatches: {:?}", matches);
 
-                let free_maps: Vec<FreeMap> = matches
-                    .iter()
-                    .map(|(_, _, _, free_map)| free_map.clone())
-                    .collect();
+                let mut free_maps: Vec<FreeMap> = Vec::new();
+                for (_, _, _, free_map) in &matches {
+                    self.reserve_clone(free_map)?;
+                    self.reserve_vec(&mut free_maps, 1)?;
+                    free_maps.push(free_map.clone());
+                }
 
-                let updated_free_map = aggregate_updates(self.free_map.clone(), free_maps)?;
+                self.reserve_clone(&self.free_map)?;
+                let updated_free_map = aggregate_updates_metered(self.free_map.clone(), free_maps, &work)?;
                 // println!("\nsetting free_map in list_match");
                 self.free_map = updated_free_map;
                 // println!("\nnew free_map: {:?}", self.free_map);
 
+                self.reserve(1, 0, targets.len())?;
                 let mut remainder_target_indices = vec![false; targets.len()];
                 for (target_index, _, pattern, _) in &matches {
                     if matches!(pattern, Pattern::Remainder(_)) {
@@ -184,13 +207,15 @@ macro_rules! list_match {
                     }
                 }
 
-                let remainder_targets_sorted: Vec<$type> = targets
-                    .iter()
-                    .enumerate()
-                    .filter(|(target_index, _)| remainder_target_indices[*target_index])
-                    .map(|(_, target)| target)
-                    .cloned()
-                    .collect();
+                let mut remainder_targets_sorted: Vec<$type> = Vec::new();
+                for (target_index, target) in targets.iter().enumerate() {
+                    self.reserve_inspect(target)?;
+                    if remainder_target_indices[target_index] {
+                        self.reserve_clone(target)?;
+                        self.reserve_vec(&mut remainder_targets_sorted, 1)?;
+                        remainder_targets_sorted.push(target.clone());
+                    }
+                }
 
                 match remainder {
                     None => {
@@ -209,7 +234,7 @@ macro_rules! list_match {
                   &mut self,
                   remainder_targets: Vec<$type>,
                   level: i32,
-                  merger: &dyn Fn(Par, Vec<$type>) -> Par,
+                  merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
               ) -> Option<()> {
                 // println!("\nhit handle_remainder");
                 // println!("remainder_targets: {:#?}", remainder_targets);
@@ -217,20 +242,26 @@ macro_rules! list_match {
                 // let merger_type_name = std::any::type_name::<&dyn Fn(Par, Vec<$type>) -> Par>();
                 // println!("merger: {:?}\n", merger_type_name);
 
-                let remainder_par = self
-                .free_map
-                .clone()
-                .get(&level)
-                .cloned()
-                .unwrap_or(vector_par(Vec::new(), false));
+                self.reserve_inspect(&self.free_map)?;
+                let remainder_par = match self.free_map.get(&level) {
+                    Some(par) => {
+                        self.reserve_clone(par)?;
+                        par.clone()
+                    }
+                    None => vector_par(Vec::new(), false),
+                };
 
                 // println!("\nremainder_par: {:#?}", remainder_par);
 
-                let remainder_par_updated = merger(remainder_par, remainder_targets);
+                let work = self.work()?;
+                let remainder_par_updated = merger(remainder_par, remainder_targets, &work)?;
 
                 // println!("\nremainder_par_updated: {:#?}", remainder_par_updated);
 
                 // println!("\nmodifying free_map in handle_remainder");
+                let entries = self.free_map.len().checked_add(1)?;
+                let (operations, bytes) = tree_backing::<i32, Par>(entries)?;
+                self.reserve(operations, bytes, bytes)?;
                 self.free_map.insert(level, remainder_par_updated);
                 // println!("\ncurrent free_map: {:#?}", self.free_map);
 
@@ -279,14 +310,20 @@ macro_rules! list_match {
               fn match_function_ref(&mut self, pattern: &Pattern<$type>, t: &$type) -> Option<FreeMap> {
                 match pattern {
                   Pattern::Term(p) => {
+                     self.reserve_clone(p)?;
                      if !self.connective_used(p.clone()) {
                          // Pure arm: no write to `free_map` is reachable from here, so
                          // the pre-attempt and post-attempt maps are the same map and
                          // no snapshot is needed.
-                         guard(t == p).map(|_| self.free_map.clone())
+                         self.reserve_inspect(t)?;
+                         self.reserve_inspect(p)?;
+                         guard(t == p)?;
+                         self.reserve_clone(&self.free_map)?;
+                         Some(self.free_map.clone())
                       } else {
                          // `initState <- get` — the ONLY new clone this fix introduces.
                          let __isolate_start = std::time::Instant::now();
+                         self.reserve_clone(&self.free_map)?;
                          let init_state = self.free_map.clone();
                          ::metrics::counter!(
                              $crate::rust::interpreter::metrics_constants::RHOLANG_MATCHER_ISOLATE_STATE_CLONE_ENTRIES_METRIC,
@@ -299,6 +336,8 @@ macro_rules! list_match {
                          )
                          .increment(__isolate_start.elapsed().as_nanos() as u64);
 
+                         self.reserve_clone(t)?;
+                         self.reserve_clone(p)?;
                          let effect = self.spatial_match(t.clone(), p.clone());
 
                          // `resultState <- get; set(initState); yield resultState` as
@@ -314,7 +353,12 @@ macro_rules! list_match {
                   // remainder's own binding happens AFTER the bipartite match, on
                   // `self`, in `handle_remainder`.
                   Pattern::Remainder(_) =>
-                      guard(self.locally_free(t.clone(), 0).is_empty()).map(|_| self.free_map.clone()),
+                      {
+                          self.reserve_clone(t)?;
+                          guard(self.locally_free(t.clone(), 0).is_empty())?;
+                          self.reserve_clone(&self.free_map)?;
+                          Some(self.free_map.clone())
+                      },
                 }
               }
           }
@@ -361,110 +405,35 @@ pub fn first_duplicate_added_var(current_free_map: &FreeMap, free_maps: &[FreeMa
         .copied()
 }
 
-/// Fold the free maps of every match the bipartite matcher claimed into one.
-///
-/// The correctness of isolating the maximum-bipartite match from changing the
-/// `FreeMap` relies on our ability to aggregate the variable assignments from
-/// subsequent matches. That is only sound when the variables populated by the
-/// matcher do not duplicate each other, so this is where that is checked —
-/// see [`first_duplicate_added_var`] for what the check is and why the port
-/// had lost it.
-///
-/// ★ **A duplicate is a DECIDABLE NEGATIVE: it refuses.** Scala raised
-/// `BugFoundError` through an error channel this trait does not have —
-/// `ListMatch`/`SpatialMatcher` return `Option`, and widening them to `Result`
-/// would change every signature in the module. Refusing through the `Option`
-/// the function already returns is a **deliberate divergence from upstream**,
-/// and the caller's `?` reads it exactly as it should: *this list match does
-/// not happen*.
-///
-/// **Why the previous `panic!` could not stay.** `Matcher::get` receives
-/// `BindPattern`s deserialised from tuplespace history, including state served
-/// by a peer during sync. Pattern free-variable linearity is enforced at
-/// *normalization* (`FreeMap::merge` → "Free variable X is used twice as a
-/// binder"), which a deserialised pattern never went through on this node.
-/// The panic was unreachable only for as long as the guard was vacuous;
-/// restoring the guard while keeping the panic would have converted a dead
-/// check into a remotely-triggerable node crash
-/// (`shared/tests/panic_expectation_gate.rs`).
-///
-/// **Why this is expected to be silent forever.** Under state isolation each
-/// returned map is `current + δᵢ`; the added vars duplicate iff two claimed
-/// matches bind the same level; each level occupies at most one pattern
-/// position by linearity; and `Pattern::Remainder` binds nothing inside the
-/// bipartite match — the remainder is bound afterwards, on `self`, in
-/// `handle_remainder`. So this is a genuine defense-in-depth backstop, and it
-/// is *implementable* precisely because isolation makes the disjointness hold.
-/// The refusals counter reading non-zero means a non-linear `BindPattern`
-/// reached the matcher: a normalizer defect, or hostile tuplespace state.
-///
-/// ⚠ **THE LINEARITY PREMISE IS NOT SELF-EVIDENT, AND IT DID NOT HOLD WHEN THAT
-/// PARAGRAPH WAS WRITTEN.** "Each level occupies at most one pattern position"
-/// is a property of **one free map**, and the matcher has *several* in flight:
-/// `~P` and `P \/ Q` bodies are each normalized against a **fresh** `FreeMap`
-/// which `combine_p_negation` then **discards**
-/// (`normalizer/processes/p_negation_normalizer.rs:10-13, 65-89`), so a free
-/// variable under `~` is `FreeVar(0)` in a numbering nobody kept — and level 0
-/// is somebody *else's* level in the shared map. Two sibling sub-patterns each
-/// containing a binding negation therefore both added level 0, and this
-/// backstop fired:
-///
-/// ```text
-///   match { @0!(7) | @1!(6) } { @0!(~{x /\ 8}) | @1!(~{y /\ 9}) => A  _ => B }
-///
-///   before:  δ₁ = {0 ↦ 7}, δ₂ = {0 ↦ 6}   ⇒ duplicate ⇒ REFUSE ⇒ B runs  ✗
-///   after:   δ₁ = {},      δ₂ = {}        ⇒ disjoint  ⇒ commit ⇒ A runs  ✓
-/// ```
-///
-/// The `δᵢ` above were *the negations' own* leaks, not other attempts' — which
-/// is why `match_function`'s isolation, working exactly as specified, could not
-/// see them. `b219e199` (task #148) isolated the four connective sites inside
-/// `spatial_matcher.rs`, which is what makes a negation's `δ` empty and the
-/// premise finally true. **Nothing about this function changed**; what changed
-/// is that its precondition is now met. The mechanism — including that the
-/// normalizer really does emit level 0 in *every* negation body — is pinned by
-/// `rholang/tests/matcher_negation_isolation.rs`, and
-/// `rholang/tests/matcher_negation_reduction_witness.rs` carries it out to the
-/// reduction above.
+/// Merge claimed maps in deterministic source order. Repeated levels are last-wins,
+/// including malformed/foreign patterns: duplicate rejection would change consensus.
 pub fn aggregate_updates(current_free_map: FreeMap, free_maps: Vec<FreeMap>) -> Option<FreeMap> {
-    if let Some(level) = first_duplicate_added_var(&current_free_map, &free_maps) {
-        // Observability, not consensus — there is no cost accounting anywhere in
-        // this module, so a counter here cannot move metering.
-        metrics::counter!(
-            crate::rust::interpreter::metrics_constants::RHOLANG_MATCHER_AGGREGATE_UPDATES_REFUSALS_METRIC,
-            "source" => crate::rust::interpreter::metrics_constants::RHOLANG_METRICS_SOURCE
-        )
-        .increment(1);
+    aggregate_updates_inner(current_free_map, free_maps, None)
+}
 
-        // Structured, for a node with a subscriber installed.
-        tracing::error!(
-            target: "f1r3fly.rholang.matcher",
-            level,
-            free_maps = ?free_maps,
-            "aggregated updates conflicted with each other: two claimed matches added \
-             the same free-variable level, which a linearly-normalised pattern cannot \
-             do; declining to commit this list match"
-        );
+pub(super) fn aggregate_updates_metered(
+    current_free_map: FreeMap,
+    free_maps: Vec<FreeMap>,
+    work: &MatcherWork<'_>,
+) -> Option<FreeMap> {
+    aggregate_updates_inner(current_free_map, free_maps, Some(work))
+}
 
-        // ★ And unstructured, for the audit that has no subscriber and no metrics
-        // recorder: this backstop's whole claim is that it is SILENT, and that
-        // claim has to be checkable by running the test suite and grepping. The
-        // line is on a path that never executes, so it costs nothing.
-        eprintln!(
-            "RHOLANG-MATCHER-AGGREGATE-UPDATES-REFUSAL: level {} was added by two \
-             separate matches; free_maps = {:?}",
-            level, free_maps
-        );
-
-        return None;
+fn aggregate_updates_inner(
+    mut current_free_map: FreeMap,
+    free_maps: Vec<FreeMap>,
+    work: Option<&MatcherWork<'_>>,
+) -> Option<FreeMap> {
+    for free_map in free_maps {
+        for (level, value) in free_map {
+            if let Some(work) = work {
+                work.reserve_inspect(&current_free_map)?;
+                let entries = current_free_map.len().checked_add(1)?;
+                let (operations, bytes) = tree_backing::<i32, Par>(entries)?;
+                work.reserve(operations, bytes, bytes)?;
+            }
+            current_free_map.insert(level, value);
+        }
     }
-
-    // `updatedFreeMap = freeMaps.fold(currentFreeMap)(_ ++ _)`. The fold order is
-    // the caller's `matches` BTreeMap order and is deliberately NOT changed.
-    let updated_free_map = free_maps.into_iter().fold(current_free_map, |mut acc, fm| {
-        acc.extend(fm);
-        acc
-    });
-
-    Some(updated_free_map)
+    Some(current_free_map)
 }

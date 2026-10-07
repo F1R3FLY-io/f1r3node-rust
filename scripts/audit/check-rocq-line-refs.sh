@@ -22,27 +22,61 @@ if [[ -z "${REPO}" ]]; then
     exit 2
 fi
 
-THEORIES_DIR="${REPO}/formal/rocq/slashing/theories"
-DOCS_DIR="${REPO}/docs/theory/slashing"
+# Audit EVERY Rocq subsystem's theories against the WHOLE theory corpus, not just
+# slashing. The previous slashing-only scope meant fork-choice / finalized-floor /
+# merge-algebra / deploy-lifecycle citations were never checked at all — the same
+# blind spot that let the 2026-07-15 dev merge invalidate anchors with no gate firing.
+declare -a THEORY_DIRS=(
+    "${REPO}/formal/rocq/slashing/theories"
+    "${REPO}/formal/rocq/finalized_floor/theories"
+    "${REPO}/formal/rocq/fork_choice/theories"
+    "${REPO}/formal/rocq/merge_algebra/theories"
+    # 2026-08-08: the cost-accounting and validator trees were missing from
+    # this map, so every `CostAccountedSyntax.v:NNN`-style citation in the
+    # cost-accounting docs was reported "not found" regardless of accuracy —
+    # the exact scope blind spot the note above warns about, one tier deeper.
+    "${REPO}/formal/rocq/cost_accounted_rho/theories"
+    "${REPO}/formal/rocq/validator/theories"
+)
+DOCS_DIR="${REPO}/docs/casper/theory"
 QUIET=0
 if [[ "${1:-}" == "--quiet" ]]; then QUIET=1; fi
 
-if [[ ! -d "${THEORIES_DIR}" ]]; then
-    echo "error: Rocq theories directory not found: ${THEORIES_DIR}" >&2
-    exit 2
-fi
+for d in "${THEORY_DIRS[@]}"; do
+    if [[ ! -d "${d}" ]]; then
+        echo "error: Rocq theories directory not found: ${d}" >&2
+        exit 2
+    fi
+done
 if [[ ! -d "${DOCS_DIR}" ]]; then
     echo "error: docs directory not found: ${DOCS_DIR}" >&2
     exit 2
 fi
 
 # Build the canonical (file, line, name) index from .v sources.
+#
+# NOTE: the index is keyed by BASENAME, and basenames repeat across subsystems
+# (MainTheorem.v, Foundation.v, GuardBridge.v all exist in several). A cite is
+# therefore accepted if it matches the named declaration in ANY subsystem whose
+# file has that basename — deliberately permissive, since a doc cite of
+# `MainTheorem.v:184` is only meaningful within its own subsystem's docs. This
+# still catches the failure that matters: a name/line pair that matches NOWHERE.
 INDEX="$(mktemp)"
 trap 'rm -f "${INDEX}"' EXIT
-for v in "${THEORIES_DIR}"/*.v; do
-    base="$(basename "${v}")"
-    grep -nE '^(Theorem|Lemma|Definition|Corollary|Fixpoint|Inductive) [A-Za-z_]+' "${v}" |
-        awk -F'[: ]' -v f="${base}" '{print f, $1, $3}'
+for dir in "${THEORY_DIRS[@]}"; do
+    for v in "${dir}"/*.v; do
+        [[ -f "${v}" ]] || continue
+        base="$(basename "${v}")"
+        grep -nE '^ *(Theorem|Lemma|Definition|Corollary|Fixpoint|CoFixpoint|Inductive|CoInductive) [A-Za-z_]+' "${v}" |
+            awk -F'[: ]' -v f="${base}" '{for(i=1;i<=NF;i++) if($i ~ /^(Theorem|Lemma|Definition|Corollary|Fixpoint|CoFixpoint|Inductive|CoInductive)$/) {print f, $1, $(i+1); break}}'
+        # Also index (co)inductive CONSTRUCTORS (`  | name : ...`) and
+        # `with`-block heads (`with name : ...`) — docs legitimately cite
+        # reduction-rule constructors (rs_comm, dill_*) and mutual bodies
+        # (RhoSyntax's `with proc :`), which the declaration pass misses.
+        grep -nE '^ *(\| *|with +)[A-Za-z_][A-Za-z0-9_]* *:' "${v}" |
+            sed -E 's/^([0-9]+): *(\| *|with +)([A-Za-z_][A-Za-z0-9_]*).*/\1 \3/' |
+            awk -v f="${base}" '{print f, $1, $2}'
+    done
 done > "${INDEX}"
 
 # Scan docs for filename:line cites preceded by a backtick-quoted identifier.

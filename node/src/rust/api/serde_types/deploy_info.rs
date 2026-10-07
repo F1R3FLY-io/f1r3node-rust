@@ -53,8 +53,10 @@ pub struct DeployInfoSerde {
     pub sig: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
-    // D3 (DR-9): phloPrice / phloLimit removed — a deploy's cost is the per-COMM
-    // token count (reported in `cost`); there is no escrow price/limit.
+    #[serde(rename = "phloPrice")]
+    pub phlo_price: i64,
+    #[serde(rename = "phloLimit")]
+    pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
     pub valid_after_block_number: i64,
     pub cost: u64,
@@ -73,6 +75,8 @@ impl From<DeployInfo> for DeployInfoSerde {
             timestamp: deploy.timestamp,
             sig: deploy.sig,
             sig_algorithm: deploy.sig_algorithm,
+            phlo_price: deploy.phlo_price,
+            phlo_limit: deploy.phlo_limit,
             valid_after_block_number: deploy.valid_after_block_number,
             cost: deploy.cost,
             errored: deploy.errored,
@@ -97,6 +101,8 @@ impl From<DeployInfoSerde> for DeployInfo {
             timestamp: json.timestamp,
             sig: json.sig,
             sig_algorithm: json.sig_algorithm,
+            phlo_price: json.phlo_price,
+            phlo_limit: json.phlo_limit,
             valid_after_block_number: json.valid_after_block_number,
             cost: json.cost,
             errored: json.errored,
@@ -120,6 +126,8 @@ impl Default for DeployInfoSerde {
             timestamp: 0,
             sig: String::new(),
             sig_algorithm: String::new(),
+            phlo_price: 0,
+            phlo_limit: 0,
             valid_after_block_number: 0,
             cost: 0,
             errored: false,

@@ -194,3 +194,80 @@ fn ternary_full_arrival_debits_exactly_once_under_full_race() {
         );
     });
 }
+
+struct AtomicComm {
+    required_mask: u32,
+    budget: usize,
+    inner: Mutex<AtomicCommInner>,
+}
+
+struct AtomicCommInner {
+    pending_mask: u32,
+    committed: usize,
+    cost: usize,
+}
+
+impl AtomicComm {
+    fn new(arity: usize, budget: usize) -> Self {
+        Self {
+            required_mask: (1u32 << arity) - 1,
+            budget,
+            inner: Mutex::new(AtomicCommInner {
+                pending_mask: 0,
+                committed: 0,
+                cost: 0,
+            }),
+        }
+    }
+
+    fn introduce(&self, index: usize) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let available = inner.pending_mask | (1u32 << index);
+        if available != self.required_mask {
+            inner.pending_mask = available;
+            return false;
+        }
+        if inner.cost >= self.budget {
+            return false;
+        }
+        inner.cost += 1;
+        inner.committed += 1;
+        inner.pending_mask = 0;
+        true
+    }
+}
+
+#[test]
+fn atomic_comm_charges_once_after_every_surface_is_present() {
+    loom::model(|| {
+        let comm = Arc::new(AtomicComm::new(2, 1));
+        let left = comm.clone();
+        let right = comm.clone();
+        let left_thread = thread::spawn(move || left.introduce(0));
+        let right_thread = thread::spawn(move || right.introduce(1));
+        let left_committed = left_thread.join().unwrap();
+        let right_committed = right_thread.join().unwrap();
+        let inner = comm.inner.lock().unwrap();
+        assert_ne!(left_committed, right_committed);
+        assert_eq!(inner.committed, 1);
+        assert_eq!(inner.cost, 1);
+        assert_eq!(inner.pending_mask, 0);
+    });
+}
+
+#[test]
+fn atomic_comm_rejection_preserves_pending_and_excludes_trigger() {
+    loom::model(|| {
+        let comm = Arc::new(AtomicComm::new(2, 0));
+        let left = comm.clone();
+        let right = comm.clone();
+        let left_thread = thread::spawn(move || left.introduce(0));
+        let right_thread = thread::spawn(move || right.introduce(1));
+        assert!(!left_thread.join().unwrap());
+        assert!(!right_thread.join().unwrap());
+        let inner = comm.inner.lock().unwrap();
+        assert_eq!(inner.committed, 0);
+        assert_eq!(inner.cost, 0);
+        assert_eq!(inner.pending_mask.count_ones(), 1);
+    });
+}

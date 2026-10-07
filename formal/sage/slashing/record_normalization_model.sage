@@ -13,16 +13,12 @@ def normalize(records):
     return {str(key): sorted(value) for key, value in sorted(normalized.items())}
 
 
-def recoverable_rejected_slash_hashes(rejected, own_hashes):
-    own = set(own_hashes)
-    seen = set()
-    out = []
-    for invalid_hash, _issuer in sorted(rejected):
-        if invalid_hash in own or invalid_hash in seen:
-            continue
-        seen.add(invalid_hash)
-        out.append(invalid_hash)
-    return out
+def canonical_slash_candidates(evidence):
+    selected = {}
+    for validator, epoch, invalid_hash in evidence:
+        key = (validator, epoch)
+        selected[key] = min(invalid_hash, selected.get(key, invalid_hash))
+    return sorted((validator, epoch, invalid_hash) for (validator, epoch), invalid_hash in selected.items())
 
 
 def analyze():
@@ -39,18 +35,19 @@ def analyze():
             failures.append({"order": list(order), "candidate": candidate, "expected": expected})
             break
     duplicate = normalize([((0, 1), ["h1", "h1", "h2"])])
-    rejected = [("h3", "issuer_b"), ("h1", "issuer_a"), ("h3", "issuer_c"), ("h2", "issuer_d")]
-    recovered = recoverable_rejected_slash_hashes(rejected, {"h1"})
+    slash_evidence = [("v1", 0, "h3"), ("v1", 0, "h1"), ("v1", 0, "h3"), ("v2", 0, "h2")]
+    selected = canonical_slash_candidates(slash_evidence)
+    target_keys = [(validator, epoch) for validator, epoch, _ in selected]
     return {
         "summaries": [{
             "checked": checked,
             "failures": len(failures),
             "duplicate_idempotent": duplicate == {"(0, 1)": ["h1", "h2"]},
-            "rejected_slash_recovery": recovered == ["h2", "h3"],
+            "slash_target_unique": len(target_keys) == len(set(target_keys)),
         }],
         "failures": failures,
         "normalized": expected,
-        "recoverable_rejected_slashes": recovered,
+        "canonical_slash_candidates": selected,
     }
 
 
@@ -60,16 +57,16 @@ def self_test():
         raise AssertionError("record normalization depended on insertion order")
     if not result["summaries"][0]["duplicate_idempotent"]:
         raise AssertionError("duplicate hashes changed normalized meaning")
-    if not result["summaries"][0]["rejected_slash_recovery"]:
-        raise AssertionError("rejected slash recovery normalization changed")
+    if not result["summaries"][0]["slash_target_unique"]:
+        raise AssertionError("slash target normalization changed")
     return result
 
 
 def print_summary(result):
     for summary in result["summaries"]:
-        print("checked={checked} failures={failures} duplicate_idempotent={duplicate_idempotent} rejected_slash_recovery={rejected_slash_recovery}".format(**summary))
+        print("checked={checked} failures={failures} duplicate_idempotent={duplicate_idempotent} slash_target_unique={slash_target_unique}".format(**summary))
     print("normalized={}".format(result["normalized"]))
-    print("recoverable_rejected_slashes={}".format(result["recoverable_rejected_slashes"]))
+    print("canonical_slash_candidates={}".format(result["canonical_slash_candidates"]))
 
 
 def main(argv):

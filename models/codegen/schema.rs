@@ -431,8 +431,9 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
             facts.reaches_clone_cut_set,
         ) {
             (true, _) => Disposition::Converted(
-                "term_ops generated `impl prost::Message`; `merge_field` delegates to the \
-                 descriptor-generated `protobuf_decoder::merge_par_field` and iterative unknown-field skipper",
+                "term_ops generated `impl prost::Message`; Par delegates to the descriptor-generated \
+                 `merge_par_field`, while cost cut members merge through the generated decoder PDA \
+                 and bounded field arms; unknown groups use the iterative skipper",
             ),
             (false, true) => Disposition::FollowsFrom(
                 "the retained Prost-derived decoder reaches the generated stack-safe Message \
@@ -449,8 +450,8 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
             facts.reaches_clone_cut_set,
         ) {
             (true, _) => Disposition::Converted(
-                "term_ops generated `impl prost::Message`; `clear` detaches all recursive Par \
-                 children through `par_children::dismantle_in_place`",
+                "term_ops generated `impl prost::Message`; `clear` detaches recursive Par and \
+                 cost-signature children through the iterative `par_children` teardown",
             ),
             (false, true) => Disposition::FollowsFrom(
                 "the retained Prost-derived clear walk reaches the generated stack-safe Message \
@@ -742,6 +743,7 @@ enum Shape {
 ///
 /// The vector these live in is produced once by [`resolve_message`]; the two
 /// emitters read it under two different sort keys. See the module header.
+#[derive(Clone)]
 struct Field {
     /// The Rust struct field identifier (already keyword-escaped).
     rust_name: String,
@@ -1492,6 +1494,7 @@ fn oneof_const_prefix(oneof_ident: &str) -> &'static str {
         "VarInstance" => "VI_",
         "UnfInstance" => "UF_",
         "TaggedCont" => "TC_",
+        "Value" => "CS_",
         other => panic!(
             "schema: oneof `{other}` has no registered constant prefix. Add one to \
              `oneof_const_prefix` deliberately — an auto-abbreviation could collide with an \
@@ -1758,8 +1761,9 @@ fn tarjan_scc(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
 // so [`ClonePlan::build`] does not claim minimality. It takes the greedy
 // max-degree heuristic and then **verifies the result**: after the cut, every SCC
 // of the residual graph must be trivial. Correctness is proved, minimality is a
-// heuristic, and the difference is stated rather than blurred. On this schema the
-// answer is the singleton `{Par}`, which the emitted table publishes.
+// heuristic, and the difference is stated rather than blurred. The emitted
+// table publishes the current answer, including the independent cost-signature
+// cycle introduced by the committed cost-accounting schema.
 //
 // ## 3. Which types the driver ENTERS
 //
@@ -1792,8 +1796,17 @@ fn tarjan_scc(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
 /// [`ClonePlan::build`] **panics** if the derived cut set acquires a member with
 /// no entry here, naming the member and what it needs. A `_ =>` arm in the
 /// generated teardown would have been the silent alternative.
-const ITERATIVE_TEARDOWN: &[(&str, &str)] =
-    &[("Par", "crate::rust::rholang::par_children::dismantle")];
+const ITERATIVE_TEARDOWN: &[(&str, &str)] = &[
+    ("Par", "crate::rust::rholang::par_children::dismantle"),
+    (
+        "CostSignature",
+        "crate::rust::rholang::par_children::dismantle_cost_signature",
+    ),
+    (
+        "CostSignatureCompound",
+        "crate::rust::rholang::par_children::dismantle_cost_signature_compound",
+    ),
+];
 
 /// The protobuf scalar types whose Rust rendering is `Copy`.
 ///
@@ -2332,6 +2345,54 @@ fn bincode_emit(field: &Field, index: usize) -> String {
     }
 }
 
+/// The same descriptor field and serde position as `bincode_emit`, rendered
+/// for a charge-before-write sink. This is a generated twin of the *one*
+/// positional program, not a separately maintained schema.
+fn bincode_emit_metered(field: &Field, index: usize) -> String {
+    let name = &field.rust_name;
+    let resume = index + 1;
+    match &field.shape {
+        Shape::Map { .. } => format!(
+            "{{ let m = &self.{name}; try_put_u64(out, m.len() as u64)?; \
+             if !m.is_empty() {{ return Ok(Descent::Map {{ resume: {resume}, map: m }}); }} }}"
+        ),
+        Shape::RepeatedMessage { .. } => format!(
+            "{{ let s = &self.{name}; let n = s.len(); try_put_u64(out, n as u64)?; \
+             if n != 0 {{ return Ok(Descent::Seq {{ resume: {resume}, len: n, seq: s }}); }} }}"
+        ),
+        Shape::RepeatedString => format!("try_put_str_seq(out, &self.{name})?"),
+        Shape::RepeatedBytes => format!("try_put_bytes_seq(out, &self.{name})?"),
+        Shape::Message { .. } => format!(
+            "match &self.{name} {{ \
+             Some(v) => {{ try_put_bool(out, true)?; \
+             return Ok(Descent::Node {{ resume: {resume}, node: v }}); }} \
+             None => try_put_bool(out, false)? }}"
+        ),
+        Shape::EmptyBytes => "try_put_empty_bytes(out)?".to_string(),
+        Shape::Oneof => format!(
+            "match &self.{name} {{ \
+             Some(v) => {{ try_put_bool(out, true)?; \
+             if let Some(node) = BincodeOneof::bincode_emit_metered(v, out)? {{ \
+             return Ok(Descent::Node {{ resume: {resume}, node }}); }} }} \
+             None => try_put_bool(out, false)? }}"
+        ),
+        Shape::Scalar(ty) => match ty {
+            Type::Bool => format!("try_put_bool(out, self.{name})?"),
+            Type::String => format!("try_put_str(out, &self.{name})?"),
+            Type::Bytes => format!("try_put_byte_vec(out, &self.{name})?"),
+            Type::Int32 | Type::Sint32 | Type::Sfixed32 => {
+                format!("try_put_i32(out, self.{name})?")
+            }
+            Type::Uint32 | Type::Fixed32 => format!("try_put_u32(out, self.{name})?"),
+            Type::Int64 | Type::Sint64 | Type::Sfixed64 => {
+                format!("try_put_i64(out, self.{name})?")
+            }
+            Type::Uint64 | Type::Fixed64 => format!("try_put_u64(out, self.{name})?"),
+            other => panic!("schema: metered bincode scalar {other:?} has no primitive"),
+        },
+    }
+}
+
 /// Render a message's bincode emissions, with the tail-call patch applied.
 ///
 /// ★ THE TAIL-CALL PATCH. A descending field that is the program's LAST needs no
@@ -2359,6 +2420,19 @@ fn bincode_program(msg_name: &str, fields: &[Field]) -> Vec<String> {
         .iter()
         .enumerate()
         .map(|(i, f)| bincode_emit(f, i).replace(&spent, "resume: NO_RESUME"))
+        .collect()
+}
+
+fn bincode_program_metered(msg_name: &str, fields: &[Field]) -> Vec<String> {
+    assert!(
+        fields.len() < u16::MAX as usize,
+        "schema: `{msg_name}` is too wide"
+    );
+    let spent = format!("resume: {}", fields.len());
+    fields
+        .iter()
+        .enumerate()
+        .map(|(i, field)| bincode_emit_metered(field, i).replace(&spent, "resume: NO_RESUME"))
         .collect()
 }
 
@@ -2463,10 +2537,14 @@ fn bincode_header(src: &mut String) {
          use crate::rhoapi::tagged_continuation::TaggedCont;\n\
          use crate::rhoapi::var::VarInstance;\n\
          use crate::rust::rhoapi_ext::EPathMap;\n\
+         use rspace_plus_plus::rspace::errors::RSpaceError;\n\
+         use rspace_plus_plus::rspace::hashing::stable_hash_provider::BincodeByteSink;\n\
          use crate::rust::rholang::bincode_schema::{\n\
          \x20   put_bool, put_bytes, put_bytes_seq, put_empty_bytes, put_i32, put_i64, put_str,\n\
          \x20   put_str_seq, put_u32, put_u64, Descent, FieldKind, VariantProgram, BincodeNode,\n\
-         \x20   BincodeOneof, NO_RESUME,\n\
+         \x20   BincodeOneof, NO_RESUME, try_put_bool, try_put_byte_vec, try_put_bytes_seq,\n\
+         \x20   try_put_empty_bytes, try_put_i32, try_put_i64, try_put_str, try_put_str_seq,\n\
+         \x20   try_put_u32, try_put_u64,\n\
          };\n\
          \n",
     );
@@ -2550,7 +2628,81 @@ fn emit_bincode_message(
         }
         src.push_str("        Descent::Done\n");
     }
-    src.push_str("    }\n}\n\n");
+    src.push_str("    }\n");
+
+    src.push_str("    fn bincode_emit_metered(&self, from: usize, out: &mut dyn BincodeByteSink) -> Result<Descent<'_>, RSpaceError> {\n");
+    if fields.is_empty() {
+        src.push_str("        let _ = (from, out);\n        Ok(Descent::Done)\n");
+    } else {
+        let emits = bincode_program_metered(leaf_name, fields);
+        for (i, (field, emit)) in fields.iter().zip(&emits).enumerate() {
+            writeln!(
+                src,
+                "        if from < {} {{ {} }} // {}",
+                i + 1,
+                emit,
+                field.rust_name
+            )
+            .expect("write");
+        }
+        src.push_str("        Ok(Descent::Done)\n");
+    }
+    src.push_str("    }\n");
+
+    // The pre-cost cold-store layout is a POSITIONAL serde struct layout, not
+    // protobuf tag order. These are the only fields the cost schema added to
+    // pre-existing nodes. In particular TaggedContinuation's cost_authority
+    // sits between two old fields, so a generic trailing-byte truncation is
+    // invalid. Keep the omission list exact and fail generation on drift.
+    let omitted: &[&str] = match leaf_name {
+        "Par" => &["cost_signed_terms", "cost_stacks"],
+        "ReceiveBind" => &["cost_signature"],
+        "ListParWithRandom" => &["cost_authority", "cost_stack"],
+        "TaggedContinuation" => &["cost_authority"],
+        _ => &[],
+    };
+    if !omitted.is_empty() {
+        for name in omitted {
+            assert!(
+                fields.iter().any(|field| field.rust_name == *name),
+                "legacy bincode omission {leaf_name}.{name} missing from merged schema"
+            );
+        }
+        let legacy_fields: Vec<Field> = fields
+            .iter()
+            .filter(|field| !omitted.contains(&field.rust_name.as_str()))
+            .cloned()
+            .collect();
+        let emits = bincode_program(leaf_name, &legacy_fields);
+        src.push_str(
+            "    fn bincode_emit_legacy(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {\n",
+        );
+        for (i, (field, emit)) in legacy_fields.iter().zip(&emits).enumerate() {
+            writeln!(
+                src,
+                "        if from < {} {{ {} }} // {}",
+                i + 1,
+                emit,
+                field.rust_name
+            )
+            .expect("write");
+        }
+        src.push_str("        Descent::Done\n    }\n");
+        let emits = bincode_program_metered(leaf_name, &legacy_fields);
+        src.push_str("    fn bincode_emit_legacy_metered(&self, from: usize, out: &mut dyn BincodeByteSink) -> Result<Descent<'_>, RSpaceError> {\n");
+        for (i, (field, emit)) in legacy_fields.iter().zip(&emits).enumerate() {
+            writeln!(
+                src,
+                "        if from < {} {{ {} }} // {}",
+                i + 1,
+                emit,
+                field.rust_name
+            )
+            .expect("write");
+        }
+        src.push_str("        Ok(Descent::Done)\n    }\n");
+    }
+    src.push_str("}\n\n");
 }
 
 fn emit_bincode_oneof(src: &mut String, oneof: &Oneof) {
@@ -2560,6 +2712,7 @@ fn emit_bincode_oneof(src: &mut String, oneof: &Oneof) {
         module,
         variants,
     } = oneof;
+    let oneof_ty = format!("crate::rhoapi::{module}::{rust_ident}");
     let table_ident = format!("{}_VARIANTS", proto_name.to_uppercase());
     let count_ident = format!("{}_VARIANT_COUNT", proto_name.to_uppercase());
 
@@ -2606,7 +2759,7 @@ fn emit_bincode_oneof(src: &mut String, oneof: &Oneof) {
     // compile until this table regenerates.
     writeln!(
         src,
-        "impl BincodeOneof for {rust_ident} {{\n\
+        "impl BincodeOneof for {oneof_ty} {{\n\
          \x20   /// ★ EXHAUSTIVE — no wildcard arm. A variant added to the `.proto` cannot\n\
          \x20   /// reach production untested: the table regenerates and this match with it.\n\
          \x20   ///\n\
@@ -2621,8 +2774,50 @@ fn emit_bincode_oneof(src: &mut String, oneof: &Oneof) {
     for v in variants {
         writeln!(
             src,
-            "            {rust_ident}::{}(v) => {},",
+            "            {oneof_ty}::{}(v) => {},",
             v.rust_ident, v.payload_expr
+        )
+        .expect("write");
+    }
+    src.push_str("        }\n    }\n");
+    src.push_str("    fn bincode_emit_metered(&self, out: &mut dyn BincodeByteSink) -> Result<Option<&dyn BincodeNode>, RSpaceError> {\n        match self {\n");
+    for v in variants {
+        let payload = match v.ty {
+            Type::Message => format!("{{ try_put_u32(out, {})?; Ok(Some(v)) }}", v.index),
+            Type::Bool => format!(
+                "{{ try_put_u32(out, {})?; try_put_bool(out, *v)?; Ok(None) }}",
+                v.index
+            ),
+            Type::String => format!(
+                "{{ try_put_u32(out, {})?; try_put_str(out, v)?; Ok(None) }}",
+                v.index
+            ),
+            Type::Bytes => format!(
+                "{{ try_put_u32(out, {})?; try_put_byte_vec(out, v)?; Ok(None) }}",
+                v.index
+            ),
+            Type::Int32 | Type::Sint32 | Type::Sfixed32 => format!(
+                "{{ try_put_u32(out, {})?; try_put_i32(out, *v)?; Ok(None) }}",
+                v.index
+            ),
+            Type::Uint32 | Type::Fixed32 => format!(
+                "{{ try_put_u32(out, {})?; try_put_u32(out, *v)?; Ok(None) }}",
+                v.index
+            ),
+            Type::Int64 | Type::Sint64 | Type::Sfixed64 => format!(
+                "{{ try_put_u32(out, {})?; try_put_i64(out, *v)?; Ok(None) }}",
+                v.index
+            ),
+            Type::Uint64 | Type::Fixed64 => format!(
+                "{{ try_put_u32(out, {})?; try_put_u64(out, *v)?; Ok(None) }}",
+                v.index
+            ),
+            other => panic!("schema: metered oneof member has type {other:?} without a primitive"),
+        };
+        writeln!(
+            src,
+            "            {oneof_ty}::{}(v) => {payload},",
+            v.rust_ident
         )
         .expect("write");
     }
@@ -3172,6 +3367,7 @@ fn emit_protobuf_oneof(src: &mut String, oneof: &Oneof) {
         module,
         variants,
     } = oneof;
+    let oneof_ty = format!("crate::rhoapi::{module}::{rust_ident}");
     let table_ident = format!("{}_PROTOBUF_VARIANTS", proto_name.to_uppercase());
 
     writeln!(
@@ -3203,7 +3399,7 @@ fn emit_protobuf_oneof(src: &mut String, oneof: &Oneof) {
     // ── the exhaustive impl: no wildcard arm, so a new variant fails to compile ──
     writeln!(
         src,
-        "impl ProtobufOneof for {rust_ident} {{\n\
+        "impl ProtobufOneof for {oneof_ty} {{\n\
          \x20   /// ★ EXHAUSTIVE — no wildcard arm. A variant added to the `.proto` cannot\n\
          \x20   /// reach production untested: the table regenerates and this match with it.\n\
          \x20   ///\n\
@@ -3231,12 +3427,7 @@ fn emit_protobuf_oneof(src: &mut String, oneof: &Oneof) {
                 )
             }
         };
-        writeln!(
-            src,
-            "            {rust_ident}::{}(v) => {arm},",
-            v.rust_ident
-        )
-        .expect("write");
+        writeln!(src, "            {oneof_ty}::{}(v) => {arm},", v.rust_ident).expect("write");
     }
     src.push_str("        }\n    }\n\n");
 
@@ -3273,12 +3464,7 @@ fn emit_protobuf_oneof(src: &mut String, oneof: &Oneof) {
                 )
             }
         };
-        writeln!(
-            src,
-            "            {rust_ident}::{}(v) => {arm},",
-            v.rust_ident
-        )
-        .expect("write");
+        writeln!(src, "            {oneof_ty}::{}(v) => {arm},", v.rust_ident).expect("write");
     }
     src.push_str("        }\n    }\n}\n\n");
 }
@@ -3910,6 +4096,20 @@ fn emit_term_ops_source(
             .copied()
             .expect("schema: Par must have resolved fields"),
     );
+    emit_cost_message_impls(
+        &mut src,
+        plan,
+        messages,
+        oneofs,
+        fields_of
+            .get("CostSignature")
+            .copied()
+            .expect("schema: CostSignature must have resolved fields"),
+        fields_of
+            .get("CostSignatureCompound")
+            .copied()
+            .expect("schema: CostSignatureCompound must have resolved fields"),
+    );
 
     // ── §F  the retained oracle ──
     emit_clone_oracle(
@@ -3979,6 +4179,184 @@ fn emit_par_message_impl(src: &mut String, fields: &[Field]) {
         .expect("write Par clear field");
     }
     src.push_str("    }\n}\n\n");
+}
+
+/// The cost-signature cycle is the new independent feedback cut. The build
+/// strips Prost's recursive Message derive from whichever member the feedback
+/// cut selected, so emit that replacement here. Fail closed if the wire shapes
+/// change: the explicit
+/// field-merge arms below must never silently follow a changed tag layout.
+fn emit_cost_message_impls(
+    src: &mut String,
+    plan: &ClonePlan,
+    messages: &[Message<'_>],
+    oneofs: &[Oneof],
+    signature: &[Field],
+    compound: &[Field],
+) {
+    assert!(
+        signature.len() == 1
+            && signature[0].rust_name == "value"
+            && matches!(&signature[0].shape, Shape::Oneof)
+            && signature[0].min_tag() == 1,
+        "schema: CostSignature Message merge expects the value oneof at tags 1..6"
+    );
+    assert!(
+        compound.len() == 1
+            && compound[0].rust_name == "elements"
+            && matches!(&compound[0].shape, Shape::RepeatedMessage { leaf } if leaf == "CostSignature")
+            && compound[0].min_tag() == 1,
+        "schema: CostSignatureCompound Message merge expects repeated CostSignature at tag 1"
+    );
+    let value = decoder_oneof(messages, oneofs, "CostSignature", "value");
+    let actual: Vec<(&str, u32)> = value
+        .variants
+        .iter()
+        .map(|variant| (variant.rust_ident.as_str(), variant.tag))
+        .collect();
+    assert_eq!(
+        actual.as_slice(),
+        &[
+            ("Ground", 1),
+            ("BoundLevel", 2),
+            ("Quote", 3),
+            ("Compound", 4),
+            ("Name", 5),
+            ("Unit", 6),
+        ],
+        "schema: CostSignature Message merge oneof tag/name mapping changed"
+    );
+    assert!(
+        plan.in_cut("CostSignature") || plan.in_cut("CostSignatureCompound"),
+        "schema: the direct cost-signature cycle has no Message feedback cut"
+    );
+    if plan.in_cut("CostSignature") {
+        src.push_str(r#"
+impl Default for CostSignature {
+    fn default() -> Self { Self { value: None } }
+}
+
+impl prost::Message for CostSignature {
+    fn encode_raw(&self, buf: &mut impl prost::bytes::BufMut) {
+        crate::rust::rholang::protobuf_encoder::encode_into(self, buf);
+    }
+
+    fn merge(&mut self, buf: impl prost::bytes::Buf) -> Result<(), prost::DecodeError> {
+        crate::rust::rholang::protobuf_decoder::merge_cost_signature(self, buf)
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: prost::encoding::WireType,
+        buf: &mut impl prost::bytes::Buf,
+        ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        use crate::rhoapi::cost_signature::Value;
+        use prost::encoding;
+        match tag {
+            1 => {
+                let mut payload = Vec::new();
+                encoding::bytes::merge(wire_type, &mut payload, buf, ctx)?;
+                self.value = Some(Value::Ground(payload));
+            }
+            2 => {
+                let mut payload = 0;
+                encoding::sint32::merge(wire_type, &mut payload, buf, ctx)?;
+                self.value = Some(Value::BoundLevel(payload));
+            }
+            3 => {
+                let mut child = match self.value.take() {
+                    Some(Value::Quote(child)) => child,
+                    _ => Par::default(),
+                };
+                encoding::message::merge(wire_type, &mut child, buf, ctx)?;
+                self.value = Some(Value::Quote(child));
+            }
+            4 => {
+                let mut child = match self.value.take() {
+                    Some(Value::Compound(child)) => child,
+                    _ => CostSignatureCompound::default(),
+                };
+                crate::rust::rholang::protobuf_decoder::merge_delimited_cost_signature_compound(
+                    &mut child, wire_type, buf,
+                )?;
+                self.value = Some(Value::Compound(child));
+            }
+            5 => {
+                let mut child = match self.value.take() {
+                    Some(Value::Name(child)) => child,
+                    _ => Par::default(),
+                };
+                encoding::message::merge(wire_type, &mut child, buf, ctx)?;
+                self.value = Some(Value::Name(child));
+            }
+            6 => {
+                let mut payload = false;
+                encoding::bool::merge(wire_type, &mut payload, buf, ctx)?;
+                self.value = Some(Value::Unit(payload));
+            }
+            _ => return crate::rust::rholang::protobuf_decoder::skip_unknown_field(wire_type, tag, buf),
+        }
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        crate::rust::rholang::protobuf_encoder::encoded_len(self)
+    }
+
+    fn clear(&mut self) {
+        crate::rust::rholang::par_children::dismantle_cost_signature_in_place(self);
+        self.value = None;
+    }
+}
+"#);
+    }
+
+    if plan.in_cut("CostSignatureCompound") {
+        src.push_str(
+            r#"
+impl Default for CostSignatureCompound {
+    fn default() -> Self { Self { elements: Vec::new() } }
+}
+
+impl prost::Message for CostSignatureCompound {
+    fn encode_raw(&self, buf: &mut impl prost::bytes::BufMut) {
+        crate::rust::rholang::protobuf_encoder::encode_into(self, buf);
+    }
+
+    fn merge(&mut self, buf: impl prost::bytes::Buf) -> Result<(), prost::DecodeError> {
+        crate::rust::rholang::protobuf_decoder::merge_cost_signature_compound(self, buf)
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: prost::encoding::WireType,
+        buf: &mut impl prost::bytes::Buf,
+        _ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        match tag {
+            1 => {
+                let child = crate::rust::rholang::protobuf_decoder::decode_delimited_cost_signature(
+                    wire_type, buf,
+                )?;
+                self.elements.push(child);
+                Ok(())
+            }
+            _ => crate::rust::rholang::protobuf_decoder::skip_unknown_field(wire_type, tag, buf),
+        }
+    }
+
+    fn encoded_len(&self) -> usize {
+        crate::rust::rholang::protobuf_encoder::encoded_len(self)
+    }
+
+    fn clear(&mut self) { self.elements.clear(); }
+}
+"#,
+        );
+    }
 }
 
 fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
@@ -4052,6 +4430,13 @@ fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
              #[inline]\n\
              fn drop(&mut self) {\n\
                  crate::rust::rholang::par_children::dismantle_in_place(self);\n\
+             }\n\
+         }\n\
+         \n\
+         impl Drop for CostSignature {\n\
+             #[inline]\n\
+             fn drop(&mut self) {\n\
+                 crate::rust::rholang::par_children::dismantle_cost_signature_in_place(self);\n\
              }\n\
          }\n\
          \n",
@@ -5007,8 +5392,8 @@ fn emit_clone_family_message(
 /// §D — the three families for one oneof enum. Exhaustive matches, no wildcard:
 /// a new member is a compile error until this file regenerates.
 fn emit_clone_family_oneof(src: &mut String, oneof: &Oneof, plan: &ClonePlan) {
-    let enum_ty = &oneof.rust_ident;
-    let stem = enum_ty.to_snake_case();
+    let enum_ty = format!("crate::rhoapi::{}::{}", oneof.module, oneof.rust_ident);
+    let stem = oneof.rust_ident.to_snake_case();
 
     let arm_plan = |v: &Variant| -> FieldDescent {
         match &v.message_leaf {
@@ -5252,7 +5637,7 @@ fn emit_clone_impls(
         if plan.oneof_is_copy[&oneof.rust_ident] {
             continue;
         }
-        let enum_ty = &oneof.rust_ident;
+        let enum_ty = format!("crate::rhoapi::{}::{}", oneof.module, oneof.rust_ident);
         writeln!(
             src,
             "impl Clone for {enum_ty} {{\n    \
@@ -5896,9 +6281,8 @@ fn emit_debug_oracle(
 
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["Par"],
-        "schema: the generated Debug differential currently names Par as its root; \
-         widen the generated test roots when the descriptor-derived cut set changes"
+        vec!["Par", "CostSignature"],
+        "schema: Debug differential roots must track the descriptor-derived cut set"
     );
     src.push_str(
         "#[cfg(test)]\n\
@@ -7270,7 +7654,7 @@ fn emit_eq_oracle(
     }
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["Par"],
+        vec!["Par", "CostSignature"],
         "schema: Eq differential root must track the descriptor-derived cut set"
     );
     src.push_str(
@@ -7294,6 +7678,53 @@ fn emit_eq_oracle(
          \x20       }\n\
          \x20   }\n\
          }\n\n",
+    );
+    src.push_str(
+        r#"#[cfg(test)]
+mod cost_signature_pda_differential {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn examples() -> Vec<CostSignature> {
+        use cost_signature::Value;
+        vec![
+            CostSignature::default(),
+            CostSignature { value: Some(Value::Ground(vec![0, 1, 255])) },
+            CostSignature { value: Some(Value::BoundLevel(-3)) },
+            CostSignature { value: Some(Value::Unit(true)) },
+            CostSignature { value: Some(Value::Quote(Par::default())) },
+            CostSignature { value: Some(Value::Name(Par::default())) },
+            CostSignature { value: Some(Value::Compound(CostSignatureCompound {
+                elements: vec![
+                    CostSignature { value: Some(Value::Unit(false)) },
+                    CostSignature { value: Some(Value::Compound(CostSignatureCompound {
+                        elements: vec![CostSignature { value: Some(Value::Ground(vec![7])) }],
+                    })) },
+                ],
+            })) },
+        ]
+    }
+
+    #[test]
+    fn recursive_cut_root_matches_generated_eq_ord_hash_and_debug() {
+        let values = examples();
+        for left in &values {
+            assert_eq!(format!("{:?}", left), format!("{:?}", OracleDebug(DebugNode::MCostSignature(left))));
+            assert_eq!(format!("{:#?}", left), format!("{:#?}", OracleDebug(DebugNode::MCostSignature(left))));
+            let mut actual = DefaultHasher::new();
+            left.hash(&mut actual);
+            let mut oracle = DefaultHasher::new();
+            oracle_hash_cost_signature(left, &mut oracle);
+            assert_eq!(actual.finish(), oracle.finish());
+            for right in &values {
+                assert_eq!(left == right, oracle_eq_cost_signature(left, right));
+                assert_eq!(left.cmp(right), oracle_ord_cost_signature(left, right));
+            }
+        }
+    }
+}
+"#,
     );
 }
 
@@ -7804,7 +8235,7 @@ fn emit_hash_oracle(
     }
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["Par"],
+        vec!["Par", "CostSignature"],
         "schema: Hash differential root must track the descriptor-derived cut set"
     );
     src.push_str(
@@ -8030,9 +8461,8 @@ fn emit_ord_oracle(
 
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["Par"],
-        "schema: the generated Ord differential currently names Par as its root; \
-         widen the generated test roots when the descriptor-derived cut set changes"
+        vec!["Par", "CostSignature"],
+        "schema: Ord differential roots must track the descriptor-derived cut set"
     );
     src.push_str(
         "#[cfg(test)]\n\
@@ -8398,12 +8828,13 @@ fn emit_clone_oracle(
         if plan.oneof_is_copy[&oneof.rust_ident] {
             continue;
         }
-        let enum_ty = &oneof.rust_ident;
+        let enum_ty = format!("crate::rhoapi::{}::{}", oneof.module, oneof.rust_ident);
+        let stem = oneof.rust_ident.to_snake_case();
         writeln!(
             src,
             "/// The DERIVE's body for [`{enum_ty}`].\n\
              pub fn oracle_clone_{}(src: &{enum_ty}) -> {enum_ty} {{\n    match src {{",
-            enum_ty.to_snake_case()
+            stem
         )
         .expect("write");
         for v in &oneof.variants {
@@ -8751,7 +9182,7 @@ fn emit_schema_meta_source(
          pub static HAND_WRITTEN_TRAVERSALS: &[(&str, &str)] = &[\n\
          \x20   (\"PartialEq::eq\", \"models/src/lib.rs — ignores `locally_free`\"),\n\
          \x20   (\"Hash::hash\", \"models/src/lib.rs — mirrors `PartialEq`'s field set\"),\n\
-         \x20   (\"Drop::drop\", \"generated `impl Drop for Par` delegates to `par_children::dismantle_in_place`\"),\n\
+         \x20   (\"Drop::drop\", \"generated `impl Drop for Par` and `CostSignature` delegate to iterative `par_children` teardown\"),\n\
          ];\n\n",
     );
 
@@ -10467,6 +10898,18 @@ impl<B> Machine<B> {
             src.push_str("                Value::Par(value) => pars.push(value),\n");
             continue;
         }
+        if msg.leaf_name() == "CostSignature" {
+            let oneof = decoder_oneof(messages, oneofs, "CostSignature", "value");
+            let salvage = decoder_oneof_salvage_fn(oneof);
+            writeln!(
+                src,
+                "                Value::CostSignature(mut value) => {{\n\
+                     \x20                   {salvage}(value.value.take(), &mut work);\n\
+                     \x20               }}"
+            )
+            .expect("write CostSignature Drop-safe salvage arm");
+            continue;
+        }
         let ty = msg.rust_path();
         writeln!(
             src,
@@ -10609,6 +11052,119 @@ fn emit_protobuf_decoder_entries(src: &mut String, rows: &[(&Message<'_>, Option
         )
         .expect("write protobuf decoder entry");
     }
+
+    // `CostSignature::merge` must preserve an existing oneof/message payload
+    // across a second wire occurrence. Start the same heterogeneous PDA with
+    // an iterative Clone of that payload; on malformed input the original is
+    // unchanged, while successful merges retain Prost's last-scalar /
+    // merge-message behavior. This also breaks the standalone
+    // CostSignature -> Compound -> CostSignature native-call cycle.
+    src.push_str(
+        r#"pub fn merge_cost_signature<B: Buf>(
+    value: &mut crate::rhoapi::CostSignature,
+    buf: B,
+) -> Result<(), DecodeError> {
+    let mut machine = Machine::new(
+        buf,
+        Node::CostSignature {
+            value: value.clone(),
+            limit: 0,
+        },
+        true,
+    );
+    machine.run()?;
+    if machine.values.len() != 1 {
+        panic!(
+            "protobuf decoder invariant: CostSignature merge left {} root values",
+            machine.values.len()
+        );
+    }
+    match machine.values.pop().expect("the single checked root value exists") {
+        Value::CostSignature(merged) => {
+            *value = merged;
+            Ok(())
+        }
+        other => {
+            let found = other.kind_name();
+            machine.values.push(other);
+            panic!("protobuf decoder invariant: expected CostSignature, found {found}");
+        }
+    }
+}
+
+pub fn merge_cost_signature_compound<B: Buf>(
+    value: &mut crate::rhoapi::CostSignatureCompound,
+    buf: B,
+) -> Result<(), DecodeError> {
+    let mut machine = Machine::new(
+        buf,
+        Node::CostSignatureCompound {
+            value: value.clone(),
+            limit: 0,
+        },
+        true,
+    );
+    machine.run()?;
+    if machine.values.len() != 1 {
+        panic!(
+            "protobuf decoder invariant: CostSignatureCompound merge left {} root values",
+            machine.values.len()
+        );
+    }
+    match machine.values.pop().expect("the single checked root value exists") {
+        Value::CostSignatureCompound(merged) => {
+            *value = merged;
+            Ok(())
+        }
+        other => {
+            let found = other.kind_name();
+            machine.values.push(other);
+            panic!("protobuf decoder invariant: expected CostSignatureCompound, found {found}");
+        }
+    }
+}
+
+/// One length-delimited CostSignature child. The `Take` buffer is the exact
+/// protobuf field boundary; no nested call to a Prost `merge_field` is made.
+pub fn decode_delimited_cost_signature<B: Buf>(
+    wire_type: WireType,
+    buf: &mut B,
+) -> Result<crate::rhoapi::CostSignature, DecodeError> {
+    encoding::check_wire_type(WireType::LengthDelimited, wire_type)?;
+    let len = decode_varint(buf)?;
+    if len > buf.remaining() as u64 {
+        return Err(buffer_underflow());
+    }
+    let mut child = (&mut *buf).take(len as usize);
+    let value = decode_cost_signature(&mut child)?;
+    if child.remaining() != 0 {
+        return Err(delimited_length_exceeded());
+    }
+    Ok(value)
+}
+
+/// Merge a repeated occurrence of the singular compound oneof arm without
+/// recursing through Compound::merge_field -> CostSignature::merge_field.
+pub fn merge_delimited_cost_signature_compound<B: Buf>(
+    value: &mut crate::rhoapi::CostSignatureCompound,
+    wire_type: WireType,
+    buf: &mut B,
+) -> Result<(), DecodeError> {
+    encoding::check_wire_type(WireType::LengthDelimited, wire_type)?;
+    let len = decode_varint(buf)?;
+    if len > buf.remaining() as u64 {
+        return Err(buffer_underflow());
+    }
+    let mut child = (&mut *buf).take(len as usize);
+    merge_cost_signature_compound(value, &mut child)?;
+    if child.remaining() != 0 {
+        return Err(delimited_length_exceeded());
+    }
+    Ok(())
+}
+
+"#,
+    );
 
     src.push_str(
         r#"pub fn decode_epath_map<B: Buf>(buf: B) -> Result<EPathMap, DecodeError> {

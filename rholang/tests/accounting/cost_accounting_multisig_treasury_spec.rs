@@ -9,7 +9,7 @@
 //! validates the W1 normalizer on every joint-authority surface form.
 //!
 //! NATIVE SEMANTICS (MAJOR-4). Native recognition emits NO fuel gates
-//! (recognition-only — the normalized `Par` has the same COMM count as the
+//! (recognition-only — the normalized `Par` is identical to the
 //! unsigned program), so IN-PROGRAM PARKING does not occur and multi-sig
 //! FUNDEDNESS is settled at DEPLOY ADMISSION (the Rust acceptance gate, with the
 //! BALANCED `DefaultApportionment` debiting each cosigner wallet an equal share),

@@ -1,14 +1,40 @@
 // See casper/src/main/scala/coop/rchain/casper/ReportingProtoTransformer.scala
 
+//! Convert rspace reporting events into the protobuf wire format
+//! (`ReportProto`) consumed by the API and block info layer.
+//!
+//! [`ReportingProtoTransformer`] is the concrete transformer used by
+//! the reporting path. It wraps rspace-level `ReportingConsume` /
+//! `ReportingProduce` / `ReportingComm` values into the prost-generated
+//! `ReportProto` enum, mirroring the Scala `ReportingProtoTransformer`.
+
 use models::casper::{
-    report_proto, PeekProto, ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto,
+    report_proto, PeekProto, ReportCommProto, ReportConsumeProto, ReportPhase as ProtoReportPhase,
+    ReportProduceProto, ReportProto,
 };
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::reporting_rspace::{
-    ReportingComm, ReportingConsume, ReportingProduce,
+    ReportPhase as RspaceReportPhase, ReportingComm, ReportingConsume, ReportingProduce,
 };
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
 
+/// Map the rspace-level `ReportPhase` to the protobuf `ReportPhase`
+/// discriminant. The proto enum is the single source of truth for
+/// consumers. The default on both sides is `Unspecified`, which is what
+/// reports predating the marker decode as.
+pub fn to_proto_phase(phase: RspaceReportPhase) -> i32 {
+    match phase {
+        RspaceReportPhase::Unspecified => ProtoReportPhase::Unspecified as i32,
+        RspaceReportPhase::Precharge => ProtoReportPhase::Precharge as i32,
+        RspaceReportPhase::User => ProtoReportPhase::User as i32,
+        RspaceReportPhase::Refund => ProtoReportPhase::Refund as i32,
+    }
+}
+
+/// Transformer that serializes rspace reporting events into protobuf
+/// `ReportProto` wire types. It is stateless. See the module docs and
+/// the notes below for why `ReportProto` replaces Scala's
+/// `ReportEventProto` and why cloning is acceptable here.
 pub struct ReportingProtoTransformer;
 
 /// ARCHITECTURAL NOTE: ReportEventProto replacement
@@ -35,8 +61,11 @@ pub struct ReportingProtoTransformer;
 /// 3. This is a one-time transformation for reporting, not a hot path
 
 impl ReportingProtoTransformer {
+    /// Construct the stateless transformer.
     pub fn new() -> Self { ReportingProtoTransformer }
 
+    /// Serialize a `ReportingConsume` into `ReportConsumeProto`,
+    /// cloning the owned protobuf channel and pattern data.
     pub fn serialize_consume_proto(
         &self,
         rc: &ReportingConsume<Par, BindPattern, TaggedContinuation>,
@@ -52,6 +81,8 @@ impl ReportingProtoTransformer {
         }
     }
 
+    /// Serialize a `ReportingProduce` into `ReportProduceProto`,
+    /// cloning the owned channel and data `Par`.
     pub fn serialize_produce_proto(
         &self,
         rp: &ReportingProduce<Par, ListParWithRandom>,
@@ -62,6 +93,8 @@ impl ReportingProtoTransformer {
         }
     }
 
+    /// Serialize a `ReportingComm` into `ReportCommProto`,
+    /// delegating to the consume and produce helpers for its parts.
     pub fn serialize_comm_proto(
         &self,
         rcm: &ReportingComm<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -93,6 +126,8 @@ impl ReportingProtoTransformer {
 impl ReportingTransformer<Par, BindPattern, ListParWithRandom, TaggedContinuation, ReportProto>
     for ReportingProtoTransformer
 {
+    /// Wrap a serialized consume into the generic `ReportProto`
+    /// envelope (`Report::Consume`).
     fn serialize_consume(
         &self,
         rc: &ReportingConsume<Par, BindPattern, TaggedContinuation>,
@@ -103,6 +138,8 @@ impl ReportingTransformer<Par, BindPattern, ListParWithRandom, TaggedContinuatio
         }
     }
 
+    /// Wrap a serialized produce into the generic `ReportProto`
+    /// envelope (`Report::Produce`).
     fn serialize_produce(&self, rp: &ReportingProduce<Par, ListParWithRandom>) -> ReportProto {
         let produce_proto = self.serialize_produce_proto(rp);
         ReportProto {
@@ -110,6 +147,8 @@ impl ReportingTransformer<Par, BindPattern, ListParWithRandom, TaggedContinuatio
         }
     }
 
+    /// Wrap a serialized comm into the generic `ReportProto`
+    /// envelope (`Report::Comm`).
     fn serialize_comm(
         &self,
         rcm: &ReportingComm<Par, BindPattern, ListParWithRandom, TaggedContinuation>,

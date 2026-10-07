@@ -1,7 +1,9 @@
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
+use serde_json::json;
 use tower_http::cors::{Any, CorsLayer};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -18,7 +20,10 @@ use crate::rust::web::{events_info, status_info, version_info};
 pub struct Routes;
 
 impl Routes {
-    pub fn create_main_routes(reporting_enabled: bool) -> Router<AppState> {
+    pub fn create_main_routes(
+        reporting_enabled: bool,
+        http_max_body_bytes: usize,
+    ) -> Router<AppState> {
         let cors = CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
@@ -52,10 +57,14 @@ impl Routes {
             router = router.nest("/reporting", ReportingRoutes::create_router());
         }
 
-        router.layer(cors)
+        router
+            .layer(DefaultBodyLimit::max(http_max_body_bytes))
+            .fallback(not_found_handler)
+            .method_not_allowed_fallback(method_not_allowed_handler)
+            .layer(cors)
     }
 
-    pub fn create_admin_routes() -> Router<AppState> {
+    pub fn create_admin_routes(http_max_body_bytes: usize) -> Router<AppState> {
         let cors = CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
@@ -69,8 +78,35 @@ impl Routes {
             .nest("/api", admin_routes.merge(reporting_routes))
             .nest("/api/v1", WebApiRoutesV1::create_admin_router())
             .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", AdminApi::openapi()))
+            .layer(DefaultBodyLimit::max(http_max_body_bytes))
+            .fallback(not_found_handler)
+            .method_not_allowed_fallback(method_not_allowed_handler)
             .layer(cors)
     }
+}
+
+/// 404 for unregistered paths. Keeps the JSON shape consistent with AppError.
+async fn not_found_handler() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "endpoint_not_found",
+            "message": "The requested endpoint does not exist",
+        })),
+    )
+        .into_response()
+}
+
+/// 405 for valid paths called with an unsupported method (e.g. GET on /deploy).
+async fn method_not_allowed_handler() -> Response {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(json!({
+            "error": "method_not_allowed",
+            "message": "The HTTP method is not allowed for this endpoint",
+        })),
+    )
+        .into_response()
 }
 
 #[utoipa::path(

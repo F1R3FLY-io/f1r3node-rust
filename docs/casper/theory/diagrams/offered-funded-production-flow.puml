@@ -1,0 +1,67 @@
+@startuml offered-funded-production-flow
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam ArrowColor #374151
+skinparam ParticipantBorderColor #374151
+skinparam ParticipantFontColor #111827
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupBackgroundColor #F8FAFC
+skinparam NoteBackgroundColor #FEF3C7
+skinparam NoteBorderColor #B45309
+title Proposed offered-funded path: authenticated submission to independent replay
+
+actor User #DBEAFE
+participant "Ingress and\nproposer" as Ingress #BFDBFE
+participant "Funding snapshot\nand policy" as Funding #BFDBFE
+participant "Private native\ncandidate" as Candidate #FDE68A
+participant "Atomic state\npublication" as Publish #BBF7D0
+participant "Independent\nvalidator" as Validator #BBF7D0
+
+User -> Ingress: signed offered envelope
+activate Ingress
+Ingress -> Ingress: verify format, signatures, owner consent
+Ingress -> Funding: freeze original root and adopted schedule
+activate Funding
+Funding -> Funding: authenticate wallet and prepaid inventory
+Funding --> Candidate: verified offer and rooted inputs
+deactivate Funding
+activate Candidate
+Candidate -> Candidate: bounded private execution
+Candidate -> Candidate: complete journal and measurements
+Candidate -> Candidate: derive demand, prepaid draws, retained births
+Candidate -> Candidate: prove approved funding-family contract
+alt any proof, budget, backing, or replay evidence fails
+  Candidate --> Ingress: reject and discard checkpoint
+  Ingress --> User: rejection without publication
+else certified candidate
+  Candidate -> Publish: exact settlement and canonical evidence
+  activate Publish
+  Publish -> Publish: recheck root and old values
+  alt stale root or atomic settlement fails
+    Publish --> Candidate: rollback and retry or reject
+  else all components commit
+    Publish --> Ingress: adjacent roots and processed deploy
+    Ingress -> Validator: block with envelope and evidence
+    activate Validator
+    Validator -> Validator: replay from authenticated roots
+    Validator -> Validator: regenerate funding, receipts, and cost
+    alt evidence or root differs
+      Validator --> Ingress: reject block
+    else exact match
+      Validator --> Ingress: accept block
+    end
+    deactivate Validator
+  end
+  deactivate Publish
+end
+deactivate Candidate
+deactivate Ingress
+
+legend bottom
+  |= Color |= Meaning |
+  |<#BFDBFE>| Authentication and state capture |
+  |<#FDE68A>| Unpublished preparation and proof |
+  |<#BBF7D0>| Atomic publication and independent validation |
+endlegend
+@enduml

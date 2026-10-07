@@ -14,19 +14,27 @@ use crypto::rust::signatures::signed::Signed;
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, ETuple, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rhoapi::g_unforgeable::UnfInstance::{
+    GAuthorityIdBody, GDeployerIdBody, GPrincipalIdBody, GPrivateBody,
+};
+use models::rhoapi::{
+    Bundle, ETuple, Expr, GAuthorityId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable,
+    ListParWithRandom, Par, Var,
+};
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::pathmap_crate_type_mapper::is_closed_registry_value;
 use models::rust::rholang::implicits::single_expr;
 use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+use super::accounting::RuntimeBudget;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
+use super::execution_space::ExecutionSpace;
 use super::grpc_client_service::GrpcClientService;
 use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
@@ -35,15 +43,15 @@ use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
-    RhoSysAuthToken, RhoUri,
+    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber,
+    RhoSingleCustodyId, RhoString, RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::chromadb_service::{CollectionEntries, Metadata};
 #[cfg(feature = "chromadb")]
-use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
+use crate::rust::interpreter::rho_type::{Extractor, RhoNil};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
 // NOTE: Not implementing Logger
@@ -333,26 +341,33 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
 
 #[derive(Clone)]
 pub struct ProcessContext {
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub dispatcher: RhoDispatch,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+    /// The runtime's URN → Par binding table, shared with
+    /// `DebruijnInterpreter`. Plumbed in so a future
+    /// `registry_lookup` system process can serve legacy URNs by
+    /// consulting it directly instead of duplicating the table.
+    pub urn_map: Arc<HashMap<String, Par>>,
     pub system_processes: SystemProcesses,
+    pub cost: RuntimeBudget,
 }
 
 impl ProcessContext {
     pub fn create(
-        space: RhoISpace,
+        space: ExecutionSpace,
         dispatcher: RhoDispatch,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+        urn_map: Arc<HashMap<String, Par>>,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
-        urn_map: Arc<HashMap<String, Par>>,
+        cost: RuntimeBudget,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -360,17 +375,19 @@ impl ProcessContext {
             block_data: block_data.clone(),
             invalid_blocks,
             deploy_data: deploy_data.clone(),
+            urn_map: urn_map.clone(),
             system_processes: SystemProcesses::create(
                 dispatcher,
                 space,
                 block_data,
                 deploy_data,
+                urn_map,
                 openai_service,
                 ollama_service,
                 grpc_client_service,
                 chromadb_service,
-                urn_map,
             ),
+            cost,
         }
     }
 }
@@ -439,7 +456,41 @@ impl Definition {
                 + Sync,
         >,
     ) {
-        (self.body_ref, (self.handler)(context))
+        let forbidden = matches!(
+            self.body_ref,
+            BodyRefs::STDOUT
+                | BodyRefs::STDOUT_ACK
+                | BodyRefs::STDERR
+                | BodyRefs::STDERR_ACK
+                | BodyRefs::GPT4
+                | BodyRefs::DALLE3
+                | BodyRefs::TEXT_TO_AUDIO
+                | BodyRefs::GRPC_TELL
+                | BodyRefs::OLLAMA_CHAT
+                | BodyRefs::OLLAMA_GENERATE
+                | BodyRefs::OLLAMA_MODELS
+                | BodyRefs::CHROMA_CREATE_COLLECTION
+                | BodyRefs::CHROMA_GET_COLLECTION_META
+                | BodyRefs::CHROMA_UPSERT_ENTRIES
+                | BodyRefs::CHROMA_QUERY
+                | BodyRefs::CHROMA_DELETE_DOCUMENTS
+        );
+        let cost = context.cost.clone();
+        let handler = (self.handler)(context);
+        (
+            self.body_ref,
+            Box::new(move |args| {
+                if forbidden && cost.native_execution_active() {
+                    Box::pin(async {
+                        Err(InterpreterError::ReduceError(
+                            "native funded execution forbids external service calls".to_string(),
+                        ))
+                    })
+                } else {
+                    handler(args)
+                }
+            }),
+        )
     }
 
     pub fn to_urn_map(&self) -> (String, Par) {
@@ -491,9 +542,16 @@ impl BlockData {
 }
 
 #[derive(Clone)]
+pub enum DeployAuthority {
+    Legacy(PublicKey),
+    Principal(GPrincipalId),
+    Compound(GAuthorityId),
+}
+
+#[derive(Clone)]
 pub struct DeployData {
     pub timestamp: i64,
-    pub deployer_id: PublicKey,
+    pub authority: DeployAuthority,
     pub deploy_id: Vec<u8>,
 }
 
@@ -501,7 +559,7 @@ impl DeployData {
     pub fn empty() -> Self {
         DeployData {
             timestamp: 0,
-            deployer_id: PublicKey::from_bytes(&[0]),
+            authority: DeployAuthority::Legacy(PublicKey::from_bytes(&[0])),
             deploy_id: vec![0],
         }
     }
@@ -509,28 +567,72 @@ impl DeployData {
     pub fn from_deploy(template: &Signed<casper_message::DeployData>) -> Self {
         DeployData {
             timestamp: template.data.time_stamp,
-            deployer_id: template.pk.clone(),
+            authority: DeployAuthority::Legacy(template.pk.clone()),
             deploy_id: template.sig.to_vec(),
         }
     }
 
-    /// Multi-signer variant. The `timestamp`, `deployer_id`, and `deploy_id`
-    /// are taken from the PRIMARY signer (`cosigned.primary()`), matching
-    /// the legacy single-sig semantics for `rho:system:deployId` and
-    /// `rho:system:deployerId`. Multi-cosigner introspection happens via
-    /// the separate `rho:system:cosigners` channel populated by
-    /// `normalizer_env_from_cosigned_deploy` — this struct intentionally
-    /// keeps the legacy primary-only shape so that downstream consumers
-    /// (PoS contract calls, slashing, etc.) see the same per-deploy
-    /// identity they always have.
     pub fn from_cosigned(
-        template: &crypto::rust::signatures::signed::Cosigned<casper_message::DeployData>,
+        template: &crypto::rust::signatures::signed::Cosigned<
+            models::rust::cost_deploy_data::DeployData,
+        >,
     ) -> Self {
+        if template.is_envelope_bound() {
+            let identity = template
+                .envelope_commitment()
+                .expect("validated protocol-v6 envelope identity");
+            return Self::from_bound(template, template.data.time_stamp, &identity);
+        }
         let primary = template.primary();
         DeployData {
             timestamp: template.data.time_stamp,
-            deployer_id: primary.pk.clone(),
+            authority: DeployAuthority::Legacy(primary.pk.clone()),
             deploy_id: primary.sig.to_vec(),
+        }
+    }
+
+    pub fn from_envelope(template: &DeployEnvelope) -> Self {
+        let timestamp = template.body().time_stamp;
+        let identity = template.identity().as_bytes();
+        match template.view() {
+            DeployEnvelopeRef::Legacy(_) => Self {
+                timestamp,
+                authority: DeployAuthority::Legacy(template.primary().pk.clone()),
+                deploy_id: template.identity().as_bytes().to_vec(),
+            },
+            DeployEnvelopeRef::BodyV61(template) => Self::from_bound(template, timestamp, identity),
+            DeployEnvelopeRef::Funded(template) => Self::from_bound(template, timestamp, identity),
+            DeployEnvelopeRef::OfferedFunded(template) => {
+                Self::from_bound(template, timestamp, identity)
+            }
+        }
+    }
+
+    fn from_bound<A>(
+        template: &crypto::rust::signatures::signed::Cosigned<A>,
+        timestamp: i64,
+        identity: &[u8],
+    ) -> Self
+    where
+        A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage,
+    {
+        let selected = template
+            .selected_signers_v61()
+            .expect("validated protocol-v6 selected signers");
+        let authority = if let [signer] = selected.as_slice() {
+            DeployAuthority::Principal(GPrincipalId {
+                key_family: 1,
+                public_key: signer.pk.bytes.to_vec(),
+            })
+        } else {
+            DeployAuthority::Compound(GAuthorityId {
+                id: models::rust::normalizer_env::authority_id_v61(&selected),
+            })
+        };
+        Self {
+            timestamp,
+            authority,
+            deploy_id: identity.to_vec(),
         }
     }
 }
@@ -539,10 +641,13 @@ impl DeployData {
 #[derive(Clone)]
 pub struct SystemProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
-    urn_map: Arc<HashMap<String, Par>>,
+    /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
+    /// upcoming `registry_lookup` handler consults this when serving
+    /// legacy URNs.
+    pub urn_map: Arc<HashMap<String, Par>>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
@@ -554,14 +659,14 @@ pub struct SystemProcesses {
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
+        space: ExecutionSpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+        urn_map: Arc<HashMap<String, Par>>,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
-        urn_map: Arc<HashMap<String, Par>>,
     ) -> Self {
         SystemProcesses {
             dispatcher,
@@ -758,7 +863,7 @@ impl SystemProcesses {
             },
 
             "fromDeployerId" => {
-                match RhoDeployerId::unapply(second_par).map(VaultAddress::from_deployer_id) {
+                match RhoSingleCustodyId::unapply(second_par).map(VaultAddress::from_deployer_id) {
                     Some(Some(ra)) => RhoString::create_par(ra.to_base58()),
                     _ => Par::default(),
                 }
@@ -795,7 +900,7 @@ impl SystemProcesses {
             return Err(illegal_argument_error("deployer_id_ops"));
         };
 
-        let response = RhoDeployerId::unapply(second_par)
+        let response = RhoSingleCustodyId::unapply(second_par)
             .map(RhoByteArray::create_par)
             .unwrap_or_default();
 
@@ -968,7 +1073,15 @@ impl SystemProcesses {
         let [value, reply] = args.as_slice() else {
             return Err(illegal_argument_error("registry_closed_value"));
         };
-        produce(&[new_gbool_par(is_closed_registry_value(value), vec![], false)], reply).await
+        produce(
+            &[new_gbool_par(
+                is_closed_registry_value(value),
+                vec![],
+                false,
+            )],
+            reply,
+        )
+        .await
     }
 
     pub async fn sys_auth_token_ops(
@@ -1044,12 +1157,14 @@ impl SystemProcesses {
             return Err(illegal_argument_error("get_block_data"));
         };
 
-        let data = block_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
-            RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
-        ];
+        let output = {
+            let data = block_data.read().await;
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
+                RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -1072,12 +1187,27 @@ impl SystemProcesses {
             ));
         };
 
-        let data = deploy_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            RhoDeployerId::create_par(data.deployer_id.bytes.as_ref().to_vec()),
-            RhoDeployId::create_par(data.deploy_id.clone()),
-        ];
+        let output = {
+            let data = deploy_data.read().await;
+            let authority = match &data.authority {
+                DeployAuthority::Legacy(public_key) => GUnforgeable {
+                    unf_instance: Some(GDeployerIdBody(GDeployerId {
+                        public_key: public_key.bytes.to_vec(),
+                    })),
+                },
+                DeployAuthority::Principal(principal) => GUnforgeable {
+                    unf_instance: Some(GPrincipalIdBody(principal.clone())),
+                },
+                DeployAuthority::Compound(authority) => GUnforgeable {
+                    unf_instance: Some(GAuthorityIdBody(authority.clone())),
+                },
+            };
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
+                Par::default().with_unforgeables(vec![authority]),
+                RhoDeployId::create_par(data.deploy_id.clone()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -1289,7 +1419,7 @@ impl SystemProcesses {
         let response = match ollama_service.chat(Some(&model), messages).await {
             Ok(response) => response,
             Err(e) => {
-                tracing::error!("Ollama chat error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama chat request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1345,7 +1475,7 @@ impl SystemProcesses {
         let response = match ollama_service.generate(Some(&model), &prompt).await {
             Ok(response) => response,
             Err(e) => {
-                tracing::error!("Ollama generate error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama generate request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1389,7 +1519,7 @@ impl SystemProcesses {
         let models = match ollama_service.list_models().await {
             Ok(models) => models,
             Err(e) => {
-                tracing::error!("Ollama models error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama models list request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1531,7 +1661,7 @@ impl SystemProcesses {
         // Log the abort reason for debugging
         if let Some(arg) = args.first() {
             let str = self.pretty_printer.build_string_from_message(arg);
-            eprintln!("Execution aborted with arguments: {}", str);
+            tracing::error!(abort_args = %str, "Rholang contract execution aborted");
         }
 
         Err(InterpreterError::UserAbortError)
@@ -1548,7 +1678,6 @@ impl SystemProcesses {
         &self,
         message: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // println!("\nhit handle_message");
         let mut printer = PrettyPrinter::new();
 
         fn clue_msg(clue: String, attempt: i64) -> String {
@@ -1654,23 +1783,23 @@ impl SystemProcesses {
 
                         match log_level.as_str() {
                             "trace" => {
-                                println!("trace: {}", msg);
+                                tracing::trace!("{}", msg);
                                 Ok(vec![])
                             }
                             "debug" => {
-                                println!("debug: {}", msg);
+                                tracing::debug!("{}", msg);
                                 Ok(vec![])
                             }
                             "info" => {
-                                println!("info: {}", msg);
+                                tracing::info!("{}", msg);
                                 Ok(vec![])
                             }
                             "warn" => {
-                                println!("warn: {}", msg);
+                                tracing::warn!("{}", msg);
                                 Ok(vec![])
                             }
                             "error" => {
-                                println!("error: {}", msg);
+                                tracing::error!("{}", msg);
                                 Ok(vec![])
                             }
                             _ => Err(illegal_argument_error("std_log")),
@@ -1931,7 +2060,7 @@ impl SystemProcesses {
         };
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 
@@ -2003,7 +2132,7 @@ impl SystemProcesses {
         let result_par = RhoList::create_par(result_par_vec);
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 

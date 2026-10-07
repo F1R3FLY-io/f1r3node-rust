@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -26,8 +26,10 @@ use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::env;
+use shared::rust::store::key_value_store::MissingBlockContext;
+use tokio::sync::mpsc;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
@@ -49,36 +51,213 @@ pub struct BlockProcessor<T: TransportLayer + Send + Sync> {
     dependencies: BlockProcessorDependencies<T>,
 }
 
+/// What must happen to a block once validation has returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PostValidation {
+    /// The block was judged. Drop it from the buffer and stop tracking it.
+    Settled,
+    /// The block was NOT judged: validation needed a block this node does not
+    /// hold. Keep it buffered against the named dependency and fetch that, or
+    /// the block is dropped un-judged and the gap it needs is never requested.
+    AwaitingBlock(BlockHash),
+    /// The block was NOT judged: replay needed a state root this node does
+    /// not hold. Keep it buffered as a pendant — the pendant scan retries it
+    /// after each processed block, throttled by the missing-dependency
+    /// attempts machinery — and hand the root to the state requester.
+    AwaitingState(rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash),
+}
+
+/// Withdraw the deferral if this node has no hole in its history.
+///
+/// `Undecidable` is the one outcome that is not a verdict, so it is also the
+/// one an attacker would want: a block that induces it is never judged, never
+/// recorded invalid, and produces no evidence. That is only acceptable when the
+/// node truly cannot know — which is exactly when its own history is cut short.
+///
+/// A node built from genesis holds a complete main-parent spine, so a block it
+/// cannot find is corruption and must be judged as before. A node restored from
+/// a sync anchor has nothing below that anchor and never will:
+/// `last_approved_block` is written once — at the genesis ceremony or at LFS
+/// restore — and never advances, so its height is a durable statement about
+/// what that node can answer, not a transient flag.
+pub(crate) fn guard_deferral(
+    status: ValidBlockProcessing,
+    approved_block_number: i64,
+) -> ValidBlockProcessing {
+    match status {
+        Either::Left(BlockError::Undecidable(hash)) if approved_block_number == 0 => {
+            Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(
+                hash,
+                MissingBlockContext::new("genesis-rooted node refuses deferral"),
+            )))
+        }
+        // Same rule for the state artifact: a genesis-rooted node computed or
+        // imported every root it ever needed, so a missing one is corruption
+        // and must be judged — deferring would hand a crafted block a
+        // permanent non-verdict on any full node.
+        Either::Left(BlockError::AwaitingState(root)) if approved_block_number == 0 => {
+            Either::Left(BlockError::BlockException(CasperError::Other(format!(
+                "state root {} missing on a genesis-rooted node — local corruption, not sync",
+                root
+            ))))
+        }
+        other => other,
+    }
+}
+
+/// Why a consumed block copy will or will not be processed. Typed because the
+/// drop policy differs per verdict: see [`OfInterestVerdict::purges_buffer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfInterestVerdict {
+    Fresh,
+    AlreadyProcessed,
+    WrongShard,
+    WrongVersion,
+    OldUnsolicited,
+}
+
+impl OfInterestVerdict {
+    pub fn is_fresh(&self) -> bool { matches!(self, OfInterestVerdict::Fresh) }
+
+    /// True only for verdicts about the BLOCK (requeue-loop fuel).
+    /// `AlreadyProcessed` judges the COPY: the buffer entry belongs to the
+    /// recovery already in flight and must survive.
+    pub fn purges_buffer(&self) -> bool {
+        matches!(
+            self,
+            OfInterestVerdict::WrongShard
+                | OfInterestVerdict::WrongVersion
+                | OfInterestVerdict::OldUnsolicited
+        )
+    }
+}
+
+fn of_interest_verdict(
+    already_processed: bool,
+    shard_of_interest: bool,
+    version_of_interest: bool,
+    old_block: bool,
+    requested_as_dependency: bool,
+) -> OfInterestVerdict {
+    if already_processed {
+        OfInterestVerdict::AlreadyProcessed
+    } else if !shard_of_interest {
+        OfInterestVerdict::WrongShard
+    } else if !version_of_interest {
+        OfInterestVerdict::WrongVersion
+    } else if old_block && !requested_as_dependency {
+        OfInterestVerdict::OldUnsolicited
+    } else {
+        OfInterestVerdict::Fresh
+    }
+}
+
+/// Whether an arriving block is settled history to be admitted unjudged —
+/// the LFS door, opened at runtime.
+///
+/// A restored node's own restore inserted hundreds of blocks hash-checked and
+/// unexecuted; a straggler from the same settled region — cited by gossip the
+/// restore could not have known about — is the same kind of block and gets the
+/// same treatment. Judging it instead is what broke: the node-state validation
+/// checks assume dependency-ordered insertion, which the restore itself
+/// bypassed, so the verdicts they produce on old blocks are statements about
+/// this node's restore, not about the block.
+///
+/// Each condition closes a distinct attack; see the truth-table test.
+///
+/// `seq_below_senders_latest` requires the block's sequence number to sit
+/// strictly below the sender's current latest message. Genuine settled
+/// stragglers always do — settled history predates the anchor's
+/// justification frontier — while a block at-or-above that frontier is
+/// live-chain material wearing a sub-anchor height (the CI run 32588262605
+/// pollution shape: shared validator keys, foreign seq 40 against a live
+/// seq-5 head). A sender with NO latest message passes the condition:
+/// deep settled history is routinely authored by since-unbonded validators
+/// with no live slot, and live material always has one — refusing on an
+/// absent slot re-wedges the restore gaps the door exists to close.
+pub(crate) fn admit_as_settled(
+    block_number: i64,
+    approved_block_number: i64,
+    solicited_by_bonded: bool,
+    budget_remaining: bool,
+    seq_below_senders_latest: bool,
+) -> bool {
+    approved_block_number > 0
+        && block_number <= approved_block_number
+        && solicited_by_bonded
+        && budget_remaining
+        && seq_below_senders_latest
+}
+
+/// What the block-processing loop should do with a block whose validation
+/// attempt returned a hard `Err` (no verdict, not a typed deferral).
+///
+/// `Retry` keeps the block buffered — a transient fault heals on a later
+/// harvest, and the failure quarantine paces those retries. `PurgeAndQuarantine`
+/// is the bounded end: the block leaves the buffer loudly, and only a fresh
+/// peer delivery can bring it back (CI run 32588262605, arm64-docker joiner3:
+/// five buffered blocks re-harvested ~2,770 times each on the same estimator
+/// walk error — fail, pendant, fail — with nothing bounding the loop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationFailureDisposition {
+    Retry,
+    PurgeAndQuarantine,
+}
+
+/// Classify a validation outcome for post-processing.
+///
+/// Everything except `Undecidable` is a verdict and is settled. `Undecidable`
+/// is the absence of one, so the block must survive to be retried: dropping it
+/// loses the block, and the missing hash it names is the only thing that can
+/// unstick the node.
+pub(crate) fn post_validation(status: &ValidBlockProcessing) -> PostValidation {
+    match status {
+        Either::Left(BlockError::Undecidable(missing)) => {
+            PostValidation::AwaitingBlock(missing.clone())
+        }
+        Either::Left(BlockError::AwaitingState(root)) => {
+            PostValidation::AwaitingState(root.clone())
+        }
+        _ => PostValidation::Settled,
+    }
+}
+
+/// Lifetime cap on settled-history admissions. Legitimate joins need single
+/// digits (the gaps LFS's closure missed); the cap prices the worst case — a
+/// BONDED attacker citing self-signed junk below the anchor — at bounded,
+/// alarmed storage. Past it the node degrades to today's deferral, loudly.
+const SETTLED_ADMISSION_BUDGET: u64 = 512;
+
+/// Ceiling on detached block-hash announces in flight. An announce is
+/// best-effort gossip (peers also learn hashes from proposals and the casper
+/// loop), so past the ceiling further announces are dropped rather than
+/// queued — bounded loss under saturation instead of unbounded task growth.
+pub const ANNOUNCE_MAX_IN_FLIGHT: usize = 128;
+
 const CASPER_BUFFER_PRUNE_INTERVAL_MS: u64 = 5_000;
+/// Must exceed the dependency re-request clock, or pruning fights recovery.
 const CASPER_BUFFER_STALE_TTL_MS: u64 = 180_000;
 const CASPER_BUFFER_MAX_APPROX_NODES: usize = 16_384;
 const CASPER_BUFFER_MAX_PRUNE_BATCH: usize = 512;
-const CASPER_BUFFER_MAX_APPROX_NODES_ENV: &str = "F1R3_CASPER_BUFFER_MAX_APPROX_NODES";
-const CASPER_BUFFER_STALE_TTL_MS_ENV: &str = "F1R3_CASPER_BUFFER_STALE_TTL_MS";
-const CASPER_BUFFER_MAX_PRUNE_BATCH_ENV: &str = "F1R3_CASPER_BUFFER_MAX_PRUNE_BATCH";
-const CASPER_BUFFER_PRUNE_INTERVAL_MS_ENV: &str = "F1R3_CASPER_BUFFER_PRUNE_INTERVAL_MS";
 const CASPER_BUFFER_STALE_PRUNED_METRIC: &str = "casper.buffer.stale-pruned";
 const CASPER_BUFFER_OVERFLOW_PRUNED_METRIC: &str = "casper.buffer.overflow-pruned";
 const CASPER_BUFFER_APPROX_NODES_METRIC: &str = "casper.buffer.approx-nodes";
 const CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC: &str = "casper.buffer.dependency-loop-pruned";
-const MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT: u32 = 32;
-const MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV: &str = "F1R3_MISSING_DEPENDENCY_ATTEMPTS_MAX";
-const MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT: u64 = 120_000;
-const MISSING_DEPENDENCY_QUARANTINE_MS_ENV: &str = "F1R3_MISSING_DEPENDENCY_QUARANTINE_MS";
+const MISSING_DEPENDENCY_ATTEMPTS_MAX: u32 = 32;
+/// Hard-error attempt cap per buffered block. Public so tests exercise the
+/// bound the block-processing loop relies on.
+pub const VALIDATION_ERROR_ATTEMPTS_MAX: u32 = 32;
+const MISSING_DEPENDENCY_QUARANTINE_MS: u64 = 120_000;
+/// Distinct from the missing-dependency pause: the two ledgers pace
+/// different recoveries.
+const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
+/// Admission cap on the shared in-flight block set. Must not exceed the
+/// node's block-processor queue capacity.
+pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-const MALLOC_TRIM_INTERVAL_BLOCKS_DEFAULT: u64 = 64;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-const MALLOC_TRIM_INTERVAL_BLOCKS_ENV: &str = "F1R3_MALLOC_TRIM_EVERY_BLOCKS";
+const MALLOC_TRIM_INTERVAL_BLOCKS: u64 = 64;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 static MALLOC_TRIM_BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-static MALLOC_TRIM_INTERVAL_BLOCKS: OnceLock<u64> = OnceLock::new();
-static CASPER_BUFFER_MAX_APPROX_NODES_CFG: OnceLock<usize> = OnceLock::new();
-static CASPER_BUFFER_STALE_TTL_MS_CFG: OnceLock<u64> = OnceLock::new();
-static CASPER_BUFFER_MAX_PRUNE_BATCH_CFG: OnceLock<usize> = OnceLock::new();
-static CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG: OnceLock<u64> = OnceLock::new();
-static MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
-static MISSING_DEPENDENCY_QUARANTINE_MS_CFG: OnceLock<u64> = OnceLock::new();
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 unsafe extern "C" {
@@ -86,55 +265,9 @@ unsafe extern "C" {
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn malloc_trim_interval_blocks() -> u64 {
-    *MALLOC_TRIM_INTERVAL_BLOCKS.get_or_init(|| {
-        env::var_or(
-            MALLOC_TRIM_INTERVAL_BLOCKS_ENV,
-            MALLOC_TRIM_INTERVAL_BLOCKS_DEFAULT,
-        )
-    })
-}
-
-fn casper_buffer_max_approx_nodes() -> usize {
-    *CASPER_BUFFER_MAX_APPROX_NODES_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_MAX_APPROX_NODES_ENV,
-            CASPER_BUFFER_MAX_APPROX_NODES,
-        )
-    })
-}
-
-fn casper_buffer_stale_ttl_ms() -> u64 {
-    *CASPER_BUFFER_STALE_TTL_MS_CFG
-        .get_or_init(|| env::var_or(CASPER_BUFFER_STALE_TTL_MS_ENV, CASPER_BUFFER_STALE_TTL_MS))
-}
-
-fn casper_buffer_max_prune_batch() -> usize {
-    *CASPER_BUFFER_MAX_PRUNE_BATCH_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_MAX_PRUNE_BATCH_ENV,
-            CASPER_BUFFER_MAX_PRUNE_BATCH,
-        )
-    })
-}
-
-fn casper_buffer_prune_interval_ms() -> u64 {
-    *CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_PRUNE_INTERVAL_MS_ENV,
-            CASPER_BUFFER_PRUNE_INTERVAL_MS,
-        )
-    })
-}
-
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn maybe_trim_allocator_after_block() {
-    let interval = malloc_trim_interval_blocks();
-    if interval == 0 {
-        return;
-    }
     let n = MALLOC_TRIM_BLOCK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-    if n.is_multiple_of(interval) {
+    if n.is_multiple_of(MALLOC_TRIM_INTERVAL_BLOCKS) {
         use crate::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC;
         // Best-effort return of free heap pages to OS to limit RSS ratcheting.
         unsafe {
@@ -148,35 +281,26 @@ fn maybe_trim_allocator_after_block() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn maybe_trim_allocator_after_block() {}
 
-fn missing_dependency_attempts_max() -> u32 {
-    *MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG.get_or_init(|| {
-        env::var_or_filtered(
-            MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV,
-            MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT,
-            |v: &u32| *v > 0,
-        )
-    })
-}
-
-fn missing_dependency_quarantine_ms() -> u64 {
-    *MISSING_DEPENDENCY_QUARANTINE_MS_CFG.get_or_init(|| {
-        env::var_or_filtered(
-            MISSING_DEPENDENCY_QUARANTINE_MS_ENV,
-            MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT,
-            |v: &u64| *v > 0,
-        )
-    })
-}
-
-impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
+impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
+
+    /// The height this node was started from. Zero means genesis — a complete
+    /// spine, so nothing below it can legitimately be absent.
+    fn approved_block_number(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync + 'static>,
+    ) -> Result<i64, CasperError> {
+        casper
+            .get_approved_block()
+            .map(|approved| proto_util::block_number(approved))
+    }
 
     /// check if block should be processed
     pub fn check_if_of_interest(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
-    ) -> Result<bool, CasperError> {
+    ) -> Result<OfInterestVerdict, CasperError> {
         // TODO casper.dag_contains does not take into account equivocation tracker
         let already_processed =
             casper.dag_contains(&block.block_hash) || casper.buffer_contains(&block.block_hash);
@@ -195,7 +319,24 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             proto_util::block_number(block) < proto_util::block_number(approved_block)
         })?;
 
-        Ok(!already_processed && shard_of_interest && version_of_interest && !old_block)
+        // A block this node requested to satisfy a missing dependency is of
+        // interest whatever its height. Dropping it as "old" is why a joiner
+        // can never acquire pre-anchor history: it requests the dependency,
+        // receives it, discards it here, and the dependent block retries
+        // forever — 23,643 attempts on one block before the shard's finality
+        // stalled behind the joiner's idle stake. The `old_block` filter still
+        // does its real job, since unsolicited gossip is never in this set.
+        let requested_as_dependency = self
+            .dependencies
+            .was_requested_as_dependency(&block.block_hash)?;
+
+        Ok(of_interest_verdict(
+            already_processed,
+            shard_of_interest,
+            version_of_interest,
+            old_block,
+            requested_as_dependency,
+        ))
     }
 
     /// check block format and store if check passed
@@ -231,6 +372,10 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             .sweep_orphaned_missing_dependency_attempts()?;
         self.dependencies
             .sweep_orphaned_missing_dependency_quarantine()?;
+        self.dependencies
+            .sweep_expired_validation_error_quarantine()?;
+        self.dependencies
+            .sweep_orphaned_validation_error_attempts()?;
 
         if self
             .dependencies
@@ -239,7 +384,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             tracing::debug!(
                 "Skipping block {} due to missing-dependency quarantine ({}ms).",
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                missing_dependency_quarantine_ms()
+                MISSING_DEPENDENCY_QUARANTINE_MS
             );
             metrics::counter!(CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE, "reason" => "quarantine")
                 .increment(1);
@@ -250,8 +395,10 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
 
         let (is_ready, deps_to_fetch, deps_in_buffer) = self
             .dependencies
-            .get_non_validated_dependencies(casper, block)
+            .get_non_validated_dependencies(casper.clone(), block)
             .await?;
+        self.dependencies
+            .record_settled_solicitations(&casper, block, &deps_to_fetch);
 
         if is_ready {
             self.dependencies
@@ -266,7 +413,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 tracing::warn!(
                     "Throttling block {} after {} missing-dependency checks (keeping in buffer).",
                     PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                    missing_dependency_attempts_max()
+                    MISSING_DEPENDENCY_ATTEMPTS_MAX
                 );
                 metrics::counter!(CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE, "reason" => "attempts")
                     .increment(1);
@@ -316,11 +463,51 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         let setup_start = Instant::now();
         let mut snapshot = match snapshot_opt {
             Some(snapshot) => snapshot,
-            None => {
-                self.dependencies
-                    .get_casper_state_snapshot(casper.clone())
-                    .await?
-            }
+            None => match self
+                .dependencies
+                .get_casper_state_snapshot(casper.clone())
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                // The snapshot walks the same history the floor does, so it hits
+                // the same edge first on a node whose history is short. Report it
+                // as the absence of a verdict rather than erroring the block out
+                // of the pipeline un-judged and untracked — but only if this node
+                // is entitled to defer at all.
+                Err(CasperError::BlockNotHeld(missing, site)) => {
+                    let guarded = guard_deferral(
+                        Either::Left(BlockError::Undecidable(missing.clone())),
+                        self.approved_block_number(casper.clone())?,
+                    );
+                    if !matches!(guarded, Either::Left(BlockError::Undecidable(_))) {
+                        return Err(CasperError::BlockNotHeld(missing, site));
+                    }
+                    tracing::warn!(
+                        "Snapshot for block {} needs {}, which this node does not hold. Walk: {}",
+                        PrettyPrinter::build_string_bytes(&block.block_hash),
+                        PrettyPrinter::build_string_bytes(&missing),
+                        site.accessor()
+                    );
+                    tracing::debug!(
+                        target: "f1r3.trace.absence",
+                        missing = %PrettyPrinter::build_string_bytes(&missing),
+                        site = %site,
+                        "snapshot: absence origin"
+                    );
+                    let deps = HashSet::from([missing.clone()]);
+                    self.dependencies
+                        .record_settled_solicitations(&casper, block, &deps);
+                    self.dependencies
+                        .commit_to_buffer(block, Some(deps.clone()))
+                        .await?;
+                    self.dependencies
+                        .request_missing_dependencies(&deps)
+                        .await?;
+                    self.dependencies.ack_processed(block).await?;
+                    return Ok(guarded);
+                }
+                Err(err) => return Err(err),
+            },
         };
         metrics::histogram!(BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(setup_start.elapsed().as_secs_f64());
@@ -331,6 +518,9 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             .dependencies
             .validate_block(casper.clone(), &mut snapshot, block)
             .await?;
+        // Validation reports what it found; whether this node may answer "I
+        // cannot judge" is a fact about the node, decided here.
+        let status = guard_deferral(status, self.approved_block_number(casper.clone())?);
         metrics::histogram!(BLOCK_VALIDATION_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(validation_start.elapsed().as_secs_f64());
 
@@ -340,7 +530,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 metrics::counter!(BLOCK_VALIDATION_SUCCESS_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
                     .increment(1);
                 self.dependencies
-                    .effects_for_valid_block(casper, block)
+                    .effects_for_valid_block(casper.clone(), block)
                     .await
             }
             Either::Left(invalid_block) => {
@@ -351,13 +541,13 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 match invalid_block {
                     BlockError::Invalid(i) => {
                         self.dependencies
-                            .effects_for_invalid_block(casper, block, i, &snapshot)
+                            .effects_for_invalid_block(casper.clone(), block, i, &snapshot)
                             .await
                     }
                     // BlockException → InvalidTransaction is safe: validation_dispatcher.rs:548
                     // routes every is_slashable() variant through the same record-creation path
                     // as AdmissibleEquivocation, so the slash pipeline fires identically. See
-                    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4 and
+                    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4 and
                     // theorem T-9.3 (`t_9_3_dispatch_complete`, BugFixDispatcher.v:41).
                     BlockError::BlockException(ref err) => {
                         tracing::warn!(
@@ -367,7 +557,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                         );
                         self.dependencies
                             .effects_for_invalid_block(
-                                casper,
+                                casper.clone(),
                                 block,
                                 &InvalidBlock::InvalidTransaction,
                                 &snapshot,
@@ -379,9 +569,55 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             }
         }?;
 
-        // once block is validated and effects are invoked, it should be removed from buffer
-        self.dependencies.remove_from_buffer(block).await?;
-        self.dependencies.ack_processed(block).await?;
+        match post_validation(&status) {
+            PostValidation::Settled => {
+                // once block is validated and effects are invoked, it should be removed from buffer
+                self.dependencies.remove_from_buffer(block).await?;
+                self.dependencies.ack_processed(block).await?;
+            }
+            PostValidation::AwaitingBlock(missing) => {
+                tracing::warn!(
+                    "Block {} could not be judged: this node does not hold {}. Keeping it \
+                     buffered and requesting that block.",
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    PrettyPrinter::build_string_bytes(&missing)
+                );
+                let deps = HashSet::from([missing]);
+                self.dependencies
+                    .record_settled_solicitations(&casper, block, &deps);
+                self.dependencies
+                    .commit_to_buffer(block, Some(deps.clone()))
+                    .await?;
+                self.dependencies
+                    .request_missing_dependencies(&deps)
+                    .await?;
+                self.dependencies.ack_processed(block).await?;
+            }
+            PostValidation::AwaitingState(root) => {
+                tracing::warn!(
+                    block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    %root,
+                    "Block could not be judged: this node does not hold the state root its \
+                     replay starts from. Keeping it buffered and fetching the root."
+                );
+                // The pendant scan retries this block after every processed
+                // block; the attempts machinery throttles a block whose root
+                // never arrives, exactly as it throttles one whose missing
+                // BLOCK never arrives.
+                if self
+                    .dependencies
+                    .register_missing_dependency_attempt(&block.block_hash)?
+                {
+                    self.dependencies
+                        .clear_missing_dependency_attempts(&block.block_hash)?;
+                    self.dependencies
+                        .mark_missing_dependency_quarantine(&block.block_hash)?;
+                }
+                self.dependencies.commit_to_buffer(block, None).await?;
+                self.dependencies.request_state_root(&root);
+                self.dependencies.ack_processed(block).await?;
+            }
+        }
         maybe_trim_allocator_after_block();
 
         Ok(status)
@@ -392,15 +628,76 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         self.dependencies.ack_processed(block).await
     }
 
+    /// See [`BlockRetriever::note_local_backpressure_drop`].
+    pub fn note_local_backpressure_drop(&self, hash: &BlockHash, site: &'static str) {
+        self.dependencies
+            .block_retriever
+            .note_local_backpressure_drop(hash, site);
+    }
+
+    /// See [`BlockProcessorDependencies::try_admit_settled`].
+    pub async fn try_admit_settled(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync + 'static>,
+        block: &BlockMessage,
+    ) -> Result<bool, CasperError> {
+        self.dependencies.try_admit_settled(casper, block).await
+    }
+
     /// Remove block hash from CasperBuffer dependency graph.
     pub async fn remove_from_buffer(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.dependencies.remove_from_buffer(block).await
+    }
+
+    /// Drop a consumed copy per the verdict: purge for verdicts about the
+    /// block, ack-only for `AlreadyProcessed` — the buffer entry belongs to
+    /// the recovery in flight and must survive the duplicate.
+    pub async fn dispose_not_of_interest(
+        &self,
+        verdict: OfInterestVerdict,
+        block: &BlockMessage,
+    ) -> Result<(), CasperError> {
+        if verdict.purges_buffer() {
+            tracing::info!(
+                "Block {} is not of interest. Dropped.",
+                PrettyPrinter::build_string_bytes(&block.block_hash)
+            );
+            self.purge_from_buffer_and_ack(block).await
+        } else {
+            tracing::info!(
+                "Block {} is already processed or in recovery. Duplicate copy dropped.",
+                PrettyPrinter::build_string_bytes(&block.block_hash)
+            );
+            self.ack_processed(block).await
+        }
     }
 
     /// Best-effort purge for stale/uninteresting blocks to prevent infinite buffer requeue loops.
     pub async fn purge_from_buffer_and_ack(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.dependencies.remove_from_buffer(block).await?;
         self.dependencies.ack_processed(block).await
+    }
+
+    /// See [`BlockProcessorDependencies::note_validation_failure`].
+    pub fn note_validation_failure(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<ValidationFailureDisposition, CasperError> {
+        self.dependencies.note_validation_failure(block_hash)
+    }
+
+    /// See [`BlockProcessorDependencies::is_validation_failure_quarantined`].
+    pub fn is_validation_failure_quarantined(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<bool, CasperError> {
+        self.dependencies
+            .is_validation_failure_quarantined(block_hash)
+    }
+
+    /// See [`BlockProcessorDependencies::clear_validation_failures`].
+    pub fn clear_validation_failures(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        self.dependencies.clear_validation_failures(block_hash)
     }
 }
 
@@ -418,9 +715,32 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     casper_buffer_last_prune_ms: Arc<AtomicU64>,
     missing_dependency_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
     missing_dependency_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
+    /// Hard validation `Err`s per buffered block, bounding the
+    /// fail→pendant→fail loop the way `missing_dependency_attempts` bounds
+    /// the dependency-check loop. Deadlines are `Instant`s: the quarantine
+    /// paces retries, so a wall-clock step (NTP correction) must neither
+    /// void an active quarantine nor extend one for hours.
+    validation_error_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
+    validation_error_quarantine_until: Arc<Mutex<HashMap<BlockHash, std::time::Instant>>>,
+    /// Hashes solicited as dependencies by a block whose sender is bonded in
+    /// this node's anchor. Membership is the third condition of
+    /// [`admit_as_settled`]; entries are removed when the block arrives, and
+    /// the set is capped so no-shows cannot grow it unboundedly.
+    settled_solicitations: Arc<Mutex<HashSet<BlockHash>>>,
+    /// Blocks admitted as settled history since start; compared against
+    /// [`SETTLED_ADMISSION_BUDGET`].
+    settled_admissions: Arc<AtomicU64>,
+    /// Names missing state roots to the runtime state requester. `None` only
+    /// in test constructions; without it a missing root still defers safely,
+    /// it just never heals.
+    state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
+    /// Permits bounding detached block-hash announces in flight. Each spawned
+    /// announce holds one until its sends resolve, so slow peers cap the task
+    /// count at the permit count instead of block-rate x send-timeout.
+    announce_permits: Arc<tokio::sync::Semaphore>,
 }
 
-impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
+impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub fn new(
         block_store: KeyValueBlockStore,
         casper_buffer: CasperBufferKeyValueStorage,
@@ -429,6 +749,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         transport: Arc<T>,
         connections_cell: ConnectionsCell,
         conf: RPConf,
+        state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
     ) -> Self {
         Self {
             block_store,
@@ -441,7 +762,85 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             casper_buffer_last_prune_ms: Arc::new(AtomicU64::new(0)),
             missing_dependency_attempts: Arc::new(Mutex::new(HashMap::new())),
             missing_dependency_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
+            validation_error_attempts: Arc::new(Mutex::new(HashMap::new())),
+            validation_error_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
+            settled_solicitations: Arc::new(Mutex::new(HashSet::new())),
+            settled_admissions: Arc::new(AtomicU64::new(0)),
+            state_root_fetch_tx,
+            announce_permits: Arc::new(tokio::sync::Semaphore::new(ANNOUNCE_MAX_IN_FLIGHT)),
         }
+    }
+
+    /// Name a missing root to the state requester, if one is wired.
+    fn request_state_root(&self, root: &Blake2b256Hash) {
+        match &self.state_root_fetch_tx {
+            Some(tx) => {
+                if tx.try_send(root.clone()).is_err() {
+                    tracing::warn!(
+                        %root,
+                        "state requester queue full or closed; the root stays absent and \
+                         its dependents keep deferring"
+                    );
+                }
+            }
+            None => tracing::warn!(
+                %root,
+                "no state requester wired; the root stays absent and its dependents \
+                 keep deferring"
+            ),
+        }
+    }
+
+    /// Record which solicited hashes were cited by a bonded validator's block,
+    /// making them candidates for settled-history admission when they arrive.
+    ///
+    /// Bondedness is judged against the ANCHOR's bond set: the anchor is the
+    /// one block a restored node trusts unconditionally, and a validator bonded
+    /// there has stake to lose — its blocks are signature-checked before this
+    /// runs, so an attacker cannot borrow the status. A citer bonded only after
+    /// the anchor does not qualify; its solicitations take the ordinary path,
+    /// which fails toward deferral, never toward admission.
+    fn record_settled_solicitations(
+        &self,
+        casper: &Arc<dyn Casper + Send + Sync + 'static>,
+        citer: &BlockMessage,
+        deps: &HashSet<BlockHash>,
+    ) {
+        const SETTLED_SOLICITATIONS_CAP: usize = 4_096;
+
+        let Ok(anchor) = casper.get_approved_block() else {
+            return;
+        };
+        let citer_is_bonded = anchor
+            .body
+            .state
+            .bonds
+            .iter()
+            .any(|bond| bond.validator == citer.sender);
+        if !citer_is_bonded {
+            return;
+        }
+        let Ok(mut solicitations) = self.settled_solicitations.lock() else {
+            return;
+        };
+        if solicitations.len() + deps.len() > SETTLED_SOLICITATIONS_CAP {
+            tracing::warn!(
+                tracked = solicitations.len(),
+                incoming = deps.len(),
+                "Settled-solicitation set at capacity; new dependencies take the \
+                 deferral path instead of the admission door"
+            );
+            return;
+        }
+        solicitations.extend(deps.iter().cloned());
+    }
+
+    /// Take (and thereby consume) the settled-solicitation marker for a hash.
+    fn take_settled_solicitation(&self, hash: &BlockHash) -> bool {
+        self.settled_solicitations
+            .lock()
+            .map(|mut set| set.remove(hash))
+            .unwrap_or(false)
     }
 
     // Public getters for tests
@@ -455,7 +854,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let last_prune = self.casper_buffer_last_prune_ms.load(Ordering::Relaxed);
-        let prune_interval_ms = casper_buffer_prune_interval_ms();
+        let prune_interval_ms = CASPER_BUFFER_PRUNE_INTERVAL_MS;
         if now_ms.saturating_sub(last_prune) < prune_interval_ms {
             return Ok(());
         }
@@ -463,9 +862,9 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .store(now_ms, Ordering::Relaxed);
 
         let (stale_pruned, overflow_pruned) = self.casper_buffer.enforce_limits(
-            casper_buffer_max_approx_nodes(),
-            casper_buffer_stale_ttl_ms(),
-            casper_buffer_max_prune_batch(),
+            CASPER_BUFFER_MAX_APPROX_NODES,
+            CASPER_BUFFER_STALE_TTL_MS,
+            CASPER_BUFFER_MAX_PRUNE_BATCH,
             prune_interval_ms,
         )?;
         let approx_nodes = self.casper_buffer.approx_node_count();
@@ -765,7 +1164,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         })?;
         let next = attempts.entry(block_hash.clone()).or_insert(0);
         *next = next.saturating_add(1);
-        Ok(*next >= missing_dependency_attempts_max())
+        Ok(*next >= MISSING_DEPENDENCY_ATTEMPTS_MAX)
     }
 
     fn clear_missing_dependency_attempts(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
@@ -802,7 +1201,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let until = now_ms.saturating_add(missing_dependency_quarantine_ms());
+        let until = now_ms.saturating_add(MISSING_DEPENDENCY_QUARANTINE_MS);
         let mut quarantine = self
             .missing_dependency_quarantine_until
             .lock()
@@ -837,6 +1236,140 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .is_some_and(|until| now_ms < until))
     }
 
+    /// Record one hard validation `Err` for a buffered block and decide its
+    /// fate: pace further retries via the failure quarantine, and end the
+    /// retry loop entirely once the attempt cap is reached.
+    ///
+    /// The quarantine is stamped in both dispositions — between retries it
+    /// paces the pendant harvest, and after the cap it damps an immediate
+    /// re-delivery from restarting the loop hot. Only a fresh peer delivery
+    /// outlives the purge, which is exactly the re-delivery convergence the
+    /// truncation-horizon work relies on.
+    pub fn note_validation_failure(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<ValidationFailureDisposition, CasperError> {
+        let reached_cap = {
+            let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+            let next = attempts.entry(block_hash.clone()).or_insert(0);
+            *next = next.saturating_add(1);
+            if *next >= VALIDATION_ERROR_ATTEMPTS_MAX {
+                attempts.remove(block_hash);
+                true
+            } else {
+                false
+            }
+        };
+
+        let until = std::time::Instant::now()
+            + std::time::Duration::from_millis(VALIDATION_ERROR_QUARANTINE_MS);
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.insert(block_hash.clone(), until);
+
+        Ok(if reached_cap {
+            ValidationFailureDisposition::PurgeAndQuarantine
+        } else {
+            ValidationFailureDisposition::Retry
+        })
+    }
+
+    /// Whether the pendant harvest should skip this hash because its last
+    /// validation attempt hard-failed within the quarantine window.
+    pub fn is_validation_failure_quarantined(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<bool, CasperError> {
+        let now = std::time::Instant::now();
+        let quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        Ok(quarantine
+            .get(block_hash)
+            .copied()
+            .is_some_and(|until| now < until))
+    }
+
+    /// A settled verdict ends the failure ledger for this hash.
+    pub fn clear_validation_failures(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        {
+            let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+            attempts.remove(block_hash);
+        }
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.remove(block_hash);
+        Ok(())
+    }
+
+    fn sweep_expired_validation_error_quarantine(&self) -> Result<(), CasperError> {
+        let now = std::time::Instant::now();
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.retain(|_, until| *until > now);
+        Ok(())
+    }
+
+    fn sweep_orphaned_validation_error_attempts(&self) -> Result<(), CasperError> {
+        let to_clear: Vec<BlockHash> = {
+            let attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+
+            attempts
+                .keys()
+                .filter_map(|block_hash| {
+                    let block_hash_serde = BlockHashSerde(block_hash.clone());
+                    let is_active = self.casper_buffer.contains(&block_hash_serde)
+                        || self.casper_buffer.is_pendant(&block_hash_serde);
+
+                    if is_active {
+                        None
+                    } else {
+                        Some(block_hash.clone())
+                    }
+                })
+                .collect()
+        };
+
+        if to_clear.is_empty() {
+            return Ok(());
+        }
+
+        let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_attempts lock".to_string(),
+            )
+        })?;
+
+        for block_hash in to_clear {
+            attempts.remove(&block_hash);
+        }
+
+        Ok(())
+    }
+
     fn sweep_expired_missing_dependency_quarantine(&self) -> Result<(), CasperError> {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -852,6 +1385,113 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             })?;
         quarantine.retain(|_, until| *until > now_ms);
         Ok(())
+    }
+
+    pub fn was_requested_as_dependency(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+        self.block_retriever.was_requested_as_dependency(hash)
+    }
+
+    /// Admit an arriving block as settled history if [`admit_as_settled`]'s
+    /// conditions hold: inserted into the DAG hash-checked and unjudged, the
+    /// same treatment LFS restore gave every block it downloaded. Returns
+    /// whether the block was admitted; a `false` sends it down the ordinary
+    /// judged path.
+    ///
+    /// Insertion cannot touch consensus state: `InsertMode::SettledHistory`
+    /// leaves latest messages exactly as they were, and every verdict channel
+    /// is untouched because the block never enters validation.
+    pub async fn try_admit_settled(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync + 'static>,
+        block: &BlockMessage,
+    ) -> Result<bool, CasperError> {
+        // One-shot provenance ticket: `take` consumes the solicitation, so
+        // the boolean below is the REAL third conjunct, not a restatement.
+        let solicited_by_bonded = self.take_settled_solicitation(&block.block_hash);
+        if !solicited_by_bonded {
+            return Ok(false);
+        }
+        let approved_block_number = casper
+            .get_approved_block()
+            .map(|approved| proto_util::block_number(approved))?;
+        let seq_below_senders_latest = {
+            let representation = self.block_dag_storage.get_representation()?;
+            match representation.latest_message_hash(&block.sender) {
+                Some(latest_hash) => match representation.lookup(&latest_hash)? {
+                    Some(latest_meta) => block.seq_num < latest_meta.sequence_number,
+                    None => false,
+                },
+                // No latest message: this sender has no live testimony on
+                // this node — an unbonded historic author, the normal case
+                // for deep settled history. The conjunct exists to refuse
+                // live-chain material wearing a sub-anchor height, and live
+                // material always HAS a live latest message, so its job is
+                // done entirely by the Some arm; refusing here re-wedges
+                // restores whose gap blocks were authored by since-departed
+                // validators. A bonded citer vouching for a no-slot author
+                // is the budget-priced attack the admission cap already
+                // bounds.
+                None => true,
+            }
+        };
+        if !admit_as_settled(
+            proto_util::block_number(block),
+            approved_block_number,
+            solicited_by_bonded,
+            self.settled_admissions.load(Ordering::Relaxed) < SETTLED_ADMISSION_BUDGET,
+            seq_below_senders_latest,
+        ) {
+            return Ok(false);
+        }
+
+        // Reserve the budget slot atomically: check-then-increment as two
+        // steps lets concurrent admissions overshoot the documented bound.
+        let Ok(reserved) = self.settled_admissions.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |admitted| (admitted < SETTLED_ADMISSION_BUDGET).then(|| admitted + 1),
+        ) else {
+            return Ok(false);
+        };
+
+        if let Err(insert_err) = self.block_dag_storage.insert(
+            block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,
+        ) {
+            // Return the reserved slot: a storage failure must not consume
+            // budget headroom.
+            self.settled_admissions.fetch_sub(1, Ordering::Relaxed);
+            return Err(insert_err.into());
+        }
+        let admitted = reserved + 1;
+        if admitted == SETTLED_ADMISSION_BUDGET / 2 {
+            tracing::warn!(
+                admitted,
+                budget = SETTLED_ADMISSION_BUDGET,
+                "Settled-history admissions at half budget; a healthy join needs single \
+                 digits — investigate what keeps citing unheld settled blocks"
+            );
+        }
+        tracing::info!(
+            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            block_number = proto_util::block_number(block),
+            anchor_number = approved_block_number,
+            admitted,
+            "Admitted solicited block as settled history (below this node's sync anchor)"
+        );
+        // An admitted block is a legal parent, and a parent's state is read by
+        // its children's replay. Fetch its declared roots now, eagerly: a child
+        // validating before they land defers on AwaitingState and retries —
+        // the fetch is already in flight either way.
+        self.request_state_root(&Blake2b256Hash::from_bytes_prost(
+            &block.body.state.post_state_hash,
+        ));
+        self.request_state_root(&Blake2b256Hash::from_bytes_prost(
+            &block.body.state.pre_state_hash,
+        ));
+        self.remove_from_buffer(block).await?;
+        self.ack_processed(block).await?;
+        Ok(true)
     }
 
     /// Equivalent to Scala's: requestMissingDependencies = (deps: Set[BlockHash]) => { ... }
@@ -915,22 +1555,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         let dag = casper.handle_invalid_block(block, invalid_block, &snapshot.dag)?;
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
-        if let Err(err) = self
-            .transport
-            .send_block_hash(
-                &self.connections_cell,
-                &self.conf,
-                &block.block_hash,
-                &block.sender,
-            )
-            .await
-        {
-            tracing::warn!(
-                "Failed to send block hash {} to sender during invalid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                err
-            );
-        }
+        self.spawn_block_hash_announce(block);
 
         Ok(dag)
     }
@@ -944,30 +1569,54 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         let dag = { casper.handle_valid_block(block).await? };
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
-        if let Err(err) = self
-            .transport
-            .send_block_hash(
-                &self.connections_cell,
-                &self.conf,
-                &block.block_hash,
-                &block.sender,
-            )
-            .await
-        {
-            tracing::warn!(
-                "Failed to send block hash {} to sender during valid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                err
-            );
-        }
+        self.spawn_block_hash_announce(block);
 
         Ok(dag)
+    }
+
+    /// Test-only: drive the announce spawn directly.
+    pub fn spawn_block_hash_announce_for_test(&self, block: &BlockMessage) {
+        self.spawn_block_hash_announce(block)
+    }
+
+    /// The announce is one-way gossip, so it runs detached: awaited inline,
+    /// one unreachable peer's send timeout taxes every processed block.
+    /// Detached tasks are permit-bounded: without the cap, in-flight count is
+    /// block-processing rate times the slowest peer's send timeout.
+    fn spawn_block_hash_announce(&self, block: &BlockMessage) {
+        let Ok(permit) = self.announce_permits.clone().try_acquire_owned() else {
+            tracing::debug!(
+                block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                cap = ANNOUNCE_MAX_IN_FLIGHT,
+                "dropping block-hash announce: every announce slot is held by a \
+                 slow peer send; peers learn the hash from gossip instead"
+            );
+            return;
+        };
+        let transport = self.transport.clone();
+        let connections_cell = self.connections_cell.clone();
+        let conf = self.conf.clone();
+        let block_hash = block.block_hash.clone();
+        let sender = block.sender.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(err) = transport
+                .send_block_hash(&connections_cell, &conf, &block_hash, &sender)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to send block hash {} to peers during block effects: {}",
+                    PrettyPrinter::build_string_bytes(&block_hash),
+                    err
+                );
+            }
+        });
     }
 }
 
 /// Constructor function equivalent to Scala's companion object apply method
 /// Creates unified dependencies and BlockProcessor
-pub fn new_block_processor<T: TransportLayer + Send + Sync>(
+pub fn new_block_processor<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     casper_buffer: CasperBufferKeyValueStorage,
     block_dag_storage: BlockDagKeyValueStorage,
@@ -975,6 +1624,7 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync>(
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
+    state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
 ) -> BlockProcessor<T> {
     let dependencies = BlockProcessorDependencies::new(
         block_store,
@@ -984,7 +1634,174 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync>(
         transport,
         connections_cell,
         conf,
+        state_root_fetch_tx,
     );
 
     BlockProcessor::new(dependencies)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rust::block_status::ValidBlock;
+
+    /// A block validation could not judge must not be cleaned up like one it
+    /// did. Settling it drops it from the buffer, and because an invalid block
+    /// counts as a satisfied dependency, the next block in line then becomes
+    /// "ready" and is mis-handled the same way — the gap is never fetched and
+    /// the node never catches up.
+    #[test]
+    fn an_undecidable_block_waits_for_the_block_it_named() {
+        let missing = BlockHash::from(b"the-block-we-lack".to_vec());
+
+        assert_eq!(
+            post_validation(&Either::Left(BlockError::Undecidable(missing.clone()))),
+            PostValidation::AwaitingBlock(missing),
+            "an undecidable block must stay buffered against the block it needs"
+        );
+    }
+
+    /// Deferral is only honest for a node that actually has a hole in its
+    /// history. A node built from genesis holds a complete spine, so a block it
+    /// cannot find is corruption, and it must still judge — otherwise any
+    /// crafted block that induces the error would buy its proposer a permanent
+    /// non-verdict: never judged, never invalid, no evidence, sitting in the
+    /// buffer while every honest node judges it normally.
+    ///
+    /// A node restored from a sync anchor is truncated for the life of its data
+    /// directory: `last_approved_block` is written once, at genesis ceremony or
+    /// at restore, and never advances. Its anchor height is therefore a durable
+    /// statement that history below it will never arrive.
+    #[test]
+    fn only_a_node_with_a_hole_in_its_history_may_defer() {
+        let missing = BlockHash::from(b"below-my-anchor".to_vec());
+        let undecidable = || Either::Left(BlockError::Undecidable(missing.clone()));
+
+        assert_eq!(
+            guard_deferral(undecidable(), 87),
+            Either::Left(BlockError::Undecidable(missing.clone())),
+            "a node restored at an anchor genuinely cannot judge below it"
+        );
+
+        assert!(
+            matches!(
+                guard_deferral(undecidable(), 0),
+                Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(..)))
+            ),
+            "a genesis-rooted node has the whole spine, so a missing block is corruption \
+             and must be judged — deferring here is an escape hatch for crafted blocks"
+        );
+    }
+
+    /// Purging on a duplicate of a block mid-dependency-recovery removes the
+    /// block from every retry structure at once — recovery then ends unless a
+    /// peer happens to resend it.
+    #[test]
+    fn a_duplicate_of_a_block_in_recovery_drops_without_purging_the_buffer() {
+        use super::{of_interest_verdict, OfInterestVerdict};
+
+        assert_eq!(
+            of_interest_verdict(true, true, true, false, false),
+            OfInterestVerdict::AlreadyProcessed
+        );
+        assert_eq!(
+            of_interest_verdict(false, false, true, false, false),
+            OfInterestVerdict::WrongShard
+        );
+        assert_eq!(
+            of_interest_verdict(false, true, false, false, false),
+            OfInterestVerdict::WrongVersion
+        );
+        assert_eq!(
+            of_interest_verdict(false, true, true, true, false),
+            OfInterestVerdict::OldUnsolicited
+        );
+        assert_eq!(
+            of_interest_verdict(false, true, true, true, true),
+            OfInterestVerdict::Fresh,
+            "an old block this node solicited as a dependency is fresh work"
+        );
+        assert_eq!(
+            of_interest_verdict(false, true, true, false, false),
+            OfInterestVerdict::Fresh
+        );
+
+        assert!(OfInterestVerdict::WrongShard.purges_buffer());
+        assert!(OfInterestVerdict::WrongVersion.purges_buffer());
+        assert!(OfInterestVerdict::OldUnsolicited.purges_buffer());
+        assert!(
+            !OfInterestVerdict::AlreadyProcessed.purges_buffer(),
+            "a verdict about the COPY must not destroy the recovery state of the block"
+        );
+    }
+
+    /// Settled-history admission is the LFS door opened at runtime. A restored
+    /// node judges old blocks with checks that assume dependency-ordered
+    /// insertion — an assumption its own restore already broke for 298 blocks —
+    /// so a straggler from the same settled region must come through the same
+    /// door those 298 did: hash-checked, inserted, never judged. Each condition
+    /// closes a distinct attack:
+    ///
+    ///   - only a truncated node (a genesis-rooted node judges everything, so
+    ///     no crafted block can buy an unjudged admission there);
+    ///   - only at-or-below the anchor (live consensus is always judged);
+    ///   - only when solicited by a bonded validator's signature-checked block
+    ///     (an unbonded attacker's citations open nothing);
+    ///   - only within budget (a staked attacker buys bounded, alarmed storage,
+    ///     never unbounded growth — past the budget the node degrades to
+    ///     today's deferral, loudly);
+    ///   - only seq-strictly-below the sender's latest message (settled
+    ///     history predates the anchor's justification frontier; a higher
+    ///     seq is live-chain material wearing a sub-anchor height).
+    #[test]
+    fn settled_history_admission_has_five_conditions() {
+        assert!(
+            admit_as_settled(9, 87, true, true, true),
+            "a below-anchor block solicited by a bonded citer on a truncated node is settled history"
+        );
+        assert!(
+            admit_as_settled(87, 87, true, true, true),
+            "the anchor's own height is inside the settled cut"
+        );
+        assert!(
+            !admit_as_settled(88, 87, true, true, true),
+            "above the anchor is live consensus and must be judged"
+        );
+        assert!(
+            !admit_as_settled(9, 0, true, true, true),
+            "a genesis-rooted node judges everything — same discriminator as guard_deferral"
+        );
+        assert!(
+            !admit_as_settled(9, 87, false, true, true),
+            "a citation from an unbonded sender opens no door"
+        );
+        assert!(
+            !admit_as_settled(9, 87, true, false, true),
+            "budget exhausted falls back to deferral, never silent growth"
+        );
+        assert!(
+            !admit_as_settled(9, 87, true, true, false),
+            "a seq at-or-above the sender's latest message is not settled history"
+        );
+    }
+
+    /// Every actual verdict — valid, invalid, or a genuine storage fault — is
+    /// settled. Only the absence of a verdict waits.
+    #[test]
+    fn every_verdict_settles() {
+        for status in [
+            Either::Right(ValidBlock::Valid),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidTransaction)),
+            Either::Left(BlockError::BlockException(CasperError::RuntimeError(
+                "disk".into(),
+            ))),
+            Either::Left(BlockError::MissingBlocks),
+        ] {
+            assert_eq!(
+                post_validation(&status),
+                PostValidation::Settled,
+                "{status:?} is a verdict and must be settled, not retried"
+            );
+        }
+    }
 }

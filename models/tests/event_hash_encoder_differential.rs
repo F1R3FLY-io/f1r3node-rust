@@ -1,7 +1,11 @@
 //! Differential proof for the generated event-hash bincode encoder.
 //!
 //! For each production root, this suite compares `ColdStoreEncode::cold_encode`
-//! and the event-hash entry point with the legacy derived-serde bytes. Coverage
+//! and the event-hash entry point with derived-serde bytes for the SAME merged
+//! schema. `legacy` in older helper names means the pre-generator Serde path;
+//! it does not mean the pre-cost 52217b94a field layout. Historical byte
+//! identity requires a separate versioned-codec differential against that
+//! pinned revision before pre-activation replay can use these hashes. Coverage
 //! includes every expression/connective arm, all EPathMap fixture shapes,
 //! bounded-depth reference comparisons, generated terms, and an executed
 //! negative control. The separate Casper depth gate proves the generated path
@@ -147,6 +151,8 @@ fn datum_of(pars: Vec<Par>) -> ListParWithRandom {
     ListParWithRandom {
         pars,
         random_state: vec![0xAA; 32],
+        cost_authority: None,
+        cost_stack: None,
     }
 }
 
@@ -163,6 +169,7 @@ fn pattern_of(patterns: Vec<Par>) -> BindPattern {
 fn continuation_of(body: Par) -> TaggedContinuation {
     TaggedContinuation {
         guard: Some(expr_par(ExprInstance::GBool(true))),
+        cost_authority: None,
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(body),
             random_state: vec![0x5A; 16],
@@ -338,7 +345,7 @@ proptest! {
         random_state in proptest::collection::vec(any::<u8>(), 0..16),
         free_count in 0i32..8,
     ) {
-        let d = ListParWithRandom { pars: vec![par.clone()], random_state: random_state.clone() };
+        let d = ListParWithRandom { pars: vec![par.clone()], random_state: random_state.clone(), cost_authority: None, cost_stack: None };
         prop_assert!(identity_verdict("prop/datum", &d.cold_encode(),
             &bincode::serialize(&d).expect("oracle")).is_ok());
 
@@ -348,6 +355,7 @@ proptest! {
 
         let k = TaggedContinuation {
             guard: Some(par.clone()),
+            cost_authority: None,
             tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
                 body: Some(par), random_state,
             })),

@@ -150,24 +150,24 @@ mod tests {
                                 }],
                                 ..Par::default().clone()
                             }
-                            .with_locally_free(create_bit_vector(&vec![0])),
+                            .with_locally_free(create_bit_vector(&[0])),
                         ),
                         source: Some(Par::default()),
                         free_count: 0,
                         guard: None,
                     }],
 
-                    locally_free: create_bit_vector(&vec![0]),
+                    locally_free: create_bit_vector(&[0]),
                     connective_used: false,
                 }),
             ])
-            .with_locally_free(create_bit_vector(&vec![0]));
+            .with_locally_free(create_bit_vector(&[0]));
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(result.clone().unwrap().free_map, inputs.free_map);
         assert_eq!(
             result.clone().unwrap().par.locally_free,
-            create_bit_vector(&vec![0])
+            create_bit_vector(&[0])
         );
     }
 
@@ -224,26 +224,24 @@ mod tests {
                         }],
                         ..Par::default().clone()
                     }
-                    .with_locally_free(create_bit_vector(&vec![0]))],
+                    .with_locally_free(create_bit_vector(&[0]))],
                     source: Some(Par::default()),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
                 peek: false,
                 bind_count: 0,
-                locally_free: create_bit_vector(&vec![0]),
+                locally_free: create_bit_vector(&[0]),
                 connective_used: false,
                 condition: None,
             }])
-            .with_locally_free(create_bit_vector(&vec![0]));
+            .with_locally_free(create_bit_vector(&[0]));
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(result.clone().unwrap().free_map, inputs.free_map);
-        assert_eq!(
-            result.unwrap().par.locally_free,
-            create_bit_vector(&vec![0])
-        )
+        assert_eq!(result.unwrap().par.locally_free, create_bit_vector(&[0]))
     }
 }

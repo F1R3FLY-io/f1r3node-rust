@@ -8,7 +8,8 @@ use counter::Counter;
 use dashmap::DashMap;
 use proptest_derive::Arbitrary;
 
-use super::hashing::stable_hash_provider::StableHashSerialize;
+use super::errors::RSpaceError;
+use super::hashing::stable_hash_provider::{EventCodecEpoch, StableHashSerialize};
 use super::trace::event::{Consume, Produce};
 
 // Reference-shaped RSpace transport: the payload fields of the hot-store
@@ -46,6 +47,22 @@ pub struct Datum<A: Clone> {
 impl<A> Datum<A>
 where A: Clone + StableHashSerialize
 {
+    /// Construct an event identity under an authenticated codec epoch before
+    /// the datum can enter the hot store. Legacy rejects populated cost fields.
+    pub fn create_for_epoch<C: StableHashSerialize>(
+        epoch: EventCodecEpoch,
+        channel: &C,
+        a: A,
+        persist: bool,
+    ) -> Result<Datum<A>, RSpaceError> {
+        let source = Produce::create_for_epoch(epoch, channel, &a, persist)?;
+        Ok(Datum {
+            a: Arc::new(a),
+            persist,
+            source,
+        })
+    }
+
     pub fn create<C: StableHashSerialize>(channel: &C, a: A, persist: bool) -> Datum<A> {
         let source = Produce::create(channel, &a, persist);
         Datum {
@@ -78,6 +95,26 @@ where
     P: Clone + StableHashSerialize,
     K: Clone + StableHashSerialize,
 {
+    /// Construct a consume identity under the same authenticated epoch that
+    /// will be used for channel keys, checkpoint writes, and replay reads.
+    pub fn create_for_epoch<C: Clone + StableHashSerialize>(
+        epoch: EventCodecEpoch,
+        channels: &Vec<C>,
+        patterns: &Vec<P>,
+        continuation: &K,
+        persist: bool,
+        peeks: BTreeSet<i32>,
+    ) -> Result<WaitingContinuation<P, K>, RSpaceError> {
+        let source = Consume::create_for_epoch(epoch, channels, patterns, continuation, persist)?;
+        Ok(WaitingContinuation {
+            patterns: Arc::new(patterns.to_vec()),
+            continuation: Arc::new(continuation.clone()),
+            persist,
+            peeks,
+            source,
+        })
+    }
+
     pub fn create<C: Clone + StableHashSerialize>(
         channels: &Vec<C>,
         patterns: &Vec<P>,
@@ -150,6 +187,12 @@ where
     pub fn empty() -> Self {
         MultisetMultiMap {
             map: DashMap::new(),
+        }
+    }
+
+    pub(crate) fn empty_with_shard_amount(shards: usize) -> Self {
+        MultisetMultiMap {
+            map: DashMap::with_shard_amount(shards),
         }
     }
 

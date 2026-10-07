@@ -1,7 +1,7 @@
 // SlashingObserver — the read-only contract every tier of the
 // slashing test architecture must satisfy.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.2.4
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.2.4
 // (tier model, added by Track 9). Plan-agent design from session
 // committed at fa29d33+.
 //
@@ -48,12 +48,6 @@ pub trait SlashingObserver {
 
     /// Witness set of the record at `(validator, base_seq)`. Empty
     /// when no record exists.
-    ///
-    /// Part of the complete tier observation surface (every tier
-    /// implements it, and the inherent `SlashingTestHarness::record_witnesses`
-    /// is used by many record-shape tests). The trait-qualified form
-    /// currently has no caller, so it is allowed to be dead.
-    #[allow(dead_code)]
     fn record_witnesses(&self, validator: &str, base_seq: SeqNum) -> BTreeSet<BlockHash>;
 
     /// Validators counted in the GHOST estimator (active set minus

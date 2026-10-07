@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Local type definitions for the SlashingTestHarness state machine.
 //
 // These mirror the abstract LTS state from
-// docs/theory/slashing/slashing-specification.md §2.2 / §3.1
+// docs/casper/theory/slashing/slashing-specification.md §2.2 / §3.1
 // (S = (D, I, E, B, A, Sl, C)) and the Rocq formalization at
 // formal/rocq/slashing/theories/{Block,EquivocationRecord,DAGState,PoSContract}.v.
 //

@@ -151,6 +151,7 @@ fn unsupported_kind(instance: &ExprInstance, spatial: SpatialSupport) -> Option<
         | ExprInstance::GUri(_)
         | ExprInstance::GByteArray(_)
         | ExprInstance::GDouble(_)
+        | ExprInstance::GFloat32(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_) => None,
@@ -308,6 +309,7 @@ fn push_expr<'g>(
         | ExprInstance::GUri(_)
         | ExprInstance::GByteArray(_)
         | ExprInstance::GDouble(_)
+        | ExprInstance::GFloat32(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)

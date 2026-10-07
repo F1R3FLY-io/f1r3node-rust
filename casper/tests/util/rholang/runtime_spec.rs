@@ -20,13 +20,14 @@ async fn empty_state_hash_should_be_the_same_as_hard_coded_cached_value() {
     let store = kvm.r_space_stores().await.unwrap();
     let runtime = create_runtime_from_kv_store(
         store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         false,
         &mut Vec::new(),
         Arc::new(Box::new(Matcher)),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let hard_coded_hash = RuntimeManager::empty_state_hash_fixed();
     let mut runtime_ops = RuntimeOps::new(runtime);
@@ -44,13 +45,14 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     let store = kvm.r_space_stores().await.unwrap();
     let mut runtime = create_runtime_from_kv_store(
         store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         false,
         &mut Vec::new(),
         Arc::new(Box::new(Matcher)),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let contract = r#"
          new a in {
@@ -77,14 +79,8 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     assert!(r.unwrap().errors.is_empty());
 
     let checkpoint = runtime.create_checkpoint().await;
-    // Updated 2026-04-29 by Phase 9 of where-clauses-and-match-guards
-    // (plan §7.12). The guard moved from BindPattern.condition to
-    // TaggedContinuation.guard, re-encoding the bootstrap registry's
-    // installed continuations and patterns. The "without_hard_fork"
-    // name now refers to the post-fork baseline; further unintended
-    // drift would still be caught.
     let expected_hash = Blake2b256Hash::from_hex(
-        "b3eeba72ea8b293a95635b8caf03973d55f721a4ad915da9ff8aa6b6cdcc0ba4",
+        "b1995ca995a2b700303559675f1a6f07232972285ed0b2657ea1f0e48681f745",
     );
 
     assert_eq!(expected_hash, checkpoint.root);

@@ -15,8 +15,30 @@
    block_seq             │ seqNum(b) ∈ ℕ               │ b.seq_num : i32
    block_hash            │ h(b) ∈ H                     │ b.block_hash
    block_justifications  │ J(b) ⊆ V × H                 │ b.justifications
-   block_carries_slash   │ Slash ∈ b.system_deploys     │ has_slash_system_deploys
+   block_carries_slash   │ Slash ∈ b.system_deploys     │ slash_targets ∋ offender
    ─────────────────────────────────────────────────────────────────────────
+
+   NOTE (2026-07-15 dev merge) — `block_carries_slash`'s Rust binding MOVED, and
+   the old name is now a false friend. It used to be the block-global predicate
+   `has_slash_system_deploys` (pre-merge `validate.rs:1355/1362`:
+   `neglected_invalid_justification && !has_slash_system_deploys`). The merge
+   rewrote `neglected_invalid_block` (`validate.rs:1346`) into a PER-TARGET
+   exemption: it collects `slash_targets` from the block's AUTHORIZED slash
+   deploys, keyed by `slash_target_key(offender, activation_epoch)`
+   (`validate.rs:1365,1412`), and rejects only when the offender's own key is
+   absent (`validate.rs:1448-1449`).
+
+   `has_slash_system_deploys` still EXISTS (`validate.rs:962`, `:1099`) but now
+   governs an unrelated check (the empty-block progress gate in
+   `Validate::parents`), so citing it here would point a reader at the wrong
+   predicate. The per-target reading is a STRICT REFINEMENT of the block-global
+   one (a block carrying a slash for X no longer excuses neglecting a slash for Y).
+
+   This does NOT weaken the model: `BugFixSelfRegression.v:99-113`'s
+   `rejects_neglected_post_fix` is PARAMETRIC in the slash flag
+   (`andb has_neglected (negb has_slash)`) and its own comment already reads it
+   as "lacks a CORRESPONDING slash deploy" — i.e. the per-target sense. T-9.9 and
+   the widening claim are unaffected; only this name binding was stale.
 
    Companion doc: slashing-verification.md §3.2
    ═══════════════════════════════════════════════════════════════════════════ *)

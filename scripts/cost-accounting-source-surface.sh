@@ -58,11 +58,14 @@ surface_json() {
   local cross_surface_role="${10}"
   local abs_file="$ROOT/$file"
   local match=""
+  local symbol_match=""
   local line="0"
   local status="absent"
   local found="false"
 
-  if [[ -f "$abs_file" ]] && match="$(rg -n -m 1 -F -- "$pattern" "$abs_file")"; then
+  if [[ -f "$abs_file" ]] \
+    && symbol_match="$(rg -n -m 1 -F -- "$symbol" "$abs_file")" \
+    && match="$(rg -n -m 1 -F -- "$pattern" "$abs_file")"; then
     line="${match%%:*}"
     status="present"
     found="true"
@@ -103,39 +106,24 @@ emit() {
     surface_json "$@"
   }
 
-  add_surface v11_runtime_trace_slot_cap runtime_budget trace_slot_capacity rholang/src/rust/interpreter/accounting/mod.rs cost_trace_event_slots cost_trace_event_slots true present "runtime_budget,trace_commitment,capacity_bound" source
+  add_surface v11_runtime_atomic_batch_admission runtime_budget atomic_batch_admission rholang/src/rust/interpreter/accounting/mod.rs commit_canonical_batch "pub fn commit_canonical_batch" true present "runtime_budget,atomic_admission,canonical_order,reject_before_mutation" source
   add_surface v11_runtime_invalid_admission runtime_budget invalid_admission_before_mutation rholang/src/rust/interpreter/accounting/mod.rs validate_billable_event "fn validate_billable_event" true present "runtime_budget,admission,reject_before_mutation" source
-  add_surface v11_runtime_oop_singleton runtime_budget oop_boundary_singleton rholang/src/rust/interpreter/accounting/mod.rs last_oop_event last_oop_event true present "runtime_budget,oop_boundary,trace_commitment" source
+  add_surface v11_runtime_oop_singleton runtime_budget oop_boundary_singleton rholang/src/rust/interpreter/accounting/mod.rs last_oop_event "pub fn last_oop_event" true present "runtime_budget,oop_boundary,trace_commitment" source
   add_surface v11_runtime_unmetered_scope runtime_budget unmetered_scope_leak rholang/src/rust/interpreter/accounting/mod.rs enter_unmetered_scope enter_unmetered_scope false present "runtime_budget,system_mode,quarantine" source
   add_surface v11_metering_pending_queue metering pending_queue_ordering rholang/src/rust/interpreter/metering.rs pending "pending: Arc<Mutex" true present "metering,queue_order,source_event_routing" bridge
   add_surface v11_metering_local_index metering local_index_determinism rholang/src/rust/interpreter/metering.rs next_local_index next_local_index true present "metering,local_index,trace_identity" bridge
   add_surface v11_parallel_futures_unordered parallel_eval completion_order_parallelism rholang/src/rust/interpreter/reduce.rs FuturesUnordered FuturesUnordered true present "parallel_eval,completion_order,max_parallelism" bridge
   add_surface v11_parallel_stable_errors parallel_eval stable_error_aggregation rholang/src/rust/interpreter/reduce.rs sort_by_key sort_by_key true present "parallel_eval,stable_error_order,deterministic_reporting" bridge
-  add_surface v11_replay_digest_count casper_replay replay_auth_digest_count casper/src/rust/rholang/replay_runtime.rs replay_cost_trace replay_cost_trace true present "casper_replay,digest_count,auth_boundary" sink
-  add_surface v11_replay_payload_hash casper_replay replay_payload_cache_key casper/src/rust/util/rholang/runtime_manager.rs replay_payload_hash "fn replay_payload_hash" true present "casper_replay,payload_hash,auth_boundary" sink
-  add_surface v11_settlement_checked_charge settlement refund_overflow models/src/rust/casper/protocol/casper_message.rs checked_total_phlo_charge_value "fn checked_total_phlo_charge_value" true present "settlement,checked_arithmetic,overflow_rejection" sink
-  add_surface v11_settlement_refund_projection settlement refund_as_fuel models/src/rust/casper/protocol/casper_message.rs refund_amount_for_token_cost "pub fn refund_amount_for_token_cost" true present "settlement,refund_projection,fuel_isolation" sink
-  add_surface v11_slashing_system_deploy slashing slashing_evidence_gap casper/src/rust/util/rholang/costacc/slash_deploy.rs SlashDeploy "pub struct SlashDeploy" false present "slashing,evidence_boundary,system_effect" sink
-  add_surface v11_slashing_replay_payload slashing slash_field_authentication casper/src/rust/util/rholang/runtime_manager.rs "SystemDeployData::Slash" "SystemDeployData::Slash" false present "slashing,payload_hash,auth_boundary" sink
+  add_surface v11_settlement_checked_reservation settlement checked_reservation_arithmetic rholang/src/rust/interpreter/accounting/authority.rs verify_with_allocation "pub fn verify_with_allocation" true present "settlement,checked_arithmetic,overflow_rejection,vault_reservation" sink
+  add_surface v11_settlement_refund_conservation settlement vault_refund_conservation rholang/src/rust/interpreter/accounting/authority.rs refund "pub fn refund(" true present "settlement,refund_projection,conservation,vault_reservation" sink
   add_surface v11_legacy_charging_rspace_absent legacy_quarantine legacy_runtime_metering_downgrade rholang/src/rust/interpreter/storage/charging_rspace.rs ChargingRSpace ChargingRSpace true absent "legacy_quarantine,absent_surface,downgrade_guard" quarantine
-  add_surface v14_slashing_epoch_authorization slashing slash_epoch_authorization casper/src/rust/slashing_authorization.rs received_slash_deploy_authorized "pub fn received_slash_deploy_authorized" false present "slashing,authorization,epoch_boundary" sink
-  add_surface v14_slashing_duplicate_target slashing duplicate_target_rejection casper/src/rust/slashing_authorization.rs slash_target_key_collides "pub fn slash_target_key_collides" false present "slashing,authorization,duplicate_target" sink
-  add_surface v14_slashing_parent_pre_state_authorization slashing parent_pre_state_authorization casper/src/rust/slashing_authorization.rs validate_received_slash_deploys "bonds_map" false present "slashing,authorization,parent_pre_state,bond_boundary" sink
-  add_surface v14_slashing_recovered_current_evidence slashing recovered_rejected_current_evidence casper/src/rust/merging/rejected_slash.rs filter_recoverable_with_evidence "pub fn filter_recoverable_with_evidence" false present "slashing,recovered_rejected,current_evidence,epoch_boundary" sink
-  add_surface v14_slashing_block_creator_current_epoch slashing recovered_slash_current_epoch_filter casper/src/rust/blocks/proposer/block_creator.rs recovered_target_activation_epoch "recovered_target_activation_epoch" false present "slashing,block_creator,current_epoch,evidence_boundary" sink
   add_surface v14_mergeable_type_domain mergeable_channels merge_type_domain rspace++/src/rspace/merger/merging_logic.rs MergeType "pub enum MergeType" true present "mergeable_channels,merge_type,type_domain" source
-  add_surface v14_mergeable_bitmask_combine mergeable_channels bitmask_or_combine rspace++/src/rspace/merger/merging_logic.rs combine_mergeable_value "MergeType::BitmaskOr => ((a as u64) | (b as u64)) as i64" true present "mergeable_channels,bitmask_or,merge_combine" bridge
+  add_surface v14_mergeable_bitmask_combine mergeable_channels bitmask_or_combine rspace++/src/rspace/merger/merging_logic.rs combine_mergeable_value "MergeType::BitmaskOr => Some(((a as u64) | (b as u64)) as i64)" true present "mergeable_channels,bitmask_or,merge_combine" bridge
   add_surface v14_mergeable_bitmask_diff mergeable_channels typed_bitmask_diff_roundtrip rholang/src/rust/interpreter/merging/rholang_merging_logic.rs calculate_num_channel_diff "MergeType::BitmaskOr => ((end_val as u64) & !(*prev_val as u64)) as i64" true present "mergeable_channels,bitmask_or,diff_roundtrip" bridge
-  add_surface v14_mergeable_runtime_fold mergeable_channels multi_value_fold_not_max casper/src/rust/rholang/runtime.rs fold_multi_value "MergeType::BitmaskOr => values" true present "mergeable_channels,bitmask_or,deterministic_fold" bridge
   add_surface v14_mergeable_non_numeric_fallback mergeable_channels non_numeric_mergeable_fallback rholang/src/rust/interpreter/merging/rholang_merging_logic.rs try_get_number_with_rnd "pub fn try_get_number_with_rnd" true present "mergeable_channels,non_numeric,fallback_conflict_path" bridge
   add_surface v14_mergeable_tag_propagation mergeable_channels mergeable_tag_type_propagation rholang/src/rust/interpreter/reduce.rs is_mergeable_channel "fn is_mergeable_channel(&self, chan: &Par) -> Option<MergeType>" true present "mergeable_channels,mergeable_tags,type_propagation" source
   add_surface v14_mergeable_store_type_persistence mergeable_channels merge_type_persistence rholang/src/rust/interpreter/merging/rholang_merging_logic.rs NumberChannel "pub merge_type: MergeType" true present "mergeable_channels,store_wire,type_persistence" sink
-  add_surface v14_transport_tls_peer_certificates transport_tls peer_certificate_extraction comm/src/rust/transport/f1r3fly_tls_transport.rs peer_certificates "pub fn peer_certificates" false present "transport_tls,peer_identity,certificate_boundary" source
-  add_surface v14_transport_tls_key_path transport_tls tls_key_material_path_config comm/src/rust/transport/tls_conf.rs key_path "pub key_path: PathBuf" false present "transport_tls,key_material,path_config" source
   add_surface v14_private_key_debug_surface crypto_key_material debug_secret_exposure crypto/src/rust/private_key.rs PrivateKey "#[derive(Debug, Clone, Eq)]" false present "crypto_key_material,secret_material,debug_boundary" source
-  add_surface v14_api_preview_private_names api_ingress private_name_preview_input node/src/rust/api/deploy_grpc_service_v1.rs preview_private_names "async fn preview_private_names" false present "api_ingress,external_request,private_name_preview" source
-  add_surface v14_replay_cache_event_log_bound replay_cache cache_event_log_bound casper/src/rust/util/rholang/runtime_manager.rs MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES true present "replay_cache,event_log_bound,replay_boundary" bridge
-  add_surface v14_dependency_rustsec_policy dependency_advisory accepted_rustsec_exception deny.toml RUSTSEC-2026-0098 RUSTSEC-2026-0098 false present "dependency_advisory,rustsec,accepted_exception" source
 
   printf '\n  ]\n'
   printf '}\n'

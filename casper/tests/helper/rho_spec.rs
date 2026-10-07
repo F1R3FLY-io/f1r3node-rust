@@ -21,6 +21,7 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::rho_runtime::{create_runtime_from_kv_store, RhoRuntime};
 use rholang::rust::interpreter::system_processes::{byte_name, Definition};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::r#match::Match;
 
 use crate::genesis::contracts::test_util::TestUtil;
@@ -340,6 +341,7 @@ pub fn test_framework_contracts(
 pub async fn genesis_runtime(
     genesis_parameters: GenesisParameters,
     additional_system_processes: &mut Vec<Definition>,
+    phase: &std::sync::Mutex<&'static str>,
 ) -> Result<(impl RhoRuntime, GenesisContext), InterpreterError> {
     let mut genesis_builder = GenesisBuilder::new();
     let genesis = genesis_builder
@@ -364,6 +366,7 @@ pub async fn genesis_runtime(
     // `mk_test_rnode_store_manager_from_genesis` opens the shared LMDB environment at genesis's
     // OWN `rspace_scope_id`, which is how every other genesis-dependent test in this suite
     // reaches genesis state (see `resources::with_runtime_manager`).
+    *phase.lock().expect("phase label mutex is never poisoned") = "store-open";
     let mut kvs_manager = mk_test_rnode_store_manager_from_genesis(&genesis);
     let r_store = kvs_manager.r_space_stores().await.map_err(|e| {
         InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
@@ -373,8 +376,11 @@ pub async fn genesis_runtime(
     // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
     // In pure Rust code (without JNA), we must create the Matcher explicitly here,
     // as RSpace::create(stores, matcher) requires it as a parameter.
-    let matcher = Arc::new(Box::new(Matcher::default())
-        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
+    let matcher =
+        Arc::new(Box::new(Matcher)
+            as Box<
+                dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>,
+            >);
 
     // `init_registry: false` — the genesis post-state ALREADY contains the bootstrapped
     // registry. `bootstrap_registry` is an `inj` of the registry's Rholang term
@@ -384,15 +390,16 @@ pub async fn genesis_runtime(
     // Injecting it a second time on top of that state would duplicate data on the registry's
     // channels, and `create_runtime` follows it with a `create_checkpoint()` that would move the
     // shared genesis scope's current-root pointer out from under any sibling test.
+    *phase.lock().expect("phase label mutex is never poisoned") = "runtime-create";
     let mut runtime = create_runtime_from_kv_store(
         r_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         false,
         additional_system_processes,
         matcher,
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
-    .await;
+    .await?;
 
     // Pin the read root to genesis's post-state rather than trusting the roots store's
     // current-root pointer. `RSpace::create` starts at `RootRepository::current_root()`
@@ -402,9 +409,8 @@ pub async fn genesis_runtime(
     // block over the same genesis scope advances that pointer. `reset` also calls
     // `restore_installs`, so the fixed-channel system processes installed above survive it.
     let genesis_post_state =
-        rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
-            &genesis.genesis_block.body.state.post_state_hash,
-        );
+        Blake2b256Hash::from_bytes_prost(&genesis.genesis_block.body.state.post_state_hash);
+    *phase.lock().expect("phase label mutex is never poisoned") = "genesis-reset";
     runtime.reset(&genesis_post_state).await?;
 
     println!(
@@ -422,34 +428,73 @@ pub async fn get_results(
     genesis_parameters: GenesisParameters,
     test_result_collector: Arc<TestResultCollector>,
 ) -> Result<TestResult, InterpreterError> {
-    let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
-    let (runtime, _genesis) =
-        genesis_runtime(genesis_parameters, &mut additional_system_processes).await?;
+    // Bound genesis construction and runtime setup as well as source execution.
+    // The phase records where a stalled suite expired without leaving an
+    // untimed setup wedge behind a test-only timeout.
+    let phase = Arc::new(std::sync::Mutex::new("genesis-build"));
+    let phase_in_body = phase.clone();
+    let body = async {
+        let mut additional_system_processes =
+            test_framework_contracts(test_result_collector.clone());
+        let (runtime, _genesis) = genesis_runtime(
+            genesis_parameters,
+            &mut additional_system_processes,
+            phase_in_body.as_ref(),
+        )
+        .await?;
 
-    println!("Starting tests from {}", test_object.path);
+        println!("Starting tests from {}", test_object.path);
 
-    let runtime = setup_runtime(runtime, other_libs).await?;
+        *phase_in_body
+            .lock()
+            .expect("phase label mutex is never poisoned") = "rhospec-install";
+        let runtime = setup_runtime(runtime, other_libs).await?;
 
-    let rand = Blake2b512Random::create_from_length(128).split_short(1);
+        let rand = Blake2b512Random::create_from_length(128).split_short(1);
+        *phase_in_body
+            .lock()
+            .expect("phase label mutex is never poisoned") = EVAL_TEST_SOURCE_PHASE;
+        TestUtil::eval_source(test_object, &runtime, rand).await
+    };
 
-    // Note: tokio::time::timeout similar to Scala's `monix.eval.Task.timeout()`.
-    // If test execution takes longer than `execution_timeout`, it returns a timeout error.
-    match tokio::time::timeout(
-        execution_timeout,
-        TestUtil::eval_source(test_object, &runtime, rand),
-    )
-    .await
-    {
+    match tokio::time::timeout(execution_timeout, body).await {
         Ok(result) => result?,
         Err(_) => {
-            return Err(InterpreterError::BugFoundError(format!(
-                "Timeout of {:?} expired while executing test from {}",
-                execution_timeout, test_object.path
-            )))
+            return Err(timeout_error(
+                execution_timeout,
+                &phase.lock().expect("phase label mutex is never poisoned"),
+                &test_object.path,
+            ))
         }
     }
 
     Ok(test_result_collector.get_result())
+}
+
+/// Pipeline phase that evaluates the spec's Rholang source.
+pub const EVAL_TEST_SOURCE_PHASE: &str = "eval-test-source";
+
+const TIMEOUT_PREFIX: &str = "Timeout of ";
+const TIMEOUT_PHASE_OPEN: &str = " expired in phase '";
+const TIMEOUT_PHASE_CLOSE: &str = "' while executing test from ";
+
+fn timeout_error(timeout: Duration, phase: &str, path: &str) -> InterpreterError {
+    InterpreterError::BugFoundError(format!(
+        "{TIMEOUT_PREFIX}{timeout:?}{TIMEOUT_PHASE_OPEN}{phase}{TIMEOUT_PHASE_CLOSE}{path}"
+    ))
+}
+
+/// Phase a `run_tests` timeout expired in, or `None` when the error is not a
+/// harness timeout. The encoder and decoder live together so a message
+/// change cannot silently disable a caller's retry gate.
+pub fn timeout_phase(err: &InterpreterError) -> Option<&str> {
+    let InterpreterError::BugFoundError(message) = err else {
+        return None;
+    };
+    let rest = message.strip_prefix(TIMEOUT_PREFIX)?;
+    let start = rest.find(TIMEOUT_PHASE_OPEN)? + TIMEOUT_PHASE_OPEN.len();
+    let end = rest[start..].find(TIMEOUT_PHASE_CLOSE)? + start;
+    Some(&rest[start..end])
 }
 
 async fn setup_runtime<R: RhoRuntime>(
@@ -502,10 +547,39 @@ fn rho_spec_deploy() -> Signed<DeployData> {
     let deploy_data = DeployData {
         term: compiled.code,
         time_stamp: RHO_SPEC_TIMESTAMP,
+        phlo_price: 0,
+        phlo_limit: i64::MAX,
         valid_after_block_number: 0,
         shard_id: SHARD_ID.to_string(),
         expiration_timestamp: None,
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), sk).expect("Failed to sign RhoSpec deploy")
+}
+
+#[cfg(test)]
+mod timeout_phase_tests {
+    use super::*;
+
+    #[test]
+    fn timeout_phase_round_trips_the_encoded_phase() {
+        let err = timeout_error(
+            Duration::from_secs(60),
+            EVAL_TEST_SOURCE_PHASE,
+            "PoSTest.rho",
+        );
+        assert_eq!(timeout_phase(&err), Some(EVAL_TEST_SOURCE_PHASE));
+    }
+
+    #[test]
+    fn timeout_phase_rejects_other_errors() {
+        let err = InterpreterError::BugFoundError("Failed to create RSpaceStore: x".into());
+        assert_eq!(timeout_phase(&err), None);
+        assert_eq!(
+            timeout_phase(&InterpreterError::UndefinedRequiredProtobufFieldError(
+                "f".into()
+            )),
+            None
+        );
+    }
 }

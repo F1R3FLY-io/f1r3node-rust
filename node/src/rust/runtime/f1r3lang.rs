@@ -443,4 +443,44 @@ mod tests {
         assert!(!composition.evaluation.lookahead.host_bound());
         assert_eq!(composition.evaluation.funding.value, funding);
     }
+
+    #[test]
+    fn trusted_node_frontend_preserves_cost_name_and_hash_principals() {
+        use models::rhoapi::cost_signature::Value as CostValue;
+
+        let (policy, funding) = host_policy(&|_| Some("1000000".into())).unwrap();
+        let composition = F1r3langComposition::new(
+            Arc::new(EmptyRegistrySnapshot),
+            inline_language_install_policy(),
+            policy,
+            funding,
+        )
+        .unwrap();
+        let prepare = |source| {
+            composition
+                .evaluation
+                .frontend
+                .prepare(source, std::collections::HashMap::new())
+                .expect("trusted MeTTaIL frontend accepts Cost(Rho) source")
+        };
+
+        let named = prepare("{% Nil %}[@Nil]");
+        let hashed = prepare("{% Nil %}[#(Nil)]");
+        let named_signature = named.as_par().cost_signed_terms[0]
+            .signature
+            .as_ref()
+            .expect("quoted Name principal");
+        let hashed_signature = hashed.as_par().cost_signed_terms[0]
+            .signature
+            .as_ref()
+            .expect("hashed process section");
+        assert!(matches!(
+            named_signature.value.as_ref(),
+            Some(CostValue::Name(_))
+        ));
+        assert!(matches!(
+            hashed_signature.value.as_ref(),
+            Some(CostValue::Quote(_))
+        ));
+    }
 }

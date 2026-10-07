@@ -86,6 +86,8 @@ fn datum_fixtures() -> Vec<(&'static str, Datum<ListParWithRandom>)> {
             a: ListParWithRandom {
                 pars: vec![corpus::all_par_fields(), corpus::deep_mixed_par(24)],
                 random_state: vec![0xF1, 0xF2, 0xF3, 0xF4],
+                cost_authority: None,
+                cost_stack: None,
             }
             .into(),
             persist: false,
@@ -99,6 +101,8 @@ fn datum_fixtures() -> Vec<(&'static str, Datum<ListParWithRandom>)> {
             a: ListParWithRandom {
                 pars: vec![],
                 random_state: vec![],
+                cost_authority: None,
+                cost_stack: None,
             }
             .into(),
             persist: true,
@@ -108,6 +112,8 @@ fn datum_fixtures() -> Vec<(&'static str, Datum<ListParWithRandom>)> {
             a: ListParWithRandom {
                 pars: vec![corpus::deep_par(48)],
                 random_state: vec![9; 32],
+                cost_authority: None,
+                cost_stack: None,
             }
             .into(),
             persist: false,
@@ -143,6 +149,7 @@ fn continuation_fixtures() -> Vec<(
             .into(),
             continuation: TaggedContinuation {
                 guard: Some(corpus::gint(41)),
+                cost_authority: None,
                 tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
                     body: Some(corpus::deep_mixed_par(20)),
                     random_state: vec![1, 2],
@@ -161,6 +168,7 @@ fn continuation_fixtures() -> Vec<(
             patterns: Vec::<BindPattern>::new().into(),
             continuation: TaggedContinuation {
                 guard: None,
+                cost_authority: None,
                 tagged_cont: Some(TaggedCont::ScalaBodyRef(-99)),
             }
             .into(),
@@ -312,6 +320,8 @@ fn a_datum_too_deep_for_the_derived_decoder_still_reads_back() {
                 a: ListParWithRandom {
                     pars: vec![corpus::deep_par(4096)],
                     random_state: vec![1, 2, 3],
+                    cost_authority: None,
+                    cost_stack: None,
                 }
                 .into(),
                 persist: true,

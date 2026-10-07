@@ -28,16 +28,16 @@ OBJECTIVES = [
 ]
 
 SUPPORTED_MUTATIONS = [
-    "cost_trace_digest",
-    "cost_trace_event_count",
-    "cost",
+    "processed_deploy_cost",
+    "authority_cost_witness",
+    "authority_byte_events",
+    "replay_payload_hash",
     "signature",
     "block_hash",
     "failed",
     "system_error",
     "slash_fields",
     "genesis",
-    "cost_trace_present",
 ]
 
 
@@ -78,24 +78,6 @@ def find_or_none(strategy, predicate, cfg):
 
 def digest_value(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=schema_json_default).encode("utf-8")).hexdigest()[:16]
-
-
-def expected_fixture_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        primitive_descriptor = str(event.get("primitive_descriptor", event.get("descriptor", "")))
-        invalid_descriptor = str(event.get("kind", "")) == "primitive" and len(primitive_descriptor) > 512
-        invalid_source_path = len(event.get("path", [])) > 1024
-        if weight <= 0 or invalid_descriptor or invalid_source_path:
-            return (0, 0, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
 
 
 def discover_source_seeds(roots, limit):
@@ -286,7 +268,7 @@ def rholang_eval_records(seed_roots, source_limit, objectives):
 def replay_security_records(objectives):
     if not (objective_enabled(objectives, "replay") or objective_enabled(objectives, "production") or objective_enabled(objectives, "security")):
         return []
-    mutations = ["cost_trace_digest", "cost_trace_event_count", "cost_trace_present", "signature", "block_hash"]
+    mutations = authenticated_replay_fields(["signature", "block_hash"])
     scenario = canonical_scenario(
         "horizon_v6_replay_downgrade_rejection",
         events=[
@@ -300,15 +282,15 @@ def replay_security_records(objectives):
         rho_source="Nil",
         production_oracle="casper_replay_payload",
         expected_outcome="replay_reject",
-        differential_axes=["digest", "count", "trace_presence", "signature", "block_hash"],
+        differential_axes=["processed_cost", "authority_witness", "byte_events", "payload_hash", "signature", "block_hash"],
         attack_campaign="v6_replay_downgrade_rejection",
         oracle_kind="production_replay_payload_downgrade_rejection",
         production_path="RuntimeManager replay payload + block hash authentication",
-        campaign_steps=["reserve", "finalize", "remove_or_mutate_cost_trace", "replay"],
+        campaign_steps=["reserve", "finalize", "remove_or_mutate_authority_witness", "replay"],
         minimized_input_digest=digest_value(mutations),
         reproducer_command=command_for_fixture(),
         threat_family="production_replay",
-        expected_invariants=["cost_accounted_replay_rejects_missing_or_mutated_trace"],
+        expected_invariants=["cost_accounted_replay_rejects_missing_or_mutated_authority_witness"],
         rust_reproducer={"test": "generated_frontier_casper_boundary_fixtures_hold"},
         promotion_target="rust:test",
         expected_classification="confirmed_safe",
@@ -333,26 +315,23 @@ def settlement_slashing_records(objectives):
         "horizon_v6_casper_settlement_isolation",
         events=[canonical_event("source", 2, descriptor="v6/settlement/source", deploy=0, path=[0])],
         initial_budget=4,
-        phlo_limit=4,
-        phlo_price=3,
-        token_cost=2,
-        settlement={"authority": "casper", "escrow": 12, "token_cost": 6, "refund": 6},
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count"]},
-        replay_mutations=["cost", "cost_trace_digest"],
+        settlement=vault_settlement(12, 12, 0, 0, 6, 0),
+        replay_fields={"fields": authenticated_replay_fields()},
+        replay_mutations=authenticated_replay_fields(),
         rho_source="Nil",
         production_oracle="casper_settlement",
         expected_outcome="settlement_isolated",
-        differential_axes=["cost", "refund", "digest"],
+        differential_axes=["processed_cost", "refund", "authority_witness", "byte_events", "payload_hash"],
         attack_campaign="v6_casper_settlement_isolation",
         oracle_kind="production_casper_settlement_isolation",
-        production_path="DeployData::refund_amount_for_token_cost + RuntimeBudget",
-        campaign_steps=["precharge", "reserve", "settle", "assert_no_runtime_fuel_replenish"],
+        production_path="authority::verify_with_allocation + acceptance::settle_candidate + RuntimeBudget",
+        campaign_steps=["reserve_vault_authority", "reserve", "settle", "assert_no_runtime_fuel_replenish"],
         minimized_input_digest=digest_value("v6-settlement-isolation"),
         reproducer_command=command_for_fixture(),
         threat_family="production_settlement",
         expected_invariants=[
             "uc_ca_058_refund_cannot_replenish_runtime_fuel",
-            "uc_ca_009_charged_plus_refund_equals_escrow",
+            "uc_ca_009_debit_plus_refund_equals_reservation",
         ],
         rust_reproducer={"test": "generated_frontier_casper_boundary_fixtures_hold"},
         promotion_target="rust:test",
@@ -362,13 +341,13 @@ def settlement_slashing_records(objectives):
         "horizon_v6_stale_slashing_duplicate_boundary",
         events=[canonical_event("source", 1, descriptor="v6/stale-slashing/source", deploy=0, path=[0])],
         initial_budget=4,
-        settlement={"kind": "slash_after_evaluation", "authority": "casper", "escrow": 8, "token_cost": 2, "refund": 6, "stale_evidence": True, "duplicate_evidence": True},
-        replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "slash_fields", "genesis", "block_hash"]},
-        negative_mutations=["slash_fields", "genesis", "block_hash", "cost_trace_digest"],
+        settlement=vault_settlement(8, 8, 0, 0, 2, 0, kind="slash_after_evaluation", stale_evidence=True, duplicate_evidence=True),
+        replay_fields={"fields": authenticated_replay_fields(["slash_fields", "genesis", "block_hash"])},
+        negative_mutations=authenticated_replay_fields(["slash_fields", "genesis", "block_hash"]),
         rho_source="Nil",
         production_oracle="slashing_evidence",
         expected_outcome="guarded_projection",
-        differential_axes=["slash_fields", "genesis", "block_hash", "digest"],
+        differential_axes=["slash_fields", "genesis", "block_hash", "authority_witness", "payload_hash"],
         attack_campaign="v6_stale_slashing_duplicate_boundary",
         oracle_kind="production_stale_duplicate_slashing_boundary",
         production_path="slashing evidence validation + replay payload authentication",

@@ -11,20 +11,20 @@ def all_records():
     invalid_event = canonical_event("source", 0)
     trace_cap_events = [canonical_event("source", 1, path=[i]) for i in range(5)]
     replay_fields = {
-        "cost": 7,
-        "digest_present": True,
-        "digest": "good",
-        "event_count": 2,
+        "processed_deploy_cost": 7,
+        "authority_cost_witness": "witness-a",
+        "authority_byte_events": ["event-a"],
+        "replay_payload_hash": "payload-a",
         "signature": "sig-a",
         "activation": "cost_accounted",
     }
     settlement = {
         "deploys": [
-            {"phlo_limit": 10, "phlo_price": 2, "token_cost": 3, "refund": 14},
-            {"phlo_limit": 5, "phlo_price": 4, "token_cost": 5, "refund": 0},
+            vault_settlement(20, 20, 0, 0, 6, 0),
+            vault_settlement(20, 20, 0, 0, 20, 0),
         ],
         "total_refund": 14,
-        "total_escrow": 40,
+        "total_reservation": 40,
     }
 
     return [
@@ -32,7 +32,7 @@ def all_records():
             "objective_frontier",
             "confirmed_safe",
             "sage_frontier_invalid_event_rejection",
-            "Invalid billable events are high-priority because accepting them would authenticate trace evidence without fuel.",
+            "Invalid billable events are high-priority because accepting them would commit diagnostic trace evidence without fuel.",
             canonical_scenario(
                 "frontier_invalid_event",
                 events=[invalid_event],
@@ -47,20 +47,20 @@ def all_records():
         ),
         record(
             "objective_frontier",
-            "proof_or_model_strengthening",
+            "confirmed_safe",
             "sage_frontier_trace_cap_boundary",
-            "Trace-cap behavior remains a separate frontier point because it combines resource exhaustion with replay evidence retention.",
+            "Diagnostic trace bounds cannot reject or truncate consensus accounting events.",
             canonical_scenario(
                 "frontier_trace_cap",
                 events=trace_cap_events,
                 initial_budget=10,
-                projection={"max_trace_events": 4},
+                projection={"max_diagnostic_events": 4},
                 threat_family="concurrency_schedule",
-                expected_invariants=["trace-slot linearizability", "trace-cap preservation"],
+                expected_invariants=["diagnostic-bound isolation", "consensus-trace completeness"],
                 promotion_target="rocq:uc_ca_070",
-                expected_classification="proof_or_model_strengthening",
+                expected_classification="confirmed_safe",
             ),
-            {"trace_cap": 4, "events": trace_cap_events, "accepted_count": 4, "rejected_count": 1},
+            {"diagnostic_cap": 4, "events": trace_cap_events, "accepted_count": 5, "diagnostic_count": 4, "rejected_count": 0},
             ["TLA+: RuntimeBudgetReplay", "Loom: trace-slot accounting"],
         ),
         record(
@@ -99,7 +99,7 @@ def all_records():
             "objective_frontier",
             "projection_risk",
             "sage_frontier_producer_routing_guard",
-            "Producer-routing regressions are retained on the frontier because zero-capable producers can otherwise authenticate cost trace entries without work.",
+            "Producer-routing regressions are retained on the frontier because zero-capable producers can otherwise commit diagnostic cost-trace entries without work.",
             canonical_scenario(
                 "frontier_producer_routing",
                 events=[canonical_event("primitive", 0, descriptor="variable-work-empty")],

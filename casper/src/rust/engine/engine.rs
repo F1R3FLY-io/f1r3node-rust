@@ -49,6 +49,11 @@ pub trait Engine: Send + Sync {
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError>;
 
+    /// Called by the casper loop on each tick while this engine has no
+    /// Casper instance, so an engine waiting on pushed ceremony messages
+    /// can pull when the push window was missed.
+    async fn on_no_casper_tick(&self) -> Result<(), CasperError> { Ok(()) }
+
     /// Returns the casper instance as an Arc if this engine wraps one.
     /// Returns None for engines that don't have casper (NoopEngine, Initializing, etc.)
     /// The Arc allows ownership transfer and use across async boundaries.
@@ -192,7 +197,7 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
 
 // NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
 // based on discussion with Steven for TestFixture compatibility
-pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
+pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
     block_processing_queue_tx: mpsc::Sender<(
         Arc<dyn MultiParentCasper + Send + Sync>,
         BlockMessage,
@@ -209,6 +214,11 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
     block_retriever: BlockRetriever<U>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
+    state_items_tx: Option<
+        tokio::sync::mpsc::Sender<
+            models::rust::casper::protocol::casper_message::StoreItemsMessage,
+        >,
+    >,
 ) -> Result<(), CasperError> {
     let approved_block_info =
         PrettyPrinter::build_string_block_message(&approved_block.candidate.block, true);
@@ -223,17 +233,8 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
     )
     .increment(1);
 
-    // Publish EnteredRunningState event
     let block_hash_string =
         PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
-    event_log
-        .publish(F1r3flyEvent::entered_running_state(block_hash_string))
-        .map_err(|e| {
-            CasperError::Other(format!(
-                "Failed to publish EnteredRunningState event: {}",
-                e
-            ))
-        })?;
 
     let running = Running::new(
         block_processing_queue_tx,
@@ -245,9 +246,17 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
         transport,
         conf,
         block_retriever,
+        state_items_tx,
     );
 
     engine_cell.set(Arc::new(running)).await;
+
+    if let Err(e) = event_log.publish(F1r3flyEvent::entered_running_state(block_hash_string)) {
+        tracing::error!(
+            "Failed to publish EnteredRunningState event after committing Running state: {}",
+            e
+        );
+    }
 
     Ok(())
 }
@@ -295,6 +304,7 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     runtime_manager_arc: &Arc<RuntimeManager>,
     estimator: &Estimator,
     heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
 ) -> Result<(), CasperError> {
     // Create bounded channels and return senders so caller can feed LFS responses (Scala: expose queues).
     // Scala uses size-50 bounded queues; we add a third for the
@@ -336,6 +346,7 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         runtime_manager,
         estimator.clone(),
         heartbeat_signal_ref.clone(),
+        state_items_tx,
     ));
 
     // Initialize immediately on transition.

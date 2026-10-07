@@ -17,4 +17,7 @@ pub mod recognize;
 pub mod sig;
 
 #[cfg(test)]
+mod sugar_properties;
+
+#[cfg(test)]
 mod tests;

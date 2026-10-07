@@ -29,16 +29,16 @@ OBJECTIVES = [
 ]
 
 SUPPORTED_MUTATIONS = [
-    "cost_trace_digest",
-    "cost_trace_event_count",
-    "cost",
+    "processed_deploy_cost",
+    "authority_cost_witness",
+    "authority_byte_events",
+    "replay_payload_hash",
     "signature",
     "block_hash",
     "failed",
     "system_error",
     "slash_fields",
     "genesis",
-    "cost_trace_present",
 ]
 
 
@@ -79,24 +79,6 @@ def find_or_none(strategy, predicate, cfg):
 
 def digest_value(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=schema_json_default).encode("utf-8")).hexdigest()[:16]
-
-
-def expected_fixture_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        primitive_descriptor = str(event.get("primitive_descriptor", event.get("descriptor", "")))
-        invalid_descriptor = str(event.get("kind", "")) == "primitive" and len(primitive_descriptor) > 512
-        invalid_source_path = len(event.get("path", [])) > 1024
-        if weight <= 0 or invalid_descriptor or invalid_source_path:
-            return (0, 0, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
 
 
 def discover_source_seeds(roots, limit):
@@ -275,7 +257,7 @@ def negative_auth_records(profile, search_mode, objectives):
     cfg = hypothesis_settings(profile, search_mode)
     mutations = find_or_none(
         st.lists(st.sampled_from(SUPPORTED_MUTATIONS), min_size=int(5), max_size=int(len(SUPPORTED_MUTATIONS)), unique=True),
-        lambda xs: "cost_trace_digest" in xs and "cost_trace_event_count" in xs and "signature" in xs and "block_hash" in xs,
+        lambda xs: "authority_cost_witness" in xs and "authority_byte_events" in xs and "signature" in xs and "block_hash" in xs,
         cfg,
     ) or SUPPORTED_MUTATIONS
     scenario = canonical_scenario(
@@ -298,7 +280,7 @@ def negative_auth_records(profile, search_mode, objectives):
         candidate_property="negative_replay_authentication",
         oracle_strength="production_helper",
         threat_family="negative_authentication",
-        expected_invariants=["full_replay_payload_authenticates_cost_trace_fields", "block_authenticates_cost_trace_payload"],
+        expected_invariants=["full_replay_payload_authenticates_authority_cost_fields", "block_authenticates_authority_cost_payload"],
         rust_reproducer={"test": "generated_frontier_negative_auth_fixtures_hold"},
         promotion_target="rust:test",
         expected_classification="confirmed_safe",
@@ -421,16 +403,13 @@ def cross_deploy_records(objectives):
         ],
         deploy_count=2,
         initial_budget=8,
-        phlo_limit=8,
-        phlo_price=2,
-        token_cost=5,
-        settlement={"authority": "casper", "escrow": 16, "token_cost": 10, "refund": 6, "deploy_local": True},
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count"]},
-        replay_mutations=["cost_trace_digest", "cost_trace_event_count"],
+        settlement=vault_settlement(16, 16, 0, 0, 10, 0, deploy_local=True),
+        replay_fields={"fields": authenticated_replay_fields()},
+        replay_mutations=authenticated_replay_fields(),
         attack_campaign="v5_cross_deploy_settlement_locality",
         oracle_kind="deploy_local_settlement",
-        production_path="DeployData::refund_amount_for_token_cost + RuntimeBudget",
-        campaign_steps=["precharge", "reserve_each_deploy", "settle", "replay"],
+        production_path="authority::verify_with_allocation + acceptance::settle_candidate + RuntimeBudget",
+        campaign_steps=["reserve_vault_authority", "reserve_each_deploy", "settle", "replay"],
         minimized_input_digest=digest_value("cross-deploy-settlement"),
         reproducer_command=command_for_fixture(),
         candidate_property="deploy_local_settlement",
@@ -505,7 +484,7 @@ def scheduler_records(objectives):
         candidate_property="rollback_replay_boundary",
         oracle_strength="formal",
         threat_family="scheduler_interleaving",
-        expected_invariants=["rollback_preserves_authenticated_trace_boundary", "rollback_does_not_leak_budget"],
+        expected_invariants=["rollback_preserves_diagnostic_trace_boundary", "rollback_does_not_leak_budget"],
         rust_reproducer={"test": "generated_frontier_property_fixtures_hold"},
         promotion_target="rust:test",
         expected_classification="proof_or_model_strengthening",
@@ -543,16 +522,13 @@ def settlement_slashing_records(objectives):
         ],
         deploy_count=2,
         initial_budget=6,
-        phlo_limit=6,
-        phlo_price=2,
-        token_cost=3,
-        settlement={"kind": "slash_after_evaluation", "authority": "casper", "escrow": 12, "token_cost": 6, "refund": 6, "cache_evidence": True},
-        replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "signature", "slash_fields", "genesis"]},
-        negative_mutations=["cost_trace_digest", "cost_trace_event_count", "slash_fields", "genesis", "signature"],
+        settlement=vault_settlement(12, 12, 0, 0, 6, 0, kind="slash_after_evaluation", cache_evidence=True),
+        replay_fields={"fields": authenticated_replay_fields(["signature", "slash_fields", "genesis"])},
+        negative_mutations=authenticated_replay_fields(["slash_fields", "genesis", "signature"]),
         attack_campaign="v5_settlement_slashing_cache_composition",
         oracle_kind="slash_refund_replay_cache_composition",
         production_path="runtime budget + processed deploy payload + settlement projection",
-        campaign_steps=["precharge", "reserve", "finalize", "settle", "slash", "replay_cache_lookup"],
+        campaign_steps=["reserve_vault_authority", "reserve", "finalize", "settle", "slash", "replay_cache_lookup"],
         minimized_input_digest=digest_value("settlement-slashing-cache"),
         reproducer_command=command_for_fixture(),
         candidate_property="slash_refund_replay_cache_composition",
@@ -561,7 +537,7 @@ def settlement_slashing_records(objectives):
         expected_invariants=[
             "slash_system_effect_is_unmetered_for_user_budget",
             "uc_ca_058_refund_cannot_replenish_runtime_fuel",
-            "replay_cache_authenticates_cost_trace_payload",
+            "replay_cache_authenticates_authority_cost_payload",
         ],
         rust_reproducer={"test": "generated_frontier_property_fixtures_hold"},
         promotion_target="rust:test",
@@ -571,9 +547,9 @@ def settlement_slashing_records(objectives):
         "horizon_v5_stale_evidence_duplicate_boundary",
         events=[canonical_event("source", 1, descriptor="v5/stale-evidence-duplicate", deploy=0, path=[0])],
         initial_budget=4,
-        settlement={"kind": "slash_after_evaluation", "authority": "casper", "escrow": 8, "token_cost": 2, "refund": 6, "stale_evidence": True, "duplicate_evidence": True},
-        replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "slash_fields", "genesis", "block_hash"]},
-        negative_mutations=["slash_fields", "genesis", "block_hash", "cost_trace_digest"],
+        settlement=vault_settlement(8, 8, 0, 0, 2, 0, kind="slash_after_evaluation", stale_evidence=True, duplicate_evidence=True),
+        replay_fields={"fields": authenticated_replay_fields(["slash_fields", "genesis", "block_hash"])},
+        negative_mutations=authenticated_replay_fields(["slash_fields", "genesis", "block_hash"]),
         attack_campaign="v5_stale_evidence_duplicate_boundary",
         oracle_kind="stale_duplicate_cost_evidence_boundary",
         production_path="slashing evidence validation + replay payload authentication",
@@ -622,12 +598,12 @@ def cache_resource_records(objectives):
             canonical_event("source", 1, descriptor="v5/cache/3", deploy=0, path=[3]),
         ],
         initial_budget=8,
-        replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "cost_trace_present"]},
-        negative_mutations=["cost_trace_digest", "cost_trace_event_count", "cost_trace_present"],
+        replay_fields={"fields": authenticated_replay_fields()},
+        negative_mutations=authenticated_replay_fields(),
         resource_bounds={"max_descriptor_bytes": 512, "max_retained_trace_events": 4, "cache_churn": True},
         attack_campaign="v5_cache_resource_churn",
         oracle_kind="bounded_replay_cache_churn",
-        production_path="RuntimeBudget retained trace + replay cache evidence",
+        production_path="RuntimeBudget retained diagnostics + RuntimeManager::replay_payload_hash",
         campaign_steps=["reserve_many", "finalize", "clear_diagnostic", "replay_cache_lookup"],
         minimized_input_digest=digest_value("cache-resource-churn"),
         reproducer_command=command_for_fixture(),

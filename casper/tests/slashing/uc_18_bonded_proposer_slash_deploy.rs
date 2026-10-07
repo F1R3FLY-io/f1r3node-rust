@@ -1,6 +1,6 @@
 // UC-18 — Bonded proposer enumerates pending slash targets without self-cost.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-18.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-18.
 // Theorems: T-9.8.
 //
 // Scenario: an offender v0 equivocates and the dispatcher records the

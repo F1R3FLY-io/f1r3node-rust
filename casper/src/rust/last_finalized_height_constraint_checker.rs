@@ -18,10 +18,16 @@ pub fn check(
 
     let last_finalized_block = snapshot.dag.lookup_unsafe(&last_finalized_block_hash)?;
     let latest_message_opt = snapshot.dag.latest_message(&validator)?;
-    let latest_message = latest_message_opt.ok_or(CasperError::Other(
-        "Last finalized height constraint checker: Validator does not have a latest message"
-            .to_string(),
-    ))?;
+    let latest_message = match latest_message_opt {
+        Some(latest_message) => latest_message,
+        None => {
+            tracing::debug!(
+                target: "f1r3fly.casper.proposer",
+                "Height constraint: proposer has no latest message yet; skipping propose"
+            );
+            return Ok(CheckProposeConstraintsResult::not_bonded());
+        }
+    };
 
     let height_difference = latest_message.block_number - last_finalized_block.block_number;
     let global_height_difference = snapshot.max_block_num - last_finalized_block.block_number;

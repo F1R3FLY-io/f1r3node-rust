@@ -1,5 +1,5 @@
 use models::rhoapi::{
-    Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, ReceiveBind, Send,
+    Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, ReceiveBind, Send,
 };
 
 /*
@@ -45,6 +45,10 @@ pub fn compare_connectives_without_locally_free(a: &Connective, b: &Connective) 
     a.connective_instance == b.connective_instance
 }
 
+pub fn compare_conditionals_without_locally_free(a: &If, b: &If) -> bool {
+    match_pars_drive(MatchWork::If(a, b))
+}
+
 pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBind) -> bool {
     match_pars_drive(MatchWork::ReceiveBind(a, b))
 }
@@ -60,6 +64,7 @@ enum MatchWork<'a> {
     Receive(&'a Receive, &'a Receive),
     New(&'a New, &'a New),
     ReceiveBind(&'a ReceiveBind, &'a ReceiveBind),
+    If(&'a If, &'a If),
 }
 
 fn match_pars_drive(root: MatchWork<'_>) -> bool {
@@ -74,6 +79,10 @@ fn match_pars_drive(root: MatchWork<'_>) -> bool {
                     || target.matches.len() != pattern.matches.len()
                     || target.unforgeables.len() != pattern.unforgeables.len()
                     || target.bundles.len() != pattern.bundles.len()
+                    || target.connectives.len() != pattern.connectives.len()
+                    || target.conditionals.len() != pattern.conditionals.len()
+                    || target.cost_signed_terms != pattern.cost_signed_terms
+                    || target.cost_stacks != pattern.cost_stacks
                     || target.connective_used != pattern.connective_used
                     || !target
                         .sends
@@ -116,6 +125,14 @@ fn match_pars_drive(root: MatchWork<'_>) -> bool {
                 {
                     return false;
                 }
+                work.extend(
+                    target
+                        .conditionals
+                        .iter()
+                        .zip(&pattern.conditionals)
+                        .rev()
+                        .map(|(target, pattern)| MatchWork::If(target, pattern)),
+                );
                 work.extend(
                     target
                         .news
@@ -167,7 +184,9 @@ fn match_pars_drive(root: MatchWork<'_>) -> bool {
                 ));
             }
             MatchWork::ReceiveBind(target, pattern) => {
-                if target.remainder != pattern.remainder || target.free_count != pattern.free_count
+                if target.remainder != pattern.remainder
+                    || target.free_count != pattern.free_count
+                    || target.cost_signature != pattern.cost_signature
                 {
                     return false;
                 }
@@ -186,6 +205,22 @@ fn match_pars_drive(root: MatchWork<'_>) -> bool {
                         .rev()
                         .map(|(target, pattern)| MatchWork::Par(target, pattern)),
                 );
+            }
+            MatchWork::If(target, pattern) => {
+                if target.connective_used != pattern.connective_used {
+                    return false;
+                }
+                for (left, right) in [
+                    (&target.condition, &pattern.condition),
+                    (&target.if_true, &pattern.if_true),
+                    (&target.if_false, &pattern.if_false),
+                ] {
+                    match (left.as_ref(), right.as_ref()) {
+                        (Some(left), Some(right)) => work.push(MatchWork::Par(left, right)),
+                        (None, None) => {}
+                        _ => return false,
+                    }
+                }
             }
         }
     }

@@ -113,12 +113,12 @@ mod tests {
         let (st1, _) = st.get_next(false);
 
         // Received requested item
-        let (_, receive_info) = st1.received(10, 100, None);
-        assert_eq!(receive_info.requested, true);
+        let (_, receive_info) = st1.received(10, 100, None, true);
+        assert!(receive_info.requested);
 
         // Received unknown item
-        let (_, receive_info1) = st1.received(100, 200, None);
-        assert_eq!(receive_info1.requested, false);
+        let (_, receive_info1) = st1.received(100, 200, None, true);
+        assert!(!receive_info1.requested);
     }
 
     #[test]
@@ -142,10 +142,10 @@ mod tests {
         let (st1, _) = st.get_next(false);
 
         // Received the last latest item (sets minimum height)
-        let (st2, receive_info1) = st1.received(10, 100, None);
-        assert_eq!(receive_info1.requested, true);
-        assert_eq!(receive_info1.latest, true);
-        assert_eq!(receive_info1.lastlatest, true);
+        let (st2, receive_info1) = st1.received(10, 100, None, true);
+        assert!(receive_info1.requested);
+        assert!(receive_info1.latest);
+        assert!(receive_info1.lastlatest);
 
         // Minimum height should be recalculated based on the last latest item (-1)
         assert_eq!(st2.lower_bound, 99);
@@ -157,8 +157,8 @@ mod tests {
         assert_eq!(ids2, expected_ids2);
 
         // Received higher height should be accepted
-        let (st4, receive_info3) = st3.received(11, 50, None);
-        assert_eq!(receive_info3.requested, true);
+        let (st4, receive_info3) = st3.received(11, 50, None, true);
+        assert!(receive_info3.requested);
 
         // Minimum height should stay the same after all latest items received
         assert_eq!(st4.lower_bound, 99);
@@ -187,20 +187,20 @@ mod tests {
         let (st1, _) = st.get_next(false);
 
         // Received latest item
-        let (st2, receive_info) = st1.received(10, 100, None);
-        assert_eq!(receive_info.requested, true);
-        assert_eq!(receive_info.latest, true);
-        assert_eq!(receive_info.lastlatest, false);
+        let (st2, receive_info) = st1.received(10, 100, None, true);
+        assert!(receive_info.requested);
+        assert!(receive_info.latest);
+        assert!(!receive_info.lastlatest);
 
         // Before all latest received, next should be empty
         let (st3, ids1) = st2.get_next(false);
         assert_eq!(ids1, HashSet::new());
 
         // Received latest item (the last one)
-        let (st4, receive_info1) = st3.received(11, 110, None);
-        assert_eq!(receive_info1.requested, true);
-        assert_eq!(receive_info1.latest, true);
-        assert_eq!(receive_info1.lastlatest, true);
+        let (st4, receive_info1) = st3.received(11, 110, None, true);
+        assert!(receive_info1.requested);
+        assert!(receive_info1.latest);
+        assert!(receive_info1.lastlatest);
 
         // After the last of latest received, the rest of items should be requested
         let (_, ids4) = st4.get_next(false);
@@ -223,15 +223,26 @@ mod tests {
 
         // If item is not received, it should stay unfinished
         let st1 = st.done(10);
-        assert_eq!(st1.is_finished(), false);
+        assert!(!st1.is_finished());
 
         // Mark next as requested ...
         let (st2, _) = st1.get_next(false);
         // ... and received
-        let (st3, _) = st2.received(10, 100, None);
+        let (st3, _) = st2.received(10, 100, None, true);
 
         let st4 = st3.done(10);
-        assert_eq!(st4.is_finished(), true);
+        assert!(st4.is_finished());
+    }
+
+    #[test]
+    fn pending_mergeable_entry_should_not_block_finished_state() {
+        let st = ST::new(HashSet::from([10]), None, None);
+        let (st, _) = st.get_next(false);
+        let (st, _) = st.received(10, 100, None, true);
+        let st = st.done(10).mergeable_pending(10);
+
+        assert!(!st.mergeable_d.is_empty());
+        assert!(st.is_finished());
     }
 
     #[test]
@@ -261,15 +272,15 @@ mod tests {
         assert_eq!(ids2, HashSet::new());
 
         // It should not be finished until all items are Done
-        assert_eq!(st2.is_finished(), false);
+        assert!(!st2.is_finished());
 
         // Received first item
-        let (st3, receive_info) = st2.received(10, 100, None);
-        assert_eq!(receive_info.requested, true);
+        let (st3, receive_info) = st2.received(10, 100, None, true);
+        assert!(receive_info.requested);
 
         let st4 = st3.done(10);
 
         // Return finished when all items as Done
-        assert_eq!(st4.is_finished(), true);
+        assert!(st4.is_finished());
     }
 }

@@ -1,6 +1,14 @@
 # Vaults and Tokens
 
-The vault system manages REV (the native token) balances. Built on top of the registry using MakeMint for currency operations and SystemVault for authenticated transfers.
+The vault system manages persistent REV custody. `MakeMint` supplies the purse
+machinery, while the registered `SystemVault` provides authenticated transfers,
+protocol minting, cost reservation, exact burn, proposer-fee transfer, and
+refund. Wallets and their vault purses are reusable and refillable; creating a
+new key is not required for each transfer or process execution.
+
+See [Cost-accounted Rholang](13-cost-model.md) for the integrated compute and
+storage cost model and [Wallet-funded process lifecycle](20-wallet-funded-processes.md)
+for the end-to-end wallet, purse, process, cryptography, and consensus flow.
 
 ## Architecture
 
@@ -126,6 +134,30 @@ new lookup(`rho:registry:lookup`), sysCh,
   }
 }
 ```
+
+An incoming transfer can refill the same vault any number of times. It moves
+existing REV from the authenticated source purse to the destination purse and
+does not mint, replace, or consume the destination wallet. If a cost-accounted
+process is already running, the credit does not enlarge that process's fixed
+certificate; it is available to a later admission whose pre-state includes the
+transfer.
+
+## Cost-accounting settlement
+
+The internal `SystemVault.applyCost` operation is restricted to authenticated
+system execution. It receives the certificate reservation identity,
+component-wise maximum allocations, exact realized charges, proposer address,
+and system authority token. Within one lexical transaction it:
+
+1. reserves the certified maximum from every source purse;
+2. validates that exact compute and byte charges stay within that maximum;
+3. burns exact execution cost;
+4. transfers the deterministic fee to the proposer; and
+5. returns unused capacity before completing.
+
+No user contract can call this path with ambient authority. The enclosing node
+checkpoint commits vault changes, located-stack pops, RSpace state, and cost
+evidence together. Failure restores the pre-state.
 
 ## Vault Registration
 

@@ -27,7 +27,7 @@ use super::has_locally_free::HasLocallyFree;
 #[cfg(test)]
 use super::lazy_relation::RelationalMatchStats;
 use super::lazy_relation::{EdgeResult, LazyRelation, RelationCursor};
-use super::list_match::aggregate_updates;
+use super::list_match::aggregate_updates_metered;
 use super::match_pars::match_pars;
 use super::par_count::ParCount;
 use super::spatial_matcher::SpatialMatcherContext;
@@ -112,6 +112,9 @@ pda_entry!(match_match, Match, Match);
 pda_entry!(match_unforgeable, Unforgeable, GUnforgeable);
 pda_entry!(match_receive_bind, ReceiveBind, ReceiveBind);
 pda_entry!(match_case, MatchCase, MatchCase);
+pda_entry!(match_if, If, If);
+pda_entry!(match_cost_signed_term, CostSignedTerm, CostSignedTerm);
+pda_entry!(match_cost_stack, CostStack, CostStack);
 
 enum Job {
     Match(Box<MatchPair>),
@@ -187,6 +190,37 @@ enum MatchPair {
     Unforgeable(GUnforgeable, GUnforgeable),
     ReceiveBind(ReceiveBind, ReceiveBind),
     MatchCase(MatchCase, MatchCase),
+    If(If, If),
+    CostSignedTerm(CostSignedTerm, CostSignedTerm),
+    CostStack(CostStack, CostStack),
+}
+
+impl MatchPair {
+    fn reserve_inspections(&self, context: &SpatialMatcherContext) -> Option<()> {
+        macro_rules! inspect {
+            ($target:expr, $pattern:expr) => {{
+                context.reserve_inspect($target)?;
+                context.reserve_inspect($pattern)
+            }};
+        }
+        match self {
+            Self::Par(target, pattern) => inspect!(target, pattern),
+            Self::ParPair(target, pattern) => inspect!(target, pattern),
+            Self::Connective(target, pattern) => inspect!(target, pattern),
+            Self::Bundle(target, pattern) => inspect!(target, pattern),
+            Self::Send(target, pattern) => inspect!(target, pattern),
+            Self::Receive(target, pattern) => inspect!(target, pattern),
+            Self::New(target, pattern) => inspect!(target, pattern),
+            Self::Expr(target, pattern) => inspect!(target, pattern),
+            Self::Match(target, pattern) => inspect!(target, pattern),
+            Self::Unforgeable(target, pattern) => inspect!(target, pattern),
+            Self::ReceiveBind(target, pattern) => inspect!(target, pattern),
+            Self::MatchCase(target, pattern) => inspect!(target, pattern),
+            Self::If(target, pattern) => inspect!(target, pattern),
+            Self::CostSignedTerm(target, pattern) => inspect!(target, pattern),
+            Self::CostStack(target, pattern) => inspect!(target, pattern),
+        }
+    }
 }
 
 fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
@@ -198,8 +232,11 @@ fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
 
     loop {
         job = match job {
-            Job::Match(pair) => evaluate_pair(context, *pair, &mut frames),
-            Job::ParConnectives(state) => step_par_connectives(*state, &mut frames),
+            Job::Match(pair) => {
+                pair.reserve_inspections(context)?;
+                evaluate_pair(context, *pair, &mut frames)
+            }
+            Job::ParConnectives(state) => step_par_connectives(context, *state, &mut frames),
             Job::ConnectiveCandidates(state) => {
                 step_connective_candidates(context, *state, &mut frames)
             }
@@ -379,6 +416,9 @@ fn evaluate_pair(
         MatchPair::Unforgeable(target, pattern) => evaluate_unforgeable(target, pattern),
         MatchPair::ReceiveBind(target, pattern) => evaluate_receive_bind(target, pattern),
         MatchPair::MatchCase(target, pattern) => evaluate_match_case(target, pattern),
+        MatchPair::If(target, pattern) => Job::Return(target == pattern),
+        MatchPair::CostSignedTerm(target, pattern) => Job::Return(target == pattern),
+        MatchPair::CostStack(target, pattern) => Job::Return(target == pattern),
     }
 }
 
@@ -486,19 +526,35 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     }))
 }
 
-fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) -> Job {
-    let Some(plan) = state.plans.get(state.next).cloned() else {
+fn step_par_connectives(
+    context: &mut SpatialMatcherContext,
+    mut state: ParConnectiveState,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(plan) = state.plans.get(state.next) else {
         return start_par_fields(state, frames);
     };
+    if context.reserve(1, 0, 0).is_none() || context.reserve_clone(&plan.connective).is_none() {
+        return Job::Return(false);
+    }
+    let plan = plan.clone();
     state.next += 1;
-    let candidates = sub_pars(
+    let Some(work) = context.work() else {
+        return Job::Return(false);
+    };
+    let Some(candidates) = sub_pars(
         &state.target,
         &plan.bounds.0,
         &plan.bounds.1,
         &plan.remainder_bounds.0,
         &plan.remainder_bounds.1,
-    )
-    .collect();
+        work,
+    ) else {
+        return Job::Return(false);
+    };
+    let Some(candidates): Option<Vec<_>> = candidates.collect() else {
+        return Job::Return(false);
+    };
     let free_map_is_unreachable = matches!(
         plan.connective.connective_instance,
         Some(ConnBool(_))
@@ -523,11 +579,21 @@ fn step_connective_candidates(
     mut state: ConnectiveCandidates,
     frames: &mut FrameStack,
 ) -> Job {
-    let Some((candidate, remainder)) = state.candidates.get(state.next).cloned() else {
+    let Some(pair) = state.candidates.get(state.next) else {
         return Job::Return(false);
     };
+    if context.reserve_clone(&pair.0).is_none() || context.reserve_clone(&pair.1).is_none() {
+        return Job::Return(false);
+    }
+    let (candidate, remainder) = pair.clone();
     state.next += 1;
+    if !state.free_map_is_unreachable && context.reserve_clone(&context.free_map).is_none() {
+        return Job::Return(false);
+    }
     let snapshot = (!state.free_map_is_unreachable).then(|| context.free_map.clone());
+    if context.reserve_clone(&state.connective).is_none() {
+        return Job::Return(false);
+    }
     let connective = state.connective.clone();
     frames.push(Frame::ConnectiveCandidate {
         state: Box::new(state),
@@ -1027,7 +1093,9 @@ fn evaluate_unforgeable(target: GUnforgeable, pattern: GUnforgeable) -> Job {
         Some(GPrivateBody(_))
         | Some(GDeployIdBody(_))
         | Some(GDeployerIdBody(_))
-        | Some(GSysAuthTokenBody(_)) => Job::Return(target == pattern),
+        | Some(GSysAuthTokenBody(_))
+        | Some(GAuthorityIdBody(_))
+        | Some(GPrincipalIdBody(_)) => Job::Return(target == pattern),
         None => Job::Return(false),
     }
 }
@@ -1144,8 +1212,8 @@ impl MatchValue {
 fn expr_connective_used(expr: &Expr) -> bool {
     match expr.expr_instance.as_ref() {
         Some(
-            GBool(_) | GInt(_) | GDouble(_) | GBigInt(_) | GBigRat(_) | GFixedPoint(_) | GString(_)
-            | GUri(_) | GByteArray(_),
+            GBool(_) | GInt(_) | GDouble(_) | GFloat32(_) | GBigInt(_) | GBigRat(_)
+            | GFixedPoint(_) | GString(_) | GUri(_) | GByteArray(_),
         )
         | None => false,
         Some(EListBody(value)) => value.connective_used,
@@ -1619,7 +1687,13 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
         .into_iter()
         .map(|(_, assignment)| assignment.free_map.into_owned())
         .collect::<Vec<_>>();
-    let Some(updated) = aggregate_updates(context.free_map.clone(), maps) else {
+    let Some(work) = context.work() else {
+        return Job::Return(false);
+    };
+    if context.reserve_clone(&context.free_map).is_none() {
+        return Job::Return(false);
+    }
+    let Some(updated) = aggregate_updates_metered(context.free_map.clone(), maps, &work) else {
         return Job::Return(false);
     };
     context.free_map = updated;
@@ -2005,7 +2079,13 @@ fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job
         maps.push(assignment.free_map);
     }
 
-    let Some(updated) = aggregate_updates(context.free_map.clone(), maps) else {
+    let Some(work) = context.work() else {
+        return Job::Return(false);
+    };
+    if context.reserve_clone(&context.free_map).is_none() {
+        return Job::Return(false);
+    }
+    let Some(updated) = aggregate_updates_metered(context.free_map.clone(), maps, &work) else {
         return Job::Return(false);
     };
     context.free_map = updated;

@@ -10,9 +10,7 @@ pub mod exports {
     pub use crate::rust::interpreter::matcher::exports::*;
 }
 
-pub mod list_match {
-    pub use crate::rust::interpreter::matcher::list_match::*;
-}
+pub mod list_match;
 
 pub mod match_pars {
     pub use crate::rust::interpreter::matcher::match_pars::*;
@@ -23,7 +21,33 @@ pub mod par_count {
 }
 
 pub mod sub_pars {
-    pub use crate::rust::interpreter::matcher::sub_pars::*;
+    use models::rhoapi::Par;
+
+    use super::par_count::ParCount;
+    use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+
+    /// The recursive semantic oracle deliberately shares the production
+    /// subset enumeration, as it did before the metered matcher gained its
+    /// private work token. Only the recursive search/control flow is compared.
+    pub fn sub_pars(
+        par: &Par,
+        min: &ParCount,
+        max: &ParCount,
+        min_prune: &ParCount,
+        max_prune: &ParCount,
+    ) -> impl Iterator<Item = (Par, Par)> {
+        let context = SpatialMatcherContext::new();
+        crate::rust::interpreter::matcher::sub_pars::sub_pars(
+            par,
+            min,
+            max,
+            min_prune,
+            max_prune,
+            context.work().expect("unmetered matcher work"),
+        )
+        .expect("unmetered subset enumeration")
+        .map(|pair| pair.expect("unmetered candidate copy"))
+    }
 }
 
 pub mod fold_match;

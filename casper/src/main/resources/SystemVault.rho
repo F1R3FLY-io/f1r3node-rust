@@ -22,7 +22,23 @@ new
   _create,
   _systemVault,
   _transferTemplate,
-  _depositTemplate
+  _depositTemplate,
+  reserveAll,
+  refundReserved,
+  failReservation,
+  validateSettlement,
+  settleReserved,
+  applyCostAmounts,
+  validateFeeAbsence,
+  ensureCostCursor,
+  applyCostWithCursor,
+  applyCostWithTwoCursors,
+  costContributions,
+  validateContributionCursor,
+  splitAndDeposit,
+  prepareTransferBatch,
+  depositTransferBatch,
+  abort(`rho:execution:abort`)
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
   rl!(`rho:system:authKey`, *AuthKeyCh) |
@@ -33,10 +49,12 @@ in {
        @(_, Either)   <- EitherCh &
        TreeHashMap    <- TreeHashMapCh) {
     // Each invocation of the SystemVault contract uses a different mint.
-    new mintCh, vaultMapStore, initVault in {
+    new mintCh, vaultMapStore, costCursorMapStore, costCursorNamespace, costCursorLock, initVault in {
       // Initializes the vaultMapStore.
       TreeHashMap!("init", 2, *vaultMapStore) |
-      for (@vaultMap <- vaultMapStore) {
+      TreeHashMap!("init", 2, *costCursorMapStore) |
+      costCursorLock!() |
+      for (@vaultMap <- vaultMapStore & @costCursorMap <- costCursorMapStore) {
         // Called from VaultsGenerator:
         //   SystemVault!("init", *ret)
         new initContinue in {
@@ -81,6 +99,299 @@ in {
               VaultAddress!("fromUnforgeable", *unf, *vaultAddrCh) |
               for (@unfVaultAddress <- vaultAddrCh) {
                 @AuthKey!("make", (*_systemVault, unfVaultAddress), *ret)
+              }
+            }
+          } |
+          contract SystemVault(@"find", @vaultAddress, retCh) = {
+            new vaultAddressValidCh, vaultAddressValidEitherCh in {
+              VaultAddress!("validate", vaultAddress, *vaultAddressValidCh) |
+              @Either!("fromNillableError <-", *vaultAddressValidCh, *vaultAddressValidEitherCh) |
+              for (@vaultAddressEither <- vaultAddressValidEitherCh) {
+                match vaultAddressEither {
+                  (false, _) => {
+                    retCh!(vaultAddressEither)
+                  }
+                  _ => {
+                    new getVaultCh in {
+                      TreeHashMap!("get", vaultMap, vaultAddress, *getVaultCh) |
+                      for (@vault <- getVaultCh) {
+                        if (vault == Nil) {
+                          retCh!((false, "Vault not found"))
+                        } else {
+                          retCh!((true, vault))
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          contract SystemVault(@"costCursor", @scope, retCh) = {
+            new existsCh in {
+              TreeHashMap!("get", costCursorMap, scope, *existsCh) |
+              for (@exists <- existsCh) {
+                if (exists == Nil) {
+                  retCh!([false, 0, 0])
+                } else {
+                  for (@revision <<- @(scope, "revision", *costCursorNamespace) &
+                       @position <<- @(scope, "position", *costCursorNamespace)) {
+                    retCh!([true, revision, position])
+                  }
+                }
+              }
+            }
+          } |
+          contract ensureCostCursor(@scope, retCh) = {
+            for (<- costCursorLock) {
+              new existsCh in {
+                TreeHashMap!("get", costCursorMap, scope, *existsCh) |
+                for (@exists <- existsCh) {
+                  if (exists == Nil) {
+                    new setCh in {
+                      TreeHashMap!("set", costCursorMap, scope, true, *setCh) |
+                      for (_ <- setCh) {
+                        @(scope, "revision", *costCursorNamespace)!(0) |
+                        @(scope, "position", *costCursorNamespace)!(0) |
+                        costCursorLock!() |
+                        retCh!(true)
+                      }
+                    }
+                  } else {
+                    costCursorLock!() |
+                    retCh!(Nil)
+                  }
+                }
+              }
+            }
+          } |
+          contract applyCostWithCursor(@scope, @expectedRevision, @expectedPosition,
+                                       @nextRevision, @nextPosition,
+                                       @allocations, @charges, @feeAddress, retCh) = {
+            new readyCh in {
+              ensureCostCursor!(scope, *readyCh) |
+              for (_ <- readyCh) {
+                for (@revision <- @(scope, "revision", *costCursorNamespace) &
+                     @position <- @(scope, "position", *costCursorNamespace)) {
+                  if (revision == expectedRevision and position == expectedPosition) {
+                    new completedCh in {
+                      applyCostAmounts!(allocations, charges, feeAddress, *completedCh) |
+                      for (@result <- completedCh) {
+                        match result {
+                          (true, _) => {
+                            @(scope, "revision", *costCursorNamespace)!(nextRevision) |
+                            @(scope, "position", *costCursorNamespace)!(nextPosition) |
+                            retCh!(result)
+                          }
+                          _ => {
+                            @(scope, "revision", *costCursorNamespace)!(revision) |
+                            @(scope, "position", *costCursorNamespace)!(position) |
+                            retCh!(result)
+                          }
+                        }
+                      }
+                    }
+                  } else {
+                    @(scope, "revision", *costCursorNamespace)!(revision) |
+                    @(scope, "position", *costCursorNamespace)!(position) |
+                    retCh!((false, "Stale monetary cursor transition"))
+                  }
+                }
+              }
+            }
+          } |
+          contract validateFeeAbsence(@charges, retCh) = {
+            match charges {
+              [] => { retCh!(true) }
+              [(_, _, _, fee), ...tail] => {
+                if (fee == 0) { validateFeeAbsence!(tail, *retCh) }
+                else { retCh!(false) }
+              }
+              _ => { retCh!(false) }
+            }
+          } |
+          contract SystemVault(@"applyCost", @reservationId, @allocations, @charges, @feeAddress, @feeCursor, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid) {
+                  match feeCursor {
+                    Nil => {
+                      new noFeeCh in {
+                        validateFeeAbsence!(charges, *noFeeCh) |
+                        for (@noFee <- noFeeCh) {
+                          if (noFee) { applyCostAmounts!(allocations, charges, feeAddress, *retCh) }
+                          else { retCh!((false, "Monetary fee requires a cursor transition")) }
+                        }
+                      }
+                    }
+                    (scope, count, expectedRevision, expectedPosition, nextRevision, nextPosition) => {
+                      if (count > 0 and expectedRevision >= 0 and expectedRevision < 9223372036854775807 and
+                          expectedPosition >= 0 and expectedPosition < count and nextPosition >= 0 and nextPosition < count) {
+                        if (nextRevision == expectedRevision + 1) {
+                          applyCostWithCursor!(scope, expectedRevision, expectedPosition, nextRevision, nextPosition,
+                                               allocations, charges, feeAddress, *retCh)
+                        } else {
+                          retCh!((false, "Invalid monetary cursor successor"))
+                        }
+                      } else {
+                        retCh!((false, "Invalid monetary cursor bounds"))
+                      }
+                    }
+                    _ => {
+                      retCh!((false, "Invalid monetary cursor transition"))
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized cost application"))
+                }
+              }
+            }
+          } |
+          contract costContributions(@charges, @resource, @fee, retCh) = {
+            match charges {
+              [] => { retCh!((true, resource, fee)) }
+              [(_, _, burn, chargedFee), ...tail] => {
+                if (burn >= 0 and chargedFee >= 0) {
+                  costContributions!(tail, resource or burn > 0, fee or chargedFee > 0, *retCh)
+                } else { retCh!((false, false, false)) }
+              }
+              _ => { retCh!((false, false, false)) }
+            }
+          } |
+          contract validateContributionCursor(@cursor, @positive, retCh) = {
+            match cursor {
+              Nil => { retCh!(not positive) }
+              (_, count, expectedRevision, expectedPosition, nextRevision, nextPosition) => {
+                if (positive and count > 0 and expectedRevision >= 0 and expectedRevision < 9223372036854775807 and
+                    expectedPosition >= 0 and expectedPosition < count and nextPosition >= 0 and nextPosition < count) {
+                  retCh!(nextRevision == expectedRevision + 1)
+                } else { retCh!(false) }
+              }
+              _ => { retCh!(false) }
+            }
+          } |
+          contract applyCostWithTwoCursors(@resourceCursor, @feeCursor, @allocations, @charges, @feeAddress, retCh) = {
+            match (resourceCursor, feeCursor) {
+              ((resourceScope, _, resourceExpectedRevision, resourceExpectedPosition, resourceNextRevision, resourceNextPosition),
+               (feeScope, _, feeExpectedRevision, feeExpectedPosition, feeNextRevision, feeNextPosition)) => {
+                new resourceReady, feeReady in {
+                  ensureCostCursor!(resourceScope, *resourceReady) |
+                  ensureCostCursor!(feeScope, *feeReady) |
+                  for (_ <- resourceReady & _ <- feeReady) {
+                    for (@resourceRevision <- @(resourceScope, "revision", *costCursorNamespace) &
+                         @resourcePosition <- @(resourceScope, "position", *costCursorNamespace) &
+                         @feeRevision <- @(feeScope, "revision", *costCursorNamespace) &
+                         @feePosition <- @(feeScope, "position", *costCursorNamespace)) {
+                      new publish in {
+                        for (@rr, @rp, @fr, @fp, @result <- publish) {
+                          @(resourceScope, "revision", *costCursorNamespace)!(rr) |
+                          @(resourceScope, "position", *costCursorNamespace)!(rp) |
+                          @(feeScope, "revision", *costCursorNamespace)!(fr) |
+                          @(feeScope, "position", *costCursorNamespace)!(fp) |
+                          retCh!(result)
+                        } |
+                        if (resourceRevision == resourceExpectedRevision and resourcePosition == resourceExpectedPosition and
+                            feeRevision == feeExpectedRevision and feePosition == feeExpectedPosition) {
+                          new completedCh in {
+                            applyCostAmounts!(allocations, charges, feeAddress, *completedCh) |
+                            for (@result <- completedCh) {
+                              match result {
+                                (true, _) => {
+                                  publish!(resourceNextRevision, resourceNextPosition, feeNextRevision, feeNextPosition, result)
+                                }
+                                _ => { publish!(resourceRevision, resourcePosition, feeRevision, feePosition, result) }
+                              }
+                            }
+                          }
+                        } else {
+                          publish!(resourceRevision, resourcePosition, feeRevision, feePosition,
+                                   (false, "Stale funding cursor transition"))
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              _ => { retCh!((false, "Invalid funding cursor pair")) }
+            }
+          } |
+          contract SystemVault(@"applyPhloCost", @reservationId, @allocations, @charges, @feeAddress,
+                               @resourceCursor, @feeCursor, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid) {
+                  new contributionsCh in {
+                    costContributions!(charges, false, false, *contributionsCh) |
+                    for (@(valid, resource, fee) <- contributionsCh) {
+                      if (valid) {
+                        new resourceValidCh, feeValidCh in {
+                          validateContributionCursor!(resourceCursor, resource, *resourceValidCh) |
+                          validateContributionCursor!(feeCursor, fee, *feeValidCh) |
+                          for (@resourceValid <- resourceValidCh & @feeValid <- feeValidCh) {
+                            if (resourceValid and feeValid) {
+                              match (resourceCursor, feeCursor) {
+                                (Nil, Nil) => { applyCostAmounts!(allocations, charges, feeAddress, *retCh) }
+                                ((scope, _, er, ep, nr, np), Nil) => {
+                                  applyCostWithCursor!(scope, er, ep, nr, np, allocations, charges, feeAddress, *retCh)
+                                }
+                                (Nil, (scope, _, er, ep, nr, np)) => {
+                                  applyCostWithCursor!(scope, er, ep, nr, np, allocations, charges, feeAddress, *retCh)
+                                }
+                                ((resourceScope, resourceCount, _, _, _, _), (feeScope, feeCount, _, _, _, _)) => {
+                                  if (resourceScope != feeScope and resourceCount == feeCount) {
+                                    applyCostWithTwoCursors!(resourceCursor, feeCursor, allocations, charges, feeAddress, *retCh)
+                                  } else { retCh!((false, "Funding cursor roles must have distinct scopes and equal cohorts")) }
+                                }
+                                _ => { retCh!((false, "Invalid funding cursor pair")) }
+                              }
+                            } else { retCh!((false, "Funding cursor does not match its contribution")) }
+                          }
+                        }
+                      } else { retCh!((false, "Invalid funding contributions")) }
+                    }
+                  }
+                } else { retCh!((false, "Unauthorized cost application")) }
+              }
+            }
+          } |
+          contract applyCostAmounts(@allocations, @charges, @feeAddress, retCh) = {
+            new reserveCh in {
+              reserveAll!(allocations, [], *reserveCh) |
+              for (@reserveResult <- reserveCh) {
+                match reserveResult {
+                  (true, reserved) => {
+                    new validationCh in {
+                      validateSettlement!(reserved, charges, *validationCh) |
+                      for (@validationResult <- validationCh) {
+                        match validationResult {
+                          (false, error) => {
+                            failReservation!(reserved, error, *retCh)
+                          }
+                          _ => {
+                            new feeVaultCh in {
+                              SystemVault!("findOrCreate", feeAddress, *feeVaultCh) |
+                              for (@feeVaultResult <- feeVaultCh) {
+                                match feeVaultResult {
+                                  (false, error) => {
+                                    failReservation!(reserved, error, *retCh)
+                                  }
+                                  _ => {
+                                    settleReserved!(reserved, charges, feeAddress, *retCh)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  (false, error) => {
+                    retCh!((false, error))
+                  }
+                }
               }
             }
           } |
@@ -200,6 +511,42 @@ in {
                   }
                 }
               } |
+              contract systemVault(@"transferBatch", @transfers, authKey, ret) = {
+                new authKeyValidCh in {
+                  @AuthKey!("check", *authKey, (*_systemVault, ownVaultAddress), *authKeyValidCh) |
+                  for (@authKeyValid <- authKeyValidCh) {
+                    if (authKeyValid) {
+                      new prepareCh in {
+                        prepareTransferBatch!(transfers, [], Set(), 0, *prepareCh) |
+                        for (@prepareResult <- prepareCh) {
+                          match prepareResult {
+                            (true, prepared, total) => {
+                              new splitCh in {
+                                purse!("split", total, *splitCh) |
+                                for (@splitResult <- splitCh) {
+                                  match splitResult {
+                                    [reservedPurse] => {
+                                      depositTransferBatch!(reservedPurse, prepared, *ret)
+                                    }
+                                    _ => {
+                                      ret!((false, "Insufficient funds"))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            (false, error, _) => {
+                              ret!((false, error))
+                            }
+                          }
+                        }
+                      }
+                    } else {
+                      ret!((false, "Invalid AuthKey"))
+                    }
+                  }
+                }
+              } |
               // Set to Nil to disable logging
               contract systemVault(@"setLog", logCh, authKey, ret) = {
                 new authKeyValidCh in {
@@ -225,6 +572,20 @@ in {
               // Internal SystemVault method for making deposits between purses.
               contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_deposit", depositPurse, retCh) = {
                 _depositTemplate!(*purse, *depositPurse, *retCh)
+              } |
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_costSplit", @role, @amount, retCh) = {
+                if (role == "General") {
+                  purse!("split", amount, *retCh)
+                } else {
+                  retCh!([])
+                }
+              } |
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_costDeposit", @role, depositPurse, retCh) = {
+                if (role == "General") {
+                  _depositTemplate!(*purse, *depositPurse, *retCh)
+                } else {
+                  retCh!((false, "Unsupported vault custody role"))
+                }
               }
             }
           } |
@@ -273,6 +634,266 @@ in {
                 // Calls purse deposit method in MakeMint contract; adds amount to toPurse and subtracts from fromPurse.
                 fromPurse!("deposit", amount, *toPurse, *depositSuccessCh) |
                 @Either!("fromBoolean <-", *depositSuccessCh, "BUG FOUND: purse deposit failed", *retCh)
+              }
+            }
+          } |
+          contract reserveAll(@pending, @reserved, retCh) = {
+            match pending {
+              [(address, role, amount) ...tail] => {
+                if (amount > 0 and role == "General") {
+                  new getVaultCh, splitCh in {
+                    TreeHashMap!("get", vaultMap, address, *getVaultCh) |
+                    for (@vault <- getVaultCh) {
+                      if (vault == Nil) {
+                        failReservation!(reserved, "Funding vault not found", *retCh)
+                      } else {
+                        @{address | bundle0{*_systemVault}}!("_costSplit", role, amount, *splitCh) |
+                        for (@splitResult <- splitCh) {
+                          match splitResult {
+                            [reservedPurse] => {
+                              reserveAll!(tail, reserved ++ [(address, role, amount, reservedPurse)], *retCh)
+                            }
+                            _ => {
+                              failReservation!(reserved, "Insufficient funds", *retCh)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  failReservation!(reserved, "Cost reservation amount must be positive", *retCh)
+                }
+              }
+              [] => {
+                retCh!((true, reserved))
+              }
+              _ => {
+                failReservation!(reserved, "Malformed cost allocations", *retCh)
+              }
+            }
+          } |
+          contract refundReserved(@reserved, retCh) = {
+            match reserved {
+              [(address, role, _, reservedPurse) ...tail] => {
+                new depositCh in {
+                  @{address | bundle0{*_systemVault}}!("_costDeposit", role, reservedPurse, *depositCh) |
+                  for (@depositResult <- depositCh) {
+                    match depositResult {
+                      (true, _) => {
+                        refundReserved!(tail, *retCh)
+                      }
+                      (false, error) => {
+                        retCh!((false, error))
+                      }
+                    }
+                  }
+                }
+              }
+              _ => {
+                retCh!((true, Nil))
+              }
+            }
+          } |
+          contract failReservation(@reserved, @error, retCh) = {
+            new refundCh in {
+              refundReserved!(reserved, *refundCh) |
+              for (@refundResult <- refundCh) {
+                match refundResult {
+                  (true, _) => {
+                    retCh!((false, error))
+                  }
+                  (false, refundError) => {
+                    retCh!((false, "Cost reservation rollback failed: " ++ refundError))
+                  }
+                }
+              }
+            }
+          } |
+          contract validateSettlement(@reserved, @charges, retCh) = {
+            match reserved {
+              [(reservedAddress, reservedRole, reservedAmount, _) ...reservedTail] => {
+                match charges {
+                  [(chargeAddress, chargeRole, burn, fee) ...chargeTail] => {
+                    if (
+                      reservedAddress == chargeAddress and
+                      reservedRole == chargeRole and
+                      burn >= 0 and
+                      fee >= 0 and
+                      burn + fee <= reservedAmount and
+                      chargeRole == "General"
+                    ) {
+                      validateSettlement!(reservedTail, chargeTail, *retCh)
+                    } else {
+                      retCh!((false, "Invalid cost settlement allocation"))
+                    }
+                  }
+                  _ => {
+                    retCh!((false, "Cost settlement allocations do not match reservation"))
+                  }
+                }
+              }
+              _ => {
+                match charges {
+                  [] => {
+                    retCh!((true, Nil))
+                  }
+                  _ => {
+                    retCh!((false, "Cost settlement allocations do not match reservation"))
+                  }
+                }
+              }
+            }
+          } |
+          contract settleReserved(@reserved, @charges, @feeAddress, retCh) = {
+            match reserved {
+              [(sourceAddress, sourceRole, reservedAmount, reservedPurse) ...reservedTail] => {
+                match charges {
+                  [(sourceAddress, sourceRole, burn, fee) ...chargeTail] => {
+                    new feeCh in {
+                      splitAndDeposit!(reservedPurse, feeAddress, "General", fee, *feeCh) |
+                      for (@feeResult <- feeCh) {
+                        match feeResult {
+                          (true, _) => {
+                            new refundCh in {
+                              splitAndDeposit!(reservedPurse, sourceAddress, sourceRole, reservedAmount - burn - fee, *refundCh) |
+                              for (@refundResult <- refundCh) {
+                                match refundResult {
+                                  (true, _) => {
+                                    settleReserved!(reservedTail, chargeTail, feeAddress, *retCh)
+                                  }
+                                  (false, error) => {
+                                    retCh!((false, error))
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          (false, error) => {
+                            retCh!((false, error))
+                          }
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    retCh!((false, "Cost settlement allocations do not match reservation"))
+                  }
+                }
+              }
+              _ => {
+                retCh!((true, Nil))
+              }
+            }
+          } |
+          contract splitAndDeposit(purse, @targetAddress, @targetRole, @amount, retCh) = {
+            if (amount == 0) {
+              retCh!((true, Nil))
+            } else {
+              new splitCh in {
+                purse!("split", amount, *splitCh) |
+                for (@splitResult <- splitCh) {
+                  match splitResult {
+                    [splitPurse] => {
+                      new depositCh in {
+                        @{targetAddress | bundle0{*_systemVault}}!("_costDeposit", targetRole, splitPurse, *depositCh) |
+                        for (@depositResult <- depositCh) {
+                          retCh!(depositResult)
+                        }
+                      }
+                    }
+                    _ => {
+                      retCh!((false, "Cost settlement purse split failed"))
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          contract prepareTransferBatch(@pending, @prepared, @seen, @total, retCh) = {
+            match pending {
+              [(targetAddress, amount) ...tail] => {
+                if (seen.contains(targetAddress)) {
+                  retCh!((false, "Transfer targets must be distinct", 0))
+                } else if (amount > 0 and total <= 9223372036854775807 - amount) {
+                  new validCh in {
+                    VaultAddress!("validate", targetAddress, *validCh) |
+                    for (@valid <- validCh) {
+                      if (valid == Nil) {
+                        prepareTransferBatch!(
+                          tail,
+                          prepared ++ [(targetAddress, amount)],
+                          seen.add(targetAddress),
+                          total + amount,
+                          *retCh
+                        )
+                      } else {
+                        retCh!((false, "Invalid target vault address", 0))
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Transfer amount must be positive and bounded", 0))
+                }
+              }
+              [] => {
+                if (prepared.length() > 0) {
+                  retCh!((true, prepared, total))
+                } else {
+                  retCh!((false, "Transfer batch must not be empty", 0))
+                }
+              }
+              _ => {
+                retCh!((false, "Malformed transfer batch", 0))
+              }
+            }
+          } |
+          contract depositTransferBatch(reservedPurse, @pending, retCh) = {
+            match pending {
+              [(targetAddress, amount) ...tail] => {
+                new targetVaultCh in {
+                  SystemVault!("findOrCreate", targetAddress, *targetVaultCh) |
+                  for (@targetVaultResult <- targetVaultCh) {
+                    match targetVaultResult {
+                      (true, _) => {
+                        new splitCh in {
+                          reservedPurse!("split", amount, *splitCh) |
+                          for (@splitResult <- splitCh) {
+                            match splitResult {
+                              [splitPurse] => {
+                                new depositCh in {
+                                  @{targetAddress | bundle0{*_systemVault}}!("_deposit", splitPurse, *depositCh) |
+                                  for (@depositResult <- depositCh) {
+                                    match depositResult {
+                                      (true, _) => {
+                                        depositTransferBatch!(*reservedPurse, tail, *retCh)
+                                      }
+                                      _ => {
+                                        abort!("Transfer batch deposit failed")
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                              _ => {
+                                abort!("Transfer batch split failed")
+                              }
+                            }
+                          }
+                        }
+                      }
+                      _ => {
+                        abort!("Transfer batch target creation failed")
+                      }
+                    }
+                  }
+                }
+              }
+              [] => {
+                retCh!((true, Nil))
+              }
+              _ => {
+                abort!("Malformed prepared transfer batch")
               }
             }
           } |

@@ -1,0 +1,23 @@
+# Code owners for CI and its credential wiring.
+#
+# @F1R3FLY-io/ci-maintainers must retain at least `push` on this repository:
+# GitHub silently ignores code owners without write access, so a team demoted to
+# read would leave these paths effectively unowned with no error anywhere.
+#
+# This file only auto-requests reviewers on its own. The teeth come from the
+# `require_code_owner_review` rule on the devProtect and masterProtect rulesets.
+
+/.github/workflows/  @F1R3FLY-io/ci-maintainers
+/.github/scripts/    @F1R3FLY-io/ci-maintainers
+/.github/CODEOWNERS  @F1R3FLY-io/ci-maintainers
+/deny.toml          @F1R3FLY-io/ci-maintainers
+/supply-chain/      @F1R3FLY-io/ci-maintainers
+/.cargo/            @F1R3FLY-io/ci-maintainers
+Cargo.toml          @F1R3FLY-io/ci-maintainers
+Cargo.lock          @F1R3FLY-io/ci-maintainers
+build.rs            @F1R3FLY-io/ci-maintainers
+Dockerfile          @F1R3FLY-io/ci-maintainers
+/Cross.toml         @F1R3FLY-io/ci-maintainers
+/rust-toolchain.toml @F1R3FLY-io/ci-maintainers
+/scripts/ci/        @F1R3FLY-io/ci-maintainers
+/scripts/supply-chain/ @F1R3FLY-io/ci-maintainers

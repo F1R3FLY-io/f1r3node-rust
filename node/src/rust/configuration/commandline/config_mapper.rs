@@ -95,6 +95,10 @@ impl ConfigMapper<Options> for NodeConf {
                 run.discovery_heartbeat_batch_size,
             );
             Self::try_override_value(
+                &mut self.peers_discovery.heartbeat_failure_threshold,
+                run.discovery_heartbeat_failure_threshold,
+            );
+            Self::try_override_value(
                 &mut self.peers_discovery.init_wait_loop_interval,
                 run.discovery_init_wait_loop_interval,
             );
@@ -127,6 +131,18 @@ impl ConfigMapper<Options> for NodeConf {
                 run.api_max_blocks_limit,
             );
             Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_max_concurrent,
+                run.api_exploratory_deploy_max_concurrent,
+            );
+            Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_phlo_limit,
+                run.api_exploratory_deploy_phlo_limit,
+            );
+            Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_execution_timeout,
+                run.api_exploratory_deploy_execution_timeout,
+            );
+            Self::try_override_value(
                 &mut self.api_server.keep_alive_time,
                 run.api_keep_alive_time,
             );
@@ -135,12 +151,12 @@ impl ConfigMapper<Options> for NodeConf {
                 run.api_keep_alive_timeout,
             );
             Self::try_override_value(
-                &mut self.api_server.permit_keep_alive_time,
-                run.api_permit_keep_alive_time,
+                &mut self.api_server.tcp_keepalive_time,
+                run.api_tcp_keepalive_time,
             );
             Self::try_override_value(
-                &mut self.api_server.max_connection_idle,
-                run.api_max_connection_idle,
+                &mut self.api_server.request_timeout,
+                run.api_request_timeout,
             );
             Self::try_override_value(
                 &mut self.api_server.max_connection_age,
@@ -155,10 +171,6 @@ impl ConfigMapper<Options> for NodeConf {
             Self::try_override_value(&mut self.storage.data_dir, run.data_dir);
 
             // TLS fields
-            Self::try_override_bool(
-                &mut self.tls.secure_random_non_blocking,
-                run.tls_secure_random_non_blocking,
-            );
             Self::try_override_value(&mut self.tls.key_path, run.tls_key_path);
             Self::try_override_value(&mut self.tls.certificate_path, run.tls_certificate_path);
 
@@ -358,7 +370,7 @@ impl ConfigMapper<Options> for NodeConf {
                 &mut self.casper.heartbeat_conf.self_propose_cooldown,
                 run.heartbeat_self_propose_cooldown,
             );
-            Self::try_override_value(
+            Self::try_override_option(
                 &mut self.casper.heartbeat_conf.stale_recovery_min_interval,
                 run.heartbeat_stale_recovery_min_interval,
             );
@@ -377,6 +389,14 @@ impl ConfigMapper<Options> for NodeConf {
             Self::try_override_value(
                 &mut self.casper.heartbeat_conf.advanced.deploy_recovery_max_lag,
                 run.heartbeat_advanced_deploy_recovery_max_lag,
+            );
+            Self::try_override_value(
+                &mut self
+                    .casper
+                    .heartbeat_conf
+                    .advanced
+                    .empty_frontier_max_unfinalized_blocks,
+                run.heartbeat_advanced_empty_frontier_max_unfinalized_blocks,
             );
         }
     }
@@ -440,7 +460,6 @@ mod tests {
         "--disable-state-exporter",
         "--tls-certificate-path=/var/lib/rnode/node.certificate.pem",
         "--tls-key-path=/var/lib/rnode/node.key.pem",
-        "--tls-secure-random-non-blocking",
         "--api-host=localhost",
         "--api-port-grpc-external=11111",
         "--api-port-grpc-internal=11111",
@@ -449,10 +468,13 @@ mod tests {
         "--api-grpc-max-recv-message-size=111111",
         "--api-max-blocks-limit=111111",
         "--api-enable-reporting",
+        "--api-exploratory-deploy-max-concurrent=111111",
+        "--api-exploratory-deploy-phlo-limit=111111",
+        "--api-exploratory-deploy-execution-timeout=111111seconds",
         "--api-keep-alive-time=111111seconds",
         "--api-keep-alive-timeout=111111seconds",
-        "--api-permit-keep-alive-time=111111seconds",
-        "--api-max-connection-idle=111111seconds",
+        "--api-tcp-keepalive-time=111111seconds",
+        "--api-request-timeout=111111seconds",
         "--api-max-connection-age=111111seconds",
         "--api-max-connection-age-grace=111111seconds",
         "--data-dir=/var/lib/rnode",
@@ -503,6 +525,7 @@ mod tests {
         "--heartbeat-advanced-frontier-chase-max-lag=111",
         "--heartbeat-advanced-pending-deploy-max-lag=222",
         "--heartbeat-advanced-deploy-recovery-max-lag=333",
+        "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks=444",
         "--synchrony-finalized-baseline-enabled=false",
         "--synchrony-finalized-baseline-max-distance=666666"
         ];
@@ -548,13 +571,14 @@ mod tests {
 
     #[test]
     fn test_parse_args_negative_advanced_lag_rejected() {
-        // The three advanced lag-cap flags use a value_parser that
+        // The advanced lag-cap flags use a value_parser that
         // rejects negative integers; a negative cap would silently
         // disable the corresponding code path in the proposer.
         for flag in &[
             "--heartbeat-advanced-frontier-chase-max-lag",
             "--heartbeat-advanced-pending-deploy-max-lag",
             "--heartbeat-advanced-deploy-recovery-max-lag",
+            "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks",
         ] {
             let arg = format!("{flag}=-1");
             let argv = vec!["rnode", "run", &arg];
@@ -579,6 +603,9 @@ mod tests {
             grpc_port: Some(40401),
             grpc_max_recv_message_size: 16777216,
             profile: Some("docker".to_string()),
+            log_level: None,
+            log_format: None,
+            log_sink: None,
             subcommand: Some(OptionsSubCommand::Run(RunOptions {
                 config_file: None,
                 thread_pool_size: None,
@@ -599,6 +626,7 @@ mod tests {
                 discovery_lookup_interval: Some(Duration::from_secs(111111)),
                 discovery_cleanup_interval: Some(Duration::from_secs(111111)),
                 discovery_heartbeat_batch_size: Some(111111),
+                discovery_heartbeat_failure_threshold: Some(111111),
                 discovery_init_wait_loop_interval: Some(Duration::from_secs(111111)),
                 protocol_port: Some(11111),
                 protocol_grpc_max_recv_message_size: Some(111111),
@@ -608,7 +636,6 @@ mod tests {
                 protocol_max_message_consumers: Some(111111),
                 tls_key_path: Some(PathBuf::from("/var/lib/rnode/node.key.pem")),
                 tls_certificate_path: Some(PathBuf::from("/var/lib/rnode/node.certificate.pem")),
-                tls_secure_random_non_blocking: true,
                 api_host: Some("localhost".to_string()),
                 api_port_grpc_external: Some(11111),
                 api_port_grpc_internal: Some(11111),
@@ -617,10 +644,13 @@ mod tests {
                 api_port_admin_http: Some(11111),
                 api_max_blocks_limit: Some(111111),
                 api_enable_reporting: true,
+                api_exploratory_deploy_max_concurrent: Some(111111),
+                api_exploratory_deploy_phlo_limit: Some(111111),
+                api_exploratory_deploy_execution_timeout: Some(Duration::from_secs(111111)),
                 api_keep_alive_time: Some(Duration::from_secs(111111)),
                 api_keep_alive_timeout: Some(Duration::from_secs(111111)),
-                api_permit_keep_alive_time: Some(Duration::from_secs(111111)),
-                api_max_connection_idle: Some(Duration::from_secs(111111)),
+                api_tcp_keepalive_time: Some(Duration::from_secs(111111)),
+                api_request_timeout: Some(Duration::from_secs(111111)),
                 api_max_connection_age: Some(Duration::from_secs(111111)),
                 api_max_connection_age_grace: Some(Duration::from_secs(111111)),
                 data_dir: Some(PathBuf::from("/var/lib/rnode")),
@@ -679,6 +709,7 @@ mod tests {
                 heartbeat_advanced_frontier_chase_max_lag: Some(111),
                 heartbeat_advanced_pending_deploy_max_lag: Some(222),
                 heartbeat_advanced_deploy_recovery_max_lag: Some(333),
+                heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Some(444),
                 synchrony_finalized_baseline_enabled: Some(false),
                 synchrony_finalized_baseline_max_distance: Some(666666),
             })),
@@ -716,6 +747,7 @@ mod tests {
                 lookup_interval: Duration::from_secs(30),
                 cleanup_interval: Duration::from_secs(30),
                 heartbeat_batch_size: 4,
+                heartbeat_failure_threshold: 3,
                 init_wait_loop_interval: Duration::from_secs(30),
             },
             api_server: crate::rust::configuration::model::ApiServer {
@@ -725,12 +757,16 @@ mod tests {
                 grpc_max_recv_message_size: 16777216,
                 port_http: 40403,
                 port_admin_http: 40405,
+                http_max_body_bytes: 16777216,
                 max_blocks_limit: 100,
                 enable_reporting: false,
+                exploratory_deploy_max_concurrent: 1,
+                exploratory_deploy_phlo_limit: 5_000_000,
+                exploratory_deploy_execution_timeout: Duration::from_secs(15),
                 keep_alive_time: Duration::from_secs(2),
                 keep_alive_timeout: Duration::from_secs(20),
-                permit_keep_alive_time: Duration::from_secs(5),
-                max_connection_idle: Duration::from_secs(300),
+                tcp_keepalive_time: Duration::from_secs(5),
+                request_timeout: Duration::from_secs(300),
                 max_connection_age: Duration::from_secs(3600),
                 max_connection_age_grace: Duration::from_secs(5),
             },
@@ -740,7 +776,6 @@ mod tests {
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),
                 key_path: PathBuf::from("/var/lib/rnode/node.key.pem"),
-                secure_random_non_blocking: false,
                 custom_certificate_location: false,
                 custom_key_location: false,
             },
@@ -756,6 +791,8 @@ mod tests {
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                deploy_lifespan: 50,
+                deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
                 fork_choice_check_if_stale_interval: Duration::from_secs(30),
                 synchrony_constraint_threshold: 0.0,
@@ -766,6 +803,7 @@ mod tests {
                     drop_peer_after_retries: 4,
                 },
                 genesis_block_data: casper::rust::casper_conf::GenesisBlockData {
+                    resource_policy: None,
                     genesis_data_dir: "/var/lib/rnode/genesis".to_string(),
                     bonds_file: "".to_string(),
                     wallets_file: "".to_string(),
@@ -777,13 +815,6 @@ mod tests {
                     genesis_block_number: 0,
                     pos_multi_sig_public_keys: vec![],
                     pos_multi_sig_quorum: 0,
-                    max_cosigners_per_deploy:
-                        casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-                    initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-                    epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
-                    // Task #13b: default EMPTY genesis client funding-slot list
-                    // (back-compat — no client `Σ⟦c⟧` seed unless configured).
-                    client_fuel_allocations: Vec::new(),
                     deploy_timestamp: None,
                     native_token_name: "F1R3CAP".to_string(),
                     native_token_symbol: "F1R3".to_string(),
@@ -798,7 +829,6 @@ mod tests {
                     ceremony_master_mode: false,
                 },
                 min_phlo_price: 1,
-                strict_funding_enforcement: false,
                 heartbeat_conf: casper::rust::casper_conf::HeartbeatConf {
                     enabled: false,
                     check_interval: Duration::from_secs(30),
@@ -806,17 +836,15 @@ mod tests {
                     self_propose_cooldown: Duration::from_secs(15),
                     ..casper::rust::casper_conf::HeartbeatConf::default()
                 },
-                disable_late_block_filtering: true,
                 enable_mergeable_channel_gc: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
-                finalizer: casper::rust::casper_conf::FinalizerConf::default(),
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,
                 synchrony_finalized_baseline_enabled: true,
                 synchrony_finalized_baseline_max_distance: 2048,
-                max_user_deploys_per_block: 32,
+                max_user_deploys_per_block: 128,
             },
             metrics: crate::rust::configuration::model::Metrics {
                 prometheus: false,
@@ -827,6 +855,7 @@ mod tests {
                 tick_interval: std::time::Duration::from_secs(10),
                 influxdb_endpoint: crate::rust::configuration::model::InfluxDbEndpoint::default(),
             },
+            logging: Default::default(),
             dev_mode: false,
             dev: crate::rust::configuration::model::DevConf {
                 deployer_private_key: None,
@@ -838,9 +867,9 @@ mod tests {
         default_config.override_config_values(options);
 
         // Verify that CLI options have overridden the default values
-        assert_eq!(default_config.standalone, true);
-        assert_eq!(default_config.autopropose, false);
-        assert_eq!(default_config.dev_mode, true);
+        assert!(default_config.standalone);
+        assert!(!default_config.autopropose);
+        assert!(default_config.dev_mode);
 
         // Protocol server fields
         assert_eq!(
@@ -851,10 +880,10 @@ mod tests {
             default_config.protocol_server.host,
             Some("localhost".to_string())
         );
-        assert_eq!(default_config.protocol_server.allow_private_addresses, true);
-        assert_eq!(default_config.protocol_server.use_random_ports, true);
-        assert_eq!(default_config.protocol_server.dynamic_ip, true);
-        assert_eq!(default_config.protocol_server.no_upnp, true);
+        assert!(default_config.protocol_server.allow_private_addresses);
+        assert!(default_config.protocol_server.use_random_ports);
+        assert!(default_config.protocol_server.dynamic_ip);
+        assert!(default_config.protocol_server.no_upnp);
         assert_eq!(default_config.protocol_server.port, 11111);
         assert_eq!(
             default_config.protocol_server.grpc_max_recv_message_size,
@@ -867,10 +896,10 @@ mod tests {
             111111
         );
         assert_eq!(default_config.protocol_server.max_message_consumers, 111111);
-        assert_eq!(default_config.protocol_server.disable_state_exporter, true);
+        assert!(default_config.protocol_server.disable_state_exporter);
 
         // Protocol client fields
-        assert_eq!(default_config.protocol_client.disable_lfs, true);
+        assert!(default_config.protocol_client.disable_lfs);
         assert_eq!(default_config.protocol_client.bootstrap, "rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&discovery=40404".to_string());
         assert_eq!(
             default_config.protocol_client.network_timeout,
@@ -903,7 +932,7 @@ mod tests {
         );
 
         // API server fields
-        assert_eq!(default_config.api_server.enable_reporting, true);
+        assert!(default_config.api_server.enable_reporting);
         assert_eq!(default_config.api_server.port_grpc_external, 11111);
         assert_eq!(default_config.api_server.port_grpc_internal, 11111);
         assert_eq!(default_config.api_server.port_http, 11111);
@@ -911,6 +940,20 @@ mod tests {
         assert_eq!(default_config.api_server.host, "localhost".to_string());
         assert_eq!(default_config.api_server.grpc_max_recv_message_size, 111111);
         assert_eq!(default_config.api_server.max_blocks_limit, 111111);
+        assert_eq!(
+            default_config.api_server.exploratory_deploy_max_concurrent,
+            111111
+        );
+        assert_eq!(
+            default_config.api_server.exploratory_deploy_phlo_limit,
+            111111
+        );
+        assert_eq!(
+            default_config
+                .api_server
+                .exploratory_deploy_execution_timeout,
+            Duration::from_secs(111111)
+        );
         assert_eq!(
             default_config.api_server.keep_alive_time,
             Duration::from_secs(111111)
@@ -920,11 +963,11 @@ mod tests {
             Duration::from_secs(111111)
         );
         assert_eq!(
-            default_config.api_server.permit_keep_alive_time,
+            default_config.api_server.tcp_keepalive_time,
             Duration::from_secs(111111)
         );
         assert_eq!(
-            default_config.api_server.max_connection_idle,
+            default_config.api_server.request_timeout,
             Duration::from_secs(111111)
         );
         assert_eq!(
@@ -943,7 +986,6 @@ mod tests {
         );
 
         // TLS fields
-        assert_eq!(default_config.tls.secure_random_non_blocking, true);
         assert_eq!(
             default_config.tls.key_path,
             PathBuf::from("/var/lib/rnode/node.key.pem")
@@ -954,11 +996,11 @@ mod tests {
         );
 
         // Metrics fields
-        assert_eq!(default_config.metrics.prometheus, true);
-        assert_eq!(default_config.metrics.influxdb, true);
-        assert_eq!(default_config.metrics.influxdb_udp, true);
-        assert_eq!(default_config.metrics.zipkin, true);
-        assert_eq!(default_config.metrics.sigar, true);
+        assert!(default_config.metrics.prometheus);
+        assert!(default_config.metrics.influxdb);
+        assert!(default_config.metrics.influxdb_udp);
+        assert!(default_config.metrics.zipkin);
+        assert!(default_config.metrics.sigar);
 
         // Dev fields
         assert_eq!(
@@ -1035,7 +1077,7 @@ mod tests {
                 .casper
                 .heartbeat_conf
                 .stale_recovery_min_interval,
-            Duration::from_secs(333333)
+            Some(Duration::from_secs(333333))
         );
         assert_eq!(
             default_config
@@ -1067,6 +1109,14 @@ mod tests {
                 .advanced
                 .deploy_recovery_max_lag,
             333
+        );
+        assert_eq!(
+            default_config
+                .casper
+                .heartbeat_conf
+                .advanced
+                .empty_frontier_max_unfinalized_blocks,
+            444
         );
 
         // Round robin dispatcher fields
@@ -1149,12 +1199,11 @@ mod tests {
             default_config.casper.genesis_ceremony.autogen_shard_size,
             111111
         );
-        assert_eq!(
+        assert!(
             default_config
                 .casper
                 .genesis_ceremony
-                .genesis_validator_mode,
-            true
+                .genesis_validator_mode
         );
     }
 }

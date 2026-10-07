@@ -605,6 +605,14 @@ impl PrettyPrinter {
                         Ok(format!("{}f64", f))
                     }
                 }
+                ExprInstance::GFloat32(bits) => {
+                    let f = f32::from_bits(*bits);
+                    if f == f.floor() && f.is_finite() {
+                        Ok(format!("{:.1}f32", f))
+                    } else {
+                        Ok(format!("{}f32", f))
+                    }
+                }
                 ExprInstance::GBigInt(bytes) => {
                     Ok(format!("{}n", twos_complement_to_decimal(bytes)))
                 }

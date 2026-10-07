@@ -15,7 +15,7 @@ async fn test_fetch_local_peer_node_with_defaults() {
     // Create a test node identifier (using a sample hex string)
     // In real usage, this would be derived from a TLS certificate
     let test_node_id = "de6eed5d00cf080fc587eeb412cb31a75fd10358";
-    let node_identifier = NodeIdentifier::new(test_node_id.to_string());
+    let node_identifier = NodeIdentifier::new(test_node_id).expect("valid test node ID");
 
     // Fetch the peer node
     let result = fetch_local_peer_node(
@@ -75,10 +75,11 @@ async fn test_fetch_local_peer_node_with_host() {
     let protocol_port: u16 = 40400;
     let discovery_port: u16 = 40404;
     let no_upnp = true;
-    let host: Option<String> = Some("localhost".to_string());
+    let host_value = "localhost".to_string();
+    let host: Option<String> = Some(host_value.clone());
 
     let test_node_id = "de6eed5d00cf080fc587eeb412cb31a75fd10358";
-    let node_identifier = NodeIdentifier::new(test_node_id.to_string());
+    let node_identifier = NodeIdentifier::new(test_node_id).expect("valid test node ID");
 
     let result = fetch_local_peer_node(
         host.clone(),
@@ -92,8 +93,7 @@ async fn test_fetch_local_peer_node_with_host() {
     match result {
         Ok(peer_node) => {
             assert_eq!(
-                peer_node.endpoint.host,
-                host.unwrap(),
+                peer_node.endpoint.host, host_value,
                 "Host should match the provided host"
             );
             assert_eq!(
@@ -126,7 +126,7 @@ async fn test_fetch_local_peer_node_no_upnp() {
     let host: Option<String> = None;
 
     let test_node_id = "de6eed5d00cf080fc587eeb412cb31a75fd10358";
-    let node_identifier = NodeIdentifier::new(test_node_id.to_string());
+    let node_identifier = NodeIdentifier::new(test_node_id).expect("valid test node ID");
 
     let result = fetch_local_peer_node(
         host,

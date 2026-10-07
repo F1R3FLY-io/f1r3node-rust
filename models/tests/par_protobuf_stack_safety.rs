@@ -1,7 +1,8 @@
 //! Executable evidence that the protobuf recursion ceiling has been removed.
 //!
-//! `Par` is the descriptor-derived feedback vertex of the recursive rhoapi
-//! message graph. Its generated `prost::Message` implementation delegates
+//! `Par` is one descriptor-derived feedback vertex of the recursive rhoapi
+//! message graph; the cost-signature cycle adds another (tested in
+//! `cost_protobuf_stack_safety`). Its generated `prost::Message` implementation delegates
 //! encoding, length measurement, field merging, and clearing to explicit
 //! machines. Every remaining Prost-derived message reaches that feedback
 //! vertex within the statically bounded residual graph height, so term depth no

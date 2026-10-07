@@ -161,7 +161,7 @@ fn accounting_demand_and_decomposition_are_stack_safe() {
 
             let envelope = Sig::Ground(vec![9, 8, 7, 6]);
             let demand_entry = demand(&par, &envelope);
-            assert_eq!(demand_entry.known_lower_bound, 1);
+            assert_eq!(demand_entry.certified_upper_bound, 1);
             assert!(!demand_entry.unknown);
 
             let envelope_key = sig_key(&envelope);
@@ -401,6 +401,7 @@ fn nested_binders(depth: usize) -> Par {
                 source: Some(new_gint_par(0, vec![], false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             }],
             body: Some(p),
             persistent: false,

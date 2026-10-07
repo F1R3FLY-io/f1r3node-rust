@@ -117,12 +117,74 @@
 
 use std::cell::RefCell;
 use std::collections::btree_map;
+use std::convert::Infallible;
+
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::BincodeByteSink;
 
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::bincode_schema::{
-    pathmap_snapshot, put_bytes, BincodeNode, BincodeSeq, Descent, PathmapSnapshot, NO_RESUME,
+    pathmap_snapshot, put_bytes, try_put_bytes, BincodeNode, BincodeSeq, Descent, PathmapSnapshot,
+    NO_RESUME,
 };
+
+/// The traversal is shared; only bounded primitive emission differs.
+trait DriverSink {
+    type Error;
+    fn emit<'a>(
+        &mut self,
+        node: &'a dyn BincodeNode,
+        field: usize,
+        legacy: bool,
+    ) -> Result<Descent<'a>, Self::Error>;
+    fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
+}
+
+impl DriverSink for Vec<u8> {
+    type Error = Infallible;
+
+    fn emit<'a>(
+        &mut self,
+        node: &'a dyn BincodeNode,
+        field: usize,
+        legacy: bool,
+    ) -> Result<Descent<'a>, Infallible> {
+        Ok(if legacy {
+            node.bincode_emit_legacy(field, self)
+        } else {
+            node.bincode_emit(field, self)
+        })
+    }
+
+    fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Infallible> {
+        put_bytes(self, bytes);
+        Ok(())
+    }
+}
+
+struct MeteredSink<'a>(&'a mut dyn BincodeByteSink);
+
+impl DriverSink for MeteredSink<'_> {
+    type Error = RSpaceError;
+
+    fn emit<'a>(
+        &mut self,
+        node: &'a dyn BincodeNode,
+        field: usize,
+        legacy: bool,
+    ) -> Result<Descent<'a>, RSpaceError> {
+        if legacy {
+            node.bincode_emit_legacy_metered(field, self.0)
+        } else {
+            node.bincode_emit_metered(field, self.0)
+        }
+    }
+
+    fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), RSpaceError> {
+        try_put_bytes(self.0, bytes)
+    }
+}
 
 // ===========================================================================
 // §A  Byte emission
@@ -213,6 +275,7 @@ crate::pooled_stack! {
 
 struct Machine<'a> {
     ops: Vec<Op<'a>>,
+    legacy_layout: bool,
     /// One live iterator per ancestor `New` (the `injections` map).
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
     /// Op-stack high-water mark, tracked only when `TRACK` is on.
@@ -232,9 +295,16 @@ impl<'a> Machine<'a> {
     fn new() -> Self {
         Machine {
             ops: take_ops(),
+            legacy_layout: false,
             map_iters: Vec::new(),
             high_water: 0,
         }
+    }
+
+    fn new_legacy() -> Self {
+        let mut machine = Self::new();
+        machine.legacy_layout = true;
+        machine
     }
 
     /// Run to completion.
@@ -243,14 +313,14 @@ impl<'a> Machine<'a> {
     /// away entirely on the production path — the instrumented and production
     /// machines are then provably the *same* machine, which a separate sampler
     /// loop could not claim.
-    fn run<const TRACK: bool>(&mut self, out: &mut Vec<u8>) {
+    fn run<const TRACK: bool, S: DriverSink>(&mut self, out: &mut S) -> Result<(), S::Error> {
         loop {
             if TRACK && self.ops.len() > self.high_water {
                 self.high_water = self.ops.len();
             }
             let Some(op) = self.ops.pop() else { break };
             match op {
-                Op::Node { node, field } => self.run_node(out, node, field as usize),
+                Op::Node { node, field } => self.run_node(out, node, field as usize)?,
                 Op::Seq { seq, index, len } => {
                     if index < len {
                         // ★ Re-push SELF, not `n` children: the op stack stays
@@ -286,7 +356,7 @@ impl<'a> Machine<'a> {
                         Some((key, value)) => {
                             // serde emits a map as COUNT then key/value PAIRS:
                             // the key here, then the arbitrarily deep value.
-                            put_bytes(out, key.as_bytes());
+                            out.put_bytes(key.as_bytes())?;
                             self.ops.push(Op::MapEntries);
                             self.ops.push(Op::Node {
                                 node: value,
@@ -300,6 +370,7 @@ impl<'a> Machine<'a> {
                 }
             }
         }
+        Ok(())
     }
 
     /// Emit fields `[field..]` of `node`, suspending at the first descent.
@@ -308,17 +379,23 @@ impl<'a> Machine<'a> {
     /// through. The first design asked the node for each field in turn and cost
     /// 21 indirect calls per `Par`; see `bincode_schema.rs` §A2.
     #[inline]
-    fn run_node(&mut self, out: &mut Vec<u8>, node: &'a dyn BincodeNode, field: usize) {
+    fn run_node<S: DriverSink>(
+        &mut self,
+        out: &mut S,
+        node: &'a dyn BincodeNode,
+        field: usize,
+    ) -> Result<(), S::Error> {
         // ⚠ `EPathMap` cannot be entered at field 0: its `ps` may have to be
         // CONSTRUCTED in canonical order (§4), which no borrow-returning
         // emission can serve. Intercept, park, and rejoin at field 1.
         if field == 0 {
             if let Some(map) = node.bincode_as_pathmap() {
-                self.open_pathmap(out, node, map);
-                return;
+                self.open_pathmap(out, node, map)?;
+                return Ok(());
             }
         }
-        match node.bincode_emit(field, out) {
+        let descent = out.emit(node, field, self.legacy_layout)?;
+        match descent {
             Descent::Done => {}
             Descent::Node {
                 resume,
@@ -340,6 +417,7 @@ impl<'a> Machine<'a> {
                 self.ops.push(Op::MapEntries);
             }
         }
+        Ok(())
     }
 
     /// Begin a counted repeat over `seq`.
@@ -390,7 +468,12 @@ impl<'a> Machine<'a> {
     /// walker because `EPathMap`'s first field is an accessor-reached EPM1 byte
     /// snapshot rather than a plain generated field read. Emitting anything else
     /// changes the event-hash preimage silently.
-    fn open_pathmap(&mut self, out: &mut Vec<u8>, node: &'a dyn BincodeNode, map: &'a EPathMap) {
+    fn open_pathmap<S: DriverSink>(
+        &mut self,
+        out: &mut S,
+        node: &'a dyn BincodeNode,
+        map: &'a EPathMap,
+    ) -> Result<(), S::Error> {
         // ★★ THIS SEAM IS TRIE-NATIVE.
         //
         // The mandate is that a pathmap serializes as its own byte array on every
@@ -403,8 +486,9 @@ impl<'a> Machine<'a> {
         // trie snapshot contiguous and leaves the steady-state bincode driver at
         // zero owned entry projections.
         let PathmapSnapshot::Stored { trie_snapshot } = pathmap_snapshot(map);
-        put_bytes(out, trie_snapshot);
+        out.put_bytes(trie_snapshot)?;
         self.suspend(node, 1);
+        Ok(())
     }
 }
 
@@ -439,11 +523,56 @@ pub fn encode_into<T: BincodeNode>(value: &T, out: &mut Vec<u8>) {
         node: value,
         field: 0,
     });
-    m.run::<false>(out);
+    m.run::<false, _>(out)
+        .unwrap_or_else(|never| match never {});
     debug_assert!(
         m.map_iters.is_empty(),
         "bincode_encoder: a map iterator outlived its field"
     );
+}
+
+/// Emit the exact pre-cost positional struct layout on the same explicit
+/// worklist. Callers must reject cost-bearing values before using this path;
+/// omitting a populated cost field would otherwise be a lossy consensus
+/// conversion. This function does not choose an epoch from payload shape.
+pub fn encode_legacy_into<T: BincodeNode>(value: &T, out: &mut Vec<u8>) {
+    let mut machine = Machine::new_legacy();
+    machine.ops.push(Op::Node {
+        node: value,
+        field: 0,
+    });
+    machine
+        .run::<false, _>(out)
+        .unwrap_or_else(|never| match never {});
+    debug_assert!(machine.map_iters.is_empty());
+}
+
+pub fn encode_legacy<T: BincodeNode>(value: &T) -> Vec<u8> {
+    let mut out = Vec::with_capacity(OUT_CAPACITY);
+    encode_legacy_into(value, &mut out);
+    out
+}
+
+/// Stream either positional epoch layout through the same explicit worklist
+/// used by the Vec fast path. The caller authenticates the epoch and refuses
+/// cost-bearing values in Legacy before invoking this emitter.
+pub fn encode_metered_into<T: BincodeNode>(
+    value: &T,
+    legacy: bool,
+    sink: &mut dyn BincodeByteSink,
+) -> Result<(), RSpaceError> {
+    let mut machine = if legacy {
+        Machine::new_legacy()
+    } else {
+        Machine::new()
+    };
+    machine.ops.push(Op::Node {
+        node: value,
+        field: 0,
+    });
+    machine.run::<false, _>(&mut MeteredSink(sink))?;
+    debug_assert!(machine.map_iters.is_empty());
+    Ok(())
 }
 
 /// Encode `value` into a fresh `Vec<u8>`.
@@ -546,7 +675,8 @@ pub fn op_stack_high_water<T: BincodeNode>(value: &T) -> usize {
         node: value,
         field: 0,
     });
-    m.run::<true>(&mut out);
+    m.run::<true, _>(&mut out)
+        .unwrap_or_else(|never| match never {});
     m.high_water
 }
 
@@ -563,3 +693,45 @@ pub const fn op_size() -> usize { std::mem::size_of::<Op<'static>>() }
 /// that produced [`BincodeNode::bincode_as_pathmap`]. The gate keeps that fact
 /// executable so the "optimization" cannot be reintroduced.
 pub fn program_address(node: &dyn BincodeNode) -> usize { node.bincode_program().as_ptr() as usize }
+
+#[cfg(test)]
+mod legacy_layout_tests {
+    use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
+
+    use super::*;
+    use crate::rhoapi::{ListParWithRandom, ReceiveBind, Send, TaggedContinuation};
+
+    #[test]
+    fn pre_cost_empty_struct_bytes_match_pinned_52217b94a_layout() {
+        // bincode 1.3.3 fixint-LE: nine empty Par repeated fields (9 × 8),
+        // blank locally_free bytes (8), and one false connective flag (1).
+        assert_eq!(encode_legacy(&Par::default()), vec![0; 81]);
+        // Two old Option fields: guard, tagged_cont. The merged schema inserts
+        // cost_authority between them, so truncating a current encoding is not
+        // a valid way to obtain this two-byte historical layout.
+        assert_eq!(encode_legacy(&TaggedContinuation::default()), vec![0; 2]);
+        assert_eq!(encode_legacy(&ListParWithRandom::default()), vec![0; 16]);
+        assert_eq!(encode_legacy(&ReceiveBind::default()), vec![0; 14]);
+    }
+
+    #[test]
+    fn pre_cost_nested_encode_decode_remains_stack_safe() {
+        std::thread::Builder::new()
+            .stack_size(96 * 1024)
+            .spawn(|| {
+                let mut par = Par::default();
+                for _ in 0..4096 {
+                    par = Par::default().with_sends(vec![Send {
+                        chan: Some(par),
+                        ..Send::default()
+                    }]);
+                }
+                let bytes = encode_legacy(&par);
+                let decoded = Par::cold_decode_legacy(&bytes).expect("legacy nested Par");
+                assert_eq!(encode_legacy(&decoded), bytes);
+            })
+            .expect("small-stack legacy codec worker")
+            .join()
+            .expect("legacy codec must not overflow");
+    }
+}

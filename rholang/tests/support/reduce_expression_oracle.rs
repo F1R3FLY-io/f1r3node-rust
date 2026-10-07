@@ -179,6 +179,9 @@ macro_rules! reducer_expression_oracle_methods {
                     ExprInstance::GDouble(x) => Ok(Expr {
                         expr_instance: Some(ExprInstance::GDouble(*x)),
                     }),
+                    ExprInstance::GFloat32(bits) => Ok(Expr {
+                        expr_instance: Some(ExprInstance::GFloat32(*bits)),
+                    }),
                     ExprInstance::GBigInt(x) => Ok(Expr {
                         expr_instance: Some(ExprInstance::GBigInt(x.clone())),
                     }),

@@ -179,6 +179,7 @@ fn receive(source: Par, body: Par, connective_used: bool) -> Par {
                 source: Some(source),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             }],
             body: Some(body),
             persistent: false,

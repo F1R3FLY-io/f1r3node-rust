@@ -9,15 +9,19 @@ pub mod chromadb_service;
 pub mod compiler;
 pub mod contract_call;
 pub mod deploy_parameters;
+pub mod deterministic_reduction;
 pub mod dispatch;
 pub mod env;
 pub mod errors;
+pub mod execution_space;
 pub mod external_services;
 pub mod frontend;
 pub mod fused_pathmap_chain;
 pub mod grpc_client_service;
 pub mod guard;
+pub mod host_work;
 pub mod interpreter;
+pub mod io;
 pub mod matcher;
 pub mod metering;
 pub mod merging;
@@ -45,6 +49,7 @@ pub mod storage;
 pub mod substitute;
 pub mod substitute_combine;
 pub mod substitute_drive;
+mod substitute_metered_combine;
 #[cfg(test)]
 #[path = "../../../tests/support/substitute_oracle.rs"]
 pub mod substitute_oracle;

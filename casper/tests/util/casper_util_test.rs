@@ -108,11 +108,9 @@ async fn is_in_main_chain_should_classify_diamond_dags_appropriately() {
         assert!(dag
             .is_in_main_chain(&b2.block_hash, &b4.block_hash)
             .unwrap());
-        assert_ne!(
-            dag.is_in_main_chain(&b3.block_hash, &b4.block_hash)
-                .unwrap(),
-            true
-        );
+        assert!(!dag
+            .is_in_main_chain(&b3.block_hash, &b4.block_hash)
+            .unwrap());
     })
     .await
 }
@@ -200,31 +198,21 @@ async fn is_in_main_chain_should_classify_complicated_chains_appropriately() {
         assert!(dag
             .is_in_main_chain(&genesis.block_hash, &b2.block_hash)
             .unwrap());
-        assert_ne!(
-            dag.is_in_main_chain(&b2.block_hash, &b3.block_hash)
-                .unwrap(),
-            true
-        );
-        assert_ne!(
-            dag.is_in_main_chain(&b3.block_hash, &b4.block_hash)
-                .unwrap(),
-            true
-        );
-        assert_ne!(
-            dag.is_in_main_chain(&b4.block_hash, &b5.block_hash)
-                .unwrap(),
-            true
-        );
-        assert_ne!(
-            dag.is_in_main_chain(&b5.block_hash, &b6.block_hash)
-                .unwrap(),
-            true
-        );
-        assert_ne!(
-            dag.is_in_main_chain(&b6.block_hash, &b7.block_hash)
-                .unwrap(),
-            true
-        );
+        assert!(!dag
+            .is_in_main_chain(&b2.block_hash, &b3.block_hash)
+            .unwrap());
+        assert!(!dag
+            .is_in_main_chain(&b3.block_hash, &b4.block_hash)
+            .unwrap());
+        assert!(!dag
+            .is_in_main_chain(&b4.block_hash, &b5.block_hash)
+            .unwrap());
+        assert!(!dag
+            .is_in_main_chain(&b5.block_hash, &b6.block_hash)
+            .unwrap());
+        assert!(!dag
+            .is_in_main_chain(&b6.block_hash, &b7.block_hash)
+            .unwrap());
         assert!(dag
             .is_in_main_chain(&b7.block_hash, &b8.block_hash)
             .unwrap());
@@ -234,11 +222,9 @@ async fn is_in_main_chain_should_classify_complicated_chains_appropriately() {
         assert!(dag
             .is_in_main_chain(&b2.block_hash, &b8.block_hash)
             .unwrap());
-        assert_ne!(
-            dag.is_in_main_chain(&b4.block_hash, &b2.block_hash)
-                .unwrap(),
-            true
-        );
+        assert!(!dag
+            .is_in_main_chain(&b4.block_hash, &b2.block_hash)
+            .unwrap());
     })
     .await
 }

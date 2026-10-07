@@ -1,5 +1,14 @@
-use crate::rspace::errors::HistoryError;
+use crate::rspace::errors::{HistoryError, RSpaceError};
+use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::SourceMeter;
+use crate::rspace::hashing::stable_hash_provider::{
+    EventCodecEpoch, StableHashSerialize, channel_hash_for_epoch, channel_tuple_hash_for_epoch,
+};
 use crate::rspace::internal::{Datum, WaitingContinuation};
+use crate::rspace::serializers::cold_store_decode::{ColdStoreDecode, ColdStoreDecodeError};
+use crate::rspace::serializers::serializers::{
+    decode_continuation_for_epoch, decode_datum_for_epoch,
+};
 
 /**
  * Reader for particular history (state verified on blockchain)
@@ -51,6 +60,14 @@ pub trait HistoryReader<Key, C: Clone, P: Clone, A: Clone, K: Clone> {
      */
     fn base(&self) -> Box<dyn HistoryReaderBase<C, P, A, K>>;
 
+    fn base_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Box<dyn HistoryReaderBase<C, P, A, K>>, RSpaceError> {
+        meter.reserve(1, 0, std::mem::size_of_val(self))?;
+        Ok(self.base())
+    }
+
     fn get_data_proj_generic(&self, key: &C) -> Vec<Datum<A>>;
 
     fn get_continuations_proj_generic(&self, key: &Vec<C>) -> Vec<WaitingContinuation<P, K>>;
@@ -83,4 +100,86 @@ pub trait HistoryReaderBase<C: Clone, P: Clone, A: Clone, K: Clone>: Sync + Send
     }
 
     fn get_joins(&self, key: &C) -> Vec<Vec<C>> { self.get_joins_proj(key) }
+}
+
+/// A history reader bound to one authenticated codec epoch for its lifetime.
+/// All typed-key lookups use the same Route A key namespace as event creation
+/// and fall closed before storage access if Legacy is given a cost-bearing key.
+/// The underlying hash-keyed reader stays generic and retains its old API for
+/// historical callers; activated sessions use this wrapper instead of `base`.
+pub struct EpochHistoryReader<C: Clone, P: Clone, A: Clone, K: Clone> {
+    reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
+    epoch: EventCodecEpoch,
+}
+
+impl<C: Clone, P: Clone, A: Clone, K: Clone> EpochHistoryReader<C, P, A, K> {
+    pub fn new(
+        reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
+        epoch: EventCodecEpoch,
+    ) -> Self {
+        Self { reader, epoch }
+    }
+
+    pub fn epoch(&self) -> EventCodecEpoch { self.epoch }
+
+    pub fn root(&self) -> Blake2b256Hash { self.reader.root() }
+}
+
+impl<C, P, A, K> EpochHistoryReader<C, P, A, K>
+where
+    C: Clone + StableHashSerialize,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    fn decode_error(error: ColdStoreDecodeError) -> RSpaceError {
+        RSpaceError::HistoryError(HistoryError::DecodeError(error.to_string()))
+    }
+
+    pub fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError>
+    where A: ColdStoreDecode {
+        let key = channel_hash_for_epoch(self.epoch, channel)?;
+        self.reader
+            .get_data_proj_binary(&key)
+            .map_err(RSpaceError::HistoryError)?
+            .iter()
+            .map(|bytes| decode_datum_for_epoch(self.epoch, bytes).map_err(Self::decode_error))
+            .collect()
+    }
+
+    pub fn get_continuations(
+        &self,
+        channels: &[C],
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>
+    where
+        P: ColdStoreDecode,
+        K: ColdStoreDecode,
+    {
+        let key = channel_tuple_hash_for_epoch(self.epoch, channels)?;
+        self.reader
+            .get_continuations_proj_binary(&key)
+            .map_err(RSpaceError::HistoryError)?
+            .iter()
+            .map(|bytes| {
+                decode_continuation_for_epoch(self.epoch, bytes).map_err(Self::decode_error)
+            })
+            .collect()
+    }
+
+    pub fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError>
+    where C: ColdStoreDecode {
+        let key = channel_hash_for_epoch(self.epoch, channel)?;
+        self.reader
+            .get_joins_proj_binary(&key)
+            .map_err(RSpaceError::HistoryError)?
+            .iter()
+            .map(|bytes| {
+                crate::rspace::serializers::cold_store_decode::cold_decode_vec_prefix_for_epoch::<C>(
+                    self.epoch, bytes,
+                )
+                .map(|(join, _)| join)
+                .map_err(Self::decode_error)
+            })
+            .collect()
+    }
 }

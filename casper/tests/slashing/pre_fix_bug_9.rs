@@ -1,7 +1,7 @@
 // Pre-fix regression backstop for bug #9 (slash-system-deploy
 // rejected by validation pre-fix).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.10.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.10.
 // Out-of-band approach per design/14-test-plan.md §14.7.
 //
 // Post-fix #9 is already applied at `casper/src/rust/validate.rs:1018-1029`:

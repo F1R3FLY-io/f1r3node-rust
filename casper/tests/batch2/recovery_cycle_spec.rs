@@ -1,26 +1,23 @@
-// D3 (DR-9, OD-2): this file previously exercised the rejected-deploy
-// recovery pipeline using a PRECHARGE-driven multi-parent-merge conflict: two
-// same-key deploys whose combined `phlo_limit × phlo_price` precharge drove the
-// shared REV vault below zero, which `conflict_set_merger::fold_rejection`
-// rejected, after which the rejected deploy landed in
-// `KeyValueRejectedDeployBuffer` and was re-proposed.
+// End-to-end regression test for the rejected-deploy recovery pipeline:
+// a deploy that is conflict-rejected during a multi-parent merge lands
+// in `KeyValueRejectedDeployBuffer` and is re-included in a subsequent
+// proposer's body.
 //
-// D3 REMOVES the per-deploy precharge, so two benign same-key deploys
-// (`@0!(0) | for(_<-@0)`, which write no mergeable number-channel diff) NO
-// LONGER conflict on a vault balance at merge — both branches merge cleanly.
-// The double-spend protection moved to the per-signature ACCEPTANCE GATE
-// (`util/rholang/acceptance.rs`: §7.7 reject-both / drained-pool), covered by
-// `reject_both_on_oversubscription` / `drained_present_pool_rejects` /
-// `per_signature_group_gate`. This test is therefore re-pinned to assert the
-// D3 behavior: the same-key benign deploys MERGE without a precharge-driven
-// rejection and both remain reachable. (The recovery-buffer/re-propose
-// machinery itself is consensus-critical and D3-independent; re-exercising it
-// under D3 requires a non-precharge merge-conflict trigger — a vault-draining
-// REV transfer or a provisioned Σ⟦s⟧ settlement-debit conflict — which is a
-// multi-parent-merge follow-on, not part of the D3 cost-model removal.)
+// Conflict generator: two deploys signed by the SAME funded key, each
+// requesting a phlogiston precharge that would individually leave the
+// shared vault solvent but together would drive the vault balance below
+// zero. `conflict_set_merger::fold_rejection` rejects whichever branch
+// it processes second to keep the merged state non-negative. The
+// Rholang body is `Nil`, so play execution has no `|` parallel
+// composition and is fully deterministic.
 
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use serial_test::serial;
 
 use crate::helper::test_node::TestNode;
@@ -41,33 +38,81 @@ impl TestContext {
     }
 }
 
-/// Send/receive pair drives a deterministic, non-trivial settled cost
-/// under the cost-accounted-rho metering model (one `send_eval` + one
-/// `receive_eval` + a COMM + substitutions land the deploy at 49 phlo
-/// in the merged tree). The deploy must settle successfully —
-/// `block_index` discards failed-deploy diffs upstream of the merge
-/// engine, so an `OutOfPhlogistons` exit would erase the vault drain
-/// that drives the rejection.
+/// Trivial deploy body. The conflict comes from the system-level
+/// precharge against the source vault, not from anything in the Rholang.
 const CONFLICT_RHO: &str = r#"
-@0!(0) | for (_ <- @0) { 0 }
+Nil
 "#;
 
 /// Phlogiston pricing per deploy. The actual REV drain on the source
 /// vault is `cost * phlo_price` (precharge is `phlo_limit * phlo_price`,
 /// refunded down to `cost * phlo_price`).
 ///
-/// `phlo_limit = 80` keeps the per-branch precharge at
-/// `80 * 100_000 = 8_000_000` REV — under the 9_000_000 REV vault cap
-/// (the default `DEFAULT_PUB` balance from `genesis_builder`'s
-/// `predefined_vault`). `phlo_price = 100_000` amplifies the body's
-/// settled cost (49 phlo) into `49 * 100_000 = 4_900_000` REV of vault
-/// drain per branch. Two such deploys against the same source vault
-/// sum to `9_800_000` REV, exceeding the `9_000_000` balance and
-/// triggering the merge-engine's negative-balance rejection. The body
-/// stays comfortably under `phlo_limit` (49 < 80) so the deploy
-/// settles without `OutOfPhlogistons`.
-const PHLO_LIMIT: i64 = 80;
-const PHLO_PRICE: i64 = 100_000;
+/// `phlo_limit = 8` keeps the precharge under the 9_000_000 REV vault
+/// cap (`8 * 1_000_000 = 8_000_000`). The deploy's actual cost is ~5
+/// phlo, so per-deploy net drain ≈ `5 * 1_000_000 = 5_000_000` REV. Two
+/// such deploys against the same vault sum to `10_000_000`, exceeding
+/// the 9_000_000 balance and triggering the merge-engine's
+/// negative-balance rejection.
+const PHLO_LIMIT: i64 = 8;
+const PHLO_PRICE: i64 = 1_000_000;
+
+fn assert_touched_integer_add_channels_single_valued(
+    node: &TestNode,
+    state_hash: &Bytes,
+    blocks: &[BlockMessage],
+) {
+    let mut channels = std::collections::BTreeMap::new();
+    for block in blocks {
+        let diffs = node
+            .runtime_manager
+            .load_mergeable_channels(
+                &block.body.state.post_state_hash,
+                block.sender.clone(),
+                block.seq_num,
+            )
+            .expect("load mergeable channels");
+        for diff in diffs {
+            for (hash, (_, merge_type)) in diff {
+                if merge_type == MergeType::IntegerAdd {
+                    channels.insert(hash, merge_type);
+                }
+            }
+        }
+    }
+
+    let root = Blake2b256Hash::from_bytes_prost(state_hash);
+    let reader = node
+        .runtime_manager
+        .get_history_repo()
+        .get_history_reader(&root)
+        .expect("history reader");
+
+    for (hash, _) in channels {
+        let data = reader.get_data(&hash).expect("get mergeable channel data");
+        let values: Vec<i64> = data
+            .iter()
+            .filter_map(|datum| {
+                RholangMergingLogic::try_get_number_with_rnd(&datum.a).map(|(n, _)| n)
+            })
+            .collect();
+        assert!(
+            data.len() <= 1,
+            "number channel {} holds {} values {:?}; IntegerAdd single-value invariant violated",
+            hex::encode(hash.bytes()),
+            data.len(),
+            values
+        );
+        if data.len() == 1 {
+            assert_eq!(
+                values.len(),
+                1,
+                "number channel {} is not numeric at merged state",
+                hex::encode(hash.bytes())
+            );
+        }
+    }
+}
 
 /// Recovery cycle end-to-end.
 ///
@@ -80,17 +125,15 @@ const PHLO_PRICE: i64 = 100_000;
 ///       merge_block          proposed by validator 1 (NOT validator 0)
 ///            |
 ///     recovery_block         proposed by validator 0; the rejected sig
-///                            must surface in body.deploys
+///                            must stay parked while its source is unresolved
 ///
 /// The flow exercises:
 ///   1. Multi-parent merge in `compute_parents_post_state`, where
-///      `dag_merger::merge` returns the rejected sig and
-///      `compute_rejected_buffer_admits` admits it to the buffer.
+///      `dag_merger::merge` returns the rejected sig and admits it to the buffer.
 ///   2. Buffer population on the recovery proposer via
 ///      `validate_block_checkpoint` when it syncs merge_block.
-///   3. `prepare_user_deploys` pulling from the buffer and the
-///      self-chain dedup filter exempting `rejected_in_scope` sigs so
-///      the recovered deploy actually reaches `body.deploys`.
+///   3. `prepare_user_deploys` refusing to replay the buffered deploy
+///      while the same sig is still visible in unresolved scope.
 ///
 /// Determinism notes:
 ///
@@ -103,25 +146,33 @@ const PHLO_PRICE: i64 = 100_000;
 /// * The larger-sig deploy is routed to `nodes[0]`'s block_a so the
 ///   rejected sig lives in validator 0's own previous block.
 ///
-/// * Validator 0 must NOT propose merge_block. Validator 1 does. That
-///   keeps validator 0's `latest_message_hash` at block_a, so when
-///   validator 0 later creates recovery_block,
-///   `collect_self_chain_deploy_sigs` walks `block_a → genesis` and
-///   block_a's body deploys (including the rejected sig) always land
-///   in `self_chain_deploy_sigs`. The hash-asc tiebreak that decides
-///   merge_block's main parent is irrelevant — we never traverse
-///   merge_block via the self-chain walk.
+/// * Validator 0 must NOT propose merge_block. Validator 1 does. The
+///   rejected copy's carrier is validator 0's own block_a, so the
+///   owner-scoped buffer populate lands the retry with validator 0 —
+///   the node whose later create re-proposes it — while validator 1
+///   (a non-owner) merely records the adjudication.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
-    let ctx = TestContext::new().await;
-    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
+async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
+    // Two validators bonded in genesis (stakes {1, 3}): validator 1 holds a
+    // witnessing majority, so the settle ladder below can advance the floor.
+    // A genesis bonding the full default validator set would strand every
+    // floor at genesis with only two nodes running.
+    let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(genesis_parameters))
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
 
     // Two validators, no synchrony constraint, unlimited parents so the
     // multi-parent merge actually happens.
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 2, None, None, None, None)
         .await
         .expect("create_network(2)");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     // Build the two conflicting deploys. Both are signed by the same
     // funded key; different timestamps (enforced by the sleeps) keep
@@ -171,11 +222,11 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
     // proposes block_b. Neither has seen the other's block yet, so each
     // executes its deploy against the genesis post-state independently.
     let block_a = nodes[0]
-        .add_block_from_deploys(&[deploy_a.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_a))
         .await
         .expect("validator 0 proposes block_a");
     let block_b = nodes[1]
-        .add_block_from_deploys(&[deploy_b.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_b))
         .await
         .expect("validator 1 proposes block_b");
     assert_ne!(
@@ -203,8 +254,8 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
     );
 
     // Validator 1 proposes merge_block. Validator 0 deliberately does
-    // not propose it: keeping validator 0's latest at block_a is what
-    // makes the recovery propose's self-chain walk deterministic.
+    // not propose it: the rejected copy's carrier stays validator 0's
+    // own block_a, so the owner-scoped populate buffers the retry there.
     //
     // The marker deploy gives `create_block` something fresh to commit
     // so it doesn't short-circuit on `NoNewDeploys`.
@@ -214,7 +265,7 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
             .expect("build marker_deploy")
     };
     let merge_block = nodes[1]
-        .add_block_from_deploys(&[marker_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
         .await
         .expect("validator 1 proposes merge_block over [block_a, block_b]");
 
@@ -230,33 +281,19 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
         merge_block
             .header
             .parents_hash_list
-            .iter()
-            .any(|h| *h == block_a.block_hash),
+            .contains(&block_a.block_hash),
         "merge_block parents must include block_a"
     );
     assert!(
         merge_block
             .header
             .parents_hash_list
-            .iter()
-            .any(|h| *h == block_b.block_hash),
+            .contains(&block_b.block_hash),
         "merge_block parents must include block_b"
     );
 
-    // D3 (DR-9, OD-2): this scenario's double-spend conflict was driven ENTIRELY
-    // by the per-deploy PRECHARGE (`phlo_limit × phlo_price` debited the source
-    // REV vault; two same-key precharges drove its mergeable balance below zero,
-    // which `conflict_set_merger::fold_rejection` rejected). D3 REMOVES the
-    // precharge: the benign `CONFLICT_RHO` (`@0!(0) | for(_<-@0)`) writes NO
-    // mergeable number-channel diff, so two same-key copies do NOT conflict on a
-    // vault balance — both branches merge cleanly. The double-spend protection
-    // moved to the per-signature ACCEPTANCE GATE (`util/rholang/acceptance.rs`):
-    // two deploys sharing a signature draw from one supply pool Σ⟦s⟧, and the
-    // §7.7 reject-both / drained-pool checks reject the second once the pool is
-    // committed — covered by the gate tests `reject_both_on_oversubscription`,
-    // `drained_present_pool_rejects`, and `per_signature_group_gate`. So under D3
-    // the merge admits both same-key benign deploys WITHOUT a precharge-driven
-    // rejection.
+    // The merge engine's negative-balance check must have rejected one
+    // of the two deploys, and it must be deploy_a (the lex-larger sig).
     let rejected_sigs: Vec<Bytes> = merge_block
         .body
         .rejected_deploys
@@ -264,33 +301,434 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
         .map(|rd| rd.sig.clone())
         .collect();
     assert!(
-        !rejected_sigs.iter().any(|s| *s == sig_a || *s == sig_b),
-        "D3: neither same-key benign deploy is rejected at MERGE — the \
-         precharge-driven vault-balance conflict is removed; double-spend \
-         protection is the per-signature acceptance gate, not the merge \
-         engine's vault-balance check. Got merge rejected sigs={:?}, \
+        !rejected_sigs.is_empty(),
+        "merge_block.body.rejected_deploys must be non-empty — combined \
+         precharge from two same-key deploys must drive the source vault \
+         balance below zero, which `conflict_set_merger::fold_rejection` \
+         catches by rejecting the second branch"
+    );
+    let conflict_sig = rejected_sigs
+        .iter()
+        .find(|s| **s == sig_a || **s == sig_b)
+        .cloned()
+        .expect("the rejected sig must be one of the two conflicting deploys");
+    assert_eq!(
+        conflict_sig,
+        sig_a,
+        "the rejected sig must be deploy_a's (the lex-larger sig that \
+         `fold_rejection` processes second). Got rejected sigs={:?}, \
          sig_a={}, sig_b={}",
         rejected_sigs.iter().map(hex::encode).collect::<Vec<_>>(),
         hex::encode(&sig_a),
         hex::encode(&sig_b)
     );
+    let surviving_sig = sig_b.clone();
 
-    // Both same-key deploys remain reachable in the canonical view via the
-    // deploy index (neither was dropped by a merge-time rejection).
-    let representation = nodes[0]
-        .block_dag_storage
-        .get_representation()
-        .expect("dag representation");
-    for sig in [&sig_a, &sig_b] {
+    // Sync merge_block from validator 1 back to validator 0. The
+    // receive-side `validate_block_checkpoint` runs
+    // `compute_parents_post_state` with the buffer arg, which populates
+    // validator 0's own `KeyValueRejectedDeployBuffer`. The recovery
+    // proposer's snapshot BFS then sees merge_block's `rejected_deploys`
+    // and populates `rejected_in_scope`.
+    {
+        let (a, b) = nodes.split_at_mut(1);
+        a[0].sync_with_one(&mut b[0])
+            .await
+            .expect("sync merge_block 1 -> 0");
+    }
+    assert!(
+        nodes[0].contains(&merge_block.block_hash),
+        "validator 0 must observe merge_block before recovery propose"
+    );
+
+    // Validator 0's buffer must contain the rejected sig after sync.
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        let contains_rejected = buffer_guard
+            .contains_sig(&conflict_sig)
+            .expect("buffer.contains_sig");
         assert!(
-            representation
-                .lookup_by_deploy_id(&sig.to_vec())
-                .ok()
-                .flatten()
-                .is_some(),
-            "D3: same-key benign deploy sig {} must remain reachable in the \
-             canonical view (it was admitted, not merge-rejected)",
-            hex::encode(sig)
+            contains_rejected,
+            "validator 0's buffer must contain the rejected sig {} after \
+             syncing merge_block",
+            hex::encode(&conflict_sig)
         );
+    }
+    // Settle the adjudication: the retry gate opens only once the rejection
+    // record is inside the proposer's frozen floor closure. Validator 1
+    // (majority stake) mints settle rounds synced to validator 0 until
+    // validator 0's derived floor covers merge_block.
+    let m_height = merge_block.body.state.block_number;
+    let mut settled = false;
+    for round in 0..30i32 {
+        let settle_marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(
+                50 + round,
+                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                Some(shard_id.clone()),
+            )
+            .expect("build settle marker")
+        };
+        let b = nodes[1]
+            .add_block_from_deploys(std::slice::from_ref(&settle_marker))
+            .await
+            .expect("settle round");
+        {
+            let (a, c) = nodes.split_at_mut(1);
+            a[0].sync_with_one(&mut c[0])
+                .await
+                .expect("sync settle round 1 -> 0");
+        }
+        let dag = nodes[0].casper.block_dag().await.expect("dag");
+        let floor = casper::rust::finality::floor::floor_of_block(
+            &dag,
+            &nodes[0].block_store,
+            &b.block_hash,
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(0.0),
+        )
+        .await
+        .expect("floor_of_block");
+        if floor.hash == merge_block.block_hash
+            || (floor.block_number >= m_height
+                && dag
+                    .is_dag_ancestor(&merge_block.block_hash, &floor.hash)
+                    .expect("ancestor query"))
+        {
+            settled = true;
+            break;
+        }
+    }
+    assert!(
+        settled,
+        "staging precondition: validator 0's floor must come to cover \
+         merge_block within the settle rounds"
+    );
+
+    // Validator 0 proposes another block while its source block is still
+    // visible in unresolved scope. The rejection is now settled in the
+    // floor, so the retry gate is open and the rejected sig must be
+    // retryable rather than blocked until the source leaves the DAG window.
+    let marker_deploy_2 = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::basic_deploy_data(1, None, Some(shard_id.clone()))
+            .expect("build marker_deploy_2")
+    };
+    let recovery_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy_2))
+        .await
+        .expect("validator 0 proposes recovery_block");
+
+    let recovery_sigs: Vec<&[u8]> = recovery_block
+        .body
+        .deploys
+        .iter()
+        .map(|pd| pd.identity_bytes())
+        .collect();
+    assert!(
+        recovery_sigs.iter().any(|s| *s == conflict_sig.as_ref()),
+        "recovery_block.body.deploys must replay recovered sig {}; got body.deploys sigs = {:?}",
+        hex::encode(&conflict_sig),
+        recovery_sigs
+            .iter()
+            .map(|s| hex::encode(*s))
+            .collect::<Vec<_>>()
+    );
+    // Packaging the replay must NOT drain the buffer entry: the recovery
+    // block is not yet canonical (fork choice could leave it behind), and
+    // the buffer holds the only re-proposable copy. The entry is purged
+    // only once the replay is finalized-won.
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            buffer_guard
+                .contains_sig(&conflict_sig)
+                .expect("buffer.contains_sig"),
+            "recovered sig must remain buffered until its replay is finalized-won"
+        );
+    }
+
+    let body_deploy_sigs: std::collections::HashSet<Bytes> = recovery_block
+        .body
+        .deploys
+        .iter()
+        .map(|pd| pd.identity_bytes().to_vec().into())
+        .collect();
+    let overlapping_rejected_sigs: Vec<Bytes> = recovery_block
+        .body
+        .rejected_deploys
+        .iter()
+        .filter_map(|rd| body_deploy_sigs.contains(&rd.sig).then_some(rd.sig.clone()))
+        .collect();
+    assert!(
+        overlapping_rejected_sigs.is_empty(),
+        "recovery_block must not list accepted deploy signatures as rejected; overlaps={:?}",
+        overlapping_rejected_sigs
+            .iter()
+            .map(hex::encode)
+            .collect::<Vec<_>>()
+    );
+
+    {
+        let (a, b) = nodes.split_at_mut(1);
+        b[0].sync_with_one(&mut a[0])
+            .await
+            .expect("sync recovery_block 0 -> 1");
+    }
+    assert!(
+        nodes[1].contains(&recovery_block.block_hash),
+        "validator 1 must validate the recovery block with filtered rejected_deploys"
+    );
+
+    // The surviving sig must remain reachable in the canonical view via
+    // the deploy index, pointing back to its pre-merge block.
+    assert!(
+        nodes[0]
+            .block_dag_storage
+            .get_representation()
+            .expect("dag representation")
+            .deploy_canonical_appearance(&surviving_sig)
+            .ok()
+            .flatten()
+            .is_some(),
+        "the surviving sig {} must be reachable in the canonical view via \
+         its lifecycle row",
+        hex::encode(&surviving_sig)
+    );
+
+    // Regression for issue #42: the re-inclusion window between the recovery
+    // proposal and its finalization is closed by the canonical-won selection
+    // filter, NOT by finalization. Before any `record_directly_finalized`
+    // call, validator 0 proposes an interim block on top of `recovery_block`.
+    // `recovery_block` is now in the parent cone and re-includes the recovered
+    // sig cleanly at a height above the rejection, so `prepare_user_deploys`
+    // suppresses it. The recovered sig must be absent from the interim block's
+    // body — a single sig must not appear in every block until the LFB advances.
+    let interim_marker = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::basic_deploy_data(7, None, Some(shard_id.clone()))
+            .expect("build interim_marker")
+    };
+    let interim_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&interim_marker))
+        .await
+        .expect("validator 0 proposes interim block before finalization");
+    assert!(
+        !interim_block
+            .body
+            .deploys
+            .iter()
+            .any(|pd| pd.identity_bytes() == conflict_sig.as_ref()),
+        "issue #42: the recovered sig {} must not be re-included once its clean \
+         recovery inclusion is canonically won over the proposer's parents, even \
+         before the recovery block finalizes; got body.deploys sigs = {:?}",
+        hex::encode(&conflict_sig),
+        interim_block
+            .body
+            .deploys
+            .iter()
+            .map(|pd| hex::encode(pd.identity_bytes()))
+            .collect::<Vec<_>>()
+    );
+    // The buffer entry is still retained (custody holds until finalized-won).
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            buffer_guard
+                .contains_sig(&conflict_sig)
+                .expect("buffer.contains_sig"),
+            "suppression from re-proposal must not evict the buffer entry"
+        );
+    }
+
+    // Buffer custody after the replay wins: the purge keys on floor-state
+    // membership of the deploy's effect, and the FLOOR has not covered
+    // the replay here — the finality marker written below is not the
+    // floor. Custody therefore holds through the marker — the entry
+    // STAYS buffered, while the canonical-won selection filter keeps it
+    // from ever being re-proposed — and ends only when the floor either
+    // covers the replay or closes the window.
+    nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(recovery_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("mark recovery_block finalized");
+    let marker_deploy_3 = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone()))
+            .expect("build marker_deploy_3")
+    };
+    let post_finality_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy_3))
+        .await
+        .expect("validator 0 proposes post-finality block");
+    assert!(
+        !post_finality_block
+            .body
+            .deploys
+            .iter()
+            .any(|pd| pd.identity_bytes() == conflict_sig.as_ref()),
+        "a finalized-won sig must not be replayed again"
+    );
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            buffer_guard
+                .contains_sig(&conflict_sig)
+                .expect("buffer.contains_sig"),
+            "an uncovered replay's deploy stays in buffer custody; no \
+             node-local finality marker may evict it"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() {
+    let ctx = TestContext::new().await;
+    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("create_network(3)");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    let mut deploys = Vec::new();
+    for _ in 0..3 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        deploys.push(
+            construct_deploy::source_deploy_now_full(
+                CONFLICT_RHO.to_string(),
+                Some(PHLO_LIMIT),
+                Some(PHLO_PRICE),
+                Some(construct_deploy::DEFAULT_SEC.clone()),
+                None,
+                Some(shard_id.clone()),
+            )
+            .expect("build conflicting deploy"),
+        );
+    }
+
+    let block_0 = nodes[0]
+        .add_block_from_deploys(&[deploys[0].clone()])
+        .await
+        .expect("validator 0 proposes sibling");
+    let block_1 = nodes[1]
+        .add_block_from_deploys(&[deploys[1].clone()])
+        .await
+        .expect("validator 1 proposes sibling");
+    let block_2 = nodes[2]
+        .add_block_from_deploys(&[deploys[2].clone()])
+        .await
+        .expect("validator 2 proposes sibling");
+    let sibling_blocks = vec![block_0, block_1, block_2];
+
+    for (source, block) in sibling_blocks.iter().enumerate() {
+        #[allow(clippy::needless_range_loop)]
+        for target in 0..3 {
+            if source != target {
+                nodes[target]
+                    .process_block(block.clone())
+                    .await
+                    .expect("process sibling");
+            }
+        }
+    }
+
+    for node in &nodes {
+        for block in &sibling_blocks {
+            assert!(node.contains(&block.block_hash));
+        }
+    }
+
+    let marker = construct_deploy::basic_deploy_data(
+        10_000,
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(shard_id.clone()),
+    )
+    .expect("build merge marker");
+    let merge_block = nodes[0]
+        .add_block_from_deploys(&[marker])
+        .await
+        .expect("validator 0 proposes merge");
+
+    for block in &sibling_blocks {
+        assert!(
+            merge_block
+                .header
+                .parents_hash_list
+                .contains(&block.block_hash),
+            "merge block must include sibling {}",
+            hex::encode(&block.block_hash)
+        );
+    }
+
+    let rejected_sigs: Vec<Bytes> = merge_block
+        .body
+        .rejected_deploys
+        .iter()
+        .map(|rd| rd.sig.clone())
+        .collect();
+    let conflicting_rejections = deploys
+        .iter()
+        .filter(|deploy| rejected_sigs.contains(&deploy.sig))
+        .count();
+    assert_eq!(
+        conflicting_rejections,
+        2,
+        "three same-payer siblings must leave exactly one deploy solvent; rejected={:?}",
+        rejected_sigs.iter().map(hex::encode).collect::<Vec<_>>()
+    );
+
+    let mut observed_blocks = sibling_blocks.clone();
+    observed_blocks.push(merge_block.clone());
+    assert_touched_integer_add_channels_single_valued(
+        &nodes[0],
+        &merge_block.body.state.post_state_hash,
+        &observed_blocks,
+    );
+
+    #[allow(clippy::needless_range_loop)]
+    for target in 1..3 {
+        nodes[target]
+            .process_block(merge_block.clone())
+            .await
+            .expect("process merge block");
+        assert_touched_integer_add_channels_single_valued(
+            &nodes[target],
+            &merge_block.body.state.post_state_hash,
+            &observed_blocks,
+        );
+    }
+
+    for proposer in 0..3 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        let traffic = construct_deploy::basic_deploy_data(
+            20_000 + proposer as i32,
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            Some(shard_id.clone()),
+        )
+        .expect("build traffic deploy");
+        let block = nodes[proposer]
+            .add_block_from_deploys(&[traffic])
+            .await
+            .expect("post-merge validator traffic must propose");
+        observed_blocks.push(block.clone());
+        assert_touched_integer_add_channels_single_valued(
+            &nodes[proposer],
+            &block.body.state.post_state_hash,
+            &observed_blocks,
+        );
+        #[allow(clippy::needless_range_loop)]
+        for target in 0..3 {
+            if target != proposer {
+                nodes[target]
+                    .process_block(block.clone())
+                    .await
+                    .expect("process post-merge traffic");
+            }
+        }
     }
 }

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "comment": "Registry of soak-tracked metrics. Adding a metric is data, not code: emit a SOAK_METRIC line from the integration harness and declare it here. The collector, the weekly/nightly aggregation, the dashboard charts and the gate all read this file.",
+  "line_format": "SOAK_METRIC name=<key> value=<number> [phase=<label>] [node=<name>]",
+  "gate_policies": {
+    "track": "Record and chart only. Never fails or warns on week-over-week movement. Use until enough history exists to set a defensible threshold. A max_abs ceiling, if set, still applies as a runaway guard.",
+    "warn": "Emit a warning on regression beyond the threshold; does not fail the soak.",
+    "gate": "Fail the soak on regression beyond the threshold."
+  },
+  "metrics": [
+    {
+      "key": "lfb_spread",
+      "label": "LFB convergence spread",
+      "unit": "blocks",
+      "description": "Max minus min last-finalized-block number across all shard nodes, sampled at the end of each steady-state load phase. Measures whether nodes agree on finalized state, which is distinct from tip-LFB lag (how far finalization trails the DAG tip).",
+      "aggregate": ["p50", "p95", "max"],
+      "direction": "lower_better",
+      "gate": {
+        "policy": "track",
+        "regression_threshold_pct": null,
+        "max_abs": 50,
+        "max_abs_rationale": "Runaway guard, deliberately generous — NOT a tuned threshold. test_load.py asserts spread <= 5 at a single quiescent post-drain point; mid-load spread is legitimately wider, and nobody has measured that distribution yet. A spread this large means nodes disagree on finalized state outright rather than one lagging slightly. Re-set from observed data once several weeks of history exist, then move policy to warn and later gate."
+      },
+      "chart": {
+        "show": true,
+        "series": ["p95", "max"]
+      }
+    }
+  ]
+}

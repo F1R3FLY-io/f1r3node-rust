@@ -152,8 +152,8 @@
 //!    table, so bincode performs one contiguous byte-slice read and no entry
 //!    projection or recursive value decode. See [`Op::PathmapBuild`].
 //!
-//! 4. **The three oneofs** (`ExprInstance` 36 arms, `ConnectiveInstance` 9,
-//!    `TaggedCont` 2) are an `Option` tag (**1** byte) *then* a variant index
+//! 4. **The oneofs** (`ExprInstance` 37 arms, `ConnectiveInstance` 9,
+//!    `TaggedCont` 2, `CostSignature.Value` 6) are an `Option` tag (**1** byte) *then* a variant index
 //!    (**4** bytes, `u32` fixint-LE) — two reads, not one. And the index is
 //!    serde's **declaration order**, not the proto tag: `EPathmapBody` is proto
 //!    tag 32 but serde index 25. The numbering lives in exactly one place,
@@ -209,17 +209,19 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::{
 };
 
 use crate::rhoapi::connective::ConnectiveInstance;
+use crate::rhoapi::cost_signature::Value as CostValue;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::tagged_continuation::TaggedCont;
 use crate::rhoapi::var::{VarInstance, WildcardMsg};
 use crate::rhoapi::{
-    BindPattern, Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
+    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
+    CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
     EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational, GDeployId,
-    GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, If, KeyValuePair,
-    ListBindPatterns, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
-    ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GAuthorityId,
+    GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate, GSysAuthToken,
+    GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match, MatchCase, New,
+    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::par_children::{
@@ -249,22 +251,25 @@ type Res<T> = Result<T, ColdStoreDecodeError>;
 // `EX_E_PATHMAP_BODY` is 25 and its proto tag is 32.
 use crate::rust::rholang::bincode_schema_tables::{
     CN_CONN_AND_BODY, CN_CONN_BOOL, CN_CONN_BYTE_ARRAY, CN_CONN_INT, CN_CONN_NOT_BODY,
-    CN_CONN_OR_BODY, CN_CONN_STRING, CN_CONN_URI, CN_VAR_REF_BODY, EX_E_AND_BODY, EX_E_DIV_BODY,
-    EX_E_EQ_BODY, EX_E_GTE_BODY, EX_E_GT_BODY, EX_E_LIST_BODY, EX_E_LTE_BODY, EX_E_LT_BODY,
-    EX_E_MAP_BODY, EX_E_MATCHES_BODY, EX_E_METHOD_BODY, EX_E_MINUS_BODY, EX_E_MINUS_MINUS_BODY,
-    EX_E_MOD_BODY, EX_E_MULT_BODY, EX_E_NEG_BODY, EX_E_NEQ_BODY, EX_E_NOT_BODY, EX_E_OR_BODY,
-    EX_E_PATHMAP_BODY, EX_E_PERCENT_PERCENT_BODY, EX_E_PLUS_BODY, EX_E_PLUS_PLUS_BODY,
-    EX_E_SET_BODY, EX_E_TUPLE_BODY, EX_E_VAR_BODY, EX_E_ZIPPER_BODY, EX_G_BIG_INT, EX_G_BIG_RAT,
-    EX_G_BOOL, EX_G_BYTE_ARRAY, EX_G_DOUBLE, EX_G_FIXED_POINT, EX_G_INT, EX_G_STRING, EX_G_URI,
+    CN_CONN_OR_BODY, CN_CONN_STRING, CN_CONN_URI, CN_VAR_REF_BODY, CS_BOUND_LEVEL, CS_COMPOUND,
+    CS_GROUND, CS_NAME, CS_QUOTE, CS_UNIT, EX_E_AND_BODY, EX_E_DIV_BODY, EX_E_EQ_BODY,
+    EX_E_GTE_BODY, EX_E_GT_BODY, EX_E_LIST_BODY, EX_E_LTE_BODY, EX_E_LT_BODY, EX_E_MAP_BODY,
+    EX_E_MATCHES_BODY, EX_E_METHOD_BODY, EX_E_MINUS_BODY, EX_E_MINUS_MINUS_BODY, EX_E_MOD_BODY,
+    EX_E_MULT_BODY, EX_E_NEG_BODY, EX_E_NEQ_BODY, EX_E_NOT_BODY, EX_E_OR_BODY, EX_E_PATHMAP_BODY,
+    EX_E_PERCENT_PERCENT_BODY, EX_E_PLUS_BODY, EX_E_PLUS_PLUS_BODY, EX_E_SET_BODY, EX_E_TUPLE_BODY,
+    EX_E_VAR_BODY, EX_E_ZIPPER_BODY, EX_G_BIG_INT, EX_G_BIG_RAT, EX_G_BOOL, EX_G_BYTE_ARRAY,
+    EX_G_DOUBLE, EX_G_FIXED_POINT, EX_G_FLOAT32, EX_G_INT, EX_G_STRING, EX_G_URI,
     TAGGED_CONT_VARIANT_COUNT as TAGGED_CONT_VARIANTS_LEN,
     UNF_INSTANCE_VARIANT_COUNT as UNF_INSTANCE_VARIANTS_LEN,
+    VALUE_VARIANT_COUNT as COST_VALUE_VARIANTS_LEN,
     VAR_INSTANCE_VARIANT_COUNT as VAR_INSTANCE_VARIANTS_LEN,
 };
 
 /// `var::VarInstance`: `BoundVar`, `FreeVar`, `Wildcard` — ★ generated.
 const VAR_INSTANCE_VARIANT_COUNT: u32 = VAR_INSTANCE_VARIANTS_LEN as u32;
-/// `g_unforgeable::UnfInstance`: the four unforgeable bodies — ★ generated.
+/// `g_unforgeable::UnfInstance`: the six unforgeable bodies — ★ generated.
 const UNF_INSTANCE_VARIANT_COUNT: u32 = UNF_INSTANCE_VARIANTS_LEN as u32;
+const COST_VALUE_VARIANT_COUNT: u32 = COST_VALUE_VARIANTS_LEN as u32;
 /// `tagged_continuation::TaggedCont`: `ParBody`, `ScalaBodyRef` — ★ generated.
 const TAGGED_CONT_VARIANT_COUNT: u32 = TAGGED_CONT_VARIANTS_LEN as u32;
 
@@ -536,8 +541,15 @@ impl<'a> Reader<'a> {
             2 => UnfInstance::GDeployerIdBody(GDeployerId {
                 public_key: self.byte_seq()?,
             }),
-            // `GSysAuthToken` is a zero-field struct: consumes NOTHING.
-            _ => UnfInstance::GSysAuthTokenBody(GSysAuthToken {}),
+            3 => UnfInstance::GSysAuthTokenBody(GSysAuthToken {}),
+            4 => UnfInstance::GAuthorityIdBody(GAuthorityId {
+                id: self.byte_seq()?,
+            }),
+            5 => UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family: self.u32()?,
+                public_key: self.byte_seq()?,
+            }),
+            _ => return Err(ColdStoreDecodeError::MachineInvariant("UnfInstance arm")),
         };
         Ok(GUnforgeable {
             unf_instance: Some(instance),
@@ -574,6 +586,11 @@ enum Kind {
     Connective,
     Kv,
     BindPattern,
+    CostSignature,
+    CostSignedTerm,
+    CostStack,
+    CostRegion,
+    CostAuthority,
 }
 
 impl Kind {
@@ -592,6 +609,11 @@ impl Kind {
             Kind::Connective => Op::ConnStart,
             Kind::Kv => Op::KvStart,
             Kind::BindPattern => Op::BindPatternStart,
+            Kind::CostSignature => Op::CostSignatureStart,
+            Kind::CostSignedTerm => Op::CostSignedTermStart,
+            Kind::CostStack => Op::CostStackStart,
+            Kind::CostRegion => Op::CostRegionStart,
+            Kind::CostAuthority => Op::CostAuthorityStart,
         }
     }
 }
@@ -623,6 +645,8 @@ enum Op {
         field: u8,
     },
     ParBuild,
+    ParCostSigned,
+    ParCostStacks,
 
     // ---- Send: chan, data, persistent, locally_free, connective_used
     SendStart,
@@ -658,6 +682,39 @@ enum Op {
     BindBuild {
         n_patterns: usize,
         has_source: bool,
+    },
+    BindCostBuild {
+        n_patterns: usize,
+        has_source: bool,
+        has_signature: bool,
+    },
+
+    CostSignatureStart,
+    CostSignatureParBuild {
+        variant: u32,
+    },
+    CostSignatureCompoundBuild {
+        count: usize,
+    },
+    CostSignedTermStart,
+    CostSignedTermSignature {
+        has_body: bool,
+    },
+    CostSignedTermBuild {
+        has_body: bool,
+        has_signature: bool,
+    },
+    CostStackStart,
+    CostStackBuild {
+        count: usize,
+    },
+    CostRegionStart,
+    CostRegionBuild {
+        has_signature: bool,
+    },
+    CostAuthorityStart,
+    CostAuthorityBuild {
+        count: usize,
     },
 
     // ---- New: bind_count, p, uri, injections, locally_free
@@ -787,30 +844,43 @@ enum Op {
     },
     ConnNotBuild,
 
-    // ---- TaggedContinuation: guard, tagged_cont
+    // ---- TaggedContinuation: guard, cost_authority, tagged_cont
     TaggedContinuationStart,
     TaggedContinuationCont {
         t_guard: bool,
+    },
+    TaggedContinuationTagged {
+        t_guard: bool,
+        has_authority: bool,
     },
     /// `TaggedCont::ParBody(ParWithRandom { body, random_state })`.
     TaggedContinuationParBody {
         t_guard: bool,
         t_body: bool,
+        has_authority: bool,
     },
     /// `TaggedCont::ScalaBodyRef(i64)`, value already read.
     TaggedContinuationScala {
         t_guard: bool,
         value: i64,
+        has_authority: bool,
     },
     /// `tagged_cont` absent.
     TaggedContinuationAbsent {
         t_guard: bool,
+        has_authority: bool,
     },
 
     // ---- ListParWithRandom: pars, random_state
     ListParWithRandomStart,
     ListParWithRandomBuild {
         n: usize,
+    },
+    ListParWithRandomCostStack {
+        has_authority: bool,
+    },
+    ListParWithRandomFinish {
+        has_stack: bool,
     },
 
     // ---- ParWithRandom: body, random_state (standalone entry)
@@ -844,6 +914,15 @@ enum Op {
 struct ParFrame {
     counts: [usize; 8],
     unforgeables: Vec<GUnforgeable>,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+    n_cost_signed_terms: usize,
+    n_cost_stacks: usize,
+}
+
+struct BindTail {
+    remainder: Option<Var>,
+    free_count: i32,
 }
 
 /// `Receive`'s five scalars, read between `body` and `condition` and therefore
@@ -870,6 +949,7 @@ struct NewFrame {
 
 struct Machine<'a> {
     r: Reader<'a>,
+    legacy_layout: bool,
     ops: Vec<Op>,
 
     // per-type value stacks
@@ -877,6 +957,11 @@ struct Machine<'a> {
     sends: Vec<Send>,
     receives: Vec<Receive>,
     binds: Vec<ReceiveBind>,
+    cost_signatures: Vec<CostSignature>,
+    cost_signed_terms: Vec<CostSignedTerm>,
+    cost_stacks: Vec<CostStack>,
+    cost_regions: Vec<CostRegion>,
+    cost_authorities: Vec<CostAuthority>,
     news: Vec<New>,
     matches: Vec<Match>,
     cases: Vec<MatchCase>,
@@ -894,6 +979,8 @@ struct Machine<'a> {
 
     // side frames
     par_frames: Vec<ParFrame>,
+    bind_tails: Vec<BindTail>,
+    region_ids: Vec<Vec<u8>>,
     receive_tails: Vec<ReceiveTail>,
     new_frames: Vec<NewFrame>,
     method_names: Vec<String>,
@@ -939,11 +1026,17 @@ impl<'a> Machine<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Machine {
             r: Reader::new(bytes),
+            legacy_layout: false,
             ops: Vec::with_capacity(64),
             pars: Vec::new(),
             sends: Vec::new(),
             receives: Vec::new(),
             binds: Vec::new(),
+            cost_signatures: Vec::new(),
+            cost_signed_terms: Vec::new(),
+            cost_stacks: Vec::new(),
+            cost_regions: Vec::new(),
+            cost_authorities: Vec::new(),
             news: Vec::new(),
             matches: Vec::new(),
             cases: Vec::new(),
@@ -959,11 +1052,19 @@ impl<'a> Machine<'a> {
             list_par_with_randoms: Vec::new(),
             tagged_continuations: Vec::new(),
             par_frames: Vec::new(),
+            bind_tails: Vec::new(),
+            region_ids: Vec::new(),
             receive_tails: Vec::new(),
             new_frames: Vec::new(),
             method_names: Vec::new(),
             trie_snapshots: Vec::new(),
         }
+    }
+
+    fn new_legacy(bytes: &'a [u8]) -> Self {
+        let mut machine = Self::new(bytes);
+        machine.legacy_layout = true;
+        machine
     }
 
     /// Schedule `count` repetitions of `kind` as ONE op. See §3 on why this is
@@ -1021,6 +1122,11 @@ impl<'a> Machine<'a> {
             ("sends", self.sends.len(), false),
             ("receives", self.receives.len(), false),
             ("binds", self.binds.len(), false),
+            ("cost_signatures", self.cost_signatures.len(), false),
+            ("cost_signed_terms", self.cost_signed_terms.len(), false),
+            ("cost_stacks", self.cost_stacks.len(), false),
+            ("cost_regions", self.cost_regions.len(), false),
+            ("cost_authorities", self.cost_authorities.len(), false),
             ("news", self.news.len(), false),
             ("matches", self.matches.len(), false),
             ("cases", self.cases.len(), false),
@@ -1054,6 +1160,8 @@ impl<'a> Machine<'a> {
             }
         }
         if !self.par_frames.is_empty()
+            || !self.bind_tails.is_empty()
+            || !self.region_ids.is_empty()
             || !self.receive_tails.is_empty()
             || !self.new_frames.is_empty()
             || !self.method_names.is_empty()
@@ -1104,7 +1212,7 @@ impl<'a> Machine<'a> {
                     Kind::If,
                 ];
                 if field as usize == KINDS.len() {
-                    self.ops.push(Op::ParBuild);
+                    self.ops.push(Op::ParCostSigned);
                     return Ok(());
                 }
                 if field == 5 {
@@ -1116,13 +1224,43 @@ impl<'a> Machine<'a> {
                 self.ops.push(Op::ParField { field: field + 1 });
                 self.repeat(KINDS[field as usize], n);
             }
-            Op::ParBuild => {
+            Op::ParCostSigned => {
                 let locally_free = self.r.byte_seq()?;
                 let connective_used = self.r.bool()?;
+                let frame = self.par_frame()?;
+                frame.locally_free = locally_free;
+                frame.connective_used = connective_used;
+                if self.legacy_layout {
+                    self.ops.push(Op::ParBuild);
+                    return Ok(());
+                }
+                let count = self.r.len()?;
+                let frame = self.par_frame()?;
+                frame.n_cost_signed_terms = count;
+                self.ops.push(Op::ParCostStacks);
+                self.repeat(Kind::CostSignedTerm, count);
+            }
+            Op::ParCostStacks => {
+                let count = self.r.len()?;
+                self.par_frame()?.n_cost_stacks = count;
+                self.ops.push(Op::ParBuild);
+                self.repeat(Kind::CostStack, count);
+            }
+            Op::ParBuild => {
                 let frame = self
                     .par_frames
                     .pop()
                     .ok_or(ColdStoreDecodeError::MachineInvariant("Par frame"))?;
+                let cost_stacks = take_n(
+                    &mut self.cost_stacks,
+                    frame.n_cost_stacks,
+                    "Par.cost_stacks",
+                )?;
+                let cost_signed_terms = take_n(
+                    &mut self.cost_signed_terms,
+                    frame.n_cost_signed_terms,
+                    "Par.cost_signed_terms",
+                )?;
                 // Each of these lives on its OWN stack, so the drains are
                 // independent; the order below simply mirrors declaration
                 // order read backwards for legibility.
@@ -1145,8 +1283,10 @@ impl<'a> Machine<'a> {
                     bundles,
                     connectives,
                     conditionals,
-                    locally_free,
-                    connective_used,
+                    locally_free: frame.locally_free,
+                    connective_used: frame.connective_used,
+                    cost_signed_terms,
+                    cost_stacks,
                 });
             }
 
@@ -1257,15 +1397,173 @@ impl<'a> Machine<'a> {
             } => {
                 let remainder = self.r.opt_var()?;
                 let free_count = self.r.i32()?;
+                let has_signature = if self.legacy_layout {
+                    false
+                } else {
+                    self.r.option_tag()?
+                };
+                self.bind_tails.push(BindTail {
+                    remainder,
+                    free_count,
+                });
+                self.ops.push(Op::BindCostBuild {
+                    n_patterns,
+                    has_source,
+                    has_signature,
+                });
+                if has_signature {
+                    self.ops.push(Op::CostSignatureStart);
+                }
+            }
+            Op::BindCostBuild {
+                n_patterns,
+                has_source,
+                has_signature,
+            } => {
+                let cost_signature = if has_signature {
+                    Some(take_one(
+                        &mut self.cost_signatures,
+                        "ReceiveBind.cost_signature",
+                    )?)
+                } else {
+                    None
+                };
+                let tail = take_one(&mut self.bind_tails, "ReceiveBind tail")?;
                 // `source` was pushed AFTER the patterns, so it comes off first.
                 let source = take_opt_par(&mut self.pars, has_source, "ReceiveBind.source")?;
                 let patterns = take_n(&mut self.pars, n_patterns, "ReceiveBind.patterns")?;
                 self.binds.push(ReceiveBind {
                     patterns,
                     source,
-                    remainder,
-                    free_count,
+                    remainder: tail.remainder,
+                    free_count: tail.free_count,
+                    cost_signature,
                 });
+            }
+
+            Op::CostSignatureStart => {
+                if !self.r.option_tag()? {
+                    self.cost_signatures.push(CostSignature { value: None });
+                    return Ok(());
+                }
+                let variant = self
+                    .r
+                    .variant("CostSignature.Value", COST_VALUE_VARIANT_COUNT)?;
+                match variant {
+                    CS_GROUND => self.cost_signatures.push(CostSignature {
+                        value: Some(CostValue::Ground(self.r.byte_seq()?)),
+                    }),
+                    CS_BOUND_LEVEL => self.cost_signatures.push(CostSignature {
+                        value: Some(CostValue::BoundLevel(self.r.i32()?)),
+                    }),
+                    CS_UNIT => self.cost_signatures.push(CostSignature {
+                        value: Some(CostValue::Unit(self.r.bool()?)),
+                    }),
+                    CS_QUOTE | CS_NAME => {
+                        self.ops.push(Op::CostSignatureParBuild { variant });
+                        self.ops.push(Op::ParStart);
+                    }
+                    CS_COMPOUND => {
+                        let count = self.r.len()?;
+                        self.ops.push(Op::CostSignatureCompoundBuild { count });
+                        self.repeat(Kind::CostSignature, count);
+                    }
+                    _ => return Err(ColdStoreDecodeError::MachineInvariant("CostSignature arm")),
+                }
+            }
+            Op::CostSignatureParBuild { variant } => {
+                let par = take_one(&mut self.pars, "CostSignature Par")?;
+                let value = match variant {
+                    CS_QUOTE => CostValue::Quote(par),
+                    CS_NAME => CostValue::Name(par),
+                    _ => {
+                        return Err(ColdStoreDecodeError::MachineInvariant(
+                            "CostSignature Par arm",
+                        ))
+                    }
+                };
+                self.cost_signatures
+                    .push(CostSignature { value: Some(value) });
+            }
+            Op::CostSignatureCompoundBuild { count } => {
+                let elements = take_n(
+                    &mut self.cost_signatures,
+                    count,
+                    "CostSignatureCompound.elements",
+                )?;
+                self.cost_signatures.push(CostSignature {
+                    value: Some(CostValue::Compound(CostSignatureCompound { elements })),
+                });
+            }
+            Op::CostSignedTermStart => {
+                let has_body = self.r.option_tag()?;
+                self.ops.push(Op::CostSignedTermSignature { has_body });
+                self.opt_par_child(has_body);
+            }
+            Op::CostSignedTermSignature { has_body } => {
+                let has_signature = self.r.option_tag()?;
+                self.ops.push(Op::CostSignedTermBuild {
+                    has_body,
+                    has_signature,
+                });
+                if has_signature {
+                    self.ops.push(Op::CostSignatureStart);
+                }
+            }
+            Op::CostSignedTermBuild {
+                has_body,
+                has_signature,
+            } => {
+                let signature = if has_signature {
+                    Some(take_one(
+                        &mut self.cost_signatures,
+                        "CostSignedTerm.signature",
+                    )?)
+                } else {
+                    None
+                };
+                let body = take_opt_par(&mut self.pars, has_body, "CostSignedTerm.body")?;
+                self.cost_signed_terms
+                    .push(CostSignedTerm { body, signature });
+            }
+            Op::CostStackStart => {
+                let count = self.r.len()?;
+                self.ops.push(Op::CostStackBuild { count });
+                self.repeat(Kind::CostSignature, count);
+            }
+            Op::CostStackBuild { count } => {
+                let cells = take_n(&mut self.cost_signatures, count, "CostStack.cells")?;
+                self.cost_stacks.push(CostStack { cells });
+            }
+            Op::CostRegionStart => {
+                let instance_id = self.r.byte_seq()?;
+                let has_signature = self.r.option_tag()?;
+                self.region_ids.push(instance_id);
+                self.ops.push(Op::CostRegionBuild { has_signature });
+                if has_signature {
+                    self.ops.push(Op::CostSignatureStart);
+                }
+            }
+            Op::CostRegionBuild { has_signature } => {
+                let signature = if has_signature {
+                    Some(take_one(&mut self.cost_signatures, "CostRegion.signature")?)
+                } else {
+                    None
+                };
+                let instance_id = take_one(&mut self.region_ids, "CostRegion.instance_id")?;
+                self.cost_regions.push(CostRegion {
+                    instance_id,
+                    signature,
+                });
+            }
+            Op::CostAuthorityStart => {
+                let count = self.r.len()?;
+                self.ops.push(Op::CostAuthorityBuild { count });
+                self.repeat(Kind::CostRegion, count);
+            }
+            Op::CostAuthorityBuild { count } => {
+                let regions = take_n(&mut self.cost_regions, count, "CostAuthority.regions")?;
+                self.cost_authorities.push(CostAuthority { regions });
             }
 
             // ---------------------------------------------------------------
@@ -1499,6 +1797,10 @@ impl<'a> Machine<'a> {
                         // `fixed64` carrying the raw IEEE-754 bits.
                         let v = self.r.u64()?;
                         self.push_expr(ExprInstance::GDouble(v));
+                    }
+                    EX_G_FLOAT32 => {
+                        let v = self.r.u32()?;
+                        self.push_expr(ExprInstance::GFloat32(v));
                     }
                     EX_G_BIG_INT => {
                         let v = self.r.byte_seq()?;
@@ -1833,48 +2135,111 @@ impl<'a> Machine<'a> {
                 self.opt_par_child(t_guard);
             }
             Op::TaggedContinuationCont { t_guard } => {
+                let has_authority = if self.legacy_layout {
+                    false
+                } else {
+                    self.r.option_tag()?
+                };
+                self.ops.push(Op::TaggedContinuationTagged {
+                    t_guard,
+                    has_authority,
+                });
+                if has_authority {
+                    self.ops.push(Op::CostAuthorityStart);
+                }
+            }
+            Op::TaggedContinuationTagged {
+                t_guard,
+                has_authority,
+            } => {
                 if !self.r.option_tag()? {
-                    self.ops.push(Op::TaggedContinuationAbsent { t_guard });
+                    self.ops.push(Op::TaggedContinuationAbsent {
+                        t_guard,
+                        has_authority,
+                    });
                     return Ok(());
                 }
                 match self.r.variant("TaggedCont", TAGGED_CONT_VARIANT_COUNT)? {
                     0 => {
                         let t_body = self.r.option_tag()?;
-                        self.ops
-                            .push(Op::TaggedContinuationParBody { t_guard, t_body });
+                        self.ops.push(Op::TaggedContinuationParBody {
+                            t_guard,
+                            t_body,
+                            has_authority,
+                        });
                         self.opt_par_child(t_body);
                     }
                     _ => {
                         let value = self.r.i64()?;
-                        self.ops
-                            .push(Op::TaggedContinuationScala { t_guard, value });
+                        self.ops.push(Op::TaggedContinuationScala {
+                            t_guard,
+                            value,
+                            has_authority,
+                        });
                     }
                 }
             }
-            Op::TaggedContinuationParBody { t_guard, t_body } => {
+            Op::TaggedContinuationParBody {
+                t_guard,
+                t_body,
+                has_authority,
+            } => {
                 let random_state = self.r.byte_seq()?;
                 let body = take_opt_par(&mut self.pars, t_body, "ParWithRandom.body")?;
                 let guard = take_opt_par(&mut self.pars, t_guard, "TaggedContinuation.guard")?;
+                let cost_authority = if has_authority {
+                    Some(take_one(
+                        &mut self.cost_authorities,
+                        "TaggedContinuation.cost_authority",
+                    )?)
+                } else {
+                    None
+                };
                 self.tagged_continuations.push(TaggedContinuation {
                     guard,
                     tagged_cont: Some(TaggedCont::ParBody(ParWithRandom { body, random_state })),
+                    cost_authority,
                 });
             }
-            Op::TaggedContinuationScala { t_guard, value } => {
+            Op::TaggedContinuationScala {
+                t_guard,
+                value,
+                has_authority,
+            } => {
                 let guard = take_opt_par(&mut self.pars, t_guard, "TaggedContinuation.guard")?;
+                let cost_authority = if has_authority {
+                    Some(take_one(
+                        &mut self.cost_authorities,
+                        "TaggedContinuation.cost_authority",
+                    )?)
+                } else {
+                    None
+                };
                 self.tagged_continuations.push(TaggedContinuation {
                     guard,
                     tagged_cont: Some(TaggedCont::ScalaBodyRef(value)),
+                    cost_authority,
                 });
             }
-            Op::TaggedContinuationAbsent { t_guard } => {
+            Op::TaggedContinuationAbsent {
+                t_guard,
+                has_authority,
+            } => {
                 let guard = take_opt_par(&mut self.pars, t_guard, "TaggedContinuation.guard")?;
+                let cost_authority = if has_authority {
+                    Some(take_one(
+                        &mut self.cost_authorities,
+                        "TaggedContinuation.cost_authority",
+                    )?)
+                } else {
+                    None
+                };
                 self.tagged_continuations.push(TaggedContinuation {
                     guard,
                     tagged_cont: None,
+                    cost_authority,
                 });
             }
-
             // ---------------------------------------------------------------
             // ListParWithRandom / ParWithRandom
             // ---------------------------------------------------------------
@@ -1886,8 +2251,54 @@ impl<'a> Machine<'a> {
             Op::ListParWithRandomBuild { n } => {
                 let pars = take_n(&mut self.pars, n, "ListParWithRandom.pars")?;
                 let random_state = self.r.byte_seq()?;
+                self.list_par_with_randoms.push(ListParWithRandom {
+                    pars,
+                    random_state,
+                    cost_authority: None,
+                    cost_stack: None,
+                });
+                if self.legacy_layout {
+                    return Ok(());
+                }
+                let has_authority = self.r.option_tag()?;
+                self.ops
+                    .push(Op::ListParWithRandomCostStack { has_authority });
+                if has_authority {
+                    self.ops.push(Op::CostAuthorityStart);
+                }
+            }
+            Op::ListParWithRandomCostStack { has_authority } => {
+                let authority = if has_authority {
+                    Some(take_one(
+                        &mut self.cost_authorities,
+                        "ListParWithRandom.cost_authority",
+                    )?)
+                } else {
+                    None
+                };
                 self.list_par_with_randoms
-                    .push(ListParWithRandom { pars, random_state });
+                    .last_mut()
+                    .ok_or(ColdStoreDecodeError::MachineInvariant("ListParWithRandom"))?
+                    .cost_authority = authority;
+                let has_stack = self.r.option_tag()?;
+                self.ops.push(Op::ListParWithRandomFinish { has_stack });
+                if has_stack {
+                    self.ops.push(Op::CostStackStart);
+                }
+            }
+            Op::ListParWithRandomFinish { has_stack } => {
+                let stack = if has_stack {
+                    Some(take_one(
+                        &mut self.cost_stacks,
+                        "ListParWithRandom.cost_stack",
+                    )?)
+                } else {
+                    None
+                };
+                self.list_par_with_randoms
+                    .last_mut()
+                    .ok_or(ColdStoreDecodeError::MachineInvariant("ListParWithRandom"))?
+                    .cost_stack = stack;
             }
             Op::ParWithRandomStart => {
                 let has_body = self.r.option_tag()?;
@@ -1955,6 +2366,11 @@ impl<'a> Machine<'a> {
             && self.sends.is_empty()
             && self.receives.is_empty()
             && self.binds.is_empty()
+            && self.cost_signatures.is_empty()
+            && self.cost_signed_terms.is_empty()
+            && self.cost_stacks.is_empty()
+            && self.cost_regions.is_empty()
+            && self.cost_authorities.is_empty()
             && self.news.is_empty()
             && self.matches.is_empty()
             && self.cases.is_empty()
@@ -2002,6 +2418,15 @@ impl<'a> Machine<'a> {
         }
 
         let mut loose: Vec<Par> = mem::take(&mut self.pars);
+        let mut loose_cost_signatures = mem::take(&mut self.cost_signatures);
+        for region in mem::take(&mut self.cost_regions) {
+            loose_cost_signatures.extend(region.signature);
+        }
+        for authority in mem::take(&mut self.cost_authorities) {
+            for region in authority.regions {
+                loose_cost_signatures.extend(region.signature);
+            }
+        }
 
         let mut receives = mem::take(&mut self.receives);
         let binds = mem::take(&mut self.binds);
@@ -2048,13 +2473,25 @@ impl<'a> Machine<'a> {
         for pwr in mem::take(&mut self.par_with_randoms) {
             loose.extend(pwr.body);
         }
+        let mut loose_cost_stacks = mem::take(&mut self.cost_stacks);
         for lpwr in mem::take(&mut self.list_par_with_randoms) {
             loose.extend(lpwr.pars);
+            if let Some(authority) = lpwr.cost_authority {
+                for region in authority.regions {
+                    loose_cost_signatures.extend(region.signature);
+                }
+            }
+            loose_cost_stacks.extend(lpwr.cost_stack);
         }
         for tc in mem::take(&mut self.tagged_continuations) {
             loose.extend(tc.guard);
             if let Some(TaggedCont::ParBody(pwr)) = tc.tagged_cont {
                 loose.extend(pwr.body);
+            }
+            if let Some(authority) = tc.cost_authority {
+                for region in authority.regions {
+                    loose_cost_signatures.extend(region.signature);
+                }
             }
         }
 
@@ -2067,6 +2504,13 @@ impl<'a> Machine<'a> {
         root.bundles = mem::take(&mut self.bundles);
         root.connectives = mem::take(&mut self.connectives);
         root.conditionals = mem::take(&mut self.ifs);
+        root.cost_signed_terms = mem::take(&mut self.cost_signed_terms);
+        root.cost_stacks = loose_cost_stacks;
+        if !loose_cost_signatures.is_empty() {
+            root.cost_stacks.push(CostStack {
+                cells: loose_cost_signatures,
+            });
+        }
         loose.push(root);
 
         dismantle_all(loose);
@@ -2093,6 +2537,15 @@ impl ColdStoreDecode for Par {
         crate::rust::rholang::phase7_depth_histogram::record_par("bincode_decoder", &value);
         Ok((value, consumed))
     }
+
+    fn cold_decode_legacy_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut machine = Machine::new_legacy(bytes);
+        machine.ops.push(Op::ParStart);
+        machine.run()?;
+        machine.assert_drained(DrainedRoot::Par)?;
+        let consumed = machine.r.consumed();
+        Ok((take_one(&mut machine.pars, "legacy Par (root)")?, consumed))
+    }
 }
 
 impl ColdStoreDecode for ListParWithRandom {
@@ -2109,6 +2562,21 @@ impl ColdStoreDecode for ListParWithRandom {
             &value,
         );
         Ok((value, consumed))
+    }
+
+    fn cold_decode_legacy_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut machine = Machine::new_legacy(bytes);
+        machine.ops.push(Op::ListParWithRandomStart);
+        machine.run()?;
+        machine.assert_drained(DrainedRoot::ListParWithRandom)?;
+        let consumed = machine.r.consumed();
+        Ok((
+            take_one(
+                &mut machine.list_par_with_randoms,
+                "legacy ListParWithRandom (root)",
+            )?,
+            consumed,
+        ))
     }
 }
 
@@ -2127,6 +2595,18 @@ impl ColdStoreDecode for BindPattern {
         );
         Ok((value, consumed))
     }
+
+    fn cold_decode_legacy_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut machine = Machine::new_legacy(bytes);
+        machine.ops.push(Op::BindPatternStart);
+        machine.run()?;
+        machine.assert_drained(DrainedRoot::BindPattern)?;
+        let consumed = machine.r.consumed();
+        Ok((
+            take_one(&mut machine.bind_patterns, "legacy BindPattern (root)")?,
+            consumed,
+        ))
+    }
 }
 
 impl ColdStoreDecode for TaggedContinuation {
@@ -2143,6 +2623,21 @@ impl ColdStoreDecode for TaggedContinuation {
             &value,
         );
         Ok((value, consumed))
+    }
+
+    fn cold_decode_legacy_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut machine = Machine::new_legacy(bytes);
+        machine.ops.push(Op::TaggedContinuationStart);
+        machine.run()?;
+        machine.assert_drained(DrainedRoot::TaggedContinuation)?;
+        let consumed = machine.r.consumed();
+        Ok((
+            take_one(
+                &mut machine.tagged_continuations,
+                "legacy TaggedContinuation (root)",
+            )?,
+            consumed,
+        ))
     }
 }
 

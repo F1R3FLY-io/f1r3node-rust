@@ -1,163 +1,287 @@
-# Rholang Token Cost Model
+# Cost-accounted Rholang
 
-**Status:** implementation-aligned with D3 / DR-9 / OD-1 / OD-3
+F1R3node meters Rholang with two related but distinct cost dimensions:
 
-**Consensus unit:** one token for each committed `BillableKind::Comm` event
+1. **Compute-based authority accounting** charges successful atomic RSpace
+   communications and preserves the linear ownership semantics of signed and
+   located processes.
+2. **Storage-based quantitative accounting** charges the canonical bytes
+   introduced to RSpace, delivered by a communication, and committed in its
+   replay trace.
 
-**Non-consensus telemetry:** per-operation weights and the cost-trace digest
+Both dimensions draw existing REV custody from the same authenticated
+`SystemVault`, also called the **RevVault** in the cost-accounting papers. They
+share one certificate, one execution witness, one failure-atomic settlement,
+and one replay-validity decision. An offered-funded deploy carries a
+client-selected `phlo_limit` and `phlo_price`, signed together with its body
+and funding intent. Their product, plus the fee, is a checked REV ceiling;
+it does not introduce a second fuel currency or a runtime A/B switch.
 
-This guide describes the token model implemented by the current node. The former
-`phlo_limit × phlo_price` escrow, precharge, refund, and per-deploy exhaustion model has been
-removed. Historical design records that discuss those mechanisms predate D3 and are not a
-description of the current wire or runtime.
+The design refines the five gated communication rules and join-cost schema in
+[*Cost-Accounted Rho Calculus*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex)
+and the cost endofunctor over continued interactive generalized structured
+labelled transition systems (GSLTs) in
+[*Continued Interactive GSLTs and the Cost Endofunctor*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
+The byte tariff is a native safety refinement: the papers require finite,
+authority-backed work but deliberately do not prescribe a protobuf byte
+schedule.
 
-## 1. Terms
+![End-to-end byte and authority lifecycle: a top-up changes only unreserved custody, admission freezes authority, byte, and fee allocations, RSpace charges before mutation, settlement burns exact cost and transfers the fee, and replay recomputes the same evidence.](../casper/theory/diagrams/vault-backed-byte-accounting.svg)
+
+## Terms, units, and ledgers
 
 | Term | Meaning |
-|---|---|
-| **COMM event** | A token-consuming send or receive reduction. The reducer records it as `BillableKind::Comm`. |
-| **Consensus cost** | The number of committed COMM events. Every COMM contributes exactly one, independent of its diagnostic weight. |
-| **Demand** | The static per-signature COMM count, written `Delta_s` in source as `DemandEntry::known_lower_bound`. |
-| **Supply** | The renewable token balance for signature `s`, stored on the unnameable supply channel produced by `SignatureChannel::from_sig(s)`. |
-| **Diagnostic event** | A `Reduction`, `Primitive`, or `Substitution` event. It records useful work information but contributes zero to consensus cost. |
-| **Accepted-byte envelope** | The configured maximum decoded protobuf size. It bounds network work performed before a deploy has a metered Rholang state. |
+| --- | --- |
+| `COMM` | One successful atomic RSpace synchronization between a waiting continuation and all required data |
+| Authority signature | Canonical identity of a wallet, located purse, or compound linear authority permitted to pay |
+| Supply $`\Sigma(a)`$ | REV custody and authenticated prepaid stack cells available to authority lane $`a`$ in the certified pre-state |
+| Compute bound $`B_A(a)`$ | Maximum physical authority allocated to successful communication events in lane $`a`$ |
+| Byte bound $`B_Q(a)`$ | Maximum quantitative byte debit allocated to lane $`a`$ |
+| Fee allocation $`F(a)`$ | Deterministic transfer from payer custody to the proposer, separate from burned execution cost |
+| Realized authority $`\kappa(a)`$ | Physical authority consumed by successful committed communication events |
+| Realized byte cost $`Q(a)`$ | Canonical introduction, delivery, and trace bytes charged to lane $`a`$ |
+| Certificate | Domain-separated commitment to the protocol, program, pre-state, bounds, allocations, fee, and reservation identity |
+| Witness | Exact causal events, physical draws, byte events, settlements, and adjacent state roots produced by execution |
 
-The mathematical consensus quantity for deploy `d` is:
+The `OfferedFundedDeploy` authorization signs a domain-separated payload
+containing the authorization version, body intent, funding intent, and both
+offer fields. Changing either offer field therefore requires a new signature.
+The offer's maximum debit is checked as
+`phlo_limit × phlo_price + fee` in REV. Admission must authenticate the
+funding intent and prove that the offered ceiling is fundable before execution;
+settlement charges realized cost and the fee, returning unused prepaid value
+without replenishing runtime fuel. Replay verifies the same offer, execution
+cost, and settlement from authenticated inputs.
+
+Let $`C(E)`$ be the number of committed `COMM` events in execution $`E`$.
+Let $`Q(E)`$ be its quantitative byte cost. `ProcessedDeploy.cost` reports:
 
 ```math
-\operatorname{cost}(d)
-=
-\left|\left\{e \in \operatorname{committed}(d) \mid
-\operatorname{kind}(e)=\mathtt{Comm}\right\}\right|.
+K(E)=C(E)+Q(E).
 ```
 
-`RuntimeBudget::reconcile_lane` implements this equation: a committed `Comm` adds one, while
-`Reduction`, `Primitive`, and `Substitution` add zero. The event's `weight` remains diagnostic and
-does not alter the count.
+The reported scalar is not the physical REV debit. A single `COMM` can require
+several linear authority components, while one compound component can select a
+particular physical funding option. If $`A(E)`$ is the exact physical authority
+draw and $`F(E)`$ the fee, the native custody change is:
 
-## 2. End-to-end accounting flow
+```math
+\operatorname{VaultDebit}(E)=A(E)+Q(E)+F(E).
+```
 
-| Stage | Input | Decision or result | Consensus role |
-|---|---|---|---|
-| Network admission | Encoded gRPC message | Reject when the declared protobuf length exceeds the configured decoder limit | Bounds pre-decode work; does not charge tokens |
-| Normalization | Accepted Rholang source | Produce a normalized, stack-safe `Par`, or reject a parse error | No token charge; work is bounded by accepted bytes |
-| Funding analysis | Normalized `Par` and deploy signature | Compute per-signature COMM demand and compare it with live supply | Determines deploy admission |
-| Evaluation | Admitted deploy | Record COMM and diagnostic events; execute without a per-deploy OOP cap | Produces the actual COMM count |
-| Replay | Block deploys and pre-state | Recompute admission, execution, and settlement | Rejects cost, admission, status, or post-state disagreement |
-| Settlement | Admitted per-signature demand | Debit supply once at block close | Conserves the funded token supply |
+Keeping $`C`$, $`A`$, and $`Q`$ distinct is load-bearing. Collapsing them would
+either weaken compound authority, lose the one-interaction grade of the papers,
+or leave storage work outside the hard REV ceiling.
 
-### 2.1 Static funding gate
+## Compute-based authority accounting
 
-`rholang::interpreter::accounting::delta_sigma::demand` is a pure, iterative structural pass over
-the fully normalized `Par`. It counts exactly the send and receive nodes that cause the reducer to
-emit `BillableKind::Comm`. `New`, `Match`, `If`, primitive calls, and substitutions are traversed as
-needed but do not add to consensus demand.
+A send that waits and a receive that waits perform no successful communication,
+so each contributes zero to $`C(E)`$. When a complete match fires, the runtime
+records one causal `COMM` and charges it once. An $`N`$-channel join is one
+atomic communication, not $`N`$ partially committed events.
 
-Under the current `s0` collapse, all counted COMMs are attributed to the deploy envelope's
-signature. Compound signatures use the same Split/Join supply algebra and live cross-group residual
-ledger on play and replay. The gate admits only a canonically ordered funded prefix; replay
-recomputes that decision independently.
+Authority is nevertheless component-wise. A whole redex inside one signed
+region can draw one authority cell. Separately located or compound participants
+can require several cells for the same `COMM`. Tensor requires all components;
+additive choice reserves the point-wise maximum of alternatives; lollipop
+transfers authority from its source obligation to its continuation; and a
+located term draws from its named purse instead of falling back to the deploy
+signer.
 
-### 2.2 Runtime and settlement
+The physical allocator searches canonical wallet balances and located stacks,
+records the exact draw per event, and re-verifies that presentation before it
+can enter block evidence. Candidate-created authority cannot fund the same
+admission: only authenticated pre-state custody and causally available prepaid
+stacks count.
 
-An admitted user deploy runs **unmetered for liveness**: it has no former `phlo_limit` exhaustion
-boundary. This is safe because the block-assembly gate has already established fundedness, and the
-runtime continues to record every COMM required to compute `ProcessedDeploy.cost`.
+## Storage-based quantitative byte accounting
 
-Settlement is not a second charge. It is the single state transition that realizes the admitted
-demand against the signature supply pool. Per-operation diagnostic weights neither mint supply nor
-increase the debit.
+Storage-based accounting covers three finite resource surfaces:
 
-## 3. Pre-COMM resource envelope
+- a stable `produce` or `consume` **introduction** before any RSpace counter,
+  store, lookup, or trace mutation;
+- every payload delivered by a successful `COMM`; and
+- the canonical consume/produce trace committed for replay.
 
-Protobuf decoding and source parsing occur before a Rholang COMM event exists, so billing them as
-COMMs would change the approved calculus. They are bounded by input size instead:
+For schedule $`S=(r_i,r_d,r_t)`$, the charge for event $`e`$ is:
 
-| Ingress | Default bound | Enforcement point |
-|---|---:|---|
-| External and internal API gRPC | 16 MiB | Each generated Deploy, Propose, REPL, LSP, and reflection service calls `max_decoding_message_size` |
-| Peer protocol unary gRPC | 256 KiB | The generated `TransportLayerServer` decoder is bounded before the TLS request interceptor |
-| Peer streamed payload | 256 MiB reconstructed message | Chunking plus the stream circuit's `max_stream_message_size` check |
+```math
+Q_S(e)=r_iI(e)+r_dD(e)+r_tT(e),
+```
 
-Tonic checks the gRPC message's declared length before reserving its protobuf body buffer or calling
-prost. An oversized unary message returns gRPC `OutOfRange`, and the service handler is not invoked.
-The black-box gates are:
+where $`I`$ is introduction footprint, $`D`$ is delivered payload, and $`T`$
+is committed trace footprint. Schedule version 1 uses unit rates. The schedule
+version and Blake2b-256 digest are consensus evidence, so a validator cannot
+silently use different rates or encodings.
 
-- `node/tests/grpc_message_size_spec.rs` for public API deploy ingress;
-- `comm/tests/transport/message_size_spec.rs` for peer transport ingress.
+Both sides are charged as introductions regardless of arrival order. Charging
+only the side retained in RSpace would make cost depend on Tokio scheduling.
+Persistent operations reuse one stable introduction identity across internal
+fixed-point retries, while distinct non-persistent operations preserve their
+multiplicity. Peek restoration, persistence, and removal never create negative
+byte credits.
 
-The decoder, normalizer, and generated term traversals are pushdown-automaton or worklist driven, so
-nesting depth does not consume native call stack and no recursion-depth acceptance limit is needed.
-The byte envelope bounds the amount of unauthenticated representation admitted to those stack-safe
-machines. It is a size policy, not a hidden shape policy: equally sized shallow and deep terms face
-the same network threshold.
+Every addition, multiplication, and integer conversion is checked. Overflow or
+insufficient capacity rejects before the affected mutation. See
+[Vault-backed quantitative byte accounting](../casper/theory/cost-accounting-impl/vault-backed-byte-accounting.md)
+for the exact canonical footprints and concurrency protocol.
 
-## 4. Diagnostic operation weights
+## Unified admission and settlement
 
-The functions in `rholang/src/rust/interpreter/accounting/costs.rs` still estimate physical work for
-telemetry, profiling, and regression analysis. Examples include operand-size-sensitive BigInt and
-BigRat arithmetic, encoded-length equality checks, collection operations, string conversion, and
-substitution. These values are recorded on diagnostic events but have the following invariant:
+For every authority lane $`a`$, admission requires:
+
+```math
+B_A(a)+B_Q(a)+F(a)\leq\Sigma(a).
+```
+
+The certificate freezes all three allocations against one authenticated
+pre-state. A later wallet top-up can fund a later execution, but it cannot
+change an in-flight bound, rescue an exhausted execution, or alter the
+certificate identifier.
+
+The production algorithm is:
 
 ```text
-diagnostic weight changes  =>  consensus COMM count unchanged
+verify and canonically order the complete cosigned envelope
+normalize with the authenticated deployer and cosigner environment
+derive candidate authority from the merged pre-state
+execute in scratch state under finite authority and byte capacity
+discard exhausted candidates and repeat until the retained set is stable
+derive exact physical draws, byte settlement, fee, and adjacent roots
+apply all vault debits, stack pops, fee credit, and state changes atomically
+publish the certificate and witness only for the committed result
 ```
 
-This separation permits better performance models without silently changing deploy funding or
-forking replay. Any future proposal to promote a diagnostic weight into consensus accounting is a
-new protocol decision and must be entered in the consensus change register.
+`SystemVault.applyCost` realizes the paper's reserve, exact debit, fee transfer,
+and refund phases inside one lexical transaction. Unused maximum allocation
+never becomes a durable debit. Unused located stack cells remain in RSpace.
+Failure restores the enclosing node checkpoint, so user state, stack pops,
+vault changes, and evidence commit together or not at all.
 
-## 5. Worked examples
+After successful settlement:
 
-### 5.1 One send
+```math
+\Sigma'(a)=\Sigma(a)-\kappa(a)-Q(a)-F(a).
+```
+
+Transfers and fee credits conserve ownership. Only authenticated genesis or
+proof-of-stake system execution may call `SystemVault.protocolMint` to increase
+total REV supply.
+
+## Atomic RSpace ordering
+
+The observer order is part of consensus:
+
+```text
+before a produce mutation: reserve its canonical introduction bytes
+before a consume mutation: reserve its canonical introduction bytes
+after selecting a complete match but before mutation:
+    reserve one COMM unit
+    reserve every delivered payload and trace byte
+    record physical and quantitative event identities
+commit the RSpace match and resume the continuation
+```
+
+If any reservation fails, the triggering operation is not recorded and the
+affected datum or continuation is not removed. A located-stack production uses
+a pending physical reservation that becomes visible only after its complete
+byte-charged RSpace operation succeeds; cancellation or error restores exactly
+those pending cells.
+
+## Replay and consensus
+
+The exact RSpace log is a causal replay witness, not proposer telemetry.
+Independent validators:
+
+1. reconstruct and verify the complete cosigned envelope;
+2. normalize with the same authenticated environment;
+3. verify the authority protocol and byte-schedule identities;
+4. replay the causal events from the certified pre-state;
+5. recompute compute cost, byte cost, physical draws, fee, and settlement; and
+6. require exact post-state-root equality.
+
+A cost, schedule, event, allocation, status, or root mismatch makes the block
+invalid. Missing local history and temporarily unavailable state are local
+validation failures and must not be converted into slash evidence.
+
+Multi-parent merge operates on durable effects, not proof-local reservations.
+Accepted effects retain exact source-block and execution-index provenance.
+Finality and fork choice may advance only through state lineage that preserves
+already certified effects. Mergeable evidence is replayed locally and keyed by
+complete execution identity; unauthenticated peer-provided merge data cannot
+authorize a state transition.
+
+## Examples
+
+An unmatched output has no compute charge but does have an introduction-byte
+charge:
 
 ```rholang
-@0!(1)
+@"requests"!(42)
 ```
 
-The normalized term contains one token-consuming send, so its static demand and completed runtime
-consensus cost are both one. Encoding, normalization, and the payload's integer size do not add
-COMM tokens.
+For this execution, $`C(E)=0`$ and $`Q(E)>0`$.
 
-### 5.2 Arithmetic without communication
+A matched pair contributes two introductions, one delivered payload and trace,
+and one compute event:
 
 ```rholang
-new return in { return!(1 + 2 * 3) }
+@"requests"!(42) |
+for (value <- @"requests") { Nil }
 ```
 
-The arithmetic produces diagnostic primitive weights. The send on `return` contributes the one
-consensus COMM token; the multiplication and addition contribute zero consensus tokens.
+Reversing arrival order leaves both $`C(E)`$ and $`Q(E)`$ unchanged.
 
-### 5.3 Deep but byte-bounded input
+A two-channel join is still one compute event, but its byte charge includes all
+introductions, both delivered payloads, and the complete join trace:
 
-A deeply nested term is accepted or rejected according to syntax, signature, funding, and the same
-message-byte limit as a shallow term. Traversal depth itself is not an admission criterion. The
-iterative decoder and normalizer use heap worklists rather than native recursion.
+```rholang
+@"left"!(1) |
+@"right"!(2) |
+for (x <- @"left"; y <- @"right") { Nil }
+```
 
-## 6. Failure semantics
+No input is partially consumed when either the authority proof or byte
+reservation is insufficient.
 
-| Failure | Result |
-|---|---|
-| Protobuf exceeds ingress bound | Reject before decoding or handler dispatch with gRPC `OutOfRange` |
-| Source does not parse or normalize | Reject the deploy; no COMM tokens are consumed |
-| Static demand is not funded | Reject at block assembly; replay recomputes the same decision |
-| User evaluation fails | Roll back that deploy's tuple-space effects while retaining deterministic status and cost evidence |
-| Replay observes different cost, status, admission, or post-state | Reject the block |
+## Failure semantics
 
-`OutOfPhlogistonsError` and finite `RuntimeBudget` construction remain useful for isolated internal
-tests and diagnostic machinery, but they are not the live accepted-user-deploy policy after OD-1.
+- Parser or signature failure occurs before user execution and publishes no
+  cost certificate or witness.
+- Insufficient authenticated supply rejects admission without committed user
+  state or vault debit.
+- Introduction, payload, trace, or arithmetic failure rejects before the
+  affected RSpace mutation.
+- Runtime exhaustion cannot certify itself and cannot commit its speculative
+  root.
+- Replay mismatch is objective block invalidity.
+- Local storage unavailability is retried or recovered and never becomes
+  consensus evidence against a peer.
 
-## 7. Source-of-truth map
+## Implementation and verification map
 
-| Concern | Authoritative source |
-|---|---|
-| Approved model | `docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md` |
-| Static demand and supply algebra | `rholang/src/rust/interpreter/accounting/delta_sigma.rs` |
-| Runtime reconciliation | `rholang/src/rust/interpreter/accounting/mod.rs` |
-| COMM emission | `rholang/src/rust/interpreter/reduce.rs` and `metering.rs` |
-| Accepted deploy execution | `casper/src/rust/rholang/runtime.rs` |
-| API byte bound | `node/src/rust/api/grpc_package.rs` |
-| Peer byte bound | `comm/src/rust/transport/grpc_transport_receiver.rs` |
-| Operator defaults | `node/src/main/resources/defaults.conf` |
-| Consensus classification | `docs/consensus/consensus-change-register.md` |
-| Resource analysis | `docs/theory/cost-accounting-threat-model.md` |
+| Obligation | Implementation | Verification |
+| --- | --- | --- |
+| One compute event per successful atomic match | `rspace_interface::CommObserver`; locked RSpace match path | `AtomicCommAccounting.v`; `AtomicCommAccounting.tla`; trigger-order and join tests |
+| Canonical introduction, delivery, and trace bytes | `accounting/byte_accounting.rs`; proposal and replay RSpace observers | `VaultBackedByteAccounting.v`; `VaultBackedByteAccounting.tla`; RSpace unit/property tests |
+| One hard REV ceiling across compute, bytes, and fee | `FundingCertificate`; `RuntimeBudget`; `SystemVault.applyCost` | `EndToEndAuthority.v`; `AtomicVaultSettlementRefinement.v`; admission and settlement tests |
+| Located purse and lollipop isolation | authority regions, funding slots, stack reservations, canonical physical allocator | `WalletFundedLollipop.v`; `WalletFundedLollipop.tla`; cross-deploy wallet-funded tests |
+| Failure-atomic stack introduction | pending stack reservation plus node checkpoint | `StackIntroductionAtomicity.v`; TLA+ unsafe controls; Loom and rollback tests |
+| Independent proposal/replay equality | certificate and witness validation in Casper runtime and replay runtime | `StateBoundValidatorConvergence.tla`; replay and independent-runtime regressions |
+| State-preserving finality and merge | exact state-effect provenance, finalized floor, deterministic merge algebra | finalized-floor, deploy-recovery, and merge-algebra TLA+/Rocq suites plus Casper integration tests |
+
+Read [Wallet-funded process lifecycle](20-wallet-funded-processes.md) for the
+end-to-end user and operator workflow, including wallet refill and cryptographic
+ownership. Read
+[End-to-end cost authority and native RevVault settlement](../casper/theory/cost-accounting-impl/end-to-end-authority-settlement.md)
+for the implementation contract and
+[Formal Verification of Cost-Accounted Rho](../casper/theory/cost-accounted-rho-verification.md)
+for the proof catalog.
+
+## References
+
+1. J.-Y. Girard, “Linear Logic,” *Theoretical Computer Science* 50 (1987),
+   1–101. [doi:10.1016/0304-3975(87)90045-4](https://doi.org/10.1016/0304-3975(87)90045-4).
+2. L. G. Meredith and M. Radestock, “A Reflective Higher-order Calculus,”
+   *Electronic Notes in Theoretical Computer Science* 141(5) (2005), 49–67.
+   [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016).

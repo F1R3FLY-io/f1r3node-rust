@@ -6,7 +6,7 @@ use rspace_plus_plus::rspace::rspace_interface::ProduceCommitGuard;
 
 use super::dispatch::{decode_non_deterministic_output, DispatchType, RhoDispatch};
 use super::errors::InterpreterError;
-use super::rho_runtime::RhoISpace;
+use super::execution_space::ExecutionSpace;
 
 /**
  * This is a tool for unapplying the messages sent to the system contracts.
@@ -29,7 +29,7 @@ use super::rho_runtime::RhoISpace;
  * See rholang/src/main/scala/coop/rchain/rholang/interpreter/ContractCall.scala
  */
 pub struct ContractCall {
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub dispatcher: RhoDispatch,
 }
 
@@ -88,6 +88,8 @@ impl ContractCall {
             let ListParWithRandom {
                 pars: args,
                 random_state: rand,
+                cost_authority,
+                ..
             } = messages.pop()?;
 
             let space = self.space.clone();
@@ -97,6 +99,8 @@ impl ContractCall {
                     let payload = ListParWithRandom {
                         pars: values,
                         random_state: rand,
+                        cost_authority,
+                        cost_stack: None,
                     };
                     let produce_result = match guard.as_deref() {
                         Some(guard) => {
@@ -217,7 +221,10 @@ mod tests {
         }
     }
 
-    async fn fixture() -> ContractCall {
+    async fn fixture() -> (
+        ContractCall,
+        crate::rust::interpreter::rho_runtime::RhoISpace,
+    ) {
         let mut manager = InMemoryStoreManager::new();
         let stores = manager.r_space_stores().await.expect("in-memory stores");
         let space = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
@@ -226,13 +233,15 @@ mod tests {
         )
         .expect("space");
         let table: RhoDispatchMap = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
-        ContractCall {
-            space: Arc::new(Box::new(space)),
+        let raw_space: crate::rust::interpreter::rho_runtime::RhoISpace = Arc::new(Box::new(space));
+        let call = ContractCall {
+            space: raw_space.clone().into(),
             dispatcher: Arc::new(RholangAndScalaDispatcher {
                 _dispatch_table: table,
                 reducer: Arc::new(OnceLock::new()),
             }),
-        }
+        };
+        (call, raw_space)
     }
 
     #[tokio::test]
@@ -247,7 +256,7 @@ mod tests {
 
     async fn check_guarded_producer(owned: bool) {
         for matched in [false, true] {
-            let call = fixture().await;
+            let (call, raw_space) = fixture().await;
             let live = Arc::new(RwLock::new(true));
             let invocations = Arc::new(AtomicUsize::new(0));
             let guard = Arc::new(Authority(live.clone(), invocations.clone()));
@@ -291,6 +300,7 @@ mod tests {
                         TaggedContinuation {
                             tagged_cont: Some(TaggedCont::ScalaBodyRef(777)),
                             guard: None,
+                            cost_authority: None,
                         },
                         false,
                         BTreeSet::new()
@@ -303,6 +313,7 @@ mod tests {
                 vec![ListParWithRandom {
                     pars: Vec::new(),
                     random_state: random_state.clone(),
+                    ..Default::default()
                 }],
                 false,
                 Vec::new(),
@@ -323,7 +334,7 @@ mod tests {
             assert_eq!(invocations.load(Ordering::SeqCst), 0);
             drop(unpolled);
             assert_eq!(invocations.load(Ordering::SeqCst), 0);
-            assert!(call.space.get_data(&channel).await.is_empty());
+            assert!(raw_space.get_data(&channel).await.is_empty());
             let future = prepare();
             *live.write().expect("revoke after future creation") = false;
             assert!(matches!(
@@ -334,9 +345,9 @@ mod tests {
             ));
             assert_eq!(invocations.load(Ordering::SeqCst), 1);
             assert_eq!(received.load(Ordering::SeqCst), 0);
-            assert!(call.space.get_data(&channel).await.is_empty());
+            assert!(raw_space.get_data(&channel).await.is_empty());
             assert_eq!(
-                call.space
+                raw_space
                     .get_waiting_continuations(vec![channel.clone()])
                     .await
                     .len(),
@@ -347,7 +358,7 @@ mod tests {
             assert!(prepare().await.expect("authorized reply").is_empty());
             assert_eq!(invocations.load(Ordering::SeqCst), 2);
             assert_eq!(received.load(Ordering::SeqCst), usize::from(matched));
-            let stored = call.space.get_data(&channel).await;
+            let stored = raw_space.get_data(&channel).await;
             if matched {
                 assert!(stored.is_empty());
                 assert!(!*live.read().expect("receiver revoked authority"));
@@ -361,7 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_split_moves_complete_arguments_and_rejects_only_outer_arity() {
-        let call = fixture().await;
+        let (call, _raw_space) = fixture().await;
         for length in [0, 1, 3] {
             let args = vec![new_gint_par(17, Vec::new(), false); length];
             let previous = vec![new_gint_par(23, Vec::new(), false); 2];
@@ -374,6 +385,7 @@ mod tests {
                     vec![ListParWithRandom {
                         pars: args,
                         random_state: vec![3; 32],
+                        ..Default::default()
                     }],
                     true,
                     previous,
@@ -390,7 +402,8 @@ mod tests {
             let messages = vec![
                 ListParWithRandom {
                     pars: Vec::new(),
-                    random_state: vec![3; 32]
+                    random_state: vec![3; 32],
+                    ..Default::default()
                 };
                 length
             ];
@@ -401,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn owned_and_borrowed_ordinary_producers_preserve_payload_and_random_state() {
         for owned in [false, true] {
-            let call = fixture().await;
+            let (call, raw_space) = fixture().await;
             let values = vec![
                 new_gint_par(8, Vec::new(), false),
                 new_gint_par(7, Vec::new(), false),
@@ -415,6 +428,7 @@ mod tests {
                 vec![ListParWithRandom {
                     pars: Vec::new(),
                     random_state: random_state.clone(),
+                    ..Default::default()
                 }],
                 true,
                 Vec::new(),
@@ -429,7 +443,7 @@ mod tests {
                 produce(&values, &channel).await.unwrap()
             };
             assert!(output.is_empty());
-            let stored = call.space.get_data(&query).await;
+            let stored = raw_space.get_data(&query).await;
             assert_eq!(stored.len(), 1);
             assert_eq!(stored[0].a.pars, expected);
             assert_eq!(stored[0].a.random_state, random_state);
@@ -442,7 +456,7 @@ mod tests {
         for owned in [false, true] {
             for nondeterministic in [false, true] {
                 for fails in [false, true] {
-                    let call = fixture().await;
+                    let (call, _raw_space) = fixture().await;
                     let channel = new_gstring_par("owned-callback".into(), Vec::new(), false);
                     let body_ref = if nondeterministic {
                         BodyRefs::GPT4
@@ -496,6 +510,7 @@ mod tests {
                             TaggedContinuation {
                                 tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
                                 guard: None,
+                                cost_authority: None,
                             },
                             false,
                             BTreeSet::new(),
@@ -507,6 +522,7 @@ mod tests {
                         vec![ListParWithRandom {
                             pars: Vec::new(),
                             random_state: random,
+                            ..Default::default()
                         }],
                         true,
                         previous.clone(),

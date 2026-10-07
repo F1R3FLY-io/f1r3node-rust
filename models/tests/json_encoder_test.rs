@@ -5,7 +5,6 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rust::par_map::ParMap;
 use models::rust::par_set::ParSet;
 use models::rust::utils::*;
-use serde_json;
 
 #[test]
 fn test_par_set_json_serialization() {

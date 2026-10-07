@@ -1,0 +1,129 @@
+' Sequence Diagram 02 — the multi-parent merge pipeline (determinism view).
+'
+' The block-merge call chain, in order:
+'   index each deploy chain (DeployChainIndex::new; user/system event logs
+'     folded + combined)
+'   → resolve_conflicts: dedup into branches, build the conflict map, pick the
+'     optimal rejection set (consumer 1 — greedy keep-one, HashSet-ordered)
+'   → compute_merged_state: sort survivors by the total-order comparator, then
+'     FOLD StateChange::combine (consumer 2 — order-sensitive because combine is
+'     non-associative, Finding A)
+'   → emit (pre-state hash, rejected-set)
+'   → block validation RECOMPUTES the same pipeline and rejects on any mismatch.
+'
+' The two RED activations are the order-sensitive consumers; both are node-
+' identical IFF DeployChainIndex::cmp is a strict total order (Finding-B fix).
+'
+' Render:
+'   plantuml -tsvg docs/theory/merge-algebra/diagrams/02-merge-pipeline-sequence.puml
+
+@startuml 02-merge-pipeline-sequence
+!theme plain
+
+skinparam sequence {
+  ArrowColor            #444444
+  LifeLineBorderColor   #666666
+  LifeLineBackgroundColor #F5F5F5
+  ParticipantBorderColor #333333
+  ParticipantFontName   "monospace"
+  ParticipantFontSize   10
+  NoteBackgroundColor   #FFF7E0
+  NoteBorderColor       #E65100
+}
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Multi-parent merge pipeline (byte-identical determinism)
+
+' Participant color legend:
+'   Merger      = gold      (#FFE082)  the deterministic merge driver
+'   RSpace      = sky blue  (#BBDEFB)  channel diffs + event-log index reads
+'   Comparator  = mint      (#C8E6C9)  DeployChainIndex::cmp (total order)
+'   Validator   = pink      (#F8BBD0)  recomputes + accepts/rejects the block
+'
+' Arrow color legend:
+'   blue   (#1565C0) = read query / index build
+'   green  (#2E7D32) = total-order comparison (min_by / sort)
+'   gray   (#546E7A) = self-step (pure transform / fold)
+'   orange (#E65100) = emitted merge result / accept-reject
+'
+' RED activation (#FFCDD2) marks an ORDER-SENSITIVE consumer.
+
+participant "Merger" as MRG #FFE082
+participant "RSpace diffs" as RSP #BBDEFB
+participant "cmp (total order)" as CMP #C8E6C9
+participant "Validator" as VAL #F8BBD0
+
+activate MRG
+
+MRG -[#1565C0]> RSP : DeployChainIndex::new(per chain)
+activate RSP
+note over RSP
+  fold each deploy into user_event_log_index
+  or system_event_log_index (is_system_deploy_id),
+  then EventLogIndex::combine (set-union monoid) — P2
+end note
+RSP --[#1565C0]> MRG : indexed chains
+deactivate RSP
+
+MRG -[#546E7A]> MRG : resolve_conflicts — dedup into branches,\ncompute conflict map (conflicts(), GAP-3)
+activate MRG #FFCDD2
+note right of MRG #FFECB3
+  CONSUMER 1 — greedy keep-one / rejection
+  dag_merger.rs:50 dependency_ordered_branch_items
+  pending ← branch.0.iter()  (a HashSet: RandomState
+    reseed ⟹ node-varying iteration order)
+  .min_by(|l,r| cmp) :65  then greedy
+  split_unavailable_branch_consumes :120
+  ⟹ the REJECTED SET is order-dependent.
+end note
+MRG -[#2E7D32]> CMP : min_by(cmp) over pending
+activate CMP
+CMP --[#2E7D32]> MRG : unique min (total order ⟹ no HashSet leak)
+deactivate CMP
+deactivate MRG
+
+MRG -[#546E7A]> MRG : compute_merged_state :360
+activate MRG #FFCDD2
+note right of MRG #FFECB3
+  CONSUMER 2 — merged-state FOLD
+  sort_by(compare_branches) :385 + branch_items.sort() :391
+  (both bottom out in DeployChainIndex::cmp)
+  combined = combined.combine(item) :426
+  StateChange::combine is NON-ASSOCIATIVE (Finding A),
+  so ONLY a canonical (total-order) fold order is
+  node-identical.
+end note
+MRG -[#2E7D32]> CMP : sort survivors by cmp
+activate CMP
+CMP --[#2E7D32]> MRG : canonical order (Equal-class ⊆ Eq)
+deactivate CMP
+MRG -[#546E7A]> MRG : fold ChannelChange::combine per channel
+deactivate MRG
+
+MRG -[#E65100]>o VAL : (pre-state hash, rejected-set)
+activate VAL
+MRG -[#E65100]>o VAL : block records the same pair
+note over VAL, MRG
+  interpreter_util.rs RECOMPUTES the merge:
+    :228 compute_parents_post_state
+    :259 pre-state mismatch  ⟹ REJECT, no replay
+    :269 rejected-set mismatch ⟹ invalid_rejected_deploy
+end note
+alt recomputed == recorded (deterministic ✓)
+  VAL --[#2E7D32]> MRG : ACCEPT (replay proceeds)
+else any byte differs
+  VAL --[#C62828]> MRG : REJECT ── a divergence here is a FORK / stall
+end
+deactivate VAL
+
+deactivate MRG
+
+note over MRG, VAL
+  Every step is a PURE function of the merge INPUTS
+  (base state + the set of deploy chains) ⟹ node-identical
+  (pre-state, rejected-set). Rocq merge_algebra_keeporder_correct
+  + merge_algebra_split_correct (axiom-free).
+end note
+
+@enduml

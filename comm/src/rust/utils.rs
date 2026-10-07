@@ -63,17 +63,12 @@ pub async fn resolve_hostname_to_ip(host: &str, port: u32) -> Result<SocketAddr,
         Ok(ip) => Ok(SocketAddr::new(ip, port as u16)),
         Err(_) => {
             let addr_str = format!("{}:{}", host, port);
-            let mut addrs = lookup_host(&addr_str).await.map_err(|e| {
-                tracing::error!("DNS resolution failed for '{}': {}", addr_str, e);
-                CommError::InternalCommunicationError(format!(
-                    "Failed to resolve hostname '{}': {}",
-                    host, e
-                ))
-            })?;
+            let mut addrs = lookup_host(&addr_str)
+                .await
+                .map_err(|e| CommError::DnsResolutionFailed(host.to_string(), e.to_string()))?;
 
             let resolved_addr = addrs.next().ok_or_else(|| {
-                tracing::error!("No addresses resolved for '{}'", addr_str);
-                CommError::InternalCommunicationError(format!("No address resolved for '{}'", host))
+                CommError::DnsResolutionFailed(host.to_string(), "No address resolved".to_string())
             })?;
 
             Ok(resolved_addr)
@@ -195,6 +190,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_validate_inet_address_resolves_hostnames() {
+        let result = validate_inet_address("localhost", |addr| is_loopback_address(addr)).await;
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_helper_functions_ipv6_variants() {
+        let multicast_v6: IpAddr = "ff02::1".parse().unwrap();
+        let site_local_v6: IpAddr = "fec0::1".parse().unwrap();
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let public_v6: IpAddr = "2001:db8::1".parse().unwrap();
+
+        assert!(is_multicast_address(&multicast_v6));
+        assert!(!is_multicast_address(&public_v6));
+        assert!(is_site_local_address(&site_local_v6));
+        assert!(!is_site_local_address(&public_v6));
+        assert!(is_link_local_address(&link_local_v6));
+        assert!(!is_link_local_address(&public_v6));
+    }
+
+    #[tokio::test]
     async fn test_validate_inet_address_with_custom_predicate() {
         // Custom predicate: only allow loopback addresses
         let result = validate_inet_address("127.0.0.1", |addr| is_loopback_address(addr)).await;
@@ -233,6 +249,12 @@ mod tests {
         if let Ok(socket_addr) = result {
             assert_eq!(socket_addr.port(), 8080);
         }
+    }
+
+    #[tokio::test]
+    async fn failed_hostname_resolution_returns_typed_error() {
+        let error = resolve_hostname_to_ip("", 40400).await.unwrap_err();
+        assert!(matches!(error, CommError::DnsResolutionFailed(_, _)));
     }
 
     #[test]

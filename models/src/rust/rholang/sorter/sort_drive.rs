@@ -133,16 +133,17 @@
 
 use typed_arena::Arena;
 
-use super::score_tree::ScoredTerm;
+use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
 use super::sort_combine::{
     combine_bind, combine_bundle, combine_case, combine_connective, combine_expr, combine_if,
     combine_match, combine_new, combine_par, combine_receive, combine_send, connective_child_pars,
     empty_par, expr_child_pars, sort_unforgeable, ParParts,
 };
+use crate::rhoapi::cost_signature::Value as CostSignatureValue;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::{
-    Bundle, Connective, EPathMap, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive,
-    ReceiveBind, Send,
+    Bundle, Connective, CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, EPathMap,
+    Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
 };
 use crate::rust::canonical_path::decode_trie_path;
 use crate::rust::epathmap_trie_codec::EPathMapMode;
@@ -166,6 +167,9 @@ pub(crate) enum SortVal {
     Bundle(ScoredTerm<Bundle>),
     Connective(ScoredTerm<Connective>),
     Unforgeable(ScoredTerm<GUnforgeable>),
+    CostSignature(ScoredTerm<CostSignature>),
+    CostSignedTerm(ScoredTerm<CostSignedTerm>),
+    CostStack(ScoredTerm<CostStack>),
 }
 
 /// A value plus its **source index** — its position in its parent's slot list.
@@ -202,6 +206,9 @@ pub(crate) enum NodeKind<'t> {
     /// `Var` positions are `EVar::v` and the two remainders, all scored in
     /// place inside `sort_combine` — so it has no node variant.)
     Unforgeable(&'t GUnforgeable),
+    CostSignature(&'t CostSignature),
+    CostSignedTerm(&'t CostSignedTerm),
+    CostStack(&'t CostStack),
 }
 
 /// A node plus the **source index** the value it produces must carry.
@@ -237,6 +244,8 @@ pub(crate) enum SortKont<'t> {
         n_connectives: usize,
         n_unforgeables: usize,
         n_conditionals: usize,
+        n_cost_signed_terms: usize,
+        n_cost_stacks: usize,
     },
     SendK {
         send: &'t Send,
@@ -245,6 +254,7 @@ pub(crate) enum SortKont<'t> {
     BindK {
         bind: &'t ReceiveBind,
         n_patterns: usize,
+        has_cost_signature: bool,
     },
     ReceiveK {
         recv: &'t Receive,
@@ -275,6 +285,16 @@ pub(crate) enum SortKont<'t> {
         expr: &'t Expr,
         n: usize,
     },
+    CostSignatureK {
+        signature: &'t CostSignature,
+        n: usize,
+    },
+    CostSignedTermK {
+        term: &'t CostSignedTerm,
+    },
+    CostStackK {
+        n_cells: usize,
+    },
 }
 
 impl SortKont<'_> {
@@ -302,6 +322,8 @@ impl SortKont<'_> {
                 n_connectives,
                 n_unforgeables,
                 n_conditionals,
+                n_cost_signed_terms,
+                n_cost_stacks,
                 ..
             } => {
                 n_sends
@@ -313,11 +335,17 @@ impl SortKont<'_> {
                     + n_connectives
                     + n_unforgeables
                     + n_conditionals
+                    + n_cost_signed_terms
+                    + n_cost_stacks
             }
             // `chan` + `data`
             SortKont::SendK { n_data, .. } => 1 + n_data,
             // `patterns` + `source`
-            SortKont::BindK { n_patterns, .. } => n_patterns + 1,
+            SortKont::BindK {
+                n_patterns,
+                has_cost_signature,
+                ..
+            } => n_patterns + 1 + usize::from(*has_cost_signature),
             // `binds` + `body` + `condition`
             SortKont::ReceiveK { n_binds, .. } => n_binds + 2,
             // `p` + one per injection value
@@ -332,6 +360,11 @@ impl SortKont<'_> {
             SortKont::BundleK { .. } => 1,
             SortKont::ConnK { n, .. } => *n,
             SortKont::ExprK { n, .. } => *n,
+            SortKont::CostSignatureK { n, .. } => *n,
+            SortKont::CostSignedTermK { term } => {
+                usize::from(term.body.is_some()) + usize::from(term.signature.is_some())
+            }
+            SortKont::CostStackK { n_cells } => *n_cells,
         }
     }
 }
@@ -376,6 +409,9 @@ sort_pop_ix!(pop_if_ix, If, If);
 sort_pop_ix!(pop_bundle_ix, Bundle, Bundle);
 sort_pop_ix!(pop_connective_ix, Connective, Connective);
 sort_pop_ix!(pop_unforgeable_ix, Unforgeable, GUnforgeable);
+sort_pop_ix!(pop_cost_signature_ix, CostSignature, CostSignature);
+sort_pop_ix!(pop_cost_signed_term_ix, CostSignedTerm, CostSignedTerm);
+sort_pop_ix!(pop_cost_stack_ix, CostStack, CostStack);
 
 /// Pop one `Par` value, discarding its index. The whole child run has already
 /// been checked by [`assert_children_are_in_source_order`].
@@ -431,6 +467,13 @@ sort_pop_n!(pop_n_if, pop_if_ix, If);
 sort_pop_n!(pop_n_bundle, pop_bundle_ix, Bundle);
 sort_pop_n!(pop_n_connective, pop_connective_ix, Connective);
 sort_pop_n!(pop_n_unforgeable, pop_unforgeable_ix, GUnforgeable);
+sort_pop_n!(pop_n_cost_signature, pop_cost_signature_ix, CostSignature);
+sort_pop_n!(
+    pop_n_cost_signed_term,
+    pop_cost_signed_term_ix,
+    CostSignedTerm
+);
+sort_pop_n!(pop_n_cost_stack, pop_cost_stack_ix, CostStack);
 
 /// The children a `Combine` is about to consume must sit on the value stack as
 /// a contiguous ascending run `0, 1, …, arity-1`.
@@ -536,12 +579,22 @@ fn descend_par<'t>(par: &'t Par, idx: u32, work: &mut Vec<Step<'t, SortTraversal
         n_connectives: par.connectives.len(),
         n_unforgeables: par.unforgeables.len(),
         n_conditionals: par.conditionals.len(),
+        n_cost_signed_terms: par.cost_signed_terms.len(),
+        n_cost_stacks: par.cost_stacks.len(),
     };
     let mut next = kont.arity() as u32;
     work.push(Step::Combine(IxKont { idx, kont }));
     // Visit order is the pre-conversion matcher's: sends, receives, exprs,
-    // news, matches, bundles, connectives, unforgeables, conditionals. Pushed
+    // news, matches, bundles, connectives, unforgeables, conditionals,
+    // cost-signed terms, cost stacks. Pushed
     // in reverse so LIFO pops them in that order.
+    push_reversed(work, &mut next, &par.cost_stacks, NodeKind::CostStack);
+    push_reversed(
+        work,
+        &mut next,
+        &par.cost_signed_terms,
+        NodeKind::CostSignedTerm,
+    );
     push_reversed(work, &mut next, &par.conditionals, NodeKind::If);
     push_reversed(work, &mut next, &par.unforgeables, NodeKind::Unforgeable);
     push_reversed(work, &mut next, &par.connectives, NodeKind::Connective);
@@ -582,9 +635,13 @@ fn descend_bind<'t>(bind: &'t ReceiveBind, idx: u32, work: &mut Vec<Step<'t, Sor
     let kont = SortKont::BindK {
         bind,
         n_patterns: bind.patterns.len(),
+        has_cost_signature: bind.cost_signature.is_some(),
     };
     let mut next = kont.arity() as u32;
     work.push(Step::Combine(IxKont { idx, kont }));
+    if let Some(signature) = bind.cost_signature.as_ref() {
+        push_one(work, &mut next, NodeKind::CostSignature(signature));
+    }
     push_one(work, &mut next, NodeKind::Par(source));
     push_reversed(work, &mut next, &bind.patterns, NodeKind::Par);
     debug_assert_eq!(next, 0, "descend_bind: slot list and arity disagree");
@@ -791,6 +848,88 @@ fn descend_expr<'t>(
     debug_assert_eq!(next, 0, "descend_expr: slot list and arity disagree");
 }
 
+/// Flatten compound children *before* sorting, exactly as the source cost
+/// sorter does. The flattening worklist and the main sort driver are both
+/// explicit, including when a Quote/Name points back to a Par with cost data.
+fn descend_cost_signature<'t>(
+    signature: &'t CostSignature,
+    idx: u32,
+    work: &mut Vec<Step<'t, SortTraversal<'_>>>,
+) {
+    let mut children: Vec<&'t CostSignature> = Vec::new();
+    let par_child = match signature.value.as_ref() {
+        Some(CostSignatureValue::Compound(compound)) => {
+            let mut pending: Vec<&'t CostSignature> = compound.elements.iter().rev().collect();
+            while let Some(element) = pending.pop() {
+                match element.value.as_ref() {
+                    Some(CostSignatureValue::Compound(nested)) => {
+                        pending.extend(nested.elements.iter().rev());
+                    }
+                    _ => children.push(element),
+                }
+            }
+            None
+        }
+        Some(CostSignatureValue::Quote(par) | CostSignatureValue::Name(par)) => Some(par),
+        _ => None,
+    };
+    let kont = SortKont::CostSignatureK {
+        signature,
+        n: if par_child.is_some() {
+            1
+        } else {
+            children.len()
+        },
+    };
+    let mut next = kont.arity() as u32;
+    work.push(Step::Combine(IxKont { idx, kont }));
+    if let Some(par) = par_child {
+        push_one(work, &mut next, NodeKind::Par(par));
+    } else {
+        for child in children.into_iter().rev() {
+            push_one(work, &mut next, NodeKind::CostSignature(child));
+        }
+    }
+    debug_assert_eq!(
+        next, 0,
+        "descend_cost_signature: slot list and arity disagree"
+    );
+}
+
+fn descend_cost_signed_term<'t>(
+    term: &'t CostSignedTerm,
+    idx: u32,
+    work: &mut Vec<Step<'t, SortTraversal<'_>>>,
+) {
+    let kont = SortKont::CostSignedTermK { term };
+    let mut next = kont.arity() as u32;
+    work.push(Step::Combine(IxKont { idx, kont }));
+    if let Some(signature) = term.signature.as_ref() {
+        push_one(work, &mut next, NodeKind::CostSignature(signature));
+    }
+    if let Some(body) = term.body.as_ref() {
+        push_one(work, &mut next, NodeKind::Par(body));
+    }
+    debug_assert_eq!(
+        next, 0,
+        "descend_cost_signed_term: slot list and arity disagree"
+    );
+}
+
+fn descend_cost_stack<'t>(
+    stack: &'t CostStack,
+    idx: u32,
+    work: &mut Vec<Step<'t, SortTraversal<'_>>>,
+) {
+    let kont = SortKont::CostStackK {
+        n_cells: stack.cells.len(),
+    };
+    let mut next = kont.arity() as u32;
+    work.push(Step::Combine(IxKont { idx, kont }));
+    push_reversed(work, &mut next, &stack.cells, NodeKind::CostSignature);
+    debug_assert_eq!(next, 0, "descend_cost_stack: slot list and arity disagree");
+}
+
 // ===========================================================================
 // the driver — an instance of `models::rust::rholang::drive`
 // ===========================================================================
@@ -859,6 +998,9 @@ impl<'arena> Traversal for SortTraversal<'arena> {
             NodeKind::If(i) => descend_if(i, idx, work),
             NodeKind::Bundle(b) => descend_bundle(b, idx, work),
             NodeKind::Connective(c) => descend_connective(c, idx, work),
+            NodeKind::CostSignature(signature) => descend_cost_signature(signature, idx, work),
+            NodeKind::CostSignedTerm(term) => descend_cost_signed_term(term, idx, work),
+            NodeKind::CostStack(stack) => descend_cost_stack(stack, idx, work),
             // The one leaf: no sub-`Par`, scored in place.
             NodeKind::Unforgeable(u) => vals.push(ValItem {
                 idx,
@@ -949,6 +1091,8 @@ fn run_combine(k: SortKont<'_>, vals: &mut Vec<ValItem>) -> SortVal {
             n_connectives,
             n_unforgeables,
             n_conditionals,
+            n_cost_signed_terms,
+            n_cost_stacks,
         } => combine_par_k(
             par,
             [
@@ -961,11 +1105,17 @@ fn run_combine(k: SortKont<'_>, vals: &mut Vec<ValItem>) -> SortVal {
                 n_connectives,
                 n_unforgeables,
                 n_conditionals,
+                n_cost_signed_terms,
+                n_cost_stacks,
             ],
             vals,
         ),
         SortKont::SendK { send, n_data } => combine_send_k(send, n_data, vals),
-        SortKont::BindK { bind, n_patterns } => combine_bind_k(bind, n_patterns, vals),
+        SortKont::BindK {
+            bind,
+            n_patterns,
+            has_cost_signature,
+        } => combine_bind_k(bind, n_patterns, has_cost_signature, vals),
         SortKont::ReceiveK { recv, n_binds } => combine_receive_k(recv, n_binds, vals),
         SortKont::NewK { new, n_injections } => combine_new_k(new, n_injections, vals),
         SortKont::CaseK { case } => combine_case_k(case, vals),
@@ -974,10 +1124,13 @@ fn run_combine(k: SortKont<'_>, vals: &mut Vec<ValItem>) -> SortVal {
         SortKont::BundleK { bundle } => combine_bundle_k(bundle, vals),
         SortKont::ConnK { conn, n } => combine_conn_k(conn, n, vals),
         SortKont::ExprK { expr, n } => combine_expr_k(expr, n, vals),
+        SortKont::CostSignatureK { signature, n } => combine_cost_signature_k(signature, n, vals),
+        SortKont::CostSignedTermK { term } => combine_cost_signed_term_k(term, vals),
+        SortKont::CostStackK { n_cells } => combine_cost_stack_k(n_cells, vals),
     }
 }
 
-/// The nine category counts, in `descend_par`'s visit order.
+/// The eleven category counts, in `descend_par`'s visit order.
 const N_SENDS: usize = 0;
 const N_RECEIVES: usize = 1;
 const N_EXPRS: usize = 2;
@@ -987,10 +1140,14 @@ const N_BUNDLES: usize = 5;
 const N_CONNECTIVES: usize = 6;
 const N_UNFORGEABLES: usize = 7;
 const N_CONDITIONALS: usize = 8;
+const N_COST_SIGNED_TERMS: usize = 9;
+const N_COST_STACKS: usize = 10;
 
 #[inline(never)]
-fn combine_par_k(par: &Par, counts: [usize; 9], vals: &mut Vec<ValItem>) -> SortVal {
+fn combine_par_k(par: &Par, counts: [usize; 11], vals: &mut Vec<ValItem>) -> SortVal {
     // Popped in the REVERSE of `descend_par`'s visit order.
+    let cost_stacks = pop_n_cost_stack(vals, counts[N_COST_STACKS]);
+    let cost_signed_terms = pop_n_cost_signed_term(vals, counts[N_COST_SIGNED_TERMS]);
     let conditionals = pop_n_if(vals, counts[N_CONDITIONALS]);
     let unforgeables = pop_n_unforgeable(vals, counts[N_UNFORGEABLES]);
     let connectives = pop_n_connective(vals, counts[N_CONNECTIVES]);
@@ -1010,6 +1167,8 @@ fn combine_par_k(par: &Par, counts: [usize; 9], vals: &mut Vec<ValItem>) -> Sort
         connectives,
         unforgeables,
         conditionals,
+        cost_signed_terms,
+        cost_stacks,
     }))
 }
 
@@ -1021,10 +1180,16 @@ fn combine_send_k(send: &Send, n_data: usize, vals: &mut Vec<ValItem>) -> SortVa
 }
 
 #[inline(never)]
-fn combine_bind_k(bind: &ReceiveBind, n_patterns: usize, vals: &mut Vec<ValItem>) -> SortVal {
+fn combine_bind_k(
+    bind: &ReceiveBind,
+    n_patterns: usize,
+    has_cost_signature: bool,
+    vals: &mut Vec<ValItem>,
+) -> SortVal {
+    let cost_signature = has_cost_signature.then(|| pop_cost_signature_ix(vals).1);
     let channel = pop_par(vals);
     let patterns = pop_n_par(vals, n_patterns);
-    SortVal::Bind(combine_bind(bind, patterns, channel))
+    SortVal::Bind(combine_bind(bind, patterns, channel, cost_signature))
 }
 
 #[inline(never)]
@@ -1083,6 +1248,150 @@ fn combine_expr_k(expr: &Expr, n: usize, vals: &mut Vec<ValItem>) -> SortVal {
     SortVal::Expr(combine_expr(expr, kids))
 }
 
+#[inline(never)]
+fn combine_cost_signature_k(
+    signature: &CostSignature,
+    n: usize,
+    vals: &mut Vec<ValItem>,
+) -> SortVal {
+    let scored = match signature.value.as_ref() {
+        None => ScoredTerm {
+            term: CostSignature::default(),
+            score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
+        },
+        Some(CostSignatureValue::Ground(bytes)) => ScoredTerm {
+            term: CostSignature {
+                value: Some(CostSignatureValue::Ground(bytes.clone())),
+            },
+            score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIG_GROUND, vec![
+                Tree::<ScoreAtom>::create_leaf_from_bytes(bytes.clone()),
+            ]),
+        },
+        Some(CostSignatureValue::Unit(_)) => ScoredTerm {
+            term: CostSignature {
+                value: Some(CostSignatureValue::Unit(true)),
+            },
+            score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIG_UNIT, Vec::new()),
+        },
+        Some(CostSignatureValue::BoundLevel(level)) => ScoredTerm {
+            term: CostSignature {
+                value: Some(CostSignatureValue::BoundLevel(*level)),
+            },
+            score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIG_BOUND, vec![
+                Tree::<ScoreAtom>::create_leaf_from_i64(*level as i64),
+            ]),
+        },
+        Some(CostSignatureValue::Quote(_) | CostSignatureValue::Name(_)) => {
+            let par = pop_par(vals);
+            let kind = if matches!(signature.value.as_ref(), Some(CostSignatureValue::Quote(_))) {
+                Score::COST_SIG_QUOTE
+            } else {
+                Score::COST_SIG_NAME
+            };
+            let value = if kind == Score::COST_SIG_QUOTE {
+                CostSignatureValue::Quote(par.term)
+            } else {
+                CostSignatureValue::Name(par.term)
+            };
+            ScoredTerm {
+                term: CostSignature { value: Some(value) },
+                score: Tree::<ScoreAtom>::create_node_from_i32(kind, vec![par.score]),
+            }
+        }
+        Some(CostSignatureValue::Compound(_)) => {
+            let mut elements = pop_n_cost_signature(vals, n);
+            elements.retain(|element| {
+                !matches!(
+                    element.term.value.as_ref(),
+                    Some(CostSignatureValue::Unit(_))
+                )
+            });
+            match elements.len() {
+                0 => ScoredTerm {
+                    term: CostSignature {
+                        value: Some(CostSignatureValue::Unit(true)),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::COST_SIG_UNIT,
+                        Vec::new(),
+                    ),
+                },
+                1 => elements.pop().expect("one cost-signature element"),
+                _ => {
+                    ScoredTerm::sort_vec(&mut elements);
+                    let scores = elements
+                        .iter()
+                        .map(|element| element.score.clone())
+                        .collect();
+                    let terms = elements.into_iter().map(|element| element.term).collect();
+                    ScoredTerm {
+                        term: CostSignature {
+                            value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+                                elements: terms,
+                            })),
+                        },
+                        score: Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::COST_SIG_COMPOUND,
+                            scores,
+                        ),
+                    }
+                }
+            }
+        }
+    };
+    SortVal::CostSignature(scored)
+}
+
+#[inline(never)]
+fn combine_cost_signed_term_k(term: &CostSignedTerm, vals: &mut Vec<ValItem>) -> SortVal {
+    // The source sorter evaluates body first and signature second, but scores
+    // signature before body. The child slots and LIFO pops preserve both.
+    let signature = term
+        .signature
+        .as_ref()
+        .map(|_| pop_cost_signature_ix(vals).1);
+    let body = term.body.as_ref().map(|_| pop_par(vals));
+    let (signature_term, signature_score) = match signature {
+        Some(scored) => (Some(scored.term), scored.score),
+        None => (
+            None,
+            Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
+        ),
+    };
+    let (body_term, body_score) = match body {
+        Some(scored) => (Some(scored.term), scored.score),
+        None => (
+            None,
+            Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
+        ),
+    };
+    SortVal::CostSignedTerm(ScoredTerm {
+        term: CostSignedTerm {
+            body: body_term,
+            signature: signature_term,
+        },
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIGNED_TERM, vec![
+            signature_score,
+            body_score,
+        ]),
+    })
+}
+
+#[inline(never)]
+fn combine_cost_stack_k(n_cells: usize, vals: &mut Vec<ValItem>) -> SortVal {
+    let cells = pop_n_cost_signature(vals, n_cells);
+    let mut terms = Vec::with_capacity(n_cells);
+    let mut scores = Vec::with_capacity(n_cells);
+    for cell in cells {
+        terms.push(cell.term);
+        scores.push(cell.score);
+    }
+    SortVal::CostStack(ScoredTerm {
+        term: CostStack { cells: terms },
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_STACK, scores),
+    })
+}
+
 // ===========================================================================
 // the typed entry points
 // ===========================================================================
@@ -1114,3 +1423,16 @@ sort_entry!(sort_match_node, Match, Match, Match);
 sort_entry!(sort_if, If, If, If);
 sort_entry!(sort_bundle, Bundle, Bundle, Bundle);
 sort_entry!(sort_connective, Connective, Connective, Connective);
+sort_entry!(
+    sort_cost_signature,
+    CostSignature,
+    CostSignature,
+    CostSignature
+);
+sort_entry!(
+    sort_cost_signed_term,
+    CostSignedTerm,
+    CostSignedTerm,
+    CostSignedTerm
+);
+sort_entry!(sort_cost_stack, CostStack, CostStack, CostStack);

@@ -1,6 +1,6 @@
 //! EPathMap interpreter-internal method-chain view fusion.
 //!
-//! One production seam, [`DebruijnInterpreter::begin_fused_method_chain`], is
+//! One production seam, [`ReducerCore::begin_fused_method_chain`], is
 //! called first in both `EMethodBody` dispatch arms. It recognizes the whole
 //! read-only PathMap/zipper chain and returns resumable [`FusedAction`] values.
 //! The reducer executes argument evaluation on its existing heap worklist and
@@ -137,7 +137,7 @@ use models::rust::pathmap_integration::{
 use super::accounting::costs::{lookup_cost, method_call_cost, union_cost, var_eval_cost};
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::reduce::DebruijnInterpreter;
+use super::reduce::ReducerCore;
 
 /// `get_type(ExprInstance::EPathmapBody(_))` (reduce.rs:7312) — the
 /// `MethodNotDefined::other_type` payload for a map-mode view.
@@ -281,6 +281,33 @@ impl LinkKind {
         match self {
             LinkKind::GetLeaf | LinkKind::GetSubtrie => LinkDiagnostic::Lookup,
             _ => LinkDiagnostic::IncrementalUnion,
+        }
+    }
+}
+
+#[cfg(test)]
+impl ReducerCore {
+    pub(crate) fn try_eval_fused_method_chain<'a>(
+        &self,
+        emethod: &'a EMethod,
+        env: &'a Env<Par>,
+    ) -> Result<Option<Par>, InterpreterError> {
+        let mut action = match self.begin_fused_method_chain(emethod, env)? {
+            Some(action) => action,
+            None => return Ok(None),
+        };
+        loop {
+            action = match action {
+                FusedAction::EvalPositionA { state, arg } => {
+                    let arg = self.eval_expr_recursive(arg, env)?;
+                    self.continue_fused_after_position_a(state, arg)?
+                }
+                FusedAction::EvalPositionB { state, arg } => {
+                    let arg = self.eval_expr_recursive(&arg, env)?;
+                    self.continue_fused_after_position_b(state, arg)?
+                }
+                FusedAction::Complete(par) => return Ok(Some(par)),
+            };
         }
     }
 }
@@ -543,7 +570,7 @@ fn single_expr_par(expr_instance: ExprInstance) -> Par {
     }])
 }
 
-impl DebruijnInterpreter {
+impl ReducerCore {
     pub(crate) fn begin_fused_method_chain<'a>(
         &self,
         emethod: &'a EMethod,
@@ -675,31 +702,6 @@ impl DebruijnInterpreter {
         }
         state.next_index -= 1;
         self.advance_fused(state)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn try_eval_fused_method_chain<'a>(
-        &self,
-        emethod: &'a EMethod,
-        env: &'a Env<Par>,
-    ) -> Result<Option<Par>, InterpreterError> {
-        let mut action = match self.begin_fused_method_chain(emethod, env)? {
-            Some(action) => action,
-            None => return Ok(None),
-        };
-        loop {
-            action = match action {
-                FusedAction::EvalPositionA { state, arg } => {
-                    let arg = self.eval_expr_recursive(arg, env)?;
-                    self.continue_fused_after_position_a(state, arg)?
-                }
-                FusedAction::EvalPositionB { state, arg } => {
-                    let arg = self.eval_expr_recursive(&arg, env)?;
-                    self.continue_fused_after_position_b(state, arg)?
-                }
-                FusedAction::Complete(par) => return Ok(Some(par)),
-            };
-        }
     }
 
     fn apply_fused_link(

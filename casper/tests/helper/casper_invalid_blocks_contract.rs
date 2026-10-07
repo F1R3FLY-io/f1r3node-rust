@@ -19,7 +19,7 @@ pub async fn set(
                 *invalid_blocks_lock = new_invalid_blocks_par.clone();
 
                 let result_par = vec![Par::default()];
-                produce(&result_par, &ack_channel).await?;
+                produce(&result_par, ack_channel).await?;
                 Ok(result_par)
             }
             _ => Err(illegal_argument_error("casper_invalid_blocks_set")),

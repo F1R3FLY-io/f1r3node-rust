@@ -35,6 +35,11 @@ impl Blake2b256Hash {
         Blake2b256Hash::from_bytes(bytes)
     }
 
+    pub fn try_from_hex(hex: &str) -> Result<Self, hex::FromHexError> {
+        let bytes = hex::decode(hex)?;
+        Ok(Blake2b256Hash::from_bytes(bytes))
+    }
+
     pub fn bytes(&self) -> Vec<u8> { self.0.clone() }
 
     pub fn to_bytes_prost(&self) -> prost::bytes::Bytes {

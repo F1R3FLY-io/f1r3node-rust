@@ -14,6 +14,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 V="$ROOT/formal/iris/cost_accounting/Reconcile.v"
+WORK_ROOT="$ROOT/target/verification/cost-accounted-rho/iris"
+mkdir -p "$WORK_ROOT"
 
 echo "Checking cost-accounted rho reconciliation linearizability (Iris)..."
 
@@ -25,15 +27,15 @@ if ! command -v coqc >/dev/null 2>&1 && ! command -v rocq >/dev/null 2>&1; then
 fi
 
 # Probe for coq-iris (iris.heap_lang) before attempting the real check.
-probe="$(mktemp -d)/probe.v"
+probe_dir="$(mktemp -d "$WORK_ROOT/probe.XXXXXX")"
+trap 'rm -rf "$probe_dir"' EXIT
+probe="$probe_dir/probe.v"
 printf 'From iris.heap_lang Require Import lang.\n' > "$probe"
 if ! (cd "$(dirname "$probe")" && coqc probe.v) >/dev/null 2>&1; then
-  rm -rf "$(dirname "$probe")"
   echo "  coq-iris (iris.heap_lang) not installed — skipped (fail-soft);"
   echo "  the reconciliation's schedule-independence is covered by the loom tests + RuntimeBudgetReplay TLA+ model."
   exit 0
 fi
-rm -rf "$(dirname "$probe")"
 
 if (cd "$(dirname "$V")" && coqc "$(basename "$V")") >/dev/null 2>&1; then
   echo "  Iris: Reconcile.v verified (debit_spec + debit_atomic_spec — logically-atomic linearizability)."

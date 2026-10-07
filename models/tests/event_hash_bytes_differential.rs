@@ -2,10 +2,12 @@
 //!
 //! Datum, bind-pattern, and continuation bytes are built by the generated
 //! explicit-worklist bincode encoder. This suite compares those production
-//! entry points with the legacy derived-serde oracle over every reachable
-//! container position, canonical PathMap permutations and duplicates, promoted
-//! regressions, and bounded generated trees. Any mismatch changes consensus
-//! event-hash preimages.
+//! entry points with the derived-serde oracle for the SAME merged schema over
+//! every reachable container position, canonical PathMap permutations and
+//! duplicates, promoted regressions, and bounded generated trees. Any mismatch
+//! changes consensus event-hash preimages. `legacy` in helper names denotes the pre-generator
+//! Serde path, not the pre-cost 52217b94a field layout; these checks do not
+//! prove pre-activation byte identity.
 
 mod fixtures;
 
@@ -39,33 +41,35 @@ fn datum(pars: Vec<Par>) -> ListParWithRandom {
     ListParWithRandom {
         pars,
         random_state: vec![0xAA; 32],
+        cost_authority: None,
+        cost_stack: None,
     }
 }
 
 fn assert_event_hash_eq_legacy_datum(label: &str, value: &ListParWithRandom) {
-    let legacy = bincode::serialize(value).expect("legacy bincode");
+    let legacy = bincode::serialize(value).expect("merged-schema derived bincode");
     let actual = event_hash_bytes_list_par_with_random(value);
     assert_eq!(
         actual, legacy,
-        "{label}: datum event-hash bytes must equal legacy bincode bytes"
+        "{label}: datum event-hash bytes must equal merged-schema derived bincode bytes"
     );
 }
 
 fn assert_event_hash_eq_legacy_pattern(label: &str, value: &BindPattern) {
-    let legacy = bincode::serialize(value).expect("legacy bincode");
+    let legacy = bincode::serialize(value).expect("merged-schema derived bincode");
     let actual = event_hash_bytes_bind_pattern(value);
     assert_eq!(
         actual, legacy,
-        "{label}: pattern event-hash bytes must equal legacy bincode bytes"
+        "{label}: pattern event-hash bytes must equal merged-schema derived bincode bytes"
     );
 }
 
 fn assert_event_hash_eq_legacy_continuation(label: &str, value: &TaggedContinuation) {
-    let legacy = bincode::serialize(value).expect("legacy bincode");
+    let legacy = bincode::serialize(value).expect("merged-schema derived bincode");
     let actual = event_hash_bytes_tagged_continuation(value);
     assert_eq!(
         actual, legacy,
-        "{label}: continuation event-hash bytes must equal legacy bincode bytes"
+        "{label}: continuation event-hash bytes must equal merged-schema derived bincode bytes"
     );
 }
 
@@ -205,6 +209,7 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                     source: Some(map_par()),
                     remainder: Some(free_var),
                     free_count: 1,
+                    cost_signature: None,
                 }],
                 body: Some(map_par()),
                 persistent: false,
@@ -293,6 +298,7 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
         });
         assert_event_hash_eq_legacy_continuation(label, &TaggedContinuation {
             guard: Some(par.clone()),
+            cost_authority: None,
             tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
                 body: Some(par),
                 random_state: vec![7; 16],
@@ -312,10 +318,12 @@ fn nested_pathmaps_match_legacy_bincode() {
 fn scala_body_ref_matches_legacy_bincode() {
     assert_event_hash_eq_legacy_continuation("scala-body-ref", &TaggedContinuation {
         guard: Some(epathmap_par(sample_map())),
+        cost_authority: None,
         tagged_cont: Some(TaggedCont::ScalaBodyRef(42)),
     });
     assert_event_hash_eq_legacy_continuation("none-cont", &TaggedContinuation {
         guard: None,
+        cost_authority: None,
         tagged_cont: None,
     });
 }
@@ -512,6 +520,8 @@ fn production_gate(pars: &[Par], random_state: Vec<u8>, free_count: i32) {
     let value = ListParWithRandom {
         pars: pars.to_vec(),
         random_state,
+        cost_authority: None,
+        cost_stack: None,
     };
     assert_eq!(
         event_hash_bytes_list_par_with_random(&value),
@@ -532,6 +542,7 @@ fn production_gate(pars: &[Par], random_state: Vec<u8>, free_count: i32) {
 
     let continuation = TaggedContinuation {
         guard: pars.first().cloned(),
+        cost_authority: None,
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: pars.last().cloned(),
             random_state: vec![3; 8],

@@ -6,20 +6,21 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, Justification, ProcessedDeploy,
+    BlockMessage, Bond, Justification, ProcessedDeploy, ProcessedUserDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
 
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
-use crate::rust::util::rholang::interpreter_util::compute_deploys_checkpoint;
+use crate::rust::util::rholang::interpreter_util::compute_deploys_checkpoint_envelopes;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use crate::rust::util::{construct_deploy, proto_util};
@@ -57,27 +58,38 @@ async fn compute_block_checkpoint(
     block: &BlockMessage,
     casper_snapshot: &CasperSnapshot,
     runtime_manager: &mut RuntimeManager,
-) -> Result<(StateHash, Vec<ProcessedDeploy>), CasperError> {
+) -> Result<(StateHash, Vec<ProcessedUserDeploy>), CasperError> {
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
-        .map(|d| d.deploy)
-        .collect();
+        .map(|deploy| match deploy {
+            ProcessedUserDeploy::Legacy(legacy) => Ok(PendingDeployCandidate::CheckedLegacy(
+                legacy.checked_envelope().clone(),
+            )),
+            ProcessedUserDeploy::Offered(_) => Err(CasperError::RuntimeError(
+                "block-generator replay of offered deploys requires approved genesis context"
+                    .to_string(),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let (_, post_state_hash, processed_deploys, _, _, _) = compute_deploys_checkpoint(
+    let checkpoint = compute_deploys_checkpoint_envelopes(
         block_store,
         parents,
         deploys,
         Vec::<SystemDeployEnum>::new(),
         casper_snapshot,
         runtime_manager,
+        None,
         BlockData::from_block(block),
         HashMap::new(),
+        None,
+        None,
         None,
     )
     .await?;
 
-    Ok((post_state_hash, processed_deploys))
+    Ok((checkpoint.post_state_hash, checkpoint.deploys))
 }
 
 fn inject_post_state_hash(
@@ -85,7 +97,7 @@ fn inject_post_state_hash(
     block_dag_storage: &mut IndexedBlockDagStorage,
     block: &BlockMessage,
     post_state_hash: StateHash,
-    processed_deploys: Vec<ProcessedDeploy>,
+    processed_deploys: Vec<ProcessedUserDeploy>,
 ) -> Result<(), CasperError> {
     let mut updated_block = block.clone();
     updated_block.body.state.post_state_hash = post_state_hash;

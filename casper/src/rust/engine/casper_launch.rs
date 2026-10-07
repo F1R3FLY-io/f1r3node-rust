@@ -36,6 +36,7 @@ use crate::rust::engine::genesis_validator::GenesisValidator;
 use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
@@ -75,16 +76,19 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     disable_state_exporter: bool,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    state_items_tx: Option<
+        tokio::sync::mpsc::Sender<
+            models::rust::casper::protocol::casper_message::StoreItemsMessage,
+        >,
+    >,
 }
 
-const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
-
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
+use crate::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING;
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
     /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
-    fn create_casper(
+    async fn create_casper(
         &self,
         validator_id: Option<ValidatorIdentity>,
         ab: BlockMessage,
@@ -106,6 +110,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             ab,
             self.heartbeat_signal_ref.clone(),
         )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -138,10 +143,21 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
+        state_items_tx: Option<
+            tokio::sync::mpsc::Sender<
+                models::rust::casper::protocol::casper_message::StoreItemsMessage,
+            >,
+        >,
     ) -> Self {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.fault_tolerance_threshold,
+            // Locally-derived exact ppm from the configured f32. On a joining/
+            // existing chain, `initializing` overwrites it with the on-chain ppm
+            // (the single exact conversion point).
+            fault_tolerance_threshold_ppm: ProofOfStake::fault_tolerance_threshold_to_ppm(
+                conf.fault_tolerance_threshold,
+            ),
             shard_name: conf.shard_name.clone(),
             parent_shard_id: conf.parent_shard_id.clone(),
             finalization_rate: conf.finalization_rate,
@@ -149,37 +165,34 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             max_parent_depth: conf.max_parent_depth,
             synchrony_constraint_threshold: conf.synchrony_constraint_threshold,
             height_constraint_threshold: conf.height_constraint_threshold,
-            deploy_lifespan: 50,
-            casper_version: 1,
-            config_version: 1,
+            deploy_lifespan: conf.deploy_lifespan,
+            // Zero derives the budget from the citability window
+            // (max-parent-depth heights of cadence) with a 5x margin. The
+            // launch always produces a bound: `None` (unbounded) is
+            // reserved for constructions that bypass operator conf.
+            deploy_play_budget: Some(if conf.deploy_play_budget.is_zero() {
+                std::time::Duration::from_millis(
+                    ((conf.max_parent_depth as i64).max(1)
+                        * (conf.heartbeat_conf.check_interval.as_millis() as i64)
+                        / 5) as u64,
+                )
+            } else {
+                conf.deploy_play_budget
+            }),
+            // A derived budget is provisional: hash_set_casper recomputes it
+            // from the ADOPTED max-parent-depth.
+            deploy_play_budget_is_derived: conf.deploy_play_budget.is_zero(),
+            heartbeat_check_interval: conf.heartbeat_conf.check_interval,
+            casper_version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
             bond_minimum: conf.genesis_block_data.bond_minimum,
             bond_maximum: conf.genesis_block_data.bond_maximum,
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
             min_phlo_price: conf.min_phlo_price,
-            // Task #13a: spec-strict acceptance-gate activation, wired from the
-            // shard-genesis `CasperConf` (default OFF = back-compat). Same
-            // shard constant on every node ⇒ the gate verdict is
-            // replay-deterministic (mirrors `min_phlo_price` directly above).
-            strict_funding_enforcement: conf.strict_funding_enforcement,
-            // Task #13b: genesis client funding-slot allocations, wired from the
-            // shard-genesis `GenesisBlockData` (default EMPTY = back-compat) and
-            // hex-lowered once here so a malformed key fails fast at launch. Same
-            // shard constant on every node ⇒ the block-1 client seed is
-            // replay-deterministic (mirrors `strict_funding_enforcement` above).
-            client_fuel_allocations: conf
-                .genesis_block_data
-                .lowered_client_fuel_allocations()
-                .expect("invalid client-fuel-allocations in genesis-block-data"),
-            // Late block filtering disabled = deploys from "late" blocks (blocks not yet seen by
-            // all validators) are included in merged state. Prevents deploy loss during network
-            // partitions or validator catchup. Default is true (disabled).
-            disable_late_block_filtering: conf.disable_late_block_filtering,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
-            finalizer_conf: conf.finalizer.clone(),
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.synchrony_recovery_max_bypasses,
@@ -187,16 +200,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             synchrony_finalized_baseline_max_distance: conf
                 .synchrony_finalized_baseline_max_distance,
             max_user_deploys_per_block: conf.max_user_deploys_per_block,
-            max_cosigners_per_deploy: conf.genesis_block_data.max_cosigners_per_deploy,
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
-            // Phase 13: defaults match the previous hardcoded constants
-            // (`FINALIZER_BLOCKING_TIMEOUT = 15s`,
-            // `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
-            // gains corresponding fields, plumb them through here.
-            finalizer_blocking_timeout: std::time::Duration::from_secs(15),
-            active_validators_cache_max_entries: 4096,
+            active_validators_cache_max_entries:
+                crate::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
 
         Self {
@@ -225,6 +233,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             trim_state,
             disable_state_exporter,
             heartbeat_signal_ref,
+            state_items_tx,
         }
     }
 
@@ -255,8 +264,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 BlockMessage,
             )>,
         ) -> Result<(), CasperError> {
-            println!("sendBufferPendantsToCasper");
-
             let pendants = casper_buffer_storage.get_pendants();
 
             // Filter pendants to only those that exist in BlockStore
@@ -304,7 +311,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // because we additionally clean up the BlockRetriever's
                     // hash-tracking state (a launch-specific concern that
                     // the generic recon helper doesn't know about).
-                    // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+                    // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
                     if dag_contains {
                         tracing::warn!(
                             "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",
@@ -337,9 +344,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         );
                         continue;
                     }
-                    let max_in_flight = max_blocks_in_processing();
+                    let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                     if blocks_in_processing.len() > max_in_flight {
                         blocks_in_processing.remove(&block_hash);
+                        block_retriever.note_local_backpressure_drop(&block_hash, "launch-pendant");
                         tracing::warn!(
                             "Skipping pendant {} enqueue because in-flight block cap {} is reached",
                             PrettyPrinter::build_string_bytes(&block_hash),
@@ -370,7 +378,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
 
-        let casper = self.create_casper(validator_id.clone(), ab)?;
+        let casper = self.create_casper(validator_id.clone(), ab).await?;
         let casper_arc = Arc::new(casper);
 
         // Scala equivalent: init = for { _ <- askPeersForForkChoiceTips; _ <- sendBufferPendantsToCasper(casper); _ <- proposeFOpt.traverse(...) } yield ()
@@ -443,6 +451,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.block_retriever.clone(),
             &self.engine_cell,
             &self.event_publisher,
+            self.state_items_tx.clone(),
         )
         .await?;
 
@@ -463,9 +472,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip(self))]
     async fn connect_as_genesis_validator(&self) -> Result<(), CasperError> {
-        println!("connectAsGenesisValidator");
-
         // As a genesis validator, native-token-* values from local config are
         // what will be baked into the TokenMetadata contract at genesis (via
         // default_blessed_terms). On-chain state cannot disagree with local
@@ -510,7 +518,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             VaultParser::parse_from_path_str(&self.conf.genesis_block_data.wallets_file)
                 .map_err(|e| CasperError::RuntimeError(format!("Failed to parse vaults: {}", e)))?;
 
-        let bap = BlockApproverProtocol::new(
+        let mut bap = BlockApproverProtocol::new(
             validator_id.clone(),
             timestamp,
             vaults,
@@ -520,21 +528,27 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            self.casper_shard_conf.fault_tolerance_threshold_ppm,
+            self.casper_shard_conf.max_parent_depth,
+            self.casper_shard_conf.deploy_lifespan,
+            self.casper_shard_conf.min_phlo_price,
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
                 .pos_multi_sig_public_keys
                 .clone(),
             self.conf.genesis_block_data.pos_multi_sig_quorum,
-            self.conf.genesis_block_data.max_cosigners_per_deploy,
-            self.conf.genesis_block_data.initial_phlogiston,
-            self.conf.genesis_block_data.epoch_phlogiston,
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;
+        bap.resource_policy = self
+            .conf
+            .genesis_block_data
+            .lowered_resource_policy()
+            .map_err(CasperError::RuntimeError)?;
 
         // Scala equivalent: EngineCell[F].set(new GenesisValidator(...))
         let genesis_validator = GenesisValidator::new(
@@ -559,6 +573,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.runtime_manager.clone(),
             self.estimator.clone(),
             self.heartbeat_signal_ref.clone(),
+            self.state_items_tx.clone(),
         );
 
         self.engine_cell.set(Arc::new(genesis_validator)).await;
@@ -566,9 +581,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip(self))]
     async fn init_bootstrap(&self, disable_state_exporter: bool) -> Result<(), CasperError> {
-        println!("initBootstrap");
-
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
         );
@@ -588,37 +602,23 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             "Ceremony master: native token metadata will be baked into genesis from local config"
         );
 
-        tracing::warn!("=== BOOTSTRAP GENESIS INPUT DEBUG START ===");
-
-        tracing::warn!(bonds_file = %self.conf.genesis_block_data.bonds_file);
-        tracing::warn!(wallets_file = %self.conf.genesis_block_data.wallets_file);
-
-        tracing::warn!(
+        tracing::info!(
+            bonds_file = %self.conf.genesis_block_data.bonds_file,
+            wallets_file = %self.conf.genesis_block_data.wallets_file,
             bond_minimum = self.conf.genesis_block_data.bond_minimum,
             bond_maximum = self.conf.genesis_block_data.bond_maximum,
             epoch_length = self.conf.genesis_block_data.epoch_length,
             quarantine_length = self.conf.genesis_block_data.quarantine_length,
             number_of_active_validators = self.conf.genesis_block_data.number_of_active_validators,
-        );
-
-        tracing::warn!(
             shard_name = %self.casper_shard_conf.shard_name,
             deploy_timestamp = self.conf.genesis_block_data.deploy_timestamp,
             genesis_block_number = self.conf.genesis_block_data.genesis_block_number,
-        );
-
-        tracing::warn!(
             required_signatures = self.conf.genesis_ceremony.required_signatures,
             approve_duration_ms = self.conf.genesis_ceremony.approve_duration.as_millis(),
             approve_interval_ms = self.conf.genesis_ceremony.approve_interval.as_millis(),
-        );
-
-        tracing::warn!(
             pos_multi_sig_quorum = self.conf.genesis_block_data.pos_multi_sig_quorum,
-            pos_multi_sig_keys = ?self.conf.genesis_block_data.pos_multi_sig_public_keys,
+            "bootstrap genesis input",
         );
-
-        tracing::warn!("=== BOOTSTRAP GENESIS INPUT DEBUG END ===");
 
         // Scala equivalent: abp <- ApproveBlockProtocol.of[F](...)
         let abp = ApproveBlockProtocolFactory::create(
@@ -630,6 +630,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            self.casper_shard_conf.fault_tolerance_threshold_ppm,
+            self.casper_shard_conf.max_parent_depth,
+            self.casper_shard_conf.deploy_lifespan,
+            self.casper_shard_conf.min_phlo_price,
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,
@@ -641,12 +645,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 .pos_multi_sig_public_keys
                 .clone(),
             self.conf.genesis_block_data.pos_multi_sig_quorum,
-            self.conf.genesis_block_data.max_cosigners_per_deploy,
-            self.conf.genesis_block_data.initial_phlogiston,
-            self.conf.genesis_block_data.epoch_phlogiston,
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.conf
+                .genesis_block_data
+                .lowered_resource_policy()
+                .map_err(CasperError::RuntimeError)?,
             &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),
@@ -703,7 +708,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 )
                 .await
                 {
-                    tracing::error!("waitingForApprovedBlockLoop failed: {:?}", e);
+                    tracing::error!(error = ?e, "waiting for approved block loop failed");
                 }
             }
         });
@@ -766,6 +771,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             &self.runtime_manager,
             &self.estimator,
             &self.heartbeat_signal_ref,
+            self.state_items_tx.clone(),
         )
         .await?;
 

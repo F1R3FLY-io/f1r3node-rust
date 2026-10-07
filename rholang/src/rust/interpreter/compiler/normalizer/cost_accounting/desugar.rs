@@ -15,7 +15,7 @@
 //! `strip_signed_binds` (the Axis-C per-clause-signed-join recovery) is added in
 //! Phase 4 alongside the signed-join recognition that uses it.
 
-use rholang_parser::ast::{AnnProc, Bind, Proc, Signature};
+use rholang_parser::ast::{AnnProc, Proc, Signature};
 use rholang_parser::RholangParser;
 
 use crate::rust::interpreter::errors::InterpreterError;
@@ -82,52 +82,4 @@ pub fn lollipop<'ast>(
                 .to_string(),
         )),
     }
-}
-
-/// Axis-C signed-JOIN recovery (W1 Phase 4): strip every per-clause signed bind
-/// `{% y <- x %}[s]` in a `for`'s receipts back to its underlying LINEAR bind
-/// `y <- x`, collecting the clause signatures in source order. The recovered
-/// `for` is the natural-arity DATA join — a fuel token is structurally incapable
-/// of entering its `ReceiveBind` set (Greg 2026-06-15: fuel is provisioned on
-/// `Σ⟦s⟧` and acquired by SEQUENTIAL per-atom gates, NEVER folded into the data
-/// join, which would make an n-clause join 2n-way). Recognition-only: NO gate node
-/// is emitted; the reducer meters the join per-COMM and the per-clause lane
-/// attribution is the channel match (Phase 3). The collected signatures are
-/// validated by the caller ([`super::recognize::recognize_signed_join`]).
-pub fn strip_signed_binds<'ast>(
-    receipts: &'ast rholang_parser::ast::Receipts<'ast>,
-    body: AnnProc<'ast>,
-    span: rholang_parser::SourceSpan,
-    parser: &'ast RholangParser<'ast>,
-) -> (AnnProc<'ast>, Vec<Signature<'ast>>) {
-    // Collect the clause signatures (source order) for the caller to validate.
-    let mut clause_sigs: Vec<Signature<'ast>> = Vec::new();
-    for receipt in receipts.iter() {
-        for bind in receipt.binds.iter() {
-            if let Bind::Signed { sig, .. } = bind {
-                clause_sigs.push(sig.clone());
-            }
-        }
-    }
-    // Rebuild the `for` with each `Bind::Signed` demoted to its `Bind::Linear`
-    // (same `lhs`/`rhs`, signature dropped); all other binds are preserved.
-    let plain = parser
-        .ast_builder()
-        .alloc_for_with_guards(
-            receipts.iter().map(|receipt| {
-                (
-                    receipt.binds.iter().map(|bind| match bind {
-                        Bind::Signed { lhs, rhs, .. } => Bind::Linear {
-                            lhs: lhs.clone(),
-                            rhs: rhs.clone(),
-                        },
-                        other => other.clone(),
-                    }),
-                    receipt.guard,
-                )
-            }),
-            body,
-        )
-        .ann(span);
-    (plain, clause_sigs)
 }

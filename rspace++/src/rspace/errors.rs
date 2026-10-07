@@ -6,12 +6,23 @@ use shared::rust::store::key_value_store::KvStoreError;
 pub enum RSpaceError {
     ProduceCommitDenied,
     ProduceCommitProtocolViolation,
+    OutOfPhlogistons,
+    HostWorkRejected,
     InterpreterError(String),
     HistoryError(HistoryError),
     RadixTreeError(RadixTreeError),
     KvStoreError(KvStoreError),
     BugFoundError(String),
     ReportingError(String),
+    /// Replay finished with recorded COMM events still unconsumed. Classified
+    /// by its own variant rather than by message text so consumers can
+    /// decide on the condition instead of parsing prose: a replay that
+    /// legitimately failed is allowed to leave entries behind, and that
+    /// distinction previously depended on a substring match.
+    UnusedCommEvent {
+        leftover_count: usize,
+        leftover: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for RSpaceError {
@@ -21,12 +32,22 @@ impl std::fmt::Display for RSpaceError {
             RSpaceError::ProduceCommitProtocolViolation => {
                 write!(f, "Produce commit guard violated its invocation contract")
             }
+            RSpaceError::OutOfPhlogistons => write!(f, "Out of phlogistons"),
+            RSpaceError::HostWorkRejected => write!(f, "Host work budget rejected evaluation."),
             RSpaceError::InterpreterError(err) => write!(f, "Interpreter Error: {}", err),
             RSpaceError::HistoryError(err) => write!(f, "History Error: {}", err),
             RSpaceError::RadixTreeError(err) => write!(f, "Radix Tree Error: {}", err),
             RSpaceError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
             RSpaceError::BugFoundError(err) => write!(f, "RSpace Bug Found Error: {}", err),
             RSpaceError::ReportingError(err) => write!(f, "Reporting Error: {}", err),
+            RSpaceError::UnusedCommEvent {
+                leftover_count,
+                leftover,
+            } => write!(
+                f,
+                "Unused COMM event: replayData multimap has {} elements left; leftover={:?}",
+                leftover_count, leftover
+            ),
         }
     }
 }
@@ -151,6 +172,12 @@ impl From<KvStoreError> for RadixTreeError {
 pub enum RootError {
     KvStoreError(String),
     UnknownRootError(String),
+    /// A specific root the store does not hold, carried typed so a caller can
+    /// fetch it from peers. Distinct from [`RootError::UnknownRootError`],
+    /// which reports storewide conditions in prose: this one names an artifact
+    /// that exists elsewhere and is absent here — a fact about this node's
+    /// sync, and the only RootError a validator may answer with "ask me later".
+    RootNotFound(crate::rspace::hashing::blake2b256_hash::Blake2b256Hash),
 }
 
 impl std::fmt::Display for RootError {
@@ -158,6 +185,9 @@ impl std::fmt::Display for RootError {
         match self {
             RootError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
             RootError::UnknownRootError(err) => write!(f, "Unknown root: {}", err),
+            // Renders identically to the prose variant it replaced at the
+            // validate-and-set site, so log greps and harness scans carry over.
+            RootError::RootNotFound(root) => write!(f, "Unknown root: unknown root: {}", root),
         }
     }
 }

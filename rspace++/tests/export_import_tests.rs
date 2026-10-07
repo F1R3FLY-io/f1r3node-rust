@@ -82,19 +82,20 @@ async fn export_and_import_of_one_page_should_works_correctly() {
     // println!("\ndata_items_page: {:?}", data_items);
 
     // Validate exporting page
-    let _ = RSpaceImporterInstance::validate_state_items(
+    RSpaceImporterInstance::validate_state_items(
         history_items.clone(),
         data_items.clone(),
         init_start_path,
         page_size,
         start_skip,
         importer1,
-    );
+    )
+    .unwrap();
 
     // Import page to space2
-    let _ = importer2.set_history_items(history_items);
-    let _ = importer2.set_data_items(data_items);
-    let _ = importer2.set_root(&init_point.root);
+    importer2.set_history_items(history_items);
+    importer2.set_data_items(data_items);
+    importer2.set_root(&init_point.root);
     let _ = space2.reset(&init_point.root).await;
 
     // space2.store.print();
@@ -120,6 +121,23 @@ async fn export_and_import_of_one_page_should_works_correctly() {
 }
 
 #[tokio::test]
+async fn corrupted_history_hash_returns_error() {
+    let (_, _, importer, _, _, _) = test_setup().await;
+    let root = Blake2b256Hash::from_bytes(vec![1; 32]);
+    let claimed_hash = Blake2b256Hash::from_bytes(vec![2; 32]);
+    let result = RSpaceImporterInstance::validate_state_items(
+        vec![(claimed_hash, vec![3; 16])],
+        Vec::new(),
+        vec![(root, None)],
+        750,
+        0,
+        importer,
+    );
+
+    assert!(matches!(result, Err(error) if error.contains("Trie hash does not match")));
+}
+
+#[tokio::test]
 async fn multipage_export_should_work_correctly() {
     let (space1, exporter1, importer1, space2, _, importer2) = test_setup().await;
 
@@ -139,42 +157,40 @@ async fn multipage_export_should_work_correctly() {
                             exporter1: Arc<dyn RSpaceExporter>,
                             importer1: Arc<dyn RSpaceImporter>|
      -> Result<Params, Params> {
-        match params {
-            (history_items, data_items, start_path) => {
-                // Export 1 page from space1
-                let export_data = RSpaceExporterItems::get_history_and_data(
-                    exporter1,
-                    start_path.clone(),
-                    start_skip,
-                    page_size,
-                );
+        let (history_items, data_items, start_path) = params;
+        // Export 1 page from space1
+        let export_data = RSpaceExporterItems::get_history_and_data(
+            exporter1,
+            start_path.clone(),
+            start_skip,
+            page_size,
+        );
 
-                let history_items_page = export_data.0.items;
-                let data_items_page = export_data.1.items;
-                let last_path = export_data.0.last_path;
+        let history_items_page = export_data.0.items;
+        let data_items_page = export_data.1.items;
+        let last_path = export_data.0.last_path;
 
-                // Validate exporting page
-                let _ = RSpaceImporterInstance::validate_state_items(
-                    history_items_page.clone(),
-                    data_items_page.clone(),
-                    start_path,
-                    page_size,
-                    start_skip,
-                    importer1,
-                );
+        // Validate exporting page
+        RSpaceImporterInstance::validate_state_items(
+            history_items_page.clone(),
+            data_items_page.clone(),
+            start_path,
+            page_size,
+            start_skip,
+            importer1,
+        )
+        .unwrap();
 
-                let r = (
-                    [history_items, history_items_page.clone()].concat(),
-                    [data_items, data_items_page].concat(),
-                    last_path,
-                );
+        let r = (
+            [history_items, history_items_page.clone()].concat(),
+            [data_items, data_items_page].concat(),
+            last_path,
+        );
 
-                if (history_items_page.len() as i32) < page_size {
-                    Err(r)
-                } else {
-                    Ok(r)
-                }
-            }
+        if (history_items_page.len() as i32) < page_size {
+            Err(r)
+        } else {
+            Ok(r)
         }
     };
 
@@ -213,9 +229,9 @@ async fn multipage_export_should_work_correctly() {
     let data_items = export_data.1;
 
     // Import page to space2
-    let _ = importer2.set_history_items(history_items);
-    let _ = importer2.set_data_items(data_items);
-    let _ = importer2.set_root(&init_point.root);
+    importer2.set_history_items(history_items);
+    importer2.set_data_items(data_items);
+    importer2.set_root(&init_point.root);
     let _ = space2.reset(&init_point.root).await;
 
     // Testing data in space2 (match all installed channels)
@@ -259,42 +275,40 @@ async fn multipage_export_with_skip_should_work_correctly() {
                                       exporter1: Arc<dyn RSpaceExporter>,
                                       importer1: Arc<dyn RSpaceImporter>|
      -> Result<Params, Params> {
-        match params {
-            (history_items, data_items, start_path, skip) => {
-                // Export 1 page from space1
-                let export_data = RSpaceExporterItems::get_history_and_data(
-                    exporter1,
-                    start_path.clone(),
-                    skip,
-                    page_size,
-                );
+        let (history_items, data_items, start_path, skip) = params;
+        // Export 1 page from space1
+        let export_data = RSpaceExporterItems::get_history_and_data(
+            exporter1,
+            start_path.clone(),
+            skip,
+            page_size,
+        );
 
-                let history_items_page = export_data.0.items;
-                let data_items_page = export_data.1.items;
+        let history_items_page = export_data.0.items;
+        let data_items_page = export_data.1.items;
 
-                // Validate exporting page
-                let _ = RSpaceImporterInstance::validate_state_items(
-                    history_items_page.clone(),
-                    data_items_page.clone(),
-                    start_path.clone(),
-                    page_size,
-                    skip,
-                    importer1,
-                );
+        // Validate exporting page
+        RSpaceImporterInstance::validate_state_items(
+            history_items_page.clone(),
+            data_items_page.clone(),
+            start_path.clone(),
+            page_size,
+            skip,
+            importer1,
+        )
+        .unwrap();
 
-                let r = (
-                    [history_items, history_items_page.clone()].concat(),
-                    [data_items, data_items_page].concat(),
-                    start_path,
-                    skip + page_size,
-                );
+        let r = (
+            [history_items, history_items_page.clone()].concat(),
+            [data_items, data_items_page].concat(),
+            start_path,
+            skip + page_size,
+        );
 
-                if (history_items_page.len() as i32) < page_size {
-                    Err(r)
-                } else {
-                    Ok(r)
-                }
-            }
+        if (history_items_page.len() as i32) < page_size {
+            Err(r)
+        } else {
+            Ok(r)
         }
     };
 
@@ -333,9 +347,9 @@ async fn multipage_export_with_skip_should_work_correctly() {
     let data_items = export_data.1;
 
     // Import page to space2
-    let _ = importer2.set_history_items(history_items);
-    let _ = importer2.set_data_items(data_items);
-    let _ = importer2.set_root(&init_point.root);
+    importer2.set_history_items(history_items);
+    importer2.set_data_items(data_items);
+    importer2.set_root(&init_point.root);
     let _ = space2.reset(&init_point.root).await;
 
     // Testing data in space2 (match all installed channels)

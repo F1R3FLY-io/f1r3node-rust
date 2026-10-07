@@ -1,0 +1,98 @@
+' Component Diagram 04 — Channel netting: the non-commuting square (Finding A).
+'
+' The per-channel ChannelChange::combine (rspace++/…/channel_change.rs:17) is
+' vec_union (idempotent MAX-multiset union) + cancel_common. It is COMMUTATIVE
+' but NON-ASSOCIATIVE. With a single datum x and
+'     a = add(x) = (1,0),  b = add(x) = (1,0),  c = remove(x) = (0,1)
+' the two association orders DIVERGE:
+'     (a·b)·c :  a·b = cancel(max(1,1),max(0,0)) = {x};  ·c ⟹ cancel(1,1) = ∅
+'     a·(b·c) :  b·c = cancel(max(1,0),max(0,1)) = ∅;    a·∅ = {x}
+' so the fold RESULT depends on the association (hence, in a multi-branch fold,
+' on order). This is a DISCLOSED property of the shipped operator, exhibited as
+' the Rocq theorem combine_not_assoc_exhibit (à la IntegerAdd.launder_exhibit) —
+' NOT a code change. It is benign only because the Finding-B total order pins a
+' single canonical fold order (so every node folds identically).
+'
+' The sum-union FIX (componentwise addition, cancel deferred) is the free
+' commutative monoid on datum multiplicities: both association orders CONVERGE
+' to (2,1) [net +1], so its fold is permutation-invariant (netting_fold_perm).
+' It is shown ALONGSIDE to contrast — it would change merge SEMANTICS, so it is
+' disclosed, not shipped.
+'
+' Witnesses: Rocq ChannelNetting.combine_max_comm / combine_not_assoc_exhibit /
+'            channel_netting_fixed_deterministic, Z3 channel_netting_monoid.py,
+'            Rust channel_change.rs tests.
+'
+' Render:
+'   plantuml -tsvg docs/theory/merge-algebra/diagrams/04-channel-netting-lattice.puml
+
+@startuml 04-channel-netting-lattice
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam rectangle {
+  FontName "monospace"
+  FontSize 10
+}
+skinparam package {
+  BackgroundColor<<Good>> #EEFAF1
+  BackgroundColor<<Bad>>  #FDECEA
+  BorderColor #444444
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Channel netting — the non-commuting square (Finding A)
+
+' Node color legend:
+'   red    (#FFCDD2)          = max-union association step (shipped combine)
+'   red    (#EF9A9A)          = DIVERGENT endpoints (∅ vs {x}) — non-associative
+'   green  (#C8E6C9)          = sum-union association step (the fix)
+'   green  (#A5D6A7)          = CONVERGENT endpoint (2,1) — associative monoid
+'   white  (#FFFFFF)          = the shared inputs a, b, c
+' Edge color legend:
+'   red    (#C62828) = (a·b)·c  association order
+'   orange (#EF6C00) = a·(b·c)  association order
+'   green  (#2E7D32) = both orders (they coincide under the fix)
+
+rectangle "inputs (single datum x):\na = add(x) = (1,0)\nb = add(x) = (1,0)\nc = rem(x) = (0,1)" as IN #FFFFFF
+
+package "SHIPPED max-union combine — NON-associative ✗" <<Bad>> {
+  rectangle "a·b = cancel(max(1,1),max(0,0))\n= {x} = (1,0)" as MAB #FFCDD2
+  rectangle "b·c = cancel(max(1,0),max(0,1))\n= ∅ = (0,0)" as MBC #FFCDD2
+  rectangle "(a·b)·c = cancel(max(1,0),max(0,1))\n= ∅ = (0,0)" as ML #EF9A9A
+  rectangle "a·(b·c) = cancel(max(1,0),max(0,0))\n= {x} = (1,0)" as MR #EF9A9A
+  MAB -[#C62828,bold]-> ML : ·c
+  MBC -[#EF6C00,bold]-> MR : a·
+  ML -[#C62828]-> MR : ∅  ≠  {x}\n(square does NOT commute)
+}
+
+package "SUM-union FIX — commutative monoid ✓" <<Good>> {
+  rectangle "a⊕b = (1+1, 0+0)\n= (2,0)" as SAB #C8E6C9
+  rectangle "b⊕c = (1+0, 0+1)\n= (1,1)" as SBC #C8E6C9
+  rectangle "(a⊕b)⊕c = (2,1)  [net +1]\n a⊕(b⊕c) = (2,1)  [net +1]\ncancel ⟹ {x} either way" as SBOTH #A5D6A7
+  SAB -[#2E7D32,bold]-> SBOTH : ·c
+  SBC -[#2E7D32,bold]-> SBOTH : a·
+}
+
+IN -[#C62828,bold]-> MAB
+IN -[#EF6C00,bold]-> MBC
+IN -[#2E7D32,bold]-> SAB
+IN -[#2E7D32,bold]-> SBC
+
+legend bottom
+  Max-union combine is COMMUTATIVE (combine_max_comm) but NON-ASSOCIATIVE: the
+  (a·b)·c and a·(b·c) endpoints DIFFER (∅ vs {x}), so commutativity alone cannot
+  rescue a multi-branch fold — associativity is required for order-independence.
+  Finding A is DISCLOSED (exhibited as combine_not_assoc_exhibit), NOT fixed: a
+  max→sum union change would alter merge SEMANTICS. It is benign here ONLY because
+  the Finding-B total order pins ONE canonical fold order. The sum-union monoid
+  (shown for contrast) makes both associations CONVERGE to (2,1) and folds
+  permutation-invariantly (netting_fold_perm; Z3 channel_netting_monoid.py).
+endlegend
+
+@enduml

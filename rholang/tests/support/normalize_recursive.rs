@@ -103,6 +103,16 @@ pub(crate) fn normalize_ann_proc_recursive<'ast>(
     _env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
+    // This historical differential oracle models ordinary Rholang lowering only.
+    // Signed per-clause receives have source-exact cost tests instead; admitting
+    // them here would silently discard their funding authority.
+    if let Proc::ForComprehension { receipts, .. } = &proc.proc {
+        assert!(
+            !receipts.iter().any(|receipt| receipt.binds.iter().any(|bind| matches!(bind, Bind::Signed { .. }))),
+            "recursive normalizer oracle requires unsigned receive binds; signed binds belong to cost tests"
+        );
+    }
+
     fn unary_exp<'ast>(
         sub_proc: &'ast AnnProc<'ast>,
         input: ProcVisitInputs,
@@ -403,28 +413,7 @@ pub(crate) fn normalize_ann_proc_recursive<'ast>(
         Proc::ForComprehension {
             receipts,
             proc: continuation,
-        } => {
-            // W1 Phase 4: a `for` carrying any per-clause SIGNED bind
-            // `{% y <- x %}[s]` routes to signed-join recognition (validate each
-            // clause sig, recover the natural-arity plain join). Greg 2026-06-15:
-            // fuel is provisioned on `Σ⟦s⟧` and acquired by SEQUENTIAL per-atom
-            // gates — a fuel token is structurally incapable of entering the data
-            // join's `ReceiveBind` set, so fuel is NEVER folded into the join
-            // (recognition-only: no gate node; the reducer meters per-COMM by
-            // lane). An unsigned `for` lowers ordinarily.
-            use rholang_parser::ast::Bind;
-            let has_signed_bind = receipts.iter().any(|receipt| {
-                receipt
-                    .binds
-                    .iter()
-                    .any(|bind| matches!(bind, Bind::Signed { .. }))
-            });
-            if has_signed_bind {
-                recognize_signed_join_recursive(receipts, *continuation, proc.span, input, _env, parser)
-            } else {
-                normalize_p_input_recursive(receipts, continuation, input, _env, parser)
-            }
-        }
+        } => normalize_p_input_recursive(receipts, continuation, input, _env, parser),
 
         // Let - handle let bindings
         Proc::Let {
@@ -1910,6 +1899,7 @@ fn normalize_p_contr_recursive<'ast>(
             source: Some(name_match_result.par.clone()),
             remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
+            cost_signature: None,
         }],
         body: Some(body_result.par),
         persistent: true,
@@ -2649,37 +2639,9 @@ fn normalize_p_input_recursive<'ast>(
                     let remainder = &lhs.remainder;
                     Ok(((names, remainder), rhs))
                 }
-                // Cost-accounted per-clause signed bind `{% y <- x %}[s]` (W1). The
-                // Phase-4 signed-JOIN dispatch (`normalize.rs` ForComprehension arm
-                // → `recognize_signed_join_recursive` → `strip_signed_binds`) demotes EVERY
-                // `Bind::Signed` to its linear bind BEFORE `normalize_p_input_recursive` sees
-                // it, so this arm is unreachable in normal operation (the
-                // `debug_assert` catches a dispatch regression). The release
-                // fallback treats it as its underlying LINEAR bind — identical
-                // receive shape / COMM count to the unsigned form, metered to the
-                // deploy envelope — so a dispatch bug degrades gracefully rather
-                // than miscompiling.
-                Bind::Signed { lhs, rhs, .. } => {
-                    debug_assert!(
-                        false,
-                        "Bind::Signed must be stripped by recognize_signed_join_recursive before \
-                         normalize_p_input_recursive (W1 Phase 4 dispatch)"
-                    );
-                    let names: Vec<_> = lhs.names.iter().collect();
-                    let remainder = &lhs.remainder;
-
-                    let source_name = match rhs {
-                        Source::Simple { name } => name,
-                        _ => {
-                            return Err(InterpreterError::ParserError(
-                                "Only simple sources supported in current implementation"
-                                    .to_string(),
-                            ))
-                        }
-                    };
-
-                    Ok(((names, remainder), source_name))
-                }
+                Bind::Signed { .. } => unreachable!(
+                    "unsigned-only recursive oracle precondition rejects signed receive binds"
+                ),
             })
             .collect();
 
@@ -2690,10 +2652,9 @@ fn normalize_p_input_recursive<'ast>(
             Bind::Linear { .. } => (false, false),
             Bind::Repeated { .. } => (true, false),
             Bind::Peek { .. } => (false, true),
-            // A cost-accounted signed bind is the linear-receive form (non-
-            // persistent, non-peek); the signature decorates, it does not change
-            // the COMM shape (W1, recognition-only in Phase 1).
-            Bind::Signed { .. } => (false, false),
+            Bind::Signed { .. } => unreachable!(
+                "unsigned-only recursive oracle precondition rejects signed receive binds"
+            ),
         };
 
         // Extract patterns and sources
@@ -2819,7 +2780,7 @@ fn normalize_p_input_recursive<'ast>(
                 .into_iter()
                 .zip(sources_par)
                 .into_iter()
-                .map(|((a, b, c, _), e)| (a, b, e, c))
+                .map(|((a, b, c, _), e)| (a, b, e, c, None))
                 .collect(),
         )?;
 
@@ -3006,43 +2967,6 @@ fn recognize_token_stack_recursive<'ast>(
         par: input.par.clone(),
         free_map: input.free_map.clone(),
     })
-}
-
-/// `for(... {% y <- x %}[s] ...)`: a JOIN carrying one or more per-clause SIGNED
-/// binds (W1 Phase 4 / Axis-C). Recover the natural-arity plain join (Greg's rule:
-/// fuel is NEVER folded into the data join — [`desugar::strip_signed_binds`]),
-/// VALIDATE each clause signature, then lower the plain join through the ORDINARY
-/// dispatch. Per-clause lane attribution is the reducer's channel match (Phase 3);
-/// the continuation is NOT re-signed (one token per clause). Emits NO gate node, so
-/// the normalized `Par` of a signed join is the SAME as its unsigned-equivalent
-/// `for` (the double-metering avoidance, extended to joins).
-fn recognize_signed_join_recursive<'ast>(
-    receipts: &'ast Receipts<'ast>,
-    body: AnnProc<'ast>,
-    span: SourceSpan,
-    input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    // Strip every `Bind::Signed` back to its linear bind and collect the clause
-    // signatures (source order). The recovered `for` is the natural-arity data
-    // join — no fuel bind enters its `ReceiveBind` set.
-    let (plain_for, clause_sigs) = desugar::strip_signed_binds(receipts, body, span, parser);
-    debug_assert!(
-        !clause_sigs.is_empty(),
-        "recognize_signed_join_recursive is dispatched only when a Bind::Signed is present"
-    );
-    // VALIDATE each clause signature (rejects a wildcard `_`, a quoted-principal
-    // `@P` ground sig, or a bare lollipop in fundable position) — the same
-    // recognition `signature_to_native_sig_recursive` applies to a `{% P %}[s]` term. Phase
-    // 3's channel match attributes each clause's rendezvous COMM to its signer lane
-    // at the reducer; here recognition only validates + recovers the plain join.
-    for sig in &clause_sigs {
-        signature_to_native_sig_recursive(sig, &input.bound_map_chain, env, parser)?;
-    }
-    // Lower the recovered PLAIN join ordinarily: its binds are now linear, so it
-    // re-normalizes through `normalize_p_input_recursive` with NO signed-bind recursion.
-    normalize_ann_proc_recursive(&plain_for, input, env, parser)
 }
 
 // ==========================================================================

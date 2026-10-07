@@ -174,7 +174,7 @@ async fn replay_compute_state(
     processed_deploy: ProcessedDeploy,
     state_hash: &StateHash,
 ) -> Result<StateHash, casper::rust::errors::CasperError> {
-    let time_stamp = processed_deploy.deploy.data.time_stamp;
+    let time_stamp = processed_deploy.body().time_stamp;
     runtime_manager
         .replay_compute_state(
             state_hash,

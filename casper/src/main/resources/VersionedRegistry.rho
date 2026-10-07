@@ -115,6 +115,9 @@ in {
       }
     } |
 
+    // Only the closed, inert subset of `lib` values is admitted.
+    // The runtime guard rejects executable processes and unforgeable names
+    // before publication, preserving the temporary-name safety promise.
     // Identity: no caller-supplied deployerId. The store key is the
     // authenticated deployer's pubKey hex; anyone can only insert
     // under their own identity.

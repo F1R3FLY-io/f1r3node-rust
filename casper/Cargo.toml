@@ -18,35 +18,32 @@ block-storage = { path = "../block-storage" }
 shared = { path = "../shared" }
 tokio = { workspace = true }
 prost = { workspace = true }
-lz4_flex = "0.11.3"
-lazy_static = "1.5.0"
+lz4_flex = { workspace = true }
+lazy_static = { workspace = true }
 hex = { workspace = true }
 dashmap = { workspace = true }
 imbl = { workspace = true }
-indexmap = "2.8.0"
+indexmap = { workspace = true }
 bincode = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-byteorder = "1.5.0"
-env_logger = "0.11.8"
+byteorder = { workspace = true }
 rand = { workspace = true }
 futures = { workspace = true }
-uuid = "1.16.0"
+uuid = { workspace = true }
 itertools = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
 # LFS Block Requester dependencies
-num_cpus = "1.0"
 async-stream = "0.3"
-tokio-stream = "0.1"
-humantime = "2.3.0"
+tokio-stream = { workspace = true }
+humantime = { workspace = true }
 tonic = { workspace = true }
 eyre = { workspace = true }
 metrics = { workspace = true }
-proptest = "1.6.0"
 parking_lot = "0.12"
-tempfile = { version = "3.24.0", optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 # ⚠ A SELF dev-dependency, and it is load-bearing rather than decorative.
@@ -62,18 +59,20 @@ tempfile = { version = "3.24.0", optional = true }
 # not. Depending on a sibling crate's feature list to make your own tests build
 # is a trap that springs the first time someone builds the package alone.
 casper = { path = ".", features = ["test-utils"] }
+node = { path = "../node" }
 # P2-16: enable block-storage's test-only RMW bypass helpers for
 # detector-totality / record-lifecycle integration tests. Production
 # builds of casper do NOT enable this feature.
 block-storage = { path = "../block-storage", features = ["test-internals"] }
-metrics-util = "0.17"
-k256 = { version = "0.13.4", features = ["ecdsa"] }
-serial_test = "3.1"
+metrics-util = { workspace = true }
+proptest = { workspace = true }
+k256 = { workspace = true }
+serial_test = { workspace = true }
 env_logger = "0.11.8"
-tempfile = "3.24.0"
+tempfile = { workspace = true }
 # Exhaustive thread-interleaving model checker for the slashing
 # atomic-RMW property (T-9.2). See
-# docs/theory/slashing/design/14-test-plan.md §14.5.
+# docs/casper/theory/slashing/design/14-test-plan.md §14.5.
 loom = "=0.7.2"
 # JSON parsing for the TLA+ trace-replay harness. See
 # casper/tests/slashing/tla_trace_replay.rs (Item 4 / Track 7).
@@ -91,14 +90,12 @@ harness = false
 
 [features]
 default = []
-# Exposes test utilities (TestNode, mocks, genesis helpers) to other workspace members.
-# Guarded with #[cfg(feature = "test-utils")] so it is never compiled in production.
-#
-# Phase 11 (visibility hardening): the casper `test_utils` module constructs
-# `BlockDagKeyValueStorage` directly from in-memory stores and grabs raw write
-# guards on the metadata / deploy indices. Those entry points now live behind
-# block-storage's `test-internals` feature, so enabling casper's `test-utils`
-# transitively enables it. Production builds keep both features off.
+# Exposes test-only items gated in production-adjacent modules to integration
+# tests and other workspace members' tests: the well-known DEFAULT_SEC/PUB
+# deploy keys and the default-key fallback in util/construct_deploy.rs.
+# Production builds keep it off, so those keys are never compiled in.
+# The compatibility helpers need tempfile in the library target and expose
+# block-storage's test-only constructors to integration tests.
 test-utils = ["tempfile", "block-storage/test-internals"]
 schnorr_secp256k1_experimental = [
     "crypto/schnorr_secp256k1_experimental",

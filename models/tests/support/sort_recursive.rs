@@ -72,6 +72,18 @@ pub fn sort_par_recursive(par: &Par) -> ScoredTerm<Par> {
             .collect(),
         unforgeables: par.unforgeables.iter().map(sort_unforgeable).collect(),
         conditionals: par.conditionals.iter().map(sort_if_recursive).collect(),
+        // Cost leaves are covered by their own recursive/explicit differential
+        // in cost_accounting_sorter; this oracle still owns the legacy Par arms.
+        cost_signed_terms: par
+            .cost_signed_terms
+            .iter()
+            .map(super::cost_accounting_sorter::sort_signed_term)
+            .collect(),
+        cost_stacks: par
+            .cost_stacks
+            .iter()
+            .map(super::cost_accounting_sorter::sort_stack)
+            .collect(),
     };
     combine_par(par, parts)
 }
@@ -93,7 +105,11 @@ pub fn sort_bind_recursive(bind: &ReceiveBind) -> ScoredTerm<ReceiveBind> {
         .expect("source field on Bind was None, should be Some");
     let patterns = bind.patterns.iter().map(sort_par_recursive).collect();
     let channel = sort_par_recursive(source);
-    combine_bind(bind, patterns, channel)
+    let cost_signature = bind
+        .cost_signature
+        .as_ref()
+        .map(super::cost_accounting_sorter::sort_signature);
+    combine_bind(bind, patterns, channel, cost_signature)
 }
 
 pub fn sort_receive_recursive(r: &Receive) -> ScoredTerm<Receive> {
@@ -434,6 +450,7 @@ mod differential_sorter {
                 None
             },
             free_count: 2,
+            cost_signature: None,
         }
     }
 
@@ -554,6 +571,8 @@ mod differential_sorter {
             conditionals: vec![if_node()],
             locally_free: vec![1, 2, 3],
             connective_used: true,
+            cost_signed_terms: vec![],
+            cost_stacks: vec![],
         }
     }
 
@@ -852,6 +871,7 @@ mod differential_sorter {
             source: Some(gstring("src")),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         };
         let sorted_bind = ReceiveSortMatcher::sort_bind(rb).term;
         assert_eq!(

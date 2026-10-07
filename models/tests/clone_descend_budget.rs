@@ -257,7 +257,12 @@ fn drive_counts(root: &Par) -> (Counts, Par) {
          means this loop and the traversal disagree.",
         vals.len()
     );
-    let CloneVal::Par(out) = vals.pop().expect("one value");
+    let out = match vals.pop().expect("one value") {
+        CloneVal::Par(out) => out,
+        CloneVal::CostSignature(_) => {
+            panic!("a Par-rooted clone walk produced a CostSignature root")
+        }
+    };
     (counts, out)
 }
 

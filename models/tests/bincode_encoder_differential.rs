@@ -579,10 +579,11 @@ proptest! {
     /// §1 + §2 + §3 through every cold-store root.
     #[test]
     fn all_properties_through_every_root(par in generate_par(2)) {
-        let datum = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2, 3] };
+        let datum = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2, 3], cost_authority: None, cost_stack: None };
         let pattern = BindPattern { patterns: vec![par.clone()], remainder: None, free_count: 3 };
         let cont = TaggedContinuation {
             guard: Some(par.clone()),
+            cost_authority: None,
             tagged_cont: Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(7)),
         };
 

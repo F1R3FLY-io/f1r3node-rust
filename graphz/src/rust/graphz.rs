@@ -454,3 +454,239 @@ impl Display for GraphzError {
 }
 
 impl std::error::Error for GraphzError {}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    #[test]
+    fn formats_graph_values_and_errors() {
+        let shapes = [
+            (GraphShape::Circle, "circle"),
+            (GraphShape::DoubleCircle, "doublecircle"),
+            (GraphShape::Box, "box"),
+            (GraphShape::PlainText, "plaintext"),
+            (GraphShape::Msquare, "Msquare"),
+            (GraphShape::Record, "record"),
+        ];
+        for (value, expected) in shapes {
+            assert_eq!(value.to_string(), expected);
+        }
+
+        let styles = [
+            (GraphStyle::Solid, "solid"),
+            (GraphStyle::Bold, "bold"),
+            (GraphStyle::Filled, "filled"),
+            (GraphStyle::Invis, "invis"),
+            (GraphStyle::Dotted, "dotted"),
+            (GraphStyle::Dashed, "dashed"),
+        ];
+        for (value, expected) in styles {
+            assert_eq!(value.to_string(), expected);
+        }
+
+        let ranks = [
+            (GraphRank::Same, "same"),
+            (GraphRank::Min, "min"),
+            (GraphRank::Source, "source"),
+            (GraphRank::Max, "max"),
+            (GraphRank::Sink, "sink"),
+        ];
+        for (value, expected) in ranks {
+            assert_eq!(value.to_string(), expected);
+        }
+
+        let directions = [
+            (GraphRankDir::TB, "TB"),
+            (GraphRankDir::BT, "BT"),
+            (GraphRankDir::LR, "LR"),
+            (GraphRankDir::RL, "RL"),
+        ];
+        for (value, expected) in directions {
+            assert_eq!(value.to_string(), expected);
+        }
+
+        let arrows = [
+            (GraphArrowType::NormalArrow, "normal"),
+            (GraphArrowType::InvArrow, "inv"),
+            (GraphArrowType::NoneArrow, "none"),
+        ];
+        for (value, expected) in arrows {
+            assert_eq!(value.to_string(), expected);
+        }
+
+        assert_eq!(default_shape(), GraphShape::Circle);
+        assert_eq!(
+            GraphzError::IoError("disk".into()).to_string(),
+            "IO Error: disk"
+        );
+        assert_eq!(
+            GraphzError::SerializationError("value".into()).to_string(),
+            "Serialization Error: value"
+        );
+    }
+
+    #[tokio::test]
+    async fn serializers_store_content() {
+        let string = StringSerializer::default();
+        string.push("alpha", "\n").await.unwrap();
+        string.push("beta", "").await.unwrap();
+        assert_eq!(string.get_content().await, "alpha\nbeta");
+
+        let (sender, receiver) = oneshot::channel();
+        let list = ListSerializer::new(sender);
+        list.push("alpha", "!").await.unwrap();
+        list.push("beta", "?").await.unwrap();
+        assert_eq!(list.get_lines().await, vec!["alpha!", "beta?"]);
+        drop(list);
+        assert_eq!(receiver.await.unwrap(), vec!["alpha!", "beta?"]);
+
+        let path = std::env::temp_dir().join(format!(
+            "graphz-serializer-{}-{}.dot",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file = File::create(&path).await.unwrap();
+        let serializer = FileSerializer::new(file).await;
+        serializer.push("alpha", "\n").await.unwrap();
+        serializer.push("beta", "").await.unwrap();
+        drop(serializer);
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            "alpha\nbeta"
+        );
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn renders_graph_nodes_edges_and_attributes() {
+        let serializer = Arc::new(StringSerializer::new());
+        let node_attributes = HashMap::from([("fontname".to_string(), "mono".to_string())]);
+        let graph = apply(
+            "network".into(),
+            GraphType::Graph,
+            serializer.clone(),
+            false,
+            Some("comment".into()),
+            Some("label".into()),
+            Some("line".into()),
+            Some(GraphRank::Same),
+            Some(GraphRankDir::LR),
+            Some("filled".into()),
+            Some("blue".into()),
+            node_attributes,
+        )
+        .await
+        .unwrap();
+
+        graph
+            .node("plain", GraphShape::Circle, None, None, None)
+            .await
+            .unwrap();
+        graph
+            .node(
+                "styled",
+                GraphShape::Box,
+                Some(GraphStyle::Bold),
+                Some("red".into()),
+                Some("Styled node".into()),
+            )
+            .await
+            .unwrap();
+        graph
+            .edge(
+                "plain",
+                "styled",
+                Some(GraphStyle::Dashed),
+                Some(GraphArrowType::InvArrow),
+                Some(false),
+            )
+            .await
+            .unwrap();
+        graph
+            .edge_tuple(("styled".into(), "plain".into()))
+            .await
+            .unwrap();
+        graph.close().await.unwrap();
+
+        let output = serializer.get_content().await;
+        assert!(output.starts_with("// comment\ngraph \"network\" {\n"));
+        assert!(output.contains("  label = \"label\"\n"));
+        assert!(output.contains("  style=filled\n"));
+        assert!(output.contains("  color=blue\n"));
+        assert!(output.contains("  rank=same\n"));
+        assert!(output.contains("  rankdir=LR\n"));
+        assert!(output.contains("  node [fontname=mono]\n"));
+        assert!(output.contains("  splines=line\n"));
+        assert!(output.contains("  \"plain\"\n"));
+        assert!(output.contains("  \"styled\" ["));
+        assert!(output.contains("shape=box"));
+        assert!(output.contains("style=bold"));
+        assert!(output.contains("color=red"));
+        assert!(output.contains("label=Styled node"));
+        assert!(output.contains("  \"plain\" -- \"styled\" ["));
+        assert!(output.contains("style=dashed"));
+        assert!(output.contains("arrowhead=inv"));
+        assert!(output.contains("constraint=false"));
+        assert!(output.contains("  \"styled\" -- \"plain\"\n"));
+        assert!(output.ends_with('}'));
+    }
+
+    #[tokio::test]
+    async fn renders_subgraphs_and_directed_graphs() {
+        let serializer = Arc::new(StringSerializer::new());
+        let nested = subgraph(
+            "cluster".into(),
+            GraphType::DiGraph,
+            serializer.clone(),
+            Some("\"quoted label\"".into()),
+            Some(GraphRank::Sink),
+            Some(GraphRankDir::BT),
+            Some("dotted".into()),
+            Some("green".into()),
+        )
+        .await
+        .unwrap();
+        nested
+            .edge(
+                "\"source\"",
+                "target",
+                None,
+                Some(GraphArrowType::NoneArrow),
+                Some(true),
+            )
+            .await
+            .unwrap();
+        nested.close().await.unwrap();
+
+        let directed = apply(
+            String::new(),
+            GraphType::DiGraph,
+            serializer.clone(),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            HashMap::new(),
+        )
+        .await
+        .unwrap();
+        directed.edge("a", "b", None, None, None).await.unwrap();
+        directed.close().await.unwrap();
+
+        let output = serializer.get_content().await;
+        assert!(output.starts_with("  subgraph \"cluster\" {\n"));
+        assert!(output.contains("    label = \"quoted label\"\n"));
+        assert!(output.contains("    \"source\" -> \"target\" ["));
+        assert!(output.contains("arrowhead=none"));
+        assert!(output.contains("constraint=true"));
+        assert!(output.contains("  }\n"));
+        assert!(output.contains("digraph {\n  \"a\" -> \"b\"\n}"));
+    }
+}

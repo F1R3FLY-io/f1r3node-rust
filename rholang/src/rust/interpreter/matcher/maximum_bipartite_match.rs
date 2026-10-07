@@ -1,16 +1,20 @@
+use shared::rust::clone_backing::CloneBacking;
+
 use super::lazy_relation::{EdgeResult, LazyRelation, RelationCursor, RelationalMatchStats};
+use super::spatial_matcher::MatcherWork;
 
 pub type MaximumBipartiteMatchStats = RelationalMatchStats;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/MaximumBipartiteMatch.scala
-pub struct MaximumBipartiteMatch<P, T, R>
+pub struct MaximumBipartiteMatch<'callback, P, T, R>
 where
-    P: Clone,
-    T: Clone + Ord,
-    R: Clone,
+    P: Clone + CloneBacking,
+    T: Clone + CloneBacking + Ord,
+    R: Clone + CloneBacking,
 {
-    match_function: Box<dyn for<'pattern, 'target> FnMut(&'pattern P, &'target T) -> Option<R>>,
-    cache_pattern: Box<dyn Fn(&P) -> bool>,
+    match_function:
+        Box<dyn for<'pattern, 'target> FnMut(&'pattern P, &'target T) -> Option<R> + 'callback>,
+    cache_pattern: Box<dyn Fn(&P) -> bool + 'callback>,
     stats: MaximumBipartiteMatchStats,
 }
 
@@ -36,11 +40,11 @@ struct SearchFrame<R> {
     pending: Option<(usize, EdgeResult<R>)>,
 }
 
-impl<P, T, R> MaximumBipartiteMatch<P, T, R>
+impl<'callback, P, T, R> MaximumBipartiteMatch<'callback, P, T, R>
 where
-    P: Clone,
-    T: Clone + Ord,
-    R: Clone,
+    P: Clone + CloneBacking,
+    T: Clone + CloneBacking + Ord,
+    R: Clone + CloneBacking,
 {
     /// Construct the compatibility matcher without relation retention.
     ///
@@ -49,7 +53,9 @@ where
     /// [`new_with_cache_policy`](Self::new_with_cache_policy) to opt proven-pure
     /// pattern rows into lazy relational reuse.
     pub fn new(
-        match_function: Box<dyn for<'pattern, 'target> FnMut(&'pattern P, &'target T) -> Option<R>>,
+        match_function: Box<
+            dyn for<'pattern, 'target> FnMut(&'pattern P, &'target T) -> Option<R> + 'callback,
+        >,
     ) -> Self {
         Self::new_with_cache_policy(match_function, Box::new(|_| false))
     }
@@ -64,8 +70,10 @@ where
     /// is pure for every target: the result may be evaluated once and replayed
     /// on later augmenting paths. Impure rows must return `false`.
     pub fn new_with_cache_policy(
-        match_function: Box<dyn for<'pattern, 'target> FnMut(&'pattern P, &'target T) -> Option<R>>,
-        cache_pattern: Box<dyn Fn(&P) -> bool>,
+        match_function: Box<
+            dyn for<'pattern, 'target> FnMut(&'pattern P, &'target T) -> Option<R> + 'callback,
+        >,
+        cache_pattern: Box<dyn Fn(&P) -> bool + 'callback>,
     ) -> Self {
         MaximumBipartiteMatch {
             match_function,
@@ -86,6 +94,21 @@ where
         })
     }
 
+    pub(super) fn find_matches_metered(
+        &mut self,
+        patterns: Vec<P>,
+        targets: Vec<T>,
+        work: &MatcherWork<'_>,
+    ) -> Option<Vec<(T, P, R)>> {
+        self.find_indexed_matches_metered(patterns, targets, work)
+            .map(|matches| {
+                matches
+                    .into_iter()
+                    .map(|(_, target, pattern, result)| (target, pattern, result))
+                    .collect()
+            })
+    }
+
     /// Return the same deterministic matching as [`find_matches`](Self::find_matches),
     /// retaining each target's original position.
     ///
@@ -98,7 +121,39 @@ where
         patterns: Vec<P>,
         targets: Vec<T>,
     ) -> Option<Vec<(usize, T, P, R)>> {
+        self.find_indexed_matches_inner(patterns, targets, None)
+    }
+
+    pub(super) fn find_indexed_matches_metered(
+        &mut self,
+        patterns: Vec<P>,
+        targets: Vec<T>,
+        work: &MatcherWork<'_>,
+    ) -> Option<Vec<(usize, T, P, R)>> {
+        self.find_indexed_matches_inner(patterns, targets, Some(work))
+    }
+
+    fn find_indexed_matches_inner(
+        &mut self,
+        patterns: Vec<P>,
+        targets: Vec<T>,
+        work: Option<&MatcherWork<'_>>,
+    ) -> Option<Vec<(usize, T, P, R)>> {
         self.stats = MaximumBipartiteMatchStats::default();
+        if let Some(work) = work {
+            work.reserve(
+                1,
+                0,
+                targets
+                    .len()
+                    .checked_mul(std::mem::size_of::<Option<Assignment<R>>>())?,
+            )?;
+            work.reserve(
+                1,
+                0,
+                patterns.len().checked_mul(std::mem::size_of::<usize>())?,
+            )?;
+        }
         let mut assignments: Vec<Option<Assignment<R>>> =
             (0..targets.len()).map(|_| None).collect();
         let mut relation =
@@ -111,12 +166,27 @@ where
                 &targets,
                 &mut assignments,
                 &mut relation,
-            ) {
+                work,
+            )? {
                 return None;
             }
         }
 
         relation.clear();
+        if let Some(work) = work {
+            work.reserve(
+                1,
+                0,
+                assignments
+                    .len()
+                    .checked_mul(std::mem::size_of::<(Candidate<T>, usize, R)>())?,
+            )?;
+            for (target_index, assignment) in assignments.iter().enumerate() {
+                if assignment.is_some() {
+                    work.reserve_clone(&targets[target_index])?;
+                }
+            }
+        }
         let mut ordered: Vec<(Candidate<T>, usize, R)> = assignments
             .into_iter()
             .enumerate()
@@ -136,6 +206,12 @@ where
         // Preserve the old BTreeMap<Candidate<T>, ...> observation order:
         // target value first, original target index as the duplicate tie-break.
         ordered.sort_by(|left, right| left.0.cmp(&right.0));
+        if let Some(work) = work {
+            for (target, pattern_index, _) in &ordered {
+                work.reserve_clone(&patterns[*pattern_index])?;
+                work.reserve_inspect(&target.value)?;
+            }
+        }
         Some(
             ordered
                 .into_iter()
@@ -165,7 +241,12 @@ where
         targets: &[T],
         assignments: &mut [Option<Assignment<R>>],
         relation: &mut LazyRelation<R>,
-    ) -> bool {
+        work: Option<&MatcherWork<'_>>,
+    ) -> Option<bool> {
+        if let Some(work) = work {
+            work.reserve(1, 0, targets.len())?;
+            work.reserve(1, 0, std::mem::size_of::<SearchFrame<R>>())?;
+        }
         let mut seen_targets = vec![false; targets.len()];
         if relation.is_cacheable(root_pattern) && relation.has_scanned_targets(root_pattern) {
             self.stats.relation_row_reuses += 1;
@@ -180,11 +261,11 @@ where
 
         loop {
             let Some(frame) = stack.last_mut() else {
-                return false;
+                return Some(false);
             };
 
             if let Some((target_index, result)) =
-                self.next_edge(frame, patterns, targets, relation, &seen_targets)
+                self.next_edge(frame, patterns, targets, relation, &seen_targets, work)?
             {
                 seen_targets[target_index] = true;
 
@@ -208,7 +289,7 @@ where
                                 result: parent_result,
                             });
                         }
-                        return true;
+                        return Some(true);
                     }
                     Some(previous) => {
                         let previous_pattern = previous.pattern_index;
@@ -219,6 +300,9 @@ where
                             self.stats.relation_row_reuses += 1;
                         }
                         self.stats.augmenting_frames += 1;
+                        if let Some(work) = work {
+                            work.reserve(1, 0, std::mem::size_of::<SearchFrame<R>>())?;
+                        }
                         stack.push(SearchFrame {
                             pattern_index: previous_pattern,
                             next_target: 0,
@@ -236,7 +320,7 @@ where
             if let Some(parent) = stack.last_mut() {
                 parent.pending = None;
             } else {
-                return false;
+                return Some(false);
             }
         }
     }
@@ -253,35 +337,51 @@ where
         targets: &[T],
         relation: &mut LazyRelation<R>,
         seen_targets: &[bool],
-    ) -> Option<(usize, EdgeResult<R>)> {
+        work: Option<&MatcherWork<'_>>,
+    ) -> Option<Option<(usize, EdgeResult<R>)>> {
         if !relation.is_cacheable(frame.pattern_index) {
             while frame.next_target < targets.len() {
                 let target_index = frame.next_target;
                 frame.next_target += 1;
+                if let Some(work) = work {
+                    work.reserve(1, 0, 0)?;
+                }
                 if seen_targets[target_index] {
                     continue;
+                }
+                if let Some(work) = work {
+                    work.reserve_inspect(&patterns[frame.pattern_index])?;
+                    work.reserve_inspect(&targets[target_index])?;
                 }
                 self.stats.edge_evaluations += 1;
                 if let Some(result) =
                     (self.match_function)(&patterns[frame.pattern_index], &targets[target_index])
                 {
                     self.stats.successful_edge_evaluations += 1;
-                    return Some((target_index, EdgeResult::Owned(result)));
+                    return Some(Some((target_index, EdgeResult::Owned(result))));
                 }
             }
-            return None;
+            return Some(None);
         }
 
         while let Some((target_index, result)) =
             relation.next_cached(frame.pattern_index, &mut frame.relation_cursor)
         {
             self.stats.cached_edge_visits += 1;
+            if let Some(work) = work {
+                work.reserve(1, 0, 0)?;
+            }
             if !seen_targets[target_index] {
-                return Some((target_index, EdgeResult::Shared(result)));
+                return Some(Some((target_index, EdgeResult::Shared(result))));
             }
         }
 
         while let Some(target_index) = relation.next_unscanned(frame.pattern_index, targets.len()) {
+            if let Some(work) = work {
+                work.reserve(1, 0, 0)?;
+                work.reserve_inspect(&patterns[frame.pattern_index])?;
+                work.reserve_inspect(&targets[target_index])?;
+            }
             self.stats.edge_evaluations += 1;
             let Some(result) =
                 (self.match_function)(&patterns[frame.pattern_index], &targets[target_index])
@@ -289,12 +389,19 @@ where
                 continue;
             };
             self.stats.successful_edge_evaluations += 1;
+            if let Some(work) = work {
+                work.reserve(
+                    1,
+                    0,
+                    std::mem::size_of::<R>() + std::mem::size_of::<usize>(),
+                )?;
+            }
             let result = relation.record_success(frame.pattern_index, target_index, result);
             if !seen_targets[target_index] {
-                return Some((target_index, EdgeResult::Shared(result)));
+                return Some(Some((target_index, EdgeResult::Shared(result))));
             }
         }
 
-        None
+        Some(None)
     }
 }

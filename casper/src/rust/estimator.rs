@@ -8,26 +8,25 @@
 //! * Project the DAG's `latest_message_hashes` through the
 //!   `invalid_latest_messages` filter so slashed validators contribute
 //!   zero weight to fork choice (T-10).
-//! * Rank surviving tips by their cumulative validator-weight score
-//!   (`build_scores_map`), breaking ties on hash for cross-node
-//!   determinism.
+//! * Choose the head by a heaviest-subtree DESCENT over the scored
+//!   main-parent tree (`build_scores_map` + `rank_forkchoices`), ties
+//!   by ascending hash for cross-node determinism; rank the remaining
+//!   frontier tips behind it.
 //! * Apply `max_parent_depth` truncation so old parents do not delay
 //!   finalization.
 //!
 //! ## Slashing-protocol position
 //!
-//! See `docs/theory/slashing/slashing-verification.md` §6.4 (T-10) for
+//! See `docs/casper/theory/slashing/slashing-verification.md` §6.4 (T-10) for
 //! the abstract filter property. The operational realization is the
 //! conjunction `(invalid-block-flag) ∧ (bond=0 ⇒ zero weight)` — see
-//! `docs/theory/slashing/design/07-fork-choice-and-lifecycle.md`.
+//! `docs/casper/theory/slashing/design/07-fork-choice-and-lifecycle.md`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use futures::stream::{self, StreamExt, TryStreamExt};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -35,53 +34,38 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::util::dag_operations::DagOperations;
 use crate::rust::util::proto_util;
 
-/// Tips of the DAG, ranked against LCA
+/// Tips of the DAG, ranked against LCA. `scores` carries the LMD-GHOST
+/// cumulative-weight score per block so callers can distinguish a decisive
+/// fork-choice winner from a tie (parent ordering may reorder only within
+/// equal scores).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForkChoice {
     pub tips: Vec<BlockHash>,
-    pub lca: BlockHash,
+    pub scores: HashMap<BlockHash, i64>,
 }
 
+/// Stateless GHOST fork-choice. The parent-count and parent-depth bounds are
+/// per-call inputs from the caller's shard conf, so the estimator can never
+/// run on a stale copy of them.
 #[derive(Debug, Clone)]
-pub struct Estimator {
-    max_number_of_parents: i32,
-    max_parent_depth_opt: Option<i32>,
-}
+pub struct Estimator;
 
 impl Estimator {
     pub const UNLIMITED_PARENTS: i32 = i32::MAX;
     const LATEST_MESSAGE_MAX_DEPTH: i64 = 1000;
 
-    pub fn apply(max_number_of_parents: i32, max_parent_depth_opt: Option<i32>) -> Self {
-        Self {
-            max_number_of_parents,
-            max_parent_depth_opt,
-        }
-    }
+    pub fn apply() -> Self { Self }
 
-    #[tracing::instrument(name = "tips0", target = "f1r3fly.casper.estimator.tips0", skip_all)]
-    pub async fn tips(
-        &self,
-        dag: &mut KeyValueDagRepresentation,
-        genesis: &BlockMessage,
-    ) -> Result<ForkChoice, KvStoreError> {
-        // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
-        // `imbl::HashMap` (refcount-bump clone). Use `into_iter` to collect
-        // by ownership rather than re-cloning every key/value pair.
-        let latest_message_hashes: HashMap<Validator, BlockHash> =
-            dag.latest_message_hashes().into_iter().collect();
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips0", "latest-message-hashes");
-        self.tips_with_latest_messages(dag, genesis, latest_message_hashes)
-            .await
-    }
-
-    /// When the BlockDag has an empty latestMessages, tips will return IndexedSeq(genesis.blockHash)
+    /// Fork choice scored from `floor`: no LCA walk or score descends below it.
+    /// With no latest messages the only tip is `floor`.
     #[tracing::instrument(name = "tips1", target = "f1r3fly.casper.estimator.tips1", skip_all)]
     pub async fn tips_with_latest_messages(
         &self,
         dag: &mut KeyValueDagRepresentation,
-        genesis: &BlockMessage,
+        floor: &BlockMetadata,
         latest_messages_hashes: HashMap<Validator, BlockHash>,
+        max_number_of_parents: i32,
+        max_parent_depth_opt: Option<i32>,
     ) -> Result<ForkChoice, KvStoreError> {
         let invalid_latest_messages =
             dag.invalid_latest_messages_from_hashes(&latest_messages_hashes)?;
@@ -90,31 +74,64 @@ impl Estimator {
         filtered_latest_messages_hashes
             .retain(|validator, _| !invalid_latest_messages.contains_key(validator));
 
-        let genesis_metadata = BlockMetadata::from_block(genesis, false, None, None);
+        // A latest message this node does not hold (a stale slot below an
+        // LFS restore horizon) cannot be cited or scored; abstain the
+        // validator instead of failing every fork-choice run.
+        let mut unheld: Vec<Validator> = Vec::new();
+        for (validator, hash) in filtered_latest_messages_hashes.iter() {
+            if dag.lookup(hash)?.is_none() {
+                tracing::debug!(
+                    target: "f1r3fly.casper.estimator",
+                    "abstaining validator with unheld latest message {:?}",
+                    hash
+                );
+                unheld.push(validator.clone());
+            }
+        }
+        for validator in unheld {
+            filtered_latest_messages_hashes.remove(&validator);
+        }
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips1", "lca");
-        let lca =
-            Self::calculate_lca(dag, &genesis_metadata, &filtered_latest_messages_hashes).await?;
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "lca");
+        let lca = Self::calculate_lca(dag, floor, &filtered_latest_messages_hashes).await?;
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips1", "score-map");
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "score-map");
         let scores_map =
             Self::build_scores_map(dag, &filtered_latest_messages_hashes, &lca).await?;
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips1", "ranked-latest-messages-hashes");
-        let ranked_latest_messages_hashes =
-            Self::rank_forkchoices(vec![lca.clone()], dag, &scores_map).await?;
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "ranked-latest-messages-hashes");
+        let ranked_latest_messages_hashes = Self::rank_forkchoices(
+            lca.clone(),
+            &filtered_latest_messages_hashes,
+            dag,
+            &scores_map,
+        )?;
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips1", "filtered-deep-parents");
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "filtered-deep-parents");
         let ranked_shallow_hashes = self
-            .filter_deep_parents(ranked_latest_messages_hashes, dag)
+            .filter_deep_parents(ranked_latest_messages_hashes, dag, max_parent_depth_opt)
             .await?;
 
-        Ok(ForkChoice {
-            tips: ranked_shallow_hashes
+        // B2: treat BOTH "unlimited" sentinels EXPLICITLY rather than relying on
+        // `-1 as usize` wrapping to usize::MAX. The estimator's own sentinel is
+        // `Self::UNLIMITED_PARENTS` (i32::MAX); the config wire convention
+        // (`casper::UNLIMITED_PARENTS`) is `-1`, and that value arrives here
+        // straight from the caller's shard conf. A genuine positive cap
+        // truncates; any negative value or i32::MAX means unlimited (take
+        // all). The cast is cast-safe and the two conventions are not
+        // conflated by two's-complement.
+        let tips = if max_number_of_parents < 0 || max_number_of_parents == Self::UNLIMITED_PARENTS
+        {
+            ranked_shallow_hashes
+        } else {
+            ranked_shallow_hashes
                 .into_iter()
-                .take(self.max_number_of_parents as usize)
-                .collect(),
-            lca,
+                .take(max_number_of_parents as usize)
+                .collect()
+        };
+        Ok(ForkChoice {
+            tips,
+            scores: scores_map,
         })
     }
 
@@ -122,8 +139,9 @@ impl Estimator {
         &self,
         ranked_latest_hashes: Vec<BlockHash>,
         dag: &KeyValueDagRepresentation,
+        max_parent_depth_opt: Option<i32>,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
-        match self.max_parent_depth_opt {
+        match max_parent_depth_opt {
             Some(max_parent_depth) => {
                 // P2-8: avoid `split_first().unwrap()` panic when
                 // `rank_forkchoices` returns an empty list (e.g.,
@@ -171,7 +189,7 @@ impl Estimator {
 
     async fn calculate_lca(
         block_dag: &KeyValueDagRepresentation,
-        genesis: &BlockMetadata,
+        floor: &BlockMetadata,
         latest_messages_hashes: &HashMap<Validator, BlockHash>,
     ) -> Result<BlockHash, KvStoreError> {
         let latest_messages: Vec<BlockMetadata> = latest_messages_hashes
@@ -190,9 +208,9 @@ impl Estimator {
             .collect();
 
         let result = if filtered_lm.is_empty() {
-            genesis.block_hash.clone()
+            floor.block_hash.clone()
         } else {
-            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag)
+            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag, floor)
                 .await?
                 .block_hash
         };
@@ -207,7 +225,7 @@ impl Estimator {
     ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
         fn hash_parents(
             hash: &BlockHash,
-            last_finalized_block_number: i64,
+            lca_block_number: i64,
             block_dag: &KeyValueDagRepresentation,
         ) -> Result<Vec<BlockHash>, KvStoreError> {
             // Phase 12 (PERF-1): one `lookup_unsafe` call per node, not two.
@@ -215,10 +233,20 @@ impl Estimator {
             // whole `BlockMetadata` for `parents` — doubling lock
             // acquisitions on the BFS-bound fork-choice path.
             let meta = block_dag.lookup_unsafe(hash)?;
-            if meta.block_number < last_finalized_block_number {
+            if meta.block_number < lca_block_number {
                 Ok(Vec::new())
             } else {
-                Ok(meta.parents)
+                // MAIN parent only. Crediting a validator's weight to every DAG
+                // ancestor saturates merged same-height siblings to equal scores
+                // permanently — every latest message descends from both once the
+                // race is merged — leaving the choice between them to a
+                // tie-break rather than to validator support. A block has
+                // exactly one main parent, so weight flows up exactly one chain
+                // and same-height siblings are mutually exclusive by
+                // construction, which is the exclusivity the clique theorem
+                // assumes. `main_parent` is `parents.first()`
+                // (block_metadata_store.rs:119).
+                Ok(meta.parents.into_iter().take(1).collect())
             }
         }
 
@@ -248,7 +276,18 @@ impl Estimator {
                 }
                 let validator_weight =
                     proto_util::weight_from_validator_by_dag(block_dag, &hash, validator)?;
-                *result.entry(hash.clone()).or_insert(0) += validator_weight;
+                // B3: fail loudly on score overflow rather than wrapping. Reachable
+                // only if the cumulative bonded weight on a block exceeds i64::MAX —
+                // a supply-cap violation (total bonded stake ≤ i64::MAX by construction),
+                // so this can only ever reject an already-invalid state, never a valid one.
+                let entry = result.entry(hash.clone()).or_insert(0);
+                *entry = entry.checked_add(validator_weight).ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "fork-choice score overflow: cumulative validator weight exceeds i64 \
+                         (total bonded stake must be ≤ i64::MAX by the supply cap)"
+                            .to_string(),
+                    )
+                })?;
                 for parent in hash_parents(&hash, lca_block_num, block_dag)? {
                     if !visited.contains(&parent) {
                         queue.push_back(parent);
@@ -275,72 +314,84 @@ impl Estimator {
         Ok(scores_map)
     }
 
-    async fn rank_forkchoices(
-        blocks: Vec<BlockHash>,
+    /// The GHOST head plus the ranked frontier.
+    ///
+    /// The HEAD comes from a heaviest-subtree DESCENT: starting at the LCA,
+    /// each step commits to the scored MAIN-parent child carrying the greatest
+    /// cumulative score (ties by ascending hash) before descending further,
+    /// and stops at the first block with no scored main-parent children — a
+    /// latest-message tip. Scores accumulate up main-parent chains
+    /// (`build_scores_map`), so a child's score IS its subtree's
+    /// latest-message weight and the head can only leave a branch for one
+    /// carrying strictly more support. Only MAIN-parent children are
+    /// followed: a merge is a main-parent child of exactly one of its parents
+    /// and a secondary child of the rest, so weight flows up exactly one
+    /// chain and same-height siblings stay mutually exclusive. An unscored
+    /// child is beyond the latest messages and bounds the walk.
+    ///
+    /// Ranking the TIPS by their own scores instead is NOT GHOST: a tip's own
+    /// score is only its owner's weight, so under concurrent proposal every
+    /// tip ties and the head falls to hash order — the spine then abandons
+    /// majority branches, which is how a finality certificate was reverted
+    /// with zero equivocations in production (the ucc-i6 divergence; see
+    /// tests/fork_choice/heaviest_subtree_descent.rs).
+    ///
+    /// The tail is the remaining latest-message frontier — every other latest
+    /// message with no scored main-parent child (one that HAS such a child is
+    /// a superseded ancestor of another tip on its own chain) — ordered
+    /// (score DESC, hash ASC) for callers that consume the full frontier.
+    fn rank_forkchoices(
+        lca: BlockHash,
+        latest_messages_hashes: &HashMap<Validator, BlockHash>,
         block_dag: &KeyValueDagRepresentation,
         scores: &HashMap<BlockHash, i64>,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let unsorted_new_blocks: Vec<BlockHash> = stream::iter(blocks.iter())
-            .then(|block| Self::replace_block_hash_with_children(block, block_dag, scores))
-            .try_fold(Vec::new(), |mut acc, children| async move {
-                acc.extend(children);
-                Ok(acc)
-            })
-            .await?;
+        fn scored_main_children(
+            block: &BlockHash,
+            block_dag: &KeyValueDagRepresentation,
+            scores: &HashMap<BlockHash, i64>,
+        ) -> Vec<BlockHash> {
+            match block_dag.children(block) {
+                Some(children_set) => children_set
+                    .iter()
+                    .filter(|child| {
+                        scores.contains_key(*child)
+                            && block_dag.main_parent(child).as_ref() == Some(block)
+                    })
+                    .cloned()
+                    .collect(),
+                None => Vec::new(),
+            }
+        }
 
-        let unique_blocks: Vec<BlockHash> = unsorted_new_blocks
-            .into_iter()
+        let mut head = lca;
+        loop {
+            let mut children = scored_main_children(&head, block_dag, scores);
+            if children.is_empty() {
+                break;
+            }
+            children.sort_by(|a, b| {
+                let score_a = scores.get(a).copied().unwrap_or(0);
+                let score_b = scores.get(b).copied().unwrap_or(0);
+                score_b.cmp(&score_a).then_with(|| a.cmp(b))
+            });
+            head = children.swap_remove(0);
+        }
+
+        let frontier: Vec<BlockHash> = latest_messages_hashes
+            .values()
+            .filter(|hash| {
+                **hash != head && scored_main_children(hash, block_dag, scores).is_empty()
+            })
+            .cloned()
             .collect::<HashSet<_>>() // distinct
             .into_iter()
             .collect();
+        let mut ranked = ListOps::sort_by_with_decreasing_order(frontier, scores);
 
-        let new_blocks = ListOps::sort_by_with_decreasing_order(unique_blocks, scores);
-
-        if Self::still_same(&blocks, &new_blocks) {
-            Ok(blocks)
-        } else {
-            Box::pin(Self::rank_forkchoices(new_blocks, block_dag, scores)).await
-        }
+        let mut tips = Vec::with_capacity(ranked.len() + 1);
+        tips.push(head);
+        tips.append(&mut ranked);
+        Ok(tips)
     }
-
-    fn non_empty_list(elements: &HashSet<BlockHash>) -> Option<Vec<BlockHash>> {
-        if elements.is_empty() {
-            None
-        } else {
-            Some(elements.iter().cloned().collect())
-        }
-    }
-
-    /// Only include children that have been scored,
-    /// this ensures that the search does not go beyond
-    /// the messages defined by blockDag.latestMessages
-    async fn replace_block_hash_with_children(
-        b: &BlockHash,
-        block_dag: &KeyValueDagRepresentation,
-        scores: &HashMap<BlockHash, i64>,
-    ) -> Result<Vec<BlockHash>, KvStoreError> {
-        match block_dag.children(b) {
-            Some(children_set) => {
-                let scored_children: HashSet<BlockHash> = children_set
-                    .iter()
-                    .filter_map(|child| {
-                        let child_hash = child.clone();
-                        if scores.contains_key(&child_hash) {
-                            Some(child_hash)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                match Self::non_empty_list(&scored_children) {
-                    Some(non_empty_children) => Ok(non_empty_children),
-                    None => Ok(vec![b.clone()]),
-                }
-            }
-            None => Ok(vec![b.clone()]),
-        }
-    }
-
-    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool { new_blocks == blocks }
 }

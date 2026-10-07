@@ -1,6 +1,6 @@
 // UC-107 — Detector deterministic under validator-set churn.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-107.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-107.
 // Theorems: T-9.11.
 //
 // Scenario: the equivocator's validator entry has been removed from the

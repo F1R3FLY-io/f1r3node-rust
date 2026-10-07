@@ -1,0 +1,62 @@
+' Component/Tree Diagram 03 — GHOST heaviest-subtree selection (worked example).
+'
+' The small weighted tree from the Wolfram witness
+' (formal/wolfram/fork_choice/ghost_heaviest_subtree.wl):
+'   children : 0 → {1,2}, 1 → {3,4}, 2 → {5}
+'   wt       : 0=0, 1=3, 2=2, 3=5, 4=1, 5=4        (supporting weight at node)
+'   subScore : 1=9, 2=6, 3=5, 4=1, 5=4  (subScore[0]=15 = wt + Σ children)
+'
+' At each level the estimator descends into the child of MAX cumulative subtree
+' score (ties → lower hash, a total order). Chosen path: 0 → 1 (9>6) → 3 (5>1),
+' heaviest-subtree leaf = 3. This matches rank_forkchoices' fixpoint.
+'
+' Render:
+'   plantuml -tsvg docs/theory/fork-choice/diagrams/03-ghost-heaviest-subtree.puml
+
+@startuml 03-ghost-heaviest-subtree
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam rectangle {
+  BorderColor #333333
+  FontName    "monospace"
+  FontSize    10
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title GHOST heaviest-subtree selection
+
+' Node color legend:
+'   green  (#A5D6A7) = CHOSEN heaviest-subtree path (0 → 1 → 3)
+'   white  (#FFFFFF) = not chosen
+' Edge color legend:
+'   green  (#2E7D32) = chosen descent (max cumulative score wins)
+'   gray   (#90A4AE) = not-chosen child
+
+rectangle "block 0  (root / LCA)\nwt = 0\nsubScore = 15" as N0 #A5D6A7
+rectangle "block 1  ◀ chosen\nwt = 3\nsubScore = 9" as N1 #A5D6A7
+rectangle "block 2\nwt = 2\nsubScore = 6" as N2 #FFFFFF
+rectangle "block 3  ◀ HEAVIEST LEAF\nwt = 5\nsubScore = 5" as N3 #A5D6A7
+rectangle "block 4  (leaf)\nwt = 1\nsubScore = 1" as N4 #FFFFFF
+rectangle "block 5  (leaf)\nwt = 4\nsubScore = 4" as N5 #FFFFFF
+
+N0 -[#2E7D32,bold]-> N1 : 9 ≥ 6  ⟹ pick 1
+N0 -[#90A4AE]-> N2 : 6  (dropped)
+N1 -[#2E7D32,bold]-> N3 : 5 ≥ 1  ⟹ pick 3
+N1 -[#90A4AE]-> N4 : 1  (dropped)
+N2 -[#90A4AE]-> N5 : 4  (off the\nheaviest path)
+
+legend bottom
+  At each level DESCEND into the max-cumulative-score child;
+  ties → lower hash (a TOTAL order, so the argmax is unique).
+  subScore[n] = wt[n] + Σ subScore[children(n)].
+  Path 0 → 1 → 3 : subScore 15 ▶ 9 ▶ 5 ; heaviest-subtree leaf = 3.
+  Rocq Rank.rank_selects_heaviest ; Wolfram ghost_heaviest_subtree.wl.
+endlegend
+
+@enduml

@@ -91,11 +91,52 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
-            Db::new("deploy-index".to_string(), None),
+            Db::new("floor-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Per-block finalized frontier F(X) (the warm up-walk pivot). Must be
+            // registered here so the production LMDB store manager can open it in
+            // BlockDagKeyValueStorage::new (mirrors "floor-index").
+            Db::new("frontier-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Deploy-lifecycle event rows (per-sig body projection, bounded to
+            // open sigs — pruned at the terminal write). Opened in
+            // BlockDagKeyValueStorage::new like the indices above.
+            Db::new("deploy-lifecycle-events".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Repeat-deploy carrier index: per-sig carrier records over valid,
+            // invalid, and settled blocks, in a dedicated store (no shared
+            // keyspace with wire-keyed rows). Opened in
+            // BlockDagKeyValueStorage::new (mirrors "floor-index").
+            Db::new("carrier-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Carrier-index metadata: the write-once engagement watermark and
+            // the prune stride cursor.
+            Db::new("carrier-index-meta".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // WRITE-ONCE terminal deploy verdicts (Finalized/Expired/Failed),
+            // written by the finality layer's lifecycle register.
+            Db::new("deploy-lifecycle-terminal".to_string(), None),
             dag_storage_env_config(),
         ),
         (
             Db::new("last-finalized-block".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Single-slot register for the shard's genesis hash (learned during
+            // a truncated restore). Opened in BlockDagKeyValueStorage::new like
+            // the indices above.
+            Db::new("genesis-hash".to_string(), None),
             dag_storage_env_config(),
         ),
         // Runtime mergeable store (cache of mergeable channels for block-merge)
@@ -108,11 +149,21 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new("deploy_storage".to_string(), None),
             deploy_storage_env_config(),
         ),
+        (
+            Db::new("deploy_envelope_storage".to_string(), None),
+            deploy_storage_env_config(),
+        ),
         // Buffer of deploys rejected during multi-parent merge; shares sizing
         // with deploy_storage since its entries are the same value type
-        // (Signed<DeployData>) and it is bounded by `deployLifespan`.
+        // (Signed<DeployData>) and it is bounded by `deploy_lifespan`.
         (
             Db::new("rejected_deploy_buffer".to_string(), None),
+            deploy_storage_env_config(),
+        ),
+        // Versioned checked retry values retain historical flat cosigners
+        // without changing the old Signed<DeployData> bincode keyspace.
+        (
+            Db::new("rejected_deploy_buffer_checked_v1".to_string(), None),
             deploy_storage_env_config(),
         ),
         // Reporting (trace) cache

@@ -9,12 +9,12 @@ load(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
 
 CASES = [
     {
-        "id": "v13_runtime_to_replay_trace_commitment",
-        "semantic_oracle": "runtime_to_replay_trace_commitment",
+        "id": "v13_runtime_to_replay_authenticated_witness",
+        "semantic_oracle": "runtime_to_replay_authenticated_witness",
         "primary_surface": "runtime_budget",
-        "primary_risk": "trace_slot_capacity",
+        "primary_risk": "atomic_batch_admission",
         "secondary_surface": "casper_replay",
-        "secondary_risk": "replay_auth_digest_count",
+        "secondary_risk": "authority_witness_replay_authentication",
         "cross_surface_role": "source_to_sink",
         "expected_disposition": "accepted",
         "mutation_axis": "runtime_to_replay",
@@ -23,16 +23,16 @@ CASES = [
             canonical_event("source", 1, descriptor="v13/runtime/replay/b", deploy=0, path=[13, 1]),
         ],
         "initial_budget": 8,
-        "replay_mutations": ["runtime_to_replay", "cost_trace_digest", "cost_trace_event_count"],
-        "source_facets": ["runtime_budget", "trace_commitment", "casper_replay", "digest_count"],
+        "replay_mutations": ["runtime_to_replay", "processed_deploy_cost", "authority_cost_witness", "authority_byte_events", "replay_payload_hash"],
+        "source_facets": ["runtime_budget", "atomic_admission", "casper_replay", "authority_witness", "byte_witness", "payload_hash"],
     },
     {
-        "id": "v13_runtime_to_settlement_fuel_isolation",
-        "semantic_oracle": "runtime_to_settlement_fuel_isolation",
+        "id": "v13_runtime_to_settlement_vault_conservation",
+        "semantic_oracle": "runtime_to_settlement_vault_conservation",
         "primary_surface": "runtime_budget",
         "primary_risk": "oop_boundary_singleton",
         "secondary_surface": "settlement",
-        "secondary_risk": "refund_as_fuel",
+        "secondary_risk": "vault_refund_conservation",
         "cross_surface_role": "source_to_settlement",
         "expected_disposition": "settlement_bounded",
         "mutation_axis": "runtime_to_settlement",
@@ -40,9 +40,9 @@ CASES = [
             canonical_event("source", 9, descriptor="v13/runtime/settlement/oop", deploy=0, path=[13, 2]),
         ],
         "initial_budget": 4,
-        "settlement": {"escrow": 12, "token_cost": 4, "refund": 8, "authority": "casper", "phlo_limit": 12, "phlo_price": 1},
+        "settlement": vault_settlement(12, 6, 4, 2, 3, 1),
         "replay_mutations": ["runtime_to_settlement", "cost", "refund"],
-        "source_facets": ["runtime_budget", "oop_boundary", "settlement", "fuel_isolation"],
+        "source_facets": ["runtime_budget", "oop_boundary", "settlement", "vault_reservation", "conservation"],
     },
     {
         "id": "v13_metering_to_parallel_digest_stability",
@@ -77,8 +77,8 @@ CASES = [
             canonical_event("source", 1, descriptor="v13/replay/slashing", deploy=0, path=[13, 6]),
         ],
         "initial_budget": 8,
-        "settlement": {"kind": "slash_after_evaluation", "authority": "casper", "escrow": 12, "token_cost": 4, "refund": 8, "slashing_scope": "post_eval"},
-        "replay_mutations": ["replay_to_slashing", "slash_fields", "cost_trace_digest", "cost_trace_event_count", "block_hash", "signature"],
+        "settlement": vault_settlement(12, 12, 0, 0, 4, 0, kind="slash_after_evaluation", slashing_scope="post_eval"),
+        "replay_mutations": ["replay_to_slashing", "slash_fields", "replay_payload_hash", "block_hash", "signature"],
         "source_facets": ["casper_replay", "payload_hash", "slashing", "field_authentication"],
     },
     {
@@ -95,7 +95,7 @@ CASES = [
             canonical_event("source", 1, descriptor="v13/legacy/runtime", deploy=0, path=[13, 7]),
         ],
         "initial_budget": 8,
-        "replay_mutations": ["legacy_to_runtime", "cost_trace_present"],
+        "replay_mutations": ["legacy_to_runtime", "authority_cost_witness_present"],
         "source_facets": ["legacy_quarantine", "absent_surface", "runtime_budget", "downgrade_guard"],
     },
 ]
@@ -137,9 +137,6 @@ def surface_for(surfaces, cost_surface, source_risk):
     for surface in surfaces:
         if surface.get("cost_surface") == cost_surface and surface.get("source_risk") == source_risk:
             return surface
-    for surface in surfaces:
-        if surface.get("cost_surface") == cost_surface:
-            return surface
     raise SystemExit("missing source surface for {} ({})".format(source_risk, cost_surface))
 
 
@@ -156,29 +153,14 @@ def source_anchor_digest_for(primary, secondary, case):
     return digest_value([anchor for anchor in anchors if anchor])
 
 
-def expected_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        if weight <= 0 or weight > 2**63 - 1:
-            return (consumed, count, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
-
-
 def command_for_fixture(test_name):
     return "COST_ACCOUNTING_FRONTIER_FIXTURES_JSON=<fixtures> cargo nextest run -p rholang {}".format(test_name)
 
 
 def rust_test_for(semantic_oracle):
     if semantic_oracle in [
-        "runtime_to_replay_trace_commitment",
-        "runtime_to_settlement_fuel_isolation",
+        "runtime_to_replay_authenticated_witness",
+        "runtime_to_settlement_vault_conservation",
         "metering_to_parallel_digest_stability",
     ]:
         return "generated_frontier_v13_runtime_metering_parallel_oracles_hold"
@@ -201,7 +183,7 @@ def record_for_case(case, primary, secondary):
         events=case.get("events", []),
         initial_budget=case.get("initial_budget", 0),
         settlement=case.get("settlement", {}),
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count", "source_semantic_oracle"]},
+        replay_fields={"fields": ["processed_deploy_cost", "authority_cost_witness", "authority_byte_events", "replay_payload_hash", "source_semantic_oracle"]},
         replay_mutations=case.get("replay_mutations", []),
         negative_mutations=case.get("replay_mutations", []),
         source_seed={"primary_surface": primary, "secondary_surface": secondary, "source_semantic_case": case},
@@ -288,8 +270,8 @@ def adequacy_record():
         expected_outcome="coverage_adequacy",
         term_family="v13_source_semantic_coverage_adequacy",
         adequacy_requirements=[
-            "runtime_to_replay_trace_commitment",
-            "runtime_to_settlement_fuel_isolation",
+            "runtime_to_replay_authenticated_witness",
+            "runtime_to_settlement_vault_conservation",
             "metering_to_parallel_digest_stability",
             "replay_to_slashing_authentication",
             "legacy_to_runtime_quarantine",
@@ -361,8 +343,8 @@ def assert_adequacy(records):
         for feature in item.get("coverage_features", []):
             features.add(feature)
     required_oracles = set([
-        "runtime_to_replay_trace_commitment",
-        "runtime_to_settlement_fuel_isolation",
+        "runtime_to_replay_authenticated_witness",
+        "runtime_to_settlement_vault_conservation",
         "metering_to_parallel_digest_stability",
         "replay_to_slashing_authentication",
         "legacy_to_runtime_quarantine",
@@ -401,7 +383,7 @@ def fixture_from_record(item):
 
 def rust_fixture_from_record(item):
     scenario = item["scenario"]
-    total, count, invalid, oop = expected_values(scenario)
+    total, count, invalid, oop = expected_fixture_values(scenario)
     return {
         "id": item["name"],
         "classification": item["classification"],

@@ -37,6 +37,7 @@ use prost::bytes::{Buf, BufMut};
 use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
 use prost::DecodeError;
+use shared::rust::clone_backing::{BackingError, CloneBacking, Walker};
 
 use super::canonical_path::{
     declared_canonical_path_metadata, decode_trie_path, encode_trie_path,
@@ -1928,6 +1929,68 @@ impl Clone for EntryTrie {
             any_connective_used: self.any_connective_used,
             trie_snapshot: Arc::clone(&self.trie_snapshot),
             epm_layout: Arc::clone(&self.epm_layout),
+        }
+    }
+}
+
+impl CloneBacking for EntryTrie {
+    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
+        // EntryTrie::clone shares its PathMap root in either populated mode;
+        // empty mode has no root to bump. Neither case clones any contained Par.
+        match &self.repr {
+            EPathMapRepr::Empty => {}
+            EPathMapRepr::Set(_) | EPathMapRepr::Map(_) => walker.shared_header_bump()?,
+        }
+        walker.push(&self.union_locally_free)?;
+        // These two Arc<OnceLock<_>> cells are shared in every mode. Their
+        // possibly large cached payloads are not copied by EntryTrie::clone.
+        walker.shared_header_bump()?;
+        walker.shared_header_bump()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod entry_trie_clone_backing_tests {
+    use std::cell::RefCell;
+
+    use shared::rust::clone_backing::{self, BLOCK_SHARED_HEADER_SCANNED};
+
+    use super::*;
+
+    #[test]
+    fn node_local_clone_charges_two_cache_roots_and_only_present_trie_root() {
+        let empty = EntryTrie::default();
+        let mut set = EntryTrie::default();
+        set.insert_entry(Par::default());
+        let mut map = EntryTrie::default();
+        map.insert_map_entry(Par::default(), Par::default())
+            .expect("fresh trie accepts map mode");
+
+        for (trie, shared_roots) in [(&empty, 2), (&set, 3), (&map, 3)] {
+            let charges = RefCell::new(Vec::new());
+            clone_backing::reserve(trie, &|ops, scanned, backing| {
+                charges.borrow_mut().push([ops, scanned, backing]);
+                Ok(())
+            })
+            .expect("clone backing charge");
+            assert_eq!(
+                charges
+                    .borrow()
+                    .iter()
+                    .filter(|&&charge| charge == [1, BLOCK_SHARED_HEADER_SCANNED, 0])
+                    .count(),
+                shared_roots
+            );
+
+            let snapshot_owners = Arc::strong_count(&trie.trie_snapshot);
+            let layout_owners = Arc::strong_count(&trie.epm_layout);
+            let clone = trie.clone();
+            assert_eq!(Arc::strong_count(&trie.trie_snapshot), snapshot_owners + 1);
+            assert_eq!(Arc::strong_count(&trie.epm_layout), layout_owners + 1);
+            drop(clone);
+            assert_eq!(Arc::strong_count(&trie.trie_snapshot), snapshot_owners);
+            assert_eq!(Arc::strong_count(&trie.epm_layout), layout_owners);
         }
     }
 }

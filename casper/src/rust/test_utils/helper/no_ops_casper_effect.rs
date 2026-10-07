@@ -291,7 +291,7 @@ impl NoOpsCasperEffect {
                 .body
                 .deploys
                 .iter()
-                .map(|deploy| deploy.deploy.sig.clone().into())
+                .map(|deploy| deploy.identity_bytes().to_vec().into())
                 .collect();
             let deploy_entries: Vec<(DeployId, BlockHashSerde)> = deploy_hashes
                 .into_iter()

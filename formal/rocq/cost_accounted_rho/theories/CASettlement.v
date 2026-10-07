@@ -47,28 +47,34 @@ Definition ca_consumed (S S' : signed_term) : nat :=
    draw limit = the initial fuel and the token cost = the native consumed count,
    charged + refund = escrow (the carrier-independent fee arithmetic applies,
    the consumed count being bounded by the limit). *)
-Theorem ca_post_evaluation_settlement_no_mint : forall S S' price,
+Theorem ca_post_evaluation_settlement_no_mint : forall S S',
   HF S -> ca_reachable S S' ->
-  settled_amount {| settlement_limit := st_total_fuel S;
-                    settlement_price := price;
-                    settlement_token_cost := ca_consumed S S' |}
-  = escrowed_amount {| settlement_limit := st_total_fuel S;
-                       settlement_price := price;
-                       settlement_token_cost := ca_consumed S S' |}.
+  settled_amount {| settlement_physical_bound := st_total_fuel S;
+                    settlement_byte_bound := 0;
+                    settlement_fee := 0;
+                    settlement_physical_cost := ca_consumed S S';
+                    settlement_byte_cost := 0 |}
+  = reserved_amount {| settlement_physical_bound := st_total_fuel S;
+                       settlement_byte_bound := 0;
+                       settlement_fee := 0;
+                       settlement_physical_cost := ca_consumed S S';
+                       settlement_byte_cost := 0 |}.
 Proof.
-  intros S S' price HFS Hreach.
-  apply charged_plus_refund_eq_escrow. simpl. unfold ca_consumed. lia.
+  intros S S' HFS Hreach.
+  apply debit_plus_refund_eq_reservation; simpl; unfold ca_consumed; lia.
 Qed.
 
 (* The refund is exactly the un-consumed fuel (drawn = charged + released). *)
-Theorem ca_settlement_refund_is_unconsumed : forall S S' price,
+Theorem ca_settlement_refund_is_unconsumed : forall S S',
   HF S -> ca_reachable S S' ->
-  refund_amount {| settlement_limit := st_total_fuel S;
-                   settlement_price := price;
-                   settlement_token_cost := ca_consumed S S' |}
-  = st_total_fuel S' * price.
+  refund_amount {| settlement_physical_bound := st_total_fuel S;
+                   settlement_byte_bound := 0;
+                   settlement_fee := 0;
+                   settlement_physical_cost := ca_consumed S S';
+                   settlement_byte_cost := 0 |}
+  = st_total_fuel S'.
 Proof.
-  intros S S' price HFS Hreach.
+  intros S S' HFS Hreach.
   pose proof (ca_funded_reachable_monotone S S' HFS Hreach) as Hmono.
-  unfold refund_amount, ca_consumed. simpl. f_equal. lia.
+  unfold refund_amount, ca_consumed. simpl. lia.
 Qed.

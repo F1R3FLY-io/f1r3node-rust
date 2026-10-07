@@ -4,13 +4,17 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 
+use super::history_reader::EpochHistoryReader;
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
-use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
+use super::native_checkpoint::NativeCheckpoint;
+use crate::rspace::errors::{HistoryError, HistoryRepositoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
+use crate::rspace::hashing::native_source::SourceMeter;
+use crate::rspace::hashing::stable_hash_provider::{EventCodecEpoch, StableHashSerialize};
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
+use crate::rspace::history::native_reader::NativeHistoryReader;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
 use crate::rspace::hot_store_action::HotStoreAction;
@@ -23,6 +27,20 @@ use crate::rspace::state::rspace_importer::RSpaceImporter;
 
 // See rspace/src/main/scala/coop/rchain/rspace/history/HistoryRepository.scala
 pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync {
+    /// Validate all channel keys for an authenticated codec epoch before any
+    /// cold-store or history mutation. The historical infallible `checkpoint`
+    /// remains available to existing callers until session-wide routing is
+    /// switched together with readers and native replay.
+    fn checkpoint_for_epoch(
+        &self,
+        epoch: EventCodecEpoch,
+        actions: Vec<HotStoreAction<C, P, A, K>>,
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, RSpaceError>
+    where
+        P: StableHashSerialize,
+        A: StableHashSerialize,
+        K: StableHashSerialize;
+
     fn checkpoint(
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
@@ -32,6 +50,17 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         &self,
         actions: Vec<HotStoreTrieAction<C, P, A, K>>,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>;
+
+    fn prepare_native_checkpoint(
+        &self,
+        actions: Vec<HotStoreAction<C, P, A, K>>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError>;
+
+    fn commit_native_checkpoint(
+        &self,
+        prepared: NativeCheckpoint,
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, RSpaceError>;
 
     fn reset(
         &self,
@@ -49,12 +78,40 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         state_hash: &Blake2b256Hash,
     ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, HistoryError>;
 
+    /// Bind typed-key lookups to a caller-authenticated epoch. The epoch is
+    /// immutable for the returned reader, so live and replay cannot switch
+    /// key namespaces in the middle of one history inspection.
+    fn get_history_reader_for_epoch(
+        &self,
+        state_hash: &Blake2b256Hash,
+        epoch: EventCodecEpoch,
+    ) -> Result<EpochHistoryReader<C, P, A, K>, HistoryError> {
+        self.get_history_reader(state_hash)
+            .map(|reader| EpochHistoryReader::new(reader, epoch))
+    }
+
+    fn get_current_history_reader_native(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, RSpaceError>;
+
+    fn get_current_history_reader_native_for_epoch(
+        &self,
+        epoch: EventCodecEpoch,
+        meter: &dyn SourceMeter,
+    ) -> Result<EpochHistoryReader<C, P, A, K>, RSpaceError> {
+        self.get_current_history_reader_native(meter)
+            .map(|reader| EpochHistoryReader::new(reader, epoch))
+    }
+
     fn get_history_reader_struct(
         &self,
         state_hash: &Blake2b256Hash,
     ) -> Result<RSpaceHistoryReaderImpl<C, P, A, K>, HistoryError>;
 
     fn root(&self) -> Blake2b256Hash;
+
+    fn native_history_reader(&self, state_hash: [u8; 32]) -> NativeHistoryReader<'_>;
 
     /// Record a root hash in the roots store so that subsequent `reset` calls
     /// can find it via `validate_and_set_current_root`. This is needed during
@@ -116,7 +173,7 @@ where
             roots_key_value_store.clone(),
         );
         let importer = RSpaceImporterStore::create(
-            history_key_value_store,
+            history_key_value_store.clone(),
             cold_key_value_store.clone(),
             roots_key_value_store,
         );
@@ -125,6 +182,7 @@ where
             current_history: Arc::new(Mutex::new(Box::new(history))),
             roots_repository: Arc::new(Mutex::new(roots_repository)),
             leaf_store: cold_key_value_store,
+            node_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
             _marker: PhantomData,

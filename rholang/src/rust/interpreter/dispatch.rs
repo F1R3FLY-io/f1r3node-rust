@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::reduce::DebruijnInterpreter;
+use super::reduce::ReducerCore;
 use super::system_processes::{non_deterministic_ops, RhoDispatchMap};
 use super::unwrap_option_safe;
 
@@ -26,7 +26,7 @@ pub fn build_env(data_list: Vec<ListParWithRandom>) -> Env<Par> {
 #[derive(Clone)]
 pub struct RholangAndScalaDispatcher {
     pub _dispatch_table: RhoDispatchMap,
-    pub reducer: Arc<OnceLock<Weak<DebruijnInterpreter>>>,
+    pub reducer: Arc<OnceLock<Weak<ReducerCore>>>,
 }
 
 pub type RhoDispatch = Arc<RholangAndScalaDispatcher>;
@@ -92,8 +92,7 @@ impl RholangAndScalaDispatcher {
         // Inherent method (no trait change). Display-only (NOT consensus).
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
-        // println!("\ndispatcher dispatch");
-        // println!("continuation: {:?}", continuation);
+        let continuation_authority = continuation.cost_authority.clone().unwrap_or_default();
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -116,19 +115,14 @@ impl RholangAndScalaDispatcher {
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
                     reducer
-                        .eval_with_path(body, &env, merged_rand, path)
+                        .eval_continuation(body, env, merged_rand, continuation_authority, path)
                         .await?;
 
                     Ok(DispatchType::DeterministicCall)
                 }
                 TaggedCont::ScalaBodyRef(_ref) => {
                     let is_non_deterministic = non_deterministic_ops().contains(&_ref);
-                    // println!("self {:p}", self);
                     let dispatch_table = self._dispatch_table.read().await;
-                    // println!(
-                    //     "dispatch_table at ScalaBodyRef: {:?}",
-                    //     dispatch_table.keys()
-                    // );
                     match dispatch_table.get(&_ref) {
                         Some(f) => {
                             match f((data_list, is_replay, previous_output)).await {

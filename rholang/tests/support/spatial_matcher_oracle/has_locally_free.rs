@@ -149,6 +149,7 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
             Some(GBool(_)) => false,
             Some(GInt(_)) => false,
             Some(GDouble(_)) => false,
+            Some(GFloat32(_)) => false,
             Some(GBigInt(_)) => false,
             Some(GBigRat(_)) => false,
             Some(GFixedPoint(_)) => false,
@@ -234,6 +235,7 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
             Some(GBool(_)) => Default::default(),
             Some(GInt(_)) => Default::default(),
             Some(GDouble(_)) => Default::default(),
+            Some(GFloat32(_)) => Default::default(),
             Some(GBigInt(_)) => Default::default(),
             Some(GBigRat(_)) => Default::default(),
             Some(GFixedPoint(_)) => Default::default(),
@@ -493,6 +495,7 @@ impl HasLocallyFree<Expr> for Expr {
             Some(GBool(_)) => false,
             Some(GInt(_)) => false,
             Some(GDouble(_)) => false,
+            Some(GFloat32(_)) => false,
             Some(GBigInt(_)) => false,
             Some(GBigRat(_)) => false,
             Some(GFixedPoint(_)) => false,
@@ -581,6 +584,7 @@ impl HasLocallyFree<Expr> for Expr {
             Some(GBool(_)) => Default::default(),
             Some(GInt(_)) => Default::default(),
             Some(GDouble(_)) => Default::default(),
+            Some(GFloat32(_)) => Default::default(),
             Some(GBigInt(_)) => Default::default(),
             Some(GBigRat(_)) => Default::default(),
             Some(GFixedPoint(_)) => Default::default(),
@@ -767,6 +771,7 @@ pub fn expr_locally_free_ref(expr: &Expr, depth: i32) -> Vec<u8> {
         Some(GBool(_)) => Vec::new(),
         Some(GInt(_)) => Vec::new(),
         Some(GDouble(_)) => Vec::new(),
+        Some(GFloat32(_)) => Vec::new(),
         Some(GBigInt(_)) => Vec::new(),
         Some(GBigRat(_)) => Vec::new(),
         Some(GFixedPoint(_)) => Vec::new(),
@@ -832,8 +837,9 @@ fn lf2(p1: &Option<Par>, p2: &Option<Par>) -> Vec<u8> {
 /// Every arm reads the same cached field the by-value form reads.
 pub fn expr_connective_used_ref(expr: &Expr) -> bool {
     match &expr.expr_instance {
-        Some(GBool(_)) | Some(GInt(_)) | Some(GDouble(_)) | Some(GBigInt(_)) | Some(GBigRat(_))
-        | Some(GFixedPoint(_)) | Some(GString(_)) | Some(GUri(_)) | Some(GByteArray(_)) => false,
+        Some(GBool(_)) | Some(GInt(_)) | Some(GDouble(_)) | Some(GFloat32(_))
+        | Some(GBigInt(_)) | Some(GBigRat(_)) | Some(GFixedPoint(_)) | Some(GString(_))
+        | Some(GUri(_)) | Some(GByteArray(_)) => false,
 
         Some(EListBody(e)) => e.connective_used,
         Some(ETupleBody(e)) => e.connective_used,

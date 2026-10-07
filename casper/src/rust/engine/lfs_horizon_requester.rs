@@ -43,8 +43,8 @@ use tokio::sync::mpsc;
 use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
 use crate::rust::errors::CasperError;
 
-/// Per-chunk page size for state-item requests. Matches the value used
-/// by `lfs_tuple_space_requester` for LFB-state subtree pagination.
+/// Per-request chunk size, carried in the request (the responder pages by
+/// it); independent of `lfs_tuple_space_requester::PAGE_SIZE`.
 pub const PAGE_SIZE: i32 = 1024;
 
 /// Per-chunk request status. Mirrors `lfs_tuple_space_requester::ReqStatus`.
@@ -79,6 +79,28 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             if !self.d.contains_key(&key) {
                 new_d.insert(key, ReqStatus::Init);
             }
+        }
+        Self { d: new_d }
+    }
+
+    /// Arm a pagination cursor for request.
+    ///
+    /// Unlike [`ST::add`], a key that is already `Done` is returned to `Init`.
+    /// Cursors converge — adjacent block states share nearly all of their trie —
+    /// and a root arriving at a path another root has already finished still
+    /// needs that path's chain walked with it in the root set. Leaving it `Done`
+    /// strands the root: its `set_root` never fires, yet every entry reads Done,
+    /// so the run reports success without it.
+    ///
+    /// Keys still in flight (`Init`/`Requested`/`Received`) are left alone —
+    /// they will complete for the merged root set on their own.
+    pub fn re_arm(&self, key: Key) -> Self {
+        let mut new_d = self.d.clone();
+        match self.d.get(&key) {
+            None | Some(ReqStatus::Done) => {
+                new_d.insert(key, ReqStatus::Init);
+            }
+            Some(_) => {}
         }
         Self { d: new_d }
     }
@@ -170,6 +192,10 @@ struct HorizonStreamProcessor<T: HorizonRequesterOps> {
     has_root: HasRootFn,
     state_importer: Arc<dyn RSpaceImporter>,
     st: Arc<Mutex<ST<StatePartPath>>>,
+    /// Roots not yet verified present in the local store. This, not the path
+    /// state machine, is what "the sync finished" means: paths are pagination
+    /// bookkeeping and can all read Done while a root was never tagged.
+    roots_pending: Arc<Mutex<HashSet<Blake2b256Hash>>>,
     /// Maps each chunk path to the SET of roots paginating through it.
     /// Initial paths `[(root, None)]` map to `{root}`. When two roots'
     /// pagination chains converge on a shared cursor (radix tries derived
@@ -289,11 +315,20 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
                         root
                     )));
                 }
+                // Verified present: this root is synced. Completion is measured
+                // over roots and not over chunk paths, because paths are an
+                // implementation detail of pagination and a root can be stranded
+                // while every path reads Done.
+                self.roots_pending
+                    .lock()
+                    .expect("roots_pending lock")
+                    .remove(root);
                 let progress = {
                     let progress_map = self.root_progress.lock().expect("root_progress lock");
                     progress_map.get(root).cloned().unwrap_or_default()
                 };
                 tracing::debug!(
+                    target: "f1r3.trace.lfs",
                     "LFS forward-horizon: completed root {} ({} chunks, {} history, {} data)",
                     root,
                     progress.chunk_count,
@@ -333,12 +368,14 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             }
             {
                 let mut state = self.st.lock().expect("ST lock");
-                let mut next = HashSet::new();
-                next.insert(last_path);
-                let new_state = state.add(next);
+                // Re-arm, not add: this cursor may be one another root already
+                // finished, and `add` would leave it Done — successor never
+                // re-walked, this root's set_root never fired, every entry Done
+                // so the run reports success without it.
+                let new_state = state.re_arm(last_path);
                 // Mark the just-processed chunk Done so it doesn't keep
                 // counting against is_finished. (Pagination continues via
-                // the freshly-added Init entry.)
+                // the re-armed Init entry.)
                 let new_state = new_state.done(start_path.clone());
                 *state = new_state;
             }
@@ -381,9 +418,6 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             );
         }
 
-        // Parallel fan-out. Same shape as
-        // `lfs_tuple_space_requester::request_next` (Scala:
-        // `broadcastStreams(ids).parJoinUnbounded`).
         let request_futures: Vec<_> = paths
             .iter()
             .map(|path| async move {
@@ -392,7 +426,15 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
                     .await
             })
             .collect();
-        futures::future::try_join_all(request_futures).await?;
+        let results = futures::future::join_all(request_futures).await;
+        let failed = results.iter().filter(|result| result.is_err()).count();
+        if failed > 0 {
+            tracing::warn!(
+                "LFS forward-horizon: {}/{} chunk send(s) failed; paths remain pending for resend",
+                failed,
+                results.len()
+            );
+        }
 
         Ok(())
     }
@@ -415,7 +457,14 @@ pub async fn stream<T: HorizonRequesterOps>(
     request_ops: T,
     mut store_items_message_receiver: mpsc::Receiver<StoreItemsMessage>,
     request_timeout: Duration,
-) -> Result<impl Stream<Item = ST<StatePartPath>>, CasperError> {
+    overall_deadline: Duration,
+) -> Result<
+    (
+        impl Stream<Item = ST<StatePartPath>>,
+        Arc<Mutex<Option<CasperError>>>,
+    ),
+    CasperError,
+> {
     let total_input = horizon_roots.len();
 
     // Pre-filter roots already present (LFB root is the typical hit, since
@@ -436,6 +485,18 @@ pub async fn stream<T: HorizonRequesterOps>(
         skipped,
         total_input
     );
+    // The set actually requested, after the has_root pre-filter. Pairs with
+    // the walk's `emitted` list: a root in one and not the other localises the
+    // loss to selection or to the pre-filter.
+    tracing::debug!(
+        target: "f1r3.trace.lfs",
+        requested = %filtered
+            .iter()
+            .map(|r| hex::encode(&r.bytes()[..8]))
+            .collect::<Vec<_>>()
+            .join(","),
+        "LFS forward-horizon: requested root set"
+    );
 
     // Build initial ST: one path per root, of the form `[(root, None)]`.
     // Each initial path uniquely identifies its root, so the singleton
@@ -453,6 +514,10 @@ pub async fn stream<T: HorizonRequesterOps>(
     let st = Arc::new(Mutex::new(ST::new(initial_paths)));
     let path_to_root = Arc::new(Mutex::new(path_to_root_init));
     let root_progress = Arc::new(Mutex::new(HashMap::new()));
+    let roots_pending: Arc<Mutex<HashSet<Blake2b256Hash>>> =
+        Arc::new(Mutex::new(filtered.iter().cloned().collect()));
+
+    let requested_root_count = filtered.len();
 
     // Bounded request queue (cap 2 — one resend + one new). Matches
     // tuple_space_requester::stream channel sizing.
@@ -468,6 +533,7 @@ pub async fn stream<T: HorizonRequesterOps>(
         has_root,
         state_importer,
         st: st.clone(),
+        roots_pending: roots_pending.clone(),
         path_to_root,
         root_progress,
         request_tx: request_tx.clone(),
@@ -478,6 +544,7 @@ pub async fn stream<T: HorizonRequesterOps>(
     let nothing_to_do = filtered.is_empty();
     let last_error_for_stream = last_error.clone();
     let st_for_stream = st.clone();
+    let roots_pending_for_stream = roots_pending.clone();
 
     // Initial request kick-off (only if we have roots to fetch).
     if !nothing_to_do {
@@ -488,7 +555,7 @@ pub async fn stream<T: HorizonRequesterOps>(
         })?;
     }
 
-    let max_request_timeout = Duration::from_secs(128);
+    let max_request_timeout = crate::rust::engine::lfs_block_requester::LFS_MAX_REQUEST_TIMEOUT;
 
     let stream = async_stream::stream! {
         if nothing_to_do {
@@ -499,6 +566,10 @@ pub async fn stream<T: HorizonRequesterOps>(
 
         let mut current_timeout = request_timeout;
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+        let mut last_progress = std::time::Instant::now();
+        let mut last_done: usize = 0;
+        let outstanding_roots =
+            || roots_pending_for_stream.lock().expect("roots_pending lock").len();
 
         loop {
             tokio::select! {
@@ -508,10 +579,7 @@ pub async fn stream<T: HorizonRequesterOps>(
 
                 Some(message) = store_items_message_receiver.recv() => {
                     if let Err(e) = processor.process_store_items_message(message).await {
-                        tracing::error!(
-                            "LFS forward-horizon: stream terminating due to processing error: {:?}",
-                            e
-                        );
+                        tracing::error!(error = ?e, "LFS forward-horizon store items processing failed; terminating stream");
                         *last_error_for_stream.lock().expect("last_error lock") = Some(e);
                         break;
                     }
@@ -520,12 +588,41 @@ pub async fn stream<T: HorizonRequesterOps>(
                         .lock()
                         .expect("ST lock")
                         .clone();
+                    let done = current_state.done_count();
+                    if done > last_done {
+                        last_done = done;
+                        last_progress = std::time::Instant::now();
+                    }
                     let is_finished = current_state.is_finished();
 
                     if is_finished {
+                        let outstanding = outstanding_roots();
+                        if outstanding > 0 {
+                            // Every path is Done and a root is still unsynced:
+                            // the path bookkeeping lost one. Reporting success
+                            // here is what makes the failure arrive later, as an
+                            // unknown root during replay, on a node that has
+                            // already discarded the sync.
+                            tracing::error!(
+                                outstanding,
+                                requested = requested_root_count,
+                                "LFS forward-horizon: all chunk paths done but roots remain unsynced"
+                            );
+                            *last_error_for_stream.lock().expect("last_error lock") =
+                                Some(CasperError::RuntimeError(format!(
+                                    "LFS forward-horizon: {} of {} roots unsynced although every \
+                                     chunk path completed",
+                                    outstanding, requested_root_count
+                                )));
+                            break;
+                        }
+                        // `ST` is keyed by chunk PATH, not by root: pagination
+                        // adds paths as cursors advance, so this count exceeds
+                        // the root count and must not be reported as roots.
                         tracing::info!(
-                            "LFS forward-horizon: complete (all {} roots synced)",
-                            current_state.len()
+                            "LFS forward-horizon: complete ({} chunk paths done for {} roots requested)",
+                            current_state.len(),
+                            requested_root_count
                         );
                         yield current_state;
                         break;
@@ -538,34 +635,46 @@ pub async fn stream<T: HorizonRequesterOps>(
                 }
 
                 Some(resend_flag) = request_rx.recv() => {
-                    if let Err(e) = processor.request_next(resend_flag).await {
-                        tracing::error!(
-                            "LFS forward-horizon: stream terminating due to request error: {:?}",
-                            e
-                        );
-                        *last_error_for_stream.lock().expect("last_error lock") = Some(e);
-                        break;
-                    }
+                    match processor.request_next(resend_flag).await {
+                        Ok(()) => {
+                            let current_state = st_for_stream
+                                .lock()
+                                .expect("ST lock")
+                                .clone();
+                            if current_state.is_finished() && outstanding_roots() == 0 {
+                                yield current_state;
+                                break;
+                            }
 
-                    let current_state = st_for_stream
-                        .lock()
-                        .expect("ST lock")
-                        .clone();
-                    if current_state.is_finished() {
-                        yield current_state;
-                        break;
+                            current_timeout = request_timeout;
+                            idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                            yield current_state;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = ?e, "LFS forward-horizon request dispatch error; resend will retry");
+                        }
                     }
-
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
-                    yield current_state;
                 }
 
                 _ = &mut idle_timeout => {
+                    let stalled_for = last_progress.elapsed();
+                    if stalled_for >= overall_deadline {
+                        tracing::error!(
+                            "LFS forward-horizon: no progress for {:?} (deadline {:?}); giving up",
+                            stalled_for,
+                            overall_deadline
+                        );
+                        *last_error_for_stream.lock().expect("last_error lock") =
+                            Some(CasperError::RuntimeError(format!(
+                                "LFS forward-horizon: peer made no progress within {:?}",
+                                overall_deadline
+                            )));
+                        break;
+                    }
                     let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
                     tracing::warn!(
-                        "LFS forward-horizon: no responses for {:?}; resending. backoff -> {:?}",
-                        current_timeout, next_timeout
+                        "LFS forward-horizon: no responses for {:?}; resending (stalled {:?} of {:?}). backoff -> {:?}",
+                        current_timeout, stalled_for, overall_deadline, next_timeout
                     );
                     if request_tx.try_send(true).is_err() {
                         tracing::warn!(
@@ -598,9 +707,7 @@ pub async fn stream<T: HorizonRequesterOps>(
     // however, we don't expose it through this stream's public surface.
     // Callers detect failure via `final ST.is_finished() == false`.
     // Specific error context is logged via `tracing::error!` in the loop.
-    let _ = last_error;
-
-    Ok(stream)
+    Ok((stream, last_error))
 }
 
 #[cfg(test)]
@@ -635,6 +742,20 @@ mod tests {
         // 2 should be Init now; 1 should still be Requested → only 2 picked.
         let (_, requested) = st.get_next(false);
         assert_eq!(requested, vec![2]);
+    }
+
+    /// The companion boundary: plain `add` never reopens a Done key — only
+    /// `re_arm` does. A Done key re-added stays Done and the run stays
+    /// finished.
+    #[test]
+    fn st_add_leaves_done_keys_done() {
+        let st: ST<i32> = ST::new(vec![1]);
+        let (st, _) = st.get_next(false);
+        let (st, _) = st.received(1);
+        let st = st.done(1);
+        let mut existing = HashSet::new();
+        existing.insert(1);
+        assert!(st.add(existing).is_finished());
     }
 
     #[test]
@@ -733,9 +854,9 @@ mod tests {
     struct NoopImporter;
 
     impl TrieImporter for NoopImporter {
-        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_root(&self, _key: &Blake2b256Hash) -> () {}
+        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_root(&self, _key: &Blake2b256Hash) {}
     }
 
     impl RSpaceImporter for NoopImporter {
@@ -762,9 +883,9 @@ mod tests {
     }
 
     impl TrieImporter for RecordingImporter {
-        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_root(&self, key: &Blake2b256Hash) -> () {
+        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_root(&self, key: &Blake2b256Hash) {
             self.recorded.lock().unwrap().insert(key.clone());
         }
     }
@@ -862,13 +983,14 @@ mod tests {
         let (sends, _) = ops.handles();
         let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(2);
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![r1, r2],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -878,6 +1000,94 @@ mod tests {
         assert!(
             sends.lock().unwrap().is_empty(),
             "no requests should have been sent for already-present roots"
+        );
+    }
+
+    /// Two roots whose pagination converges on one cursor must BOTH be synced.
+    ///
+    /// Adjacent block states share almost all of their trie, so cursors
+    /// converging is ordinary, not exotic. When the second root arrives at a
+    /// cursor the first has already finished, `ST::add` sees the path present
+    /// and leaves it `Done`: the successor is never re-armed, the chunk is never
+    /// reprocessed, and `set_root` never fires for the second root. Every path
+    /// entry is `Done`, so the run reports success while the root is missing
+    /// from the store — and the failure only surfaces later, as an unknown root
+    /// during replay, on a node that has already thrown away the sync.
+    ///
+    /// Observed live: 106 roots requested, 92 completed, "complete" logged, and
+    /// a joiner wedged on the pre-state of the first block it tried to replay.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_converged_cursor_does_not_strand_its_root() {
+        let first = hash_for(1);
+        let second = hash_for(2);
+        let shared_cursor: StatePartPath = vec![(hash_for(3), Some(0))];
+        let first_start: StatePartPath = vec![(first.clone(), None)];
+        let second_start: StatePartPath = vec![(second.clone(), None)];
+
+        let (recording, recorded) = RecordingImporter::new();
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(recording);
+        // Pre-filter sees nothing present; post-import verification sees exactly
+        // what `set_root` recorded.
+        let has_root: HasRootFn = {
+            let recorded = recorded.clone();
+            Arc::new(move |query| Ok(recorded.lock().unwrap().contains(query)))
+        };
+
+        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
+        // The first root paginates to the shared cursor and finishes there.
+        tx.send(make_response(
+            first_start,
+            shared_cursor.clone(),
+            Some(hash_for(4)),
+        ))
+        .await
+        .unwrap();
+        tx.send(make_response(
+            shared_cursor.clone(),
+            shared_cursor.clone(),
+            Some(hash_for(5)),
+        ))
+        .await
+        .unwrap();
+        // The second root then arrives at the same cursor, now already Done.
+        tx.send(make_response(
+            second_start,
+            shared_cursor.clone(),
+            Some(hash_for(6)),
+        ))
+        .await
+        .unwrap();
+        // The cursor re-armed for the second root is walked again, and this
+        // time terminates for it.
+        tx.send(make_response(
+            shared_cursor.clone(),
+            shared_cursor.clone(),
+            Some(hash_for(5)),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+
+        let (stream, _) = stream(
+            vec![first.clone(), second.clone()],
+            has_root,
+            importer,
+            MockOps::new(),
+            rx,
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+        let _ = drain(stream).await;
+
+        let synced = recorded.lock().unwrap().clone();
+        assert!(
+            synced.contains(&second),
+            "the second root converged onto a cursor the first had finished, so its \
+             state was never tagged; a run that leaves a root unsynced must not \
+             finish. Roots synced: {:?}",
+            synced.len()
         );
     }
 
@@ -919,13 +1129,14 @@ mod tests {
         // doesn't terminate via is_finished.
         drop(tx);
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![root],
             post_import_has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -954,13 +1165,14 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![root],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1034,13 +1246,14 @@ mod tests {
             drop(tx);
         });
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![root],
             post_import_has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1072,13 +1285,14 @@ mod tests {
         let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
 
         // Launch the stream and let it pump the initial request cycle.
-        let stream = stream(
+        let (stream, _) = stream(
             roots.clone(),
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(1),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1171,13 +1385,14 @@ mod tests {
             drop(tx);
         });
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![r1.clone(), r2.clone()],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1207,5 +1422,121 @@ mod tests {
             "exactly 2 roots should have been recorded; recorded = {:?}",
             recorded
         );
+    }
+    /// A completed cursor reopens when a LATER root reaches its shared
+    /// continuation: two roots whose tries converge on one continuation
+    /// path, delivered far enough apart that the first fully finishes the
+    /// path before the second arrives. The stream must re-request the
+    /// shared path for the late root (`re_arm`), and both roots must be
+    /// recorded. Reopened continuations repeat identical key-value writes
+    /// idempotently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stream_reopens_shared_continuation_for_late_root() {
+        let r1 = hash_for(30);
+        let r2 = hash_for(31);
+        let shared_cont = vec![(hash_for(109), Some(0u8))];
+
+        let (importer_inner, recorded) = RecordingImporter::new();
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(importer_inner);
+        let recorded_for_has_root = recorded.clone();
+        let has_root: HasRootFn =
+            Arc::new(move |q| Ok(recorded_for_has_root.lock().unwrap().contains(q)));
+
+        let ops = MockOps::new();
+        let (sends, _) = ops.handles();
+        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
+
+        let start1 = vec![(r1.clone(), None)];
+        let start2 = vec![(r2.clone(), None)];
+        let resp1 = make_response(start1.clone(), shared_cont.clone(), Some(hash_for(111)));
+        let resp2 = make_response(start2.clone(), shared_cont.clone(), Some(hash_for(112)));
+        let terminal = make_response(
+            shared_cont.clone(),
+            shared_cont.clone(),
+            Some(hash_for(113)),
+        );
+
+        let feeder_sends = sends.clone();
+        let feeder_recorded = recorded.clone();
+        let feeder_r1 = r1.clone();
+        let feeder_start1 = start1.clone();
+        let feeder_start2 = start2.clone();
+        let feeder_cont = shared_cont.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(10), async move {
+                loop {
+                    let both_sent = {
+                        let sent = feeder_sends.lock().unwrap();
+                        sent.contains(&feeder_start1) && sent.contains(&feeder_start2)
+                    };
+                    if both_sent {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                tx.send(resp1).await.unwrap();
+                loop {
+                    if feeder_sends.lock().unwrap().contains(&feeder_cont) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                tx.send(terminal.clone()).await.unwrap();
+                loop {
+                    if feeder_recorded.lock().unwrap().contains(&feeder_r1) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                tx.send(resp2).await.unwrap();
+                let continuation_reopened = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let request_count = feeder_sends
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter(|path| **path == feeder_cont)
+                            .count();
+                        if request_count >= 2 {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .is_ok();
+                assert!(
+                    continuation_reopened,
+                    "shared continuation was not requested for the late root"
+                );
+
+                tx.send(terminal).await.unwrap();
+                drop(tx);
+            })
+            .await
+            .expect("late-root feeder timed out");
+        });
+
+        let (stream, _) = stream(
+            vec![r1.clone(), r2.clone()],
+            has_root,
+            importer,
+            ops,
+            rx,
+            Duration::from_secs(5),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let final_st = drain(stream).await.expect("stream yields final state");
+        feeder.await.unwrap();
+
+        assert!(final_st.is_finished());
+        let recorded = recorded.lock().unwrap();
+        assert!(recorded.contains(&r1));
+        assert!(recorded.contains(&r2));
     }
 }

@@ -1,0 +1,213 @@
+# Continued GSLTs / Cost Endofunctor — Correspondence Map
+
+**Status:** Implementation-aligned correspondence record
+**Governing papers (READ-ONLY law):**
+- `publications/cost-accounting/cost-accounted-rho.tex` — the concrete cost-accounted rho calculus.
+- `publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex` — *"Continued Interactive GSLTs and the
+  Cost Endofunctor"* (the categorical construction, *one level up*).
+
+This document maps each construct of the monad paper to the artifact that realizes it in `f1r3node-rust`,
+across Rocq, Rust, TLA+, Sage, and Lean. It is the alignment record for "fully support
+`continued-gslt-cost-v2`." Both papers assume familiarity with the existing F1R3node architecture: their
+wallet, purse, mint, fee-channel, tuplespace, and validator terms name semantic roles, not instructions to
+build parallel ledgers beside SystemVault, RSpace, PoS, replay, and Casper merge. The native refinement is
+specified in [*End-to-end cost authority and native RevVault settlement*](cost-accounting-impl/end-to-end-authority-settlement.md).
+See [DR-21](cost-accounting-decision-records.md) (the executed native four-sort migration + the conditional-SN
+finding) and [DR-20](cost-accounting-decision-records.md) (the GAP enumeration).
+
+The decisive enabling move is the **native four-sort grammar** (DR-21): `for`/`send` continuations are signed
+terms (the wrapped-term sort 𝕋), so "signed terms pervade the syntax" is native and "every redex sits inside a
+wrapper" is a sorting invariant — the paper's *wrapping by construction*. The pure rho `proc`/`name` of
+`RhoSyntax.v` is kept unchanged as the translation target (carrier split).
+
+## Correspondence table
+
+| Monad-paper construct | Rocq realization (`formal/rocq/cost_accounted_rho/theories/`) | Other provers / runtime |
+|---|---|---|
+| Wrapped-term sort 𝕋; continuation slots wrapped | `CASyntax.v` — `caproc`/`caname`/`signed_term`; wrapper `STSigned`; `CPInput`/`CPOutput` carry `signed_term` | — |
+| Interaction cut; the gated rule family R1–R3 | `CAReduction.v` — `ca_step`, the five gated COMM rules | — |
+| **Wrapping by construction** (no leak = subject reduction) | `WrappingSubjectReduction.v` — `subject_reduction_wrapping`, `no_leak_requires_token`, `no_leak_stack_inert` | — |
+| **Cost monad** (η, μ); laws **descend from the two monoids** | `SignatureMonoid.v` — `sig_monoid_comm/assoc/unit_l/unit_r` (`(Sig,*,())` up to ≡sig), `tok_concat_assoc/unit_l/unit_r` (free monoid); assembled in `ContinuedGSLTCapstone.v` `Cost_Monad_Laws` | **Sage** `cost_monad_laws.sage` (bounded-exhaustive); **Lean** `CostAccountedRho/CostMonad.lean` `cost_monad_laws` |
+| Two monoids: spatial `K` (AC) vs temporal cons (free, never commutative) | `SignatureMonoid.v` `tok_concat_not_commutative`; spatial monoid `CAStructEquiv.v`/`SystemStructEquiv.v` | **Sage** `stack_concat_commutative_FAILS`; **Lean** `stack_concat_not_commutative` |
+| μ non-idempotent (flatten forgets the boundary) | (the merge is genuine; witnessed bounded-exhaustively) | **Sage** `mu_non_injective_forgets_boundary` |
+| Cost endofunctor on concrete ciGSLT | `CACostFunctorCI.v` — `CostCI`, `cost_ci_preserves_step`, `cost_ci_preserves_bisim`, `cost_ci_preserves_quote_faithful` | — |
+| Cost-endofunctor genericity: untyped-λ instance (rigid K ⇒ R1 only) | `CAUntypedLambda.v` — `lca_only_beta_r1`, `lca_funded_run_bounded`, `lca_SN_funded` (+ the Ω seam `omega_pure_diverges` / `lca_omega_funded_one_step`), `lca_beta_r1_erasure`; `CAUntypedLambdaCI.v` — `Lambda_ciGSLT` a 2nd object under `CostCI` (`Lambda_ciGSLT_nonvacuous`) | mettail `cost-decoration` emits one `Beta_R1` for λ vs five for comm (DR-25) |
+| Section of the ≡-quotient (`# = digest ∘ cf`) | `SystemStructEquiv.v` — `proc_encode` / `hash_preimage_encode` (canonical-form section); `crypto_quote` | runtime hash (DR-16 G-parametric; DR-20 (i)) |
+| **GAP-2 dissolved** (split-process COMM keeps the continuation's own seal) | `CAReduction.v` `ca_rule4`/`ca_rule5` (no `SAnd` re-seal); `WrappingSubjectReduction.v` `gap2_split_{combined,split}_keeps_own_seal`; capstone `GAP2_Dissolved` | DR-21 (b) |
+| **Cost determinism** (terminal cost unique) | `CACostDeterminism.v` — `newman_funded` → `ca_normal_form_unique_funded` → `ca_cost_deterministic_funded` (on the funded fragment) | one-unit COMM execution projection (DR-9/DR-32) plus schedule-independent quantitative RSpace byte refinement (DR-47) |
+| **Stack consumption is the modulus** | `CAModulus.v` — `funded_run_bounded` (run length ≤ consumed stack) | **TLA+** `LocatedPurse` `Inv_Conservation`; **Sage** modulus rows |
+| Strong normalization (conditional on funding) | `CAStrongNormalization.v` — `ca_SN_funded`; the divergence witness `st_total_fuel_can_increase_off_funded` (SN is genuinely conditional) | DR-21 (c) |
+| Located resource stacks / purses; nearness `near(I,J)` | `ChannelSeparation.v` `lane_pool_disjoint` (disjoint per-signature pools); `near` = name-equality `≡_N` (DR-20 (ii)) | **TLA+** `LocatedPurse` (`Inv_NoUnderflow`, `Inv_LocalSufficiencyComposes`); native `AuthorityEvent`/`AuthorityByteEvent` evidence grouped by `Sig::lane_hash`, authenticated purse inventory, and atomic SystemVault settlement |
+| OSLF spatial type `K(φ₁,φ₂)` over the AC Rho resource quotient | `CAOSLFSpatialModal.v` — `spatial_requires_disjoint_locations`, `spatial_is_commutative`, `spatial_local_sufficiency_composes` | **Rust** `oslf::Formula::Spatial/Located`; **TLA+/Apalache** `OslfLocatedTyping` location and settlement invariants plus aliasing control |
+| OSLF graded spend and post-state | `CAOSLFSpatialModal.v` — `exact_spend_check_sound_complete`, `modal_poststate_is_exact`, `modal_spend_preserves_other_surface` | **Rust** `Formula::Spend`; **TLA+/Apalache** `ModalEvidenceSound`, `ModalPoststateExact`, upper-bound control |
+| Opt-in linear / copyable / relevant usage | `CAOSLFSpatialModal.v` — exact linear soundness/completeness, no contraction/weakening, copyable/relevant theorems | **Rust** `UsageDiscipline`; **TLA+/Apalache** contraction and weakening controls; property/example tests |
+| Conservative data-dependent proof | `CAOSLFSpatialModal.v` — `conservative_sufficiency_is_sound`, `upper_bound_cannot_assert_modal_spend` | **Rust** `DemandKnowledge::UpperBound` preserves `Indeterminate`; candidate-credit regression; **TLA+/Apalache** upper-modal and candidate-credit controls |
+| The calculus IS a continued interactive GSLT with the cost structure | **`ContinuedGSLTCapstone.v` `continued_gslt_cost_capstone`** (axiom-free, "Closed under the global context") | — |
+
+### Categorical-structure figures
+
+The categorical constructs in the table above are rendered in four companion figures
+(each a rendered diagram with a detailed caption):
+
+- **Cost endofunctor & monad** — the functor `𝔠 = (· × grade)`, the unit/associativity
+  laws, and the two source monoids the laws descend from:
+  [cost-endofunctor-monad](diagrams/cost-endofunctor-monad.md).
+- **The two adjunctions** — Free ⊣ Forget (structural install/strip) and the
+  internalisation `St` of `Cost(ρ)` into pure `ρ`, with the force-point over-gating
+  limit recorded: [cost-two-adjunctions](diagrams/cost-two-adjunctions.md).
+- **Gated interaction-cut** — a cost-accounted COMM and the five gated rules R1–R5:
+  [interaction-cut](diagrams/interaction-cut.md).
+- **Located capabilities in space–time** — disjoint per-surface capability pools (space)
+  consumed in temporal order along the free token-stack monoid (time):
+  [located-capabilities-spacetime](diagrams/located-capabilities-spacetime.md).
+
+## Token-source model — clean-slate realignment (DR-27, 2026-06-15; CORRECTED same day by Greg's authoritative answers)
+
+A re-reading of the source `.tex` re-derived the token model; **Greg's 2026-06-15 SOLUTIONs then made it
+authoritative and OVERTURNED the pre-answer "off-model" verdict on REV / `wallets.txt`** (those were a misreading).
+The authoritative model:
+- **ONE system token (canonical).** ONE consumable — the system token; phlogiston is the degenerate single-token
+  case (the old homogeneous phlo = the `s₀`-collapse, cost-accounted-rho.tex:1481). It has NO consistent name —
+  *token / Phlogiston / REV / Rock / F1r3caps* all denote it (Greg: "pegged" = identical); **avoid `F1r3caps`**
+  (collides with F1R3FLY.io *Capabilities*); canonical = **phlogiston**. So **REV is a NAME for the one token, NOT
+  a separate species** (and NOT off-model). **`Pay(τ)`** (typed_value.tex) is a **TYPE on that one token, NOT a
+  second token** (Greg P9/P13); **stake** is a distinct locked-token ROLE (slashable, same denomination).
+- **`wallets.txt` is the platform's genesis value-allocation trust root (Greg P12), not an automatically usable
+  public-key allocation.** Native cost purses are keyed by a canonical public key, whereas `wallets.txt` records
+  REV addresses. The node therefore commits an explicit `client_fuel_allocations: [(PublicKey, amount)]` payload;
+  test builders can derive it from `wallets.txt` only because they also hold the corresponding test keypairs.
+  Production configuration cannot invert a REV address to obtain a public key. DR-27's one-denomination decision
+  means the two representations must conserve the same resource when bridged; it does not justify crediting both
+  ledgers or silently copying balances. User-provided cons-notation stacks retain their signature provenance for
+  cost attribution. The concrete `SystemVault` and `MakeMint` contract APIs are existing F1R3node architecture;
+  the rho paper supplies their semantic wallet, purse, mint, epoch, fee, slash, and redemption obligations.
+  The `Pay(τ)` type layer remains distinct. None of these surfaces is an implicit source of native `Σ`
+  supply: every spendable unit must be present in canonical custody or in an authenticated prepaid located stack.
+- **`spacetime-functor.tex` is geometry, NOT storage.** It maps spent phlogiston to spacetime *volume*
+  (Number = Volume); it does **not** model a storage/rent charge (the rent model is `rent_and_shard_splitting.tex`,
+  rebased off the legacy `phloLimit×phloPrice` escrow per DR-27). Do not read it as the rent resolution.
+- **Funding `Sig` is `g | #P | s∘s`.** The LL connectives `⊕/&/!/?/⊸` are the *value* type-logic (typed_value.tex) /
+  the OSLF *type* layer — NOT funding-signature formers; the 6 extra `Sig` variants on the consensus wire are an
+  undocumented extension (DR-27 F-A). This corrects an earlier reading that conflated the funding `Sig` algebra
+  with the type-connective set.
+
+See [DR-26](cost-accounting-decision-records.md) (verification posture),
+[DR-27](cost-accounting-decision-records.md) (token-source findings),
+[DR-36](cost-accounting-decision-records.md) (native resource refinement), and
+[DR-41](cost-accounting-decision-records.md) (the mathematical $`s_0`$ limit
+versus production authority semantics).
+
+## Native architecture correspondence
+
+The cost endofunctor does not prescribe a second node architecture. The implementation refines its semantic
+objects through the existing native subsystems, and that refinement is consensus-visible behavior. In
+particular, production does not expose an accounting-off mode: the monadic unit and the paper's distinguished
+free signature are proof/refinement devices, while protocol user deployment and replay always use the active
+cost-authority path.
+
+The concrete paper's pure-rho compiler pass is its internalisation/simulation route for the older runtime, not
+the production architecture assumed by its later RSpace, Casper, validator-wallet, epoch, and slashing sections.
+The native implementation below realizes those sections directly and uses the compiler-pass semantics as a
+conformance oracle, not as a replacement for the node's existing state and consensus machinery.
+
+| Paper concept | Runtime artifact |
+|---|---|
+| Unit η(P) = {P}_∅; distinguished free signature s₀ | Rocq translation/refinement boundary and payer-less bootstrap/test reducer calls; never a production user-deploy feature flag |
+| Lazy metering (charge when forced, not exposed) | pre-mutation RSpace introduction and COMM charging through the shared runtime budget; one calculus unit per COMM plus the protocol-4 byte tariff (DR-9/DR-32/DR-47) |
+| Persistent wallet / RevVault custody | blessed `SystemVault` at `rho:vault:system`, addressed through the existing `VaultAddress` and mint/purse implementation |
+| Located purses / disjoint per-surface pools | first-class `CostStack` values on canonical signature channels in ordinary RSpace; `accounting/mod.rs` keeps only execution-local lane state |
+| Available supply Σ | authenticated union of a signer's SystemVault balance and causally available prepaid RSpace stack cells, allocated physically so one unit cannot satisfy two obligations |
+| Conservative bound, realized draw, refund | certificate-bound reservation and exact draw; `SystemVault.applyCost` performs reserve, cost burn, proposer-fee transfer, and residual return in one authenticated lexical transaction, while untouched stack tails remain in RSpace |
+| Wallet and funding-slot ownership | verified deploy signer → canonical vault address for general custody; unforgeable RSpace name possession for narrowly delegated persistent slots |
+| Lollipop `s₁ ⊸ s₂` | normalizer desugaring plus distinct rendezvous/continuation authority regions; physical settlement draws each forced region from its own native purse |
+| Minting | existing `MakeMint` substrate confined by `SystemVault.protocolMint` to authenticated genesis/PoS system execution; ordinary settlement and user Rholang cannot mint native supply |
+| Validator wallet and epoch replenishment | PoS `mintPhlogiston` invokes `SystemVault.protocolMint` under the system authority token and records epoch idempotency |
+| Slashing and redemption | PoS state plus `SystemVault.protocolQuarantineAll`, protocol burn/return/penalty transitions, replayed as authenticated system deploys |
+| Fee collection and conversion | direct conserving payer-to-proposer SystemVault transfer for the native fee; blessed `rho:lang:exchange` remains available for genuine swaps of already-existing carrier resources |
+| Transaction atomicity | RSpace match observer, deploy soft checkpoint, located-stack pops, and `SystemVault.applyCost` share one retained node lifecycle; failure restores the pre-state |
+| Validator acceptance and replay | state-bound authority certificate/witness derived independently from the authenticated block pre-state by proposal and replay |
+| Concurrent composition | Casper merge combines durable RSpace changes, located-stack removals, and exact SystemVault deltas; canonical aggregation rejects aggregate overdraw |
+| Graded transitions (step labelled by consumed signature) | `BillableTokenEvent.sig_hash` |
+| Generic GSLT/OSLF funding and formula boundary | `accounting/resource_logic.rs` `GsltPresentation`, `ResourceSignature`, `OslfResourceLogic<G>::resource_observation/check_formula`; `accounting/oslf.rs` finite located formula evaluator; native specialization `RhoGslt` excludes candidate-created supply |
+| Two monoids (spatial vs temporal) | spatial `Par` (unordered) vs temporal `SourcePath` (ordered) |
+
+### Same-configuration resource availability
+
+The concrete rules R1–R3 reduce a signed interaction against a located stack
+that is already a component of the current parallel configuration. Native
+evaluation therefore cannot expose the host scheduler's choice between a
+`CostStack` declaration and an ordinary sibling reduction as semantic time.
+For each normalized `Par`, stack declarations are materialized first in
+canonical order; all remaining terms retain normal concurrent evaluation.
+
+This phase boundary is local. A declaration in a continuation is not present
+until its parent COMM releases that continuation, so it cannot satisfy the
+parent's demand. In symbols, for current declaration $`d`$, parent interaction
+$`r`$, and continuation declaration $`n`$:
+
+```math
+d \prec r \prec n.
+```
+
+This is a refinement of the papers' co-present located-resource premise, not a
+new linear-logic connective or a settlement reorder. The RSpace event log now
+records that semantic causality directly, and play and replay consume the same
+trace. See DR-42 and `ParallelStackMaterialization.{tla,v}`.
+
+MeTTaIL is not a Rust runtime dependency in this design. When `mettail-rust` is
+ready, integration is an adapter that implements the generic
+`GsltPresentation`/`ResourceSignature`/`OslfResourceLogic<G>` surface. It must
+reproduce the native three-valued evidence semantics: conservative bounds may
+prove sufficiency but never a spend; exact evidence determines the modal
+post-state; spatial branches see disjoint located surfaces; candidate-created
+supply is never authenticated pre-state capacity. The native node remains
+coupled to this specification-level conformance target, not to a particular
+MeTTaIL representation.
+
+## Honestly Rocq-primary (now mechanized)
+
+Per the multi-prover allocation (DR-21 (d), and the design table): some claims are equational/logical and
+Rocq-primary, with TLA+/Sage/Lean carrying genuine content only where there is operational/algebraic substance
+(monad laws → Sage + Lean; located purses + modulus → TLA+). The two categorical claims that rest on the
+**native translation / bisimulation** (the source-to-source erasure into pure rho) are now discharged
+axiom-free in the native four-sort grammar:
+
+- **Graded Hennessy–Milner adequacy** (graded-HML equivalence = graded bisimulation over the
+  signature-labelled `graded_step`):
+  - *soundness* — `CAGradedAdequacy.graded_adequacy_sound` (graded-bisimilar ⇒ same graded-HML);
+  - *image-finiteness* — `CAGradedImageFinite.graded_image_finite` and `CAGradedSuccPairs.graded_image_finite_pairs`
+    (the explicit finite successor enumerations `graded_succ` / `graded_succ_all`);
+  - *completeness* — `CAGradedCompleteness.graded_finitary_adequacy`: at every finite modal depth `n`,
+    depth-`n` graded bisimilarity ⟺ agreement on all graded-HML formulae of modal depth ≤ `n`, via the
+    constructive `graded_dichotomy` (distinguishing-formula extraction). **No Classical / funext / Choice** —
+    image-finiteness removes the only non-constructive obstacle.
+  - *full (non-stratified) HM theorem* — `CAGradedLimit.graded_limit_adequacy`: `(∀n, graded_bisim_n n S T)
+    ⟺ (∀φ, gsat S φ ↔ gsat T φ)` — approximant-limit graded bisimilarity = graded-HML equivalence, with no
+    depth bound. `graded_bisim_refines_approximants` bridges the coinductive gfp (`CAGradedAdequacy.graded_bisim`)
+    into the limit (`graded_bisim_implies_hml`). The one implication NOT proven — approximant-limit ⇒ coinductive
+    gfp — is exactly the image-finite infinite pigeonhole (a weak omniscience principle); it is stated and assumed
+    **nowhere**, so the whole stack stays axiom-free. This is the precise constructive ceiling, exhibited as theorems.
+  - *force-point obstruction, proven* — `CAForceSeparation.ca_force_overgating_separation` (+ `_nonvacuous`):
+    the gated translation `St (STSigned P s)` is stuck (`gated_translation_stuck`), so it is **not** strongly
+    bisimilar to the dequoted-and-running source force `Pt (st_to_proc (STSigned P s))`. The "full metered
+    bisimulation at force points" is thus a machine-checked **FALSE-for-the-naive-translation** result, not an
+    open task; a force-faithful translation is a different (out-of-scope) translation.
+- **The two adjunctions** — Free ⊣ Forget (structural) in `CAAdjunctions.v`
+  (`cost_forget_install`, `cost_install_forget_alters`, naturality), and the internalisation
+  ℐ_G ≡ `Imp_G : Cost(G) → G` over Turing-complete bases in `CAInternalisation.v`. The latter is the paper's
+  Prop. `adj2` (*internalisation as an adjoint retraction*): `ca_internalisation_retraction` proves
+  `Imp_G ∘ η_G ≈ id_G` **up to weak bisimulation** — the retraction along the cost-free unit embedding `η_G`,
+  where the freely-available unit token fires the gate as an administrative reduction (so the §3a force-point
+  over-gating, a property of the *full metered* translation at arbitrary grades, is not in scope of the claim).
+  Axiom-free and fully general over the hash/ground encoders.
+
+The central structural claims (wrapping, the cost monad, GAP-2 dissolution, cost determinism, the modulus) are
+discharged axiom-free by `continued_gslt_cost_capstone`; the graded adequacy and both adjunctions above complete
+the categorical layer (CL5–CL6) in the native grammar.
+
+## References
+
+- S. Mac Lane, *Categories for the Working Mathematician*, Graduate Texts in Mathematics, vol. 5, Springer, 1978. DOI: [10.1007/978-1-4757-4721-8](https://doi.org/10.1007/978-1-4757-4721-8). The endofunctor / unit-and-multiplication monad / adjunction structure realized by the cost construction.
+- L. G. Meredith and M. Radestock, "A reflective higher-order calculus," *Electronic Notes in Theoretical Computer Science*, vol. 141, no. 5, pp. 49–67, 2005. DOI: [10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016). The reflective rho substrate (`bang_encoding` / `D_encoding`).
+- Governing specifications (read-only law): `publications/cost-accounting/cost-accounted-rho.tex`; `publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex`.
+- Full bibliographies (with DOIs): [`cost-accounted-rho-verification.md`](cost-accounted-rho-verification.md) §13 and [`cost-accounting-linear-logic.md`](cost-accounting-linear-logic.md) §References.

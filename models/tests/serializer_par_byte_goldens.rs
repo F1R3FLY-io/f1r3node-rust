@@ -138,6 +138,7 @@ fn odd_shapes_par() -> Par {
                     var_instance: Some(VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {})),
                 }),
                 free_count: -7,
+                cost_signature: None,
             }],
             body: Some(gint(6)),
             persistent: true,
@@ -323,6 +324,8 @@ fn odd_shapes_par() -> Par {
         // shape 2 — the outermost blanked field
         locally_free: vec![0xE1, 0xE2, 0xE3],
         connective_used: true,
+        cost_signed_terms: vec![],
+        cost_stacks: vec![],
     }
 }
 
@@ -331,6 +334,8 @@ fn fixture_datum() -> Datum<ListParWithRandom> {
         a: ListParWithRandom {
             pars: vec![odd_shapes_par(), tagged(0x77)],
             random_state: vec![0xF1, 0xF2, 0xF3, 0xF4],
+            cost_authority: None,
+            cost_stack: None,
         }
         .into(),
         persist: false,
@@ -347,6 +352,8 @@ fn fixture_datum_persist() -> Datum<ListParWithRandom> {
         a: ListParWithRandom {
             pars: vec![],
             random_state: vec![],
+            cost_authority: None,
+            cost_stack: None,
         }
         .into(),
         persist: true,
@@ -378,6 +385,7 @@ fn fixture_continuation_par_body() -> WaitingContinuation<BindPattern, TaggedCon
         .into(),
         continuation: TaggedContinuation {
             guard: Some(gint(41)),
+            cost_authority: None,
             tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
                 body: Some(gint(42)),
                 random_state: vec![0x01, 0x02],
@@ -406,6 +414,7 @@ fn fixture_continuation_scala_ref() -> WaitingContinuation<BindPattern, TaggedCo
         .into(),
         continuation: TaggedContinuation {
             guard: None,
+            cost_authority: None,
             tagged_cont: Some(TaggedCont::ScalaBodyRef(-99)),
         }
         .into(),

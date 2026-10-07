@@ -740,6 +740,7 @@ fn the_protobuf_differential_can_go_red() {
     // OPPOSITE of that fix.
     let tc = TaggedContinuation {
         guard: Some(corpus::gint(11)),
+        cost_authority: None,
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(corpus::gint(22)),
             random_state: vec![9, 9, 9],
@@ -761,16 +762,18 @@ fn the_protobuf_differential_can_go_red() {
         .collect();
     assert_eq!(
         generated_tc,
-        vec!["tagged_cont", "guard"],
+        vec!["tagged_cont", "guard", "cost_authority"],
         "the generated `TaggedContinuation` prost program must put the ONEOF first (it holds \
-         tags 1-2; `guard` is tag 3), or M2 perturbs the wrong order"
+         tags 1-2; `guard` is tag 3 and cost_authority is tag 4), or M2 perturbs the wrong order"
     );
     let guard_only = TaggedContinuation {
         guard: tc.guard.clone(),
+        cost_authority: None,
         tagged_cont: None,
     };
     let cont_only = TaggedContinuation {
         guard: None,
+        cost_authority: None,
         tagged_cont: tc.tagged_cont.clone(),
     };
     let m2 = {
@@ -925,10 +928,11 @@ proptest! {
     /// Both properties through every cold-store root.
     #[test]
     fn all_roots_encode_identically(par in generate_par(2)) {
-        let datum = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2, 3] };
+        let datum = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2, 3], cost_authority: None, cost_stack: None };
         let pattern = BindPattern { patterns: vec![par.clone()], remainder: None, free_count: 3 };
         let cont = TaggedContinuation {
             guard: Some(par.clone()),
+            cost_authority: None,
             tagged_cont: Some(TaggedCont::ScalaBodyRef(7)),
         };
         prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), recursive_oracle_encode(&par));

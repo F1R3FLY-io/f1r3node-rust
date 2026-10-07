@@ -379,7 +379,7 @@ fn shape_3_ezipper_wraps_the_pathmap_in_an_option() {
 ///
 /// And the index is serde's **declaration order**, not the proto tag.
 /// `EPathmapBody` is proto tag **32** and serde index **25**; reading proto tags
-/// as serde indices would silently mis-decode 12 of the 36 arms.
+/// as serde indices would silently mis-decode 12 of the 37 arms.
 #[test]
 fn shape_4_oneofs_are_an_option_tag_then_a_u32_variant_index() {
     for (name, instance) in corpus::every_expr_instance() {
@@ -475,6 +475,7 @@ fn shape_4_tagged_cont_absent_is_not_variant_zero() {
     let absent = TaggedContinuation {
         guard: None,
         tagged_cont: None,
+        cost_authority: None,
     };
     let par_body = TaggedContinuation {
         guard: None,
@@ -482,10 +483,12 @@ fn shape_4_tagged_cont_absent_is_not_variant_zero() {
             body: None,
             random_state: vec![],
         })),
+        cost_authority: None,
     };
     let scala = TaggedContinuation {
         guard: None,
         tagged_cont: Some(TaggedCont::ScalaBodyRef(0)),
+        cost_authority: None,
     };
 
     for value in [&absent, &par_body, &scala] {
@@ -498,18 +501,23 @@ fn shape_4_tagged_cont_absent_is_not_variant_zero() {
 
     // Byte-level: `guard: None` is one byte, then the `tagged_cont` Option tag.
     let a = bincode::serialize(&absent).expect("absent");
-    assert_eq!(a, vec![0u8, 0u8], "guard tag 0, tagged_cont tag 0");
+    assert_eq!(
+        a,
+        vec![0u8, 0u8, 0u8],
+        "guard tag 0, cost_authority tag 0, tagged_cont tag 0"
+    );
     let p = bincode::serialize(&par_body).expect("par_body");
     assert_eq!(p[0], 0, "guard tag");
-    assert_eq!(p[1], 1, "tagged_cont Some tag");
+    assert_eq!(p[1], 0, "cost_authority tag");
+    assert_eq!(p[2], 1, "tagged_cont Some tag");
     assert_eq!(
-        u32::from_le_bytes(p[2..6].try_into().expect("4 bytes")),
+        u32::from_le_bytes(p[3..7].try_into().expect("4 bytes")),
         0,
         "ParBody is variant index 0"
     );
     let s = bincode::serialize(&scala).expect("scala");
     assert_eq!(
-        u32::from_le_bytes(s[2..6].try_into().expect("4 bytes")),
+        u32::from_le_bytes(s[3..7].try_into().expect("4 bytes")),
         1,
         "ScalaBodyRef is variant index 1"
     );
@@ -543,7 +551,7 @@ fn shape_4_tagged_cont_absent_is_not_variant_zero() {
 #[test]
 fn bincode_decoder_type_partition() {
     /// Transitively contains `Par`; decoded by the machine.
-    const MACHINE_TYPES: [&str; 47] = [
+    const MACHINE_TYPES: [&str; 54] = [
         // the `Par` SCC (41)
         "Par",
         "Send",
@@ -593,11 +601,18 @@ fn bincode_decoder_type_partition() {
         "ListParWithRandom",
         "BindPattern",
         "ListBindPatterns",
+        "CostSignature",
+        "Value",
+        "CostSignatureCompound",
+        "CostSignedTerm",
+        "CostRegion",
+        "CostAuthority",
+        "CostStack",
     ];
 
     /// Outside the `Par` SCC: fixed maximum nesting, hence fixed maximum stack.
     /// Decoded by the bounded leaf readers in `bincode_decoder::Reader`.
-    const BOUNDED_TYPES: [&str; 16] = [
+    const BOUNDED_TYPES: [&str; 18] = [
         "Var",
         "VarInstance",
         "WildcardMsg",
@@ -614,14 +629,16 @@ fn bincode_decoder_type_partition() {
         "PCost",
         "GBigRational",
         "GFixedPoint",
+        "GAuthorityId",
+        "GPrincipalId",
     ];
 
-    assert_eq!(MACHINE_TYPES.len(), 47);
-    assert_eq!(BOUNDED_TYPES.len(), 16);
+    assert_eq!(MACHINE_TYPES.len(), 54);
+    assert_eq!(BOUNDED_TYPES.len(), 18);
     assert_eq!(
         MACHINE_TYPES.len() + BOUNDED_TYPES.len(),
-        63,
-        "the schema has 62 generated serde types plus the hand-written EPathMap"
+        72,
+        "the schema has 71 generated serde types plus the hand-written EPathMap"
     );
 
     let mut names: Vec<&str> = MACHINE_TYPES
@@ -758,6 +775,8 @@ fn prefix_extents_let_the_following_field_be_read() {
     let value = ListParWithRandom {
         pars: vec![corpus::all_par_fields()],
         random_state: vec![1, 2, 3],
+        cost_authority: None,
+        cost_stack: None,
     };
     let mut bytes = bincode::serialize(&value).expect("serialize");
     let extent = bytes.len();

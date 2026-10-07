@@ -29,12 +29,7 @@ FUZZ_RUSTFLAGS="${FUZZ_RUSTFLAGS:--C target-feature=+aes,+sse2}"
 KANI_RUSTFLAGS="${KANI_RUSTFLAGS:--Aexplicit-builtin-cfgs-in-flags --cfg target_feature=\"aes\" --cfg target_feature=\"sse2\"}"
 MIRI_RUSTFLAGS="${MIRI_RUSTFLAGS:-$FUZZ_RUSTFLAGS}"
 MIRI_CACHE_HOME="${MIRI_CACHE_HOME:-$PWD/target/miri-cache}"
-# Default to a real memory ceiling (was unbounded when unset). Caps the
-# fuzz / mutants / apalache runs below so a runaway can't OOM the host;
-# override to widen. The TLA+ MODEL checks delegate to
-# scripts/ci/check-tla-invariants.sh, which has its own per-run envelope
-# via scripts/lib/tlc-run.sh.
-SYSTEMD_MEMORY_MAX="${SYSTEMD_MEMORY_MAX:-32G}"
+SYSTEMD_MEMORY_MAX="${SYSTEMD_MEMORY_MAX:-}"
 SYSTEMD_CPU_QUOTA="${SYSTEMD_CPU_QUOTA:-}"
 KANI_HARNESSES=(
     checked_base_seq_matches_i32_predecessor
@@ -63,7 +58,7 @@ FUZZ_TARGETS=(
 
 run_limited() {
     if [[ -n "$SYSTEMD_MEMORY_MAX" ]] && command -v systemd-run >/dev/null 2>&1; then
-        local args=(--user --scope -p "MemoryMax=$SYSTEMD_MEMORY_MAX" -p "MemorySwapMax=0")
+        local args=(--user --scope -p "MemoryMax=$SYSTEMD_MEMORY_MAX")
         if [[ -n "$SYSTEMD_CPU_QUOTA" ]]; then
             args+=(-p "CPUQuota=$SYSTEMD_CPU_QUOTA")
         fi
@@ -135,7 +130,7 @@ run_hypothesis_sage_replay() {
         --rust-fixtures-out "$rust_fixtures_out"
     SLASHING_REPLAY_JSON="$fixture_out" \
         SLASHING_RUST_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo test -p casper generated_
+        cargo nextest run -p casper generated_
 }
 
 run_coverage() {
@@ -181,13 +176,13 @@ run_apalache() {
         echo "SKIP Apalache: apalache-mc not found"
         return
     fi
-    run_limited apalache-mc check formal/tlaplus/slashing/MC_AuthorizedSlashFlow.tla
-    run_limited apalache-mc check formal/tlaplus/slashing/MC_TwoLevelSlashing.tla
+    apalache-mc check formal/tlaplus/slashing/MC_AuthorizedSlashFlow.tla
+    apalache-mc check formal/tlaplus/slashing/MC_TwoLevelSlashing.tla
 }
 
 write_run_metadata
 triage_fuzz_artifacts
-cargo test -p casper slash_authorization_regressions
+cargo nextest run -p casper slash_authorization_regressions
 
 if cargo fuzz --help >/dev/null 2>&1; then
     for target in "${FUZZ_TARGETS[@]}"; do

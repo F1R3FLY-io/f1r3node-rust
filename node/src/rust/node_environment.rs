@@ -30,7 +30,8 @@ pub async fn create(conf: &NodeConf) -> eyre::Result<NodeIdentifier> {
     has_key(&conf.tls)?;
 
     let name = name(conf)?;
-    Ok(NodeIdentifier::new(name))
+    NodeIdentifier::new(&name)
+        .map_err(|e| eyre::eyre!("Certificate does not yield a valid node ID: {}", e))
 }
 
 fn is_valid(pred: bool, msg: &str) -> eyre::Result<()> {

@@ -131,6 +131,8 @@ use std::fmt;
 
 use serde::Deserialize;
 
+use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+
 /// The decoder's error type.
 ///
 /// Variants mirror the `bincode::ErrorKind` cases the derived path can produce
@@ -249,11 +251,22 @@ pub trait ColdStoreDecode: Sized {
     /// module documentation.
     fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError>;
 
+    /// Decode the pre-cost positional layout under an authenticated Legacy
+    /// epoch. Bounded test-double types have the same layout in both epochs;
+    /// recursive rhoapi roots override this with the explicit-stack decoder.
+    fn cold_decode_legacy_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        Self::cold_decode_prefix(bytes)
+    }
+
     /// Decode a value from `bytes`, **permitting trailing bytes** — the
     /// `allow_trailing_bytes()` half of `bincode::deserialize`'s configuration.
     /// Tightening this would narrow the accepted language and fork.
     fn cold_decode(bytes: &[u8]) -> Result<Self, ColdStoreDecodeError> {
         Self::cold_decode_prefix(bytes).map(|(value, _consumed)| value)
+    }
+
+    fn cold_decode_legacy(bytes: &[u8]) -> Result<Self, ColdStoreDecodeError> {
+        Self::cold_decode_legacy_prefix(bytes).map(|(value, _consumed)| value)
     }
 }
 
@@ -374,6 +387,26 @@ pub fn cold_decode_vec_prefix<T: ColdStoreDecode>(
     Ok((out, consumed))
 }
 
+/// Decode a counted vector under an authenticated positional schema. The
+/// legacy choice is explicit and applies to every element; no payload-shape
+/// sniffing or "try the other decoder" fallback is permitted.
+pub fn cold_decode_vec_prefix_for_epoch<T: ColdStoreDecode>(
+    epoch: EventCodecEpoch,
+    bytes: &[u8],
+) -> Result<(Vec<T>, usize), ColdStoreDecodeError> {
+    let (count, mut consumed) = read_len_prefix(bytes)?;
+    let mut out = Vec::with_capacity(cautious_capacity::<T>(count));
+    for _ in 0..count {
+        let (value, used) = match epoch {
+            EventCodecEpoch::Legacy => T::cold_decode_legacy_prefix(&bytes[consumed..])?,
+            EventCodecEpoch::CostV1 => T::cold_decode_prefix(&bytes[consumed..])?,
+        };
+        consumed += used;
+        out.push(value);
+    }
+    Ok((out, consumed))
+}
+
 /// Decode the bounded TAIL of a record whose head was decoded by the machine.
 ///
 /// `Datum<A>` is `{ a: A, persist: bool, source: Produce }` and
@@ -391,6 +424,13 @@ pub fn cold_decode_vec_prefix<T: ColdStoreDecode>(
 pub fn legacy_tail<T>(bytes: &[u8]) -> Result<T, ColdStoreDecodeError>
 where T: for<'a> Deserialize<'a> {
     bincode::deserialize(bytes).map_err(|e| ColdStoreDecodeError::Legacy(e.to_string()))
+}
+
+/// Scalar test-double value with a fixed maximum nesting depth.
+impl ColdStoreDecode for u8 {
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        legacy_prefix(bytes)
+    }
 }
 
 /// `String` is one of the rspace++ **test-double** instantiations

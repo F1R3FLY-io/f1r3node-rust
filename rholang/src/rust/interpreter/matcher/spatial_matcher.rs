@@ -5,12 +5,18 @@
 //! API while preventing calls through a different message type from silently
 //! reintroducing mutual native-stack recursion.
 
+use std::sync::{Arc, Mutex};
+
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{guard, new_free_map, FreeMap, IsolatableState};
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
+use shared::rust::clone_backing::{self, arc_allocation_bytes, BackingError, CloneBacking};
+use shared::rust::collection_backing::tree_backing;
 
 use super::exports::*;
 use super::has_locally_free::HasLocallyFree;
-use super::list_match::{aggregate_updates, ListMatch, Pattern};
+use super::list_match::{aggregate_updates_metered, ListMatch, Pattern};
 use super::match_pars::match_pars;
 use super::spatial_matcher_pda;
 use crate::list_match;
@@ -25,7 +31,10 @@ list_match!(
     Match,
     Bundle,
     GUnforgeable,
-    ReceiveBind
+    ReceiveBind,
+    If,
+    CostSignedTerm,
+    CostStack
 );
 
 pub trait SpatialMatcher<T, P> {
@@ -33,15 +42,188 @@ pub trait SpatialMatcher<T, P> {
 }
 
 #[derive(Clone)]
-pub struct SpatialMatcherContext {
-    pub free_map: FreeMap,
+pub(super) struct MatcherWork<'a> {
+    meter: Option<&'a dyn SourceMeter>,
+    error: Option<Arc<Mutex<Option<RSpaceError>>>>,
 }
 
-impl SpatialMatcherContext {
+impl<'a> MatcherWork<'a> {
+    fn new() -> Self {
+        Self {
+            meter: None,
+            error: None,
+        }
+    }
+
+    fn with_meter(meter: &'a dyn SourceMeter) -> Result<Self, RSpaceError> {
+        let bytes = arc_allocation_bytes::<Mutex<Option<RSpaceError>>>()
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(1, 0, bytes)?;
+        Ok(Self {
+            meter: Some(meter),
+            error: Some(Arc::new(Mutex::new(None))),
+        })
+    }
+
+    pub fn reserve(&self, operations: usize, scanned: usize, backing: usize) -> Option<()> {
+        if let Some(error) = &self.error {
+            if error.lock().expect("matcher meter lock").is_some() {
+                return None;
+            }
+        }
+        if let Some(meter) = self.meter {
+            if let Err(error) = meter.reserve(operations, scanned, backing) {
+                *self
+                    .error
+                    .as_ref()
+                    .expect("meter error slot")
+                    .lock()
+                    .expect("matcher meter lock") = Some(error);
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    pub fn take_error(&self) -> Option<RSpaceError> {
+        self.error
+            .as_ref()?
+            .lock()
+            .expect("matcher meter lock")
+            .take()
+    }
+
+    pub fn reject<T>(&self, error: RSpaceError) -> Option<T> {
+        if let Some(slot) = &self.error {
+            let mut failed = slot.lock().expect("matcher meter lock");
+            if failed.is_none() {
+                *failed = Some(error);
+            }
+        }
+        None
+    }
+
+    pub fn reserve_vec<T>(&self, values: &mut Vec<T>, additional: usize) -> Option<()> {
+        let needed = match values.len().checked_add(additional) {
+            Some(needed) => needed,
+            None => return self.reject(RSpaceError::HostWorkRejected),
+        };
+        if needed <= values.capacity() {
+            return self.reserve(1, 0, 0);
+        }
+        let Some(next_capacity) = values
+            .capacity()
+            .checked_mul(2)
+            .map(|doubled| needed.max(doubled).max(4))
+        else {
+            return self.reject(RSpaceError::HostWorkRejected);
+        };
+        let Some(bytes) = next_capacity.checked_mul(std::mem::size_of::<T>()) else {
+            return self.reject(RSpaceError::HostWorkRejected);
+        };
+        let Some(scanned) = values.len().checked_mul(std::mem::size_of::<T>()) else {
+            return self.reject(RSpaceError::HostWorkRejected);
+        };
+        self.reserve(1, scanned, bytes)?;
+        if values
+            .try_reserve_exact(next_capacity - values.len())
+            .is_err()
+        {
+            return self.reject(RSpaceError::HostWorkRejected);
+        }
+        Some(())
+    }
+
+    fn reserve_backing<T: CloneBacking>(&self, value: &T, inspect: bool) -> Option<()> {
+        if self.meter.is_none() {
+            return self.reserve(0, 0, 0);
+        }
+        let meter = |operations, scanned, backing| {
+            self.reserve(operations, scanned, backing)
+                .ok_or(BackingError::Rejected)
+        };
+        let result = if inspect {
+            clone_backing::inspect(value, &meter)
+        } else {
+            clone_backing::reserve_copy_and_cleanup(value, &meter)
+        };
+        if result.is_err() {
+            return self.reject(RSpaceError::HostWorkRejected);
+        }
+        Some(())
+    }
+
+    pub fn reserve_clone<T: CloneBacking>(&self, value: &T) -> Option<()> {
+        self.reserve_backing(value, false)
+    }
+
+    pub fn reserve_inspect<T: CloneBacking>(&self, value: &T) -> Option<()> {
+        self.reserve_backing(value, true)
+    }
+
+    pub fn reserve_slice<T: CloneBacking>(&self, values: &[T]) -> Option<()> {
+        if self.meter.is_none() {
+            return self.reserve(0, 0, 0);
+        }
+        let meter = |operations, scanned, backing| {
+            self.reserve(operations, scanned, backing)
+                .ok_or(BackingError::Rejected)
+        };
+        if clone_backing::reserve_slice_copy_and_cleanup(values, &meter).is_err() {
+            return self.reject(RSpaceError::HostWorkRejected);
+        }
+        Some(())
+    }
+}
+
+#[derive(Clone)]
+pub struct SpatialMatcherContext<'a> {
+    pub free_map: FreeMap,
+    work: MatcherWork<'a>,
+}
+
+impl<'a> SpatialMatcherContext<'a> {
     pub fn new() -> Self {
         Self {
             free_map: new_free_map(),
+            work: MatcherWork::new(),
         }
+    }
+
+    pub fn with_meter(meter: &'a dyn SourceMeter) -> Result<Self, RSpaceError> {
+        Ok(Self {
+            free_map: new_free_map(),
+            work: MatcherWork::with_meter(meter)?,
+        })
+    }
+
+    pub fn reserve(&self, operations: usize, scanned: usize, backing: usize) -> Option<()> {
+        self.work.reserve(operations, scanned, backing)
+    }
+
+    pub fn take_error(&self) -> Option<RSpaceError> { self.work.take_error() }
+
+    pub fn reject<T>(&self, error: RSpaceError) -> Option<T> { self.work.reject(error) }
+
+    pub fn reserve_vec<T>(&self, values: &mut Vec<T>, additional: usize) -> Option<()> {
+        self.work.reserve_vec(values, additional)
+    }
+
+    pub fn reserve_clone<T: CloneBacking>(&self, value: &T) -> Option<()> {
+        self.work.reserve_clone(value)
+    }
+
+    pub fn reserve_inspect<T: CloneBacking>(&self, value: &T) -> Option<()> {
+        self.work.reserve_inspect(value)
+    }
+
+    pub fn reserve_slice<T: CloneBacking>(&self, values: &[T]) -> Option<()> {
+        self.work.reserve_slice(values)
+    }
+
+    pub(super) fn work(&self) -> Option<MatcherWork<'a>> {
+        self.reserve(1, 0, 0)?;
+        Some(self.work.clone())
     }
 
     pub fn spatial_match_result(&mut self, target: Par, pattern: Par) -> Option<&FreeMap> {
@@ -70,27 +252,27 @@ impl SpatialMatcherContext {
     }
 }
 
-impl Default for SpatialMatcherContext {
+impl<'a> Default for SpatialMatcherContext<'a> {
     fn default() -> Self { Self::new() }
 }
 
-impl IsolatableState for SpatialMatcherContext {
+impl<'a> IsolatableState for SpatialMatcherContext<'a> {
     fn free_map_mut(&mut self) -> &mut FreeMap { &mut self.free_map }
 }
 
-impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
+impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
         spatial_matcher_pda::match_par(self, target, pattern)
     }
 }
 
-impl SpatialMatcher<(Par, Par), (Par, Par)> for SpatialMatcherContext {
+impl<'a> SpatialMatcher<(Par, Par), (Par, Par)> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: (Par, Par), pattern: (Par, Par)) -> Option<()> {
         spatial_matcher_pda::match_par_pair(self, target, pattern)
     }
 }
 
-impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
+impl<'a> SpatialMatcher<Par, Connective> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Par, pattern: Connective) -> Option<()> {
         spatial_matcher_pda::match_connective(self, target, pattern)
     }
@@ -98,12 +280,30 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 
 macro_rules! pda_impl {
     ($target:ty, $entry:ident) => {
-        impl SpatialMatcher<$target, $target> for SpatialMatcherContext {
+        impl<'a> SpatialMatcher<$target, $target> for SpatialMatcherContext<'a> {
             fn spatial_match(&mut self, target: $target, pattern: $target) -> Option<()> {
                 spatial_matcher_pda::$entry(self, target, pattern)
             }
         }
     };
+}
+
+impl<'a> SpatialMatcher<If, If> for SpatialMatcherContext<'a> {
+    fn spatial_match(&mut self, target: If, pattern: If) -> Option<()> {
+        spatial_matcher_pda::match_if(self, target, pattern)
+    }
+}
+
+impl<'a> SpatialMatcher<CostSignedTerm, CostSignedTerm> for SpatialMatcherContext<'a> {
+    fn spatial_match(&mut self, target: CostSignedTerm, pattern: CostSignedTerm) -> Option<()> {
+        spatial_matcher_pda::match_cost_signed_term(self, target, pattern)
+    }
+}
+
+impl<'a> SpatialMatcher<CostStack, CostStack> for SpatialMatcherContext<'a> {
+    fn spatial_match(&mut self, target: CostStack, pattern: CostStack) -> Option<()> {
+        spatial_matcher_pda::match_cost_stack(self, target, pattern)
+    }
 }
 
 pda_impl!(Bundle, match_bundle);

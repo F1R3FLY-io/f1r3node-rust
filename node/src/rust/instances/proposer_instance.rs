@@ -54,33 +54,6 @@ pub struct ProposerInstance<T: TransportLayer + Send + Sync + 'static> {
     pub propose_queue_max_pending: usize,
 }
 
-#[cfg(test)]
-mod tests {
-    use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
-
-    use super::*;
-
-    #[test]
-    fn should_not_retry_internal_deploy_error_immediately() {
-        let result = ProposeResult::failure(ProposeFailure::InternalDeployError);
-        assert!(
-            !should_retry_immediately_on_trigger(&result, true),
-            "InternalDeployError should not trigger immediate retry"
-        );
-    }
-
-    #[test]
-    fn should_not_retry_not_enough_new_blocks_for_async_propose() {
-        let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
-            CheckProposeConstraintsFailure::NotEnoughNewBlocks,
-        ));
-        assert!(
-            !should_retry_immediately_on_trigger(&result, true),
-            "NotEnoughNewBlocks should not trigger immediate async retry"
-        );
-    }
-}
-
 impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
     /// Create a new ProposerInstance
     ///
@@ -246,7 +219,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                     {
                                         Ok(_) => {}
                                         Err(e) => {
-                                            tracing::error!("Failed to send propose result: {}", e);
+                                            tracing::error!(error = %e, "propose result send failed");
                                         }
                                     }
                                 }
@@ -255,8 +228,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                         tracing::info!("Propose: {}", propose_result.propose_status)
                                     } else {
                                         tracing::error!(
-                                            "Propose failed: {}",
-                                            propose_result.propose_status
+                                            status = %propose_result.propose_status,
+                                            "propose failed"
                                         )
                                     }
                                 }
@@ -265,7 +238,20 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                             should_retry_on_trigger
                         }
                         Err(e) => {
-                            tracing::error!("Error proposing: {}", e);
+                            tracing::error!(error = %e, "propose call failed");
+
+                            let (classified_failure, block_to_request) = classify_propose_error(&e);
+                            if let Some(hash) = block_to_request {
+                                if let Err(req_err) =
+                                    casper.request_block_from_peers(hash.clone()).await
+                                {
+                                    tracing::warn!(
+                                        error = %req_err,
+                                        block = %hex::encode(&hash[..hash.len().min(8)]),
+                                        "failed to request the block the propose walk needs"
+                                    );
+                                }
+                            }
 
                             let failure_seq_number = match casper.get_snapshot().await {
                                 Ok(snapshot) => snapshot
@@ -287,14 +273,14 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                             // Dropping this sender causes "channel closed" at caller and
                             // unnecessarily breaks heartbeat liveness flow.
                             let _ = propose_id_sender.send(ProposerResult::failure(
-                                ProposeStatus::Failure(ProposeFailure::BugError),
+                                ProposeStatus::Failure(classified_failure.clone()),
                                 failure_seq_number,
                             ));
 
                             // Runtime propose errors are internal failures and should not be
                             // reported as NoNewDeploys / InternalDeployError.
                             let error_result: (ProposeResult, Option<BlockMessage>) =
-                                (ProposeResult::failure(ProposeFailure::BugError), None);
+                                (ProposeResult::failure(classified_failure), None);
 
                             // Send to both channels
                             let _ = curr_result_tx.send(error_result);
@@ -362,10 +348,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                         "source" => VALIDATOR_METRICS_SOURCE
                                     )
                                     .set(propose_queue_pending.load(Ordering::Relaxed) as f64);
-                                    tracing::error!(
-                                        "Failed to enqueue retry propose (channel closed): {}",
-                                        e
-                                    );
+                                    tracing::error!(error = %e, "retry propose enqueue failed: channel closed");
                                     // Channel closed means we're shutting down - this is expected
                                     break;
                                 }
@@ -411,5 +394,79 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
         });
 
         Ok(result_rx)
+    }
+}
+
+/// Classify a propose-call error into the failure the channels report and
+/// the block to request, if any. `BlockNotHeld` carries the floor
+/// machinery's fetch-and-retry contract; everything else is a genuine bug
+/// the heartbeat should back off on.
+pub(crate) fn classify_propose_error(
+    error: &CasperError,
+) -> (ProposeFailure, Option<models::rust::block_hash::BlockHash>) {
+    match error {
+        CasperError::BlockNotHeld(hash, _) => (
+            ProposeFailure::MissingBlock(hash.clone()),
+            Some(hash.clone()),
+        ),
+        _ => (ProposeFailure::BugError, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
+
+    use super::*;
+
+    /// `BlockNotHeld` is availability, not a bug: the classification must
+    /// name the block so the caller requests it, and must not report the
+    /// backoff-escalating BugError.
+    #[test]
+    fn block_not_held_classifies_as_missing_block_to_request() {
+        let hash = models::rust::block_hash::BlockHash::from(vec![0x5a; 32]);
+        let (failure, request) = classify_propose_error(&CasperError::BlockNotHeld(
+            hash.clone(),
+            shared::rust::store::key_value_store::MissingBlockContext::new(""),
+        ));
+        assert_eq!(
+            request.as_ref(),
+            Some(&hash),
+            "the named block must be requested"
+        );
+        assert!(
+            matches!(failure, ProposeFailure::MissingBlock(h) if h == hash),
+            "availability failure, never BugError"
+        );
+    }
+
+    /// Every other propose error keeps the bug classification (and its
+    /// backoff) — the availability carve-out must not widen.
+    #[test]
+    fn other_errors_stay_bug_classified() {
+        let (failure, request) =
+            classify_propose_error(&CasperError::RuntimeError("genuinely broken".to_string()));
+        assert!(request.is_none());
+        assert!(matches!(failure, ProposeFailure::BugError));
+    }
+
+    #[test]
+    fn should_not_retry_internal_deploy_error_immediately() {
+        let result = ProposeResult::failure(ProposeFailure::InternalDeployError);
+        assert!(
+            !should_retry_immediately_on_trigger(&result, true),
+            "InternalDeployError should not trigger immediate retry"
+        );
+    }
+
+    #[test]
+    fn should_not_retry_not_enough_new_blocks_for_async_propose() {
+        let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
+            CheckProposeConstraintsFailure::NotEnoughNewBlocks,
+        ));
+        assert!(
+            !should_retry_immediately_on_trigger(&result, true),
+            "NotEnoughNewBlocks should not trigger immediate async retry"
+        );
     }
 }

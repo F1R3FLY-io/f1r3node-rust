@@ -2,7 +2,7 @@
 // `NeglectedInvalidBlock` arm of
 // `MultiParentCasperImpl::handle_invalid_block`.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5,
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5,
 // design/08-two-level-and-collusion.md.
 //
 // Why NeglectedInvalidBlock and not NeglectedEquivocation:
@@ -115,8 +115,7 @@ async fn integration_t_neglected_invalid_block() {
     // nodes[1] would propose a Valid block and the integration
     // would silently pass without exercising the arm at all.
     let d3 = construct_deploy::basic_deploy_data(20, None, Some(shard_id.clone())).expect("d3");
-    let mut b3_justifs: Vec<Justification> = Vec::new();
-    b3_justifs.push(Justification {
+    let b3_justifs: Vec<Justification> = vec![Justification {
         validator: nodes[0]
             .validator_id_opt
             .as_ref()
@@ -125,7 +124,7 @@ async fn integration_t_neglected_invalid_block() {
             .bytes
             .clone(),
         latest_block_hash: b1p.block_hash.clone(),
-    });
+    }];
     let b3 = propose_with_explicit_justifications(&mut nodes[1], vec![d3], b3_justifs)
         .await
         .expect("propose b3");
@@ -168,9 +167,10 @@ async fn integration_t_neglected_invalid_block() {
         s_b3
     );
 
-    // Step 6: Snapshot — post-fix #3 catch-all minted records for
-    // both v0 (equivocator) and v1 (neglecter who cited the
-    // invalid block without slashing).
+    // Step 6: Snapshot — the equivocator's record persists (equivocation
+    // is the slashable class), while the neglecter's verdict is view-
+    // relative — it depends on nodes[2]'s own invalid records — so it
+    // drops b3 without minting evidence against v1.
     let snapshot = production_snapshot_at(&nodes[2], &b1p, &genesis.genesis_block, validators)
         .await
         .expect("snapshot");
@@ -182,8 +182,8 @@ async fn integration_t_neglected_invalid_block() {
         "v0's equivocation record persists in nodes[2]'s tracker"
     );
     assert!(
-        has_v1,
-        "post-fix #3 catch-all: dispatcher mints record for v1 \
-         (the NeglectedInvalidBlock neglecter) at the production tier"
+        !has_v1,
+        "demoted: NeglectedInvalidBlock is judged against the receiver's \
+         own records and mints no slash evidence against the neglecter"
     );
 }

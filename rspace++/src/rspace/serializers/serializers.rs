@@ -1,20 +1,25 @@
 // See rspace/src/main/scala/coop/rchain/rspace/serializers/ScodecSerialize.
 // scala
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// Only the `#[cfg(test)]` ORACLE twins (`DatumOracleDe`,
-/// `WaitingContinuationOracleDe`) derive `Deserialize` now — production decode
-/// goes through `ColdStoreDecode`.
-#[cfg(test)]
-use serde::Deserialize;
-use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
+use crate::rspace::errors::RSpaceError;
+use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::{self, SourceMeter};
+use crate::rspace::hashing::stable_hash_provider::{
+    EventCodecEpoch, StableHashSerialize, event_leg_bytes_for_epoch,
+};
+use crate::rspace::history::native_reader::{NativeReadError, NativeReadMeter, decode_record};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::serializers::cold_store_decode::{
-    ColdStoreDecode, ColdStoreDecodeError, cold_decode_vec_prefix, legacy_tail,
+    ColdStoreDecode, ColdStoreDecodeError, cold_decode_vec_prefix,
+    cold_decode_vec_prefix_for_epoch, legacy_tail,
 };
 use crate::rspace::trace::event::{Consume, Produce};
 
@@ -46,20 +51,18 @@ struct DatumSer<'a, A> {
 
 /// Owned deserialize twin of the value-shaped `Datum<A>` layout.
 ///
-/// ⚠ **Retained as a `#[cfg(test)]` ORACLE only.** Production decoding goes
-/// through [`decode_datum`], which reads `a` with the O(1)-native-stack machine
-/// (`models/src/rust/rholang/bincode_decoder.rs`) and the bounded tail with
-/// bincode. This twin is what the differential in this file's `mod tests`
-/// compares against; the `Par`-typed half lives in
-/// `models/tests/cold_store_records.rs`, on the far side of the `models ->
-/// rspace_plus_plus` dependency edge.
+/// Ordinary cold-store reads use [`decode_datum`] and the iterative
+/// `ColdStoreDecode` machine. Native-replay reads use this owned twin only
+/// through the separately bounded `native_reader::decode_record` visitor:
+/// that visitor charges each deserialize operation before allocation and
+/// rejects depth 128, both consensus-visible properties of the committed
+/// cost-accounting branch. The twin also remains the cold-decoder oracle.
 ///
 /// It is a better oracle than the serialize twins were: those are
 /// hand-maintained and could drift from the struct they mirror, whereas this
 /// one's *body* is compiler-generated from the field list, so the only thing
 /// that can drift is the field list itself — which is the same list
 /// [`decode_datum`] reads, three lines below it.
-#[cfg(test)]
 #[derive(Deserialize)]
 pub(crate) struct DatumOracleDe<A> {
     pub a: A,
@@ -67,7 +70,6 @@ pub(crate) struct DatumOracleDe<A> {
     pub source: Produce,
 }
 
-#[cfg(test)]
 impl<A: Clone> From<DatumOracleDe<A>> for Datum<A> {
     fn from(de: DatumOracleDe<A>) -> Self {
         Datum {
@@ -90,8 +92,8 @@ struct WaitingContinuationSer<'a, P, K> {
 }
 
 /// Owned deserialize twin of the value-shaped `WaitingContinuation<P, K>`
-/// layout. Retained as a `#[cfg(test)]` ORACLE only — see [`DatumOracleDe`].
-#[cfg(test)]
+/// layout. Native replay uses it through the bounded metered visitor; see
+/// [`DatumOracleDe`].
 #[derive(Deserialize)]
 pub(crate) struct WaitingContinuationOracleDe<P, K> {
     pub patterns: Vec<P>,
@@ -101,7 +103,6 @@ pub(crate) struct WaitingContinuationOracleDe<P, K> {
     pub source: Consume,
 }
 
-#[cfg(test)]
 impl<P: Clone, K: Clone> From<WaitingContinuationOracleDe<P, K>> for WaitingContinuation<P, K> {
     fn from(de: WaitingContinuationOracleDe<P, K>) -> Self {
         WaitingContinuation {
@@ -141,12 +142,28 @@ fn continuation_ser<'a, P: Clone, K: Clone>(
 /// through the same twins as the cold-store encoding (one layout, one pin).
 pub trait CandidateOrderingBytes {
     fn candidate_ordering_bytes(&self) -> Vec<u8>;
+
+    /// Hash the same borrowed wire layout while reserving each serializer
+    /// write before it reads or allocates. Native replay uses this for ties.
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError>;
 }
 
 impl<A: Clone + Serialize> CandidateOrderingBytes for Datum<A> {
     fn candidate_ordering_bytes(&self) -> Vec<u8> {
         bincode::serialize(&datum_ser(self))
             .expect("Serializers: Unable to serialize datum for candidate ordering")
+    }
+
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        native_source::hash(&datum_ser(self), &|operations, scanned, backing| {
+            meter.reserve(operations, scanned, backing)
+        })
     }
 }
 
@@ -157,10 +174,55 @@ impl<P: Clone + Serialize, K: Clone + Serialize> CandidateOrderingBytes
         bincode::serialize(&continuation_ser(self))
             .expect("Serializers: Unable to serialize continuation for candidate ordering")
     }
+
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        native_source::hash(&continuation_ser(self), &|operations, scanned, backing| {
+            meter.reserve(operations, scanned, backing)
+        })
+    }
+}
+
+impl<T: CandidateOrderingBytes + ?Sized> CandidateOrderingBytes for Arc<T> {
+    fn candidate_ordering_bytes(&self) -> Vec<u8> { (**self).candidate_ordering_bytes() }
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        (**self).metered_candidate_hash(meter)
+    }
+}
+
+impl<T: CandidateOrderingBytes + Clone> CandidateOrderingBytes for Cow<'_, T> {
+    fn candidate_ordering_bytes(&self) -> Vec<u8> { self.as_ref().candidate_ordering_bytes() }
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        self.as_ref().metered_candidate_hash(meter)
+    }
 }
 
 pub fn encode_datum<A: Clone + Serialize>(datum: &Datum<A>) -> Vec<u8> {
     bincode::serialize(&datum_ser(datum)).expect("Serializers: Unable to serialize datum")
+}
+
+/// Metered form of the same borrowed wire twin used by cold-store writes.
+pub(crate) fn encode_datum_metered<A: Clone + Serialize>(
+    datum: &Datum<A>,
+    meter: &impl SourceMeter,
+) -> Result<Vec<u8>, RSpaceError> {
+    native_source::encode(&datum_ser(datum), meter)
+}
+
+/// Metered continuation encoding preserves the historical positional layout.
+pub(crate) fn encode_continuation_metered<P: Clone + Serialize, K: Clone + Serialize>(
+    continuation: &WaitingContinuation<P, K>,
+    meter: &impl SourceMeter,
+) -> Result<Vec<u8>, RSpaceError> {
+    native_source::encode(&continuation_ser(continuation), meter)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +259,22 @@ pub fn decode_datum<A: Clone + ColdStoreDecode>(
     })
 }
 
+pub fn decode_datum_for_epoch<A: Clone + ColdStoreDecode>(
+    epoch: EventCodecEpoch,
+    bytes: &[u8],
+) -> Result<Datum<A>, ColdStoreDecodeError> {
+    let (a, consumed) = match epoch {
+        EventCodecEpoch::Legacy => A::cold_decode_legacy_prefix(bytes)?,
+        EventCodecEpoch::CostV1 => A::cold_decode_prefix(bytes)?,
+    };
+    let (persist, source): (bool, Produce) = legacy_tail(&bytes[consumed..])?;
+    Ok(Datum {
+        a: Arc::new(a),
+        persist,
+        source,
+    })
+}
+
 pub fn encode_datums<A: Clone + Serialize>(datums: &Vec<Datum<A>>) -> Vec<u8> {
     let mut serialized_datums: Vec<Vec<u8>> = datums
         .iter()
@@ -207,6 +285,26 @@ pub fn encode_datums<A: Clone + Serialize>(datums: &Vec<Datum<A>>) -> Vec<u8> {
 
     serialized_datums.sort_by(compare_byte_vectors);
     bincode::serialize(&serialized_datums).expect("Serializers: Unable to serialize datums")
+}
+
+/// Epoch-selected positional cold leaf. A stored datum has no channel value,
+/// so its `source` must have been constructed under this same authenticated
+/// epoch before insertion; `Datum::create_for_epoch` is that admission API.
+pub fn encode_datums_for_epoch<A: Clone + StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    datums: &[Datum<A>],
+) -> Result<Vec<u8>, RSpaceError> {
+    let mut encoded = Vec::with_capacity(datums.len());
+    for datum in datums {
+        let mut bytes = event_leg_bytes_for_epoch(epoch, datum.a.as_ref())?;
+        bytes.extend(
+            bincode::serialize(&(datum.persist, &datum.source))
+                .expect("bounded datum tail serialization"),
+        );
+        encoded.push(bytes);
+    }
+    encoded.sort_by(compare_byte_vectors);
+    Ok(bincode::serialize(&encoded).expect("datum leaf serialization"))
 }
 
 /// The cold-store DATA leaf: a `Vec<Vec<u8>>` of per-datum encodings.
@@ -225,6 +323,17 @@ pub fn decode_datums<A: Clone + ColdStoreDecode>(
     Ok(datums)
 }
 
+pub fn decode_datums_for_epoch<A: Clone + ColdStoreDecode>(
+    epoch: EventCodecEpoch,
+    bytes: &[u8],
+) -> Result<Vec<Datum<A>>, ColdStoreDecodeError> {
+    let encoded: Vec<Vec<u8>> = legacy_tail(bytes)?;
+    encoded
+        .iter()
+        .map(|item| decode_datum_for_epoch(epoch, item))
+        .collect()
+}
+
 pub fn encode_continuations<P: Clone + Serialize, K: Clone + Serialize>(
     conts: &Vec<WaitingContinuation<P, K>>,
 ) -> Vec<u8> {
@@ -241,13 +350,40 @@ pub fn encode_continuations<P: Clone + Serialize, K: Clone + Serialize>(
         .expect("Serializers: Unable to serialize continuations")
 }
 
+pub fn encode_continuations_for_epoch<P, K>(
+    epoch: EventCodecEpoch,
+    continuations: &[WaitingContinuation<P, K>],
+) -> Result<Vec<u8>, RSpaceError>
+where
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
+{
+    let mut encoded = Vec::with_capacity(continuations.len());
+    for waiting in continuations {
+        let count =
+            u64::try_from(waiting.patterns.len()).map_err(|_| RSpaceError::HostWorkRejected)?;
+        let mut bytes = count.to_le_bytes().to_vec();
+        for pattern in waiting.patterns.iter() {
+            bytes.extend(event_leg_bytes_for_epoch(epoch, pattern)?);
+        }
+        bytes.extend(event_leg_bytes_for_epoch(epoch, waiting.continuation.as_ref())?);
+        bytes.extend(
+            bincode::serialize(&(waiting.persist, &waiting.peeks, &waiting.source))
+                .expect("bounded continuation tail serialization"),
+        );
+        encoded.push(bytes);
+    }
+    encoded.sort_by(compare_byte_vectors);
+    Ok(bincode::serialize(&encoded).expect("continuation leaf serialization"))
+}
+
 /// Decode one `WaitingContinuation<P, K>` — `{ patterns: Vec<P>,
 /// continuation: K, persist: bool, peeks: BTreeSet<i32>, source: Consume }`.
 ///
 /// `patterns` and `continuation` are both `Par`-bearing prefixes and go through
 /// the machine; the remaining three fields are bounded and decode as one
 /// bincode tuple.
-fn decode_continuation<P, K>(
+pub(crate) fn decode_continuation<P, K>(
     vec_bytes: &[u8],
 ) -> Result<WaitingContinuation<P, K>, ColdStoreDecodeError>
 where
@@ -268,6 +404,78 @@ where
     })
 }
 
+pub fn decode_continuation_for_epoch<P, K>(
+    epoch: EventCodecEpoch,
+    bytes: &[u8],
+) -> Result<WaitingContinuation<P, K>, ColdStoreDecodeError>
+where
+    P: Clone + ColdStoreDecode,
+    K: Clone + ColdStoreDecode,
+{
+    let (patterns, mut consumed) = cold_decode_vec_prefix_for_epoch::<P>(epoch, bytes)?;
+    let (continuation, used) = match epoch {
+        EventCodecEpoch::Legacy => K::cold_decode_legacy_prefix(&bytes[consumed..])?,
+        EventCodecEpoch::CostV1 => K::cold_decode_prefix(&bytes[consumed..])?,
+    };
+    consumed += used;
+    let (persist, peeks, source): (bool, BTreeSet<i32>, Consume) = legacy_tail(&bytes[consumed..])?;
+    Ok(WaitingContinuation {
+        patterns: Arc::new(patterns),
+        continuation: Arc::new(continuation),
+        persist,
+        peeks,
+        source,
+    })
+}
+
+/// Native replay deliberately retains the committed branch's bounded visitor:
+/// its exact charge trace and depth-128 rejection are consensus-visible. The
+/// value-shaped twins preserve the visitor's field layout and `size_of` charges
+/// while materializing the target's Arc-backed hot-store records afterward.
+pub(crate) trait NativeRecordDecode: Sized {
+    type Wire: DeserializeOwned;
+
+    fn decode_native<M: NativeReadMeter + ?Sized>(
+        bytes: &[u8],
+        meter: &M,
+    ) -> Result<Self, NativeReadError<M::Error>>;
+}
+
+impl<A: Clone + DeserializeOwned> NativeRecordDecode for Datum<A> {
+    type Wire = DatumOracleDe<A>;
+
+    fn decode_native<M: NativeReadMeter + ?Sized>(
+        bytes: &[u8],
+        meter: &M,
+    ) -> Result<Self, NativeReadError<M::Error>> {
+        decode_record::<DatumOracleDe<A>, M>(bytes, meter).map(Into::into)
+    }
+}
+
+impl<P: Clone + DeserializeOwned, K: Clone + DeserializeOwned> NativeRecordDecode
+    for WaitingContinuation<P, K>
+{
+    type Wire = WaitingContinuationOracleDe<P, K>;
+
+    fn decode_native<M: NativeReadMeter + ?Sized>(
+        bytes: &[u8],
+        meter: &M,
+    ) -> Result<Self, NativeReadError<M::Error>> {
+        decode_record::<WaitingContinuationOracleDe<P, K>, M>(bytes, meter).map(Into::into)
+    }
+}
+
+impl<C: DeserializeOwned> NativeRecordDecode for Vec<C> {
+    type Wire = Vec<C>;
+
+    fn decode_native<M: NativeReadMeter + ?Sized>(
+        bytes: &[u8],
+        meter: &M,
+    ) -> Result<Self, NativeReadError<M::Error>> {
+        decode_record(bytes, meter)
+    }
+}
+
 /// The cold-store CONTINUATION leaf: a `Vec<Vec<u8>>` of per-continuation
 /// encodings. See [`decode_datums`] for the outer/inner split.
 pub fn decode_continuations<P, K>(
@@ -285,6 +493,21 @@ where
     Ok(continuations)
 }
 
+pub fn decode_continuations_for_epoch<P, K>(
+    epoch: EventCodecEpoch,
+    bytes: &[u8],
+) -> Result<Vec<WaitingContinuation<P, K>>, ColdStoreDecodeError>
+where
+    P: Clone + ColdStoreDecode,
+    K: Clone + ColdStoreDecode,
+{
+    let encoded: Vec<Vec<u8>> = legacy_tail(bytes)?;
+    encoded
+        .iter()
+        .map(|item| decode_continuation_for_epoch(epoch, item))
+        .collect()
+}
+
 pub fn encode_joins<C: Clone + Serialize>(joins: &Vec<Vec<C>>) -> Vec<u8> {
     let mut serialized_joins: Vec<Vec<u8>> = joins
         .iter()
@@ -293,6 +516,23 @@ pub fn encode_joins<C: Clone + Serialize>(joins: &Vec<Vec<C>>) -> Vec<u8> {
 
     serialized_joins.sort_by(compare_byte_vectors);
     bincode::serialize(&serialized_joins).expect("Serializers: Unable to serialize joins")
+}
+
+pub fn encode_joins_for_epoch<C: Clone + StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    joins: &[Vec<C>],
+) -> Result<Vec<u8>, RSpaceError> {
+    let mut encoded = Vec::with_capacity(joins.len());
+    for join in joins {
+        let count = u64::try_from(join.len()).map_err(|_| RSpaceError::HostWorkRejected)?;
+        let mut bytes = count.to_le_bytes().to_vec();
+        for channel in join {
+            bytes.extend(event_leg_bytes_for_epoch(epoch, channel)?);
+        }
+        encoded.push(bytes);
+    }
+    encoded.sort_by(compare_byte_vectors);
+    Ok(bincode::serialize(&encoded).expect("join leaf serialization"))
 }
 
 /// The cold-store JOINS leaf: a `Vec<Vec<u8>>` whose inner elements are each a
@@ -307,6 +547,17 @@ pub fn decode_joins<C: Clone + ColdStoreDecode>(
         joins.push(join);
     }
     Ok(joins)
+}
+
+pub fn decode_joins_for_epoch<C: Clone + ColdStoreDecode>(
+    epoch: EventCodecEpoch,
+    bytes: &[u8],
+) -> Result<Vec<Vec<C>>, ColdStoreDecodeError> {
+    let encoded: Vec<Vec<u8>> = legacy_tail(bytes)?;
+    encoded
+        .iter()
+        .map(|item| cold_decode_vec_prefix_for_epoch::<C>(epoch, item).map(|(join, _)| join))
+        .collect()
 }
 
 pub fn encode_binary(binary: &Vec<Vec<u8>>) -> Vec<u8> {
@@ -347,8 +598,74 @@ fn compare_byte_vectors(a: &Vec<u8>, b: &Vec<u8>) -> Ordering {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
     use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use crate::rspace::history::native_reader::{NativeReadCharge, NativeReadFault};
+
+    // These are the committed source branch's value-shaped record layouts.
+    // Their derived visitor is the independent native-meter oracle.
+    #[derive(Serialize, Deserialize)]
+    struct LegacyDatum<A> {
+        a: A,
+        persist: bool,
+        source: Produce,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct LegacyContinuation<P, K> {
+        patterns: Vec<P>,
+        continuation: K,
+        persist: bool,
+        peeks: BTreeSet<i32>,
+        source: Consume,
+    }
+
+    struct TraceMeter {
+        charges: RefCell<Vec<NativeReadCharge>>,
+        limit: Option<usize>,
+    }
+
+    impl TraceMeter {
+        fn new(limit: Option<usize>) -> Self {
+            Self {
+                charges: RefCell::new(Vec::new()),
+                limit,
+            }
+        }
+    }
+
+    impl NativeReadMeter for TraceMeter {
+        type Error = &'static str;
+
+        fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
+            let mut charges = self.charges.borrow_mut();
+            if self.limit.is_some_and(|limit| charges.len() >= limit) {
+                return Err("budget");
+            }
+            charges.push(charge);
+            Ok(())
+        }
+    }
+
+    struct SourceTraceMeter(RefCell<Vec<(usize, usize, usize)>>);
+
+    impl SourceTraceMeter {
+        fn new() -> Self { Self(RefCell::new(Vec::new())) }
+    }
+
+    impl SourceMeter for SourceTraceMeter {
+        fn reserve(
+            &self,
+            operations: usize,
+            scanned: usize,
+            backing: usize,
+        ) -> Result<(), RSpaceError> {
+            self.0.borrow_mut().push((operations, scanned, backing));
+            Ok(())
+        }
+    }
 
     fn datum() -> Datum<String> {
         Datum {
@@ -374,6 +691,144 @@ mod tests {
                 persistent: true,
             },
         }
+    }
+
+    #[test]
+    fn native_record_adapter_preserves_source_visitor_charges_and_budget_order() {
+        let datum_bytes = encode_datum(&datum());
+        let continuation_bytes =
+            bincode::serialize(&continuation_ser(&continuation())).expect("encode");
+        assert_eq!(
+            std::mem::size_of::<DatumOracleDe<String>>(),
+            std::mem::size_of::<LegacyDatum<String>>()
+        );
+        assert_eq!(
+            std::mem::size_of::<WaitingContinuationOracleDe<String, String>>(),
+            std::mem::size_of::<LegacyContinuation<String, String>>()
+        );
+
+        let source = TraceMeter::new(None);
+        let source_datum: LegacyDatum<String> =
+            decode_record(&datum_bytes, &source).expect("source datum");
+        let integrated = TraceMeter::new(None);
+        let integrated_datum =
+            Datum::<String>::decode_native(&datum_bytes, &integrated).expect("integrated datum");
+        assert_eq!(integrated_datum.a.as_ref(), &source_datum.a);
+        assert_eq!(integrated_datum.persist, source_datum.persist);
+        assert_eq!(integrated_datum.source, source_datum.source);
+        assert_eq!(*integrated.charges.borrow(), *source.charges.borrow());
+
+        let source_cont = TraceMeter::new(None);
+        let source_wire: LegacyContinuation<String, String> =
+            decode_record(&continuation_bytes, &source_cont).expect("source continuation");
+        let integrated_cont = TraceMeter::new(None);
+        let integrated_wire = WaitingContinuation::<String, String>::decode_native(
+            &continuation_bytes,
+            &integrated_cont,
+        )
+        .expect("integrated continuation");
+        assert_eq!(integrated_wire.patterns.as_ref(), &source_wire.patterns);
+        assert_eq!(integrated_wire.continuation.as_ref(), &source_wire.continuation);
+        assert_eq!(integrated_wire.persist, source_wire.persist);
+        assert_eq!(integrated_wire.peeks, source_wire.peeks);
+        assert_eq!(integrated_wire.source, source_wire.source);
+        assert_eq!(*integrated_cont.charges.borrow(), *source_cont.charges.borrow());
+
+        let limit = source.charges.borrow().len() / 2;
+        let source_limited = TraceMeter::new(Some(limit));
+        let integrated_limited = TraceMeter::new(Some(limit));
+        assert!(matches!(
+            decode_record::<LegacyDatum<String>, _>(&datum_bytes, &source_limited),
+            Err(NativeReadError::Host("budget"))
+        ));
+        assert!(matches!(
+            Datum::<String>::decode_native(&datum_bytes, &integrated_limited),
+            Err(NativeReadError::Host("budget"))
+        ));
+        assert_eq!(*integrated_limited.charges.borrow(), *source_limited.charges.borrow());
+    }
+
+    #[test]
+    fn native_record_encoding_preserves_source_bytes_and_reservation_order() {
+        let value = datum();
+        let old = LegacyDatum {
+            a: value.a.as_ref().clone(),
+            persist: value.persist,
+            source: value.source.clone(),
+        };
+        let old_meter = SourceTraceMeter::new();
+        let new_meter = SourceTraceMeter::new();
+        assert_eq!(
+            native_source::encode(&old, &old_meter).expect("source encoding"),
+            encode_datum_metered(&value, &new_meter).expect("integrated encoding"),
+        );
+        assert_eq!(*old_meter.0.borrow(), *new_meter.0.borrow());
+
+        let value = continuation();
+        let old = LegacyContinuation {
+            patterns: value.patterns.as_ref().clone(),
+            continuation: value.continuation.as_ref().clone(),
+            persist: value.persist,
+            peeks: value.peeks.clone(),
+            source: value.source.clone(),
+        };
+        let old_meter = SourceTraceMeter::new();
+        let new_meter = SourceTraceMeter::new();
+        assert_eq!(
+            native_source::encode(&old, &old_meter).expect("source encoding"),
+            encode_continuation_metered(&value, &new_meter).expect("integrated encoding"),
+        );
+        assert_eq!(*old_meter.0.borrow(), *new_meter.0.borrow());
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    enum Nested {
+        End,
+        Next(Box<Nested>),
+    }
+
+    #[test]
+    fn native_record_adapter_preserves_source_depth_rejection() {
+        let mut shallow = Nested::End;
+        for _ in 0..8 {
+            shallow = Nested::Next(Box::new(shallow));
+        }
+        let shallow_datum = Datum {
+            a: Arc::new(shallow),
+            persist: false,
+            source: datum().source,
+        };
+        let shallow_bytes = encode_datum(&shallow_datum);
+        let shallow_source = TraceMeter::new(None);
+        let source_value: LegacyDatum<Nested> =
+            decode_record(&shallow_bytes, &shallow_source).expect("shallow source datum");
+        let shallow_integrated = TraceMeter::new(None);
+        let integrated_value = Datum::<Nested>::decode_native(&shallow_bytes, &shallow_integrated)
+            .expect("shallow integrated datum");
+        assert_eq!(integrated_value.a.as_ref(), &source_value.a);
+        assert_eq!(*shallow_integrated.charges.borrow(), *shallow_source.charges.borrow());
+
+        let mut nested = Nested::End;
+        for _ in 0..256 {
+            nested = Nested::Next(Box::new(nested));
+        }
+        let datum = Datum {
+            a: Arc::new(nested),
+            persist: false,
+            source: datum().source,
+        };
+        let bytes = encode_datum(&datum);
+        let source = TraceMeter::new(None);
+        let integrated = TraceMeter::new(None);
+        assert!(matches!(
+            decode_record::<LegacyDatum<Nested>, _>(&bytes, &source),
+            Err(NativeReadError::Invalid(NativeReadFault::Depth))
+        ));
+        assert!(matches!(
+            Datum::<Nested>::decode_native(&bytes, &integrated),
+            Err(NativeReadError::Invalid(NativeReadFault::Depth))
+        ));
+        assert_eq!(*integrated.charges.borrow(), *source.charges.borrow());
     }
 
     /// The composition claim for `Datum<A>`: prefix + tuple tail == the derived

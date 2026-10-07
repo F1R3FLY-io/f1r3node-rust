@@ -363,6 +363,7 @@ pub(crate) fn split_expr_instance(instance: ExprInstance) -> (ExprArm, Vec<Optio
         | ExprInstance::GUri(_)
         | ExprInstance::GByteArray(_)
         | ExprInstance::GDouble(_)
+        | ExprInstance::GFloat32(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
@@ -559,12 +560,14 @@ pub(crate) fn rebuild_receive_bind(
     patterns: Vec<Par>,
     remainder: Option<Var>,
     free_count: i32,
+    cost_signature: Option<models::rhoapi::CostSignature>,
 ) -> ReceiveBind {
     ReceiveBind {
         patterns,
         source: Some(source),
         remainder,
         free_count,
+        cost_signature,
     }
 }
 
@@ -690,6 +693,8 @@ pub(crate) fn rebuild_par(
     matches: Vec<Match>,
     bundles: Vec<Bundle>,
     conditionals: Vec<If>,
+    cost_signed_terms: Vec<models::rhoapi::CostSignedTerm>,
+    cost_stacks: Vec<models::rhoapi::CostStack>,
     unforgeables: Vec<models::rhoapi::GUnforgeable>,
     locally_free: Vec<u8>,
     connective_used: bool,
@@ -707,6 +712,8 @@ pub(crate) fn rebuild_par(
             bundles,
             connectives: Vec::new(),
             conditionals,
+            cost_signed_terms,
+            cost_stacks,
             locally_free: set_bits_until(locally_free, shift),
             connective_used,
         }),

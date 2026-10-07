@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Multi-prover cross-witness (LOCAL-ONLY, fail-soft): the accounting runtime's
 # budget-conservation reconciliation core, Verus-verified (correspondence→proof).
-# Corroborates CASettlement.charged_plus_refund_eq_escrow on the Rust functional
+# Corroborates Settlement.debit_plus_refund_eq_reservation on the Rust functional
 # core (Creusot is the contracts-on-the-pure-fns alternative; the lock-free CAS
 # linearizability is the Iris leg).
 #
@@ -12,6 +12,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RS="$ROOT/formal/verus/cost_accounting/budget_conservation.rs"
+WORK_ROOT="$ROOT/target/verification/cost-accounted-rho/verus"
+mkdir -p "$WORK_ROOT"
 
 echo "Checking cost-accounted rho budget conservation (Verus)..."
 
@@ -27,9 +29,9 @@ fi
 
 # verus compiles by default, emitting a binary into the CWD; run it from a scratch
 # dir so no build artifact lands in the repo, then discard the dir.
-VERUS_OUT="$(mktemp -d)"
+VERUS_OUT="$(mktemp -d "$WORK_ROOT/run.XXXXXX")"
+trap 'rm -rf "$VERUS_OUT"' EXIT
 out="$(cd "$VERUS_OUT" && timeout 300 verus "$RS" 2>&1 || true)"
-rm -rf "$VERUS_OUT"
 
 # A verus whose pinned rust toolchain is absent cannot run — treat as unavailable.
 if printf '%s\n' "$out" | grep -qiE 'required rust toolchain.*not found|toolchain .* not installed|rustup .* install'; then

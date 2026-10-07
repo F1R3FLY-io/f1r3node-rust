@@ -1,0 +1,69 @@
+' Pre-execution acceptance of one offered-funded candidate (DR-64, decision D1).
+' The producer and every validator run the same check from the signed envelope
+' and the original root R0, before any runtime entry. The signed phloLimit is the
+' P1 safety margin: the unprovable remainder is held in full, or the candidate is
+' rejected with no effect and no charge.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-64);
+'                  publications/cost-accounting/cost-accounted-rho.tex
+'                  (sec:acceptance-protocol, thm:decidability, def:conservative-demand).
+' Palette:  input = supply blue · static analysis = process lilac · funding gate = teal
+'           execution = pool green · settlement/refund = note green · reject = red
+'           decisions = control amber
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/offered-preexecution-acceptance.puml
+'          (or: ./render.sh offered-preexecution-acceptance.puml)
+
+@startuml offered-preexecution-acceptance
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+title Pre-execution acceptance of an offered-funded candidate (DR-64)
+
+start
+:signed offered envelope\nand original root <latex>R_0</latex>; <<$ca_supply>>
+:resolve lexical names\nfrom the envelope seed; <<$ca_process>>
+:static_authority_plan\nfor each signature lane <latex>s</latex>; <<$ca_process>>
+if (lane demand provable?) then (yes)
+  :<latex>\Delta^{\mathrm{known}}_s</latex> = exact lane demand\nplus syntactic byte charges; <<$ca_process>>
+else (no · UnprovableDemand)
+  :<latex>\Delta^{\mathrm{known}}_s = 0</latex>\n(the remainder covers the lane); <<$ca_process>>
+endif
+:<latex>R = \left(\mathrm{phloLimit} - \sum_s \Delta^{\mathrm{known}}_s\right)\cdot \mathrm{phloPrice}</latex>; <<$ca_delta>>
+:fit known holds plus the complete remainder <latex>R</latex>\non eligible signed sources at <latex>R_0</latex>\n(hold_cap, debit_cap, total exposure); <<$ca_gate>>
+if (holds fit the supply at <latex>R_0</latex>?) then (no)
+  :reject before any runtime entry\nno effect · no charge; <<$ca_rejectfill>>
+  note right $ca_note_red
+    P1 acceptance step 5: the deployment is
+    rejected without executing any part of it.
+    DR-72 quarantines it with a status entry.
+  end note
+  stop
+else (yes · resources committed)
+  :execute in a fresh offered runtime\nresource_bound = known + remainder; <<$ca_pool>>
+  if (meter outcome) then (within bounds)
+    :charge measured use · refund unused hold\nto the original sources; <<$ca_note_green>>
+  elseif (signed limit exhausted\nin a capped part) then
+    :classified user failure: roll back,\nkeep billable prefix and fee, refund rest; <<$ca_note_amber>>
+  else (exact lane overrun)
+    :correctness failure: reject candidate,\nrestore pre-state, no charge; <<$ca_rejectfill>>
+  endif
+endif
+stop
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| signed input and authenticated root |
+  |<$ca_process>| static demand analysis (existing analyzers) |
+  |<$ca_delta>| signed-limit remainder (P1 safety margin) |
+  |<$ca_gate>| funding gate before execution |
+  |<$ca_pool>| execution with committed resources |
+  |<$ca_note_green>| settlement and refund |
+  |<$ca_note_amber>| classified user failure |
+  |<$ca_rejectfill>| rejection or correctness failure (no charge) |
+  |<$ca_control>| decision |
+endlegend
+
+@enduml

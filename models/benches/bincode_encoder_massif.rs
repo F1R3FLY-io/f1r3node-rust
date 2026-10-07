@@ -54,6 +54,8 @@ fn datum() -> ListParWithRandom {
             ..Default::default()
         }],
         random_state: vec![0xa5; 32],
+        cost_authority: None,
+        cost_stack: None,
     }
 }
 

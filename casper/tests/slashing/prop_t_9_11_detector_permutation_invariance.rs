@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Theorem T-9.11 (permutation invariance) — randomized.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14 T-9.11.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14 T-9.11.
 // Rocq: formal/rocq/slashing/theories/EquivocationDetector.v
 // theorem `detector_permutation_invariant`.
 //
@@ -74,11 +74,9 @@ proptest! {
             fixture.add_block(&child_b);
             fixture.add_block(&missing_pointer);
 
-            let entries = vec![
-                justification(fixture.validators[1].clone(), child_a.block_hash.clone()),
+            let entries = [justification(fixture.validators[1].clone(), child_a.block_hash.clone()),
                 justification(fixture.validators[2].clone(), child_b.block_hash.clone()),
-                justification(fixture.validators[3].clone(), missing_pointer.block_hash.clone()),
-            ];
+                justification(fixture.validators[3].clone(), missing_pointer.block_hash.clone())];
             let current = block(
                 20,
                 fixture.validators[4].clone(),

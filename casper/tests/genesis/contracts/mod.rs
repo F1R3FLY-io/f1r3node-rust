@@ -3,13 +3,12 @@ use std::time::Duration;
 pub mod rho_spec_probe;
 pub mod test_util;
 
+pub mod active_validators_cap_spec;
 pub mod auth_key_spec;
 pub mod blessed_contract_source_pins;
 pub mod block_data_contract_spec;
-pub mod capabilities_registry_spec;
 pub mod deep_recursion_spec;
 pub mod either_spec;
-pub mod exchange_spec;
 pub mod failing_result_collector_spec;
 pub mod genesis_contract_failure_mechanisms;
 pub mod genesis_overflow_guard_shape;

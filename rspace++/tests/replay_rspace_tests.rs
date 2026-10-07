@@ -1,12 +1,13 @@
 // See rspace/src/test/scala/coop/rchain/rspace/ReplayRSpaceTests.scala
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::hash::Hash;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use metrics_util::debugging::{DebuggingRecorder, Snapshotter};
 use rand::prelude::SliceRandom;
-use rand::thread_rng;
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
@@ -14,13 +15,19 @@ use rspace_plus_plus::rspace::hot_store_action::{
     HotStoreAction, InsertAction, InsertContinuations,
 };
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::merging_logic::are_conflicting;
 use rspace_plus_plus::rspace::metrics_constants::{PRODUCE_COMM_LABEL, RSPACE_METRICS_SOURCE};
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
-use rspace_plus_plus::rspace::rspace_interface::{ContResult, ISpace, RSpaceResult};
+use rspace_plus_plus::rspace::rspace_interface::{
+    ContResult, ISpace, RSpaceAccountingObserver, RSpaceResult,
+};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::trace::event::{Consume, IOEvent, Produce};
+use rspace_plus_plus::rspace::trace::event::{
+    COMM, Consume, Event, IOEvent, Produce, recorded_removal,
+};
 use serde::{Deserialize, Serialize};
 
 static METRICS_RECORDER: OnceLock<(DebuggingRecorder, Snapshotter)> = OnceLock::new();
@@ -41,6 +48,7 @@ fn get_metrics_snapshotter() -> &'static Snapshotter {
     snapshotter
 }
 
+#[allow(clippy::mutable_key_type)]
 fn capture_baseline_metrics(snapshotter: &Snapshotter) -> u64 {
     let snapshot = snapshotter.snapshot();
     let metrics = snapshot.into_hashmap();
@@ -58,6 +66,7 @@ fn capture_baseline_metrics(snapshotter: &Snapshotter) -> u64 {
     count
 }
 
+#[allow(clippy::mutable_key_type)]
 fn verify_metrics_incremented(snapshotter: &Snapshotter, baseline_count: u64) {
     let snapshot = snapshotter.snapshot();
     let metrics = snapshot.into_hashmap();
@@ -108,6 +117,84 @@ impl Match<Pattern, String, String> for StringMatch {
                 }
             }
         }
+    }
+}
+
+struct RejectingObserver(AtomicUsize);
+
+impl RSpaceAccountingObserver<String, Pattern, String, String> for RejectingObserver {
+    fn observe_produce(
+        &self,
+        _: &Produce,
+        _: &String,
+        _: &String,
+        _: bool,
+    ) -> Result<(), RSpaceError> {
+        Ok(())
+    }
+
+    fn observe_consume(
+        &self,
+        _: &Consume,
+        _: &[String],
+        _: &[Pattern],
+        _: &String,
+        _: bool,
+        _: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        Ok(())
+    }
+
+    fn observe_comm(
+        &self,
+        _: &COMM,
+        _: &String,
+        _: bool,
+        _: &[(&String, bool)],
+    ) -> Result<(), RSpaceError> {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        Err(RSpaceError::OutOfPhlogistons)
+    }
+}
+
+struct RejectingOperationObserver {
+    produces: AtomicUsize,
+    consumes: AtomicUsize,
+}
+
+impl RSpaceAccountingObserver<String, Pattern, String, String> for RejectingOperationObserver {
+    fn observe_produce(
+        &self,
+        _: &Produce,
+        _: &String,
+        _: &String,
+        _: bool,
+    ) -> Result<(), RSpaceError> {
+        self.produces.fetch_add(1, Ordering::AcqRel);
+        Err(RSpaceError::OutOfPhlogistons)
+    }
+
+    fn observe_consume(
+        &self,
+        _: &Consume,
+        _: &[String],
+        _: &[Pattern],
+        _: &String,
+        _: bool,
+        _: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        self.consumes.fetch_add(1, Ordering::AcqRel);
+        Err(RSpaceError::OutOfPhlogistons)
+    }
+
+    fn observe_comm(
+        &self,
+        _: &COMM,
+        _: &String,
+        _: bool,
+        _: &[(&String, bool)],
+    ) -> Result<(), RSpaceError> {
+        Ok(())
     }
 }
 
@@ -204,6 +291,184 @@ async fn creating_a_comm_event_should_replay_correctly() {
             .expect("replay data lock")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn soft_checkpoint_segments_the_committed_trace() {
+    let (space, _) = fixture().await;
+    space
+        .produce("before".to_string(), "one".to_string(), false)
+        .await
+        .unwrap();
+    let checkpoint = space.create_soft_checkpoint().await;
+    space
+        .produce("after".to_string(), "two".to_string(), false)
+        .await
+        .unwrap();
+
+    let log = space.take_event_log().await;
+    assert_eq!(checkpoint.log.len(), 1);
+    assert!(matches!(checkpoint.log[0], Event::IoEvent(IOEvent::Produce(_))));
+    assert_eq!(log.len(), 1);
+    assert!(matches!(log[0], Event::IoEvent(IOEvent::Produce(_))));
+}
+
+#[tokio::test]
+async fn recorded_data_removal_replays_and_commits_the_same_root() {
+    let (space, replay_space) = fixture().await;
+    let channel = "purse".to_string();
+    space
+        .produce(channel.clone(), "stack".to_string(), false)
+        .await
+        .unwrap();
+    let pre_state = space.create_checkpoint().await.unwrap();
+
+    space
+        .remove_data_at_recorded(&channel, 0, b"linear-stack-instance")
+        .await
+        .unwrap();
+    let post_state = space.create_checkpoint().await.unwrap();
+    assert!(space.get_data(&channel).await.is_empty());
+    assert_eq!(post_state.log.len(), 2);
+    assert!(matches!(post_state.log[0], Event::IoEvent(IOEvent::Consume(_))));
+    assert!(matches!(post_state.log[1], Event::Comm(_)));
+
+    replay_space
+        .rig_and_reset(pre_state.root, post_state.log)
+        .await
+        .unwrap();
+    replay_space
+        .remove_data_at_recorded(&channel, 0, b"linear-stack-instance")
+        .await
+        .unwrap();
+    let replay_post_state = replay_space.create_checkpoint().await.unwrap();
+
+    assert_eq!(replay_post_state.root, post_state.root);
+    assert!(replay_space.get_data(&channel).await.is_empty());
+}
+
+#[test]
+fn recorded_removal_conflicts_only_for_the_same_linear_instance() {
+    let source = Produce::create(&"purse", &"stack", false);
+    let index = |operation_id: &[u8]| {
+        let (consume, comm) = recorded_removal(&"purse", &source, operation_id);
+        EventLogIndex::new(
+            vec![Event::IoEvent(IOEvent::Consume(consume)), Event::Comm(comm)],
+            |_| false,
+            |_| false,
+            BTreeMap::new(),
+        )
+    };
+    let first = index(b"first-instance");
+    let first_sibling = index(b"first-instance");
+    let second = index(b"second-instance");
+
+    assert!(are_conflicting(&first, &first_sibling));
+    assert!(!are_conflicting(&first, &second));
+}
+
+#[tokio::test]
+async fn replay_observer_rejection_preserves_rspace_and_trace() {
+    let (space, replay_space) = fixture().await;
+    let channels = vec!["ch1".to_string()];
+    let patterns = vec![Pattern::Wildcard];
+    let continuation = "continuation".to_string();
+    let datum = "datum".to_string();
+    let empty_point = space.create_checkpoint().await.unwrap();
+
+    assert!(
+        space
+            .consume(
+                channels.clone(),
+                patterns.clone(),
+                continuation.clone(),
+                false,
+                BTreeSet::new()
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        space
+            .produce(channels[0].clone(), datum.clone(), false)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let rig_point = space.create_checkpoint().await.unwrap();
+    replay_space
+        .rig_and_reset(empty_point.root, rig_point.log)
+        .await
+        .unwrap();
+
+    let observer = Arc::new(RejectingObserver(AtomicUsize::new(0)));
+    replay_space.set_accounting_observer(Some(observer.clone()));
+    assert!(
+        replay_space
+            .consume(channels.clone(), patterns, continuation.clone(), false, BTreeSet::new())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        replay_space
+            .produce(channels[0].clone(), datum, false)
+            .await,
+        Err(RSpaceError::OutOfPhlogistons)
+    );
+
+    assert_eq!(observer.0.load(Ordering::Acquire), 1);
+    assert!(replay_space.get_data(&channels[0]).await.is_empty());
+    assert_eq!(replay_space.get_waiting_continuations(channels).await.len(), 1);
+    let log = replay_space.take_event_log().await;
+    assert!(log.is_empty());
+}
+
+#[tokio::test]
+async fn replay_operation_rejection_precedes_store_and_trace_mutation() {
+    let (_, replay_space) = fixture().await;
+    let observer = Arc::new(RejectingOperationObserver {
+        produces: AtomicUsize::new(0),
+        consumes: AtomicUsize::new(0),
+    });
+    replay_space.set_accounting_observer(Some(observer.clone()));
+
+    assert_eq!(
+        replay_space
+            .produce("channel".to_string(), "datum".to_string(), false)
+            .await,
+        Err(RSpaceError::OutOfPhlogistons)
+    );
+    assert!(
+        replay_space
+            .get_data(&"channel".to_string())
+            .await
+            .is_empty()
+    );
+    assert!(replay_space.take_event_log().await.is_empty());
+
+    assert_eq!(
+        replay_space
+            .consume(
+                vec!["channel".to_string()],
+                vec![Pattern::Wildcard],
+                "continuation".to_string(),
+                false,
+                BTreeSet::new(),
+            )
+            .await,
+        Err(RSpaceError::OutOfPhlogistons)
+    );
+    assert!(
+        replay_space
+            .get_waiting_continuations(vec!["channel".to_string()])
+            .await
+            .is_empty()
+    );
+    assert!(replay_space.take_event_log().await.is_empty());
+    assert_eq!(observer.produces.load(Ordering::Acquire), 1);
+    assert_eq!(observer.consumes.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]
@@ -692,7 +957,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         space: &impl ISpace<String, Pattern, String, String>,
         range: Vec<i32>,
         channels_creator: F,
-        patterns: &Vec<Pattern>,
+        patterns: &[Pattern],
         continuation_creator: G,
         persist: bool,
         peeks: &BTreeSet<i32>,
@@ -701,7 +966,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         F: Fn(i32) -> Vec<String>,
         G: Fn(i32) -> String,
     {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut shuffled_range = range.clone();
         shuffled_range.shuffle(&mut rng);
 
@@ -710,7 +975,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
             let result = space
                 .consume(
                     channels_creator(i),
-                    patterns.clone(),
+                    patterns.to_vec(),
                     continuation_creator(i),
                     persist,
                     peeks.clone(),
@@ -734,7 +999,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         F: Fn(i32) -> String,
         A: Fn(i32) -> String,
     {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut shuffled_range = range.clone();
         shuffled_range.shuffle(&mut rng);
 
@@ -752,7 +1017,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         space: &impl ISpace<String, Pattern, String, String>,
         range: Vec<i32>,
         channels_creator: F,
-        patterns: &Vec<Pattern>,
+        patterns: &[Pattern],
         continuation_creator: G,
         persist: bool,
         peeks: &BTreeSet<i32>,
@@ -761,7 +1026,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         F: Fn(i32) -> Vec<String>,
         G: Fn(i32) -> String,
     {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut shuffled_range = range.clone();
         shuffled_range.shuffle(&mut rng);
 
@@ -770,7 +1035,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
             let result = space
                 .consume(
                     channels_creator(i),
-                    patterns.clone(),
+                    patterns.to_vec(),
                     continuation_creator(i),
                     persist,
                     peeks.clone(),
@@ -794,7 +1059,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         F: Fn(i32) -> String,
         A: Fn(i32) -> String,
     {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut shuffled_range = range.clone();
         shuffled_range.shuffle(&mut rng);
 
@@ -822,7 +1087,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         &space,
         range.clone(),
         kp(vec!["ch1".to_string()]),
-        &vec![Pattern::Wildcard],
+        &[Pattern::Wildcard],
         continuation_creator,
         false,
         &BTreeSet::default(),
@@ -847,7 +1112,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         &replay_space,
         range,
         kp(vec!["ch1".to_string()]),
-        &vec![Pattern::Wildcard],
+        &[Pattern::Wildcard],
         continuation_creator,
         false,
         &BTreeSet::default(),
@@ -870,7 +1135,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
 async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should_replay_correctly()
 {
     let (space, replay_space) = fixture().await;
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
 
     let amount_of_channels = 10;
     let amount_of_peeked_channels = 5;
@@ -886,9 +1151,9 @@ async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should
 
     async fn consume_and_produce(
         space: &impl ISpace<String, Pattern, String, String>,
-        channels: &Vec<String>,
-        patterns: &Vec<Pattern>,
-        continuation: &String,
+        channels: &[String],
+        patterns: &[Pattern],
+        continuation: &str,
         peeks: &BTreeSet<i32>,
         produces: &Vec<String>,
     ) -> Vec<
@@ -896,7 +1161,13 @@ async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should
     > {
         let mut results = vec![];
         let _ = space
-            .consume(channels.clone(), patterns.clone(), continuation.clone(), false, peeks.clone())
+            .consume(
+                channels.to_vec(),
+                patterns.to_vec(),
+                continuation.to_string(),
+                false,
+                peeks.clone(),
+            )
             .await;
 
         for ch in produces {
@@ -1546,7 +1817,7 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
         .expect("replay data lock")
         .map
         .get(&IOEvent::Consume(cr_1.clone()))
-        .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+        .map(|counter| counter.values().copied().sum::<usize>())
         .unwrap_or(0);
     let count_cr2 = replay_space
         .replay_data
@@ -1554,7 +1825,7 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
         .expect("replay data lock")
         .map
         .get(&IOEvent::Consume(cr_2.clone()))
-        .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+        .map(|counter| counter.values().copied().sum::<usize>())
         .unwrap_or(0);
     assert_eq!(count_cr1 + count_cr2, 2);
 
@@ -1575,7 +1846,7 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
         .expect("replay data lock")
         .map
         .get(&IOEvent::Consume(cr_1.clone()))
-        .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+        .map(|counter| counter.values().copied().sum::<usize>())
         .unwrap_or(0);
     let count_cr2 = replay_space
         .replay_data
@@ -1583,7 +1854,7 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
         .expect("replay data lock")
         .map
         .get(&IOEvent::Consume(cr_2.clone()))
-        .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+        .map(|counter| counter.values().copied().sum::<usize>())
         .unwrap_or(0);
     assert_eq!(count_cr1 + count_cr2, 1);
 
@@ -1597,7 +1868,7 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
         .expect("replay data lock")
         .map
         .get(&IOEvent::Consume(cr_1))
-        .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+        .map(|counter| counter.values().copied().sum::<usize>())
         .unwrap_or(0);
     let count_cr2 = replay_space
         .replay_data
@@ -1605,7 +1876,7 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
         .expect("replay data lock")
         .map
         .get(&IOEvent::Consume(cr_2))
-        .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+        .map(|counter| counter.values().copied().sum::<usize>())
         .unwrap_or(0);
     assert_eq!(count_cr1 + count_cr2, 0);
 }
@@ -1748,12 +2019,8 @@ async fn clear_should_empty_the_replay_store_reset_the_replay_event_log_reset_th
             .changes()
             .into_iter()
             .filter_map(|action| {
-                if let HotStoreAction::Insert(insert) = action {
-                    if let InsertAction::InsertContinuations(conts) = insert {
-                        Some(conts)
-                    } else {
-                        None
-                    }
+                if let HotStoreAction::Insert(InsertAction::InsertContinuations(conts)) = action {
+                    Some(conts)
                 } else {
                     None
                 }
@@ -1929,6 +2196,68 @@ async fn check_replay_data_should_throw_error_if_replay_data_contains_elements()
     let _ = replay_space.rig_and_reset(c.root, c.log).await;
     let res = replay_space.check_replay_data().await;
     assert!(res.is_err());
+}
+
+#[tokio::test]
+async fn duplicate_comm_witness_is_rejected_after_one_matching_replay() {
+    let (space, replay_space) = fixture().await;
+    let channel = "wallet".to_string();
+    let channels = vec![channel.clone()];
+    let patterns = vec![Pattern::Wildcard];
+    let continuation = "settle".to_string();
+    let datum = "charge".to_string();
+    let initial = space.create_checkpoint().await.unwrap();
+    assert!(
+        space
+            .consume(
+                channels.clone(),
+                patterns.clone(),
+                continuation.clone(),
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        space
+            .produce(channel.clone(), datum.clone(), false)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let recorded = space.create_checkpoint().await.unwrap();
+    let duplicate = recorded
+        .log
+        .iter()
+        .find(|event| matches!(event, Event::Comm(_)))
+        .cloned()
+        .unwrap();
+    let mut tampered = recorded.log;
+    tampered.push(duplicate);
+    replay_space
+        .rig_and_reset(initial.root, tampered)
+        .await
+        .unwrap();
+    assert!(
+        replay_space
+            .consume(channels, patterns, continuation, false, BTreeSet::new())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        replay_space
+            .produce(channel, datum, false)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(matches!(
+        replay_space.check_replay_data().await,
+        Err(RSpaceError::UnusedCommEvent { .. })
+    ));
 }
 
 // Verify is_replay flag matches correct behavior.

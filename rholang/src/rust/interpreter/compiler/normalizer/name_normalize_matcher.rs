@@ -259,11 +259,9 @@ mod tests {
         };
         NameVisitInputs {
             bound_map_chain: {
-                let updated_bound_map_chain =
-                    input
-                        .bound_map_chain
-                        .put_pos((name.to_string(), v_type, source_pos));
-                updated_bound_map_chain
+                input
+                    .bound_map_chain
+                    .put_pos((name.to_string(), v_type, source_pos))
             },
             ..input.clone()
         }
@@ -283,12 +281,10 @@ mod tests {
         };
         NameVisitInputs {
             free_map: {
-                let updated_free_map =
-                    input
-                        .clone()
-                        .free_map
-                        .put_pos((name.to_string(), v_type, source_pos));
-                updated_free_map
+                input
+                    .clone()
+                    .free_map
+                    .put_pos((name.to_string(), v_type, source_pos))
             },
             ..input.clone()
         }
@@ -334,7 +330,7 @@ mod tests {
             bound_name_inputs_with_bound_map_chain(input.clone(), "x", VarSort::NameSort, 1, 1);
 
         let result = normalize_name(&n_var, bound_inputs.clone(), &env, &parser);
-        let expected_result = new_boundvar_par(0, create_bit_vector(&vec![0]), false);
+        let expected_result = new_boundvar_par(0, create_bit_vector(&[0]), false);
 
         let unwrap_result = result.clone().unwrap();
         assert_eq!(unwrap_result.par, expected_result);
@@ -417,7 +413,7 @@ mod tests {
             bound_name_inputs_with_bound_map_chain(input.clone(), "x", VarSort::NameSort, 1, 1);
 
         let result = normalize_name(&quote_name, bound_inputs.clone(), &env, &parser);
-        let expected_result: Par = new_boundvar_par(0, create_bit_vector(&vec![0]), false);
+        let expected_result: Par = new_boundvar_par(0, create_bit_vector(&[0]), false);
 
         let unwrap_result = result.clone().unwrap();
         assert_eq!(unwrap_result.par, expected_result);
@@ -463,7 +459,7 @@ mod tests {
             bound_name_inputs_with_bound_map_chain(input.clone(), "x", VarSort::NameSort, 1, 1);
 
         let result = normalize_name(&quote_name, bound_inputs.clone(), &env, &parser);
-        let expected_result = new_boundvar_par(0, create_bit_vector(&vec![0]), false);
+        let expected_result = new_boundvar_par(0, create_bit_vector(&[0]), false);
 
         let unwrap_result = result.clone().unwrap();
         assert_eq!(unwrap_result.par, expected_result);
@@ -497,7 +493,7 @@ mod tests {
 
         let result = normalize_name(&quote_name, bound_inputs.clone(), &env, &parser);
 
-        let bound_var_expr = new_boundvar_par(0, create_bit_vector(&vec![0]), false);
+        let bound_var_expr = new_boundvar_par(0, create_bit_vector(&[0]), false);
         let expected_result =
             prepend_expr(bound_var_expr.clone(), bound_var_expr.exprs[0].clone(), 0);
 
@@ -533,7 +529,7 @@ mod tests {
         assert!(result.is_ok());
 
         let unwrap_result = result.unwrap();
-        let expected_result = new_boundvar_par(0, create_bit_vector(&vec![0]), false);
+        let expected_result = new_boundvar_par(0, create_bit_vector(&[0]), false);
         assert_eq!(unwrap_result.par, expected_result);
         assert_eq!(unwrap_result.free_map, bound_inputs.free_map);
     }

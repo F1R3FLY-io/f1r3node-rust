@@ -8,13 +8,11 @@ use models::rust::utils::*;
 use super::exports::*;
 use super::fold_match::FoldMatch;
 use super::has_locally_free::HasLocallyFree;
-use super::list_match::{aggregate_updates, ListMatch, Pattern};
+use super::list_match::{aggregate_updates, oracle_list_match, ListMatch, Pattern};
 use super::match_pars::match_pars;
 use super::par_count::ParCount;
 use super::sub_pars::sub_pars;
-use crate::list_match;
-
-list_match!(
+oracle_list_match!(
     Par,
     (Par, Par),
     Send,
@@ -1088,6 +1086,8 @@ impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
             Some(GPrivateBody(_))
             | Some(GDeployIdBody(_))
             | Some(GDeployerIdBody(_))
+            | Some(GAuthorityIdBody(_))
+            | Some(GPrincipalIdBody(_))
             | Some(GSysAuthTokenBody(_)) => guard(target == pattern),
 
             // `unf_instance` is a required oneof, so an absent payload is a

@@ -1,13 +1,29 @@
 // Tests covering the rejected-deploy-buffer recovery exemption:
 //
-//   - Validator side (`Validate::repeat_deploy`) MUST reject a recovery block
-//     whose deploy is canonically Finalized via a different chain (the
-//     rejection in `rejected_in_scope` came from a non-canonical sibling).
-//     Re-executing such a deploy would be double-execution.
+//   - Validator side (`Validate::repeat_deploy`): the exemption is a PURE
+//     FUNCTION OF THE BLOCK — a sig is legal recovery only when its latest
+//     canonical disposition in the block's own parent scope is a merge
+//     rejection AND that rejection record has settled into the floor
+//     closure (`FloorContext::retry_gate_open`); a retry ahead of the gate
+//     is `PrematureDeployRetry` (non-slashable — delay, never loss). Both
+//     inputs are consensus content (the parent scope and the floor derived
+//     from the block's frozen justifications), so every validator reaches
+//     the same verdict. An earlier version gated the exemption on the
+//     validating node's LOCAL finalization status, which forked the network
+//     when two honest nodes' finalization progress differed (roaming
+//     InvalidRepeatDeploy Heavy Pipeline failures). Double-execution
+//     defense is layered:
+//       * a win never rejected in scope keeps the sig in the check set and
+//         the ancestor scan flags the repeat (deterministic);
+//       * a FABRICATED rejection record (naming a floor-protected deploy an
+//         honest merge could never reject) invalidates the fabricating
+//         block itself via the rejected-list equality check in
+//         `validate_block_checkpoint` (`InvalidRejectedDeploy`), so no
+//         descendant can build on it.
 //
-//   - Proposer side (`prepare_user_deploys`) MUST decline the exemption for
-//     the same shape, otherwise it gossips a recovery block that downstream
-//     validators correctly flag as `InvalidRepeatDeploy` — leading to
+//   - Proposer side (`prepare_user_deploys`) MUST decline the exemption
+//     when the deploy's effects are already canonical, otherwise it gossips
+//     a recovery block that downstream validators flag — leading to
 //     mutual-slashing on FTT=0 shards.
 
 use std::sync::Arc;
@@ -41,7 +57,6 @@ fn mk_casper_snapshot(
         height_constraint_threshold: 0,
         deploy_lifespan: 50,
         casper_version: 1,
-        config_version: 1,
         bond_minimum: 0,
         bond_maximum: i64::MAX,
         epoch_length: 0,
@@ -49,7 +64,6 @@ fn mk_casper_snapshot(
         min_phlo_price: 0,
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
-        disable_late_block_filtering: false,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };
@@ -65,13 +79,25 @@ fn mk_casper_snapshot(
     snapshot
 }
 
+/// The stale-recovery shape: D's only real inclusion is in genesis (the
+/// finalized base), and a child block FABRICATES a rejected_deploys record
+/// for it — no honest merge can reject a chain protected by its floor.
+///
+/// `repeat_deploy` reads the parent's on-chain record and the block's
+/// frozen floor, so every node returns the SAME verdict: the rejection at
+/// block_n is live (unsettled in the floor closure), the retry gate is
+/// closed, and the re-inclusion is the non-slashable premature-retry arm.
+/// The fabricated record itself is separately unbuildable: block_n fails
+/// `validate_block_checkpoint`'s rejected-list equality
+/// (`InvalidRejectedDeploy` — the recomputed merge produces no such
+/// rejection), so the fabricating branch is orphaned regardless.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
+async fn repeat_deploy_gates_retry_on_a_live_parent_rejection_record() {
     crate::init_logger();
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+        let deploy_sig: Bytes = Bytes::copy_from_slice(deploy.identity_bytes());
 
         // Genesis (LFB) carries D — so D is canonically Finalized.
         let genesis = create_genesis_block(
@@ -104,9 +130,12 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
             None,
             None,
             None,
+            None,
         );
         block_n.body.rejected_deploys = vec![RejectedDeploy {
             sig: deploy_sig.clone(),
+            duplicate: false,
+            carrier: prost::bytes::Bytes::new(),
         }];
         block_store
             .put(block_n.block_hash.clone(), &block_n)
@@ -127,6 +156,7 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
             None,
             None,
             None,
+            None,
         );
 
         let dag = block_dag_storage
@@ -138,15 +168,27 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
         rejected.insert(deploy_sig.clone());
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let ctx = casper::rust::finality::floor_context::FloorContext::derive(
+            &snapshot.dag,
+            &block_store,
+            std::slice::from_ref(&block_n.block_hash),
+            &std::collections::BTreeMap::new(),
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+        )
+        .await
+        .expect("derive floor context");
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50, Some(&ctx));
 
-        assert!(
-            matches!(
-                result,
-                Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
-            ),
-            "expected InvalidRepeatDeploy (D is canonically Finalized; rejection in \
-             block_n is non-canonical so the exemption must decline), got {:?}",
+        // Deterministic semantics: repeat_deploy reads the parent's on-chain
+        // rejection record and the block's frozen floor (same verdict on
+        // every node). The rejection at block_n is LIVE — not settled in the
+        // floor closure — so the retry gate is closed and the verdict is the
+        // non-slashable premature-retry arm, never a node-local misfire.
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
+            "repeat_deploy must return the same verdict on every node: the \
+             parent-scope rejection is live, so the retry is premature; got {:?}",
             result
         );
     })
@@ -167,11 +209,11 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let processed_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let signed_deploy = processed_deploy.deploy.clone();
+        let signed_deploy = processed_deploy.legacy_execution_projection();
         let deploy_sig: Bytes = signed_deploy.sig.clone();
 
         // Genesis (LFB) carries D — so D is canonically Finalized.
-        let _genesis = create_genesis_block(
+        let genesis = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
             None,
@@ -212,6 +254,10 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             .get_representation()
             .expect("dag representation")
             .last_finalized_block();
+        // A proposer always builds on at least one parent; the canonical-won
+        // record scan walks the main-parent chain from here and must see D's
+        // win in genesis.
+        snapshot.parents = vec![genesis.clone()];
         snapshot.deploys_in_scope.insert(deploy_sig.clone());
         snapshot.rejected_in_scope.insert(deploy_sig.clone());
 
@@ -227,6 +273,8 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             &block_store,
+            true,
+            true,
         )
         .await
         .expect("prepare_user_deploys should not error");
@@ -245,6 +293,160 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
              Included: {:?}\nD's sig:  {}",
             included_sigs,
             hex::encode(&deploy_sig),
+        );
+    })
+    .await
+}
+
+/// Determinism regression (InvalidRepeatDeploy fork, 2026-07-15): the SAME
+/// block must receive the SAME repeat_deploy verdict from validators whose
+/// node-local views differ. The pre-fix exemption read the validating node's
+/// `rejected_in_scope` snapshot set and the sig's LOCAL finalization status:
+/// a node whose scope set (or finality progress) differed from its peers
+/// returned `InvalidRepeatDeploy` for a recovery block the rest accepted,
+/// permanently forking that node (Recording invalid block →
+/// UnknownRootError cascade — the roaming Heavy Pipeline failures that
+/// survived the protocol-FTT fix). The deterministic exemption reads only
+/// the block's own parent scope, so the two divergent snapshots below must
+/// agree — and agree on Valid (the on-chain rejection record makes the
+/// re-inclusion legal recovery).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
+    use dashmap::DashSet;
+    use rspace_plus_plus::rspace::history::Either as RE;
+
+    crate::init_logger();
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_sig: Bytes = Bytes::copy_from_slice(deploy.identity_bytes());
+
+        // Recovery shape with the on-chain disposition record: genesis →
+        // block_x (D) → block_m (rejected_deploys=[D]) → block_w (D again).
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let block_x = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut block_m = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_x.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        block_m.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy_sig.clone(),
+            duplicate: false,
+            carrier: prost::bytes::Bytes::new(),
+        }];
+        block_store
+            .put(block_m.block_hash.clone(), &block_m)
+            .unwrap();
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_m.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Validator A: its recovery pipeline has the sig in rejected_in_scope
+        // (the view the pre-fix exemption keyed on).
+        let dag_a = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot_a = mk_casper_snapshot(dag_a);
+        let rejected: DashSet<Bytes> = DashSet::new();
+        rejected.insert(deploy_sig.clone());
+        snapshot_a.rejected_in_scope = Arc::new(rejected);
+
+        // Validator B: same chain data, but its live view never surfaced the
+        // sig in rejected_in_scope (fresh restart / different snapshot
+        // timing). Pre-fix this node alone flagged InvalidRepeatDeploy.
+        let dag_b = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot_b = mk_casper_snapshot(dag_b);
+
+        // Each validator derives the SAME frozen floor from the block's own
+        // parents, so the retry gate — like the record walk — is a pure
+        // function of the block.
+        let ctx_a = casper::rust::finality::floor_context::FloorContext::derive(
+            &snapshot_a.dag,
+            &block_store,
+            std::slice::from_ref(&block_m.block_hash),
+            &std::collections::BTreeMap::new(),
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+        )
+        .await
+        .expect("derive floor context (A)");
+        let ctx_b = casper::rust::finality::floor_context::FloorContext::derive(
+            &snapshot_b.dag,
+            &block_store,
+            std::slice::from_ref(&block_m.block_hash),
+            &std::collections::BTreeMap::new(),
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+        )
+        .await
+        .expect("derive floor context (B)");
+        let verdict_a =
+            Validate::repeat_deploy(&block_w, &mut snapshot_a, &block_store, 50, Some(&ctx_a));
+        let verdict_b =
+            Validate::repeat_deploy(&block_w, &mut snapshot_b, &block_store, 50, Some(&ctx_b));
+
+        assert_eq!(
+            verdict_a, verdict_b,
+            "repeat_deploy must be a pure function of the block: divergent \
+             node-local views returned different verdicts (fork)"
+        );
+        assert_eq!(
+            verdict_a,
+            RE::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
+            "the rejection at block_m is live (unsettled in the block's \
+             floor), so every node reads the re-inclusion as a premature \
+             retry — the same verdict whatever the node-local view says"
         );
     })
     .await

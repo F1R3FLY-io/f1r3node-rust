@@ -8,7 +8,7 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, ProcessedSystemDeploy, UnapprovedBlock,
+    ApprovedBlockCandidate, BlockApproval, ProcessedSystemDeploy, UnapprovedBlock,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::bytes::Bytes;
@@ -26,6 +26,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
 /// The field layout and logic mirror the original as closely as possible.
 #[derive(Clone)]
 pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
+    pub resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
     // Configuration / static data
     validator_id: ValidatorIdentity,
     pub deploy_timestamp: i64,
@@ -36,12 +37,13 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
+    pub fault_tolerance_threshold_ppm: i64,
+    pub max_parent_depth: i32,
+    pub deploy_lifespan: i64,
+    pub min_phlo_price: i64,
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
-    pub max_cosigners_per_deploy: u32,
-    pub initial_phlogiston: i64,
-    pub epoch_phlogiston: i64,
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
@@ -63,12 +65,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
+        fault_tolerance_threshold_ppm: i64,
+        max_parent_depth: i32,
+        deploy_lifespan: i64,
+        min_phlo_price: i64,
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
-        max_cosigners_per_deploy: u32,
-        initial_phlogiston: i64,
-        epoch_phlogiston: i64,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -94,6 +97,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .collect();
 
         Ok(Self {
+            resource_policy: None,
             validator_id,
             deploy_timestamp,
             vaults,
@@ -103,12 +107,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             epoch_length,
             quarantine_length,
             number_of_active_validators,
+            fault_tolerance_threshold_ppm,
+            max_parent_depth,
+            deploy_lifespan,
+            min_phlo_price,
             required_sigs,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
-            max_cosigners_per_deploy,
-            initial_phlogiston,
-            epoch_phlogiston,
             native_token_name,
             native_token_symbol,
             native_token_decimals,
@@ -160,16 +165,77 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
+        fault_tolerance_threshold_ppm: i64,
+        max_parent_depth: i32,
+        deploy_lifespan: i64,
+        min_phlo_price: i64,
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
-        max_cosigners_per_deploy: u32,
-        initial_phlogiston: i64,
-        epoch_phlogiston: i64,
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
     ) -> Result<(), String> {
+        Self::validate_candidate_with_policy(
+            runtime_manager,
+            candidate,
+            required_sigs,
+            _deploy_timestamp,
+            vaults,
+            bonds,
+            minimum_bond,
+            maximum_bond,
+            epoch_length,
+            quarantine_length,
+            number_of_active_validators,
+            fault_tolerance_threshold_ppm,
+            max_parent_depth,
+            deploy_lifespan,
+            min_phlo_price,
+            shard_id,
+            pos_multi_sig_public_keys,
+            pos_multi_sig_quorum,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            None,
+        )
+        .await
+    }
+
+    pub async fn validate_candidate_with_policy(
+        runtime_manager: &RuntimeManager,
+        candidate: &ApprovedBlockCandidate,
+        required_sigs: i32,
+        _deploy_timestamp: i64,
+        vaults: &Vec<Vault>,
+        bonds: &HashMap<Bytes, i64>,
+        minimum_bond: i64,
+        maximum_bond: i64,
+        epoch_length: i32,
+        quarantine_length: i32,
+        number_of_active_validators: u32,
+        fault_tolerance_threshold_ppm: i64,
+        max_parent_depth: i32,
+        deploy_lifespan: i64,
+        min_phlo_price: i64,
+        shard_id: &str,
+        pos_multi_sig_public_keys: &[String],
+        pos_multi_sig_quorum: u32,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
+    ) -> Result<(), String> {
+        if let Some(policy) = resource_policy {
+            policy
+                .validate_context(
+                    candidate.block.header.version,
+                    shard_id,
+                    native_token_decimals,
+                )
+                .map_err(|error| error.to_string())?;
+        }
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
             return Err(format!(
@@ -211,26 +277,31 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             epoch_length,
             quarantine_length,
             number_of_active_validators,
+            // Must match the ceremony master's values: the pos_generator deploy
+            // is replayed byte-for-byte, so any mismatch fails genesis
+            // validation — ceremony participants must agree on the consensus
+            // parameters like every other genesis parameter.
+            fault_tolerance_threshold_ppm,
+            max_parent_depth,
+            deploy_lifespan,
+            min_phlo_price,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
-            max_cosigners_per_deploy,
-            initial_phlogiston,
-            epoch_phlogiston,
         };
 
-        tracing::warn!("GENESIS DEBUG ---");
-        //        tracing::warn!("deploy_timestamp: {}", deploy_timestamp);
-        tracing::warn!("shard_id: {}", shard_id);
-        tracing::warn!("pos.minimum_bond: {}", pos_params.minimum_bond);
-        tracing::warn!("pos.maximum_bond: {}", pos_params.maximum_bond);
-        tracing::warn!("pos.epoch_length: {}", pos_params.epoch_length);
-        tracing::warn!("pos.quarantine_length: {}", pos_params.quarantine_length);
-        tracing::warn!("vaults: {:?}", vaults);
-        tracing::warn!("--------------------");
+        tracing::info!(
+            shard_id = %shard_id,
+            pos_minimum_bond = pos_params.minimum_bond,
+            pos_maximum_bond = pos_params.maximum_bond,
+            pos_epoch_length = pos_params.epoch_length,
+            pos_quarantine_length = pos_params.quarantine_length,
+            vault_count = vaults.len(),
+            "genesis parameters resolved",
+        );
 
         // Expected blessed contracts
         let genesis_blessed_contracts =
-            crate::rust::genesis::genesis::Genesis::default_blessed_terms(
+            crate::rust::genesis::genesis::Genesis::default_blessed_terms_with_policy(
                 &pos_params,
                 vaults,
                 i64::MAX,
@@ -238,9 +309,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 native_token_name,
                 native_token_symbol,
                 native_token_decimals,
+                resource_policy,
             );
 
-        let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
+        let block_deploys = &block.body.deploys;
+        if block_deploys
+            .iter()
+            .any(|deploy| deploy.as_legacy().is_none())
+        {
+            return Err("Genesis candidate cannot contain offered-funded deploys.".to_string());
+        }
 
         if block_deploys.len() != genesis_blessed_contracts.len() {
             return Err(
@@ -254,10 +332,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .iter()
             .zip(genesis_blessed_contracts.iter())
             .filter(|(candidate_deploy, expected_contract)| {
-                candidate_deploy.deploy.data.term != expected_contract.data.term
+                candidate_deploy.term() != expected_contract.data.term
             })
             .map(|(candidate_deploy, _)| {
-                let term = &candidate_deploy.deploy.data.term;
+                let term = candidate_deploy.term();
                 term.chars().take(100).collect::<String>()
             })
             .take(5)
@@ -273,22 +351,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         // State hash checks
         let empty_state_hash = RuntimeManager::empty_state_hash_fixed();
         let state_hash = runtime_manager
-            .replay_compute_state(
+            .replay_compute_state_envelopes(
                 &empty_state_hash,
                 block_deploys.clone(),
                 Vec::<ProcessedSystemDeploy>::new(),
                 &rholang::rust::interpreter::system_processes::BlockData::from_block(block),
                 None,
                 true,
-                // Task #13a: genesis-candidate replay runs with cost-accounting
-                // OFF (`is_genesis = true`), so the strict flag is inert — the
-                // acceptance recompute is skipped entirely. Pass `false`.
-                false,
-                // Task #13b: genesis-candidate replay (block 0, cost-accounting
-                // OFF) performs no close-deploy client credit (the credit is
-                // gated on `block_number == 1` AND genesis runs no close
-                // post_eval), so the allocation list is inert here. Pass empty.
-                &[],
             )
             .await
             .map_err(|e| format!("Failed status during replay: {:?}.", e))?;
@@ -324,7 +393,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         candidate: &ApprovedBlockCandidate,
         shard_id: &str,
     ) -> Result<(), String> {
-        Self::validate_candidate(
+        Self::validate_candidate_with_policy(
             runtime_manager,
             candidate,
             self.required_sigs,
@@ -336,15 +405,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.epoch_length,
             self.quarantine_length,
             self.number_of_active_validators,
+            self.fault_tolerance_threshold_ppm,
+            self.max_parent_depth,
+            self.deploy_lifespan,
+            self.min_phlo_price,
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,
-            self.max_cosigners_per_deploy,
-            self.initial_phlogiston,
-            self.epoch_phlogiston,
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,
+            self.resource_policy.as_ref(),
         )
         .await
     }
