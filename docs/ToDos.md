@@ -88,6 +88,7 @@ claimed_by: claude-session-dfac55a4
 claimed_at: 2026-10-07T22:00:00Z
 branch: ci/oci-spend-budget-reaper-control
 pr_base_branch: dev
+pr: 668
 origin: "On 2026-10-07 the user asked why the OCI spend of this billing cycle is almost twice the spend of August. The October pace is about 4,090 USD for the month against 2,203 USD in August. All of the increase is ephemeral CI runner compute in the ci-runner compartment: 37.76 USD per day in August, 73.46 in September, 98.85 on October 1 to 7. The user chose three controls: a daily spend alert above 70 USD, a reaper outside the GitHub scheduler, and run-scoped VM cleanup when a launch is cancelled or fails."
 execution_contract:
   base_branch: dev
@@ -125,15 +126,27 @@ tasks:
     notes: "At 70 USD the alert would have fired on 36 of the 67 days from 2026-08-01 to 2026-10-06 (median day 72 USD). The Usage API lags by hours, so the alert reports the previous day and does not stop resources."
   - id: TASK-022-2
     title: "Run the ephemeral runner reaper from an OCI Function on the OCI Resource Scheduler"
-    status: pending
-    claimed_by: null
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T23:30:00Z
     blocked_by: []
+    files:
+      - oci/runner-reaper/handler.sh
+      - oci/runner-reaper/test-handler.sh
+      - oci/runner-reaper/Dockerfile
+      - oci/runner-reaper/README.md
+      - scripts/oci/deploy-runner-reaper.sh
+      - scripts/oci/lib/fn-deploy.sh
+      - scripts/oci/test-fn-deploy.sh
+      - .github/workflows/ci-runner-reaper.yml
+    progress: "2026-10-07: handler, tests, and deploy script written and not deployed. The tests run the jq program of ci-runner-reaper.yml on the same instances as the handler and require the same result. A deliberate change of the 7-day cap in the workflow made the test fail. scripts/oci/lib/fn-deploy.sh now holds the upserts that deploy-spend-alert.sh and deploy-runner-reaper.sh share. scripts/oci/test-fn-deploy.sh runs both deploy scripts with stub oci and docker commands."
     design: "Port the reap rule of ci-runner-reaper.yml to a Bash handler in oci/runner-reaper/, deployed to the f1r3node-ci-schedulers application and invoked every 30 minutes. The rule stays the same: terminate RUNNING or STOPPED ci-eph-* instances in the ci-runner compartment that are older than MAX_AGE_HOURS (2), unless a valid soak-deadline-epoch tag is in the future. The GitHub workflow keeps workflow_dispatch and its schedule as a second, idempotent sweep."
     acceptance:
       - "Handler tests prove parity with the workflow filter: untagged old instance reaped, young instance kept, future soak deadline kept, expired deadline reaped, and Infinity, NaN, 1e309, unparseable, and more-than-7-day deadlines reaped."
       - "The handler never terminates an instance whose name does not start with ci-eph-, and it has a dry-run mode."
-      - "The compartment OCID of the Function config equals the literal in ci-runner-reaper.yml and merge-recovery-soak.yml. check-workflow-invariants.sh or the deploy script asserts it."
-      - "IAM lets the Function list and terminate instances only in the ci-runner compartment."
+      - "The compartment OCID of the Function config equals the literal in ci-runner-reaper.yml. The deploy script reads it from that file and stops on a different OCI_COMPARTMENT_OCID. Done 2026-10-07 (scripts/oci/test-fn-deploy.sh)."
+      - "IAM lets the Function manage instance-family only in the ci-runner compartment, the same grant as ci-runner-ephemeral-policy that the runners use to terminate themselves."
+      - "The first deployment uses DRY_RUN=true, and its result matches a manual dry run of the GitHub workflow."
       - "Over 24 hours after deployment, the invoke log shows at least 44 of 48 scheduled sweeps."
   - id: TASK-022-3
     title: "Tag each heavy-pipeline runner VM with its GitHub run at launch"
@@ -168,7 +181,7 @@ tasks:
 ---
 ```
 
-**Current state:** TASK-022-1 code and tests are on the branch and not deployed. TASK-022-2 to TASK-022-4 wait for the user's confirmation of the design.
+**Current state:** TASK-022-1 code and tests are in PR #668 and not deployed. TASK-022-2 code and tests are on the same branch and not deployed. TASK-022-3 is next.
 
 ---
 
