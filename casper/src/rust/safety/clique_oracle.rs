@@ -135,11 +135,13 @@ impl CliqueOracle {
         map.insert(key, value);
     }
 
-    /// weight map of main parent (fallbacks to message itself if no parents)
-    /// TODO - why not use local weight map but seek for parent?
-    /// P.S. This is related to the fact that we create latest message for newly bonded validator
-    /// equal to message where bonding deploy has been submitted. So stake from validator that did not create anything is
-    /// put behind this message. So here is one more place where this logic makes things more complex.
+    /// The committee that certifies `target_msg`: the bonds the target carries.
+    /// `Validate::bonds_cache_from_floor` checks that field against
+    /// `floor_committee` on the target's floor, on both the propose and the
+    /// replay side, so it is a pure function of that floor and identical for
+    /// siblings sharing one. The main parent's bonds are not: a block whose floor
+    /// has advanced past a bonding deploy carries an electorate its parent does
+    /// not, and each side of a fork would certify under its own.
     pub async fn get_corresponding_weight_map(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
@@ -207,12 +209,8 @@ impl CliqueOracle {
         meter.step(WorkKind::Oracle)?;
         meter.allocate(64, 128)?;
         let meta = dag.lookup_unsafe_metered(meter, target_msg)?;
-        let weights = match meta.parents.first() {
-            Some(parent) => dag.lookup_unsafe_metered(meter, parent)?.weight_map,
-            None => meta.weight_map,
-        };
         let mut result = HashMap::new();
-        for (validator, weight) in weights {
+        for (validator, weight) in meta.weight_map {
             meter.step(WorkKind::Oracle)?;
             result.insert(validator, weight);
         }

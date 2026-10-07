@@ -2337,13 +2337,15 @@ mod frontier_determinism_tests {
         assert!(state_contains(&dag, &store, &at(&t, 3), &at(&e, 0), &mut memo).unwrap());
     }
 
-    /// R-COMM: the certifying committee is `bonds_of(floor(B))`. The oracle
-    /// reads it from the target's MAIN PARENT, so a bonding deploy landing on
-    /// one side of a fork gives the branches different electorates and each
-    /// clears the threshold alone.
+    /// R-COMM: the certifying committee is `bonds_of(floor(B))`, and the bonds a
+    /// block carries ARE that set — `Validate::bonds_cache_from_floor` rejects any
+    /// other. The oracle must therefore read the target's own committee: a block
+    /// whose floor has advanced past a bonding deploy and its pre-bond main parent
+    /// carry different electorates, so certifying against the parent's lets each
+    /// side of a fork clear the threshold under a committee no validity rule
+    /// checked.
     #[tokio::test]
-    #[ignore = "red on dev pending #459 (committee read from the main parent)"]
-    async fn sibling_branches_are_certified_under_one_committee() {
+    async fn the_certifying_committee_is_the_target_s_own_bonds() {
         let v = val();
         let joiner = Bytes::from(vec![0x07u8; 65]);
         let (floor, pre, plain, bonded, above) = (h(0), h(1), h(2), h(3), h(4));
@@ -2368,9 +2370,6 @@ mod frontier_determinism_tests {
                 (&joiner, 400),
             ]),
         ]);
-        dag.put_cached_floor(plain.clone(), floor.clone()).unwrap();
-        dag.put_cached_floor(above.clone(), floor.clone()).unwrap();
-
         let committee_of = |target: &Bytes| {
             let target = target.clone();
             let dag = &dag;
@@ -2380,23 +2379,27 @@ mod frontier_determinism_tests {
                     .expect("committee")
             }
         };
-        let on_plain: i64 = committee_of(&plain).await.values().sum();
-        let on_above: i64 = committee_of(&above).await.values().sum();
-        let at_floor: i64 = dag
-            .lookup(&floor)
-            .unwrap()
-            .expect("floor metadata")
-            .weight_map
-            .values()
-            .sum();
+        let own_bonds_of = |target: &Bytes| {
+            dag.lookup(target)
+                .unwrap()
+                .expect("metadata")
+                .weight_map
+                .into_iter()
+                .collect::<HashMap<_, _>>()
+        };
 
+        // `bonded`'s floor has advanced past the bond its parent predates, so
+        // the two carry different committees and the read is discriminating.
+        assert_ne!(own_bonds_of(&bonded), own_bonds_of(&pre));
         assert_eq!(
-            (on_plain, on_above),
-            (at_floor, at_floor),
-            "two blocks sharing a floor must be certified under that floor's \
-             committee; judging each branch under its own bonds lets both sides \
-             of a fork finalize independently"
+            committee_of(&bonded).await,
+            own_bonds_of(&bonded),
+            "the certifying committee must be the target's own bonds, which \
+             bonds_cache_from_floor pins to its floor; reading the parent's \
+             judges the block under a committee no validity rule checked"
         );
+        assert_eq!(committee_of(&plain).await, own_bonds_of(&plain));
+        assert_eq!(committee_of(&floor).await, own_bonds_of(&floor));
     }
 
     /// A multi-parent block with no recorded base has an underivable state
@@ -3227,8 +3230,16 @@ mod frontier_determinism_tests {
         }];
 
         let mut blocks = vec![
-            md_wm(floor_block.clone(), vec![], 9, &vb, committee),
-            md_wm(target.clone(), vec![floor_block.clone()], 10, &va, vec![]),
+            md_wm(floor_block.clone(), vec![], 9, &vb, committee.clone()),
+            // Every block carries the committee of its own floor, which
+            // `bonds_cache_from_floor` pins — the target included.
+            md_wm(
+                target.clone(),
+                vec![floor_block.clone()],
+                10,
+                &va,
+                committee,
+            ),
             la_meta,
             lb_meta,
         ];
