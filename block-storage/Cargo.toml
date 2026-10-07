@@ -41,6 +41,7 @@ test-internals = []
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [dev-dependencies]
+metrics-util = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 # Exhaustive thread-interleaving model checker for the

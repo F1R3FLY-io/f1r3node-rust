@@ -617,6 +617,7 @@ dependencies = [
  "loom 0.7.2",
  "lz4_flex",
  "metrics 0.23.1",
+ "metrics-util 0.17.0",
  "models",
  "once_cell",
  "parking_lot",
