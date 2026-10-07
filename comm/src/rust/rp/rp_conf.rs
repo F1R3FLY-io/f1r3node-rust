@@ -5,11 +5,13 @@ use std::time::Duration;
 
 use crate::rust::errors::CommError;
 use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::chain_id::ChainIdCell;
 
 #[derive(Debug, Clone)]
 pub struct RPConf {
     pub local: PeerNode,
     pub network_id: String,
+    pub chain_id: ChainIdCell,
     pub bootstrap: Option<PeerNode>,
     pub default_timeout: Duration,
     pub max_num_of_connections: usize,
@@ -20,6 +22,7 @@ impl RPConf {
     pub fn new(
         local: PeerNode,
         network_id: String,
+        chain_id: ChainIdCell,
         bootstrap: Option<PeerNode>,
         default_timeout: Duration,
         max_num_of_connections: usize,
@@ -28,11 +31,21 @@ impl RPConf {
         Self {
             local,
             network_id,
+            chain_id,
             bootstrap,
             default_timeout,
             max_num_of_connections,
             clear_connections: ClearConnectionsConf::new(num_of_connections_pinged),
         }
+    }
+
+    pub fn check_chain_id(
+        &self,
+        peer: &str,
+        peer_chain_id: &[u8],
+        type_id: Option<&str>,
+    ) -> Result<(), CommError> {
+        self.chain_id.check(peer, peer_chain_id, type_id)
     }
 }
 
@@ -118,6 +131,7 @@ mod tests {
         RPConf::new(
             peer("local", "localhost"),
             "testnet".to_string(),
+            ChainIdCell::unknown(),
             Some(peer("bootstrap", "bootstrap-host")),
             Duration::from_secs(3),
             25,

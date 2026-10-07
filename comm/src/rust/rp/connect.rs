@@ -272,7 +272,8 @@ where
     liveness.retain_connected(&connected_ids);
 
     let results = join_all(to_ping.iter().cloned().map(|peer| {
-        let heartbeat_msg = protocol_helper::heartbeat(&conf.local, &conf.network_id);
+        let heartbeat_msg =
+            protocol_helper::heartbeat(&conf.local, &conf.network_id, conf.chain_id.to_wire());
         async move {
             let result = transport.send(&peer, &heartbeat_msg).await;
             (peer, result)
@@ -408,7 +409,8 @@ pub async fn connect<T: TransportLayer>(
     transport: &T,
 ) -> Result<(), CommError> {
     let start = std::time::Instant::now();
-    let handshake_msg = protocol_helper::protocol_handshake(&conf.local, &conf.network_id);
+    let handshake_msg =
+        protocol_helper::protocol_handshake(&conf.local, &conf.network_id, conf.chain_id.to_wire());
     let result = transport.send(peer, &handshake_msg).await;
 
     // Record connect-time histogram (matches Scala Connect.scala:L174)

@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use models::routing::tl_response::Payload;
 use models::routing::transport_layer_client::TransportLayerClient;
 use models::routing::{Chunk, Protocol, TlRequest, TlResponse};
+use prost::bytes::Bytes;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 use tonic::{Request, Status};
@@ -147,11 +148,12 @@ impl GrpcTransport {
         transport: &mut T,
         peer: &PeerNode,
         network_id: &str,
+        chain_id: Bytes,
         blob: &Blob,
         packet_chunk_size: usize,
     ) -> Result<(), CommError> {
         // Generate chunks using our Chunker
-        let chunks = Chunker::chunk_it(network_id, blob, packet_chunk_size);
+        let chunks = Chunker::chunk_it(network_id, chain_id, blob, packet_chunk_size);
 
         // Create a stream of chunks
         let chunk_stream = tokio_stream::iter(chunks);
@@ -166,7 +168,6 @@ impl GrpcTransport {
 #[cfg(test)]
 mod tests {
     use models::routing::{Ack, Header, InternalServerError, Packet};
-    use prost::bytes::Bytes;
 
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
@@ -212,6 +213,7 @@ mod tests {
         let ack_response = TlResponse {
             payload: Some(Payload::Ack(Ack {
                 header: Some(Header {
+                    chain_id: Bytes::new(),
                     sender: Some(protocol_helper::node(&peer)),
                     network_id: "test".to_string(),
                 }),
@@ -279,7 +281,7 @@ mod tests {
         };
 
         // Test that we can create chunks (functionality tested in chunker module)
-        let chunks = Chunker::chunk_it("test_network", &blob, 4096);
+        let chunks = Chunker::chunk_it("test_network", Bytes::new(), &blob, 4096);
         assert!(!chunks.is_empty());
         assert!(!chunks.is_empty()); // At least header chunk
     }

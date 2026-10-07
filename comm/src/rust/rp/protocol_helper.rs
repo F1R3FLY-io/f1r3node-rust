@@ -13,10 +13,11 @@ use crate::rust::transport::transport_layer::Blob;
 
 pub fn to_protocol_bytes(x: &str) -> Vec<u8> { x.as_bytes().to_vec() }
 
-pub fn header(src: &PeerNode, network_id: &str) -> Header {
+pub fn header(src: &PeerNode, network_id: &str, chain_id: Bytes) -> Header {
     Header {
         sender: Some(node(src)),
         network_id: network_id.to_string(),
+        chain_id,
     }
 }
 
@@ -44,16 +45,16 @@ pub fn to_peer_node(n: &Node) -> PeerNode {
     }
 }
 
-pub fn protocol(src: &PeerNode, network_id: &str) -> Protocol {
+pub fn protocol(src: &PeerNode, network_id: &str, chain_id: Bytes) -> Protocol {
     Protocol {
-        header: Some(header(src, network_id)),
+        header: Some(header(src, network_id, chain_id)),
         ..Default::default()
     }
 }
 
-pub fn protocol_handshake(src: &PeerNode, network_id: &str) -> Protocol {
+pub fn protocol_handshake(src: &PeerNode, network_id: &str, chain_id: Bytes) -> Protocol {
     Protocol {
-        header: Some(header(src, network_id)),
+        header: Some(header(src, network_id, chain_id)),
         message: Some(models::routing::protocol::Message::ProtocolHandshake(
             ProtocolHandshake {
                 nonce: Bytes::new(),
@@ -62,9 +63,9 @@ pub fn protocol_handshake(src: &PeerNode, network_id: &str) -> Protocol {
     }
 }
 
-pub fn protocol_handshake_response(src: &PeerNode, network_id: &str) -> Protocol {
+pub fn protocol_handshake_response(src: &PeerNode, network_id: &str, chain_id: Bytes) -> Protocol {
     Protocol {
-        header: Some(header(src, network_id)),
+        header: Some(header(src, network_id, chain_id)),
         message: Some(
             models::routing::protocol::Message::ProtocolHandshakeResponse(
                 ProtocolHandshakeResponse {
@@ -75,23 +76,30 @@ pub fn protocol_handshake_response(src: &PeerNode, network_id: &str) -> Protocol
     }
 }
 
-pub fn heartbeat(src: &PeerNode, network_id: &str) -> Protocol {
+pub fn heartbeat(src: &PeerNode, network_id: &str, chain_id: Bytes) -> Protocol {
     Protocol {
-        header: Some(header(src, network_id)),
+        header: Some(header(src, network_id, chain_id)),
         message: Some(models::routing::protocol::Message::Heartbeat(Heartbeat {})),
     }
 }
 
-pub fn packet(src: &PeerNode, network_id: &str, packet: Packet) -> Protocol {
+pub fn packet(src: &PeerNode, network_id: &str, chain_id: Bytes, packet: Packet) -> Protocol {
     Protocol {
-        header: Some(header(src, network_id)),
+        header: Some(header(src, network_id, chain_id)),
         message: Some(models::routing::protocol::Message::Packet(packet)),
     }
 }
 
-pub fn packet_with_content<A>(src: &PeerNode, network_id: &str, content: A) -> Protocol
-where A: ToPacket {
-    packet(src, network_id, content.mk_packet())
+pub fn packet_with_content<A>(
+    src: &PeerNode,
+    network_id: &str,
+    chain_id: Bytes,
+    content: A,
+) -> Protocol
+where
+    A: ToPacket,
+{
+    packet(src, network_id, chain_id, content.mk_packet())
 }
 
 pub fn to_packet(proto: &Protocol) -> Result<Packet, CommError> {
@@ -104,9 +112,9 @@ pub fn to_packet(proto: &Protocol) -> Result<Packet, CommError> {
     }
 }
 
-pub fn disconnect(src: &PeerNode, network_id: &str) -> Protocol {
+pub fn disconnect(src: &PeerNode, network_id: &str, chain_id: Bytes) -> Protocol {
     Protocol {
-        header: Some(header(src, network_id)),
+        header: Some(header(src, network_id, chain_id)),
         message: Some(models::routing::protocol::Message::Disconnect(
             Disconnect {},
         )),
@@ -144,7 +152,7 @@ mod tests {
     #[test]
     fn sender_round_trips_through_node() {
         let src = peer("sender-id", "sender-host");
-        let proto = protocol(&src, "net");
+        let proto = protocol(&src, "net", Bytes::new());
         assert_eq!(sender(&proto), src);
         assert!(proto.message.is_none());
         assert_eq!(proto.header.as_ref().unwrap().network_id, "net");
@@ -153,7 +161,7 @@ mod tests {
     #[test]
     fn disconnect_carries_disconnect_message() {
         let src = peer("id", "host");
-        let proto = disconnect(&src, "net");
+        let proto = disconnect(&src, "net", Bytes::new());
         assert_eq!(
             proto.message,
             Some(models::routing::protocol::Message::Disconnect(
@@ -166,7 +174,7 @@ mod tests {
     #[test]
     fn handshake_response_carries_response_message() {
         let src = peer("id", "host");
-        let proto = protocol_handshake_response(&src, "net");
+        let proto = protocol_handshake_response(&src, "net", Bytes::new());
         assert_eq!(
             proto.message,
             Some(
@@ -186,14 +194,14 @@ mod tests {
             type_id: "BlockMessage".to_string(),
             content: Bytes::from_static(b"payload"),
         };
-        let proto = packet(&src, "net", pkt.clone());
+        let proto = packet(&src, "net", Bytes::new(), pkt.clone());
         assert_eq!(to_packet(&proto).unwrap(), pkt);
     }
 
     #[test]
     fn to_packet_rejects_non_packet_message() {
         let src = peer("id", "host");
-        let proto = heartbeat(&src, "net");
+        let proto = heartbeat(&src, "net", Bytes::new());
         let err = to_packet(&proto).unwrap_err();
         match err {
             CommError::UnknownProtocolError(msg) => {

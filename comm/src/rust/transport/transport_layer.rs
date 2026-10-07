@@ -53,7 +53,8 @@ pub trait TransportLayer {
         peer: &PeerNode,
         msg: Packet,
     ) -> Result<(), CommError> {
-        let protocol_msg = protocol_helper::packet(&conf.local, &conf.network_id, msg);
+        let protocol_msg =
+            protocol_helper::packet(&conf.local, &conf.network_id, conf.chain_id.to_wire(), msg);
         self.send(peer, &protocol_msg).await
     }
 
@@ -113,7 +114,12 @@ pub trait TransportLayer {
     ) -> Result<(), CommError> {
         let max = scope_size.unwrap_or(conf.max_num_of_connections);
         let peers = connections_cell.random(max)?;
-        let protocol_msg = protocol_helper::packet(&conf.local, &conf.network_id, message);
+        let protocol_msg = protocol_helper::packet(
+            &conf.local,
+            &conf.network_id,
+            conf.chain_id.to_wire(),
+            message,
+        );
         self.broadcast(&peers.0, &protocol_msg).await
     }
 
@@ -141,7 +147,12 @@ pub trait TransportLayer {
         retry_after: Duration,
         msg_type_name: &str,
     ) -> Result<(), CommError> {
-        let protocol_msg = protocol_helper::packet(&conf.local, &conf.network_id, message);
+        let protocol_msg = protocol_helper::packet(
+            &conf.local,
+            &conf.network_id,
+            conf.chain_id.to_wire(),
+            message,
+        );
 
         info!("Starting to request {}", msg_type_name);
 

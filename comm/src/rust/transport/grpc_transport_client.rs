@@ -14,6 +14,7 @@ use tonic::transport::Channel;
 
 use crate::rust::errors::CommError;
 use crate::rust::peer_node::{NodeIdentifier, PeerNode};
+use crate::rust::rp::chain_id::ChainIdCell;
 use crate::rust::transport::f1r3fly_connector::F1r3flyConnector;
 use crate::rust::transport::grpc_transport::GrpcTransport;
 use crate::rust::transport::packet_ops::PacketOps;
@@ -79,6 +80,7 @@ impl BufferedGrpcStreamChannel {
 #[derive(Clone)]
 pub struct GrpcTransportClient {
     network_id: String,
+    chain_id: ChainIdCell,
     cert: String,
     key: String,
     max_message_size: i32,
@@ -100,6 +102,7 @@ impl GrpcTransportClient {
     /// Create a new GrpcTransportClient
     pub fn new(
         network_id: String,
+        chain_id: ChainIdCell,
         cert: String,
         key: String,
         max_message_size: i32,
@@ -119,6 +122,7 @@ impl GrpcTransportClient {
 
         Ok(Self {
             network_id,
+            chain_id,
             cert,
             key,
             max_message_size,
@@ -242,6 +246,7 @@ impl GrpcTransportClient {
             let peer_clone = peer.clone();
             let cache_clone = self.cache.clone();
             let network_id = self.network_id.clone();
+            let chain_id = self.chain_id.clone();
             let default_send_timeout = self.default_send_timeout;
             let packet_chunk_size = self.packet_chunk_size;
 
@@ -267,6 +272,7 @@ impl GrpcTransportClient {
                         &stream_msg.sender,
                         &cache_clone,
                         &network_id,
+                        &chain_id,
                         default_send_timeout,
                         packet_chunk_size,
                         client_for_task.clone(),
@@ -455,6 +461,7 @@ impl GrpcTransportClient {
         sender: &PeerNode,
         cache: &StreamCache,
         network_id: &str,
+        chain_id: &ChainIdCell,
         default_send_timeout: Duration,
         packet_chunk_size: i32,
         client: Arc<
@@ -492,6 +499,7 @@ impl GrpcTransportClient {
                     &mut *client_guard,
                     peer,
                     network_id,
+                    chain_id.to_wire(),
                     &blob,
                     packet_chunk_size as usize,
                 )
@@ -647,6 +655,7 @@ mod tests {
     fn client(network_timeout: Duration) -> GrpcTransportClient {
         GrpcTransportClient::new(
             "test".to_string(),
+            ChainIdCell::unknown(),
             "cert".to_string(),
             "key".to_string(),
             1024,

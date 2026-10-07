@@ -5,7 +5,9 @@ use std::sync::Arc;
 use models::routing::{Packet, Protocol};
 
 use crate::rust::errors::CommError;
-use crate::rust::metrics_constants::{DISCONNECT_METRIC, RP_HANDLE_METRICS_SOURCE};
+use crate::rust::metrics_constants::{
+    DISCONNECT_METRIC, FOREIGN_CHAIN_REFUSED_METRIC, RP_HANDLE_METRICS_SOURCE,
+};
 use crate::rust::p2p::packet_handler::PacketHandler;
 use crate::rust::peer_node::PeerNode;
 use crate::rust::rp::connect::ConnectionsCell;
@@ -13,6 +15,64 @@ use crate::rust::rp::protocol_helper;
 use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::communication_response::CommunicationResponse;
 use crate::rust::transport::transport_layer::TransportLayer;
+
+fn peer_chain_id(protocol: &Protocol) -> &[u8] {
+    protocol
+        .header
+        .as_ref()
+        .map(|header| header.chain_id.as_ref())
+        .unwrap_or_default()
+}
+
+fn packet_type_id(protocol: &Protocol) -> Option<&str> {
+    match &protocol.message {
+        Some(models::routing::protocol::Message::Packet(packet)) => Some(&packet.type_id),
+        _ => None,
+    }
+}
+
+fn is_handshake(protocol: &Protocol) -> bool {
+    matches!(
+        &protocol.message,
+        Some(models::routing::protocol::Message::ProtocolHandshake(_))
+            | Some(models::routing::protocol::Message::ProtocolHandshakeResponse(_))
+    )
+}
+
+/// Refuse a peer that does not share this node's chain.
+async fn refuse_foreign_chain(
+    peer: &PeerNode,
+    protocol: &Protocol,
+    transport_layer: Arc<dyn TransportLayer + Send + Sync + 'static>,
+    connections_cell: &ConnectionsCell,
+    rp_conf: &RPConf,
+    error: CommError,
+) -> Result<CommunicationResponse, CommError> {
+    metrics::counter!(FOREIGN_CHAIN_REFUSED_METRIC, "source" => RP_HANDLE_METRICS_SOURCE)
+        .increment(1);
+    tracing::warn!(peer = %peer, error = %error, "Refused a message from a peer of another chain");
+
+    let _ = connections_cell.flat_modify(|connections| {
+        if connections.iter().any(|known| known.id.key == peer.id.key) {
+            connections.remove_conn_and_report(peer.clone())
+        } else {
+            Ok(connections)
+        }
+    });
+
+    if is_handshake(protocol) {
+        let goodbye = protocol_helper::disconnect(
+            &rp_conf.local,
+            &rp_conf.network_id,
+            rp_conf.chain_id.to_wire(),
+        );
+        if let Err(e) = transport_layer.send(peer, &goodbye).await {
+            tracing::debug!(peer = %peer, error = %e, "Could not tell a foreign-chain peer to disconnect");
+        }
+    }
+
+    Ok(CommunicationResponse::not_handled(error))
+}
 
 pub async fn handle(
     protocol: &Protocol,
@@ -22,6 +82,28 @@ pub async fn handle(
     rp_conf: &RPConf,
 ) -> Result<CommunicationResponse, CommError> {
     let sender = protocol_helper::sender(protocol);
+    let chain_id = peer_chain_id(protocol);
+
+    // A joining node has no genesis of its own yet and learns one here, from
+    // the peer it was configured to trust. The value is verified against this
+    // node's own genesis as soon as that is recorded.
+    rp_conf
+        .chain_id
+        .adopt_from_bootstrap(&sender, rp_conf.bootstrap.as_ref(), chain_id);
+
+    if let Err(error) =
+        rp_conf.check_chain_id(&sender.to_string(), chain_id, packet_type_id(protocol))
+    {
+        return refuse_foreign_chain(
+            &sender,
+            protocol,
+            transport_layer,
+            connections_cell,
+            rp_conf,
+            error,
+        )
+        .await;
+    }
 
     match &protocol.message {
         Some(models::routing::protocol::Message::Heartbeat(_)) => {
@@ -91,8 +173,11 @@ pub async fn handle_protocol_handshake(
     connections_cell: &ConnectionsCell,
     rp_conf: &RPConf,
 ) -> Result<CommunicationResponse, CommError> {
-    let response =
-        protocol_helper::protocol_handshake_response(&rp_conf.local, &rp_conf.network_id);
+    let response = protocol_helper::protocol_handshake_response(
+        &rp_conf.local,
+        &rp_conf.network_id,
+        rp_conf.chain_id.to_wire(),
+    );
 
     match transport_layer.send(peer, &response).await {
         Ok(_) => {

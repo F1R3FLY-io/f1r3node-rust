@@ -3,6 +3,7 @@
 use futures::StreamExt;
 use models::routing::chunk::Content;
 use models::routing::{Chunk, ChunkData, ChunkHeader};
+use prost::bytes::Bytes;
 use shared::rust::shared::compression::Compression;
 use tokio_stream::Stream;
 use tracing;
@@ -32,6 +33,8 @@ pub struct Header {
     pub content_length: i32,
     /// Network ID for validation
     pub network_id: String,
+    /// Genesis hash of the sender's chain
+    pub chain_id: Bytes,
     /// Whether the content is compressed
     pub compressed: bool,
 }
@@ -43,6 +46,7 @@ impl Header {
         type_id: String,
         content_length: i32,
         network_id: String,
+        chain_id: Bytes,
         compressed: bool,
     ) -> Self {
         Self {
@@ -50,6 +54,7 @@ impl Header {
             type_id,
             content_length,
             network_id,
+            chain_id,
             compressed,
         }
     }
@@ -80,6 +85,9 @@ impl Circuit {
 pub enum StreamError {
     /// Wrong network ID detected
     WrongNetworkId,
+    /// The sender belongs to a different chain, or pushed chain data without
+    /// naming a chain.
+    WrongChainId { reason: String },
     /// Maximum size reached
     MaxSizeReached,
     /// Incomplete message received
@@ -94,6 +102,9 @@ impl StreamError {
         match self {
             StreamError::WrongNetworkId => {
                 "Could not receive stream! Wrong network id.".to_string()
+            }
+            StreamError::WrongChainId { reason } => {
+                format!("Could not receive stream! {}", reason)
             }
             StreamError::MaxSizeReached => "Max message size was reached.".to_string(),
             StreamError::NotFullMessage { streamed } => {
@@ -110,6 +121,9 @@ impl StreamError {
 
     /// Create a WrongNetworkId error
     pub fn wrong_network_id() -> Self { StreamError::WrongNetworkId }
+
+    /// Create a WrongChainId error
+    pub fn wrong_chain_id(reason: String) -> Self { StreamError::WrongChainId { reason } }
 
     /// Create a MaxSizeReached error (circuit opened)
     pub fn circuit_opened() -> Self { StreamError::MaxSizeReached }
@@ -440,6 +454,7 @@ impl StreamHandler {
                 let ChunkHeader {
                     sender,
                     type_id,
+                    chain_id,
                     compressed,
                     content_length,
                     network_id,
@@ -456,8 +471,14 @@ impl StreamHandler {
                 };
 
                 // Create header
-                let header =
-                    Header::new(peer_sender, type_id, content_length, network_id, compressed);
+                let header = Header::new(
+                    peer_sender,
+                    type_id,
+                    content_length,
+                    network_id,
+                    chain_id,
+                    compressed,
+                );
 
                 // Update streamed state with header
                 let new_streamed = streamed.with_header(header);
