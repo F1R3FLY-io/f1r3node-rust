@@ -11,8 +11,10 @@
 //     (leader, verify-success, verify-divergence, oracular-echo).
 //   - [`HandlerFamily`] — groups handlers by effect shape
 //     (mutation, observation, stream, lock, lifecycle).  Used by
-//     the per-family count pin in the yet-to-land handler-dispatcher
-//     slice and by future per-family file splits.
+//     the per-family count pin
+//     (`fs_handlers_per_family_counts_match_pinned`, slice 5.51)
+//     and by the per-family file splits under
+//     `handlers/{mutation,observation,stream,lock,lifecycle}/*.rs`.
 //
 // # Deferred to subsequent Wave 4 slices
 //
@@ -58,7 +60,9 @@ pub use consensus_divergence::consensus_divergence_reply;
 pub use dispatch::{dispatch_via_trait, dispatch_via_trait_owned};
 pub use family::HandlerFamily;
 pub use fs_handler::FsHandler;
-pub use fs_handlers::{FsHandlerEntry, EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS};
+pub use fs_handlers::{
+    FsHandlerEntry, EXPECTED_MIGRATED_HANDLER_COUNT, EXPECTED_VERIFYING_HANDLER_COUNT, FS_HANDLERS,
+};
 pub use fs_processes::FsProcesses;
 pub use journal_path::JournalPath;
 pub use reply::HandlerReply;
