@@ -27,7 +27,9 @@ use support::session::{with_space, Session};
 #[tokio::test]
 async fn harness_session_runs_a_queue_space_under_the_family_agent() {
     let mut session = Session::new().await;
-    let space = session.setup("rho:space:hashmap:queue", r#""default""#).await;
+    let space = session
+        .setup("rho:space:hashmap:queue", r#""default""#)
+        .await;
     for value in [5, 3] {
         session
             .run(

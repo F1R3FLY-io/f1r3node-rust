@@ -2682,6 +2682,1779 @@
           ]
         }
       ]
+    },
+    "P5": {
+      "title": "P5 wave W2: the engine (Match.v, GenericRSpace.v and the engine headline of AgentReadCoverage.v), the bag (DataCollection.v, ContinuationCollection.v), the cell (CellDiscipline.v), the Array and Vector stores with the allocator (OuterStorage.v, VectorStore.v, HashMapStore.v, and the allocator race of CounterConflict.tla), the pure PathMap layer (PathMapPrefix.v), the P5 families (SpaceFactory.v), the routing of receive queries (SpaceRefs.v), and the stack with one fire count for each transaction (StackDiscipline.v, StackDiscipline.tla, decision 49)",
+      "design": "P5 design v3 (decision 48) and the W2 batch reports. R# are Rocq headlines and V# are TLA+ invariants. V1-V8 are the invariants of GenericRSpace.tla, V9-V10 the allocator invariants of CounterConflict.tla. The properties of the engine run the real bag, queue and cell disciplines and a probe of the set. witness_tests lists deterministic tests of the W2 code. V11-V15 are the invariants of StackDiscipline.tla, with TxnFiresBounded (decision 49).",
+      "test_status": "required",
+      "test_files": [
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+        "rholang/tests/reified_array_vector.rs",
+        "rholang/tests/reified_bag.rs",
+        "rholang/tests/reified_cell.rs",
+        "rholang/tests/reified_engine_props.rs",
+        "rholang/tests/reified_families.rs",
+        "rholang/tests/reified_hooks_p5.rs",
+        "rholang/tests/reified_stack.rs"
+      ],
+      "expected_properties": 75,
+      "formal": {
+        "R1": {
+          "kind": "rocq",
+          "name": "cell_capacity_one",
+          "file": "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+          "statement": "The cell plans keep at most one record and one waiter. A plan fails with CellOccupied exactly when the same plan without the capacity check overflows a side, and otherwise the two plans are equal. This holds for every element of offer and receive, so for a fresh operation and, by headline 3, for a re-entered one.",
+          "tests": [
+            "prop_cell_capacity_one"
+          ]
+        },
+        "R2": {
+          "kind": "rocq",
+          "name": "cell_restore_never_occupied",
+          "file": "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+          "statement": "Every staged operation of a cell plan applies to the staged view at its point with the capacity check of Cx::check_capacity. In particular the re-store of Rule E meets an empty record slot, because the peek fire removed the record and the cell held one record.",
+          "tests": [
+            "prop_cell_restore_never_occupied"
+          ]
+        },
+        "R3": {
+          "kind": "rocq",
+          "name": "cell_reentry_as_fresh",
+          "file": "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+          "statement": "A re-entered element with a valid first-round ord runs the plan of a fresh element with that ord on the bumped collection. So it keeps its record and its identity, it fires as a fresh element fires, and it fails with CellOccupied exactly when a fresh element would.",
+          "tests": [
+            "prop_cell_reentry_as_fresh"
+          ]
+        },
+        "R4": {
+          "kind": "rocq",
+          "name": "fixed_array_allocates_at_most_size",
+          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+          "statement": "A fixed Array of size s allocates at most s names, each index below s, and its key check accepts exactly the index names of the space below s.",
+          "tests": [
+            "prop_fixed_array_allocates_at_most_size"
+          ]
+        },
+        "R5": {
+          "kind": "rocq",
+          "name": "fixed_array_out_of_names_exact",
+          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+          "statement": "A fixed Array fails with OutOfNames exactly when the next index plus the count exceeds its size, and then it allocates nothing and keeps its allocator.",
+          "tests": [
+            "prop_fixed_array_out_of_names_exact"
+          ]
+        },
+        "R6": {
+          "kind": "rocq",
+          "name": "cyclic_array_index_mod_size",
+          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+          "statement": "A cyclic Array of size s allocates the indices (n + i) mod s and keeps every index and its next value below s.",
+          "tests": [
+            "prop_cyclic_array_index_mod_size"
+          ]
+        },
+        "R7": {
+          "kind": "rocq",
+          "name": "allocation_batch_atomic",
+          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+          "statement": "An allocation either fails with OutOfNames and changes nothing, or allocates exactly its count of indices with one take and one put of the allocator record.",
+          "tests": [
+            "prop_allocation_batch_atomic"
+          ]
+        },
+        "R8": {
+          "kind": "rocq",
+          "name": "fixed_array_indices_sequential",
+          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+          "statement": "A fixed Array allocates the indices 0, 1, 2 and onward in order, and each batch is the next run of consecutive indices.",
+          "tests": [
+            "prop_fixed_array_indices_sequential"
+          ]
+        },
+        "R9": {
+          "kind": "rocq",
+          "name": "allocator_indices_distinct",
+          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+          "statement": "Every store except a cyclic Array never allocates one index twice.",
+          "tests": [
+            "prop_allocator_indices_distinct"
+          ]
+        },
+        "R10": {
+          "kind": "rocq",
+          "name": "allocator_identities_unique",
+          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+          "statement": "The creation of the allocator record and every take and put of the allocations have distinct event identities.",
+          "tests": [
+            "prop_allocator_identities_unique"
+          ]
+        },
+        "R11": {
+          "kind": "rocq",
+          "name": "alloc_trace_covered",
+          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+          "statement": "An allocation reserves every read before it makes it, reserves nothing after the commit, and reads exactly what it reserves (decision 42).",
+          "tests": [
+            "prop_alloc_trace_covered"
+          ]
+        },
+        "R12": {
+          "kind": "rocq",
+          "name": "vector_index_is_counter",
+          "file": "formal/rocq/reified_rspaces/theories/VectorStore.v",
+          "statement": "A Vector allocates the indices 0, 1, 2 and onward without a size bound below its counter limit, and its key check accepts exactly the index names of the space.",
+          "tests": [
+            "prop_vector_index_is_counter"
+          ]
+        },
+        "R13": {
+          "kind": "rocq",
+          "name": "vector_gensym_distinct",
+          "file": "formal/rocq/reified_rspaces/theories/VectorStore.v",
+          "statement": "A Vector never allocates one index twice.",
+          "tests": [
+            "prop_vector_gensym_distinct"
+          ]
+        },
+        "R14": {
+          "kind": "rocq",
+          "name": "vector_gensym_monotonic",
+          "file": "formal/rocq/reified_rspaces/theories/VectorStore.v",
+          "statement": "Each gensym of a Vector allocates the next index, so the indices grow by one with each call.",
+          "tests": [
+            "prop_vector_gensym_monotonic"
+          ]
+        },
+        "R15": {
+          "kind": "rocq",
+          "name": "hashmap_iteration_permutation_invariant",
+          "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+          "statement": "The records of each key and every order-free iteration of the HashMap store do not depend on the order of the puts.",
+          "tests": [
+            "prop_hashmap_iteration_permutation_invariant"
+          ]
+        },
+        "R16": {
+          "kind": "rocq",
+          "name": "hashmap_get_put_other",
+          "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+          "statement": "A put or a take on one key leaves the records of every other key unchanged, and a put on a key adds its record to that key.",
+          "tests": [
+            "prop_hashmap_get_put_other"
+          ]
+        },
+        "R17": {
+          "kind": "rocq",
+          "name": "query_source_routes_inner_channel",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "A receive whose source is a QUERY tuple reads from the inner channel of the query under the read rule of a receive source. The default space refuses a query with QuerySpecUnsupported, and a QUERY tuple never becomes a host channel.",
+          "tests": [
+            "prop_query_bind_routes_inner_channel",
+            "prop_query_source_routes_inner_channel"
+          ]
+        },
+        "R18": {
+          "kind": "rocq",
+          "name": "registered_families_complete",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "A registered family has the URN of its family, the op of its index, the body ref 200 + op, arity 2, a constructor schema and a wired dispatch arm. A family is registered exactly when it has a row and an arm, and no two registered families share an op.",
+          "tests": [
+            "prop_factory_config_names_its_family",
+            "prop_registered_families_complete"
+          ]
+        },
+        "R19": {
+          "kind": "rocq",
+          "name": "aliases_bind_family_capability",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "The alias names the op of its family and is not the URN of the family. An alias is registered exactly when its family is registered. The URN map of the definitions is a function, the alias binds the op of its family, and so does the URN of the family: both bind the capability bundle+{[0xE0, op]}.",
+          "tests": [
+            "prop_aliases_bind_family_capability",
+            "prop_factory_config_names_its_family"
+          ]
+        },
+        "R20": {
+          "kind": "rocq",
+          "name": "constructor_params_validated",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "A family without a schema is unavailable. Positional params fail first. The first unknown key fails with the least (distance, key) suggestion within two edits, a deterministic function of the key and of the schema.",
+          "tests": [
+            "prop_constructor_params_validated"
+          ]
+        },
+        "R21": {
+          "kind": "rocq",
+          "name": "priorities_validated",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "Exactly the priority queue families take the optional priorities, which no family requires. Its rule accepts exactly the GInt values in [1, i64_max], that is every GInt of at least 1, and the config keeps the canonical value. Without it the call is valid, and the levels have no bound.",
+          "tests": [
+            "prop_priorities_validated"
+          ]
+        },
+        "R22": {
+          "kind": "rocq",
+          "name": "array_size_validated",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "Every Array family requires size and takes the optional cyclic, and every other family takes neither. size accepts exactly the GInt values in [1, i64_max], and cyclic exactly the GBool values. A call without size fails with MissingParam after the key check.",
+          "tests": [
+            "prop_array_size_validated"
+          ]
+        },
+        "R23": {
+          "kind": "rocq",
+          "name": "prefix_key_iff_prefix",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "A prefix of a path is exactly a prefix key that is a byte prefix of the path key.",
+          "tests": [
+            "prop_metered_keys_equal_unmetered_keys",
+            "prop_path_keys_are_injective",
+            "prop_prefix_key_iff_prefix",
+            "prop_segments_are_a_prefix_code"
+          ]
+        },
+        "R24": {
+          "kind": "rocq",
+          "name": "reroot_ident",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "Re-rooting under the empty suffix gives the value itself.",
+          "tests": [
+            "prop_reroot_ident"
+          ]
+        },
+        "R25": {
+          "kind": "rocq",
+          "name": "reroot_compose",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "Re-rooting composes. For a PathMap the composition of two re-rootings is the re-rooting under the joined suffix. For every other value the delivery on a shorter prefix prepends the extra suffix to the list of the delivery on the longer prefix.",
+          "tests": [
+            "prop_head_adapter_roundtrip",
+            "prop_prefixed_maps_keep_their_order",
+            "prop_reroot_compose"
+          ]
+        },
+        "R26": {
+          "kind": "rocq",
+          "name": "reroot_injective",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "Under a fixed suffix, re-rooting loses no logical information, and under a suffix that is not empty two values have equal deliveries exactly when they are logically equal.",
+          "tests": [
+            "prop_reroot_injective"
+          ]
+        },
+        "R27": {
+          "kind": "rocq",
+          "name": "fips_example",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "The FIPS example. A send on @[0,1,2] is a send on every prefix. @[0,1,2]!({|\"hi\"|}), @[0,1,2]!({|\"hello\"|}) and @[0,1,3]!({|\"there\"|}) received on @[0,1] bind {|[2,\"hi\"]|}, {|[2,\"hello\"]|} and {|[3,\"there\"]|}. @[0,1,2]!(42) binds [2, 42], and @[0,1,2,\"hi\"]!({||}) binds {|[2,\"hi\"]|}.",
+          "tests": [
+            "prop_unit_shift"
+          ]
+        },
+        "R28": {
+          "kind": "rocq",
+          "name": "candidate_order_total",
+          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+          "statement": "For every strict total order of the ranks, the candidate order is a strict total order, and the exact path comes first.",
+          "tests": [
+            "prop_candidate_order_total"
+          ]
+        },
+        "R29": {
+          "kind": "rocq",
+          "name": "bag_visit_order_canonical",
+          "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+          "statement": "The visit order of the records is sorted by source key, holds the records, and does not depend on the list order of the store.",
+          "tests": [
+            "prop_bag_visit_order_canonical"
+          ]
+        },
+        "R30": {
+          "kind": "rocq",
+          "name": "bag_consume_first_spatial_match",
+          "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+          "statement": "The receive fires the first record in canonical order that its pattern binds, when its guard admits it. No earlier record matches. The receive parks when nothing matches, or when the guard refuses the first match, whatever the later records (decision 37: the guard is checked once).",
+          "tests": [
+            "prop_bag_consume_first_spatial_match"
+          ]
+        },
+        "R31": {
+          "kind": "rocq",
+          "name": "bag_persistent_match_not_removed",
+          "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+          "statement": "A fire on a persistent record leaves it (a COMM never removes a persistent record).",
+          "tests": [
+            "prop_bag_persistent_match_not_removed"
+          ]
+        },
+        "R32": {
+          "kind": "rocq",
+          "name": "bag_multiplicity_preserved",
+          "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+          "statement": "For every record, a store adds exactly one occurrence, a fire removes exactly the one non-persistent record that it binds, and no other operation changes the records.",
+          "tests": [
+            "prop_bag_multiplicity_preserved"
+          ]
+        },
+        "R33": {
+          "kind": "rocq",
+          "name": "bag_removal_keeps_equal_duplicate",
+          "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+          "statement": "Of two or more equal records, a fire removes exactly one and leaves the others.",
+          "tests": [
+            "prop_bag_removal_keeps_equal_duplicate"
+          ]
+        },
+        "R34": {
+          "kind": "rocq",
+          "name": "bag_peek_restore_is_host_second_send",
+          "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+          "statement": "A peek receive that settles stages exactly the host program: the fire, then the second send of the removed record, which is offered to the waiters first and registers the authority of the record. When no waiter takes the record, the record is stored again, so the peek leaves the multiset of records as it was.",
+          "tests": [
+            "prop_bag_legacy_charges_equal_host",
+            "prop_bag_restore_registers_the_record_authority"
+          ]
+        },
+        "R35": {
+          "kind": "rocq",
+          "name": "scan_trace_covered",
+          "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+          "statement": "Every prefix of the trace of a scan of the driver, the reads after the commit included, reads at most what it reserved (decision 42).",
+          "tests": [
+            "prop_bag_reservation_cut_rejects_without_effect"
+          ]
+        },
+        "R36": {
+          "kind": "rocq",
+          "name": "waiter_removal_by_record_identity",
+          "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+          "statement": "In a side without duplicates (F14), the fire of [w] removes [w] and keeps every other waiter, whatever their patterns (D10).",
+          "tests": [
+            "prop_bag_waiter_removal_by_record_identity"
+          ]
+        },
+        "R37": {
+          "kind": "rocq",
+          "name": "pattern_equality_removal_can_remove_another_waiter",
+          "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+          "statement": "Two waiters with equal patterns, with the other waiter [v] parked in front of the fired waiter [w]. The legacy removal keeps the fired waiter and removes [v], where the removal by identity removes [w].",
+          "tests": [
+            "prop_bag_equal_pattern_waiters_stay_distinct"
+          ]
+        },
+        "R38": {
+          "kind": "rocq",
+          "name": "park_byte_identity_idempotent",
+          "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+          "statement": "An equal park changes nothing, a new waiter is added in front, and a side stays without duplicates.",
+          "tests": [
+            "prop_bag_park_byte_identity_idempotent"
+          ]
+        },
+        "R39": {
+          "kind": "rocq",
+          "name": "waiter_visit_order_canonical",
+          "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+          "statement": "The waiter order is sorted by key, holds the waiters, and does not depend on the list order of the store. A send fires the first waiter in that order that fits, so every earlier waiter fails its pattern or its guard (decision 37, the produce side).",
+          "tests": [
+            "prop_bag_waiter_visit_order_canonical"
+          ]
+        },
+        "R40": {
+          "kind": "rocq",
+          "name": "head_waiter_unique",
+          "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+          "statement": "A head-only side offers at most one candidate. It is the least waiter of the side, and a side with waiters offers one. A scan side offers every waiter.",
+          "tests": [
+            "prop_head_waiter_unique"
+          ]
+        },
+        "R41": {
+          "kind": "rocq",
+          "name": "space_match_is_injected_match",
+          "file": "formal/rocq/reified_rspaces/theories/Match.v",
+          "statement": "The match of a plan is the injected match. 1. A fire of the scan driver or of the head driver binds the spatial match that the injected matcher computes, and the injected guard admitted it. The fired partner is a candidate of the plan. 2. A plan depends on the matcher only through its results. 3.",
+          "tests": [
+            "prop_engine_match_is_the_injected_matcher"
+          ]
+        },
+        "R42": {
+          "kind": "rocq",
+          "name": "guard_once_greedy_like_head",
+          "file": "formal/rocq/reified_rspaces/theories/Match.v",
+          "statement": "The guard is checked once, greedily, as the head driver checks it. 1. RECEIVE-SCAN chooses as the host consume: the first spatial match, then the guard once, and a refusal parks. 2. OFFER-SCAN chooses as the host produce: a guard refusal moves to the next waiter (the ids of one staged view are distinct). 3.",
+          "tests": [
+            "prop_engine_guard_checked_once_as_the_host_checks_it"
+          ]
+        },
+        "R43": {
+          "kind": "rocq",
+          "name": "wildcard_matcher_degenerate",
+          "file": "formal/rocq/reified_rspaces/theories/Match.v",
+          "statement": "The legacy WildcardMatch is the degenerate instance. A pattern for 42 receives 43 on the consume side and on the produce side, and the pattern plays no part in a choice. The real matcher parks and stores.",
+          "tests": [
+            "prop_engine_wildcard_matcher_breaks_pattern_enforcement"
+          ]
+        },
+        "R44": {
+          "kind": "rocq",
+          "name": "consume_fires_only_matching",
+          "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+          "statement": "Every consume plan, of the scan driver and of the cell, stages only fires whose dispatched record is a stored record that matches the pattern spatially and whose binding the guard admitted.",
+          "tests": [
+            "prop_engine_consume_fires_only_matching"
+          ]
+        },
+        "R45": {
+          "kind": "rocq",
+          "name": "produce_fires_only_matching",
+          "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+          "statement": "Every produce plan, of the scan driver and of the cell, stages only fires whose waiter is stored, matches the datum spatially and admits the binding.",
+          "tests": [
+            "prop_engine_produce_fires_only_matching"
+          ]
+        },
+        "R46": {
+          "kind": "rocq",
+          "name": "unordered_no_pending_match",
+          "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+          "statement": "Bag, set and cell plans keep the rule of no pending match. Every produce, consume and re-entry of the scan driver keeps no_pending, every committed plan of the cell keeps cell_inv, and cell_inv implies no_pending.",
+          "tests": [
+            "prop_engine_no_guard_free_pending_match"
+          ]
+        },
+        "R47": {
+          "kind": "rocq",
+          "name": "peek_restore_equals_host_reproduce",
+          "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+          "statement": "A peek of a non-persistent record stages the fire over the record and then exactly the plan of the second send of the host, with the bytes, the own authority and the identity of the record. The plain restore of a cell equals the second send of the cell.",
+          "tests": [
+            "prop_engine_peek_restore_equals_host_reproduce"
+          ]
+        },
+        "R48": {
+          "kind": "rocq",
+          "name": "scan_reissue_identity_stable",
+          "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+          "statement": "Decision 43 for a collection without a counter (bag and set). 1. Every order is 0, and a re-issued order other than 0 is Inconsistent. 2. Every round of a re-issued scan produce stages the element of its first round: the same record bytes, persistence and authority, so the same produce identity. 3.",
+          "tests": [
+            "prop_engine_scan_reissue_keeps_identity"
+          ]
+        },
+        "R49": {
+          "kind": "rocq",
+          "name": "engine_primitives_trace_covered",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "The staging primitives of the S1 engine reserve each read, copy and growth of the staged list before they make it, reserve nothing after the commit, and fail before the commit under a cut budget (decision 42).",
+          "tests": [
+            "prop_cell_reservation_cut_rejects_without_effect",
+            "prop_engine_primitives_reserve_before_they_read"
+          ]
+        },
+        "V1": {
+          "kind": "tla",
+          "name": "NoPendingMatch",
+          "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "statement": "After every step, no stored record and no stored waiter without a guard match each other in a bag, set or cell.",
+          "tests": [
+            "prop_engine_no_guard_free_pending_match"
+          ]
+        },
+        "V2": {
+          "kind": "tla",
+          "name": "PatternEnforcement",
+          "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "statement": "Every fire binds a record whose value the pattern of the waiter matches and whose guard admits it.",
+          "tests": [
+            "prop_engine_fires_enforce_patterns"
+          ]
+        },
+        "V3": {
+          "kind": "tla",
+          "name": "Conservation",
+          "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "statement": "Every record that a send introduced is stored, delivered, re-stored after a peek, or in flight, so no record is lost or created.",
+          "tests": [
+            "prop_engine_conserves_records"
+          ]
+        },
+        "V4": {
+          "kind": "tla",
+          "name": "NoDoubleSpend",
+          "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "statement": "A non-persistent record is spent at most once: by one fire that does not peek, or by one retirement.",
+          "tests": [
+            "prop_engine_spends_each_record_once"
+          ]
+        },
+        "V5": {
+          "kind": "tla",
+          "name": "AtomicReservation",
+          "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "statement": "A fire removes only records that are present in the view of its step, all of them in that step.",
+          "tests": [
+            "prop_engine_fire_removes_present_records_atomically"
+          ]
+        },
+        "V6": {
+          "kind": "tla",
+          "name": "SetClassRetired",
+          "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "statement": "After a consume or a send that fires a waiter of a set, no stored non-persistent member of the class of the fired value remains.",
+          "tests": [
+            "prop_engine_set_class_retired"
+          ]
+        },
+        "V7": {
+          "kind": "tla",
+          "name": "CellCapacity",
+          "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "statement": "A cell holds at most one record and at most one waiter after every step.",
+          "tests": [
+            "prop_cell_capacity_one",
+            "prop_engine_cell_capacity"
+          ]
+        },
+        "V8": {
+          "kind": "tla",
+          "name": "PeekRestoresRecord",
+          "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "statement": "Every stored record and every datum in flight carries its own introduction authority, and every store happens only when no waiter matches and admits the record.",
+          "tests": [
+            "prop_engine_peek_restores_record"
+          ]
+        },
+        "V9": {
+          "kind": "tla",
+          "name": "NoDuplicateIndex",
+          "file": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+          "statement": "When merge check #1 finds no race between two branches, the branches allocated disjoint index names of the space.",
+          "tests": [
+            "prop_no_duplicate_index"
+          ]
+        },
+        "V10": {
+          "kind": "tla",
+          "name": "AllocationsRace",
+          "file": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+          "statement": "Two branches that both allocate names of one space consume one allocator record, so merge check #1 reports a race.",
+          "tests": [
+            "prop_allocations_race"
+          ]
+        },
+        "R50": {
+          "kind": "rocq",
+          "name": "stack_head_is_max_ord",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "The top of each side is an entry of that side with the greatest (ord, rank), and a side has a top exactly when it is not empty.",
+          "tests": [
+            "prop_stack_head_is_max_ord"
+          ]
+        },
+        "R51": {
+          "kind": "rocq",
+          "name": "stack_produce_preserves_inv",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "A produce that completes in its round leaves INV: the top record and the top waiter do not match. The settle after the plan restores INV, so the produce needs no premise.",
+          "tests": [
+            "prop_stack_no_pending_match_any_schedule"
+          ]
+        },
+        "R52": {
+          "kind": "rocq",
+          "name": "stack_consume_preserves_inv",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "A consume that completes in its round leaves INV.",
+          "tests": [
+            "prop_stack_no_pending_match_any_schedule"
+          ]
+        },
+        "R53": {
+          "kind": "rocq",
+          "name": "stack_lifo",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "Every fire of an operation, of a settle job and of a re-entry binds the top waiter and the top record, and its incoming side is above every stored entry of its side (LifoOrder).",
+          "tests": [
+            "prop_stack_lifo_order_any_schedule"
+          ]
+        },
+        "R54": {
+          "kind": "rocq",
+          "name": "stack_head_blocks",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "For a cap above 0, a top that does not match blocks: the produce stores the datum on top and the consume parks the continuation on top, with no fire, although an entry below the top may fit.",
+          "tests": [
+            "prop_stack_lifo_order_any_schedule"
+          ]
+        },
+        "R55": {
+          "kind": "rocq",
+          "name": "stack_settle_terminates",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "A settle that starts after f fires of its transaction makes at most cap - f fires and at most mu fires, plus one fire for a divergent pair. A settle that stops at the cap brings its transaction to exactly cap fires, a divergent pair has a persistent waiter, and a settle that ends Quiescent leaves INV. Every transaction (a produce, a consume, a settle job and a re-entry) makes at most cap fires with its settles, and a transaction that re-issues at the cap made exactly cap fires (I-21).",
+          "tests": [
+            "prop_stack_settle_bounded_any_schedule",
+            "prop_stack_txn_fires_bounded_at_the_cap"
+          ]
+        },
+        "R56": {
+          "kind": "rocq",
+          "name": "stack_plan_permutation_invariant",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "Two views with the same entries in other list orders stage the same operations in a produce, a consume and a settle job, take the same next round, and reach views with the same entries.",
+          "tests": [
+            "prop_stack_plan_permutation_invariant"
+          ]
+        },
+        "R57": {
+          "kind": "rocq",
+          "name": "stack_without_settle_breaks_inv",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "Without the settle, the computed counterexample of the P5 design v2, section 3.1 breaks INV at the end of a completed operation. With the settle after the plan, the stack lifts the exposed record, offers it again, and INV holds.",
+          "tests": [
+            "prop_stack_no_pending_match_any_schedule"
+          ]
+        },
+        "R58": {
+          "kind": "rocq",
+          "name": "stack_reentry_at_lifo_place",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "For a cap above 0, a re-issued persistent element below the younger top of its side is stored or parked at its LIFO place with no fire. Above the top, or on an empty side, it plans as a fresh element does, from the fire count of its transaction (decision 43).",
+          "tests": [
+            "prop_stack_reissue_keeps_ord_any_schedule"
+          ]
+        },
+        "R59": {
+          "kind": "rocq",
+          "name": "stack_reissue_keeps_ord",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "A re-issued operation carries the order of its first round exactly when it is persistent, every round bumps the counter once, and a re-entered datum stores only itself (decision 43).",
+          "tests": [
+            "prop_stack_reissue_keeps_ord_any_schedule"
+          ]
+        },
+        "R60": {
+          "kind": "rocq",
+          "name": "stack_peek_restore_needs_no_settle",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "For a cap above 0, a peek of a top record that is not persistent fires, removes the record and stores it again at its order before any settle step, so the settle after the plan stages nothing (decision 45, Rule E).",
+          "tests": [
+            "prop_stack_lifo_order_any_schedule",
+            "prop_stack_no_pending_match_any_schedule"
+          ]
+        },
+        "R61": {
+          "kind": "rocq",
+          "name": "settle_trace_covered",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "A settle reserves its reads before it makes them: its trace satisfies prefix coverage, the reads of the outcome after the commit included (decision 42, DR-88).",
+          "tests": [
+            "prop_stack_reservation_cut_rejects_without_effect"
+          ]
+        },
+        "R62": {
+          "kind": "rocq",
+          "name": "stack_settle_keeps_unspent_records",
+          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+          "statement": "From every fire count of the transaction, a stored record leaves the store during a settle only when a fire of a waiter that does not peek spends it, and then the record is not persistent (decisions 30 and 45).",
+          "tests": [
+            "prop_stack_lifo_order_any_schedule"
+          ]
+        },
+        "V11": {
+          "kind": "tla",
+          "name": "LifoOrder",
+          "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "statement": "Every fire binds the top of the other side, its incoming element has an ord at least the ord of every stored entry of its own side, and every lift takes the top record, on every schedule.",
+          "tests": [
+            "prop_stack_lifo_order_any_schedule"
+          ]
+        },
+        "V12": {
+          "kind": "tla",
+          "name": "StackNoPendingMatch",
+          "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "statement": "With no round in progress, no element in flight and no settle job, the top record and the top waiter do not match (INV), on every schedule.",
+          "tests": [
+            "prop_stack_no_pending_match_any_schedule"
+          ]
+        },
+        "V13": {
+          "kind": "tla",
+          "name": "NoRecordLost",
+          "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "statement": "A record that was stored is stored, or in flight in the current settle, or a fire spent it, on every schedule.",
+          "tests": [
+            "prop_stack_lifo_order_any_schedule"
+          ]
+        },
+        "V14": {
+          "kind": "tla",
+          "name": "ReissueKeepsOrd",
+          "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "statement": "A re-issued persistent element carries the ord of its first round, and a re-issued element that is not persistent carries none, on every schedule (decision 43).",
+          "tests": [
+            "prop_stack_reissue_keeps_ord_any_schedule"
+          ]
+        },
+        "V15": {
+          "kind": "tla",
+          "name": "TxnFiresBounded",
+          "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "statement": "No space transaction makes more than Cap fires, its settles included, on every schedule (revision I-21). The ghost txnFires counts every fire of the round, also the last fire of a round that re-issues.",
+          "tests": [
+            "prop_stack_settle_bounded_any_schedule",
+            "prop_stack_txn_fires_bounded_at_the_cap"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "prop_cell_capacity_one",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R1",
+            "V7"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "prop_cell_restore_never_occupied",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R2"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "prop_cell_reentry_as_fresh",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R3"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "prop_fixed_array_allocates_at_most_size",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R4"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "prop_fixed_array_out_of_names_exact",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R5"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "prop_cyclic_array_index_mod_size",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R6"
+          ]
+        },
+        {
+          "number": 7,
+          "test": "prop_allocation_batch_atomic",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R7"
+          ]
+        },
+        {
+          "number": 8,
+          "test": "prop_fixed_array_indices_sequential",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R8"
+          ]
+        },
+        {
+          "number": 9,
+          "test": "prop_allocator_indices_distinct",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R9"
+          ]
+        },
+        {
+          "number": 10,
+          "test": "prop_allocator_identities_unique",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R10"
+          ]
+        },
+        {
+          "number": 11,
+          "test": "prop_alloc_trace_covered",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R11"
+          ]
+        },
+        {
+          "number": 12,
+          "test": "prop_vector_index_is_counter",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R12"
+          ]
+        },
+        {
+          "number": 13,
+          "test": "prop_vector_gensym_distinct",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R13"
+          ]
+        },
+        {
+          "number": 14,
+          "test": "prop_vector_gensym_monotonic",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R14"
+          ]
+        },
+        {
+          "number": 15,
+          "test": "prop_hashmap_iteration_permutation_invariant",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R15"
+          ]
+        },
+        {
+          "number": 16,
+          "test": "prop_hashmap_get_put_other",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "R16"
+          ]
+        },
+        {
+          "number": 17,
+          "test": "prop_query_bind_routes_inner_channel",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "covers": [
+            "R17"
+          ]
+        },
+        {
+          "number": 18,
+          "test": "prop_query_source_routes_inner_channel",
+          "file": "rholang/tests/reified_hooks_p5.rs",
+          "covers": [
+            "R17"
+          ]
+        },
+        {
+          "number": 19,
+          "test": "prop_registered_families_complete",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R18"
+          ]
+        },
+        {
+          "number": 20,
+          "test": "prop_factory_config_names_its_family",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R18",
+            "R19"
+          ]
+        },
+        {
+          "number": 21,
+          "test": "prop_aliases_bind_family_capability",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R19"
+          ]
+        },
+        {
+          "number": 22,
+          "test": "prop_constructor_params_validated",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R20"
+          ]
+        },
+        {
+          "number": 23,
+          "test": "prop_priorities_validated",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R21"
+          ]
+        },
+        {
+          "number": 24,
+          "test": "prop_array_size_validated",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R22"
+          ]
+        },
+        {
+          "number": 25,
+          "test": "prop_prefix_key_iff_prefix",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+          "covers": [
+            "R23"
+          ]
+        },
+        {
+          "number": 26,
+          "test": "prop_segments_are_a_prefix_code",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+          "covers": [
+            "R23"
+          ]
+        },
+        {
+          "number": 27,
+          "test": "prop_path_keys_are_injective",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+          "covers": [
+            "R23"
+          ]
+        },
+        {
+          "number": 28,
+          "test": "prop_metered_keys_equal_unmetered_keys",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+          "covers": [
+            "R23"
+          ]
+        },
+        {
+          "number": 29,
+          "test": "prop_reroot_ident",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+          "covers": [
+            "R24"
+          ]
+        },
+        {
+          "number": 30,
+          "test": "prop_reroot_compose",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+          "covers": [
+            "R25"
+          ]
+        },
+        {
+          "number": 31,
+          "test": "prop_head_adapter_roundtrip",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+          "covers": [
+            "R25"
+          ]
+        },
+        {
+          "number": 32,
+          "test": "prop_prefixed_maps_keep_their_order",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+          "covers": [
+            "R25"
+          ]
+        },
+        {
+          "number": 33,
+          "test": "prop_reroot_injective",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+          "covers": [
+            "R26"
+          ]
+        },
+        {
+          "number": 34,
+          "test": "prop_unit_shift",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+          "covers": [
+            "R27"
+          ]
+        },
+        {
+          "number": 35,
+          "test": "prop_candidate_order_total",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+          "covers": [
+            "R28"
+          ]
+        },
+        {
+          "number": 36,
+          "test": "prop_bag_visit_order_canonical",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R29"
+          ]
+        },
+        {
+          "number": 37,
+          "test": "prop_bag_consume_first_spatial_match",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R30"
+          ]
+        },
+        {
+          "number": 38,
+          "test": "prop_bag_persistent_match_not_removed",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R31"
+          ]
+        },
+        {
+          "number": 39,
+          "test": "prop_bag_multiplicity_preserved",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R32"
+          ]
+        },
+        {
+          "number": 40,
+          "test": "prop_bag_removal_keeps_equal_duplicate",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R33"
+          ]
+        },
+        {
+          "number": 41,
+          "test": "prop_bag_legacy_charges_equal_host",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R34"
+          ]
+        },
+        {
+          "number": 42,
+          "test": "prop_bag_restore_registers_the_record_authority",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R34"
+          ]
+        },
+        {
+          "number": 43,
+          "test": "prop_bag_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R35"
+          ]
+        },
+        {
+          "number": 44,
+          "test": "prop_bag_waiter_removal_by_record_identity",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R36"
+          ]
+        },
+        {
+          "number": 45,
+          "test": "prop_bag_equal_pattern_waiters_stay_distinct",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R37"
+          ]
+        },
+        {
+          "number": 46,
+          "test": "prop_bag_park_byte_identity_idempotent",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R38"
+          ]
+        },
+        {
+          "number": 47,
+          "test": "prop_bag_waiter_visit_order_canonical",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R39"
+          ]
+        },
+        {
+          "number": 48,
+          "test": "prop_head_waiter_unique",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R40"
+          ]
+        },
+        {
+          "number": 49,
+          "test": "prop_engine_match_is_the_injected_matcher",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R41"
+          ]
+        },
+        {
+          "number": 50,
+          "test": "prop_engine_guard_checked_once_as_the_host_checks_it",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R42"
+          ]
+        },
+        {
+          "number": 51,
+          "test": "prop_engine_wildcard_matcher_breaks_pattern_enforcement",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R43"
+          ]
+        },
+        {
+          "number": 52,
+          "test": "prop_engine_consume_fires_only_matching",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R44"
+          ]
+        },
+        {
+          "number": 53,
+          "test": "prop_engine_produce_fires_only_matching",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R45"
+          ]
+        },
+        {
+          "number": 54,
+          "test": "prop_engine_no_guard_free_pending_match",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R46",
+            "V1"
+          ]
+        },
+        {
+          "number": 55,
+          "test": "prop_engine_peek_restore_equals_host_reproduce",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R47"
+          ]
+        },
+        {
+          "number": 56,
+          "test": "prop_engine_scan_reissue_keeps_identity",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R48"
+          ]
+        },
+        {
+          "number": 57,
+          "test": "prop_engine_primitives_reserve_before_they_read",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R49"
+          ]
+        },
+        {
+          "number": 58,
+          "test": "prop_cell_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R49"
+          ]
+        },
+        {
+          "number": 59,
+          "test": "prop_engine_fires_enforce_patterns",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V2"
+          ]
+        },
+        {
+          "number": 60,
+          "test": "prop_engine_conserves_records",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V3"
+          ]
+        },
+        {
+          "number": 61,
+          "test": "prop_engine_spends_each_record_once",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V4"
+          ]
+        },
+        {
+          "number": 62,
+          "test": "prop_engine_fire_removes_present_records_atomically",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V5"
+          ]
+        },
+        {
+          "number": 63,
+          "test": "prop_engine_set_class_retired",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V6"
+          ]
+        },
+        {
+          "number": 64,
+          "test": "prop_engine_cell_capacity",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V7"
+          ]
+        },
+        {
+          "number": 65,
+          "test": "prop_engine_peek_restores_record",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V8"
+          ]
+        },
+        {
+          "number": 66,
+          "test": "prop_no_duplicate_index",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "number": 67,
+          "test": "prop_allocations_race",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "V10"
+          ]
+        },
+        {
+          "number": 68,
+          "test": "prop_stack_head_is_max_ord",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R50"
+          ]
+        },
+        {
+          "number": 69,
+          "test": "prop_stack_lifo_order_any_schedule",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R53",
+            "R54",
+            "R60",
+            "R62",
+            "V11",
+            "V13"
+          ]
+        },
+        {
+          "number": 70,
+          "test": "prop_stack_no_pending_match_any_schedule",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R51",
+            "R52",
+            "R57",
+            "R60",
+            "V12"
+          ]
+        },
+        {
+          "number": 71,
+          "test": "prop_stack_settle_bounded_any_schedule",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R55",
+            "V15"
+          ]
+        },
+        {
+          "number": 72,
+          "test": "prop_stack_plan_permutation_invariant",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R56"
+          ]
+        },
+        {
+          "number": 73,
+          "test": "prop_stack_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R61"
+          ]
+        },
+        {
+          "number": 74,
+          "test": "prop_stack_reissue_keeps_ord_any_schedule",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R58",
+            "R59",
+            "V14"
+          ]
+        },
+        {
+          "number": 75,
+          "test": "prop_stack_txn_fires_bounded_at_the_cap",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R55",
+            "V15"
+          ]
+        }
+      ],
+      "witness_tests": [
+        {
+          "test": "space_disciplines_cell_second_produce_occupied",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R1"
+          ]
+        },
+        {
+          "test": "space_disciplines_cell_second_park_occupied",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R1"
+          ]
+        },
+        {
+          "test": "space_disciplines_cell_peek_restores_record_not_occupied",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R2"
+          ]
+        },
+        {
+          "test": "space_disciplines_cell_restore_meets_an_empty_slot",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R2"
+          ]
+        },
+        {
+          "test": "space_disciplines_cell_reissue_reenters_as_fresh",
+          "file": "rholang/tests/reified_cell.rs",
+          "covers": [
+            "R3"
+          ]
+        },
+        {
+          "test": "space_allocator_race_conflict",
+          "file": "rholang/tests/reified_array_vector.rs",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "reducer_space_routing_query_routes_the_inner_channel",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "covers": [
+            "R17"
+          ]
+        },
+        {
+          "test": "reducer_space_routing_h4_rejects_only_malformed_queries",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "covers": [
+            "R17"
+          ]
+        },
+        {
+          "test": "hooks_query_routes_the_inner_channel",
+          "file": "rholang/tests/reified_hooks_p5.rs",
+          "covers": [
+            "R17"
+          ]
+        },
+        {
+          "test": "hooks_query_on_the_default_space_fails_closed",
+          "file": "rholang/tests/reified_hooks_p5.rs",
+          "covers": [
+            "R17"
+          ]
+        },
+        {
+          "test": "hooks_query_inner_channel_takes_the_read_rule",
+          "file": "rholang/tests/reified_hooks_p5.rs",
+          "covers": [
+            "R17"
+          ]
+        },
+        {
+          "test": "space_factory_families_registered",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R18"
+          ]
+        },
+        {
+          "test": "reified_getspaceagent_alias_equal",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R19"
+          ]
+        },
+        {
+          "test": "space_factory_alias_install_idempotent",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R19"
+          ]
+        },
+        {
+          "test": "space_factory_kwargs_unknown_param_with_suggestion",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R20"
+          ]
+        },
+        {
+          "test": "space_factory_kwargs_invalid_param",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R21"
+          ]
+        },
+        {
+          "test": "space_factory_kwargs_missing_param",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R22"
+          ]
+        },
+        {
+          "test": "space_factory_kwargs_are_stored_canonical",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R22"
+          ]
+        },
+        {
+          "test": "fips_example",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+          "covers": [
+            "R27"
+          ]
+        },
+        {
+          "test": "segments_and_keys_match_the_epm1_pins",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+          "covers": [
+            "R23"
+          ]
+        },
+        {
+          "test": "the_other_arms_follow_the_epm1_grammar",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+          "covers": [
+            "R23"
+          ]
+        },
+        {
+          "test": "elements_outside_the_structural_grammar_take_the_escape_arm",
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+          "covers": [
+            "R23"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_first_match_canonical_order",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R29"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_guard_checked_once_on_first_spatial_match",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R30"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_peek_restores_record",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R31"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_duplicate_multiplicity",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R32",
+            "R33"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_peek_restore_fires_guarded_waiter",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R34"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_legacy_charges_equal_host",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R34"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_peek_restore_reissue_keeps_identity",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R34"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R35"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_waiter_removal_by_identity_not_pattern",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R36",
+            "R37"
+          ]
+        },
+        {
+          "test": "space_disciplines_bag_produce_guard_refusal_moves_to_next_waiter",
+          "file": "rholang/tests/reified_bag.rs",
+          "covers": [
+            "R39"
+          ]
+        },
+        {
+          "test": "engine_set_retirement_grows_the_staged_list_with_reserved_work",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R49"
+          ]
+        },
+        {
+          "test": "engine_peek_restore_reoffers_to_a_guarded_waiter",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "R47",
+            "V8"
+          ]
+        },
+        {
+          "test": "engine_oracle_detects_a_pending_match_behind_a_queue_head",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "engine_oracles_detect_a_lost_record_and_a_wrong_choice",
+          "file": "rholang/tests/reified_engine_props.rs",
+          "covers": [
+            "V3",
+            "R42"
+          ]
+        },
+        {
+          "test": "space_stack_push_exposes_a_buried_waiter_and_settles",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R57",
+            "R51"
+          ]
+        },
+        {
+          "test": "space_stack_pop_exposes_a_buried_record_and_settles",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R52"
+          ]
+        },
+        {
+          "test": "space_stack_lifo_delivery",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R53"
+          ]
+        },
+        {
+          "test": "space_stack_data_head_blocks",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R54"
+          ]
+        },
+        {
+          "test": "space_stack_waiter_head_blocks",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R54"
+          ]
+        },
+        {
+          "test": "space_stack_guard_of_the_top_waiter_blocks",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R54"
+          ]
+        },
+        {
+          "test": "space_stack_round_cap_reissues_a_settle",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R55",
+            "V15"
+          ]
+        },
+        {
+          "test": "space_stack_divergent_pairs_reissue",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R55",
+            "R59"
+          ]
+        },
+        {
+          "test": "space_stack_order_survives_a_restart",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R56"
+          ]
+        },
+        {
+          "test": "space_stack_reissue_reenters_at_its_lifo_place",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R58",
+            "R59"
+          ]
+        },
+        {
+          "test": "space_stack_reissue_reenters_at_the_top_of_an_empty_side",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R58"
+          ]
+        },
+        {
+          "test": "space_stack_settle_before_reissues_the_operation_at_the_cap",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R55",
+            "R59",
+            "V15"
+          ]
+        },
+        {
+          "test": "space_stack_plan_after_a_full_settle_reissues_the_operation",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R55",
+            "R59",
+            "V15"
+          ]
+        },
+        {
+          "test": "space_stack_every_operation_bumps_the_counter",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R59"
+          ]
+        },
+        {
+          "test": "space_stack_peek_restores_top",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R60"
+          ]
+        },
+        {
+          "test": "space_stack_peek_waiter_leaves_the_lifted_record_in_flight",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R62"
+          ]
+        },
+        {
+          "test": "space_stack_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_stack.rs",
+          "covers": [
+            "R61"
+          ]
+        },
+        {
+          "test": "space_settle_reissue_copies_are_reserved_first",
+          "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+          "covers": [
+            "R61"
+          ]
+        },
+        {
+          "test": "space_stack_head_scan_reserves_its_comparisons_and_tie_encodes",
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+          "covers": [
+            "R61"
+          ]
+        },
+        {
+          "test": "space_settle_reissued_operation_keeps_the_first_round_ord_of_a_persistent_operation",
+          "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+          "covers": [
+            "R59"
+          ]
+        },
+        {
+          "test": "space_stack_head_is_the_greatest_ord_on_both_sides",
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+          "covers": [
+            "R50"
+          ]
+        },
+        {
+          "test": "space_stack_equal_ords_order_by_their_bytes",
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+          "covers": [
+            "R50"
+          ]
+        },
+        {
+          "test": "space_stack_precedes_is_a_greater_ord_and_reserves_one_comparison",
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+          "covers": [
+            "R58"
+          ]
+        }
+      ]
     }
   }
 }

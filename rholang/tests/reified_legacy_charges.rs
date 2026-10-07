@@ -341,7 +341,16 @@ async fn check_consume(
     persist: bool,
     peek: bool,
 ) -> Result<Vec<HostCall>, TestCaseError> {
-    let run = host_consume(host, budget, channels, patterns, continuation, persist, peek).await;
+    let run = host_consume(
+        host,
+        budget,
+        channels,
+        patterns,
+        continuation,
+        persist,
+        peek,
+    )
+    .await;
     match &run.fired {
         None => met(Shape::Park),
         Some((cont, results)) => {

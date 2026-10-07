@@ -46,14 +46,22 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 115: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 177: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
 #                        the 10 headlines of decision 43 and the headline
 #                        of decision 45 in HeadOnlyDisciplines.v, 8 for
-#                        AgentReadCoverage.v of decision 42, and 2 for
-#                        LegacyCharges.v of decision 45, Option P)
+#                        AgentReadCoverage.v of decision 42, 2 for
+#                        LegacyCharges.v of decision 45, Option P, and 62
+#                        for P5 wave W2: the query headline of SpaceRefs.v,
+#                        5 family headlines of SpaceFactory.v, the engine
+#                        headline of AgentReadCoverage.v, and the modules
+#                        CellDiscipline (3), DataCollection (7),
+#                        ContinuationCollection (5), Match (3),
+#                        GenericRSpace (5), OuterStorage (8), VectorStore
+#                        (3), HashMapStore (2), PathMapPrefix (6) and
+#                        StackDiscipline (13))
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -72,7 +80,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-115}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-177}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -86,10 +94,20 @@ declare -A EXPECTED_PER_MODULE=(
   [RecordEnvelope]=8
   [CounterConflict]=9
   [HeadOnlyDisciplines]=20
-  [SpaceRefs]=11
-  [SpaceFactory]=8
-  [AgentReadCoverage]=8
+  [SpaceRefs]=12
+  [SpaceFactory]=13
+  [AgentReadCoverage]=9
   [LegacyCharges]=2
+  [CellDiscipline]=3
+  [DataCollection]=7
+  [ContinuationCollection]=5
+  [Match]=3
+  [GenericRSpace]=5
+  [OuterStorage]=8
+  [VectorStore]=3
+  [HashMapStore]=2
+  [PathMapPrefix]=6
+  [StackDiscipline]=13
 )
 
 PASS=0

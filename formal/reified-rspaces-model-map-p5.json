@@ -1,0 +1,2959 @@
+{
+  "schema": "reified-rspaces-model-map/2",
+  "phase": "P5",
+  "title": "P5 wave W2: the engine, the bag, the cell and the stack, the Array and Vector stores with the allocator, the pure PathMap layer, the P5 families and the routing of receive queries",
+  "design": "P5 design v3 (decision 48) and the W2 batch reports. The headline ids are the ids of the P5 phase of formal/reified-rspaces-invariant-map.json. The stack items come from the STACK and STACK-I21 batches, with one fire count for each transaction (decision 49).",
+  "code_base": "The items are in the P5 W2 commit of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
+  "checker": "scripts/verify-reified/check-model-map.py",
+  "formal_files": {
+    "rocq": [
+      "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+      "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+      "formal/rocq/reified_rspaces/theories/DataCollection.v",
+      "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+      "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+      "formal/rocq/reified_rspaces/theories/Match.v",
+      "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+      "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "formal/rocq/reified_rspaces/theories/VectorStore.v"
+    ],
+    "tla": [
+      "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+      "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "formal/tlaplus/reified_rspaces/StackDiscipline.tla"
+    ]
+  },
+  "headlines": {
+    "R1": {
+      "kind": "rocq",
+      "name": "cell_capacity_one",
+      "file": "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+      "statement": "The cell plans keep at most one record and one waiter. A plan fails with CellOccupied exactly when the same plan without the capacity check overflows a side, and otherwise the two plans are equal. This holds for every element of offer and receive, so for a fresh operation and, by headline 3, for a re-entered one."
+    },
+    "R2": {
+      "kind": "rocq",
+      "name": "cell_restore_never_occupied",
+      "file": "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+      "statement": "Every staged operation of a cell plan applies to the staged view at its point with the capacity check of Cx::check_capacity. In particular the re-store of Rule E meets an empty record slot, because the peek fire removed the record and the cell held one record."
+    },
+    "R3": {
+      "kind": "rocq",
+      "name": "cell_reentry_as_fresh",
+      "file": "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+      "statement": "A re-entered element with a valid first-round ord runs the plan of a fresh element with that ord on the bumped collection. So it keeps its record and its identity, it fires as a fresh element fires, and it fails with CellOccupied exactly when a fresh element would."
+    },
+    "R4": {
+      "kind": "rocq",
+      "name": "fixed_array_allocates_at_most_size",
+      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "statement": "A fixed Array of size s allocates at most s names, each index below s, and its key check accepts exactly the index names of the space below s."
+    },
+    "R5": {
+      "kind": "rocq",
+      "name": "fixed_array_out_of_names_exact",
+      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "statement": "A fixed Array fails with OutOfNames exactly when the next index plus the count exceeds its size, and then it allocates nothing and keeps its allocator."
+    },
+    "R6": {
+      "kind": "rocq",
+      "name": "cyclic_array_index_mod_size",
+      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "statement": "A cyclic Array of size s allocates the indices (n + i) mod s and keeps every index and its next value below s."
+    },
+    "R7": {
+      "kind": "rocq",
+      "name": "allocation_batch_atomic",
+      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "statement": "An allocation either fails with OutOfNames and changes nothing, or allocates exactly its count of indices with one take and one put of the allocator record."
+    },
+    "R8": {
+      "kind": "rocq",
+      "name": "fixed_array_indices_sequential",
+      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "statement": "A fixed Array allocates the indices 0, 1, 2 and onward in order, and each batch is the next run of consecutive indices."
+    },
+    "R9": {
+      "kind": "rocq",
+      "name": "allocator_indices_distinct",
+      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "statement": "Every store except a cyclic Array never allocates one index twice."
+    },
+    "R10": {
+      "kind": "rocq",
+      "name": "allocator_identities_unique",
+      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "statement": "The creation of the allocator record and every take and put of the allocations have distinct event identities."
+    },
+    "R11": {
+      "kind": "rocq",
+      "name": "alloc_trace_covered",
+      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+      "statement": "An allocation reserves every read before it makes it, reserves nothing after the commit, and reads exactly what it reserves (decision 42)."
+    },
+    "R12": {
+      "kind": "rocq",
+      "name": "vector_index_is_counter",
+      "file": "formal/rocq/reified_rspaces/theories/VectorStore.v",
+      "statement": "A Vector allocates the indices 0, 1, 2 and onward without a size bound below its counter limit, and its key check accepts exactly the index names of the space."
+    },
+    "R13": {
+      "kind": "rocq",
+      "name": "vector_gensym_distinct",
+      "file": "formal/rocq/reified_rspaces/theories/VectorStore.v",
+      "statement": "A Vector never allocates one index twice."
+    },
+    "R14": {
+      "kind": "rocq",
+      "name": "vector_gensym_monotonic",
+      "file": "formal/rocq/reified_rspaces/theories/VectorStore.v",
+      "statement": "Each gensym of a Vector allocates the next index, so the indices grow by one with each call."
+    },
+    "R15": {
+      "kind": "rocq",
+      "name": "hashmap_iteration_permutation_invariant",
+      "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+      "statement": "The records of each key and every order-free iteration of the HashMap store do not depend on the order of the puts."
+    },
+    "R16": {
+      "kind": "rocq",
+      "name": "hashmap_get_put_other",
+      "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+      "statement": "A put or a take on one key leaves the records of every other key unchanged, and a put on a key adds its record to that key."
+    },
+    "R17": {
+      "kind": "rocq",
+      "name": "query_source_routes_inner_channel",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "A receive whose source is a QUERY tuple reads from the inner channel of the query under the read rule of a receive source. The default space refuses a query with QuerySpecUnsupported, and a QUERY tuple never becomes a host channel."
+    },
+    "R18": {
+      "kind": "rocq",
+      "name": "registered_families_complete",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "A registered family has the URN of its family, the op of its index, the body ref 200 + op, arity 2, a constructor schema and a wired dispatch arm. A family is registered exactly when it has a row and an arm, and no two registered families share an op."
+    },
+    "R19": {
+      "kind": "rocq",
+      "name": "aliases_bind_family_capability",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "The alias names the op of its family and is not the URN of the family. An alias is registered exactly when its family is registered. The URN map of the definitions is a function, the alias binds the op of its family, and so does the URN of the family: both bind the capability bundle+{[0xE0, op]}."
+    },
+    "R20": {
+      "kind": "rocq",
+      "name": "constructor_params_validated",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "A family without a schema is unavailable. Positional params fail first. The first unknown key fails with the least (distance, key) suggestion within two edits, a deterministic function of the key and of the schema."
+    },
+    "R21": {
+      "kind": "rocq",
+      "name": "priorities_validated",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "Exactly the priority queue families take the optional priorities, which no family requires. Its rule accepts exactly the GInt values in [1, i64_max], that is every GInt of at least 1, and the config keeps the canonical value. Without it the call is valid, and the levels have no bound."
+    },
+    "R22": {
+      "kind": "rocq",
+      "name": "array_size_validated",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "Every Array family requires size and takes the optional cyclic, and every other family takes neither. size accepts exactly the GInt values in [1, i64_max], and cyclic exactly the GBool values. A call without size fails with MissingParam after the key check."
+    },
+    "R23": {
+      "kind": "rocq",
+      "name": "prefix_key_iff_prefix",
+      "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+      "statement": "A prefix of a path is exactly a prefix key that is a byte prefix of the path key."
+    },
+    "R24": {
+      "kind": "rocq",
+      "name": "reroot_ident",
+      "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+      "statement": "Re-rooting under the empty suffix gives the value itself."
+    },
+    "R25": {
+      "kind": "rocq",
+      "name": "reroot_compose",
+      "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+      "statement": "Re-rooting composes. For a PathMap the composition of two re-rootings is the re-rooting under the joined suffix. For every other value the delivery on a shorter prefix prepends the extra suffix to the list of the delivery on the longer prefix."
+    },
+    "R26": {
+      "kind": "rocq",
+      "name": "reroot_injective",
+      "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+      "statement": "Under a fixed suffix, re-rooting loses no logical information, and under a suffix that is not empty two values have equal deliveries exactly when they are logically equal."
+    },
+    "R27": {
+      "kind": "rocq",
+      "name": "fips_example",
+      "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+      "statement": "The FIPS example. A send on @[0,1,2] is a send on every prefix. @[0,1,2]!({|\"hi\"|}), @[0,1,2]!({|\"hello\"|}) and @[0,1,3]!({|\"there\"|}) received on @[0,1] bind {|[2,\"hi\"]|}, {|[2,\"hello\"]|} and {|[3,\"there\"]|}. @[0,1,2]!(42) binds [2, 42], and @[0,1,2,\"hi\"]!({||}) binds {|[2,\"hi\"]|}."
+    },
+    "R28": {
+      "kind": "rocq",
+      "name": "candidate_order_total",
+      "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+      "statement": "For every strict total order of the ranks, the candidate order is a strict total order, and the exact path comes first."
+    },
+    "R29": {
+      "kind": "rocq",
+      "name": "bag_visit_order_canonical",
+      "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+      "statement": "The visit order of the records is sorted by source key, holds the records, and does not depend on the list order of the store."
+    },
+    "R30": {
+      "kind": "rocq",
+      "name": "bag_consume_first_spatial_match",
+      "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+      "statement": "The receive fires the first record in canonical order that its pattern binds, when its guard admits it. No earlier record matches. The receive parks when nothing matches, or when the guard refuses the first match, whatever the later records (decision 37: the guard is checked once)."
+    },
+    "R31": {
+      "kind": "rocq",
+      "name": "bag_persistent_match_not_removed",
+      "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+      "statement": "A fire on a persistent record leaves it (a COMM never removes a persistent record)."
+    },
+    "R32": {
+      "kind": "rocq",
+      "name": "bag_multiplicity_preserved",
+      "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+      "statement": "For every record, a store adds exactly one occurrence, a fire removes exactly the one non-persistent record that it binds, and no other operation changes the records."
+    },
+    "R33": {
+      "kind": "rocq",
+      "name": "bag_removal_keeps_equal_duplicate",
+      "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+      "statement": "Of two or more equal records, a fire removes exactly one and leaves the others."
+    },
+    "R34": {
+      "kind": "rocq",
+      "name": "bag_peek_restore_is_host_second_send",
+      "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+      "statement": "A peek receive that settles stages exactly the host program: the fire, then the second send of the removed record, which is offered to the waiters first and registers the authority of the record. When no waiter takes the record, the record is stored again, so the peek leaves the multiset of records as it was."
+    },
+    "R35": {
+      "kind": "rocq",
+      "name": "scan_trace_covered",
+      "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
+      "statement": "Every prefix of the trace of a scan of the driver, the reads after the commit included, reads at most what it reserved (decision 42)."
+    },
+    "R36": {
+      "kind": "rocq",
+      "name": "waiter_removal_by_record_identity",
+      "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+      "statement": "In a side without duplicates (F14), the fire of [w] removes [w] and keeps every other waiter, whatever their patterns (D10)."
+    },
+    "R37": {
+      "kind": "rocq",
+      "name": "pattern_equality_removal_can_remove_another_waiter",
+      "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+      "statement": "Two waiters with equal patterns, with the other waiter [v] parked in front of the fired waiter [w]. The legacy removal keeps the fired waiter and removes [v], where the removal by identity removes [w]."
+    },
+    "R38": {
+      "kind": "rocq",
+      "name": "park_byte_identity_idempotent",
+      "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+      "statement": "An equal park changes nothing, a new waiter is added in front, and a side stays without duplicates."
+    },
+    "R39": {
+      "kind": "rocq",
+      "name": "waiter_visit_order_canonical",
+      "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+      "statement": "The waiter order is sorted by key, holds the waiters, and does not depend on the list order of the store. A send fires the first waiter in that order that fits, so every earlier waiter fails its pattern or its guard (decision 37, the produce side)."
+    },
+    "R40": {
+      "kind": "rocq",
+      "name": "head_waiter_unique",
+      "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+      "statement": "A head-only side offers at most one candidate. It is the least waiter of the side, and a side with waiters offers one. A scan side offers every waiter."
+    },
+    "R41": {
+      "kind": "rocq",
+      "name": "space_match_is_injected_match",
+      "file": "formal/rocq/reified_rspaces/theories/Match.v",
+      "statement": "The match of a plan is the injected match. 1. A fire of the scan driver or of the head driver binds the spatial match that the injected matcher computes, and the injected guard admitted it. The fired partner is a candidate of the plan. 2. A plan depends on the matcher only through its results. 3."
+    },
+    "R42": {
+      "kind": "rocq",
+      "name": "guard_once_greedy_like_head",
+      "file": "formal/rocq/reified_rspaces/theories/Match.v",
+      "statement": "The guard is checked once, greedily, as the head driver checks it. 1. RECEIVE-SCAN chooses as the host consume: the first spatial match, then the guard once, and a refusal parks. 2. OFFER-SCAN chooses as the host produce: a guard refusal moves to the next waiter (the ids of one staged view are distinct). 3."
+    },
+    "R43": {
+      "kind": "rocq",
+      "name": "wildcard_matcher_degenerate",
+      "file": "formal/rocq/reified_rspaces/theories/Match.v",
+      "statement": "The legacy WildcardMatch is the degenerate instance. A pattern for 42 receives 43 on the consume side and on the produce side, and the pattern plays no part in a choice. The real matcher parks and stores."
+    },
+    "R44": {
+      "kind": "rocq",
+      "name": "consume_fires_only_matching",
+      "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+      "statement": "Every consume plan, of the scan driver and of the cell, stages only fires whose dispatched record is a stored record that matches the pattern spatially and whose binding the guard admitted."
+    },
+    "R45": {
+      "kind": "rocq",
+      "name": "produce_fires_only_matching",
+      "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+      "statement": "Every produce plan, of the scan driver and of the cell, stages only fires whose waiter is stored, matches the datum spatially and admits the binding."
+    },
+    "R46": {
+      "kind": "rocq",
+      "name": "unordered_no_pending_match",
+      "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+      "statement": "Bag, set and cell plans keep the rule of no pending match. Every produce, consume and re-entry of the scan driver keeps no_pending, every committed plan of the cell keeps cell_inv, and cell_inv implies no_pending."
+    },
+    "R47": {
+      "kind": "rocq",
+      "name": "peek_restore_equals_host_reproduce",
+      "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+      "statement": "A peek of a non-persistent record stages the fire over the record and then exactly the plan of the second send of the host, with the bytes, the own authority and the identity of the record. The plain restore of a cell equals the second send of the cell."
+    },
+    "R48": {
+      "kind": "rocq",
+      "name": "scan_reissue_identity_stable",
+      "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+      "statement": "Decision 43 for a collection without a counter (bag and set). 1. Every order is 0, and a re-issued order other than 0 is Inconsistent. 2. Every round of a re-issued scan produce stages the element of its first round: the same record bytes, persistence and authority, so the same produce identity. 3."
+    },
+    "R49": {
+      "kind": "rocq",
+      "name": "engine_primitives_trace_covered",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "The staging primitives of the S1 engine reserve each read, copy and growth of the staged list before they make it, reserve nothing after the commit, and fail before the commit under a cut budget (decision 42)."
+    },
+    "V1": {
+      "kind": "tla",
+      "name": "NoPendingMatch",
+      "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "statement": "After every step, no stored record and no stored waiter without a guard match each other in a bag, set or cell."
+    },
+    "V2": {
+      "kind": "tla",
+      "name": "PatternEnforcement",
+      "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "statement": "Every fire binds a record whose value the pattern of the waiter matches and whose guard admits it."
+    },
+    "V3": {
+      "kind": "tla",
+      "name": "Conservation",
+      "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "statement": "Every record that a send introduced is stored, delivered, re-stored after a peek, or in flight, so no record is lost or created."
+    },
+    "V4": {
+      "kind": "tla",
+      "name": "NoDoubleSpend",
+      "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "statement": "A non-persistent record is spent at most once: by one fire that does not peek, or by one retirement."
+    },
+    "V5": {
+      "kind": "tla",
+      "name": "AtomicReservation",
+      "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "statement": "A fire removes only records that are present in the view of its step, all of them in that step."
+    },
+    "V6": {
+      "kind": "tla",
+      "name": "SetClassRetired",
+      "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "statement": "After a consume or a send that fires a waiter of a set, no stored non-persistent member of the class of the fired value remains."
+    },
+    "V7": {
+      "kind": "tla",
+      "name": "CellCapacity",
+      "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "statement": "A cell holds at most one record and at most one waiter after every step."
+    },
+    "V8": {
+      "kind": "tla",
+      "name": "PeekRestoresRecord",
+      "file": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+      "statement": "Every stored record and every datum in flight carries its own introduction authority, and every store happens only when no waiter matches and admits the record."
+    },
+    "V9": {
+      "kind": "tla",
+      "name": "NoDuplicateIndex",
+      "file": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+      "statement": "When merge check #1 finds no race between two branches, the branches allocated disjoint index names of the space."
+    },
+    "V10": {
+      "kind": "tla",
+      "name": "AllocationsRace",
+      "file": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+      "statement": "Two branches that both allocate names of one space consume one allocator record, so merge check #1 reports a race."
+    },
+    "R50": {
+      "kind": "rocq",
+      "name": "stack_head_is_max_ord",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "The top of each side is an entry of that side with the greatest (ord, rank), and a side has a top exactly when it is not empty."
+    },
+    "R51": {
+      "kind": "rocq",
+      "name": "stack_produce_preserves_inv",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "A produce that completes in its round leaves INV: the top record and the top waiter do not match. The settle after the plan restores INV, so the produce needs no premise."
+    },
+    "R52": {
+      "kind": "rocq",
+      "name": "stack_consume_preserves_inv",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "A consume that completes in its round leaves INV."
+    },
+    "R53": {
+      "kind": "rocq",
+      "name": "stack_lifo",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "Every fire of an operation, of a settle job and of a re-entry binds the top waiter and the top record, and its incoming side is above every stored entry of its side (LifoOrder)."
+    },
+    "R54": {
+      "kind": "rocq",
+      "name": "stack_head_blocks",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "For a cap above 0, a top that does not match blocks: the produce stores the datum on top and the consume parks the continuation on top, with no fire, although an entry below the top may fit."
+    },
+    "R55": {
+      "kind": "rocq",
+      "name": "stack_settle_terminates",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "A settle that starts after f fires of its transaction makes at most cap - f fires and at most mu fires, plus one fire for a divergent pair. A settle that stops at the cap brings its transaction to exactly cap fires, a divergent pair has a persistent waiter, and a settle that ends Quiescent leaves INV. Every transaction (a produce, a consume, a settle job and a re-entry) makes at most cap fires with its settles, and a transaction that re-issues at the cap made exactly cap fires (I-21)."
+    },
+    "R56": {
+      "kind": "rocq",
+      "name": "stack_plan_permutation_invariant",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "Two views with the same entries in other list orders stage the same operations in a produce, a consume and a settle job, take the same next round, and reach views with the same entries."
+    },
+    "R57": {
+      "kind": "rocq",
+      "name": "stack_without_settle_breaks_inv",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "Without the settle, the computed counterexample of the P5 design v2, section 3.1 breaks INV at the end of a completed operation. With the settle after the plan, the stack lifts the exposed record, offers it again, and INV holds."
+    },
+    "R58": {
+      "kind": "rocq",
+      "name": "stack_reentry_at_lifo_place",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "For a cap above 0, a re-issued persistent element below the younger top of its side is stored or parked at its LIFO place with no fire. Above the top, or on an empty side, it plans as a fresh element does, from the fire count of its transaction (decision 43)."
+    },
+    "R59": {
+      "kind": "rocq",
+      "name": "stack_reissue_keeps_ord",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "A re-issued operation carries the order of its first round exactly when it is persistent, every round bumps the counter once, and a re-entered datum stores only itself (decision 43)."
+    },
+    "R60": {
+      "kind": "rocq",
+      "name": "stack_peek_restore_needs_no_settle",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "For a cap above 0, a peek of a top record that is not persistent fires, removes the record and stores it again at its order before any settle step, so the settle after the plan stages nothing (decision 45, Rule E)."
+    },
+    "R61": {
+      "kind": "rocq",
+      "name": "settle_trace_covered",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "A settle reserves its reads before it makes them: its trace satisfies prefix coverage, the reads of the outcome after the commit included (decision 42, DR-88)."
+    },
+    "R62": {
+      "kind": "rocq",
+      "name": "stack_settle_keeps_unspent_records",
+      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+      "statement": "From every fire count of the transaction, a stored record leaves the store during a settle only when a fire of a waiter that does not peek spends it, and then the record is not persistent (decisions 30 and 45)."
+    },
+    "V11": {
+      "kind": "tla",
+      "name": "LifoOrder",
+      "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+      "statement": "Every fire binds the top of the other side, its incoming element has an ord at least the ord of every stored entry of its own side, and every lift takes the top record, on every schedule."
+    },
+    "V12": {
+      "kind": "tla",
+      "name": "StackNoPendingMatch",
+      "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+      "statement": "With no round in progress, no element in flight and no settle job, the top record and the top waiter do not match (INV), on every schedule."
+    },
+    "V13": {
+      "kind": "tla",
+      "name": "NoRecordLost",
+      "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+      "statement": "A record that was stored is stored, or in flight in the current settle, or a fire spent it, on every schedule."
+    },
+    "V14": {
+      "kind": "tla",
+      "name": "ReissueKeepsOrd",
+      "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+      "statement": "A re-issued persistent element carries the ord of its first round, and a re-issued element that is not persistent carries none, on every schedule (decision 43)."
+    },
+    "V15": {
+      "kind": "tla",
+      "name": "TxnFiresBounded",
+      "file": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+      "statement": "No space transaction makes more than Cap fires, its settles included, on every schedule (revision I-21). The ghost txnFires counts every fire of the round, also the last fire of a round that re-issues."
+    }
+  },
+  "items": [
+    {
+      "item": "FamilyAgent",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/families.rs",
+      "kind": "struct",
+      "name": "FamilyAgent",
+      "line": 195,
+      "role": "The space agent of every wired family.",
+      "rocq": [
+        "receive_plan",
+        "offer_plan",
+        "cell_offer_plan",
+        "cell_receive_plan"
+      ],
+      "tla": [
+        "Offer",
+        "Receive"
+      ],
+      "covers": [
+        "R44",
+        "R45",
+        "R46",
+        "V1"
+      ]
+    },
+    {
+      "item": "Family::of_config",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/families.rs",
+      "scope": "Family",
+      "kind": "fn",
+      "name": "of_config",
+      "line": 120,
+      "role": "The family that a config names, one reserved comparison for each arm.",
+      "covers": [
+        "R44",
+        "R45"
+      ]
+    },
+    {
+      "item": "GenericSpace::run_with",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "run_with",
+      "line": 1784,
+      "role": "Runs one collection operation in its open transaction.",
+      "rocq": [
+        "operation_ord",
+        "scan_round",
+        "engine_staged",
+        "engine_trace"
+      ],
+      "tla": [
+        "Produce",
+        "Consume",
+        "ReenterData",
+        "ReenterCont",
+        "Commit"
+      ],
+      "covers": [
+        "R48",
+        "R49",
+        "V3"
+      ]
+    },
+    {
+      "item": "operation_ord",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "operation_ord",
+      "line": 1368,
+      "role": "The order of an element: the bumped counter, or the carried order of a re-issue.",
+      "rocq": [
+        "operation_ord"
+      ],
+      "covers": [
+        "R48"
+      ]
+    },
+    {
+      "item": "offer_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "offer_head",
+      "line": 1177,
+      "role": "The head driver of the produce plan.",
+      "rocq": [
+        "cell_offer_loop",
+        "head_offer"
+      ],
+      "tla": [
+        "CellOffer"
+      ],
+      "covers": [
+        "R42",
+        "R45",
+        "R46",
+        "V7",
+        "V1"
+      ]
+    },
+    {
+      "item": "receive_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "receive_head",
+      "line": 1253,
+      "role": "The head driver of the consume plan.",
+      "rocq": [
+        "cell_receive_loop",
+        "head_receive",
+        "restore_elem"
+      ],
+      "tla": [
+        "CellReceive",
+        "Restore"
+      ],
+      "covers": [
+        "R42",
+        "R44",
+        "R46",
+        "R47",
+        "V7",
+        "V8"
+      ]
+    },
+    {
+      "item": "restore_peeked",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "restore_peeked",
+      "line": 1340,
+      "role": "The re-store of a peeked record after a head-driver fire (Rule E).",
+      "rocq": [
+        "restore_elem",
+        "cell_peek_resends",
+        "consume_fire"
+      ],
+      "tla": [
+        "Restore",
+        "ReceiveStep"
+      ],
+      "covers": [
+        "R47",
+        "V8",
+        "R60"
+      ]
+    },
+    {
+      "item": "Cx::bind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "bind",
+      "line": 627,
+      "role": "The spatial match of the injected matcher.",
+      "tla": [
+        "EngineMatches"
+      ],
+      "covers": [
+        "R41",
+        "R43",
+        "V2"
+      ]
+    },
+    {
+      "item": "Cx::admits",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "admits",
+      "line": 636,
+      "role": "The guard check of the injected matcher.",
+      "tla": [
+        "Admits"
+      ],
+      "covers": [
+        "R41",
+        "R42",
+        "V2"
+      ]
+    },
+    {
+      "item": "Cx::matches",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "matches",
+      "line": 645,
+      "role": "The spatial match and the guard check, once.",
+      "rocq": [
+        "matches"
+      ],
+      "covers": [
+        "R41",
+        "R42"
+      ]
+    },
+    {
+      "item": "Cx::canonical_data_order",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "canonical_data_order",
+      "line": 611,
+      "role": "The DR-75 order of the records of a channel.",
+      "rocq": [
+        "first_spatial"
+      ],
+      "tla": [
+        "FirstById"
+      ],
+      "covers": [
+        "R42",
+        "R44",
+        "R46",
+        "R29"
+      ]
+    },
+    {
+      "item": "Cx::canonical_waiter_order",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "canonical_waiter_order",
+      "line": 618,
+      "role": "The DR-75 order of the waiters of a channel.",
+      "rocq": [
+        "first_admitting"
+      ],
+      "tla": [
+        "FirstById"
+      ],
+      "covers": [
+        "R42",
+        "R45",
+        "R39"
+      ]
+    },
+    {
+      "item": "Cx::check_capacity",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "check_capacity",
+      "line": 772,
+      "role": "The capacity check of a side before a store or a park.",
+      "rocq": [
+        "side_full",
+        "cell_inv"
+      ],
+      "tla": [
+        "StoreRec",
+        "Park"
+      ],
+      "covers": [
+        "R46",
+        "V7",
+        "R49",
+        "R1"
+      ]
+    },
+    {
+      "item": "Cx::store_on",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "store_on",
+      "line": 818,
+      "role": "Stages the store of a record.",
+      "rocq": [
+        "apply"
+      ],
+      "tla": [
+        "StoreRec"
+      ],
+      "covers": [
+        "R46",
+        "V3",
+        "V8"
+      ]
+    },
+    {
+      "item": "Cx::restore_on",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "restore_on",
+      "line": 889,
+      "role": "Stages the re-store of a peeked record with its own identity and authority.",
+      "rocq": [
+        "restore_elem",
+        "host_resend"
+      ],
+      "tla": [
+        "Restore"
+      ],
+      "covers": [
+        "R47",
+        "V8"
+      ]
+    },
+    {
+      "item": "Cx::park_on",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "park_on",
+      "line": 852,
+      "role": "Stages the park of a waiter.",
+      "rocq": [
+        "apply"
+      ],
+      "tla": [
+        "Park"
+      ],
+      "covers": [
+        "R46"
+      ]
+    },
+    {
+      "item": "Cx::fire_offer_on",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "fire_offer_on",
+      "line": 916,
+      "role": "Stages a produce-side fire.",
+      "rocq": [
+        "offer_loop"
+      ],
+      "tla": [
+        "FireOffer"
+      ],
+      "covers": [
+        "R45",
+        "V2",
+        "V4"
+      ]
+    },
+    {
+      "item": "Cx::fire_receive_group",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "fire_receive_group",
+      "line": 981,
+      "role": "Stages a consume-side fire of a group of records.",
+      "rocq": [
+        "receive_group"
+      ],
+      "tla": [
+        "FireRecv"
+      ],
+      "covers": [
+        "R44",
+        "V5",
+        "V6",
+        "R49"
+      ]
+    },
+    {
+      "item": "Cx::retire",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "retire",
+      "line": 1024,
+      "role": "Stages the retirement of a stored member of a class.",
+      "rocq": [
+        "retire_class"
+      ],
+      "tla": [
+        "RetireClassOf"
+      ],
+      "covers": [
+        "V6"
+      ]
+    },
+    {
+      "item": "push_reserved",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "push_reserved",
+      "line": 1110,
+      "role": "Grows the staged list only after the reservation of the doubled buffer.",
+      "rocq": [
+        "grown",
+        "grow_step",
+        "growth"
+      ],
+      "covers": [
+        "R49"
+      ]
+    },
+    {
+      "item": "outcome",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "outcome",
+      "line": 1444,
+      "role": "The outcome of a committed transaction from its staged list.",
+      "rocq": [
+        "engine_round_after"
+      ],
+      "covers": [
+        "R44",
+        "R49"
+      ]
+    },
+    {
+      "item": "prepay_outcome",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "prepay_outcome",
+      "line": 1436,
+      "role": "The reservation of the outcome before the commit.",
+      "covers": [
+        "R49"
+      ]
+    },
+    {
+      "item": "Cx::head_waiter",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "head_waiter",
+      "line": 676,
+      "role": "The one candidate of a head-only waiter side.",
+      "rocq": [
+        "candidates"
+      ],
+      "covers": [
+        "R40"
+      ]
+    },
+    {
+      "item": "TxnView::remove_continuation",
+      "required": true,
+      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "scope": "TxnView",
+      "kind": "fn",
+      "name": "remove_continuation",
+      "line": 1339,
+      "role": "Removes a fired waiter by its record identity (D10).",
+      "rocq": [
+        "remove_one",
+        "fire_remove"
+      ],
+      "covers": [
+        "R36",
+        "R37"
+      ]
+    },
+    {
+      "item": "TxnView::put_continuation",
+      "required": true,
+      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "scope": "TxnView",
+      "kind": "fn",
+      "name": "put_continuation",
+      "line": 1314,
+      "role": "Parks a waiter once: an equal park changes nothing (F14).",
+      "rocq": [
+        "park"
+      ],
+      "covers": [
+        "R38"
+      ]
+    },
+    {
+      "item": "FireRounds::after_fire",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "FireRounds",
+      "kind": "fn",
+      "name": "after_fire",
+      "line": 322,
+      "role": "The next step after a fire: Done, Continue or a re-issue.",
+      "rocq": [
+        "after_fire"
+      ],
+      "tla": [
+        "OfferScan",
+        "ReceiveScan",
+        "CellOffer",
+        "CellReceive"
+      ],
+      "covers": [
+        "R48",
+        "V3"
+      ]
+    },
+    {
+      "item": "offer",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "offer",
+      "line": 178,
+      "role": "The produce plan of a scan discipline.",
+      "rocq": [
+        "offer",
+        "offer_pass"
+      ],
+      "tla": [
+        "OfferScan"
+      ],
+      "covers": [
+        "R34",
+        "R39"
+      ]
+    },
+    {
+      "item": "receive",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "receive",
+      "line": 228,
+      "role": "The consume plan of a scan discipline (RECEIVE-SCAN).",
+      "rocq": [
+        "first_match",
+        "receive_choice",
+        "peek_plan"
+      ],
+      "tla": [
+        "ReceiveScan"
+      ],
+      "covers": [
+        "R30",
+        "R32",
+        "R34"
+      ]
+    },
+    {
+      "item": "restore",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "restore",
+      "line": 323,
+      "role": "RESTORE-SCAN outside a receive.",
+      "rocq": [
+        "peek_plan"
+      ],
+      "tla": [
+        "Restore"
+      ],
+      "covers": [
+        "R34"
+      ]
+    },
+    {
+      "item": "offer_scan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "offer_scan",
+      "line": 400,
+      "role": "OFFER-SCAN of an element in flight.",
+      "rocq": [
+        "offer_pass",
+        "host_send",
+        "offer_pass_is_host_send"
+      ],
+      "tla": [
+        "OfferScan"
+      ],
+      "covers": [
+        "R34",
+        "R39"
+      ]
+    },
+    {
+      "item": "first_admitting_waiter",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "first_admitting_waiter",
+      "line": 519,
+      "role": "The first waiter that binds and admits the datum.",
+      "rocq": [
+        "offer_choice",
+        "visit"
+      ],
+      "tla": [
+        "FirstById"
+      ],
+      "covers": [
+        "R39",
+        "R35"
+      ]
+    },
+    {
+      "item": "first_bound_record",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "first_bound_record",
+      "line": 555,
+      "role": "The first record whose payload the pattern binds.",
+      "rocq": [
+        "first_match",
+        "visit"
+      ],
+      "tla": [
+        "FirstById"
+      ],
+      "covers": [
+        "R29",
+        "R30",
+        "R35"
+      ]
+    },
+    {
+      "item": "class_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "class_of",
+      "line": 582,
+      "role": "The class of a fired record: the record alone for a bag.",
+      "rocq": [
+        "on_records"
+      ],
+      "covers": [
+        "R32"
+      ]
+    },
+    {
+      "item": "fire_class",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "fire_class",
+      "line": 643,
+      "role": "Stages the fire of a class over [D; n].",
+      "rocq": [
+        "on_records"
+      ],
+      "tla": [
+        "FireRecv"
+      ],
+      "covers": [
+        "R32",
+        "V5"
+      ]
+    },
+    {
+      "item": "restore_scan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "restore_scan",
+      "line": 715,
+      "role": "RESTORE-SCAN: the second send of a peeked record.",
+      "rocq": [
+        "peek_plan",
+        "host_peek",
+        "restore_scan"
+      ],
+      "tla": [
+        "Restore"
+      ],
+      "covers": [
+        "R34",
+        "R47"
+      ]
+    },
+    {
+      "item": "restored_send",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "restored_send",
+      "line": 753,
+      "role": "The cap re-issue of a second send.",
+      "rocq": [
+        "restore_reissue"
+      ],
+      "covers": [
+        "R48"
+      ]
+    },
+    {
+      "item": "retire_class",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "kind": "fn",
+      "name": "retire_class",
+      "line": 781,
+      "role": "RETIRE-CLASS of the set.",
+      "rocq": [
+        "retire_class"
+      ],
+      "tla": [
+        "RetireClassOf"
+      ],
+      "covers": [
+        "V6"
+      ]
+    },
+    {
+      "item": "BagDiscipline",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/bag.rs",
+      "kind": "struct",
+      "name": "BagDiscipline",
+      "line": 33,
+      "role": "The bag: a multiset on both sides.",
+      "rocq": [
+        "visit",
+        "first_match"
+      ],
+      "covers": [
+        "R29",
+        "R31",
+        "R32",
+        "R33"
+      ]
+    },
+    {
+      "item": "CellDiscipline",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+      "kind": "struct",
+      "name": "CellDiscipline",
+      "line": 51,
+      "role": "The cell: one record slot and one waiter slot (F15).",
+      "rocq": [
+        "cell_capacity",
+        "cell_reaches_head",
+        "cell_precedes"
+      ],
+      "covers": [
+        "R1",
+        "R2",
+        "R3"
+      ]
+    },
+    {
+      "item": "CellDiscipline::NAME",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+      "scope": "CellDiscipline",
+      "kind": "const",
+      "name": "NAME",
+      "line": 54,
+      "role": "The inner name of the family.",
+      "unmodeled": "The family dispatch compares the names (family_matches). No model needs them."
+    },
+    {
+      "item": "CellDiscipline::USES_COUNTER",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+      "scope": "CellDiscipline",
+      "kind": "const",
+      "name": "USES_COUNTER",
+      "line": 55,
+      "role": "The cell bumps its counter on every operation.",
+      "rocq": [
+        "bump_ord",
+        "bumped",
+        "reenter_produce",
+        "reenter_consume"
+      ],
+      "covers": [
+        "R1",
+        "R3"
+      ]
+    },
+    {
+      "item": "CellDiscipline::SEND_PARAMS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+      "scope": "CellDiscipline",
+      "kind": "const",
+      "name": "SEND_PARAMS",
+      "line": 56,
+      "role": "The cell takes no send params.",
+      "unmodeled": "The engine checks the params (check_params). The cell has none."
+    },
+    {
+      "item": "CellDiscipline::CAPACITY",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+      "scope": "CellDiscipline",
+      "kind": "const",
+      "name": "CAPACITY",
+      "line": 57,
+      "role": "One entry on each side (F15).",
+      "rocq": [
+        "cell_capacity",
+        "has_room",
+        "store_checked",
+        "park_checked",
+        "step_view"
+      ],
+      "covers": [
+        "R1",
+        "R2"
+      ]
+    },
+    {
+      "item": "CellDiscipline::head_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+      "scope": "CellDiscipline",
+      "kind": "fn",
+      "name": "head_metered",
+      "line": 63,
+      "role": "The head: the least (ord, bytes), as the queue.",
+      "rocq": [
+        "precedes_key",
+        "head_from",
+        "head_index"
+      ],
+      "covers": [
+        "R1",
+        "R2",
+        "R3"
+      ]
+    },
+    {
+      "item": "CellDiscipline::reaches_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+      "scope": "CellDiscipline",
+      "kind": "fn",
+      "name": "reaches_head",
+      "line": 74,
+      "role": "A fresh element always meets the other side.",
+      "rocq": [
+        "cell_reaches_head"
+      ],
+      "covers": [
+        "R3"
+      ]
+    },
+    {
+      "item": "CellDiscipline::precedes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+      "scope": "CellDiscipline",
+      "kind": "fn",
+      "name": "precedes",
+      "line": 79,
+      "role": "A re-entered element acts as a fresh one.",
+      "rocq": [
+        "cell_precedes",
+        "reentry_at_head",
+        "reenter_offer",
+        "reenter_receive"
+      ],
+      "covers": [
+        "R3"
+      ]
+    },
+    {
+      "item": "AllocationRule",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "kind": "struct",
+      "name": "AllocationRule",
+      "line": 76,
+      "role": "The rule of a store: fixed, cyclic or vector.",
+      "rocq": [
+        "rule",
+        "wf"
+      ],
+      "tla": [
+        "AllocExec"
+      ],
+      "covers": [
+        "R4",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "item": "AllocationRule::plan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "scope": "AllocationRule",
+      "kind": "fn",
+      "name": "plan",
+      "line": 109,
+      "role": "The indices and the next value of an allocation.",
+      "rocq": [
+        "fixed_plan",
+        "cyclic_plan",
+        "vector_plan",
+        "wrap_from",
+        "vplan"
+      ],
+      "tla": [
+        "Indices"
+      ],
+      "covers": [
+        "R5",
+        "R6",
+        "R8",
+        "R12",
+        "R14"
+      ]
+    },
+    {
+      "item": "bounded_sum",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "kind": "fn",
+      "name": "bounded_sum",
+      "line": 166,
+      "role": "The next allocator value, or none past the bound.",
+      "rocq": [
+        "fixed_plan",
+        "vector_plan"
+      ],
+      "covers": [
+        "R5"
+      ]
+    },
+    {
+      "item": "sequential",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "kind": "fn",
+      "name": "sequential",
+      "line": 174,
+      "role": "The indices of a fixed Array or a Vector.",
+      "rocq": [
+        "fixed_plan",
+        "vplan"
+      ],
+      "tla": [
+        "Indices"
+      ],
+      "covers": [
+        "R8",
+        "R13"
+      ]
+    },
+    {
+      "item": "cyclic",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "kind": "fn",
+      "name": "cyclic",
+      "line": 182,
+      "role": "The indices of a cyclic Array, modulo its size.",
+      "rocq": [
+        "cyclic_plan",
+        "wrap_from"
+      ],
+      "covers": [
+        "R6"
+      ]
+    },
+    {
+      "item": "index_of_name",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "kind": "fn",
+      "name": "index_of_name",
+      "line": 216,
+      "role": "The index of an index name of the space.",
+      "rocq": [
+        "check_key"
+      ],
+      "covers": [
+        "R4"
+      ]
+    },
+    {
+      "item": "check_below",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "kind": "fn",
+      "name": "check_below",
+      "line": 235,
+      "role": "An index below the size of a fixed Array.",
+      "rocq": [
+        "check_key_bounded"
+      ],
+      "covers": [
+        "R4"
+      ]
+    },
+    {
+      "item": "creation_records",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "kind": "fn",
+      "name": "creation_records",
+      "line": 259,
+      "role": "The allocator record A(sid) = 0 of a new space.",
+      "rocq": [
+        "creation_identity"
+      ],
+      "tla": [
+        "StartState"
+      ],
+      "covers": [
+        "R10",
+        "V9"
+      ]
+    },
+    {
+      "item": "allocate",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/allocator.rs",
+      "kind": "fn",
+      "name": "allocate",
+      "line": 283,
+      "role": "One allocation: take A(sid), plan, put the next value.",
+      "rocq": [
+        "alloc",
+        "after",
+        "run"
+      ],
+      "tla": [
+        "AllocExec"
+      ],
+      "covers": [
+        "R7",
+        "R9",
+        "R10",
+        "V10"
+      ]
+    },
+    {
+      "item": "ArrayShape",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/array.rs",
+      "kind": "struct",
+      "name": "ArrayShape",
+      "line": 57,
+      "role": "The size and the cyclic flag of an Array config.",
+      "rocq": [
+        "rule"
+      ],
+      "covers": [
+        "R11"
+      ]
+    },
+    {
+      "item": "ArrayOuter::check_key",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/array.rs",
+      "scope": "ArrayOuter",
+      "kind": "fn",
+      "name": "check_key",
+      "line": 142,
+      "role": "A channel of an Array space is an index name below its size (F8).",
+      "rocq": [
+        "check_key",
+        "check_key_bounded"
+      ],
+      "covers": [
+        "R4"
+      ]
+    },
+    {
+      "item": "VectorOuter::check_key",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/vector.rs",
+      "scope": "VectorOuter",
+      "kind": "fn",
+      "name": "check_key",
+      "line": 46,
+      "role": "A channel of a Vector space is an index name of the space (F8).",
+      "rocq": [
+        "vcheck_key_spec"
+      ],
+      "covers": [
+        "R12"
+      ]
+    },
+    {
+      "item": "HashMapOuter::key",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
+      "scope": "HashMapOuter",
+      "kind": "fn",
+      "name": "key",
+      "line": 29,
+      "role": "The collection key of a channel: its canonical bytes (A5).",
+      "rocq": [
+        "is_key"
+      ],
+      "covers": [
+        "R15",
+        "R16"
+      ]
+    },
+    {
+      "item": "HashMapOuter::data_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
+      "scope": "HashMapOuter",
+      "kind": "fn",
+      "name": "data_channel",
+      "line": 33,
+      "role": "The data channel D(sid, key) of a collection.",
+      "rocq": [
+        "get",
+        "put",
+        "take"
+      ],
+      "covers": [
+        "R16"
+      ]
+    },
+    {
+      "item": "AllocCx::take",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "AllocCx",
+      "kind": "fn",
+      "name": "take",
+      "line": 1977,
+      "role": "Stages the take of A(sid).",
+      "rocq": [
+        "staged_identity"
+      ],
+      "tla": [
+        "AllocExec"
+      ],
+      "covers": [
+        "R10",
+        "R11",
+        "V10"
+      ]
+    },
+    {
+      "item": "AllocCx::put",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "AllocCx",
+      "kind": "fn",
+      "name": "put",
+      "line": 1992,
+      "role": "Stages the put of the next value of A(sid).",
+      "rocq": [
+        "staged_identity"
+      ],
+      "tla": [
+        "AllocExec"
+      ],
+      "covers": [
+        "R10",
+        "R11"
+      ]
+    },
+    {
+      "item": "reject_query_source",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "reject_query_source",
+      "line": 696,
+      "role": "Hook H4: fails only on a malformed QUERY tuple.",
+      "rocq": [
+        "h4_passes",
+        "decode_source",
+        "sole_marker_tuple",
+        "marker_of"
+      ],
+      "covers": [
+        "R17"
+      ]
+    },
+    {
+      "item": "takes_fast_path",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "takes_fast_path",
+      "line": 723,
+      "role": "The fast path of a receive admits no marker tuple.",
+      "rocq": [
+        "takes_fast_path",
+        "is_marker_tuple",
+        "marker_tuple_forged"
+      ],
+      "covers": [
+        "R17"
+      ]
+    },
+    {
+      "item": "query_bind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "query_bind",
+      "line": 736,
+      "role": "The inner channel and the query of a receive bind.",
+      "rocq": [
+        "decode_source",
+        "read_bind"
+      ],
+      "covers": [
+        "R17"
+      ]
+    },
+    {
+      "item": "readable_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "readable_channel",
+      "line": 755,
+      "role": "The read rule of a receive source.",
+      "rocq": [
+        "read_channel"
+      ],
+      "covers": [
+        "R17"
+      ]
+    },
+    {
+      "item": "single_bind_route",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "single_bind_route",
+      "line": 767,
+      "role": "The route of a receive with one bind and its query.",
+      "rocq": [
+        "single_target"
+      ],
+      "covers": [
+        "R17"
+      ]
+    },
+    {
+      "item": "ReducerCore::route_receive",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "route_receive",
+      "line": 447,
+      "role": "Routes each bind of a receive by its inner channel.",
+      "rocq": [
+        "read_bind",
+        "route_bind"
+      ],
+      "covers": [
+        "R17"
+      ]
+    },
+    {
+      "item": "join_route",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "join_route",
+      "line": 802,
+      "role": "The route of a join.",
+      "unmodeled": "Joins are the JOINS batch (P5c). This campaign keeps the P4 join rule until then."
+    },
+    {
+      "item": "space_params",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "space_params",
+      "line": 858,
+      "role": "The named params of a send to a space.",
+      "unmodeled": "The agent checks the params against the discipline (S1). No model needs the hook."
+    },
+    {
+      "item": "ReducerCore::allocate_names",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "allocate_names",
+      "line": 563,
+      "role": "Runs one allocation job with the authority of the new.",
+      "unmodeled": "OuterStorage.v models the allocation, and the P4 headline native_execution_fails_closed models its fail-closed rule."
+    },
+    {
+      "item": "ReducerCore::allocate_in_spaces",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "allocate_in_spaces",
+      "line": 517,
+      "role": "The names of a new in its spaces.",
+      "unmodeled": "A structural loop over the binder groups. The witness test reducer_space_routing_allocation_jobs_give_index_names checks it."
+    },
+    {
+      "item": "body_ref",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "fn",
+      "name": "body_ref",
+      "line": 30,
+      "role": "The body ref 200 + op of a factory.",
+      "rocq": [
+        "body_ref"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "HASHMAP_BAG_SPACE_ALIAS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "const",
+      "name": "HASHMAP_BAG_SPACE_ALIAS",
+      "line": 247,
+      "role": "The FIPS alias of hashmap:bag.",
+      "rocq": [
+        "alias_rows"
+      ],
+      "covers": [
+        "R19"
+      ]
+    },
+    {
+      "item": "P5_SYSTEM_CHANNELS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "const",
+      "name": "P5_SYSTEM_CHANNELS",
+      "line": 272,
+      "role": "The op channels of the P5 factories.",
+      "rocq": [
+        "p5_rows",
+        "alias_rows"
+      ],
+      "covers": [
+        "R18",
+        "R19"
+      ]
+    },
+    {
+      "item": "REGISTERED_FAMILIES",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "const",
+      "name": "REGISTERED_FAMILIES",
+      "line": 33,
+      "role": "The P4 factory row.",
+      "rocq": [
+        "p4_rows"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "P5_FAMILY_ROWS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "const",
+      "name": "P5_FAMILY_ROWS",
+      "line": 45,
+      "role": "The P5 factory rows.",
+      "rocq": [
+        "p5_rows"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "P5_ALIAS_ROWS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "const",
+      "name": "P5_ALIAS_ROWS",
+      "line": 118,
+      "role": "The P5 alias rows.",
+      "rocq": [
+        "alias_rows"
+      ],
+      "covers": [
+        "R19"
+      ]
+    },
+    {
+      "item": "is_wired",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "is_wired",
+      "line": 124,
+      "role": "A family is wired when the dispatch has its arm.",
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "registered_p5_families",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "registered_p5_families",
+      "line": 128,
+      "role": "The P5 rows of the wired families.",
+      "rocq": [
+        "registered"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "registered_families",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "registered_families",
+      "line": 136,
+      "role": "Every registered family and its channel.",
+      "rocq": [
+        "registered"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "registered_aliases",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "registered_aliases",
+      "line": 144,
+      "role": "The aliases of the registered families.",
+      "rocq": [
+        "registered_aliases"
+      ],
+      "covers": [
+        "R19"
+      ]
+    },
+    {
+      "item": "registered_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "registered_channel",
+      "line": 151,
+      "role": "The channel of a registered URN.",
+      "rocq": [
+        "is_registered"
+      ],
+      "covers": [
+        "R18",
+        "R19"
+      ]
+    },
+    {
+      "item": "factory_capability",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "factory_capability",
+      "line": 166,
+      "role": "The capability of the factory of a family.",
+      "rocq": [
+        "factory_op"
+      ],
+      "covers": [
+        "R19"
+      ]
+    },
+    {
+      "item": "definitions",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+      "kind": "fn",
+      "name": "definitions",
+      "line": 63,
+      "role": "The installed definitions: P4 processes, P5 families, aliases.",
+      "rocq": [
+        "definitions",
+        "binds"
+      ],
+      "covers": [
+        "R18",
+        "R19"
+      ]
+    },
+    {
+      "item": "get_space_agent",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+      "kind": "fn",
+      "name": "get_space_agent",
+      "line": 164,
+      "role": "getSpaceAgent: the factory capability of a space.",
+      "rocq": [
+        "get_space_agent_of"
+      ],
+      "covers": [
+        "R19"
+      ]
+    },
+    {
+      "item": "schema",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "fn",
+      "name": "schema",
+      "line": 69,
+      "role": "The constructor schema of a family.",
+      "rocq": [
+        "schema_of"
+      ],
+      "covers": [
+        "R20",
+        "R21",
+        "R22"
+      ]
+    },
+    {
+      "item": "constructor_schema",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "fn",
+      "name": "constructor_schema",
+      "line": 100,
+      "role": "The params that the factory of a family takes.",
+      "rocq": [
+        "schema_of"
+      ],
+      "covers": [
+        "R20"
+      ]
+    },
+    {
+      "item": "required_params",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "fn",
+      "name": "required_params",
+      "line": 106,
+      "role": "The params that the factory of a family requires.",
+      "rocq": [
+        "required_of"
+      ],
+      "covers": [
+        "R20",
+        "R22"
+      ]
+    },
+    {
+      "item": "ParamRule",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "struct",
+      "name": "ParamRule",
+      "line": 112,
+      "role": "The value rule of one constructor param.",
+      "rocq": [
+        "rule"
+      ],
+      "covers": [
+        "R20",
+        "R21",
+        "R22"
+      ]
+    },
+    {
+      "item": "ParamRule::of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "scope": "ParamRule",
+      "kind": "fn",
+      "name": "of",
+      "line": 123,
+      "role": "The rule of a param name.",
+      "rocq": [
+        "rule_of"
+      ],
+      "covers": [
+        "R20"
+      ]
+    },
+    {
+      "item": "ParamRule::canonical",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "scope": "ParamRule",
+      "kind": "fn",
+      "name": "canonical",
+      "line": 135,
+      "role": "The canonical value of a param, or none.",
+      "rocq": [
+        "canonical"
+      ],
+      "covers": [
+        "R20",
+        "R21",
+        "R22"
+      ]
+    },
+    {
+      "item": "suggestion",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "fn",
+      "name": "suggestion",
+      "line": 167,
+      "role": "The least (distance, key) suggestion within two edits.",
+      "rocq": [
+        "suggest",
+        "least",
+        "within"
+      ],
+      "covers": [
+        "R20"
+      ]
+    },
+    {
+      "item": "FactoryConstructor::validate",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "scope": "FactoryConstructor",
+      "kind": "fn",
+      "name": "validate",
+      "line": 60,
+      "role": "The gates of a constructor, in order.",
+      "rocq": [
+        "validate_params",
+        "validate_qualifier"
+      ],
+      "covers": [
+        "R20",
+        "R21",
+        "R22"
+      ]
+    },
+    {
+      "item": "canonical_params",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "kind": "fn",
+      "name": "canonical_params",
+      "line": 146,
+      "role": "The canonical named params of a config.",
+      "rocq": [
+        "canonical_all"
+      ],
+      "covers": [
+        "R20"
+      ]
+    },
+    {
+      "item": "PATH_DEPTH_CAP",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "const",
+      "name": "PATH_DEPTH_CAP",
+      "line": 107,
+      "role": "The depth cap of a channel path (F9).",
+      "unmodeled": "The model has paths of every length. Rust tests check PathTooDeep (F9)."
+    },
+    {
+      "item": "plain_list_elements",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "plain_list_elements",
+      "line": 153,
+      "role": "The elements of a plain list.",
+      "rocq": [
+        "elems"
+      ],
+      "covers": [
+        "R25",
+        "R26"
+      ]
+    },
+    {
+      "item": "path_elements",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "path_elements",
+      "line": 200,
+      "role": "The path elements of a value.",
+      "rocq": [
+        "elems"
+      ],
+      "covers": [
+        "R25",
+        "R26"
+      ]
+    },
+    {
+      "item": "plain_list",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "plain_list",
+      "line": 258,
+      "role": "The canonical plain list of path elements.",
+      "rocq": [
+        "canon"
+      ],
+      "covers": [
+        "R25",
+        "R26",
+        "R27"
+      ]
+    },
+    {
+      "item": "bit_sets",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "bit_sets",
+      "line": 231,
+      "role": "The bit sets of closed data.",
+      "unmodeled": "The bit sets of closed data are empty. The model has no bit sets."
+    },
+    {
+      "item": "channel_path",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "channel_path",
+      "line": 281,
+      "role": "The path of a channel.",
+      "rocq": [
+        "elems"
+      ],
+      "covers": [
+        "R23",
+        "R28"
+      ]
+    },
+    {
+      "item": "EncodedPath",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "struct",
+      "name": "EncodedPath",
+      "line": 302,
+      "role": "The path key and the prefix ends of a path.",
+      "rocq": [
+        "path_key",
+        "prefix_key"
+      ],
+      "covers": [
+        "R23"
+      ]
+    },
+    {
+      "item": "encode_path",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "encode_path",
+      "line": 343,
+      "role": "Encodes a path once for all of its keys.",
+      "rocq": [
+        "path_key",
+        "prefix_key"
+      ],
+      "covers": [
+        "R23",
+        "R28"
+      ]
+    },
+    {
+      "item": "segment",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "segment",
+      "line": 369,
+      "role": "The EPM1 segment of one element.",
+      "rocq": [
+        "seg"
+      ],
+      "covers": [
+        "R23"
+      ]
+    },
+    {
+      "item": "is_prefix_key",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "is_prefix_key",
+      "line": 376,
+      "role": "The prefix order of paths on their keys.",
+      "rocq": [
+        "is_prefix"
+      ],
+      "covers": [
+        "R23"
+      ]
+    },
+    {
+      "item": "compare_keys",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "compare_keys",
+      "line": 384,
+      "role": "The candidate order on path keys.",
+      "rocq": [
+        "lex_cmp",
+        "cand_lt"
+      ],
+      "covers": [
+        "R28"
+      ]
+    },
+    {
+      "item": "scan_element",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "scan_element",
+      "line": 514,
+      "role": "The arm of an element: structural or escape.",
+      "rocq": [
+        "structural"
+      ],
+      "covers": [
+        "R23"
+      ]
+    },
+    {
+      "item": "escape_payload",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "escape_payload",
+      "line": 1114,
+      "role": "The prost of the sorted Par of an escaped element.",
+      "rocq": [
+        "seg"
+      ],
+      "covers": [
+        "R23"
+      ]
+    },
+    {
+      "item": "zigzag",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+      "kind": "fn",
+      "name": "zigzag",
+      "line": 1143,
+      "role": "The zigzag code of an integer.",
+      "rocq": [
+        "zigzag"
+      ],
+      "covers": [
+        "R23"
+      ]
+    },
+    {
+      "item": "LogicalPath",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+      "kind": "struct",
+      "name": "LogicalPath",
+      "line": 56,
+      "role": "A path of logical elements.",
+      "rocq": [
+        "path_key",
+        "rl"
+      ],
+      "covers": [
+        "R25",
+        "R26"
+      ]
+    },
+    {
+      "item": "LogicalPathMap",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+      "kind": "struct",
+      "name": "LogicalPathMap",
+      "line": 131,
+      "role": "A PathMap as its entries in key order.",
+      "rocq": [
+        "sorted",
+        "sort_dedup",
+        "insert_path"
+      ],
+      "covers": [
+        "R25",
+        "R26"
+      ]
+    },
+    {
+      "item": "canonical_entry",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+      "kind": "fn",
+      "name": "canonical_entry",
+      "line": 267,
+      "role": "The canonical entry form of a path.",
+      "rocq": [
+        "canon"
+      ],
+      "covers": [
+        "R25",
+        "R26",
+        "R27"
+      ]
+    },
+    {
+      "item": "HeadEPathMapAdapter::decode",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+      "scope": "HeadEPathMapAdapter",
+      "kind": "fn",
+      "name": "decode",
+      "line": 296,
+      "role": "The logical map of a HEAD EPathMap.",
+      "rocq": [
+        "head_decode"
+      ],
+      "covers": [
+        "R25",
+        "R26"
+      ]
+    },
+    {
+      "item": "HeadEPathMapAdapter::encode",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+      "scope": "HeadEPathMapAdapter",
+      "kind": "fn",
+      "name": "encode",
+      "line": 317,
+      "role": "The HEAD EPathMap of a logical map.",
+      "rocq": [
+        "head_encode"
+      ],
+      "covers": [
+        "R25",
+        "R26"
+      ]
+    },
+    {
+      "item": "reroot",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+      "kind": "fn",
+      "name": "reroot",
+      "line": 51,
+      "role": "R(s, v): the delivery of one argument under a suffix.",
+      "rocq": [
+        "reroot",
+        "pval"
+      ],
+      "covers": [
+        "R24",
+        "R25",
+        "R26",
+        "R27"
+      ]
+    },
+    {
+      "item": "reroot_payload",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+      "kind": "fn",
+      "name": "reroot_payload",
+      "line": 78,
+      "role": "The re-rooting of every argument of a payload.",
+      "rocq": [
+        "reroot"
+      ],
+      "covers": [
+        "R25",
+        "R27"
+      ]
+    },
+    {
+      "item": "lift_step",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "lift_step",
+      "line": 501,
+      "role": "The step of a K_lift: the fire count of the transaction at the lift (I-21).",
+      "unmodeled": "The identities of K_lift. The Rust tests space_settle_lift_identity_is_unique_per_counter_and_step and space_stack_two_settles_of_one_round_lift_with_distinct_steps pin them."
+    },
+    {
+      "item": "lift_pattern",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "lift_pattern",
+      "line": 155,
+      "role": "The pattern of K_lift: one remainder that binds every record.",
+      "rocq": [
+        "lift_ops"
+      ],
+      "tla": [
+        "SettleStep"
+      ],
+      "covers": [
+        "R55",
+        "R62"
+      ]
+    },
+    {
+      "item": "lift_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "lift_continuation",
+      "line": 183,
+      "role": "K_lift: the body EList[counter, step], the random state Lift.derive of the operation, and the cost authority.",
+      "unmodeled": "The identities of K_lift. The Rust tests space_settle_lift_identity_is_unique_per_counter_and_step and space_stack_settle_lift_events_shape pin them."
+    },
+    {
+      "item": "settle",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "settle",
+      "line": 404,
+      "role": "The SETTLE loop of A.8: plan the next fire, land at the end or at the cap, lift a stored record that is not persistent, re-offer it, keep an unspent lifted record in flight.",
+      "rocq": [
+        "settle_loop",
+        "at_cap",
+        "lift_ops",
+        "flying",
+        "flight_after",
+        "land",
+        "after_fire"
+      ],
+      "tla": [
+        "SettleStep",
+        "AfterFire",
+        "Land"
+      ],
+      "covers": [
+        "R51",
+        "R52",
+        "R53",
+        "R55",
+        "R62",
+        "V11",
+        "V12",
+        "V13",
+        "V15"
+      ]
+    },
+    {
+      "item": "land",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "land",
+      "line": 508,
+      "role": "The landing of the record in flight at its order with its identity (Cx::restore_on).",
+      "rocq": [
+        "land"
+      ],
+      "tla": [
+        "Land"
+      ],
+      "covers": [
+        "R55",
+        "R62",
+        "V13"
+      ]
+    },
+    {
+      "item": "lift",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "lift",
+      "line": 519,
+      "role": "The lift of a stored record: a staged consume of K_lift, each read and copy reserved first.",
+      "rocq": [
+        "lift_ops"
+      ],
+      "tla": [
+        "SettleStep"
+      ],
+      "covers": [
+        "R53",
+        "R61",
+        "R62"
+      ]
+    },
+    {
+      "item": "settle_before_plan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "settle_before_plan",
+      "line": 569,
+      "role": "The settle before the plan. At the cap or at a divergent pair it re-issues the operation (decision 43 order).",
+      "rocq": [
+        "with_settles",
+        "settle_of"
+      ],
+      "tla": [
+        "SettleStep",
+        "SettleReissue"
+      ],
+      "covers": [
+        "R51",
+        "R52",
+        "R55",
+        "R59"
+      ]
+    },
+    {
+      "item": "settle_after_plan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "settle_after_plan",
+      "line": 588,
+      "role": "The settle after the plan. At the cap or at a divergent pair it re-issues a settle job.",
+      "rocq": [
+        "with_settles",
+        "settle_at",
+        "settle_next"
+      ],
+      "tla": [
+        "SettleStep",
+        "SettleReissue"
+      ],
+      "covers": [
+        "R51",
+        "R52",
+        "R55",
+        "R57",
+        "R60",
+        "V15"
+      ]
+    },
+    {
+      "item": "settle_job",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "settle_job",
+      "line": 606,
+      "role": "A settle job: one settle, which re-issues the same settle at the cap or at a divergent pair.",
+      "rocq": [
+        "settle_job"
+      ],
+      "tla": [
+        "SettleJob",
+        "SettleStep"
+      ],
+      "covers": [
+        "R53",
+        "R56"
+      ]
+    },
+    {
+      "item": "reissued_operation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "reissued_operation",
+      "line": 643,
+      "role": "The re-issue of an operation: persistent.then(first-round order), each copy reserved first.",
+      "rocq": [
+        "carried"
+      ],
+      "tla": [
+        "Reissued"
+      ],
+      "covers": [
+        "R59",
+        "V14"
+      ]
+    },
+    {
+      "item": "settle_operation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
+      "kind": "fn",
+      "name": "settle_operation",
+      "line": 681,
+      "role": "The settle job that continues the settle after an operation, with the random state and the authorities of the operation.",
+      "rocq": [
+        "settle_next"
+      ],
+      "tla": [
+        "SettleReissue"
+      ],
+      "covers": [
+        "R59"
+      ]
+    },
+    {
+      "item": "StackDiscipline",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "kind": "struct",
+      "name": "StackDiscipline",
+      "line": 67,
+      "role": "The stack discipline: head-only, the head is the greatest (ord, bincode bytes), it uses the counter and it settles.",
+      "rocq": [
+        "record_top",
+        "waiter_top"
+      ],
+      "tla": [
+        "TopRecords",
+        "TopWaiters"
+      ],
+      "covers": [
+        "R50"
+      ]
+    },
+    {
+      "item": "StackDiscipline::head_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "StackDiscipline",
+      "kind": "fn",
+      "name": "head_metered",
+      "line": 75,
+      "role": "The head of a side: the greatest order, then the greater bincode bytes, the earlier index on equal keys, each comparison reserved.",
+      "rocq": [
+        "above",
+        "top_from",
+        "top"
+      ],
+      "tla": [
+        "TopRecords",
+        "TopWaiters"
+      ],
+      "covers": [
+        "R50",
+        "R56",
+        "R61"
+      ]
+    },
+    {
+      "item": "StackDiscipline::reaches_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "StackDiscipline",
+      "kind": "fn",
+      "name": "reaches_head",
+      "line": 96,
+      "role": "A fresh element always reaches the top of its side.",
+      "rocq": [
+        "produce",
+        "consume"
+      ],
+      "tla": [
+        "AtTop"
+      ],
+      "covers": [
+        "R53",
+        "R54"
+      ]
+    },
+    {
+      "item": "StackDiscipline::precedes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "StackDiscipline",
+      "kind": "fn",
+      "name": "precedes",
+      "line": 99,
+      "role": "A re-entering element precedes the top when its order is greater (decision 43).",
+      "rocq": [
+        "reenter_offer",
+        "reenter_receive"
+      ],
+      "tla": [
+        "AtTop"
+      ],
+      "covers": [
+        "R53",
+        "R58"
+      ]
+    },
+    {
+      "item": "StackDiscipline::settle_before",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "StackDiscipline",
+      "kind": "fn",
+      "name": "settle_before",
+      "line": 112,
+      "role": "The settle hook before the plan.",
+      "rocq": [
+        "with_settles"
+      ],
+      "tla": [
+        "SettleStep"
+      ],
+      "covers": [
+        "R51",
+        "R52"
+      ]
+    },
+    {
+      "item": "StackDiscipline::settle_after",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "StackDiscipline",
+      "kind": "fn",
+      "name": "settle_after",
+      "line": 122,
+      "role": "The settle hook after the plan.",
+      "rocq": [
+        "with_settles"
+      ],
+      "tla": [
+        "SettleStep"
+      ],
+      "covers": [
+        "R51",
+        "R52",
+        "R57",
+        "R60"
+      ]
+    },
+    {
+      "item": "StackDiscipline::settle_job",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "StackDiscipline",
+      "kind": "fn",
+      "name": "settle_job",
+      "line": 132,
+      "role": "The settle hook of a settle job.",
+      "rocq": [
+        "settle_job"
+      ],
+      "tla": [
+        "SettleJob"
+      ],
+      "covers": [
+        "R53",
+        "R56"
+      ]
+    },
+    {
+      "item": "StackView::next_fire",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "StackView",
+      "kind": "fn",
+      "name": "next_fire",
+      "line": 159,
+      "role": "StackView::next_fire: the top waiter, then the record in flight or the top record, then the metered match and guard.",
+      "rocq": [
+        "next_fire"
+      ],
+      "tla": [
+        "SettleStep"
+      ],
+      "covers": [
+        "R53",
+        "R55"
+      ]
+    },
+    {
+      "item": "Top::challenge",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+      "scope": "Top",
+      "kind": "fn",
+      "name": "challenge",
+      "line": 227,
+      "role": "The challenge of the current top by an entry: a greater order, or an equal order and greater bytes.",
+      "rocq": [
+        "above",
+        "top_from"
+      ],
+      "tla": [
+        "TopRecords",
+        "TopWaiters"
+      ],
+      "covers": [
+        "R50"
+      ]
+    },
+    {
+      "item": "open_plan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "open_plan",
+      "line": 1156,
+      "role": "The start of a plan (I-21): the settle before the plan, then the cap check of the transaction. At the cap the plan stages nothing and the operation re-issues with the order rule of decision 43.",
+      "rocq": [
+        "plan_at_cap",
+        "with_settles"
+      ],
+      "tla": [
+        "PlanStart"
+      ],
+      "covers": [
+        "R55",
+        "R59",
+        "V15"
+      ]
+    },
+    {
+      "item": "Cx::rounds",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "rounds",
+      "line": 583,
+      "role": "The one FireRounds of a transaction (Plan.rounds): the settle before the plan, the plan and the settle after it count on it (I-21).",
+      "rocq": [
+        "fires",
+        "with_settles",
+        "settle_at",
+        "settle_of"
+      ],
+      "tla": [
+        "PhaseCount",
+        "Begin",
+        "SettleJob"
+      ],
+      "covers": [
+        "R55",
+        "V15"
+      ]
+    }
+  ]
+}

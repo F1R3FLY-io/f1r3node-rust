@@ -35,6 +35,7 @@ PREFIXES = {"rs/": "rspace++/src/rspace/"}
 ALIASES = {
     "accounting/mod.rs": "rholang/src/rust/interpreter/accounting/mod.rs",
     "util/mod.rs": "rholang/src/rust/interpreter/util/mod.rs",
+    "scan.rs": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
 }
 SKIP_DIRECTORIES = ("target", ".git")
 _RANGE = r"\d+(?:-\d+)?"

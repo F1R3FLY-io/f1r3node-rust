@@ -99,6 +99,7 @@ use rholang::rust::interpreter::spaces::errors::{
     SpaceError, SpaceReplyCode, SPACE_ERROR_REPLY_TAG,
 };
 use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
+use rholang::rust::interpreter::spaces::factory::defaults::{constructor_schema, required_params};
 use rholang::rust::interpreter::spaces::factory::urn::{factory_capability, factory_channel};
 use rholang::rust::interpreter::spaces::generic::{
     CollectionChannels, Discipline, GenericSpace, Ordered, OuterStore, Side,
@@ -6837,8 +6838,9 @@ fn prop_aliases_map_to_family() {
 }
 
 /// `qualifier_matrix`: the HashSet store takes the `seq` qualifier only, every other store
-/// takes every qualifier. In P4 the factory of `hashmap:queue` accepts `default` and refuses
-/// `temp` and `seq` with `QualifierUnavailable`, and every other family is unavailable.
+/// takes every qualifier. Every factory with a constructor schema accepts `default` and refuses
+/// `temp` and `seq` with `QualifierUnavailable` until P7. An Array factory then also needs its
+/// `size` (F7, P5 design v3 A.10). Every family without a schema is unavailable.
 #[test]
 fn prop_qualifier_matrix() {
     check(
@@ -6851,17 +6853,27 @@ fn prop_qualifier_matrix() {
             );
             let ctor = list(vec![gstring(qualifier.as_str())]);
             let validated = FactoryConstructor::validate(family, &ctor);
-            match (family == SpaceFactoryUrn::HASHMAP_QUEUE, qualifier) {
-                (true, SpaceQualifier::Default) => {
-                    let validated = validated.expect("hashmap:queue accepts default");
+            match (
+                constructor_schema(family).is_some(),
+                required_params(family),
+                qualifier,
+            ) {
+                (true, [], SpaceQualifier::Default) => {
+                    let validated = validated.expect("a family with a schema accepts default");
                     prop_assert_eq!(validated.qualifier, SpaceQualifier::Default);
                     prop_assert_eq!(validated.durability(), Durability::Durable);
                 }
-                (true, other) => prop_assert_eq!(
+                (true, [required, ..], SpaceQualifier::Default) => prop_assert_eq!(
+                    validated,
+                    Err(SpaceError::MissingParam {
+                        key: (*required).to_string(),
+                    })
+                ),
+                (true, _, other) => prop_assert_eq!(
                     validated,
                     Err(SpaceError::QualifierUnavailable(other.as_str().to_string()))
                 ),
-                (false, _) => prop_assert_eq!(
+                (false, _, _) => prop_assert_eq!(
                     validated,
                     Err(SpaceError::FamilyUnavailable {
                         outer: family.outer.as_str().to_string(),

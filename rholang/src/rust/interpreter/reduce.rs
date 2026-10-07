@@ -1642,7 +1642,7 @@ impl ReducerCore {
         // `new` no longer counts toward the per-COMM consensus cost.
         self.metering
             .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
-        match self.reified_allocate(new, &env, &mut rand) {
+        match self.reified_allocate(new, &env, &mut rand, authority).await {
             Ok(env) => {
                 self.eval_with_authority(
                     unwrap_option_safe(new.p.clone())?,

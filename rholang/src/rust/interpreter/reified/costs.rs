@@ -384,7 +384,9 @@ mod tests {
         // of which reads two keys, as `reserve_ordered_lookup` of the branch does.
         let host_work = budget(1_000_000);
         let meter = ScanMeter::new(Some(host_work.clone()));
-        meter.ordered_lookup(9, 40).expect("the lookup fits the budget");
+        meter
+            .ordered_lookup(9, 40)
+            .expect("the lookup fits the budget");
         let comparisons = tree_search_bound(9);
         assert!(comparisons > 0);
         assert_eq!(

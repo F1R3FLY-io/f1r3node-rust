@@ -1,8 +1,8 @@
-//! The Reified system processes of P4 (P4 design A.5 and C.9).
+//! The Reified system processes of P4 and P5 (P4 design A.5 and C.9, P5 design v3 A.7).
 //!
 //! | URN                             | Process                                   |
 //! |---------------------------------|-------------------------------------------|
-//! | `rho:space:hashmap:queue`       | the factory of the family (`factory.rs`)  |
+//! | a family URN or a FIPS alias    | the factory of the family (`factory.rs`)  |
 //! | `rho:space:getSpaceAgent`       | `getSpaceAgent!(ret, s)`                  |
 //! | `rho:assert:assertEqual`        | `assertEqual!(ret, a, b)` (decision 33)   |
 //! | `rho:reified:internal:handleOp` | the handle process (`handle.rs`, A6)      |
@@ -13,11 +13,11 @@
 //! arity (I-18).
 //!
 //! `getSpaceAgent!(ret, s)` classifies `s` with `classify_space_ref`. For a native space it
-//! reads `C(sid)` in a read-only job and replies the capability of the factory of the family,
-//! which equals the urn map value of the factory URN (plan decision 9.4). Every other result is
-//! a typed error reply (A22): `DanglingHandle` for a missing config record, `NotANativeSpace`
-//! for a user agent, and the code of the reference error otherwise. `assertEqual!(ret, a, b)`
-//! replies `true` when `a` and `b` are equal after the sort of `ParSortMatcher`.
+//! reads `C(sid)` in a read-only job and replies the capability of the factory of the family.
+//! That capability is the urn map value of the family URN and of its alias (decision 9.4).
+//! Every other result is a typed error reply (A22): `DanglingHandle` for a missing config
+//! record, `NotANativeSpace` for a user agent, and the code of the reference error otherwise.
+//! `assertEqual!(ret, a, b)` replies `true` for equal `a` and `b` after `ParSortMatcher`.
 
 use std::sync::Arc;
 
@@ -42,7 +42,7 @@ use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError}
 use crate::rust::interpreter::spaces::agent::SpaceAgent;
 use crate::rust::interpreter::spaces::errors::{SpaceError, SpaceReplyCode};
 use crate::rust::interpreter::spaces::factory::constructor::family_of;
-use crate::rust::interpreter::spaces::factory::urn::{factory_capability, REGISTERED_FAMILIES};
+use crate::rust::interpreter::spaces::factory::urn::{self, factory_capability};
 use crate::rust::interpreter::spaces::families::FamilyAgent;
 use crate::rust::interpreter::spaces::namespace::NativeSpace;
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
@@ -53,20 +53,31 @@ use crate::rust::interpreter::system_processes::{Definition, ProcessContext};
 /// record has one format, so the agent also reads the config of any space.
 pub fn native_agent() -> Arc<dyn SpaceAgent> { Arc::new(FamilyAgent) }
 
-/// The definitions of the Reified system processes of `runtime`: the factory of each registered
-/// family, `getSpaceAgent`, `assertEqual` and the handle process.
+/// The definitions of the Reified system processes of `runtime`. The four processes of P4 come
+/// first, in their P4 order: the factory of `hashmap:queue`, `getSpaceAgent`, `assertEqual` and
+/// the handle process. Then come the factory of each registered family of P5, in family-index
+/// order, and the factory of each registered alias (`urn::registered_p5_families`,
+/// `urn::registered_aliases`). An alias has the channel, the arity, the body ref and the
+/// handler of its family, so the second install of its channel changes nothing: the install
+/// map and the dispatch table are keyed by the channel and by the body ref.
 pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     let agent = native_agent();
-    let mut definitions = Vec::with_capacity(P4_SYSTEM_CHANNELS.len());
-    for (family, channel) in REGISTERED_FAMILIES {
-        definitions.push(definition(
+    let families: Vec<_> = urn::registered_p5_families().collect();
+    let aliases: Vec<_> = urn::registered_aliases().collect();
+    let mut definitions =
+        Vec::with_capacity(P4_SYSTEM_CHANNELS.len() + families.len() + aliases.len());
+    let factory = |family, channel| {
+        definition(
             channel,
             ReifiedProcess::Factory(FactoryProcess::new(
                 family,
                 Arc::clone(runtime),
                 Arc::clone(&agent),
             )),
-        ));
+        )
+    };
+    for (family, channel) in urn::REGISTERED_FAMILIES {
+        definitions.push(factory(family, channel));
     }
     definitions.push(definition(
         GET_SPACE_AGENT_PROCESS,
@@ -81,8 +92,14 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     ));
     definitions.push(definition(
         HANDLE_OP_PROCESS,
-        ReifiedProcess::Handle(HandleProcess::new(Arc::clone(runtime), agent)),
+        ReifiedProcess::Handle(HandleProcess::new(Arc::clone(runtime), Arc::clone(&agent))),
     ));
+    for (family, channel) in families {
+        definitions.push(factory(family, channel));
+    }
+    for (channel, family) in aliases {
+        definitions.push(factory(family, channel));
+    }
     definitions
 }
 
@@ -481,6 +498,7 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::reified::factory::handle_capability;
     use crate::rust::interpreter::reified::runtime::{native_replay, unavailable};
+    use crate::rust::interpreter::reified::system_channels::P5_SYSTEM_CHANNELS;
     use crate::rust::interpreter::spaces::namespace::{self, NameTail, GET_SPACE_AGENT};
 
     fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
@@ -499,8 +517,19 @@ mod tests {
     fn space_system_ops_arity_and_body_refs_stable() {
         let runtime = unavailable();
         let defined = definitions(&runtime);
-        assert_eq!(defined.len(), P4_SYSTEM_CHANNELS.len());
-        for (definition, channel) in defined.iter().zip(P4_SYSTEM_CHANNELS) {
+        // The four processes of P4 first, then the registered families of P5 in family-index
+        // order, then the registered aliases.
+        let p5: Vec<SystemChannel> = urn::registered_p5_families()
+            .map(|(_, channel)| channel)
+            .chain(urn::registered_aliases().map(|(channel, _)| channel))
+            .collect();
+        let expected: Vec<SystemChannel> = P4_SYSTEM_CHANNELS
+            .iter()
+            .chain(p5.iter())
+            .copied()
+            .collect();
+        assert_eq!(defined.len(), expected.len());
+        for (definition, channel) in defined.iter().zip(&expected) {
             assert_eq!(definition.urn, channel.urn);
             assert_eq!(definition.fixed_channel, channel.channel());
             assert_eq!(definition.arity, channel.arity);
@@ -514,17 +543,57 @@ mod tests {
                 )
             );
         }
+        let rows: Vec<SystemChannel> = P5_SYSTEM_CHANNELS
+            .iter()
+            .filter(|channel| p5.contains(channel))
+            .copied()
+            .collect();
+        assert_eq!(
+            rows, p5,
+            "the P5 definitions keep the order of the P5 table"
+        );
         assert_eq!(
             Some(defined[0].to_urn_map().1),
             factory_capability(SpaceFactoryUrn::HASHMAP_QUEUE)
         );
         let mut processes = definitions(&runtime);
         register(&mut processes, &runtime);
-        assert_eq!(processes.len(), 2 * P4_SYSTEM_CHANNELS.len());
+        assert_eq!(processes.len(), 2 * expected.len());
         assert!(processes
             .iter()
-            .zip(P4_SYSTEM_CHANNELS.iter().chain(P4_SYSTEM_CHANNELS.iter()))
+            .zip(expected.iter().chain(expected.iter()))
             .all(|(definition, channel)| definition.body_ref == channel.body_ref()));
+    }
+
+    #[test]
+    fn space_system_ops_alias_definition_is_the_definition_of_its_family() {
+        let runtime = unavailable();
+        let factory = |family: SpaceFactoryUrn, channel: SystemChannel| {
+            definition(
+                channel,
+                ReifiedProcess::Factory(FactoryProcess::new(
+                    family,
+                    Arc::clone(&runtime),
+                    native_agent(),
+                )),
+            )
+        };
+        for (alias, family) in urn::P5_ALIAS_ROWS {
+            let (_, channel) = urn::P5_FAMILY_ROWS
+                .into_iter()
+                .find(|(candidate, _)| *candidate == family)
+                .expect("the family of an alias has a row");
+            let of_alias = factory(family, alias);
+            let of_family = factory(family, channel);
+            assert_eq!(of_alias.urn, alias.urn);
+            assert_ne!(of_alias.urn, of_family.urn);
+            assert_eq!(of_alias.fixed_channel, of_family.fixed_channel);
+            assert_eq!(of_alias.arity, of_family.arity);
+            assert_eq!(of_alias.body_ref, of_family.body_ref);
+            assert_eq!(of_alias.remainder, None);
+            assert_eq!(of_alias.to_urn_map().1, of_family.to_urn_map().1);
+            assert_eq!(Some(of_alias.to_urn_map().1), factory_capability(family));
+        }
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 # Reified RSpaces — Formal Verification (P1: the storage substrate, P2: the
 # wire encoding, P4: the hashmap:queue slice, its metering and its legacy
-# charges)
+# charges, P5 wave W2: the engine, the bag, cell and stack disciplines, the
+# Array and Vector stores, the PathMap paths and the P5 families)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -48,16 +49,23 @@
 #   HeadOnlyDisciplines
 #                     P4 (9 headlines): the head-only queue discipline and
 #                     the produce and consume plans of GenericSpace.
-#   SpaceRefs         P4 (10 headlines): space references, channel routing
-#                     R1-R7, the USE wrapper and the handle dispatch.
+#   SpaceRefs         P4 (11 headlines): space references, channel routing
+#                     R1-R7, the USE wrapper, the handle dispatch and the
+#                     native fail-closed rule (decision 46). P5 (1
+#                     headline): a receive query routes its inner channel.
 #   SpaceFactory      P4 (8 headlines): the space families, the factory
 #                     constructor, the space id, persistent sends to system
-#                     ops and SpaceAlreadyExists.
+#                     ops and SpaceAlreadyExists. P5 (5 headlines): the
+#                     registered families follow the dispatch arms, the
+#                     FIPS alias, and the constructor params (F7, F26-F28,
+#                     I-10).
 #   AgentReadCoverage Decision 42 (8 headlines): a space agent reserves each
 #                     read and copy before it makes it (DR-88 of
 #                     feature/cost-accounted-rho), its reservations precede
 #                     the commit, and its charges do not depend on the list
-#                     order of the staged view or on unread payloads.
+#                     order of the staged view or on unread payloads. P5
+#                     (1 headline): the staging primitives of the S1
+#                     engine reserve before they read or grow.
 #   LegacyCharges     Decision 45, Option P (2 headlines): the legacy
 #                     storage charges of a space transaction. The callbacks
 #                     with the carried post-charges, and then the tail, make
@@ -65,6 +73,35 @@
 #                     budget, stop point and applied operations (Q79).
 #                     Replay with the operations of play stops where play
 #                     stops (Q80).
+#   CellDiscipline    P5 (3 headlines): a cell holds one record and one
+#                     waiter (F15), its peek re-store never meets a full
+#                     slot, and a re-entered element acts as a fresh one.
+#   DataCollection    P5a (7 headlines): the bag order, the first spatial
+#                     match, the multiset laws, the peek re-store as the
+#                     host's second send (Rule E), and the scan metering.
+#   ContinuationCollection
+#                     P5a (5 headlines): waiters are removed by identity,
+#                     parked once, visited in canonical order, and a head
+#                     side offers one candidate.
+#   Match             P5 (3 headlines): the plans use the injected matcher,
+#                     check the guard as the host does, and the legacy
+#                     wildcard matcher breaks pattern enforcement.
+#   GenericRSpace     P5 (5 headlines): fires bind only matching entries,
+#                     no match stays pending, the peek re-store equals the
+#                     host's second send, and re-issues keep identities.
+#   OuterStorage      P5d (8 headlines): the Array and Vector allocator, its
+#                     index names, the key check (F8) and its metering.
+#   VectorStore       P5d (3 headlines): the Vector store grows without a
+#                     bound and keeps its indices.
+#   HashMapStore      P5d (2 headlines): the HashMap store keys a collection
+#                     by its canonical channel (A5).
+#   PathMapPrefix     P5e (6 headlines): path keys order paths by prefix,
+#                     the re-rooting laws, the FIPS example, and a total
+#                     candidate order.
+#   StackDiscipline   P5b (13 headlines): the head of a stack, LIFO order,
+#                     head blocking, the settle loop and its termination,
+#                     re-entry at the LIFO place, and one fire count for
+#                     each transaction (decision 49).
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -88,3 +125,13 @@ theories/SpaceRefs.v
 theories/SpaceFactory.v
 theories/AgentReadCoverage.v
 theories/LegacyCharges.v
+theories/CellDiscipline.v
+theories/DataCollection.v
+theories/ContinuationCollection.v
+theories/Match.v
+theories/GenericRSpace.v
+theories/OuterStorage.v
+theories/VectorStore.v
+theories/HashMapStore.v
+theories/PathMapPrefix.v
+theories/StackDiscipline.v

@@ -157,7 +157,7 @@
                              store_persistent_data
                              (rs/rspace/space_play.rs:294,
                              rs/replay_rspace/space_replay.rs:430). ssh
-                             removed_records (rs/space_store_handle.rs:1092)
+                             removed_records (rs/space_store_handle.rs:1089)
                              stages the same records
    backend                   design §2.3 (ReportingRspace delegates)
    sub_order, sched_part     rholang/src/rust/interpreter/
@@ -212,15 +212,15 @@
    sid, view_get, overlay,   ssh channel_key, group_identity, the TxnView
      installed_by_sid        maps keyed by Blake2b256Hash, and the installed
                              set of TxnCore (FR-2)
-   peeks_ok                  ssh check_peeks (rs/space_store_handle.rs:1021):
+   peeks_ok                  ssh check_peeks (rs/space_store_handle.rs:1018):
                              no peeks, or every bind peeks, else
                              MixedArrowJoin. Decision 45: it only checks the
                              peek set (peek_retention is disabled)
    vpf_effects, vcf_effects, FR-10 and decision 45: ssh TxnCore::stage_produce
-     commit_play_produce,    (rs/space_store_handle.rs:1879),
-     commit_replay_produce,  apply_fire_to_view (rs/space_store_handle.rs:2032)
+     commit_play_produce,    (rs/space_store_handle.rs:1876),
+     commit_replay_produce,  apply_fire_to_view (rs/space_store_handle.rs:2029)
      commit_play_consume,    and TxnCore::stage_consume
-     commit_replay_consume   (rs/space_store_handle.rs:2093), PlayBackend::
+     commit_replay_consume   (rs/space_store_handle.rs:2090), PlayBackend::
                              produce_fire and consume_observed
                              (rs/rspace/space_play.rs:149 and 230), and
                              ReplayBackend::produce_fire and consume_observed
@@ -230,7 +230,7 @@
    fire_stores_no_datum,     FR-10 after decision 45 (design report §C.10):
      fire_view_removes       a fire removes exactly what the host removes,
                              and it never stores a datum
-   wrap_flags,               ssh fired_receipt (rs/space_store_handle.rs:2653)
+   wrap_flags,               ssh fired_receipt (rs/space_store_handle.rs:2650)
      fired_receipt           keeps the flags of wrap_result
                              (rs/rspace/ops_consume.rs:204-229). It fails
                              with Inconsistent when the results do not line
@@ -242,13 +242,13 @@
                              with the same Produce::create identity
                              (decision 30)
    restore_of,               decision 45: receive_head
-     restores_after          (rholang/src/rust/interpreter/spaces/generic.rs:1208)
+     restores_after          (rholang/src/rust/interpreter/spaces/generic.rs:1253)
                              copies the head record when a peek fires on a
                              non-persistent record
-                             (rholang/src/rust/interpreter/spaces/generic.rs:1251).
+                             (rholang/src/rust/interpreter/spaces/generic.rs:1297).
                              restore_peeked and Cx::restore
-                             (rholang/src/rust/interpreter/spaces/generic.rs:1293
-                             and 869) stage a Store of that record with
+                             (rholang/src/rust/interpreter/spaces/generic.rs:1340
+                             and 882) stage a Store of that record with
                              persist = false right after the fire. The model
                              does not include the record authority that the
                              re-store registers (Introduction::for_record,
@@ -269,7 +269,7 @@
    stored_sources,           Produce::create (rs/trace/event.rs:238-249)
      restore_same_identity   hashes the channel, the data and the persist
                              flag. ssh stage_produce gives a staged produce
-                             that identity (rs/space_store_handle.rs:1895). So
+                             that identity (rs/space_store_handle.rs:1892). So
                              a re-store of the bytes of a record has the
                              identity of the source produce of the record
    restore_store_staged,     a re-store is a staged Store. put_datum inserts

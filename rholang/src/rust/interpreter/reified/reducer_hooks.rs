@@ -1,5 +1,5 @@
 //! The Reified RSpaces hooks of the reducer (plan decisions 22 and 32, P4 design C.3, readiness
-//! review §2 and §4).
+//! review §2 and §4, P5 design v3 A.8 and A.10).
 //!
 //! This file is the child module `reified_hooks` of `reduce.rs`, so it uses the private items of
 //! the reducer. Hook H1, the term filter, is `util::is_evaluated_process_expr`.
@@ -7,10 +7,13 @@
 //! * H2, `eval_marker`: `use s { P }` evaluates `P` under the use-context of the native space
 //!   `s`. NEWSPACE moves the names of its annotated binders into their spaces.
 //! * H3, `reified_produce`: the produce of `eval_send`. It routes the channel and applies the
-//!   rules for params and for persistent sends.
+//!   rules for params and for persistent sends. The named params of a send to a collection go
+//!   to the agent of its space (P5b).
 //! * `reified_consume` and `reified_allocate`: the consume of `eval_receive` and the names of
-//!   `eval_new`, under the use-context of the reducer.
-//! * H4, `reject_query_source`: a QUERY source fails closed until P5.
+//!   `eval_new`, under the use-context of the reducer. A receive with a QUERY tuple as its source
+//!   routes the inner channel of the query (P5b). A `new` that puts names into a space runs one
+//!   allocation job for each space of its binders (P5d, F11).
+//! * H4, `reject_query_source`: a malformed QUERY tuple fails closed.
 //!
 //! A channel that a program names without Reified syntax routes to the default space. Then each
 //! hook calls the HEAD method with identical arguments, so ordinary execution does not change.
@@ -21,8 +24,8 @@
 //! that the canonical encoder derives from the children (I-20). The decoder still accepts only
 //! the canonical image of the encoder.
 
-use std::collections::BTreeMap;
 use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -30,13 +33,14 @@ use std::sync::Arc;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    BindPattern, CostAuthority, EList, EMap, ETuple, Expr, ListParWithRandom, New, Par,
+    BindPattern, Bundle, CostAuthority, EList, EMap, ETuple, Expr, ListParWithRandom, New, Par,
     ParWithRandom, TaggedContinuation,
 };
 use models::rust::reified::encoding::{
     decode_process_tuple, decode_query_source, marker_of, sole_marker_tuple, split_trailing_params,
-    Marker, NewSpace, ProcessConstruct, ReifiedDecodeError, SendParams, UseBlock,
+    Marker, NewSpace, ProcessConstruct, QuerySpec, ReifiedDecodeError, SendParams, UseBlock,
 };
+use models::rust::rholang::implicits::single_bundle;
 use models::rust::utils::{new_elist_par, union};
 
 use super::ReducerCore;
@@ -54,7 +58,8 @@ use crate::rust::interpreter::reified::system_channels::{
 };
 use crate::rust::interpreter::reified::system_processes::native_agent;
 use crate::rust::interpreter::spaces::agent::{
-    ConsumeOp, ProduceOp, SpaceFire, SpaceOp, SpaceOutcome, SpaceReissue,
+    AllocOp, ConsumeOp, ProduceOp, QueryParams, SpaceAgent, SpaceFire, SpaceOp, SpaceOutcome,
+    SpaceReissue,
 };
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{self, CollectionKey, NameTail, NativeSpace};
@@ -67,6 +72,9 @@ type DispatchFuture<'a> =
 /// The dispatch data of a fired continuation: `(channel, matched datum, removed datum,
 /// persistent)` for each bind.
 type DispatchData = Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>;
+
+/// The text of HEAD for a receive on a bundle without the read flag (`unbundle_receive`).
+const NOT_READABLE: &str = "Trying to read from non-readable channel.";
 
 /// The target of a send after routing.
 enum SendRoute {
@@ -81,6 +89,7 @@ enum SendRoute {
 }
 
 /// The target of a receive after routing.
+#[derive(Debug)]
 enum ReceiveRoute {
     /// The HEAD consume on the default space.
     Host(Vec<(BindPattern, Par)>),
@@ -90,7 +99,22 @@ enum ReceiveRoute {
         key: CollectionKey,
         channel: Par,
         pattern: BindPattern,
+        /// The query of the bind, or `None` (P5b). The agent checks it against the schema of
+        /// its discipline.
+        query: Option<QueryParams>,
     },
+}
+
+/// A bind of a receive after its source is read and its channel is routed.
+struct RoutedBind {
+    /// The pattern of the bind.
+    pattern: BindPattern,
+    /// The channel of the bind: the source, or the inner channel of its QUERY tuple.
+    channel: Par,
+    /// The query of the bind, or `None` for a source without a QUERY tuple.
+    query: Option<QueryParams>,
+    /// The route of the channel.
+    route: Route,
 }
 
 /// The spaces of the plain binders of a `new`.
@@ -99,6 +123,53 @@ enum BinderSpaces<'s> {
     Each(&'s [Option<NativeSpace>]),
     /// Every plain binder goes to this space.
     All(NativeSpace),
+}
+
+/// The plain binders of a `new` that go to native spaces, grouped by space (P5d, F11).
+struct BinderGroups {
+    /// Each distinct space, in the order of its first binder, with the number of its binders.
+    spaces: Vec<(NativeSpace, u64)>,
+    /// The index in `spaces` of the space of each plain binder, or `None` for a binder that
+    /// keeps the name of HEAD.
+    of_binder: Vec<Option<usize>>,
+}
+
+impl BinderGroups {
+    /// Groups the first `binders` plain binders by their spaces. A space gets the place of its
+    /// first binder, so the order of the groups is deterministic.
+    fn new(binders: usize, spaces: BinderSpaces<'_>) -> Result<Self, InterpreterError> {
+        let mut groups = BinderGroups {
+            spaces: Vec::new(),
+            of_binder: Vec::with_capacity(binders),
+        };
+        let mut group_of_space: HashMap<NativeSpace, usize> = HashMap::new();
+        for offset in 0..binders {
+            let space = match spaces {
+                BinderSpaces::Each(spaces) => spaces.get(offset).copied().flatten(),
+                BinderSpaces::All(space) => Some(space),
+            };
+            let group = match space {
+                None => None,
+                Some(space) => {
+                    let next = groups.spaces.len();
+                    let group = *group_of_space.entry(space).or_insert(next);
+                    match groups.spaces.get_mut(group) {
+                        Some((_, count)) => {
+                            *count = count.checked_add(1).ok_or_else(|| {
+                                InterpreterError::BugFoundError(
+                                    "the binders of one space do not fit in u64".to_string(),
+                                )
+                            })?;
+                        }
+                        None => groups.spaces.push((space, 1)),
+                    }
+                    Some(group)
+                }
+            };
+            groups.of_binder.push(group);
+        }
+        Ok(groups)
+    }
 }
 
 impl ReducerCore {
@@ -140,13 +211,15 @@ impl ReducerCore {
             .await
     }
 
-    /// `new x_1[: s_1], … in P` (P4 design C.3). The steps are those of `eval_new`, with one
-    /// more step between the charge and the allocation:
+    /// `new x_1[: s_1], … in P` (P4 design C.3, P5 design v3 A.10). The steps are those of
+    /// `eval_new`, with one more step between the charge and the allocation:
     ///
     /// 1. Charge `new_bindings_cost` for every binder.
     /// 2. Evaluate each annotation in the outer environment and classify it. A binder without an
     ///    annotation takes the space of the use-context, or the default space without one.
-    /// 3. Allocate the names with the draws of HEAD, and move each binder into its space.
+    /// 3. Allocate the names with the draws of HEAD, then run one allocation job for each
+    ///    distinct space of the binders (`allocate_in_spaces`), and move each binder into its
+    ///    space.
     /// 4. Evaluate `P` with the remaining random state.
     async fn eval_new_space(
         &self,
@@ -166,7 +239,16 @@ impl ReducerCore {
                 None => context,
             });
         }
-        let bound = self.allocate_in_spaces(&new, env, &mut rand, BinderSpaces::Each(&spaces))?;
+        let bound = self
+            .allocate_in_spaces(
+                native_agent(),
+                &new,
+                env,
+                &mut rand,
+                BinderSpaces::Each(&spaces),
+                authority,
+            )
+            .await?;
         let body = unwrap_option_safe(new.p)?;
         self.eval_with_authority(body, &bound, rand, authority.clone())
             .await
@@ -193,7 +275,8 @@ impl ReducerCore {
         self.space_ctx.as_ref().map(|target| target.native)
     }
 
-    /// Hook H3: the produce of `eval_send` (P4 design C.3, readiness review §4).
+    /// Hook H3: the produce of `eval_send` (P4 design C.3, readiness review §4, P5 design v3
+    /// A.8).
     ///
     /// 1. A trailing PARAMS tuple is decoded after the I-20 refresh. A malformed tuple fails with
     ///    `Malformed`.
@@ -201,7 +284,9 @@ impl ReducerCore {
     /// 3. On the default space, a persistent send to an op channel or to a handle aborts (A21).
     ///    A factory call gets its constructor as one list. A handle call keeps its params. Every
     ///    other channel rejects params.
-    /// 4. On a native space, the produce runs with `space_op`. A queue takes no params.
+    /// 4. On a native space, the produce runs with `space_op`. Its named params go to the agent
+    ///    in `ProduceOp::params` (`space_params`), and the PARAMS tuple leaves the datum.
+    ///    Positional params abort.
     /// 5. A space that a user agent implements fails closed until P8.
     pub(super) fn reified_produce<'a>(
         &'a self,
@@ -254,31 +339,41 @@ impl ReducerCore {
                     authority,
                 })
             }
-            Route::Space { space, key } => match params {
-                None => Ok(SendRoute::Space(ProduceOp {
+            Route::Space { space, key } => {
+                let params = match params {
+                    None => BTreeMap::new(),
+                    Some(params) => {
+                        data.pars.pop();
+                        space_params(params)?
+                    }
+                };
+                Ok(SendRoute::Space(ProduceOp {
                     space,
                     key,
                     channel: chan,
                     data,
                     persistent,
-                    params: BTreeMap::new(),
+                    params,
                     authority,
                     reissued_ord: None,
-                })),
-                Some(params) => Err(space_params_error(params)),
-            },
+                }))
+            }
             Route::Agent => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
         }
     }
 
-    /// The consume of `eval_receive` (P4 design C.3). It takes the parameters of `consume`.
+    /// The consume of `eval_receive` (P4 design C.3, P5 design v3 A.8). It takes the parameters
+    /// of `consume`.
     ///
-    /// Outside a use-context, a receive whose channels all route to the default space calls
-    /// `consume` with identical arguments. Otherwise the body is wrapped in the USE tuple of the
-    /// use-context first, and the routes decide:
+    /// Outside a use-context, a receive whose channels all route to the default space and are
+    /// no marker tuples calls `consume` with identical arguments (`takes_fast_path`). Otherwise
+    /// the body is wrapped in the USE tuple of the use-context first. Then each bind is read
+    /// (`query_bind`) and routed, and the routes decide:
     ///
-    /// * Every channel on the default space: `consume` with the wrapped body.
-    /// * One channel on a native space: a consume with `space_op`.
+    /// * Every channel on the default space and no query: `consume` with the wrapped body.
+    /// * A query on the default space: `QuerySpecUnsupported`.
+    /// * One channel on a native space: a consume with `space_op`, with the query of the bind.
+    ///   The agent checks the query against the schema of its discipline.
     /// * Two or more channels on one native space: `OrderedJoinUnsupported` (A3).
     /// * A channel of a user agent: `AgentSpacesUnavailable`.
     /// * Every other join: `CrossSpaceJoin`.
@@ -294,11 +389,7 @@ impl ReducerCore {
     ) -> Pin<
         Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send + 'a>,
     > {
-        if self.space_ctx.is_none()
-            && binds
-                .iter()
-                .all(|(_, channel)| routes_to_default_without_context(channel))
-        {
+        if self.space_ctx.is_none() && binds.iter().all(|(_, channel)| takes_fast_path(channel)) {
             return self.consume(
                 binds,
                 body,
@@ -329,6 +420,7 @@ impl ReducerCore {
                 key,
                 channel,
                 pattern,
+                query,
             }) => Box::pin(self.space_op(
                 SpaceOp::Consume(ConsumeOp {
                     space,
@@ -339,7 +431,7 @@ impl ReducerCore {
                     persistent,
                     peek,
                     guard,
-                    query: None,
+                    query,
                     authority,
                     introduction_authority,
                     reissued_ord: None,
@@ -350,80 +442,151 @@ impl ReducerCore {
         }
     }
 
+    /// Reads the source of each bind (`query_bind`) and routes its channel, in bind order. Then
+    /// the routes decide the target of the receive (`single_bind_route`, `join_route`).
     fn route_receive(
         &self,
         binds: Vec<(BindPattern, Par)>,
     ) -> Result<ReceiveRoute, InterpreterError> {
         let mut routed = Vec::with_capacity(binds.len());
-        for (pattern, channel) in binds {
+        for (pattern, source) in binds {
+            let (channel, query) = query_bind(source)?;
             let route = self.route_channel(&channel)?;
-            routed.push((pattern, channel, route));
-        }
-        if routed
-            .iter()
-            .all(|(_, _, route)| matches!(route, Route::Default))
-        {
-            return Ok(ReceiveRoute::Host(
-                routed
-                    .into_iter()
-                    .map(|(pattern, channel, _)| (pattern, channel))
-                    .collect(),
-            ));
-        }
-        match <[_; 1]>::try_from(routed) {
-            Ok([(pattern, channel, Route::Space { space, key })]) => Ok(ReceiveRoute::Space {
-                space,
-                key,
-                channel,
+            routed.push(RoutedBind {
                 pattern,
-            }),
-            Ok([(pattern, channel, Route::Default)]) => {
-                Ok(ReceiveRoute::Host(vec![(pattern, channel)]))
-            }
-            Ok([(_, _, Route::Agent)]) => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
-            Err(routed) => {
-                Err(join_error(routed.iter().map(|(_, _, route)| route).collect()).into())
-            }
+                channel,
+                query,
+                route,
+            });
+        }
+        match <[RoutedBind; 1]>::try_from(routed) {
+            Ok([bind]) => single_bind_route(bind),
+            Err(routed) => join_route(routed),
         }
     }
 
-    /// The names of `eval_new` (P4 design C.3). It takes the parameters of
+    /// The names of `eval_new` (P4 design C.3, P5 design v3 A.10). It takes the parameters of
     /// `allocate_new_bindings` without the URN map of the reducer. Outside a use-context the
-    /// result is the result of `allocate_new_bindings`. Inside a use-context, each plain binder
-    /// becomes a name of the space of the context, with the same random draws. The URI binders
-    /// keep their values.
-    pub(super) fn reified_allocate(
+    /// result is the result of `allocate_new_bindings`, and no job runs. Inside a use-context,
+    /// each plain binder becomes a name of the space of the context, through one allocation job
+    /// for that space (`allocate_in_spaces`). The URI binders keep their values. `authority` is
+    /// the cost authority of the process that evaluates the `new`.
+    pub(super) async fn reified_allocate(
         &self,
         new: &New,
         env: &Env<Par>,
         rand: &mut Blake2b512Random,
+        authority: &CostAuthority,
     ) -> Result<Env<Par>, InterpreterError> {
         match self.context_space() {
             None => super::allocate_new_bindings(new, env, rand, &self.urn_map),
-            Some(space) => self.allocate_in_spaces(new, env, rand, BinderSpaces::All(space)),
+            Some(space) => {
+                self.allocate_in_spaces(
+                    native_agent(),
+                    new,
+                    env,
+                    rand,
+                    BinderSpaces::All(space),
+                    authority,
+                )
+                .await
+            }
         }
     }
 
-    /// Allocates the names of `new` with `allocate_new_bindings`, then moves each plain binder
-    /// that has a space into it: `GPrivate(r)` becomes `GPrivate(E0‖N‖sid‖r)`.
-    fn allocate_in_spaces(
+    /// Allocates the names of `new` and moves each plain binder that has a space into it (P5d,
+    /// F11):
+    ///
+    /// 1. `allocate_new_bindings` draws every name as HEAD does.
+    /// 2. The plain binders that have a space form one group for each distinct space, in the
+    ///    order of the first binder of each space (`BinderGroups`).
+    /// 3. Each group runs one allocation job of `agent` (`ReifiedRuntime::allocate`), in group
+    ///    order. The job reads the config of the space, so a missing space fails with
+    ///    `DanglingHandle`, and native execution fails with `SpacesUnsupportedInNativeExecution`
+    ///    (decision 46).
+    /// 4. A store without an allocator answers `Baseline`: each binder of the group keeps the
+    ///    draw `r` of HEAD as its tail, and `GPrivate(r)` becomes `GPrivate(E0‖N‖sid‖r)`. An
+    ///    Array or a Vector space gives one index `i` for each binder of the group, in binder
+    ///    order, and the name becomes `GPrivate(E0‖N‖sid‖u64_be(i))`.
+    ///
+    /// Each job takes the random state of `rand` after the draws of HEAD, and no job draws. So
+    /// the body gets the random state of HEAD. The jobs of one `new` touch the allocator records
+    /// of distinct spaces, so their identities differ by channel. Each job runs with
+    /// `authority`, the cost authority of the process that evaluates the `new`. The process pays
+    /// for its allocation, as its call `s!gensym()` would (P4 design B.7).
+    async fn allocate_in_spaces(
         &self,
+        agent: Arc<dyn SpaceAgent>,
         new: &New,
         env: &Env<Par>,
         rand: &mut Blake2b512Random,
         spaces: BinderSpaces<'_>,
+        authority: &CostAuthority,
     ) -> Result<Env<Par>, InterpreterError> {
         let mut bound = super::allocate_new_bindings(new, env, rand, &self.urn_map)?;
-        for offset in 0..plain_binders(new)? {
-            let space = match spaces {
-                BinderSpaces::Each(spaces) => spaces.get(offset).copied().flatten(),
-                BinderSpaces::All(space) => Some(space),
+        let groups = BinderGroups::new(plain_binders(new)?, spaces)?;
+        let random_state = rand.to_bytes();
+        let mut allocated = Vec::with_capacity(groups.spaces.len());
+        for &(space, count) in &groups.spaces {
+            allocated.push(
+                self.allocate_names(Arc::clone(&agent), space, count, &random_state, authority)
+                    .await?,
+            );
+        }
+        let mut next_index = vec![0_usize; groups.spaces.len()];
+        for (offset, group) in groups.of_binder.into_iter().enumerate() {
+            let Some(group) = group else {
+                continue;
             };
-            if let Some(space) = space {
-                stamp_name(&mut bound, binder_level(env, offset)?, space)?;
+            let level = binder_level(env, offset)?;
+            let (space, _) = groups.spaces[group];
+            match &allocated[group] {
+                None => stamp_name(&mut bound, level, space)?,
+                Some(indices) => {
+                    let index = indices.get(next_index[group]).copied().ok_or_else(|| {
+                        InterpreterError::BugFoundError(
+                            "an allocation has fewer names than its binders".to_string(),
+                        )
+                    })?;
+                    next_index[group] += 1;
+                    put_index_name(&mut bound, level, space, index)?;
+                }
             }
         }
         Ok(bound)
+    }
+
+    /// Runs the allocation job of `count` names of `space` with `agent` (P5d, F11), with the
+    /// random state `random_state` and the cost authority `authority`. `None` is the `Baseline`
+    /// of a store without an allocator. An allocation gives exactly `count` indices, or the space
+    /// is `Inconsistent`.
+    async fn allocate_names(
+        &self,
+        agent: Arc<dyn SpaceAgent>,
+        space: NativeSpace,
+        count: u64,
+        random_state: &[u8],
+        authority: &CostAuthority,
+    ) -> Result<Option<Vec<u64>>, InterpreterError> {
+        let op = AllocOp {
+            space,
+            count,
+            random_state: random_state.to_vec(),
+            authority: authority.clone(),
+            // Disabled by the HOOKS review (P4 design B.7): the job takes the authority of the
+            // process that evaluates the `new`, not the empty authority.
+            // authority: CostAuthority::default(),
+        };
+        match self.reified.allocate(agent, op).await? {
+            None => Ok(None),
+            Some(indices) => match u64::try_from(indices.len()) {
+                Ok(allocated) if allocated == count => Ok(Some(indices)),
+                Ok(_) | Err(_) => Err(SpaceError::Inconsistent(
+                    "an allocation gave another number of names than its binders",
+                )
+                .into()),
+            },
+        }
     }
 
     /// Runs one operation on a collection of a native space as an `Intent::Space` job, then
@@ -527,12 +690,18 @@ impl ReducerCore {
 }
 
 /// Hook H4: checks the evaluated source of a receive bind before `unbundle_receive` checks its
-/// bundle. A QUERY tuple fails closed until P5 (readiness review H3). The I-20 refresh runs
-/// before the decode.
+/// bundle. The I-20 refresh runs before the decode. A malformed QUERY tuple fails with
+/// `Malformed`. Every other source passes: a well-formed QUERY tuple routes its inner channel in
+/// `reified_consume` (P5 design v3 A.8), and an ordinary source is unchanged.
 pub(super) fn reject_query_source(source: &Par) -> Result<(), InterpreterError> {
     match decode_query_source(&refreshed_marker_par(source, Marker::Query)) {
         Ok(None) => Ok(()),
-        Ok(Some(_)) => Err(ReifiedReduceError::QuerySpecUnsupported.into()),
+        // Disabled by P5b (P5 design v3 A.8): a receive query has a meaning on a priority queue,
+        // so a well-formed QUERY tuple no longer fails closed here. `reified_consume` routes its
+        // inner channel and fills `ConsumeOp::query`. The default space and a discipline without
+        // query params still fail with `QuerySpecUnsupported`.
+        // Ok(Some(_)) => Err(ReifiedReduceError::QuerySpecUnsupported.into()),
+        Ok(Some(_)) => Ok(()),
         Err(error) => Err(ReifiedReduceError::Malformed(error).into()),
     }
 }
@@ -544,6 +713,108 @@ fn routes_to_default_without_context(channel: &Par) -> bool {
         classify_channel(channel),
         ChannelClass::SpaceName(_) | ChannelClass::AgentTagged
     )
+}
+
+/// True when a receive outside every `use` block can call `consume` without the routing of
+/// `channel` (P5 design v3 A.8): the channel routes to the default space, and it is no marker
+/// tuple. A QUERY tuple names its inner channel, so it must never become a channel of the host.
+/// Every other marker tuple is a forged channel, which also routes to the default space on the
+/// routing path, so only a QUERY tuple changes its result. The check allocates nothing.
+fn takes_fast_path(channel: &Par) -> bool {
+    routes_to_default_without_context(channel) && sole_marker_tuple(channel).is_none()
+}
+
+/// Reads the source of a receive bind (P5 design v3 A.8, decision 21). The I-20 refresh runs
+/// before the decode.
+///
+/// * A source with a QUERY tuple names its inner channel. The inner channel takes the read rule
+///   of `unbundle_receive` (`readable_channel`), and the bind carries the payload and the named
+///   params of the query.
+/// * Every other source is the channel itself, without a query.
+///
+/// Hook H4 already rejects a malformed QUERY tuple, so the `Malformed` error here is defensive.
+fn query_bind(source: Par) -> Result<(Par, Option<QueryParams>), InterpreterError> {
+    let decoded = decode_query_source(&refreshed_marker_par(&source, Marker::Query))
+        .map_err(ReifiedReduceError::Malformed)?;
+    match decoded {
+        None => Ok((source, None)),
+        Some(QuerySpec {
+            channel,
+            payload,
+            named,
+        }) => Ok((
+            readable_channel(channel)?,
+            Some(QueryParams { payload, named }),
+        )),
+    }
+}
+
+/// The inner channel of a query under the read rule of `unbundle_receive`: the body of a bundle
+/// with the read flag, or the channel itself when it is no bundle. A bundle without the read flag
+/// fails with the text of HEAD.
+fn readable_channel(channel: Par) -> Result<Par, InterpreterError> {
+    match single_bundle(&channel) {
+        Some(Bundle {
+            read_flag: false, ..
+        }) => Err(InterpreterError::ReduceError(NOT_READABLE.to_string())),
+        Some(Bundle { body, .. }) => unwrap_option_safe(body),
+        None => Ok(channel),
+    }
+}
+
+/// The target of a receive with one bind. A query on the default space has no meaning, so it
+/// fails with `QuerySpecUnsupported`, and a channel of a user agent fails closed until P8.
+fn single_bind_route(bind: RoutedBind) -> Result<ReceiveRoute, InterpreterError> {
+    match bind {
+        RoutedBind {
+            pattern,
+            channel,
+            query: None,
+            route: Route::Default,
+        } => Ok(ReceiveRoute::Host(vec![(pattern, channel)])),
+        RoutedBind {
+            query: Some(_),
+            route: Route::Default,
+            ..
+        } => Err(ReifiedReduceError::QuerySpecUnsupported.into()),
+        RoutedBind {
+            pattern,
+            channel,
+            query,
+            route: Route::Space { space, key },
+        } => Ok(ReceiveRoute::Space {
+            space,
+            key,
+            channel,
+            pattern,
+            query,
+        }),
+        RoutedBind {
+            route: Route::Agent,
+            ..
+        } => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
+    }
+}
+
+/// The target of a receive with any number of binds other than one. When every channel routes
+/// to the default space, the receive is the HEAD consume, or `QuerySpecUnsupported` when a bind
+/// has a query. A join with a channel off the default space fails with `join_error`.
+fn join_route(routed: Vec<RoutedBind>) -> Result<ReceiveRoute, InterpreterError> {
+    match (
+        routed
+            .iter()
+            .all(|bind| matches!(bind.route, Route::Default)),
+        routed.iter().any(|bind| bind.query.is_some()),
+    ) {
+        (true, false) => Ok(ReceiveRoute::Host(
+            routed
+                .into_iter()
+                .map(|bind| (bind.pattern, bind.channel))
+                .collect(),
+        )),
+        (true, true) => Err(ReifiedReduceError::QuerySpecUnsupported.into()),
+        (false, _) => Err(join_error(routed.iter().map(|bind| &bind.route).collect()).into()),
+    }
 }
 
 /// The error of a join with two or more binds whose channels do not all route to the default
@@ -578,23 +849,48 @@ fn reject_positional(params: Option<&SendParams>) -> Result<(), InterpreterError
     }
 }
 
-/// The error of params on a collection of a queue space. The queue discipline has no send
-/// params (P4 design B.4), so every named param is unknown and has no suggestion.
-fn space_params_error(params: SendParams) -> InterpreterError {
+/// The named params of a send to a collection of a native space (P5 design v3 A.8, C.1 item
+/// 29). They go to the agent in `ProduceOp::params`, and `route_send` removes their PARAMS tuple
+/// from the datum, so the record holds the payload only. The agent checks their keys against
+/// the schema of its discipline, and then their values, before the bump. So a queue, which takes
+/// no send param, still fails with `UnknownParam`. Positional params abort, as on a factory or a
+/// handle. A PARAMS tuple without params is an erased form, which no decoder accepts.
+fn space_params(params: SendParams) -> Result<BTreeMap<String, Par>, InterpreterError> {
     let SendParams { positional, named } = params;
-    match (positional.is_empty(), named.into_keys().next()) {
-        (false, _) => SpaceError::PositionalParamsUnsupported.into(),
-        (true, Some(key)) => SpaceError::UnknownParam {
-            key,
-            suggestion: None,
-        }
-        .into(),
-        (true, None) => ReifiedReduceError::Malformed(ReifiedDecodeError::EmptyCanonicalForm {
-            marker: Marker::Params,
-        })
-        .into(),
+    match (positional.is_empty(), named.is_empty()) {
+        (false, _) => Err(SpaceError::PositionalParamsUnsupported.into()),
+        (true, false) => Ok(named),
+        (true, true) => Err(ReifiedReduceError::Malformed(
+            ReifiedDecodeError::EmptyCanonicalForm {
+                marker: Marker::Params,
+            },
+        )
+        .into()),
     }
 }
+
+// Disabled by P5b (P5 design v3 A.8 and C.1 item 29, rule R-8): `space_params` replaces this
+// function. The named params of a send to a collection now go to the agent in
+// `ProduceOp::params`, and the agent checks their keys against the schema of its discipline
+// before the bump. So the named arm below, which rejected every named param at the hook, no
+// longer applies. The positional arm and the erased form keep their errors in `space_params`.
+// /// The error of params on a collection of a queue space. The queue discipline has no send
+// /// params (P4 design B.4), so every named param is unknown and has no suggestion.
+// fn space_params_error(params: SendParams) -> InterpreterError {
+//     let SendParams { positional, named } = params;
+//     match (positional.is_empty(), named.into_keys().next()) {
+//         (false, _) => SpaceError::PositionalParamsUnsupported.into(),
+//         (true, Some(key)) => SpaceError::UnknownParam {
+//             key,
+//             suggestion: None,
+//         }
+//         .into(),
+//         (true, None) => ReifiedReduceError::Malformed(ReifiedDecodeError::EmptyCanonicalForm {
+//             marker: Marker::Params,
+//         })
+//         .into(),
+//     }
+// }
 
 /// Packs the arguments of a factory call into `[ret, [ctor…]]`, so every factory has the fixed
 /// arity 2 (I-18). The list holds the arguments after `ret`, the PARAMS tuple included. A send
@@ -684,14 +980,9 @@ fn binder_level(env: &Env<Par>, offset: usize) -> Result<i32, InterpreterError> 
         })
 }
 
-/// Moves the name at `level` into `space`: the 32-byte id `r` of a new name becomes the tail of
-/// the name id `E0‖N‖sid‖r`.
-fn stamp_name(
-    bound: &mut Env<Par>,
-    level: i32,
-    space: NativeSpace,
-) -> Result<(), InterpreterError> {
-    let tail = bound
+/// The 32-byte id `r` of the name that `allocate_new_bindings` drew at `level`.
+fn drawn_tail(bound: &Env<Par>, level: i32) -> Result<[u8; 32], InterpreterError> {
+    bound
         .env_map
         .get(&level)
         .and_then(namespace::sole_gprivate_id)
@@ -700,10 +991,37 @@ fn stamp_name(
             InterpreterError::BugFoundError(format!(
                 "the new name at level {level} is not a 32-byte private name"
             ))
-        })?;
+        })
+}
+
+/// Moves the name at `level` into `space`: the 32-byte id `r` of a new name becomes the tail of
+/// the name id `E0‖N‖sid‖r`.
+fn stamp_name(
+    bound: &mut Env<Par>,
+    level: i32,
+    space: NativeSpace,
+) -> Result<(), InterpreterError> {
+    let tail = drawn_tail(bound, level)?;
     bound.env_map.insert(
         level,
         namespace::gprivate(namespace::name_id(space, NameTail::Random(tail))),
+    );
+    Ok(())
+}
+
+/// Puts the index name `E0‖N‖sid‖u64_be(index)` of `space` at `level` (P5d, F11). The draw of
+/// HEAD at that level gives no part of the name, but HEAD made it, so the random state after
+/// the draws does not change.
+fn put_index_name(
+    bound: &mut Env<Par>,
+    level: i32,
+    space: NativeSpace,
+    index: u64,
+) -> Result<(), InterpreterError> {
+    drawn_tail(bound, level)?;
+    bound.env_map.insert(
+        level,
+        namespace::gprivate(namespace::name_id(space, NameTail::Index(index))),
     );
     Ok(())
 }
@@ -1052,6 +1370,10 @@ mod tests {
         new_boundvar_par, new_bundle_par, new_emap_par, new_etuple_par, new_freevar_par,
         new_gint_par, new_gstring_par,
     };
+    use proptest::prelude::{
+        any, prop_assert, prop_assert_eq, prop_oneof, Just, ProptestConfig, Strategy,
+    };
+    use proptest::test_runner::{RngSeed, TestRunner};
     use prost::Message;
     use rspace_plus_plus::rspace::rspace::RSpace;
     use rspace_plus_plus::rspace::rspace_interface::{ISpace, RSpaceResult};
@@ -1066,7 +1388,9 @@ mod tests {
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::reduce::DebruijnInterpreter;
     use crate::rust::interpreter::reified::costs::ReissueCause;
+    use crate::rust::interpreter::reified::route::route;
     use crate::rust::interpreter::reified::runtime::native_replay;
+    use crate::rust::interpreter::reified::scope::SpaceCtx;
     use crate::rust::interpreter::rho_runtime::{create_rho_runtime, RhoISpace};
     use crate::rust::interpreter::spaces::agent::SpaceCreation;
     use crate::rust::interpreter::spaces::namespace::{
@@ -1354,7 +1678,9 @@ mod tests {
 
     /// A variable child bound to the connective value `Int` leaves the derived flags stale in
     /// each hook position. Each hook recognizes the canonical construct: the USE and NEWSPACE
-    /// tuples decode, and PARAMS and QUERY fail with their own codes, not with `Malformed`.
+    /// tuples decode, and PARAMS and QUERY fail with their own codes, not with `Malformed`. The
+    /// NEWSPACE tuple reaches the allocation job of its space, which fails closed on the
+    /// detached runtime (P5d, F11).
     #[tokio::test]
     async fn reified_marker_flags_variable_bound_to_connective_is_canonical() {
         let fixture = detached().await;
@@ -1416,11 +1742,23 @@ mod tests {
             }
             other => panic!("the refreshed NEWSPACE tuple decodes, got {other:?}"),
         }
-        fixture
-            .reducer
-            .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
-            .await
-            .expect("the NEWSPACE tuple evaluates");
+        // Disabled by P5d (P5 design v3 A.10, F11): the annotated binder now runs the allocation
+        // job of its space, and the job fails closed on the detached runtime of this fixture.
+        // The tuple still decodes, so the code below is not `Malformed`.
+        // fixture
+        //     .reducer
+        //     .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
+        //     .await
+        //     .expect("the NEWSPACE tuple evaluates");
+        assert_eq!(
+            code(
+                fixture
+                    .reducer
+                    .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
+                    .await
+            ),
+            expected("RuntimeUnavailable")
+        );
 
         let annotation_process = substituted(
             &fixture.reducer,
@@ -1691,7 +2029,8 @@ mod tests {
         let mut head_rand = rand(b"new");
         let hooked_env = hooked
             .reducer
-            .reified_allocate(&new, &env, &mut hooked_rand)
+            .reified_allocate(&new, &env, &mut hooked_rand, &authority())
+            .await
             .expect("the names are allocated");
         let head_env = allocate_new_bindings(&new, &env, &mut head_rand, &head.reducer.urn_map)
             .expect("the HEAD names are allocated");
@@ -1755,7 +2094,9 @@ mod tests {
     }
 
     /// A factory call gets its constructor as one list, and a handle call keeps its named params.
-    /// Every other default channel rejects params, and a queue collection takes none.
+    /// Every other default channel rejects params. A collection of a native space rejects
+    /// positional params at the hook and passes its named params to the agent (P5b), which the
+    /// detached runtime does not run.
     #[tokio::test]
     async fn reducer_space_routing_send_params_follow_the_route() {
         let fixture = detached().await;
@@ -1827,16 +2168,25 @@ mod tests {
             code(send_to(name.clone(), vec![int(1), positional.clone()]).await),
             expected("PositionalParamsUnsupported")
         );
-        match send_to(name, vec![int(1), named.clone()]).await {
-            Err(error) => assert_eq!(
-                error,
-                InterpreterError::from(SpaceError::UnknownParam {
-                    key: "k".to_string(),
-                    suggestion: None,
-                })
-            ),
-            Ok(_) => panic!("a queue collection took a named param"),
-        }
+        // Disabled by P5b (P5 design v3 A.8 and C.1 item 29): the hook passes the named params
+        // of a collection to the agent, which checks them before the bump. The detached runtime
+        // runs no agent, so the send fails closed. The test
+        // `reducer_space_routing_named_params_reach_the_agent` checks the `UnknownParam` of the
+        // agent of a queue.
+        // match send_to(name, vec![int(1), named.clone()]).await {
+        //     Err(error) => assert_eq!(
+        //         error,
+        //         InterpreterError::from(SpaceError::UnknownParam {
+        //             key: "k".to_string(),
+        //             suggestion: None,
+        //         })
+        //     ),
+        //     Ok(_) => panic!("a queue collection took a named param"),
+        // }
+        assert_eq!(
+            code(send_to(name, vec![int(1), named.clone()]).await),
+            expected("RuntimeUnavailable")
+        );
 
         let erased = new_etuple_par(vec![
             Marker::Params.par(),
@@ -2115,11 +2465,23 @@ mod tests {
     // ── Names ──────────────────────────────────────────────────────────────────────────────────
 
     /// Under a use-context each plain binder of `new` becomes a name of the context space with
-    /// the random draws of HEAD. URI binders keep their values.
+    /// the random draws of HEAD. URI binders keep their values. The allocation job of the space
+    /// reads its config first (P5d, F11): a HashMap space answers `Baseline` and commits nothing,
+    /// a missing space fails with `DanglingHandle`, and the detached runtime fails closed. A
+    /// `new` without plain binders runs no job.
     #[tokio::test]
     async fn reducer_space_routing_allocate_stamps_plain_binders_in_context() {
-        let fixture = detached().await;
+        // Disabled by P5d (P5 design v3 A.10, F11): the names of a `new` in a use block now come
+        // from the allocation job of the space, which reads the config of the space. So the
+        // space must exist in a host runtime, and the detached runtime fails closed (below).
+        // let fixture = detached().await;
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
         let space = native(14);
+        in_root(reducer, create(reducer, space))
+            .await
+            .expect("create the space");
+        fixture.host.take_event_log().await;
         let new = New {
             bind_count: 3,
             p: Some(Par::default()),
@@ -2132,9 +2494,21 @@ mod tests {
         let head = allocate_new_bindings(&new, &env, &mut head_rand, &fixture.reducer.urn_map)
             .expect("the HEAD names are allocated");
         let mut stamped_rand = rand(b"stamp");
-        let stamped = scoped(&fixture.reducer, space)
-            .reified_allocate(&new, &env, &mut stamped_rand)
-            .expect("the names are allocated");
+        // Disabled by P5d (P5 design v3 A.10, F11): `reified_allocate` is async, because it runs
+        // the allocation job of the space.
+        // let stamped = scoped(&fixture.reducer, space)
+        //     .reified_allocate(&new, &env, &mut stamped_rand)
+        //     .expect("the names are allocated");
+        let stamped = in_root(
+            reducer,
+            scoped(reducer, space).reified_allocate(&new, &env, &mut stamped_rand, &authority()),
+        )
+        .await
+        .expect("the names are allocated");
+        assert!(
+            fixture.host.take_event_log().await.is_empty(),
+            "the job of a HashMap space commits nothing"
+        );
         let mut draws = rand(b"stamp");
         for offset in 0..2 {
             let level = env.level + offset;
@@ -2155,7 +2529,8 @@ mod tests {
         negative.bind_count = 0;
         assert_eq!(
             scoped(&fixture.reducer, space)
-                .reified_allocate(&negative, &env, &mut rand(b"stamp"))
+                .reified_allocate(&negative, &env, &mut rand(b"stamp"), &authority())
+                .await
                 .err(),
             allocate_new_bindings(
                 &negative,
@@ -2165,8 +2540,54 @@ mod tests {
             )
             .err()
         );
+        let missing = native(15);
+        assert_eq!(
+            code(
+                in_root(
+                    reducer,
+                    scoped(reducer, missing).reified_allocate(
+                        &new,
+                        &env,
+                        &mut rand(b"stamp"),
+                        &authority()
+                    ),
+                )
+                .await
+            ),
+            expected("DanglingHandle")
+        );
+        let uris_only = New {
+            bind_count: 1,
+            ..new.clone()
+        };
+        let mut uri_rand = rand(b"stamp");
+        let uri_names = in_root(
+            reducer,
+            scoped(reducer, missing).reified_allocate(
+                &uris_only,
+                &env,
+                &mut uri_rand,
+                &authority(),
+            ),
+        )
+        .await
+        .expect("a new without plain binders runs no job");
+        assert_eq!(
+            uri_names.env_map,
+            allocate_new_bindings(&uris_only, &env, &mut rand(b"stamp"), &reducer.urn_map)
+                .expect("the HEAD names are allocated")
+                .env_map
+        );
+        let detached = detached().await;
+        assert_eq!(
+            code(
+                scoped(&detached.reducer, space)
+                    .reified_allocate(&new, &env, &mut rand(b"stamp"), &authority())
+                    .await
+            ),
+            expected("RuntimeUnavailable")
+        );
     }
-
     // ── H2: USE and NEWSPACE ───────────────────────────────────────────────────────────────────
 
     /// `use s` takes a bare or writable handle, and evaluates its body in the context of the
@@ -2237,12 +2658,25 @@ mod tests {
 
     /// NEWSPACE moves each annotated binder into its space, and each other binder into the
     /// space of the use-context, or leaves it in the default space. The names use the random
-    /// draws of `new`.
+    /// draws of `new`. Each distinct space runs one allocation job first (P5d, F11): the HashMap
+    /// spaces answer `Baseline`, so the names keep the draws of HEAD. On the detached runtime
+    /// the job fails closed, and an annotation that names no native space fails before any job.
     #[tokio::test]
     async fn reducer_space_routing_newspace_moves_annotated_binders() {
-        let fixture = detached().await;
+        // Disabled by P5d (P5 design v3 A.10, F11): each annotated space and the space of the
+        // use-context now run the allocation job of their binders, which reads their configs.
+        // So the spaces must exist in a host runtime, and the detached runtime fails closed
+        // (below).
+        // let fixture = detached().await;
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
         let annotated = native(17);
         let context = native(18);
+        for space in [annotated, context] {
+            in_root(reducer, create(reducer, space))
+                .await
+                .expect("create the space");
+        }
         let tuple_to = |out: &Par, annotation: Par| {
             new_space(
                 New {
@@ -2261,36 +2695,40 @@ mod tests {
         let second = next_tail(&mut draws);
 
         let out = private(19);
-        fixture
-            .reducer
-            .eval_marker(
+        in_root(
+            reducer,
+            reducer.eval_marker(
                 &tuple_to(&out, handle(annotated)),
                 &Env::new(),
                 rand(b"newspace"),
                 &authority(),
-            )
-            .await
-            .expect("the NEWSPACE tuple evaluates");
+            ),
+        )
+        .await
+        .expect("the NEWSPACE tuple evaluates");
         assert_eq!(stored(&fixture.host, &out).await, vec![vec![
             space_name(annotated, first),
             namespace::gprivate(second.to_vec()),
         ]]);
 
         let scoped_out = private(20);
-        scoped(&fixture.reducer, context)
-            .eval_marker(
+        in_root(
+            reducer,
+            scoped(reducer, context).eval_marker(
                 &tuple_to(&scoped_out, new_bundle_par(handle(annotated), true, false)),
                 &Env::new(),
                 rand(b"newspace"),
                 &authority(),
-            )
-            .await
-            .expect("the NEWSPACE tuple evaluates in a context");
+            ),
+        )
+        .await
+        .expect("the NEWSPACE tuple evaluates in a context");
         assert_eq!(stored(&fixture.host, &scoped_out).await, vec![vec![
             space_name(annotated, first),
             space_name(context, second),
         ]]);
 
+        let detached = detached().await;
         let rejected = private(21);
         for (annotation, failure) in [
             (string("agent"), "AgentSpacesUnavailable"),
@@ -2299,10 +2737,11 @@ mod tests {
                 new_bundle_par(handle(annotated), false, true),
                 "HandleNotWritable",
             ),
+            (handle(annotated), "RuntimeUnavailable"),
         ] {
             assert_eq!(
                 code(
-                    fixture
+                    detached
                         .reducer
                         .eval_marker(
                             &tuple_to(&rejected, annotation),
@@ -2315,27 +2754,70 @@ mod tests {
                 expected(failure)
             );
         }
+        assert!(detached.host.get_data(&rejected).await.is_empty());
+        assert_eq!(
+            code(
+                in_root(
+                    reducer,
+                    reducer.eval_marker(
+                        &tuple_to(&rejected, handle(native(22))),
+                        &Env::new(),
+                        rand(b"newspace"),
+                        &authority(),
+                    ),
+                )
+                .await
+            ),
+            expected("DanglingHandle")
+        );
         assert!(fixture.host.get_data(&rejected).await.is_empty());
     }
 
-    // ── H4: query sources ──────────────────────────────────────────────────────────────────────
+    // ── H4 and the routing of query sources ────────────────────────────────────────────────────
 
-    /// A QUERY source fails closed with `QuerySpecUnsupported`, a malformed QUERY tuple with
-    /// `Malformed`, and every other source passes.
+    // Disabled by P5b (P5 design v3 A.8): H4 accepts a well-formed QUERY tuple, because a receive
+    // query has a meaning on a priority queue. `reified_consume` routes its inner channel, and
+    // the default space and a discipline without query params still fail with
+    // `QuerySpecUnsupported`. The tests `reducer_space_routing_h4_rejects_only_malformed_queries`
+    // and `reducer_space_routing_query_routes_the_inner_channel` replace this test.
+    // /// A QUERY source fails closed with `QuerySpecUnsupported`, a malformed QUERY tuple with
+    // /// `Malformed`, and every other source passes.
+    // #[test]
+    // fn reducer_space_routing_query_sources_fail_closed() {
+    //     let query =
+    //         query_spec(string("rrs-4c-query"), vec![int(1)], Vec::new()).expect("a query builds");
+    //     assert_eq!(
+    //         code(reject_query_source(&query)),
+    //         expected("QuerySpecUnsupported")
+    //     );
+    //     let mut stale = query.clone();
+    //     stale.connective_used = true;
+    //     assert_eq!(
+    //         code(reject_query_source(&stale)),
+    //         expected("QuerySpecUnsupported")
+    //     );
+    //     let malformed = new_etuple_par(vec![Marker::Query.par(), int(1), list(vec![int(2)])]);
+    //     assert_eq!(code(reject_query_source(&malformed)), expected("Malformed"));
+    //     for source in [
+    //         private(1),
+    //         string("rrs-4c"),
+    //         new_etuple_par(vec![int(1), int(2)]),
+    //         push_process_expr(Par::default(), use_block(handle(native(1)), Par::default())),
+    //     ] {
+    //         assert_eq!(reject_query_source(&source), Ok(()));
+    //     }
+    // }
+
+    /// H4 accepts a well-formed QUERY tuple, also with a stale flag (I-20), and every source
+    /// without a QUERY tuple. Only a malformed QUERY tuple fails, with `Malformed`.
     #[test]
-    fn reducer_space_routing_query_sources_fail_closed() {
+    fn reducer_space_routing_h4_rejects_only_malformed_queries() {
         let query =
             query_spec(string("rrs-4c-query"), vec![int(1)], Vec::new()).expect("a query builds");
-        assert_eq!(
-            code(reject_query_source(&query)),
-            expected("QuerySpecUnsupported")
-        );
+        assert_eq!(reject_query_source(&query), Ok(()));
         let mut stale = query.clone();
         stale.connective_used = true;
-        assert_eq!(
-            code(reject_query_source(&stale)),
-            expected("QuerySpecUnsupported")
-        );
+        assert_eq!(reject_query_source(&stale), Ok(()));
         let malformed = new_etuple_par(vec![Marker::Query.par(), int(1), list(vec![int(2)])]);
         assert_eq!(code(reject_query_source(&malformed)), expected("Malformed"));
         for source in [
@@ -2346,6 +2828,764 @@ mod tests {
         ] {
             assert_eq!(reject_query_source(&source), Ok(()));
         }
+    }
+
+    /// A QUERY tuple with the inner channel `channel`, the payload `payload` and the named
+    /// params `named`.
+    fn query_source(channel: Par, payload: Vec<Par>, named: &[(&str, Par)]) -> Par {
+        query_spec(
+            channel,
+            payload,
+            named
+                .iter()
+                .map(|(key, value)| SendParam::Named((*key).to_string(), value.clone()))
+                .collect(),
+        )
+        .expect("a query builds")
+    }
+
+    /// The query params of [`query_source`].
+    fn query_params(payload: Vec<Par>, named: &[(&str, Par)]) -> QueryParams {
+        QueryParams {
+            payload,
+            named: named
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+        }
+    }
+
+    /// The route of a receive with one bind on `source`.
+    fn route_one(core: &ReducerCore, source: Par) -> Result<ReceiveRoute, InterpreterError> {
+        core.route_receive(vec![bind(source)])
+    }
+
+    /// The space, the channel and the query of a route to a native space.
+    fn space_route(
+        route: Result<ReceiveRoute, InterpreterError>,
+    ) -> (NativeSpace, CollectionKey, Par, Option<QueryParams>) {
+        match route {
+            Ok(ReceiveRoute::Space {
+                space,
+                key,
+                channel,
+                query,
+                ..
+            }) => (space, key, channel, query),
+            other => panic!("the receive does not route to a space: {other:?}"),
+        }
+    }
+
+    /// A QUERY tuple routes its inner channel (P5b). The tuple never takes the fast path. The
+    /// inner channel takes the read rule of `unbundle_receive`, and its route decides: a space
+    /// gets the query, the default space fails with `QuerySpecUnsupported`, and a user agent
+    /// fails closed. A source without a QUERY tuple keeps its route of P4, and joins keep their
+    /// errors.
+    #[tokio::test]
+    async fn reducer_space_routing_query_routes_the_inner_channel() {
+        let fixture = detached().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let space = native(23);
+        let context = native(24);
+        let name = space_name(space, [6; 32]);
+        let host = string("rrs-p5-query-host");
+        let payload = vec![int(1)];
+        let named = [("k", int(2))];
+        let wanted = query_params(payload.clone(), &named);
+        let on_host = query_source(host.clone(), payload.clone(), &named);
+        let on_name = query_source(name.clone(), payload.clone(), &named);
+
+        assert!(routes_to_default_without_context(&on_host));
+        for marker_tuple in [
+            on_host.clone(),
+            on_name.clone(),
+            push_process_expr(Par::default(), use_block(handle(space), Par::default())),
+            send_params(vec![SendParam::Named("k".to_string(), int(1))])
+                .expect("params build")
+                .expect("params are not empty"),
+        ] {
+            assert!(!takes_fast_path(&marker_tuple), "{marker_tuple:?}");
+        }
+        for ordinary in [private(1), host.clone(), name.clone(), handle(space)] {
+            assert_eq!(
+                takes_fast_path(&ordinary),
+                routes_to_default_without_context(&ordinary)
+            );
+        }
+
+        let key = CollectionKey::of_channel(&name).expect("a key");
+        for core in [reducer.clone(), scoped(reducer, context)] {
+            assert_eq!(
+                space_route(route_one(&core, on_name.clone())),
+                (space, key.clone(), name.clone(), Some(wanted.clone()))
+            );
+        }
+        assert_eq!(
+            code(route_one(reducer, on_host.clone())),
+            expected("QuerySpecUnsupported")
+        );
+        assert_eq!(
+            space_route(route_one(&scoped(reducer, context), on_host.clone())),
+            (
+                context,
+                CollectionKey::of_channel(&host).expect("a key"),
+                host.clone(),
+                Some(wanted.clone())
+            )
+        );
+        let readable = new_bundle_par(name.clone(), false, true);
+        assert_eq!(
+            space_route(route_one(
+                reducer,
+                query_source(readable, payload.clone(), &named)
+            )),
+            (space, key.clone(), name.clone(), Some(wanted.clone()))
+        );
+        let write_only = new_bundle_par(name.clone(), true, false);
+        assert_eq!(
+            route_one(reducer, query_source(write_only, payload.clone(), &named)).err(),
+            Some(InterpreterError::ReduceError(NOT_READABLE.to_string()))
+        );
+        let tagged = new_etuple_par(vec![
+            namespace::gprivate(namespace::op_channel(AGENT_TAG)),
+            string("agent"),
+            int(1),
+        ]);
+        assert_eq!(
+            code(route_one(
+                reducer,
+                query_source(tagged, payload.clone(), &named)
+            )),
+            expected("AgentSpacesUnavailable")
+        );
+        let mut stale = on_name.clone();
+        stale.connective_used = !stale.connective_used;
+        assert_eq!(
+            space_route(route_one(reducer, stale)),
+            (space, key.clone(), name.clone(), Some(wanted.clone()))
+        );
+        let malformed = new_etuple_par(vec![Marker::Query.par(), int(1), list(vec![int(2)])]);
+        assert_eq!(code(route_one(reducer, malformed)), expected("Malformed"));
+        let bare = query_source(name.clone(), vec![int(7)], &[]);
+        assert_eq!(
+            space_route(route_one(reducer, bare)),
+            (
+                space,
+                key.clone(),
+                name.clone(),
+                Some(query_params(vec![int(7)], &[]))
+            )
+        );
+
+        assert_eq!(
+            space_route(route_one(reducer, name.clone())),
+            (space, key, name.clone(), None)
+        );
+        match route_one(reducer, host.clone()) {
+            Ok(ReceiveRoute::Host(binds)) => {
+                assert_eq!(binds, vec![bind(host.clone())]);
+            }
+            other => panic!("a host channel routes to {other:?}"),
+        }
+
+        for (channels, failure) in [
+            (
+                vec![on_host.clone(), string("rrs-p5-query-other")],
+                "QuerySpecUnsupported",
+            ),
+            (
+                vec![on_name.clone(), space_name(space, [7; 32])],
+                "OrderedJoinUnsupported",
+            ),
+            (vec![on_name.clone(), private(2)], "CrossSpaceJoin"),
+        ] {
+            assert_eq!(
+                code(reducer.route_receive(channels.into_iter().map(bind).collect())),
+                expected(failure)
+            );
+        }
+
+        assert_eq!(
+            code(receive(reducer, vec![on_host.clone()]).await),
+            expected("QuerySpecUnsupported")
+        );
+        assert_eq!(
+            code(receive(reducer, vec![on_name.clone()]).await),
+            expected("RuntimeUnavailable")
+        );
+        for channel in [&on_host, &host] {
+            assert!(fixture
+                .host
+                .get_waiting_continuations(vec![channel.clone()])
+                .await
+                .is_empty());
+        }
+    }
+
+    /// The config of the pure properties of this module: the fixed seed and the case count of
+    /// the pure properties of the P5 suites (`rholang/tests/support/props.rs`), with no failure
+    /// persistence.
+    fn pure_config() -> ProptestConfig {
+        ProptestConfig {
+            cases: 64,
+            rng_seed: RngSeed::Fixed(0x0E0D_2026_1006_0005),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    /// One generated receive source: a channel, an optional bundle around it with its write and
+    /// read flags, an optional query, a stale tuple flag (I-20), and an optional use-context.
+    #[derive(Clone, Debug)]
+    struct SourceCase {
+        channel: Par,
+        bundle: Option<(bool, bool)>,
+        query: Option<(Vec<Par>, Vec<(String, Par)>)>,
+        stale: bool,
+        context: bool,
+    }
+
+    /// The channels of the property: forged, unforgeable, the names of two spaces, a handle
+    /// (a default object), and an agent-tagged name.
+    fn arb_channel() -> impl Strategy<Value = Par> {
+        prop_oneof![
+            any::<u8>().prop_map(|seed| string(&format!("rrs-p5-prop-{seed}"))),
+            any::<u8>().prop_map(private),
+            any::<u8>().prop_map(|tail| space_name(native(40), [tail; 32])),
+            any::<u8>().prop_map(|tail| space_name(native(41), [tail; 32])),
+            Just(handle(native(40))),
+            Just(new_etuple_par(vec![
+                namespace::gprivate(namespace::op_channel(AGENT_TAG)),
+                string("agent"),
+                int(1),
+            ])),
+        ]
+    }
+
+    fn arb_source_case() -> impl Strategy<Value = SourceCase> {
+        let query = (
+            proptest::collection::vec(any::<i8>().prop_map(|value| int(i64::from(value))), 0..3),
+            proptest::sample::subsequence(vec!["k", "priority", "w"], 0..=2),
+            any::<i8>(),
+        )
+            .prop_map(|(mut payload, keys, value)| {
+                let named: Vec<(String, Par)> = keys
+                    .into_iter()
+                    .map(|key| (key.to_string(), int(i64::from(value))))
+                    .collect();
+                if payload.is_empty() && named.is_empty() {
+                    payload.push(int(i64::from(value)));
+                }
+                (payload, named)
+            });
+        (
+            arb_channel(),
+            proptest::option::of(any::<(bool, bool)>()),
+            proptest::option::of(query),
+            any::<bool>(),
+            any::<bool>(),
+        )
+            .prop_map(|(channel, bundle, query, stale, context)| SourceCase {
+                channel,
+                bundle,
+                query,
+                stale,
+                context,
+            })
+    }
+
+    /// The target of a receive with one bind, as a comparable value.
+    #[derive(Clone, Debug, PartialEq)]
+    enum Target {
+        Host(Vec<(BindPattern, Par)>),
+        Space(NativeSpace, CollectionKey, Par, Option<QueryParams>),
+        Failed(InterpreterError),
+    }
+
+    fn target_of(route: Result<ReceiveRoute, InterpreterError>) -> Target {
+        match route {
+            Ok(ReceiveRoute::Host(binds)) => Target::Host(binds),
+            Ok(ReceiveRoute::Space {
+                space,
+                key,
+                channel,
+                query,
+                ..
+            }) => Target::Space(space, key, channel, query),
+            Err(error) => Target::Failed(error),
+        }
+    }
+
+    /// The model of `query_source_routes_inner_channel` (`SpaceRefs.v`): the route of the
+    /// channel `channel` under the context `ctx`, with the query `query`.
+    fn model_target(ctx: &SpaceCtx, channel: Par, query: Option<QueryParams>) -> Target {
+        match (route(ctx, &channel), query) {
+            (Ok(Route::Default), None) => Target::Host(vec![bind(channel)]),
+            (Ok(Route::Default), Some(_)) => {
+                Target::Failed(ReifiedReduceError::QuerySpecUnsupported.into())
+            }
+            (Ok(Route::Space { space, key }), query) => Target::Space(space, key, channel, query),
+            (Ok(Route::Agent), _) => {
+                Target::Failed(ReifiedReduceError::AgentSpacesUnavailable.into())
+            }
+            (Err(error), _) => Target::Failed(error.into()),
+        }
+    }
+
+    /// Property of `query_source_routes_inner_channel` (`SpaceRefs.v`, P5b). A receive on a
+    /// QUERY tuple routes the inner channel of the query: a bundle without the read flag fails
+    /// with the text of HEAD, and otherwise the target is the route of the inner channel, with
+    /// the query. The tuple never takes the fast path, and H4 accepts it, also with a stale
+    /// flag. A source without a QUERY tuple keeps the route of P4, with no query.
+    #[tokio::test]
+    async fn prop_query_bind_routes_inner_channel() {
+        let fixture = detached().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let scoped_core = scoped(reducer, native(42));
+        TestRunner::new(pure_config())
+            .run(&arb_source_case(), |case| {
+                let core = match case.context {
+                    true => &scoped_core,
+                    false => reducer,
+                };
+                let wrapped = match case.bundle {
+                    Some((write, read)) => new_bundle_par(case.channel.clone(), write, read),
+                    None => case.channel.clone(),
+                };
+                let (source, expected) = match &case.query {
+                    Some((payload, named)) => {
+                        let keyed: Vec<(&str, Par)> = named
+                            .iter()
+                            .map(|(key, value)| (key.as_str(), value.clone()))
+                            .collect();
+                        let mut source = query_source(wrapped.clone(), payload.clone(), &keyed);
+                        if case.stale {
+                            source.connective_used = !source.connective_used;
+                        }
+                        prop_assert!(!takes_fast_path(&source));
+                        prop_assert_eq!(reject_query_source(&source), Ok(()));
+                        let expected = match case.bundle {
+                            Some((_, false)) => Target::Failed(InterpreterError::ReduceError(
+                                NOT_READABLE.to_string(),
+                            )),
+                            Some((_, true)) | None => model_target(
+                                &core.space_ctx,
+                                case.channel.clone(),
+                                Some(query_params(payload.clone(), &keyed)),
+                            ),
+                        };
+                        (source, expected)
+                    }
+                    None => {
+                        let expected = model_target(&core.space_ctx, wrapped.clone(), None);
+                        (wrapped, expected)
+                    }
+                };
+                prop_assert_eq!(target_of(route_one(core, source)), expected);
+                Ok(())
+            })
+            .unwrap_or_else(|failure| panic!("{failure}"));
+    }
+
+    /// With a host runtime, a query on a collection of a queue space reaches the agent, which
+    /// rejects it with `QuerySpecUnsupported` before the bump. A query on a name of a missing
+    /// space fails in the agent with `DanglingName`, which shows that the query is routed.
+    #[tokio::test]
+    async fn reducer_space_routing_query_reaches_the_agent() {
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let space = native(25);
+        let name = space_name(space, [8; 32]);
+        in_root(reducer, create(reducer, space))
+            .await
+            .expect("create the space");
+        let key = CollectionKey::of_channel(&name).expect("a key");
+        let counter = namespace::gprivate(namespace::collection_counter(space, &key));
+        let collection = namespace::gprivate(namespace::data_channel(space, &key));
+        for query in [
+            query_source(name.clone(), vec![int(1)], &[]),
+            query_source(name.clone(), Vec::new(), &[("priority", int(0))]),
+        ] {
+            assert_eq!(
+                in_root(reducer, receive(reducer, vec![query])).await.err(),
+                Some(InterpreterError::from(SpaceError::QuerySpecUnsupported))
+            );
+        }
+        assert!(fixture.host.get_data(&counter).await.is_empty());
+        assert!(fixture
+            .host
+            .get_waiting_continuations(vec![collection])
+            .await
+            .is_empty());
+        let missing = space_name(native(26), [9; 32]);
+        assert_eq!(
+            code(
+                in_root(
+                    reducer,
+                    receive(reducer, vec![query_source(missing, vec![int(1)], &[])])
+                )
+                .await
+            ),
+            expected("DanglingName")
+        );
+    }
+
+    /// With a host runtime, the named params of a send to a collection reach the agent (P5b).
+    /// The queue takes no send param, so its agent fails with `UnknownParam` and no suggestion,
+    /// before the bump. A name of a missing space fails in the agent with `DanglingName`, and
+    /// positional params still abort at the hook. This replaces the hook-level `UnknownParam` of
+    /// P4.
+    #[tokio::test]
+    async fn reducer_space_routing_named_params_reach_the_agent() {
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let space = native(27);
+        let name = space_name(space, [10; 32]);
+        in_root(reducer, create(reducer, space))
+            .await
+            .expect("create the space");
+        let named = send_params(vec![SendParam::Named("k".to_string(), int(1))])
+            .expect("named params build")
+            .expect("params are not empty");
+        let positional = send_params(vec![SendParam::Positional(int(2))])
+            .expect("positional params build")
+            .expect("params are not empty");
+        match reducer.route_send(
+            name.clone(),
+            datum(vec![int(1), named.clone()]),
+            false,
+            authority(),
+        ) {
+            Ok(SendRoute::Space(op)) => {
+                assert_eq!(op.params, BTreeMap::from([("k".to_string(), int(1))]));
+                assert_eq!(op.data.pars, vec![int(1)]);
+            }
+            Ok(SendRoute::Host { .. }) => panic!("a space name routes to the host"),
+            Err(error) => panic!("the send does not route: {error:?}"),
+        }
+        for persistent in [false, true] {
+            assert_eq!(
+                in_root(
+                    reducer,
+                    reducer.reified_produce(
+                        name.clone(),
+                        datum(vec![int(1), named.clone()]),
+                        persistent,
+                        authority(),
+                    ),
+                )
+                .await
+                .err(),
+                Some(InterpreterError::from(SpaceError::UnknownParam {
+                    key: "k".to_string(),
+                    suggestion: None,
+                }))
+            );
+        }
+        let key = CollectionKey::of_channel(&name).expect("a key");
+        for channel in [
+            namespace::collection_counter(space, &key),
+            namespace::data_channel(space, &key),
+        ] {
+            assert!(fixture
+                .host
+                .get_data(&namespace::gprivate(channel))
+                .await
+                .is_empty());
+        }
+        let missing = space_name(native(28), [11; 32]);
+        for (params, failure) in [
+            (named, "DanglingName"),
+            (positional, "PositionalParamsUnsupported"),
+        ] {
+            assert_eq!(
+                code(
+                    in_root(
+                        reducer,
+                        reducer.reified_produce(
+                            missing.clone(),
+                            datum(vec![int(1), params]),
+                            false,
+                            authority(),
+                        ),
+                    )
+                    .await
+                ),
+                expected(failure)
+            );
+        }
+    }
+
+    // ── Allocation jobs (P5d, F11) ─────────────────────────────────────────────────────────────
+
+    /// A cost authority with one region whose instance and signature are made of `byte`.
+    fn region(byte: u8) -> CostAuthority {
+        use models::rhoapi::cost_signature::Value as CostSignatureValue;
+        use models::rhoapi::{CostRegion, CostSignature};
+
+        CostAuthority {
+            regions: vec![CostRegion {
+                instance_id: vec![byte; 32],
+                signature: Some(CostSignature {
+                    value: Some(CostSignatureValue::Ground(vec![byte])),
+                }),
+            }],
+        }
+    }
+
+    /// The names of `new` with the plain binders `spaces` and the allocation agent of the tests,
+    /// evaluated by a process with the cost authority `authority`.
+    async fn allocate_with(
+        reducer: &ReducerCore,
+        spaces: &[Option<NativeSpace>],
+        seed: &[u8],
+        authority: &CostAuthority,
+    ) -> (Result<Env<Par>, InterpreterError>, Blake2b512Random) {
+        use crate::rust::interpreter::reified::handle::alloc_harness::TestFamilies;
+
+        let new = New {
+            bind_count: i32::try_from(spaces.len()).expect("a small binder count"),
+            p: Some(Par::default()),
+            uri: Vec::new(),
+            injections: BTreeMap::new(),
+            locally_free: Vec::new(),
+        };
+        let mut random = rand(seed);
+        let names = in_root(
+            reducer,
+            reducer.allocate_in_spaces(
+                TestFamilies::agent(),
+                &new,
+                &env_of(int(0)),
+                &mut random,
+                BinderSpaces::Each(spaces),
+                authority,
+            ),
+        )
+        .await;
+        (names, random)
+    }
+
+    /// An allocating store gives index names (P5d, F11). The plain binders of one space take the
+    /// next indices in binder order, each distinct space runs one job in the order of its first
+    /// binder, a HashMap space keeps the draws of HEAD, and a binder without a space keeps its
+    /// name. The jobs make no draw, so the random state after them is the state of HEAD. Each
+    /// job stamps the cost authority of the process that evaluates the `new` on the allocator
+    /// record (P4 design B.7).
+    #[tokio::test]
+    async fn reducer_space_routing_allocation_jobs_give_index_names() {
+        use rspace_plus_plus::rspace::internal::Datum;
+
+        use crate::rust::interpreter::reified::handle::alloc_harness::{
+            allocator, allocator_values, counted_creation, TestFamilies,
+        };
+
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let first = native(29);
+        let second = native(30);
+        let plain = native(31);
+        for space in [first, second] {
+            in_root(
+                reducer,
+                reducer
+                    .reified
+                    .create_space(TestFamilies::agent(), counted_creation(space, &space.sid)),
+            )
+            .await
+            .expect("create the counted space");
+        }
+        in_root(reducer, create(reducer, plain))
+            .await
+            .expect("create the HashMap space");
+        let spaces = [Some(first), None, Some(second), Some(first), Some(plain)];
+        let new = New {
+            bind_count: 5,
+            p: Some(Par::default()),
+            uri: Vec::new(),
+            injections: BTreeMap::new(),
+            locally_free: Vec::new(),
+        };
+        let env = env_of(int(0));
+        let mut head_rand = rand(b"alloc");
+        let head = allocate_new_bindings(&new, &env, &mut head_rand, &reducer.urn_map)
+            .expect("the HEAD names are allocated");
+        let (names, mut job_rand) = allocate_with(reducer, &spaces, b"alloc", &region(7)).await;
+        let names = names.expect("the names are allocated");
+        let index_name =
+            |space, index| namespace::gprivate(namespace::name_id(space, NameTail::Index(index)));
+        let mut draws = rand(b"alloc");
+        let tails: Vec<[u8; 32]> = (0..5).map(|_| next_tail(&mut draws)).collect();
+        let level = |offset: i32| env.level + offset;
+        assert_eq!(names.env_map.get(&level(0)), Some(&index_name(first, 0)));
+        assert_eq!(names.env_map.get(&level(1)), head.env_map.get(&level(1)));
+        assert_eq!(names.env_map.get(&level(2)), Some(&index_name(second, 0)));
+        assert_eq!(names.env_map.get(&level(3)), Some(&index_name(first, 1)));
+        assert_eq!(
+            names.env_map.get(&level(4)),
+            Some(&space_name(plain, tails[4]))
+        );
+        assert_eq!(names.level, head.level);
+        assert_eq!(job_rand.next(), head_rand.next());
+        for (space, value) in [(first, 2), (second, 1)] {
+            assert_eq!(
+                allocator_values(&fixture.host.get_data(&allocator(space)).await),
+                vec![value]
+            );
+        }
+        // Each job takes the cost authority of the process that evaluates the `new`, so the
+        // allocator record names the process that allocated last (P4 design B.7).
+        let authorities = |records: Vec<Datum<ListParWithRandom>>| -> Vec<Option<CostAuthority>> {
+            records
+                .into_iter()
+                .map(|datum| datum.a.cost_authority)
+                .collect()
+        };
+        for space in [first, second] {
+            assert_eq!(
+                authorities(fixture.host.get_data(&allocator(space)).await),
+                vec![Some(region(7))]
+            );
+        }
+        assert!(fixture.host.get_data(&allocator(plain)).await.is_empty());
+
+        let (again, _) = allocate_with(reducer, &[Some(first)], b"again", &region(8)).await;
+        assert_eq!(
+            again
+                .expect("the names are allocated")
+                .env_map
+                .get(&level(0)),
+            Some(&index_name(first, 2))
+        );
+        assert_eq!(
+            allocator_values(&fixture.host.get_data(&allocator(first)).await),
+            vec![3]
+        );
+        assert_eq!(
+            authorities(fixture.host.get_data(&allocator(first)).await),
+            vec![Some(region(8))]
+        );
+    }
+
+    /// The host-work usage of the names of `new` under the reducer `core`, in one root with a
+    /// metered host-work budget.
+    async fn allocation_usage(core: &ReducerCore, new: &New) -> Vec<u64> {
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+        use crate::rust::interpreter::host_work::HostWorkBudget;
+
+        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
+        core.reified.begin_evaluation_scope();
+        let (names, _, errors) = root_with_observation(
+            core.space.clone(),
+            core.metering.budget(),
+            core.reduction_coordinator.clone(),
+            Some(host_work.clone()),
+            core.reified_allocate(new, &env_of(int(0)), &mut rand(b"usage"), &authority()),
+        )
+        .await;
+        assert!(
+            errors.is_empty(),
+            "the detached reductions failed: {errors:?}"
+        );
+        names.expect("the names are allocated");
+        HostWorkDimension::ALL
+            .into_iter()
+            .map(|dimension| host_work.usage(dimension).get())
+            .collect()
+    }
+
+    /// The `Baseline` job of a HashMap space reserves its reads on the host-work budget of the
+    /// deploy (decision 42), and it makes no event and charges no phlo. A `new` outside every
+    /// `use` block runs no job, so the difference of the two usages is the work of the job.
+    #[tokio::test]
+    async fn reducer_space_routing_baseline_job_reserves_its_reads() {
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let space = native(34);
+        in_root(reducer, create(reducer, space))
+            .await
+            .expect("create the space");
+        fixture.host.take_event_log().await;
+        let new = New {
+            bind_count: 2,
+            p: Some(Par::default()),
+            uri: Vec::new(),
+            injections: BTreeMap::new(),
+            locally_free: Vec::new(),
+        };
+        let phlo = reducer.metering.budget().get().value;
+        let without = allocation_usage(reducer, &new).await;
+        let with = allocation_usage(&scoped(reducer, space), &new).await;
+        assert!(
+            with.iter()
+                .zip(&without)
+                .all(|(with, without)| with >= without),
+            "{with:?} against {without:?}"
+        );
+        assert_ne!(with, without, "the job reserves its reads");
+        assert!(fixture.host.take_event_log().await.is_empty());
+        assert_eq!(reducer.metering.budget().get().value, phlo);
+    }
+
+    /// The jobs of one `new` run in the order of the first binder of each space, and each job
+    /// commits before the next one runs. So a missing space fails with `DanglingHandle` after
+    /// the jobs of the spaces before it, as the equivalent sequential program does, and the
+    /// failed deploy is reverted as a whole. Every job fails closed in a detached runtime and in
+    /// native execution (decision 46).
+    #[tokio::test]
+    async fn reducer_space_routing_allocation_jobs_fail_closed() {
+        use crate::rust::interpreter::reified::handle::alloc_harness::{
+            allocator, allocator_values, counted_creation, TestFamilies,
+        };
+
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let counted = native(32);
+        let missing = native(33);
+        in_root(
+            reducer,
+            reducer
+                .reified
+                .create_space(TestFamilies::agent(), counted_creation(counted, b"fail")),
+        )
+        .await
+        .expect("create the counted space");
+        let (names, _) = allocate_with(
+            reducer,
+            &[Some(counted), Some(missing)],
+            b"fail",
+            &authority(),
+        )
+        .await;
+        assert_eq!(code(names), expected("DanglingHandle"));
+        assert_eq!(
+            allocator_values(&fixture.host.get_data(&allocator(counted)).await),
+            vec![1]
+        );
+        let (names, _) = allocate_with(
+            reducer,
+            &[Some(missing), Some(counted)],
+            b"fail",
+            &authority(),
+        )
+        .await;
+        assert_eq!(code(names), expected("DanglingHandle"));
+        assert_eq!(
+            allocator_values(&fixture.host.get_data(&allocator(counted)).await),
+            vec![1]
+        );
+
+        let detached = detached().await;
+        let (names, _) =
+            allocate_with(&detached.reducer, &[Some(counted)], b"fail", &authority()).await;
+        assert_eq!(code(names), expected("RuntimeUnavailable"));
+        let mut replay = ReducerCore::clone(&detached.reducer);
+        replay.reified = native_replay();
+        let (names, _) = allocate_with(&replay, &[Some(counted)], b"fail", &authority()).await;
+        assert_eq!(code(names), expected("SpacesUnsupportedInNativeExecution"));
+        let (names, _) = allocate_with(&replay, &[None, None], b"fail", &authority()).await;
+        assert!(names.is_ok(), "a new without a space runs no job");
     }
 
     // ── Dispatch of space outcomes ─────────────────────────────────────────────────────────────

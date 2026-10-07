@@ -87,7 +87,12 @@ SAFE_CONFIGS=(
   "HeadOnlyDiscipline MC_HeadOnlyDiscipline.cfg"
   "HeadOnlyDiscipline MC_HeadOnlyDiscipline_Reissue.cfg"
   "CounterConflict MC_CounterConflict.cfg"
+  "CounterConflict MC_CounterConflict_Allocator.cfg"
   "NativeHandles MC_NativeHandles.cfg"
+  "GenericRSpace MC_GenericRSpace_Bag.cfg"
+  "GenericRSpace MC_GenericRSpace_Set.cfg"
+  "GenericRSpace MC_GenericRSpace_Cell.cfg"
+  "StackDiscipline MC_StackDiscipline.cfg"
 )
 # <module> <config> <the one invariant that it must refute>
 UNSAFE_CONFIGS=(
@@ -108,7 +113,19 @@ UNSAFE_CONFIGS=(
   "HeadOnlyDiscipline NonPersistentFirstOrdUnsafe.cfg QuiescentNoPendingMatch"
   "CounterConflict CounterDroppedUnsafe.cfg NoMergedOrderFabrication"
   "CounterConflict PeekCounterFreeUnsafe.cfg NoMergedOrderFabrication"
+  "CounterConflict LazyAllocatorUnsafe.cfg NoDuplicateIndex"
   "NativeHandles JoinDescriptorUnsafe.cfg HandleCallsMergeLikeContracts"
+  "GenericRSpace WildcardUnsafe.cfg PatternEnforcement"
+  "GenericRSpace SetRetireOneUnsafe.cfg SetClassRetired"
+  "GenericRSpace SetNoProduceRetireUnsafe.cfg SetClassRetired"
+  "GenericRSpace CellNoCapacityUnsafe.cfg CellCapacity"
+  "GenericRSpace PeekNoRestoreUnsafe.cfg Conservation"
+  "GenericRSpace RestoreOpAuthorityUnsafe.cfg PeekRestoresRecord"
+  "GenericRSpace RestoreNoReofferUnsafe.cfg PeekRestoresRecord"
+  "StackDiscipline StackNoSettleUnsafe.cfg StackNoPendingMatch"
+  "StackDiscipline StackReentryAtTopUnsafe.cfg LifoOrder"
+  "StackDiscipline StackPerPhaseCountUnsafe.cfg TxnFiresBounded"
+  "StackDiscipline StackPlanOpensAtCapUnsafe.cfg TxnFiresBounded"
 )
 # <name>|<module>|<config>|<length>|<expected outcome>|<marker in the violated formula>
 APALACHE_CHECKS=(

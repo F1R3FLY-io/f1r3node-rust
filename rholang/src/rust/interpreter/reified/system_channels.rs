@@ -121,6 +121,175 @@ pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), Reif
     }
 }
 
+/// The factory of the family `hashmap:bag`: family index 0, `(ret, ctor)` (P5a).
+pub const HASHMAP_BAG_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashmap:bag",
+    op: 0x00,
+    arity: 2,
+};
+
+/// The factory of the family `hashmap:stack`: family index 2 (P5b).
+pub const HASHMAP_STACK_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashmap:stack",
+    op: 0x02,
+    arity: 2,
+};
+
+/// The factory of the family `hashmap:set`: family index 3 (P5a).
+pub const HASHMAP_SET_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashmap:set",
+    op: 0x03,
+    arity: 2,
+};
+
+/// The factory of the family `hashmap:cell`: family index 4 (P5a).
+pub const HASHMAP_CELL_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashmap:cell",
+    op: 0x04,
+    arity: 2,
+};
+
+/// The factory of the family `hashmap:priorityqueue`: family index 5 (P5b).
+pub const HASHMAP_PRIORITY_QUEUE_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashmap:priorityqueue",
+    op: 0x05,
+    arity: 2,
+};
+
+/// The factory of the family `array:bag`: family index 13 (P5d).
+pub const ARRAY_BAG_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:array:bag",
+    op: 0x0D,
+    arity: 2,
+};
+
+/// The factory of the family `array:queue`: family index 14 (P5d).
+pub const ARRAY_QUEUE_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:array:queue",
+    op: 0x0E,
+    arity: 2,
+};
+
+/// The factory of the family `array:stack`: family index 15 (P5d).
+pub const ARRAY_STACK_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:array:stack",
+    op: 0x0F,
+    arity: 2,
+};
+
+/// The factory of the family `array:set`: family index 16 (P5d).
+pub const ARRAY_SET_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:array:set",
+    op: 0x10,
+    arity: 2,
+};
+
+/// The factory of the family `array:cell`: family index 17 (P5d).
+pub const ARRAY_CELL_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:array:cell",
+    op: 0x11,
+    arity: 2,
+};
+
+/// The factory of the family `array:priorityqueue`: family index 18 (P5d).
+pub const ARRAY_PRIORITY_QUEUE_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:array:priorityqueue",
+    op: 0x12,
+    arity: 2,
+};
+
+/// The factory of the family `vector:bag`: family index 19 (P5d).
+pub const VECTOR_BAG_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:vector:bag",
+    op: 0x13,
+    arity: 2,
+};
+
+/// The factory of the family `vector:queue`: family index 20 (P5d).
+pub const VECTOR_QUEUE_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:vector:queue",
+    op: 0x14,
+    arity: 2,
+};
+
+/// The factory of the family `vector:stack`: family index 21 (P5d).
+pub const VECTOR_STACK_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:vector:stack",
+    op: 0x15,
+    arity: 2,
+};
+
+/// The factory of the family `vector:set`: family index 22 (P5d).
+pub const VECTOR_SET_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:vector:set",
+    op: 0x16,
+    arity: 2,
+};
+
+/// The factory of the family `vector:cell`: family index 23 (P5d).
+pub const VECTOR_CELL_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:vector:cell",
+    op: 0x17,
+    arity: 2,
+};
+
+/// The factory of the family `vector:priorityqueue`: family index 24 (P5d).
+pub const VECTOR_PRIORITY_QUEUE_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:vector:priorityqueue",
+    op: 0x18,
+    arity: 2,
+};
+
+/// The FIPS alias `rho:space:HashMapBagSpace` of the family `hashmap:bag` (FIPS:296 and
+/// 788-791, P5a). It names the factory channel of `hashmap:bag`, so the urn map binds the alias
+/// to the capability of that family, and `getSpaceAgent` replies the same `Par` (plan decision
+/// 9.4).
+pub const HASHMAP_BAG_SPACE_ALIAS: SystemChannel = SystemChannel {
+    urn: models::rust::space_factory_urn::HASHMAP_BAG_ALIAS,
+    op: HASHMAP_BAG_FACTORY.op,
+    arity: HASHMAP_BAG_FACTORY.arity,
+};
+
+/// The system processes that P5 adds after the four of P4, in the order of the definitions: the
+/// factories in family-index order, then the alias (P5 design v3, A.7, A.8 and A.10).
+///
+/// | URN                               | Channel           | Arity | BodyRef    | Sub-phase |
+/// |-----------------------------------|-------------------|-------|------------|-----------|
+/// | `rho:space:hashmap:bag`           | `[E0, 00]`        | 2     | 200        | P5a       |
+/// | `rho:space:hashmap:stack`         | `[E0, 02]`        | 2     | 202        | P5b       |
+/// | `rho:space:hashmap:set`           | `[E0, 03]`        | 2     | 203        | P5a       |
+/// | `rho:space:hashmap:cell`          | `[E0, 04]`        | 2     | 204        | P5a       |
+/// | `rho:space:hashmap:priorityqueue` | `[E0, 05]`        | 2     | 205        | P5b       |
+/// | `rho:space:array:<inner>`         | `[E0, 0D..=12]`   | 2     | 213 to 218 | P5d       |
+/// | `rho:space:vector:<inner>`        | `[E0, 13..=18]`   | 2     | 219 to 224 | P5d       |
+/// | `rho:space:HashMapBagSpace`       | `[E0, 00]`        | 2     | 200        | P5a       |
+///
+/// The inner collections of an Array or a Vector store are bag, queue, stack, set, cell and
+/// priority queue, in this order. The VectorDB families (6 and 25) arrive in P6, the PathMap
+/// families (7 to 12) and their alias in P5e, and the HashSet families (26 to 31) in P7. A
+/// process of this list is installed only when the family dispatch wires its family
+/// (`spaces::factory::urn::registered_families`).
+pub const P5_SYSTEM_CHANNELS: [SystemChannel; 18] = [
+    HASHMAP_BAG_FACTORY,
+    HASHMAP_STACK_FACTORY,
+    HASHMAP_SET_FACTORY,
+    HASHMAP_CELL_FACTORY,
+    HASHMAP_PRIORITY_QUEUE_FACTORY,
+    ARRAY_BAG_FACTORY,
+    ARRAY_QUEUE_FACTORY,
+    ARRAY_STACK_FACTORY,
+    ARRAY_SET_FACTORY,
+    ARRAY_CELL_FACTORY,
+    ARRAY_PRIORITY_QUEUE_FACTORY,
+    VECTOR_BAG_FACTORY,
+    VECTOR_QUEUE_FACTORY,
+    VECTOR_STACK_FACTORY,
+    VECTOR_SET_FACTORY,
+    VECTOR_CELL_FACTORY,
+    VECTOR_PRIORITY_QUEUE_FACTORY,
+    HASHMAP_BAG_SPACE_ALIAS,
+];
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -151,6 +320,70 @@ mod tests {
         assert_eq!(body_ref(VECTOR), 235);
         assert_eq!(body_ref(MATCHER_OP), 249);
         assert_eq!(body_ref(SINK_OP), 250);
+    }
+
+    #[test]
+    fn p5_system_channels_have_the_table_values() {
+        let expected = [
+            ("rho:space:hashmap:bag", 0x00, 2, 200),
+            ("rho:space:hashmap:stack", 0x02, 2, 202),
+            ("rho:space:hashmap:set", 0x03, 2, 203),
+            ("rho:space:hashmap:cell", 0x04, 2, 204),
+            ("rho:space:hashmap:priorityqueue", 0x05, 2, 205),
+            ("rho:space:array:bag", 0x0D, 2, 213),
+            ("rho:space:array:queue", 0x0E, 2, 214),
+            ("rho:space:array:stack", 0x0F, 2, 215),
+            ("rho:space:array:set", 0x10, 2, 216),
+            ("rho:space:array:cell", 0x11, 2, 217),
+            ("rho:space:array:priorityqueue", 0x12, 2, 218),
+            ("rho:space:vector:bag", 0x13, 2, 219),
+            ("rho:space:vector:queue", 0x14, 2, 220),
+            ("rho:space:vector:stack", 0x15, 2, 221),
+            ("rho:space:vector:set", 0x16, 2, 222),
+            ("rho:space:vector:cell", 0x17, 2, 223),
+            ("rho:space:vector:priorityqueue", 0x18, 2, 224),
+            ("rho:space:HashMapBagSpace", 0x00, 2, 200),
+        ];
+        assert_eq!(P5_SYSTEM_CHANNELS.len(), expected.len());
+        for (channel, (urn, op, arity, body)) in P5_SYSTEM_CHANNELS.iter().zip(expected) {
+            assert_eq!(
+                (channel.urn, channel.op, channel.arity, channel.body_ref()),
+                (urn, op, arity, body)
+            );
+            assert_eq!(op_of(&channel.channel()), Some(op));
+            assert!(is_factory_op(channel.op), "{}", channel.urn);
+            assert!(is_call_op(channel.op), "{}", channel.urn);
+        }
+        let urns: BTreeSet<&str> = P4_SYSTEM_CHANNELS
+            .iter()
+            .chain(P5_SYSTEM_CHANNELS.iter())
+            .map(|channel| channel.urn)
+            .collect();
+        assert_eq!(
+            urns.len(),
+            P4_SYSTEM_CHANNELS.len() + P5_SYSTEM_CHANNELS.len(),
+            "every URN names one process"
+        );
+        let families = &P5_SYSTEM_CHANNELS[..P5_SYSTEM_CHANNELS.len() - 1];
+        let factory_ops: BTreeSet<u8> = families
+            .iter()
+            .chain(std::iter::once(&HASHMAP_QUEUE_FACTORY))
+            .map(|channel| channel.op)
+            .collect();
+        assert_eq!(factory_ops.len(), families.len() + 1, "one op per family");
+        assert_eq!(
+            HASHMAP_BAG_SPACE_ALIAS.channel(),
+            HASHMAP_BAG_FACTORY.channel(),
+            "the alias shares the channel of its family"
+        );
+        assert_eq!(
+            HASHMAP_BAG_SPACE_ALIAS.body_ref(),
+            HASHMAP_BAG_FACTORY.body_ref()
+        );
+        assert_eq!(
+            HASHMAP_BAG_SPACE_ALIAS.urn,
+            models::rust::space_factory_urn::HASHMAP_BAG_ALIAS
+        );
     }
 
     #[test]

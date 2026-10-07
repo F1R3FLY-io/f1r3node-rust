@@ -1,0 +1,37 @@
+' 19 PathMap keys: the path, the path key and the prefix keys of one channel.
+'
+' Source of Figure N11.7a in ../design.md (section N11.7). The figure restates
+' channel_path, encode_path and EncodedPath of
+' rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs (P5e). It adds no
+' new fact.
+'
+' Reading order:
+'   1. The channel @[0, 1, 2] is a plain list, so its path holds its elements.
+'   2. One buffer holds the path key and the end of each prefix key.
+'   3. The datum lives on D(sid, path_key), and the markers and the waiters
+'      of each prefix live on I(sid, prefix_key) (wave W3).
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 19-pathmap-keys.puml   Check: ./render.sh --check
+
+@startuml 19-pathmap-keys
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ObjectBorderColor $rrs_relation
+title The keys of the path [0, 1, 2]
+
+object "channel @[0, 1, 2]" as channel $rrs_name
+object "path p = [0, 1, 2]" as path $rrs_object
+object "path_key(p)\n03 00 · 03 02 · 03 04 · 00" as key $rrs_storage
+object "prefix keys of p\nε · 03 00 · 03 00 03 02 · 03 00 03 02 03 04" as prefixes $rrs_storage
+object "D(sid, path_key(p))\nthe datum" as data $rrs_substrate
+object "I(sid, prefix_key(q)) for each q ⪯ p\nthe markers and the waiters (W3)" as index $rrs_substrate
+
+channel --> path : channel_path
+path --> key : encode_path
+path --> prefixes : EncodedPath::prefix_keys
+key --> data : the data channel
+prefixes --> index : the index channels
+@enduml

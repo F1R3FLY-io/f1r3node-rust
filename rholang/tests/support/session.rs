@@ -172,7 +172,12 @@ impl Session {
     }
 
     /// Runs one deploy of `source` with the names `injections`.
-    pub async fn deploy_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
+    pub async fn deploy_with(
+        &mut self,
+        source: &str,
+        label: &str,
+        injections: &Injections,
+    ) -> Deploy {
         self.deploy_full(source, label, injections, PHLO).await
     }
 
@@ -455,7 +460,9 @@ pub fn comms_on(log: &[Event], channel: &Par) -> usize {
     let key = hash(channel);
     log.iter()
         .filter(|event| match event {
-            Event::Comm(comm) => comm.consume.channel_hashes.as_slice() == std::slice::from_ref(&key),
+            Event::Comm(comm) => {
+                comm.consume.channel_hashes.as_slice() == std::slice::from_ref(&key)
+            }
             Event::IoEvent(_) => false,
         })
         .count()

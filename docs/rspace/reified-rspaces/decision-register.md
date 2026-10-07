@@ -95,6 +95,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | In force. Implemented |
 | [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Planned after P5 (decision 48) |
 | [Decision 48](#decision-48) | The work order after decision 43 | 2026-10-06 | In force |
+| [Decision 49](#decision-49) | One fire count for each space transaction | 2026-10-06 | In force. Implemented in P5 wave W2 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -1360,6 +1361,36 @@ About 12,550 lines are the shared framework that every family reuses.
 The framework holds the substrate, the encoding, the agent framework, the factory, the handle, the routing, and the runtime.
 So the other families can reuse the framework in parallel batches.
 
+### <a id="decision-49"></a>Decision 49: One fire count for each space transaction
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-06 |
+| Status | In force. Implemented in P5 wave W2 |
+| Amends | [I-21](#i-21), its scope: the settles of an operation count on the fire count of its transaction |
+| Related | [Decision 43](#decision-43), [decision 45](#decision-45), [decision 48](#decision-48) |
+
+**Statement.**
+
+- One space transaction makes at most `FIRE_ROUND_CAP` fires. The settle before the plan, the plan, the settle after the plan and a peek re-store count on one count.
+- `Plan` holds the count, and `Cx::rounds` gives it to every driver (`rholang/src/rust/interpreter/spaces/generic.rs`).
+- `open_plan` runs the settle before the plan. When that settle fills the transaction, the operation re-issues before its plan stages anything, with the order rule of [decision 43](#decision-43).
+- A second send of a peek that meets a full transaction re-issues before it fires.
+- A settle job is a transaction of its own, so it starts at the count 0.
+- The step of a `K_lift` is the fire count of the transaction at the lift.
+
+**User's words.** The STACK batch found that the settle before a stack plan, the plan and the settle after it each started a count of their own.
+So one transaction could make $`3 \times \mathrm{FIRE\_ROUND\_CAP}`$ fires. Asked how to resolve this against I-21, the user answered "Go with the most principled solution".
+
+**Reason.**
+
+- I-21 bounds the fires of one transaction. Counts of their own gave a bound of three times the cap, which no rule states.
+- One count states the bound of I-21 exactly. The shape of each transaction stays deterministic, so play and replay agree.
+- A queue, a bag and a cell have no settle, so their transactions and the queue parity golden do not change.
+
+**Evidence.** The test `space_stack_plan_after_a_full_settle_reissues_the_operation` shows the re-issue of a full transaction.
+The property `prop_stack_settle_bounded_any_schedule` checks the bound on every schedule. The stack models `StackDiscipline.v` and `StackDiscipline.tla` and the restore check of `GenericRSpace.v` model the count.
+
 ## Minimal-footprint revision: M-1 to M-5
 
 On 2026-10-04 the user asked to "only modify what is required for reified rspaces and certainly not touch casper unless it is absolutely required … that was the purpose of the realignment".
@@ -1843,6 +1874,7 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 | Status | In force. The value is vetoable: the user may choose another cap. |
 | Amends | Item A10 of the P4 design ("a bounded chain of fires"), arbitration item H8, and [I-12](#i-12) (work bounds for each operation) |
 | Related | [Decision 34](#decision-34), [decision 43](#decision-43), [I-12](#i-12), [re-issue](glossary.md#re-issue), [space intent](glossary.md#space-intent) |
+| Amended by | [Decision 49](#decision-49): the settles of an operation count on the fire count of its transaction |
 
 **Statement.**
 

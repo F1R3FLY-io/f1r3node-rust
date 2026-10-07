@@ -1,11 +1,11 @@
 //! The constructor of a factory call and the config of a new space (P4 design C.7, steps 2
-//! and 5, and I-17).
+//! and 5, I-17, and P5 design v3, A.7, A.8 and A.10).
 //!
 //! A factory accepts only the canonical constructor `[q?][FREE?][PARAMS?]` of
 //! `SpaceFactoryConstructor`. [`FactoryConstructor::validate`] then applies the gates of this
 //! phase in this order:
 //!
-//! 1. The family has a schema in this phase, else `FamilyUnavailable`.
+//! 1. The family has a constructor schema in this phase, else `FamilyUnavailable`.
 //! 2. The constructor parses, else `BadConstructorArgument`.
 //! 3. The family takes the qualifier, else `BadConstructorArgument`. The qualifier is
 //!    `default`, else `QualifierUnavailable` (`temp` and `seq` arrive in P7).
@@ -13,10 +13,20 @@
 //! 5. The params are not positional, else `PositionalParamsUnsupported`.
 //! 6. Each named param is in the schema of the family, else `UnknownParam` with a suggestion.
 //!    The keys are checked in bytewise order.
+//! 7. Each param that the family requires is present, else `MissingParam` (the `size` of an
+//!    Array space, F7). The required keys are checked in bytewise order.
+//! 8. The rule of each named param accepts its value, else `InvalidParam` (`defaults::ParamRule`:
+//!    `size` and `cyclic` of F7, `priorities` of I-10). The values are checked in bytewise key
+//!    order.
 //!
-//! The config of the new space is a `SpaceConfig`. The agent stores its canonical map on
-//! `C(sid)` once (I-17), and nothing changes the map later. [`family_of`] names the family of a
-//! stored config.
+//! The keys come before the values, as in the check of the send params of the agent (P5 design
+//! v3, A.3.4). Every gate runs before the space exists, so a rejected call creates nothing.
+//!
+//! The config of the new space is a `SpaceConfig`. Its params are the named params of the
+//! constructor, each in the canonical form of its rule. An absent optional param stays absent,
+//! and its reader applies the default: a fixed Array space, or priority levels without a bound.
+//! The agent stores the canonical map on `C(sid)` once (I-17), and nothing changes the map
+//! later. [`family_of`] names the family of a stored config.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +36,7 @@ use models::rust::space_factory_urn::{
     SpaceFactoryConstructor, SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier,
 };
 
-use super::defaults::{constructor_schema, suggestion};
+use super::defaults::{constructor_schema, required_params, suggestion, ParamRule};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{Durability, NativeSpace};
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
@@ -39,12 +49,14 @@ pub struct FactoryConstructor {
     pub family: SpaceFactoryUrn,
     /// The qualifier of the new space.
     pub qualifier: SpaceQualifier,
-    /// The named params, which the schema of the family accepts.
+    /// The named params, which the schema of the family accepts, each in the canonical form of
+    /// its rule.
     pub params: BTreeMap<String, Par>,
 }
 
 impl FactoryConstructor {
-    /// Validates the constructor list `ctor` of a call to the factory of `family`.
+    /// Validates the constructor list `ctor` of a call to the factory of `family` with the gates
+    /// 1 to 8 of this module, in order.
     pub fn validate(family: SpaceFactoryUrn, ctor: &Par) -> Result<FactoryConstructor, SpaceError> {
         let schema = constructor_schema(family).ok_or_else(|| SpaceError::FamilyUnavailable {
             outer: family.outer.as_str().to_string(),
@@ -84,10 +96,18 @@ impl FactoryConstructor {
                 suggestion: suggestion(key, schema).map(str::to_string),
             });
         }
+        if let Some(key) = required_params(family)
+            .iter()
+            .find(|key| !named.contains_key(**key))
+        {
+            return Err(SpaceError::MissingParam {
+                key: (*key).to_string(),
+            });
+        }
         Ok(FactoryConstructor {
             family,
             qualifier,
-            params: named,
+            params: canonical_params(named)?,
         })
     }
 
@@ -120,6 +140,25 @@ const fn config_qualifier(qualifier: SpaceQualifier) -> ConfigQualifier {
     }
 }
 
+/// Gate 8: each named param in the canonical form of its rule, in bytewise key order. The first
+/// value that its rule refuses fails with `InvalidParam`. Gate 6 has checked every key against
+/// the schema, and every schema key has a rule, so a key without a rule is inconsistent.
+fn canonical_params(named: BTreeMap<String, Par>) -> Result<BTreeMap<String, Par>, SpaceError> {
+    let mut params = BTreeMap::new();
+    for (key, value) in named {
+        let rule = ParamRule::of(&key).ok_or(SpaceError::Inconsistent(
+            "a constructor param has no value rule",
+        ))?;
+        match rule.canonical(&value) {
+            Some(canonical) => {
+                params.insert(key, canonical);
+            }
+            None => return Err(SpaceError::InvalidParam { key }),
+        }
+    }
+    Ok(params)
+}
+
 /// The family that a stored config names. A config without a supported pair is inconsistent.
 pub fn family_of(config: &SpaceConfig) -> Result<SpaceFactoryUrn, SpaceError> {
     match (
@@ -146,7 +185,7 @@ mod tests {
     use models::rust::reified::builders;
     use models::rust::reified::encoding::{encode_free, FreeTheory};
     use models::rust::reified::params::SendParam;
-    use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
+    use models::rust::utils::{new_elist_par, new_gbool_par, new_gint_par, new_gstring_par};
 
     use super::*;
     use crate::rust::interpreter::spaces::namespace::SID_LEN;
@@ -241,7 +280,7 @@ mod tests {
             })
         );
         for family in SpaceFactoryUrn::all() {
-            if family == SpaceFactoryUrn::HASHMAP_QUEUE {
+            if constructor_schema(family).is_some() {
                 continue;
             }
             assert_eq!(
@@ -252,6 +291,202 @@ mod tests {
                 }),
                 "{family}"
             );
+        }
+    }
+
+    fn family(outer: SpaceOuter, inner: SpaceInner) -> SpaceFactoryUrn {
+        SpaceFactoryUrn { outer, inner }
+    }
+
+    fn flag(value: bool) -> Par { new_gbool_par(value, Vec::new(), false) }
+
+    fn named(pairs: Vec<(&str, Par)>) -> Par {
+        params(
+            pairs
+                .into_iter()
+                .map(|(key, value)| SendParam::Named(key.to_string(), value))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn reified_factory_p5_param_gates_fail_closed_in_order() {
+        let array_queue = family(SpaceOuter::Array, SpaceInner::Queue);
+        let array_pq = family(SpaceOuter::Array, SpaceInner::PriorityQueue);
+        let hashmap_pq = family(SpaceOuter::HashMap, SpaceInner::PriorityQueue);
+        let vector_bag = family(SpaceOuter::Vector, SpaceInner::Bag);
+        let check = |family: SpaceFactoryUrn, ctor: Vec<Par>| {
+            FactoryConstructor::validate(family, &list(ctor))
+        };
+        // Gate 6 before gate 7: an unknown key wins over a missing size.
+        assert_eq!(
+            check(array_queue, vec![named(vec![("sise", int(4))])]),
+            Err(SpaceError::UnknownParam {
+                key: "sise".to_string(),
+                suggestion: Some("size".to_string()),
+            })
+        );
+        assert_eq!(
+            check(array_queue, vec![named(vec![("cylic", flag(true))])]),
+            Err(SpaceError::UnknownParam {
+                key: "cylic".to_string(),
+                suggestion: Some("cyclic".to_string()),
+            })
+        );
+        assert_eq!(
+            check(hashmap_pq, vec![named(vec![("prioritis", int(3))])]),
+            Err(SpaceError::UnknownParam {
+                key: "prioritis".to_string(),
+                suggestion: Some("priorities".to_string()),
+            })
+        );
+        // Vector takes no size, and a queue takes no priorities.
+        assert_eq!(
+            check(vector_bag, vec![named(vec![("size", int(4))])]),
+            Err(SpaceError::UnknownParam {
+                key: "size".to_string(),
+                suggestion: None,
+            })
+        );
+        assert_eq!(
+            validate(vec![named(vec![("priorities", int(3))])]),
+            Err(SpaceError::UnknownParam {
+                key: "priorities".to_string(),
+                suggestion: None,
+            })
+        );
+        // Gate 7 before gate 8: a missing size wins over a bad cyclic flag.
+        for ctor in [Vec::new(), vec![string("default")], vec![named(vec![(
+            "cyclic",
+            int(1),
+        )])]] {
+            assert_eq!(
+                check(array_queue, ctor),
+                Err(SpaceError::MissingParam {
+                    key: "size".to_string(),
+                })
+            );
+        }
+        // Gate 8: the values, in bytewise key order.
+        for (pairs, key) in [
+            (vec![("size", int(0))], "size"),
+            (vec![("size", int(-3))], "size"),
+            (vec![("size", flag(true))], "size"),
+            (vec![("size", string("4"))], "size"),
+            (vec![("cyclic", int(1)), ("size", int(0))], "cyclic"),
+            (vec![("cyclic", flag(false)), ("size", int(0))], "size"),
+        ] {
+            assert_eq!(
+                check(array_queue, vec![named(pairs)]),
+                Err(SpaceError::InvalidParam {
+                    key: key.to_string(),
+                })
+            );
+        }
+        for value in [int(0), int(-1), flag(true), string("3")] {
+            assert_eq!(
+                check(hashmap_pq, vec![named(vec![("priorities", value)])]),
+                Err(SpaceError::InvalidParam {
+                    key: "priorities".to_string(),
+                })
+            );
+        }
+        assert_eq!(
+            check(array_pq, vec![named(vec![
+                ("priorities", int(0)),
+                ("size", int(2))
+            ])]),
+            Err(SpaceError::InvalidParam {
+                key: "priorities".to_string(),
+            })
+        );
+        // The earlier gates still come first.
+        assert_eq!(
+            check(array_queue, vec![string("temp")]),
+            Err(SpaceError::QualifierUnavailable("temp".to_string()))
+        );
+        assert_eq!(
+            check(array_queue, vec![nat()]),
+            Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+        );
+        assert_eq!(
+            check(array_queue, vec![params(vec![SendParam::Positional(int(
+                4
+            ))])]),
+            Err(SpaceError::PositionalParamsUnsupported)
+        );
+    }
+
+    #[test]
+    fn reified_factory_p5_params_are_stored_in_canonical_form() {
+        let array_queue = family(SpaceOuter::Array, SpaceInner::Queue);
+        let array_pq = family(SpaceOuter::Array, SpaceInner::PriorityQueue);
+        let mut stray = int(8);
+        stray.locally_free = vec![0b0000_0010];
+        let validated = FactoryConstructor::validate(
+            array_queue,
+            &list(vec![
+                string("default"),
+                named(vec![("size", stray), ("cyclic", flag(true))]),
+            ]),
+        )
+        .expect("a valid Array constructor");
+        assert_eq!(
+            validated.params,
+            BTreeMap::from([
+                ("cyclic".to_string(), flag(true)),
+                ("size".to_string(), int(8))
+            ])
+        );
+        let fixed = FactoryConstructor::validate(
+            array_queue,
+            &list(vec![named(vec![("size", int(i64::MAX))])]),
+        )
+        .expect("a fixed Array space without cyclic");
+        assert_eq!(
+            fixed.params,
+            BTreeMap::from([("size".to_string(), int(i64::MAX))])
+        );
+        let config = fixed.config(space());
+        assert_eq!(config.outer, "array");
+        assert_eq!(config.inner, "queue");
+        assert_eq!(SpaceConfig::from_par(&config.to_par()), Ok(config.clone()));
+        assert_eq!(family_of(&config), Ok(array_queue));
+        let bounded = FactoryConstructor::validate(
+            array_pq,
+            &list(vec![named(vec![("priorities", int(3)), ("size", int(1))])]),
+        )
+        .expect("a valid Array priority queue constructor");
+        assert_eq!(
+            bounded.params,
+            BTreeMap::from([
+                ("priorities".to_string(), int(3)),
+                ("size".to_string(), int(1))
+            ])
+        );
+        for family in SpaceFactoryUrn::all() {
+            let Some(schema) = constructor_schema(family) else {
+                continue;
+            };
+            let required: Vec<(&str, Par)> = required_params(family)
+                .iter()
+                .map(|key| (*key, int(2)))
+                .collect();
+            let ctor = match required.is_empty() {
+                true => Vec::new(),
+                false => vec![named(required.clone())],
+            };
+            let minimal = FactoryConstructor::validate(family, &list(ctor))
+                .unwrap_or_else(|error| panic!("{family}: {error:?}"));
+            assert_eq!(minimal.family, family);
+            assert_eq!(minimal.qualifier, SpaceQualifier::Default);
+            assert_eq!(minimal.durability(), Durability::Durable);
+            assert_eq!(minimal.params.len(), required.len(), "{family}");
+            assert!(minimal
+                .params
+                .keys()
+                .all(|key| schema.contains(&key.as_str())));
+            assert_eq!(family_of(&minimal.config(space())), Ok(family));
         }
     }
 

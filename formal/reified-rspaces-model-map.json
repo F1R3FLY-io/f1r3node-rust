@@ -428,7 +428,7 @@
       "scope": "TxnCore",
       "kind": "fn",
       "name": "stage_produce",
-      "line": 1879,
+      "line": 1876,
       "role": "Stages one produce: lock coverage of the channel (phase A), the fired group (admit_group), the join channels (phase B), then the view loads, the trigger-key pairing and the view effects (design §1.4, FR-1, FR-3, FR-4).",
       "rocq": [
         "stage",
@@ -480,7 +480,7 @@
       "scope": "TxnCore",
       "kind": "fn",
       "name": "stage_consume",
-      "line": 2093,
+      "line": 2090,
       "role": "Stages one consume: admit_group (arity, canonical order, lock coverage in both phases, installed guard) before any hot-store access, then fire against stored data or park the continuation and its joins (FR-1, FR-4).",
       "rocq": [
         "stage",
@@ -530,7 +530,7 @@
       "scope": "TxnCore",
       "kind": "fn",
       "name": "verify",
-      "line": 1802,
+      "line": 1799,
       "role": "Replay pairing under the trigger key only (FR-3): Produce(source) for a produce-side fire, Consume(source) for a consume-side fire. The COMM pairs while paired < count / binding_multiplicity. Decision 36: it returns the recorded COMM or None and never fails, so an unpaired fire stages as in play and replay staging equals play staging.",
       "rocq": [
         "verify",
@@ -565,7 +565,7 @@
       "scope": null,
       "kind": "struct",
       "name": "StagedFire",
-      "line": 1541,
+      "line": 1538,
       "role": "A staged produce-side fire. Its field recorded holds the recorded COMM that the fire paired with in replay and reporting, and None in play and for an unpaired replay fire (decision 36).",
       "rocq": [
         "Staged",
@@ -586,7 +586,7 @@
       "scope": null,
       "kind": "struct",
       "name": "StagedConsumeFire",
-      "line": 1573,
+      "line": 1570,
       "role": "A staged consume-side fire. Decision 36 adds its field recorded, with the meaning of StagedFire.recorded.",
       "rocq": [
         "Staged",
@@ -607,7 +607,7 @@
       "scope": null,
       "kind": "fn",
       "name": "binding_multiplicity",
-      "line": 1036,
+      "line": 1033,
       "role": "The bindings that one recorded COMM occurrence adds under a key in rig.",
       "rocq": [
         "mult",
@@ -863,7 +863,7 @@
       "scope": null,
       "kind": "fn",
       "name": "commit_staged",
-      "line": 2724,
+      "line": 2721,
       "role": "Applies the staged operations in order under sub_order(parent, i). StoreSwapped rejects the commit before any operation, and TxnRegistration::admit_parent rejects a second commit under one parent (FR-5). A failure of operation i keeps operations 0..i (decision D6). Decision 36: an unpaired replay fire fails here, with the error of a rejected call or with ReplayDivergence, and with the same prefix.",
       "rocq": [
         "commit_run",
@@ -899,7 +899,7 @@
       "scope": null,
       "kind": "fn",
       "name": "commit_operation",
-      "line": 2692,
+      "line": 2689,
       "role": "Commits one staged operation: apply_op applies it, after the state check of the entries that it removes (ready_produce, ready_consume), and then the event correlation is checked. Both checks cost O(changed entries) and run in every build profile, so debug and release commit identical results (FR-7').",
       "rocq": [
         "commit_op",
@@ -919,7 +919,7 @@
       "scope": "HostTxn",
       "kind": "fn",
       "name": "commit",
-      "line": 2935,
+      "line": 2932,
       "role": "Closes the transaction, clears the staged pairings and the counter delta, commits the staged operations and releases the locks and the registration.",
       "rocq": [
         "txn_lifecycle",
@@ -944,7 +944,7 @@
       "scope": null,
       "kind": "struct",
       "name": "TxnView",
-      "line": 1176,
+      "line": 1173,
       "role": "The staged view overlay with the counter delta (design §1.3). Every map is keyed by the store identity (FR-2).",
       "rocq": [
         "View",
@@ -968,7 +968,7 @@
       "scope": null,
       "kind": "fn",
       "name": "check_event_correlation",
-      "line": 1457,
+      "line": 1454,
       "role": "Correlates the staged effects of one operation with the events that its commit emits, in every build profile (FR-7, FR-7'). By H6 the staged effects are the effects of the commit, so H10 shows that the check never fails for a staged transaction.",
       "rocq": [
         "covered",
@@ -986,7 +986,7 @@
       "scope": null,
       "kind": "fn",
       "name": "sub_order",
-      "line": 494,
+      "line": 491,
       "role": "The order of operation i of a transaction: parent.path ++ [(i, SUB_OPERATION_TAG)] (decision D3).",
       "rocq": [
         "sub_order",
@@ -1006,7 +1006,7 @@
       "scope": null,
       "kind": "const",
       "name": "SUB_OPERATION_TAG",
-      "line": 490,
+      "line": 487,
       "role": "The path tag 2 of a sub-order. ReductionContext uses 0 and 1.",
       "rocq": [
         "SUB_OPERATION_TAG"
@@ -1023,7 +1023,7 @@
       "scope": null,
       "kind": "fn",
       "name": "sweep_volatile_channels",
-      "line": 2987,
+      "line": 2984,
       "role": "The volatile sweep of every host mode (design §3.1): validation (installed guard, require_canonical on every stored join group, crossing groups, persisted keys) before any mutation, the continuation, join and data loops, and the post check. SweepReport.joins counts the joins actually removed, and on_continuation_removed lets the replay host update its estimate (FR-8).",
       "rocq": [
         "sweep_volatile",
@@ -1121,7 +1121,7 @@
       "scope": "SpaceStoreHandle",
       "kind": "fn",
       "name": "sweep_volatile",
-      "line": 757,
+      "line": 754,
       "role": "Runs the sweep of the host through the handle. It fails closed with NestedTransaction, before any lock or hot-store access, when the current task holds an open transaction of this handle (FR-9').",
       "rocq": [
         "sweep_volatile",
@@ -1142,7 +1142,7 @@
       "scope": null,
       "kind": "fn",
       "name": "root_leaf_records",
-      "line": 2951,
+      "line": 2948,
       "role": "The record count of the data leaf of a channel at a history root (the outer frame, decision D5).",
       "rocq": [
         "root_leaf_record_count",
@@ -1216,7 +1216,7 @@
       "scope": "SpaceStoreHandle",
       "kind": "fn",
       "name": "root_leaf_record_count",
-      "line": 750,
+      "line": 747,
       "role": "The handle entry point. It delegates to the host.",
       "rocq": [
         "root_leaf_record_count"
@@ -1233,7 +1233,7 @@
       "scope": null,
       "kind": "fn",
       "name": "require_canonical",
-      "line": 851,
+      "line": 848,
       "role": "Admits a group whose channel keys are non-decreasing (FR-1'). A group can repeat a channel. Any other order fails with NonCanonicalChannelOrder. One channel is always canonical.",
       "rocq": [
         "group_check",
@@ -1259,7 +1259,7 @@
       "scope": null,
       "kind": "fn",
       "name": "canonical_group_key",
-      "line": 859,
+      "line": 856,
       "role": "FR-1: the key of a non-empty canonical group (group_identity, then require_canonical). Every staged group and every continuations read goes through it.",
       "rocq": [
         "group_check",
@@ -1280,7 +1280,7 @@
       "scope": "TxnCore",
       "kind": "fn",
       "name": "admit_group",
-      "line": 1685,
+      "line": 1682,
       "role": "FR-1 and FR-4: arity, canonical order, lock coverage and the installed guard of a staged group, in that order and before any hot-store access.",
       "rocq": [
         "access",
@@ -1303,7 +1303,7 @@
       "scope": "TxnCore",
       "kind": "fn",
       "name": "read_continuations",
-      "line": 1709,
+      "line": 1706,
       "role": "FR-1: SpaceTxn::continuations checks the canonical group key before the hot-store read.",
       "rocq": [
         "access",
@@ -1322,7 +1322,7 @@
       "scope": "TxnCore",
       "kind": "fn",
       "name": "read_joins",
-      "line": 1721,
+      "line": 1718,
       "role": "FR-1: SpaceTxn::joins loads the joins key of the channel, then checks each returned group.",
       "rocq": [
         "access",
@@ -1341,7 +1341,7 @@
       "scope": "TxnView",
       "kind": "fn",
       "name": "load_joins",
-      "line": 1233,
+      "line": 1230,
       "role": "Loads the join groups of a channel through the hot store and rejects a non-canonical stored group (FR-1).",
       "rocq": [
         "access",
@@ -1362,7 +1362,7 @@
       "scope": "SpaceTxnError",
       "kind": "variant",
       "name": "NonCanonicalChannelOrder",
-      "line": 106,
+      "line": 105,
       "role": "FR-1': a channel group is not sorted (non-decreasing) by channel hash, so a decreasing pair exists (also a non-canonical stored join group in a sweep). A repeated channel is canonical.",
       "rocq": [
         "GroupErr",
@@ -1383,7 +1383,7 @@
       "scope": null,
       "kind": "fn",
       "name": "channel_key",
-      "line": 832,
+      "line": 829,
       "role": "FR-2: the store identity of a channel, stable_hash_provider::hash(channel), the key of every substrate map and set.",
       "rocq": [
         "store_get",
@@ -1402,7 +1402,7 @@
       "scope": null,
       "kind": "fn",
       "name": "group_identity",
-      "line": 837,
+      "line": 834,
       "role": "FR-2: the store identity of a group, its channel keys in group order.",
       "rocq": [
         "stage_writes",
@@ -1422,7 +1422,7 @@
       "scope": null,
       "kind": "fn",
       "name": "installed_channels",
-      "line": 1142,
+      "line": 1139,
       "role": "FR-2: the installed-channel guard set, keyed by store identity.",
       "rocq": [
         "installed_by_sid"
@@ -1439,7 +1439,7 @@
       "scope": "HostTxn",
       "kind": "fn",
       "name": "recorded_comms",
-      "line": 2865,
+      "line": 2862,
       "role": "FR-3: the recorded COMMs under the trigger key of the queried source that this transaction has not paired: count / binding_multiplicity minus the paired copies.",
       "rocq": [
         "available",
@@ -1458,7 +1458,7 @@
       "scope": "SpaceTxnError",
       "kind": "variant",
       "name": "ReplayDivergence",
-      "line": 92,
+      "line": 91,
       "role": "FR-3 and decision 36: an unpaired replay fire, whose trigger event holds no free recorded occurrence of its COMM. Commit raises it after the observer accepts every call of the fire, and the operations before it stay applied (D6).",
       "rocq": [
         "pair_step",
@@ -1488,7 +1488,7 @@
       "scope": null,
       "kind": "struct",
       "name": "LockCoverage",
-      "line": 914,
+      "line": 911,
       "role": "FR-4: the exact stripes that begin holds, in phase A and phase B.",
       "rocq": [],
       "tla": [
@@ -1507,7 +1507,7 @@
       "scope": "LockCoverage",
       "kind": "fn",
       "name": "new",
-      "line": 920,
+      "line": 917,
       "role": "FR-4: records the stripes of the lock keys for both phases, as striped_locks::consume_lock takes them.",
       "rocq": [],
       "tla": [
@@ -1524,7 +1524,7 @@
       "scope": "LockCoverage",
       "kind": "fn",
       "name": "require",
-      "line": 927,
+      "line": 924,
       "role": "FR-4: a touched channel must have its stripe in the phase that the host uses for it (Produced: phase A, Joined: phase B, Consumed: both). Otherwise staging fails with UnlockedChannel.",
       "rocq": [],
       "tla": [
@@ -1543,7 +1543,7 @@
       "scope": "HeldStripes",
       "kind": "fn",
       "name": "holds",
-      "line": 890,
+      "line": 887,
       "role": "FR-4: membership of a channel hash in the held stripes of one phase.",
       "rocq": [],
       "tla": [
@@ -1560,7 +1560,7 @@
       "scope": null,
       "kind": "struct",
       "name": "LockUse",
-      "line": 902,
+      "line": 899,
       "role": "FR-4: how the host locks a touched channel: Produced, Joined or Consumed.",
       "rocq": [],
       "tla": [
@@ -1578,7 +1578,7 @@
       "scope": "SpaceTxnError",
       "kind": "variant",
       "name": "UnlockedChannel",
-      "line": 109,
+      "line": 108,
       "role": "FR-4: the transaction does not hold the stripe of a touched channel in the phase that the host uses for it.",
       "rocq": [],
       "tla": [
@@ -1596,7 +1596,7 @@
       "scope": "CommittedParents",
       "kind": "fn",
       "name": "admit",
-      "line": 588,
+      "line": 585,
       "role": "Admits one commit per parent order in the current evaluation scope (FR-5). A commit with another session or another store Arc resets the tracker first (FR-5').",
       "rocq": [
         "commit_gate",
@@ -1616,7 +1616,7 @@
       "scope": "SpaceStoreHandle",
       "kind": "fn",
       "name": "begin_evaluation_scope",
-      "line": 741,
+      "line": 738,
       "role": "Resets the tracker of committed parents at the start of a root evaluation (FR-5'). P4 calls it at the entry of ReducerCore::inj_with_observation and inj, in play and in replay.",
       "rocq": [
         "handle_step",
@@ -1635,7 +1635,7 @@
       "scope": "TxnRegistration",
       "kind": "fn",
       "name": "admit_parent",
-      "line": 646,
+      "line": 643,
       "role": "FR-5: commit_staged admits the parent order after the StoreSwapped check and before any operation.",
       "rocq": [
         "commit_gate",
@@ -1653,7 +1653,7 @@
       "scope": null,
       "kind": "struct",
       "name": "HandleState",
-      "line": 613,
+      "line": 610,
       "role": "The state that the clones of a handle share: the contexts with an open transaction (FR-9, FR-9') and the tracker of committed parents (FR-5, FR-5').",
       "rocq": [
         "Tracker",
@@ -1672,7 +1672,7 @@
       "scope": "SpaceTxnError",
       "kind": "variant",
       "name": "ParentOrderReused",
-      "line": 112,
+      "line": 111,
       "role": "FR-5: a transaction already committed under the current parent operation order.",
       "rocq": [
         "commit_gate"
@@ -1689,7 +1689,7 @@
       "scope": null,
       "kind": "fn",
       "name": "counter_room",
-      "line": 2288,
+      "line": 2285,
       "role": "FR-6: checked room for one more produce counter increment before any effect.",
       "rocq": [
         "incr",
@@ -1708,7 +1708,7 @@
       "scope": "TxnView",
       "kind": "fn",
       "name": "staged_count",
-      "line": 1420,
+      "line": 1417,
       "role": "FR-6: the staged counter host + delta with checked arithmetic.",
       "rocq": [
         "vcount",
@@ -1726,7 +1726,7 @@
       "scope": "TxnCore",
       "kind": "fn",
       "name": "next_delta",
-      "line": 1769,
+      "line": 1766,
       "role": "FR-6: the staged increment of a non-persistent produce with checked arithmetic.",
       "rocq": [
         "vbump",
@@ -1744,7 +1744,7 @@
       "scope": "SpaceTxnError",
       "kind": "variant",
       "name": "CounterOverflow",
-      "line": 114,
+      "line": 113,
       "role": "FR-6: a produce counter would exceed i32::MAX. The operation fails before any effect.",
       "rocq": [
         "bump",
@@ -1763,7 +1763,7 @@
       "scope": null,
       "kind": "fn",
       "name": "check_removed_records",
-      "line": 2382,
+      "line": 2379,
       "role": "The state check of FR-7 and FR-7': before any effect of an operation, each record that it removes sits at the position where the staged view held it (Inconsistent otherwise). It costs O(changed entries) and runs in every build profile.",
       "rocq": [
         "host_rm_valid",
@@ -1783,7 +1783,7 @@
       "scope": null,
       "kind": "struct",
       "name": "SweepReport",
-      "line": 284,
+      "line": 283,
       "role": "FR-8: the sweep counts. joins counts the joins actually removed.",
       "rocq": [],
       "tla": [],
@@ -1797,7 +1797,7 @@
       "scope": "TxnRegistration",
       "kind": "fn",
       "name": "register",
-      "line": 630,
+      "line": 627,
       "role": "FR-9: begin fails closed with NestedTransaction before it takes any lock when the current task already holds an open transaction of the handle.",
       "rocq": [],
       "tla": [],
@@ -1811,7 +1811,7 @@
       "scope": null,
       "kind": "struct",
       "name": "TxnContext",
-      "line": 550,
+      "line": 547,
       "role": "The execution context of an open transaction: the tokio task, or the thread without a task.",
       "rocq": [
         "handle_sweep"
@@ -1828,7 +1828,7 @@
       "scope": "SpaceTxnError",
       "kind": "variant",
       "name": "NestedTransaction",
-      "line": 116,
+      "line": 115,
       "role": "FR-9: the current task already holds an open transaction of this handle.",
       "rocq": [
         "handle_sweep",
@@ -1866,7 +1866,7 @@
       "scope": "SpaceTxnError",
       "kind": "variant",
       "name": "NativeReplayDirectiveUnsupported",
-      "line": 94,
+      "line": 93,
       "role": "The observer returned a native replay directive. The operation fails closed (H19).",
       "rocq": [
         "space_prelude"
@@ -1883,7 +1883,7 @@
       "scope": "TxnCore",
       "kind": "fn",
       "name": "apply_fire_to_view",
-      "line": 2032,
+      "line": 2029,
       "role": "The view effects of a produce-side fire: the continuation removal, the removed records and the fired joins. FR-10 removed its key and incoming parameters, so it never stores the incoming datum.",
       "rocq": [
         "vpf_effects",
@@ -1903,7 +1903,7 @@
       "scope": null,
       "kind": "fn",
       "name": "check_peeks",
-      "line": 1021,
+      "line": 1018,
       "role": "The peeks rule of a fire: no peeks, or every bind. Any other peek set is MixedArrowJoin. It decides nothing about the removal, because every fire removes its stored non-persistent records (decision 45, Rule E).",
       "rocq": [
         "peeks_ok"
@@ -1920,7 +1920,7 @@
       "scope": null,
       "kind": "fn",
       "name": "removed_records",
-      "line": 1092,
+      "line": 1089,
       "role": "The stored records that a fire removes: the non-persistent stored candidates, also for a peek fire (decision 45, Rule E). The incoming datum is never a removed record.",
       "rocq": [
         "fire_view_removes",
@@ -1943,7 +1943,7 @@
       "scope": null,
       "kind": "fn",
       "name": "fired_receipt",
-      "line": 2653,
+      "line": 2650,
       "role": "fired_receipt(comm, wrapped, candidates, produce) builds the receipt of a fire from the host's wrap_result. Every result keeps the persist flag of the host (decision 45, Rule E), so a non-persistent result tells the agent that the fire removed or spent its datum. The commit fails with Inconsistent when the result count differs from the candidates.",
       "rocq": [
         "fired_receipt",

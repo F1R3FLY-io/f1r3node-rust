@@ -353,12 +353,18 @@ When `s` names a native space, the reducer evaluates `P` with `s` as its [use co
 The use context changes the routes in `P` in three ways:
 
 - A channel of the class `Forged`, such as `@"jobs"`, routes to its collection in the space `s` (rule R5).
-- A plain binder of a `new` in `P` becomes a [space name](glossary.md#space-name) of `s`.
+- A plain binder of a `new` in `P` becomes a [space name](glossary.md#space-name) of `s`, through one allocation job for the space of `s` (F11).
 - A body that the reducer stores for later evaluation, such as the body of a receive, keeps the use context, as a lexical closure does.
 
 A space name and an ordinary unforgeable name keep their own routes in every use context.
 The USE tuple takes the random state of the block, so it changes no random state of `P`.
 A `use` block checks only the reference, so an operation in `P` on a space without a config record aborts with `DanglingHandle`.
+
+A `new` with plain binders in `P` runs one allocation job for the space of `s`.
+The job takes the cost authority of the process that evaluates the `new`.
+For an Array or a Vector space, the job reads the config of the space and gives each binder an index name.
+So a `new` inside `use` of a missing space aborts at the `new` with `DanglingHandle`, not at the first use of the name.
+A `new` inside `use` of a full fixed Array space aborts with `OutOfNames`. A HashMap space keeps the names of a plain `new`.
 
 ```rholang
 new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { use space { @"jobs"!(1) | for (@x <- @"jobs") { Nil } } } }
@@ -394,9 +400,9 @@ The table gives the meaning of the params on each kind of channel.
 
 | Channel of the send | Named params | Positional params |
 |---|---|---|
-| A factory | The constructor of the call holds them. The schema of `hashmap:queue` is empty, so each key aborts with `UnknownParam`. | `PositionalParamsUnsupported` |
+| A factory | The constructor of the call holds them, and the gates of the factory check them against the schema of the family ([specification FA-4 to FA-7](specification.md#15-families)). | `PositionalParamsUnsupported` |
 | A handle | `HANDLE_OP` checks them against the method. The method `produce` takes `persistent`, and another key gives the typed reply `UnknownParam`. | `PositionalParamsUnsupported` |
-| A collection of a queue space | `UnknownParam`, because the queue discipline takes no param | `PositionalParamsUnsupported` |
+| A collection of a native space | The agent checks each key against the send schema of the discipline before the bump (`UnknownParam` with the closest key), and then each value (`InvalidParam`). The queue, the bag, the stack and the cell take no send param. | `PositionalParamsUnsupported`, at the hook |
 | Every other channel | `ParamsUnsupported` | `ParamsUnsupported` |
 
 ```rholang
@@ -406,13 +412,22 @@ new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { for (_
 In this program, the handle call stores a persistent record with the payload `1` on the collection of `"jobs"`, and it replies `Nil`.
 The [agent API](agent-api.md#5-handle-methods) gives every method and its params.
 
+The factories of P5 take these constructor params ([specification FA-4 to FA-7](specification.md#15-families)):
+
+| Construct | Rule | Failure |
+|---|---|---|
+| `F!?(…; size=n)` on an Array factory | a required `GInt` of at least 1 | `MissingParam`, `InvalidParam` |
+| `F!?(…; cyclic=b)` on an Array factory | an optional `GBool`, `false` when absent | `InvalidParam` |
+| `F!?(…; priorities=n)` on a priority queue factory | an optional `GInt` of at least 1, no bound when absent | `InvalidParam` |
+| any other key | not in the schema of the family | `UnknownParam` with the nearest key within two edits |
+
 ### Constructs that fail closed
 
 The table lists each construct that P4 rejects, with its code and the phase that adds its meaning.
 
 | Construct | Example | Code | Phase |
 |---|---|---|---|
-| A query `~` on a receive | `for (y <- @"x" ~ 5) { Nil }` | `QuerySpecUnsupported` | P5 for the priority queue, P6 for VectorDB |
+| A query `~` on the default space, or on a discipline without query params | `for (y <- @"x" ~ 5) { Nil }` | `QuerySpecUnsupported` | P5 for the priority queue, P6 for VectorDB |
 | A theory reference in a factory constructor | `hmq!?(free Nat())` | `TheoryUnavailable` | P7 |
 | The qualifier `"temp"` or `"seq"` | `hmq!?("temp")` | `QualifierUnavailable` | P7 |
 | A space reference that names a user agent | `use @"space" { @"x"!(1) }` | `AgentSpacesUnavailable` | P8 |
@@ -422,7 +437,10 @@ The table lists each construct that P4 rejects, with its code and the phase that
 | A join over two spaces, or over a space and the default space | `for (@a <- x & @b <- @"y") { Nil }`, with `x` in a space | `CrossSpaceJoin` | None: the plan keeps this abort |
 | A factory of another family, or a FIPS alias | ``new f(`rho:space:hashmap:bag`) in { Nil }`` | The baseline error `No value set for <urn>` | P5 and P6 |
 
-The query fails closed on every receive, also on an ordinary channel, because hook H4 checks the source of each bind before its route.
+A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:736-750`).
+The inner channel takes the read rule of a receive source, with the same error text.
+A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:767-797`).
+On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:696-707`).
 A reference that names no space aborts with `EmptySpaceRef`, `HandleNotWritable`, or `NotASpaceRef` in every phase.
 
 ## Keyword rule

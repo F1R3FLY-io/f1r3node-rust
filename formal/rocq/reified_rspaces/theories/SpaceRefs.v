@@ -1,5 +1,6 @@
 (* ═══════════════════════════════════════════════════════════════════════════
-   SpaceRefs.v — space references, channel routing and the handle dispatch (P4)
+   SpaceRefs.v — space references, channel routing, the handle dispatch (P4)
+   and the routing of receive queries (P5b)
 
    This module models how the reducer of P4 finds the space of a channel and
    of a space reference. A space reference (`use s { P }`, `new x : s`,
@@ -13,15 +14,20 @@
    processes routes with no context. A body that the reducer stores under
    a context is wrapped in a USE tuple, so the context returns when the
    body runs. The handle process accepts a call only on a bare handle id,
-   and replies only on a reply name.
+   and replies only on a reply name. A receive with a QUERY tuple as its
+   source routes the inner channel of the query (P5b): the tuple never
+   takes the fast path, the inner channel takes the read rule of HEAD, and
+   the default space rejects the query.
 
    Sources
    - Design: the P4 design report C.1 (routing), C.2 (space references and
      the use-context), C.6 (R7), C.8 (the handle process) and E.1 (the
-     headlines of this module).
-   - Plan: rules R1 to R7, A6 and A23.
-   - Code: the P4 commit of this repository. The line numbers below are the
-     line numbers of that commit.
+     headlines of this module); the P5 design v3, A.8 (QUERY, the HOOKS
+     row) and A.13 (the headline query_source_routes_inner_channel).
+   - Plan: rules R1 to R7, A6, A23, decision 21 (the QUERY tuple) and I-20
+     (the refresh before each strict decode).
+   - Code: the current tree (P5). The line numbers below are the line
+     numbers of that tree.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -51,27 +57,27 @@
    r7_produce               rholang/src/rust/interpreter/reified/execution.rs:
                             112-129 (produce routes with no context)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:542-547
+     without_context        reducer_hooks.rs:696-701
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             106-129
    wrap_body                rholang/src/rust/interpreter/reified/scope.rs:
                             134-142
    enter_use, fire_step     rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:108-123, 127-141, 177-189
+                            reducer_hooks.rs:179-194, 198-212, 258-270
                             (eval_marker, eval_use, native_space_ref),
                             rholang/src/rust/interpreter/dispatch.rs:62-71
                             (a fired body runs on the root reducer)
    handle_of                rholang/src/rust/interpreter/reified/
                             system_channels.rs:93-98
    parse_message            rholang/src/rust/interpreter/reified/handle.rs:
-                            132-161, 175-184, 536-572, 574-579, 581-586,
-                            588-597, 606-611 (ParsedMessage::parse,
+                            138-167, 181-190, 588-624, 626-631, 633-638,
+                            640-649, 658-663 (ParsedMessage::parse,
                             is_reply_name and the sole readers)
    method_of, arity         rholang/src/rust/interpreter/reified/handle.rs:
-                            85-94, 97-103
+                            91-100, 103-109
    call, run                rholang/src/rust/interpreter/reified/handle.rs:
-                            214-269, 271-321
+                            220-275, 277-330
    ensure_available, space_entry
                             rholang/src/rust/interpreter/reified/runtime.rs
                             (ReifiedRuntime::host, ensure_available, and
@@ -79,6 +85,24 @@
                             host before submit_space), reified/
                             system_processes.rs (read_config of
                             getSpaceAgent)
+   marker_of, sole_marker_tuple
+                            models/src/rust/reified/encoding.rs:346-356,
+                            369-374 (marker_of, sole_marker_tuple)
+   decode_source, h4_passes rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs:681-692 (reject_query_source),
+                            models/src/rust/reified/encoding.rs:841-848
+                            (decode_query_source)
+   takes_fast_path          rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs:723-725
+   read_channel             rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs:740-748 (readable_channel)
+   read_bind, route_bind    rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs:721-735, 446-465 (query_bind,
+                            route_receive)
+   single_target            rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs:752-782 (single_bind_route)
+   receive_one              rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs:379-442 (reified_consume)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -86,8 +110,9 @@
    - A Par keeps what the readers look at. The field procs counts the
      sends, receives, news and matches. The field conns counts the
      connectives. The field conds counts the conditionals,
-     cost_signed_terms and cost_stacks. No reader looks
-     at locally_free or connective_used. single_bundle (implicits.rs) does
+     cost_signed_terms and cost_stacks. No reader looks at locally_free.
+     Only marker_of (section 8) looks at connective_used, as the marker_of
+     of encoding.rs does. single_bundle (implicits.rs) does
      not look at conds, so a bundle next to a conditional still unbundles,
      as in HEAD's eval_send. The model keeps that rule.
    - The canonical bytes of a channel (bincode of the sorted term) are a
@@ -103,6 +128,13 @@
    - The handle process: split_trailing_params, the config read, the
      param schema and the method bodies are section variables. The theorem
      covers the checks that run before a method body.
+   - Receive queries: the strict decoder of the elements of a QUERY tuple
+     (decode_query) is a section variable strict_query, and the query
+     itself is a section type. Encoding.v proves the decoder against its
+     encoder, so this module models only what the routing reads: the
+     marker head, the inner channel, and whether the tuple decodes. The
+     model covers a receive with one bind. A join with a query keeps the
+     join errors of P4 (reducer_hooks.rs join_route) until P5c.
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. classify_space_ref_total_deterministic  the five rules give exactly
@@ -126,6 +158,10 @@
    11. native_execution_fails_closed      native play and native replay reject
                                           a space entry at one point, before
                                           any space work (decision 46)
+   12. query_source_routes_inner_channel  a receive with a QUERY tuple routes
+                                          the inner channel of the query, and
+                                          a source without one keeps the
+                                          receive of P4 (P5b)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -1049,6 +1085,249 @@ Proof.
   destruct replay_native; repeat split; reflexivity.
 Qed.
 
+(* ── 8. Receive queries (reducer_hooks.rs, P5b) ─────────────────────────── *)
+
+(* The marker names of encoding.rs (marker_of): GPrivate([0xE0, m]) with m in
+   0xD0..0xD4 (208..212), on a Par without the connective flag. QUERY is
+   0xD3 (211). *)
+Definition query_marker : nat := 211.
+
+Definition is_marker_byte (m : nat) : bool := (208 <=? m) && (m <=? 212).
+
+Definition marker_of (p : par) : option nat :=
+  match p with
+  | mkPar 0 0 0 [] [UPrivate [tag; m]] [] _ false =>
+      if (tag =? reified_tag) && is_marker_byte m then Some m else None
+  | _ => None
+  end.
+
+(* encoding.rs sole_marker_tuple: a Par that is exactly one tuple whose head
+   is a marker name, with the marker and the elements after the head. *)
+Definition sole_marker_tuple (p : par) : option (nat * list par) :=
+  match sole_expr p with
+  | Some (ETuple (h :: rest)) =>
+      match marker_of h with Some m => Some (m, rest) | None => None end
+  | _ => None
+  end.
+
+Definition is_marker_tuple (p : par) : bool :=
+  match sole_marker_tuple p with Some _ => true | None => false end.
+
+(* reducer_hooks.rs takes_fast_path: outside every use block, reified_consume
+   calls the baseline consume only for a channel that routes to the default
+   space and is no marker tuple. *)
+Definition takes_fast_path (c : par) : bool :=
+  routes_to_default_without_context c && negb (is_marker_tuple c).
+
+Lemma sole_expr_shape :
+  forall p e, sole_expr p = Some e -> exists lf cu, p = mkPar 0 0 0 [e] [] [] lf cu.
+Proof.
+  intros [[|a] [|b] [|c] [|e1 [|e2 es]] [|u us] [|bd bs] lf cu] e H; try discriminate H.
+  destruct e1; try discriminate H; cbn in H; injection H as <-; exists lf, cu; reflexivity.
+Qed.
+
+Lemma marker_of_gprivate :
+  forall h m, marker_of h = Some m ->
+    sole_gprivate_id h = Some [reified_tag; m] /\ is_marker_byte m = true.
+Proof.
+  intros [[|a] [|b] [|c] [|e es] [| [id | n] [| u2 us]] [|bd bs] lf [|]] m H;
+    try (cbv beta iota delta [marker_of] in H; discriminate H).
+  all: destruct id as [| tag [| m0 [| x xs]]];
+    cbv beta iota delta [marker_of] in H; try discriminate H.
+  destruct ((tag =? reified_tag) && is_marker_byte m0) eqn:E; [| discriminate H].
+  injection H as <-. apply andb_prop in E as [E1 E2]. apply Nat.eqb_eq in E1. subst tag.
+  split; [reflexivity | exact E2].
+Qed.
+
+(* A marker tuple is a forged channel: it is no unforgeable name, and its head
+   is a marker name, never the agent tag. *)
+Lemma marker_tuple_forged : forall c, is_marker_tuple c = true -> classify_channel c = CForged.
+Proof.
+  intros c H. unfold is_marker_tuple, sole_marker_tuple in H.
+  destruct (sole_expr c) as [e |] eqn:Ee; [| discriminate].
+  destruct e as [| ps | ps rem | s | b | n]; try discriminate.
+  destruct ps as [| h rest]; [discriminate |].
+  destruct (marker_of h) as [m |] eqn:Em; [| discriminate].
+  destruct (marker_of_gprivate h m Em) as [Hid Hm].
+  destruct (sole_expr_shape c _ Ee) as [lf [cu ->]].
+  unfold classify_channel, is_agent_tagged. cbn [sole_unforgeable sole_expr].
+  destruct rest as [| a [| r [| x xs]]]; try reflexivity.
+  rewrite Hid. unfold bytes_eqb.
+  destruct (list_eq_dec Nat.eq_dec [reified_tag; m] [reified_tag; agent_tag]) as [E | E];
+    [| reflexivity].
+  exfalso.
+  assert (Hmeq : nth 1 [reified_tag; m] 0 = nth 1 [reified_tag; agent_tag] 0)
+    by (rewrite E; reflexivity).
+  cbn [nth] in Hmeq. unfold is_marker_byte in Hm. apply andb_prop in Hm as [_ Hle].
+  apply Nat.leb_le in Hle. unfold agent_tag in Hmeq. lia.
+Qed.
+
+Section Queries.
+  Variable canon : par -> option bytes.
+  (* The payload and the named params of a query (agent.rs QueryParams). *)
+  Variable query : Type.
+  (* The strict decoder of the elements of a QUERY tuple after its head, after
+     the I-20 refresh (encoding.rs decode_query, which Encoding.v proves
+     against its encoder): Some (inner channel, query) for the canonical image
+     of a query, and None for every other QUERY tuple. *)
+  Variable strict_query : list par -> option (par * query).
+
+  Inductive source_read : Type :=
+  | SrcPlain : source_read
+  | SrcQuery : par -> query -> source_read
+  | SrcMalformed : source_read.
+
+  (* decode_query_source after refreshed_marker_par: a source without a QUERY
+     tuple is the channel itself (SrcPlain). *)
+  Definition decode_source (c : par) : source_read :=
+    match sole_marker_tuple c with
+    | Some (m, rest) =>
+        if m =? query_marker then
+          match strict_query rest with Some (ch, q) => SrcQuery ch q | None => SrcMalformed end
+        else SrcPlain
+    | None => SrcPlain
+    end.
+
+  (* Hook H4, reject_query_source: only a malformed QUERY tuple fails. *)
+  Definition h4_passes (c : par) : bool :=
+    match decode_source c with SrcMalformed => false | SrcPlain | SrcQuery _ _ => true end.
+
+  (* readable_channel: the read rule of unbundle_receive. A bundle without the
+     read flag fails with the text of HEAD; a bundle without a body fails with
+     the error of unwrap_option_safe. *)
+  Inductive read_result : Type := Readable : par -> read_result | NotReadable | NoBody.
+
+  Definition read_channel (ch : par) : read_result :=
+    match single_bundle ch with
+    | Some (mkBundle (Some body) _ true) => Readable body
+    | Some (mkBundle None _ true) => NoBody
+    | Some (mkBundle _ _ false) => NotReadable
+    | None => Readable ch
+    end.
+
+  Inductive recv_error : Type :=
+  | RMalformed | RNotReadable | RNoBody | RKey | RQuerySpecUnsupported | RAgentSpaces.
+
+  Inductive bind_read : Type :=
+  | BindOk : par -> option query -> route_t -> bind_read
+  | BindErr : recv_error -> bind_read.
+
+  (* route_channel of the channel of a bind (route_receive). *)
+  Definition route_bind (cx : ctx) (ch : par) (q : option query) : bind_read :=
+    match route canon cx ch with RouteOk r => BindOk ch q r | RouteErr => BindErr RKey end.
+
+  (* query_bind, then route_channel (route_receive). *)
+  Definition read_bind (cx : ctx) (c : par) : bind_read :=
+    match decode_source c with
+    | SrcMalformed => BindErr RMalformed
+    | SrcPlain => route_bind cx c None
+    | SrcQuery inner q =>
+        match read_channel inner with
+        | Readable ch => route_bind cx ch (Some q)
+        | NotReadable => BindErr RNotReadable
+        | NoBody => BindErr RNoBody
+        end
+    end.
+
+  Inductive recv_target : Type :=
+  | THost : par -> recv_target
+  | TSpace : native_space -> bytes -> par -> option query -> recv_target
+  | TFail : recv_error -> recv_target.
+
+  (* single_bind_route. *)
+  Definition single_target (b : bind_read) : recv_target :=
+    match b with
+    | BindErr e => TFail e
+    | BindOk ch None RDefault => THost ch
+    | BindOk _ (Some _) RDefault => TFail RQuerySpecUnsupported
+    | BindOk ch q (RSpace n k) => TSpace n k ch q
+    | BindOk _ _ RAgent => TFail RAgentSpaces
+    end.
+
+  (* reified_consume for one bind: the fast path outside every use block, and
+     the routing path otherwise. *)
+  Definition receive_one (cx : ctx) (c : par) : recv_target :=
+    match cx with
+    | None => if takes_fast_path c then THost c else single_target (read_bind cx c)
+    | Some _ => single_target (read_bind cx c)
+    end.
+
+  (* The receive of P4 for one bind on a source that H4 passes: the fast path
+     tests only routes_to_default_without_context, and the routing path routes
+     the source itself. *)
+  Definition p4_receive_one (cx : ctx) (c : par) : recv_target :=
+    match cx with
+    | None =>
+        if routes_to_default_without_context c then THost c
+        else single_target (route_bind cx c None)
+    | Some _ => single_target (route_bind cx c None)
+    end.
+
+  (* The specification: the target of a receive on the inner channel
+     inner_channel of a query q, under the context cx. *)
+  Definition query_target (cx : ctx) (inner_channel : par) (q : query) : recv_target :=
+    match read_channel inner_channel with
+    | Readable ch =>
+        match route canon cx ch with
+        | RouteOk RDefault => TFail RQuerySpecUnsupported
+        | RouteOk (RSpace n k) => TSpace n k ch (Some q)
+        | RouteOk RAgent => TFail RAgentSpaces
+        | RouteErr => TFail RKey
+        end
+    | NotReadable => TFail RNotReadable
+    | NoBody => TFail RNoBody
+    end.
+
+  (* Headline 12. A receive with a QUERY tuple as its source routes the inner
+     channel of the query (P5b):
+     - H4 fails exactly on a malformed QUERY tuple, so a well-formed query
+       passes it;
+     - a QUERY tuple never takes the fast path, and the receive never becomes
+       a consume of the host on any channel;
+     - the receive applies the read rule of HEAD to the inner channel, and the
+       route of the inner channel decides under every context: a native space
+       gets the query, the default space fails with QuerySpecUnsupported, and
+       a user agent fails closed;
+     - a source without a QUERY tuple keeps the receive of P4. *)
+  Theorem query_source_routes_inner_channel :
+    forall cx c,
+      (h4_passes c = false <-> decode_source c = SrcMalformed) /\
+      (forall inner q, decode_source c = SrcQuery inner q ->
+         takes_fast_path c = false /\
+         (forall h, receive_one cx c <> THost h) /\
+         receive_one cx c = query_target cx inner q) /\
+      (decode_source c = SrcPlain -> receive_one cx c = p4_receive_one cx c).
+  Proof.
+    intros cx c. split; [| split].
+    - unfold h4_passes. destruct (decode_source c); split; intros H;
+        first [reflexivity | discriminate H].
+    - intros inner q Hd.
+      assert (Hfast : takes_fast_path c = false).
+      { unfold takes_fast_path.
+        assert (Hm : is_marker_tuple c = true).
+        { unfold decode_source in Hd. unfold is_marker_tuple.
+          destruct (sole_marker_tuple c) as [[m rest] |]; [reflexivity | discriminate Hd]. }
+        rewrite Hm. cbn [negb]. apply andb_false_r. }
+      assert (Hrecv : receive_one cx c = query_target cx inner q).
+      { assert (Hroute : receive_one cx c = single_target (read_bind cx c)).
+        { unfold receive_one. destruct cx; [reflexivity | rewrite Hfast; reflexivity]. }
+        rewrite Hroute. unfold read_bind, query_target. rewrite Hd. cbv beta iota.
+        destruct (read_channel inner) as [ch | |]; [| reflexivity | reflexivity].
+        unfold route_bind. destruct (route canon cx ch) as [[| n k |] |]; reflexivity. }
+      split; [exact Hfast | split; [| exact Hrecv]].
+      intros h Hh. rewrite Hrecv in Hh. unfold query_target in Hh.
+      destruct (read_channel inner) as [ch | |]; try discriminate Hh.
+      destruct (route canon cx ch) as [[| n k |] |]; discriminate Hh.
+    - intros Hd. unfold receive_one, p4_receive_one, read_bind. rewrite Hd.
+      destruct cx as [t |]; [reflexivity |].
+      unfold takes_fast_path. destruct (is_marker_tuple c) eqn:Em; cbn [negb].
+      + rewrite andb_false_r.
+        unfold routes_to_default_without_context, route_bind, route.
+        rewrite (marker_tuple_forged c Em). reflexivity.
+      + rewrite andb_true_r. reflexivity.
+  Qed.
+End Queries.
+
 (* ── Headline assumptions ────────────────────────────────────────────── *)
 Print Assumptions classify_space_ref_total_deterministic.
 Print Assumptions handle_requires_write_flag.
@@ -1061,3 +1340,4 @@ Print Assumptions ordinary_channels_route_default.
 Print Assumptions use_wrapper_restores_ctx.
 Print Assumptions handle_dispatch_total.
 Print Assumptions native_execution_fails_closed.
+Print Assumptions query_source_routes_inner_channel.

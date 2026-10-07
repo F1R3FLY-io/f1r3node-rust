@@ -44,7 +44,9 @@ pub type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuat
 pub type ParReplay = ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
 /// The phlo budget of an agent test.
-pub fn budget() -> RuntimeBudget { RuntimeBudget::new(Cost::create(1_000_000, "rrs p5 agent test")) }
+pub fn budget() -> RuntimeBudget {
+    RuntimeBudget::new(Cost::create(1_000_000, "rrs p5 agent test"))
+}
 
 /// A host-work budget that accepts every charge and records the usage.
 pub fn unbounded_host_work() -> HostWorkBudget {
@@ -203,7 +205,12 @@ pub fn exactly(value: i64) -> BindPattern {
 }
 
 /// A receive on `channel` of `space` whose body is the string `name`.
-pub fn receive_on(space: NativeSpace, channel: &Par, name: &str, pattern: BindPattern) -> ConsumeOp {
+pub fn receive_on(
+    space: NativeSpace,
+    channel: &Par,
+    name: &str,
+    pattern: BindPattern,
+) -> ConsumeOp {
     let body = match named(name, None).tagged_cont {
         Some(TaggedCont::ParBody(body)) => body,
         Some(TaggedCont::ScalaBodyRef(_)) | None => ParWithRandom::default(),
@@ -287,8 +294,8 @@ pub async fn waiters_on(space: &ParRSpace, data: &Par) -> Vec<(i64, bool, bool)>
         .await
         .into_iter()
         .map(|waiter| {
-            let ord = record::continuation_ord(&waiter.continuation)
-                .expect("a continuation record");
+            let ord =
+                record::continuation_ord(&waiter.continuation).expect("a continuation record");
             (ord, waiter.persist, !waiter.peeks.is_empty())
         })
         .collect();

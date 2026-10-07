@@ -262,6 +262,8 @@ pub fn native_replay() -> Arc<ReifiedRuntime> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use async_trait::async_trait;
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use models::rust::host_work::{
@@ -282,8 +284,6 @@ mod tests {
     use crate::rust::interpreter::deterministic_reduction::{root, ReductionCoordinator};
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::rho_runtime::RhoISpace;
-    use std::collections::BTreeMap;
-
     use crate::rust::interpreter::spaces::agent::{ConsumeOp, Prepared, ProduceOp, SettleOp};
     use crate::rust::interpreter::spaces::namespace::{
         CollectionKey, Durability, NameTail, SID_LEN,

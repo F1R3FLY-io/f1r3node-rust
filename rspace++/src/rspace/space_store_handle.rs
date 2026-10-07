@@ -40,7 +40,6 @@ use std::thread::ThreadId;
 
 use async_trait::async_trait;
 use serde::Serialize;
-
 use shared::rust::clone_backing::CloneBacking;
 
 use crate::rspace::candidate_order::{self, CandidateSource, OrderWork};
@@ -344,7 +343,10 @@ where
     canonical_view_order(waiters, meter)
 }
 
-fn canonical_view_order<T>(entries: &[T], meter: &dyn SourceMeter) -> Result<Vec<usize>, RSpaceError>
+fn canonical_view_order<T>(
+    entries: &[T],
+    meter: &dyn SourceMeter,
+) -> Result<Vec<usize>, RSpaceError>
 where
     T: CandidateSource + Clone + Serialize + CloneBacking,
 {
@@ -365,8 +367,7 @@ where
 struct SpaceOrder<'m>(&'m dyn SourceMeter);
 
 impl<'v, T> OrderWork<Cow<'v, T>> for SpaceOrder<'_>
-where
-    T: Clone + Serialize + CloneBacking,
+where T: Clone + Serialize + CloneBacking
 {
     type Error = RSpaceError;
 
@@ -433,11 +434,7 @@ fn space_order_buffer<U>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<U
     let bytes = length
         .checked_mul(size_of::<U>())
         .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(
-        length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?,
-        bytes,
-        bytes,
-    )?;
+    meter.reserve(length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
     let mut values = Vec::new();
     values
         .try_reserve_exact(length)
@@ -3187,9 +3184,10 @@ mod tests {
         assert_eq!(order, play_indices(waiters.clone()));
         assert!(counts.get().0 > 0, "the order reserves its buffers and its sort");
         assert_eq!(
-            canonical_continuation_order(&[] as &[WaitingContinuation<String, String>], &|_, _, _| {
-                Ok(())
-            }),
+            canonical_continuation_order(
+                &[] as &[WaitingContinuation<String, String>],
+                &|_, _, _| { Ok(()) }
+            ),
             Ok(Vec::new())
         );
     }
@@ -3253,7 +3251,8 @@ mod tests {
         assert_eq!(recorded.take(), vec![(1, left.0.len() + right.0.len(), 0)]);
         // A digest: the inspect of the value, then the metered hash of its
         // bincode bytes.
-        let datum: View<'_> = Cow::Owned(Datum::create(&"channel".to_string(), "payload".to_string(), false));
+        let datum: View<'_> =
+            Cow::Owned(Datum::create(&"channel".to_string(), "payload".to_string(), false));
         let digest = order.digest(&datum).expect("a digest");
         let digested = recorded.take();
         let reference = std::cell::RefCell::new(Vec::new());

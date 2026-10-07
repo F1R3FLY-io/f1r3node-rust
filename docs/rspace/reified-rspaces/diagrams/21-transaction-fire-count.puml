@@ -1,0 +1,65 @@
+' 21 Fire count of a space transaction: one count for its settles and its plan.
+'
+' Source of Figure N11.5 in ../design.md (section N11.5). The figure restates
+' Plan.rounds, Cx::rounds and open_plan of
+' rholang/src/rust/interpreter/spaces/generic.rs and the settle loop of
+' spaces/settle.rs (plan revision I-21, decision 49). It adds no new fact.
+'
+' Reading order:
+'   1. A transaction starts with the count 0, and every fire of the
+'      transaction adds 1, whoever makes it.
+'   2. The settle before the plan stops at the cap. The transaction commits
+'      its fires and re-issues the operation, which it has not inserted yet.
+'   3. The plan opens only below the cap. A full transaction re-issues the
+'      operation before the plan stages anything.
+'   4. The settle after the plan continues the count. At the cap it re-issues
+'      a settle job, which is a transaction of its own.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 21-transaction-fire-count.puml   Check: ./render.sh --check
+
+@startuml 21-transaction-fire-count
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam NoteBorderColor $rrs_relation
+title One fire count for each space transaction (I-21)
+
+start
+:run_with: bump the counter
+the count of the transaction is 0; <<$rrs_substrate>>
+:settle before the plan
+(each fire adds 1 to the count); <<$rrs_agent>>
+if (the settle reached the cap with a fire left?) then (yes)
+  :commit the staged fires
+  re-issue the operation (decision 43 keeps its order); <<$rrs_reject>>
+  stop
+else (no)
+endif
+if (the count is FIRE_ROUND_CAP? (open_plan)) then (yes)
+  :commit the fires of the settle
+  re-issue the operation (its plan stages nothing); <<$rrs_reject>>
+  stop
+else (no)
+endif
+:the plan: fires while the count stays below the cap; <<$rrs_agent>>
+if (the plan re-issues?) then (yes)
+  :commit the staged fires
+  re-issue the operation; <<$rrs_reject>>
+  stop
+else (no)
+endif
+:settle after the plan
+(it continues the count); <<$rrs_agent>>
+if (the settle reached the cap with a fire left?) then (yes)
+  :commit, and re-issue a settle job
+  (a transaction of its own, from the count 0); <<$rrs_reject>>
+else (no)
+endif
+:commit: at most <latex>\mathrm{FIRE\_ROUND\_CAP} = 64</latex> fires; <<$rrs_effect>>
+stop
+@enduml

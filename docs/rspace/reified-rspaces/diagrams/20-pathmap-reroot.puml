@@ -1,0 +1,47 @@
+' 20 PathMap re-rooting: R(s, v), the delivery of one argument on a prefix.
+'
+' Source of Figure N11.7b in ../design.md (section N11.7). The figure restates
+' reroot of rholang/src/rust/interpreter/spaces/pathmap/reroot.rs and the
+' adapter of pathmap/adapter.rs (P5e). It adds no new fact.
+'
+' Reading order:
+'   1. The suffix s is the part of the send path p after the prefix q.
+'   2. An empty suffix delivers the value as it is.
+'   3. A PathMap value gets the suffix in front of each entry, and an empty
+'      PathMap becomes the unit {| s |}.
+'   4. Every other value becomes the list of the suffix and the value.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 20-pathmap-reroot.puml   Check: ./render.sh --check
+
+@startuml 20-pathmap-reroot
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+title <latex>R(s, v)</latex>: the delivery of one argument on the prefix q
+
+start
+:the argument v of a datum on the path p; <<$rrs_object>>
+:the suffix <latex>s = p \setminus q</latex>; <<$rrs_object>>
+if (s is empty?) then (yes)
+  :deliver v as it is; <<$rrs_effect>>
+elseif (v is one EPathMap?) then (yes)
+  :decode v with the adapter
+  (paths in key order, one path for each key); <<$rrs_agent>>
+  if (the map has no entry?) then (yes)
+    :deliver the unit <latex>\{| s |\}</latex>; <<$rrs_effect>>
+  else (no)
+    :deliver <latex>\{| s \mathbin{+\!\!+} \mathrm{elems}(e) |\}</latex>
+    for each entry e; <<$rrs_effect>>
+  endif
+  :encode the map with the adapter
+  (the canonical entry form); <<$rrs_agent>>
+else (no)
+  :deliver the list <latex>[s_1, \ldots, s_k, v]</latex>; <<$rrs_effect>>
+endif
+stop
+@enduml

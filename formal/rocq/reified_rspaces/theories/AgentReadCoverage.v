@@ -34,35 +34,35 @@
    step                     reified/costs.rs:98-103, 107-112, 124-127
                             (ScanMeter::inspect, reserve_copy, copy:
                             reserve, then work)
-   scan                     spaces/generic.rs:648-664, 668-681, 685-696
+   scan                     spaces/generic.rs:656-672, 676-689, 693-704
                             (Cx::scan_head, Cx::head_waiter, Cx::head_datum:
                             the buffer, one envelope decode for each entry,
                             the head copy) and
                             spaces/disciplines/queue.rs:41-59, 88-123
                             (head_metered: one comparison for each entry
                             after the first)
-   round_staged             spaces/generic.rs:1134-1199, 1208-1290
+   round_staged             spaces/generic.rs:1177-1244, 1253-1337
                             (offer_head and receive_head: the scan, the
                             payload decode of a receive, the metered match,
                             the prepaid unwrap, the staged fire). For a peek
                             receive of a non-persistent record, the staging
                             of the round also holds the re-store of decision
                             45: the reserved copy of the record and the
-                            steps of Cx::restore (spaces/generic.rs:869-880:
+                            steps of Cx::restore (spaces/generic.rs:882-897:
                             the channel copy, Introduction::for_record and
                             register_introduction), each self-metered
-   round_after_commit       spaces/generic.rs:1397-1465 (outcome: the moves of
+   round_after_commit       spaces/generic.rs:1444-1512 (outcome: the moves of
                             into_continuation, prepaid by
                             spaces/record.rs:721-730)
-   operation_trace          spaces/generic.rs:1488-1510, 1733-1840
+   operation_trace          spaces/generic.rs:1535-1557, 1784-1892
                             (begin_collection and run_with: the channels, the
                             config, the staged list, the matcher handle, the
                             introduction, the bump, the record, the rounds and
                             the prepaid outcome buffer). The re-entry checks of
                             decision 43 are self-metered: the two comparisons of
-                            operation_ord (spaces/generic.rs:1321-1349), and the
+                            operation_ord (spaces/generic.rs:1368-1396), and the
                             scan of Cx::head_ord and Cx::at_head
-                            (spaces/generic.rs:700-718, 735-756: the buffer and
+                            (spaces/generic.rs:708-728, 745-766: the buffer and
                             the envelope decodes, with no copy) with the
                             comparison of the two orders and
                             QueueDiscipline::precedes
@@ -730,3 +730,294 @@ Print Assumptions operation_charge_permutation_invariant.
 Print Assumptions scan_charge_independent_of_unread_payloads.
 Print Assumptions p4_scan_covered_only_if_free.
 Print Assumptions unprepaid_trace_uncovered.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Appendix (P5, the engine spine S1): the primitives of the engine
+
+   The spine S1 of P5 turns the queue agent into the engine of every space
+   family. It adds four primitives to the work of a collection operation:
+   - the growth of a staged list (push_reserved): a list at its capacity
+     reserves its doubled buffer, and then it grows. The staged list of a
+     plan and its list of prefix counts both grow this way, so a plan that
+     stages more than MAX_STAGED operations pays for each growth first;
+   - a group fire over [D; n] (Cx::fire_receive_group): the copies of the
+     candidates of the other members of the group, each reserved;
+   - the prefix outcome: after the commit, the outcome of a fire that
+     dispatches a prefix moves its continuation, as every fire does, and
+     truncates its results, which reads nothing;
+   - the capacity check (Cx::check_capacity): one comparison, reserved
+     before a store or a park.
+   The headline engine_primitives_trace_covered states that an operation
+   with these primitives keeps the metering rule of decision 42: its trace
+   is covered, nothing is reserved after the commit, a budget below its
+   reservations is exceeded before the commit, and an operation that stops
+   early (for example a CellOccupied abort at its capacity check) has a
+   covered trace.
+
+   Traceability: Rocq definition → Rust code (spaces/generic.rs at the S1
+   commit 21b2b27fd)
+   grown, grow_step, growth push_reserved (1084-1101): the doubled capacity,
+                            at least 1, reserved with reserve_buffer, then
+                            try_reserve_exact
+   engine_round             one round of a plan of S1: the round of the P4
+                            model and its S1 primitives
+   er_capacity              Cx::check_capacity (758-773): the comparison of
+                            the size of a side with D::CAPACITY
+   er_group                 Cx::fire_receive_group (959-998): the reserved
+                            copies of the candidates of the other members
+                            (the plan builds them)
+   er_pushes, er_staged_*   Cx::push_staged (791-795) for the staged
+                            operations of the round
+   er_prefix, er_prefix_*   the count of a prefix fire joins Plan::prefixes
+                            with push_reserved (994)
+   er_results               the results of a group receipt, which outcome
+                            truncates (1393-1465: results.truncate(binds))
+   engine_round_after       outcome after the commit: into_continuation of
+                            each fire, prepaid by prepay_continuation_unwrap
+   eo_outcome               prepay_outcome (1385-1391): the buffer of the
+                            fires of the outcome
+
+   Abstraction. The segments of one round are balanced or prepaid, so their
+   order inside the round does not change coverage. The model puts the S1
+   primitives after the P4 part of the round.
+
+   Rust correspondence: rholang/tests/reified_engine_props.rs
+   (prop_engine_primitives_reserve_before_they_read); the S1 unit test
+   space_engine_staged_list_growth_is_reserved_before_it_grows
+   (spaces/generic.rs).
+   ═══════════════════════════════════════════════════════════════════════ *)
+
+(* The capacity of a list after push_reserved grows it at the capacity cap. *)
+Definition grown (cap : nat) : nat := Nat.max (2 * cap) 1.
+
+Section Engine.
+
+Variable buffer : nat -> nat.
+Variable compare : nat.
+
+(* push_reserved at the capacity: reserve the doubled buffer, then grow. *)
+Definition grow_step (units : nat) : list event := [Reserve units; Read units].
+
+(* n pushes onto a list of capacity cap and length len. *)
+Fixpoint growth (n cap len : nat) : list event :=
+  match n with
+  | 0 => []
+  | S n' =>
+      if len =? cap then grow_step (buffer (grown cap)) ++ growth n' (grown cap) (S len)
+      else growth n' cap (S len)
+  end.
+
+(* One round of a plan of S1: the round of the P4 model and the primitives
+   of S1. *)
+Record engine_round : Type := mkEngineRound {
+  er_round : round;          (* the scan, the decodes, the matcher, the fire and its copies *)
+  er_capacity : bool;        (* a capacity check before a store or a park *)
+  er_group : list nat;       (* the reserved copies of the other members of a group fire *)
+  er_pushes : nat;           (* the staged operations that the round pushes *)
+  er_staged_cap : nat;       (* the capacity of the staged list before the round *)
+  er_staged_len : nat;       (* the length of the staged list before the round *)
+  er_prefix : bool;          (* the fire dispatches a prefix of its results *)
+  er_prefix_cap : nat;       (* the capacity of the list of prefix counts *)
+  er_prefix_len : nat;       (* the length of the list of prefix counts *)
+  er_results : nat           (* the units of the results of the receipt of the fire *)
+}.
+
+Definition engine_round_staged (r : engine_round) : list event :=
+  round_staged buffer compare (er_round r)
+  ++ (if er_capacity r then step compare else [])
+  ++ flat_map step (er_group r)
+  ++ growth (er_pushes r) (er_staged_cap r) (er_staged_len r)
+  ++ (if er_prefix r then growth 1 (er_prefix_cap r) (er_prefix_len r) else []).
+
+(* The outcome of a fire after the commit: the moves of its continuation,
+   which the round prepaid. A prefix fire truncates its results, which reads
+   nothing. *)
+Definition engine_round_after (r : engine_round) : list event :=
+  if fires (er_round r) then [Read (unwrap (er_round r))] else [].
+
+Record engine_operation : Type := mkEngineOperation {
+  eo_setup : list nat;           (* the channels, the config, the key, param and query checks *)
+  eo_bump : list nat;            (* the counter bump, or nothing without a counter *)
+  eo_prepare : list nat;         (* the record, its identity, the re-entry checks *)
+  eo_rounds : list engine_round; (* the rounds of the plan *)
+  eo_outcome : nat               (* the buffer of the fires of the outcome *)
+}.
+
+Definition engine_staged (x : engine_operation) : list event :=
+  flat_map step (eo_setup x) ++ flat_map step (eo_bump x) ++ flat_map step (eo_prepare x)
+  ++ flat_map engine_round_staged (eo_rounds x) ++ [Reserve (eo_outcome x)].
+
+Definition engine_after_commit (x : engine_operation) : list event :=
+  Read (eo_outcome x) :: flat_map engine_round_after (eo_rounds x).
+
+Definition engine_trace (x : engine_operation) : list event :=
+  engine_staged x ++ engine_after_commit x.
+
+Lemma grow_step_balanced : forall units, balanced (grow_step units).
+Proof. intros units. exact (steps_balanced [units]). Qed.
+
+Lemma growth_balanced : forall n cap len, balanced (growth n cap len).
+Proof.
+  induction n as [| n IH]; intros cap len.
+  - split; [intros slack; apply covered_from_nil | reflexivity].
+  - cbn [growth]. destruct (len =? cap).
+    + apply balanced_app; [apply grow_step_balanced | apply IH].
+    + apply IH.
+Qed.
+
+Lemma engine_extras_balanced : forall r,
+  balanced ((if er_capacity r then step compare else [])
+            ++ flat_map step (er_group r)
+            ++ growth (er_pushes r) (er_staged_cap r) (er_staged_len r)
+            ++ (if er_prefix r then growth 1 (er_prefix_cap r) (er_prefix_len r) else [])).
+Proof.
+  intros r. apply balanced_app; [destruct (er_capacity r); [exact (steps_balanced [compare]) |
+    split; [intros slack; apply covered_from_nil | reflexivity]] |].
+  apply balanced_app; [apply steps_balanced |].
+  apply balanced_app; [apply growth_balanced |].
+  destruct (er_prefix r); [apply growth_balanced | split; [intros slack; apply covered_from_nil | reflexivity]].
+Qed.
+
+Lemma engine_round_covered : forall slack r, covered_from slack (engine_round_staged r).
+Proof.
+  intros slack r. unfold engine_round_staged.
+  pose proof (round_staged_totals buffer compare (er_round r)) as totals.
+  destruct (engine_extras_balanced r) as [extras_covered _].
+  apply covered_from_app; [apply round_staged_covered | lia | apply extras_covered].
+Qed.
+
+Lemma engine_round_totals : forall r,
+  total read_units (engine_round_staged r) + prepaid (er_round r) =
+  total reserved_units (engine_round_staged r).
+Proof.
+  intros r. unfold engine_round_staged.
+  pose proof (round_staged_totals buffer compare (er_round r)) as totals.
+  destruct (engine_extras_balanced r) as [_ extras_equal].
+  rewrite !total_app. rewrite !total_app in extras_equal. lia.
+Qed.
+
+Lemma engine_rounds_covered : forall slack rs,
+  covered_from slack (flat_map engine_round_staged rs).
+Proof.
+  intros slack rs. revert slack.
+  induction rs as [| r rest IH]; intros slack; [apply covered_from_nil |].
+  change (covered_from slack (engine_round_staged r ++ flat_map engine_round_staged rest)).
+  pose proof (engine_round_totals r) as totals.
+  apply covered_from_app; [apply engine_round_covered | lia | apply IH].
+Qed.
+
+Lemma engine_rounds_totals : forall rs,
+  total read_units (flat_map engine_round_staged rs) + sum (map (fun r => prepaid (er_round r)) rs) =
+  total reserved_units (flat_map engine_round_staged rs).
+Proof.
+  induction rs as [| r rest IH]; [reflexivity |].
+  change (flat_map engine_round_staged (r :: rest))
+    with (engine_round_staged r ++ flat_map engine_round_staged rest).
+  pose proof (engine_round_totals r).
+  cbn [map]. rewrite !total_app, sum_cons. lia.
+Qed.
+
+Lemma engine_after_rounds_read : forall rs,
+  total read_units (flat_map engine_round_after rs) = sum (map (fun r => prepaid (er_round r)) rs).
+Proof.
+  induction rs as [| r rest IH]; [reflexivity |].
+  change (flat_map engine_round_after (r :: rest))
+    with (engine_round_after r ++ flat_map engine_round_after rest).
+  cbn [map]. rewrite total_app, IH, sum_cons. unfold engine_round_after, prepaid.
+  destruct (fires (er_round r)); unfold total; simpl; lia.
+Qed.
+
+Lemma engine_after_rounds_reserved : forall rs,
+  total reserved_units (flat_map engine_round_after rs) = 0.
+Proof.
+  induction rs as [| r rest IH]; [reflexivity |].
+  change (flat_map engine_round_after (r :: rest))
+    with (engine_round_after r ++ flat_map engine_round_after rest).
+  rewrite total_app, IH. unfold engine_round_after.
+  destruct (fires (er_round r)); unfold total; simpl; lia.
+Qed.
+
+Lemma engine_staged_totals : forall x,
+  total read_units (engine_staged x) + eo_outcome x + sum (map (fun r => prepaid (er_round r)) (eo_rounds x)) =
+  total reserved_units (engine_staged x).
+Proof.
+  intros x. unfold engine_staged.
+  pose proof (engine_rounds_totals (eo_rounds x)).
+  rewrite !total_app, !steps_read, !steps_reserved, reserve_one_read, reserve_one_reserved.
+  lia.
+Qed.
+
+Lemma engine_staged_covered : forall slack x, covered_from slack (engine_staged x).
+Proof.
+  intros slack x.
+  assert (shape : engine_staged x =
+    flat_map step (eo_setup x ++ eo_bump x ++ eo_prepare x) ++
+    (flat_map engine_round_staged (eo_rounds x) ++ [Reserve (eo_outcome x)])).
+  { unfold engine_staged. rewrite !flat_map_app, <- !app_assoc. reflexivity. }
+  rewrite shape.
+  pose proof (steps_balanced (eo_setup x ++ eo_bump x ++ eo_prepare x)) as [steps_cov steps_equal].
+  pose proof (engine_rounds_totals (eo_rounds x)) as round_totals.
+  apply covered_from_app; [apply steps_cov | lia |].
+  apply covered_from_app; [apply engine_rounds_covered | lia | apply reserve_covered].
+Qed.
+
+Lemma engine_after_commit_reserved : forall x, total reserved_units (engine_after_commit x) = 0.
+Proof.
+  intros x. unfold engine_after_commit. rewrite total_cons, engine_after_rounds_reserved. reflexivity.
+Qed.
+
+Lemma covered_prefix : forall pre post, covered (pre ++ post) -> covered pre.
+Proof.
+  intros pre post H prefix suffix split. subst pre.
+  exact (H prefix (suffix ++ post) (eq_sym (app_assoc prefix suffix post))).
+Qed.
+
+Lemma engine_trace_covered : forall x, covered (engine_trace x).
+Proof.
+  intros x. unfold covered, engine_trace.
+  pose proof (engine_staged_totals x) as totals.
+  apply covered_from_app; [apply engine_staged_covered | lia |].
+  apply reads_only_covered.
+  - apply engine_after_commit_reserved.
+  - unfold engine_after_commit. rewrite total_cons, engine_after_rounds_read. simpl. lia.
+Qed.
+
+(* Decision 42 for the primitives of the engine spine S1.
+   1. The growth of a staged list reserves each doubled buffer before the
+      list grows: every growth is a balanced segment.
+   2. An operation with capacity checks, group fires, prefix fires and list
+      growth keeps prefix coverage, its reads after the commit included.
+   3. The trace after the commit reserves nothing: a prefix outcome only
+      moves what its fire prepaid.
+   4. A budget below the reservations of such an operation is exceeded by a
+      reservation of the staged part, so the operation fails before the
+      commit and has no effect.
+   5. An operation that stops early, at any point of its staged part (a
+      CellOccupied abort at a capacity check, or a host-work rejection), has
+      a covered trace up to that point. *)
+Theorem engine_primitives_trace_covered :
+  (forall n cap len, balanced (growth n cap len)) /\
+  (forall x, covered (engine_trace x)) /\
+  (forall x, total reserved_units (engine_after_commit x) = 0) /\
+  (forall x budget, budget < total reserved_units (engine_trace x) ->
+     exists prefix units suffix,
+       engine_staged x = prefix ++ Reserve units :: suffix /\
+       total reserved_units prefix <= budget /\
+       budget < total reserved_units prefix + units) /\
+  (forall x pre post, engine_staged x = pre ++ post -> covered pre).
+Proof.
+  split; [exact growth_balanced |].
+  split; [exact engine_trace_covered |].
+  split; [exact engine_after_commit_reserved |].
+  split.
+  { intros x budget exceeds. unfold engine_trace in exceeds.
+    rewrite total_app, engine_after_commit_reserved in exceeds.
+    apply first_crossing. lia. }
+  intros x pre post shape. apply (covered_prefix pre post).
+  rewrite <- shape. intros prefix suffix split.
+  exact (engine_staged_covered 0 x prefix suffix split).
+Qed.
+
+End Engine.
+
+Print Assumptions engine_primitives_trace_covered.

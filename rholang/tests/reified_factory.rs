@@ -30,13 +30,15 @@ use rholang::rust::interpreter::reified::route::{classify_channel, ChannelClass}
 use rholang::rust::interpreter::reified::runtime::unavailable;
 use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
 use rholang::rust::interpreter::reified::system_channels::{
-    body_ref, ASSERT_EQUAL_PROCESS, BODY_REF_BASE, GET_SPACE_AGENT_PROCESS, HANDLE_OP_PROCESS,
-    HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS,
+    body_ref, SystemChannel, ASSERT_EQUAL_PROCESS, BODY_REF_BASE, GET_SPACE_AGENT_PROCESS,
+    HANDLE_OP_PROCESS, HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS,
 };
 use rholang::rust::interpreter::reified::system_processes::definitions;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::spaces::errors::SpaceReplyCode;
-use rholang::rust::interpreter::spaces::factory::urn::factory_capability;
+use rholang::rust::interpreter::spaces::factory::urn::{
+    factory_capability, registered_aliases, registered_channel, registered_p5_families,
+};
 use rholang::rust::interpreter::spaces::namespace::{
     self, CollectionKey, Durability, Kind, Marker, NameTail, NativeSpace, ReifiedId, AGENT_TAG,
     REIFIED_TAG, SID_LEN,
@@ -343,6 +345,51 @@ fn events_on(log: &[Event], channel: &Par) -> Vec<(char, bool)> {
 /// The typed error reply `("rho:space:error", code, {})` of `getSpaceAgent`.
 fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
 
+/// The system processes of P5 (P5 design v3, A.7, A.8 and A.10) as `(urn, op, arity, body
+/// ref)`, in the order of the definitions: the families in family-index order, then the alias.
+/// A row is defined only when it is registered, so the pins below keep the registered rows.
+const P5_PINNED: [(&str, u8, i32, i64); 18] = [
+    ("rho:space:hashmap:bag", 0x00, 2, 200),
+    ("rho:space:hashmap:stack", 0x02, 2, 202),
+    ("rho:space:hashmap:set", 0x03, 2, 203),
+    ("rho:space:hashmap:cell", 0x04, 2, 204),
+    ("rho:space:hashmap:priorityqueue", 0x05, 2, 205),
+    ("rho:space:array:bag", 0x0D, 2, 213),
+    ("rho:space:array:queue", 0x0E, 2, 214),
+    ("rho:space:array:stack", 0x0F, 2, 215),
+    ("rho:space:array:set", 0x10, 2, 216),
+    ("rho:space:array:cell", 0x11, 2, 217),
+    ("rho:space:array:priorityqueue", 0x12, 2, 218),
+    ("rho:space:vector:bag", 0x13, 2, 219),
+    ("rho:space:vector:queue", 0x14, 2, 220),
+    ("rho:space:vector:stack", 0x15, 2, 221),
+    ("rho:space:vector:set", 0x16, 2, 222),
+    ("rho:space:vector:cell", 0x17, 2, 223),
+    ("rho:space:vector:priorityqueue", 0x18, 2, 224),
+    ("rho:space:HashMapBagSpace", 0x00, 2, 200),
+];
+
+/// The system channels of the registered families of P5 and of the registered aliases, in the
+/// order of the definitions.
+fn registered_p5_channels() -> Vec<SystemChannel> {
+    registered_p5_families()
+        .map(|(_, channel)| channel)
+        .chain(registered_aliases().map(|(channel, _)| channel))
+        .collect()
+}
+
+/// The rows of [`P5_PINNED`] that are registered.
+fn registered_p5_pins() -> Vec<(&'static str, u8, i32, i64)> {
+    let registered: BTreeSet<&str> = registered_p5_channels()
+        .into_iter()
+        .map(|channel| channel.urn)
+        .collect();
+    P5_PINNED
+        .into_iter()
+        .filter(|(urn, ..)| registered.contains(urn))
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_private_channels_unique() {
     let mut session = Session::new().await;
@@ -362,24 +409,61 @@ async fn space_private_channels_unique() {
             channel.urn
         );
     }
-    // No two URNs share a name, and only the P4 URNs hold an id with the Reified tag.
+    // Each registered URN of P5, a family or an alias, is bound to the write capability of the
+    // op channel of its family (P5 design v3, A.7).
+    let p5 = registered_p5_channels();
+    for channel in &p5 {
+        assert_eq!(
+            urn_map.get(channel.urn),
+            Some(&write_bundle(channel.channel())),
+            "the URN map binds {}",
+            channel.urn
+        );
+    }
+    // No two URNs share a name, and only the registered URNs hold an id with the Reified tag. A
+    // FIPS alias shares the channel of its family by design, so it is exempt.
+    let aliases: BTreeSet<&str> = registered_aliases()
+        .map(|(channel, _)| channel.urn)
+        .collect();
+    let registered: BTreeSet<&str> = P4_SYSTEM_CHANNELS
+        .iter()
+        .chain(p5.iter())
+        .map(|channel| channel.urn)
+        .collect();
     let mut owners: BTreeMap<Vec<u8>, &str> = BTreeMap::new();
     for (urn, value) in urn_map.iter() {
-        if let Some(previous) = owners.insert(value.encode_to_vec(), urn) {
-            panic!("{urn} and {previous} share one channel");
+        if !aliases.contains(urn.as_str()) {
+            if let Some(previous) = owners.insert(value.encode_to_vec(), urn) {
+                panic!("{urn} and {previous} share one channel");
+            }
         }
         let reified =
             capability_id(value).is_some_and(|id| namespace::decode_reified_id(&id).is_some());
-        let p4 = P4_SYSTEM_CHANNELS.iter().any(|channel| channel.urn == urn);
-        assert_eq!(reified, p4, "{urn}: only the P4 URNs hold Reified ids");
+        assert_eq!(
+            reified,
+            registered.contains(urn.as_str()),
+            "{urn}: only the registered URNs hold Reified ids"
+        );
     }
-    // The families of later phases and the FIPS aliases have no binding: they fail closed.
-    for family in SpaceFactoryUrn::all().filter(|family| *family != SpaceFactoryUrn::HASHMAP_QUEUE)
-    {
+    for (alias, family) in registered_aliases() {
+        assert_eq!(
+            urn_map.get(alias.urn),
+            urn_map.get(&family.to_string()),
+            "{} binds the capability of {family}",
+            alias.urn
+        );
+    }
+    // The families and the FIPS aliases without a registration have no binding: they fail
+    // closed.
+    for family in SpaceFactoryUrn::all().filter(|family| registered_channel(*family).is_none()) {
         assert!(!urn_map.contains_key(&family.to_string()), "{family}");
     }
     for alias in [HASHMAP_BAG_ALIAS, PATHMAP_BAG_ALIAS] {
-        assert!(!urn_map.contains_key(alias), "{alias}");
+        assert_eq!(
+            urn_map.contains_key(alias),
+            aliases.contains(alias),
+            "{alias}"
+        );
     }
     // Two factory calls in one deploy make two spaces with disjoint space-scoped channels.
     session
@@ -426,10 +510,11 @@ async fn space_private_channels_body_refs_disjoint() {
         .iter()
         .map(|definition| definition.body_ref)
         .collect();
+    let mut expected = vec![201, 233, 234, 248];
+    expected.extend(registered_p5_pins().into_iter().map(|(.., body)| body));
     assert_eq!(
-        refs,
-        vec![201, 233, 234, 248],
-        "the P4 body refs are 200 + op"
+        refs, expected,
+        "the P4 body refs are 200 + op, and the registered P5 rows follow"
     );
     for (definition, channel) in defined.iter().zip(P4_SYSTEM_CHANNELS) {
         assert_eq!(definition.body_ref, body_ref(channel.op));
@@ -974,8 +1059,20 @@ async fn reified_factory_p4_gates_fail_closed() {
             )
             .await;
     }
-    // Only hashmap:queue is registered in P4. Every other family and both FIPS aliases have no
-    // binding, so a program that names them fails before any space operation.
+    // A family or a FIPS alias without a registration has no binding, so a program that names it
+    // fails before any space operation. P5 registers a family only when the family dispatch
+    // wires it, and it never registers the PathMap and VectorDB families or the PathMap alias.
+    let registered: BTreeSet<&str> = registered_p5_channels()
+        .into_iter()
+        .map(|channel| channel.urn)
+        .collect();
+    for never in [
+        "rho:space:pathmap:queue",
+        "rho:space:vector:vectordb",
+        PATHMAP_BAG_ALIAS,
+    ] {
+        assert!(!registered.contains(never), "{never}");
+    }
     for urn in [
         "rho:space:hashmap:bag",
         "rho:space:hashmap:stack",
@@ -983,7 +1080,10 @@ async fn reified_factory_p4_gates_fail_closed() {
         "rho:space:vector:vectordb",
         HASHMAP_BAG_ALIAS,
         PATHMAP_BAG_ALIAS,
-    ] {
+    ]
+    .into_iter()
+    .filter(|urn| !registered.contains(urn))
+    {
         let source =
             format!("new factory(`{urn}`) in {{ for (q <- factory!?(\"default\")) {{ Nil }} }}");
         let deploy = session.deploy(&source, &format!("rrs-p4-gate-{urn}")).await;
@@ -1198,12 +1298,14 @@ async fn space_system_ops_get_space_agent_not_native() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_system_ops_arity_and_body_refs_stable() {
-    let pinned = [
+    // The four processes of P4 first, then the registered rows of P5 in the order of the table.
+    let mut pinned = vec![
         ("rho:space:hashmap:queue", 0x01_u8, 2, 201),
         ("rho:space:getSpaceAgent", 0x21, 2, 233),
         ("rho:assert:assertEqual", 0x22, 3, 234),
         ("rho:reified:internal:handleOp", 0x30, 2, 248),
     ];
+    pinned.extend(registered_p5_pins());
     let defined = definitions(&unavailable());
     assert_eq!(defined.len(), pinned.len());
     for (definition, (urn, op, arity, body)) in defined.iter().zip(pinned) {

@@ -19,8 +19,8 @@
      space_already_exists_stops_reissue as persistent_op_call_aborts and
      space_already_exists_is_deterministic_abort.
    - Plan: decisions 7, 18, 21 and 32, A13, A21 and I-19.
-   - Code: the P4 commit of this repository. The line numbers below are the
-     line numbers of that commit.
+   - Code: this repository. The line numbers below are the lines of the tree
+     of the P5 FACTORY batch (wave W2).
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -41,13 +41,13 @@
                             models/src/rust/space_factory_urn.rs:32, 35, 38,
                             225-263
    family_of_names          rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:124-142 (family_of)
+                            constructor.rs:163-181 (family_of)
    factory_op               rholang/src/rust/interpreter/spaces/factory/urn.rs:
-                            29-33, 37-39 (the factory channel and the
+                            158-162, 166-168 (the factory channel and the
                             capability that getSpaceAgent replies)
    validate_qualifier, durability_of
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:48-92, 95-100
+                            constructor.rs:60-112, 115-120
    parse_elements, to_elements, qual_of
                             models/src/rust/space_factory_urn.rs:368-398,
                             405-417, 428-438 (parse_elements, to_elements,
@@ -59,7 +59,7 @@
    check_persistent_send    rholang/src/rust/interpreter/reified/
                             system_channels.rs:101, 105, 110-122
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
-                            1994-2109
+                            2056-2174
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -827,3 +827,1077 @@ Print Assumptions constructor_parse_sound.
 Print Assumptions sid_derivation_deterministic.
 Print Assumptions persistent_op_call_aborts.
 Print Assumptions space_already_exists_is_deterministic_abort.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   P5 — registration, the FIPS alias and the constructor params
+
+   This section extends the module for phase P5. It comes after the P4
+   module, so no line of P4 moves: documents cite those lines. Its
+   headlines are 9 to 13.
+
+   Sources
+   - Design: P5 design v3 A.7 (the FACTORY row: registration, the alias
+     HashMapBagSpace, the schemas of bag, set and cell), A.8 (stack and the
+     priority queue, priorities of I-10), A.10 (the Array and Vector
+     families, size and cyclic of F7) and A.13 (SpaceFactory.v: three
+     headlines in P5a, one in P5b, one in P5d); P5 design v2 §2.5 (families,
+     aliases and getSpaceAgent) and §2.8.1 (F26 to F28).
+   - Plan: decisions 7, 9.4 and 33, I-10 and the P5 choice F7.
+   - Code: the tree of the P5 FACTORY batch (wave W2).
+
+   ─────────────────────────────────────────────────────────────────────────
+   Traceability: Rocq definition → Rust code
+   ─────────────────────────────────────────────────────────────────────────
+   sys_channel, body_ref    rholang/src/rust/interpreter/reified/
+                            system_channels.rs:30, 34-38, 42
+   p4_rows, p4_others       rholang/src/rust/interpreter/spaces/factory/
+                            urn.rs:33-34 (REGISTERED_FAMILIES),
+                            rholang/src/rust/interpreter/reified/
+                            system_channels.rs:49-53, 56-60, 63-67, 70-74,
+                            77-82 (P4_SYSTEM_CHANNELS)
+   p5_rows                  rholang/src/rust/interpreter/spaces/factory/
+                            urn.rs:45-114 (P5_FAMILY_ROWS),
+                            rholang/src/rust/interpreter/reified/
+                            system_channels.rs:125-241 (the factories)
+   alias_rows               rholang/src/rust/interpreter/spaces/factory/
+                            urn.rs:118-121 (P5_ALIAS_ROWS),
+                            rholang/src/rust/interpreter/reified/
+                            system_channels.rs:247-251, 272-291
+   schema_of, required_of   rholang/src/rust/interpreter/spaces/factory/
+                            defaults.rs:69-96, 100-102, 106-108
+   wired                    families::Family::of_urn, through
+                            rholang/src/rust/interpreter/spaces/factory/
+                            urn.rs:124 (is_wired)
+   registered, is_registered, registered_aliases
+                            rholang/src/rust/interpreter/spaces/factory/
+                            urn.rs:128-132, 136-140, 144-148, 151-155
+   definitions, binds       rholang/src/rust/interpreter/
+                            reified/system_processes.rs:63-104 (definitions),
+                            rholang/src/rust/
+                            interpreter/system_processes.rs:491-499 (to_urn_map)
+   get_space_agent_of       rholang/src/rust/interpreter/
+                            reified/system_processes.rs:164-200 (get_space_agent),
+                            rholang/src/rust/interpreter/spaces/factory/
+                            constructor.rs:163-181 (family_of), urn.rs:166-168
+                            (factory_capability)
+   rule, rule_of, canonical rholang/src/rust/interpreter/spaces/factory/
+                            defaults.rs:112-119, 123-130, 135-147 (ParamRule)
+   suggest, least, within, suggestion_bound
+                            rholang/src/rust/interpreter/spaces/factory/
+                            defaults.rs:40, 167-176, 181-208
+   validate_params, canonical_all
+                            rholang/src/rust/interpreter/spaces/factory/
+                            constructor.rs:60-112 (validate), 146-160
+                            (canonical_params)
+
+   ─────────────────────────────────────────────────────────────────────────
+   Abstraction
+   ─────────────────────────────────────────────────────────────────────────
+   - The dispatch arms are the section variable wired, with the hypothesis
+     that hashmap:queue is wired (S1). The corollaries registration_today and
+     registration_all_wired compute the registration for the arms of today
+     and for every row wired, so the theorems of the section are not
+     vacuous.
+   - A definition is its system channel and the family that its factory
+     creates (None for getSpaceAgent, assertEqual and the handle process).
+     The URN map is the relation binds over the definitions:
+     Definition::to_urn_map binds the URN to the write bundle of the op
+     channel, so to the op. all_definitions_functional shows that one URN
+     binds one op for every wiring.
+   - A param value is its shape: a GInt (VInt), a GBool (VBool), another
+     value (VOther: a string, Nil, two expressions or a process) or a value
+     with the connective flag (VFlagged). The bit sets are not modeled:
+     ParamRule::canonical ignores them, and the canonical value has none. A
+     GInt is an i64, so the rule [1, i64_max] accepts every GInt of at
+     least 1.
+   - The Levenshtein distance is the section variable dist, so the
+     suggestion headline holds for every distance function.
+     distance_within computes it over chars, and its unit tests pin it.
+   - validate_params models the gates 1 and 5 to 8 of validate. The gates 2
+     to 4 (the parse, the qualifier and the theory) are the P4 model above
+     (parse_elements, validate_qualifier).
+
+   Headline theorems (each one has a Print Assumptions line at the end)
+    9. registered_families_complete      F26: a family is registered exactly
+                                          when it has a row and an arm, with
+                                          its op, body ref and schema, and
+                                          nothing else is defined
+   10. aliases_bind_family_capability    F27: an alias binds the capability
+                                          of its family, and getSpaceAgent
+                                          replies it
+   11. constructor_params_validated      F28: positional, unknown keys with
+                                          the least suggestion, missing keys,
+                                          then canonical values
+   12. priorities_validated              I-10: the optional priorities of a
+                                          priority queue, a GInt >= 1
+   13. array_size_validated              F7: the required size of an Array,
+                                          a GInt in [1, i64_max], and the
+                                          optional cyclic GBool
+
+   ─────────────────────────────────────────────────────────────────────────
+   Failed strategies (do not try them again)
+   ─────────────────────────────────────────────────────────────────────────
+   - `apply in_map` cannot unify `?f ?x` with a pair of `snd r` and
+     `Some (fst r)`. Use in_map_iff with the witness.
+   - `injection H as <- <-` on `(c0, Some g) = (c, Some f)` replaces the
+     named c and f by the fresh c0 and g. Use `-> ->`.
+   - A plain cbn unfolds is_registered, Nat.ltb, canonical and the byte
+     strings of StrP5 into Pos.to_nat terms, so later rewrites find no
+     subterm. Name the constants: `cbn [snd]`, `cbn [bytes_ltb]`,
+     `cbn [fst snd]`, `cbn [canonical_all]`, `cbn [schema_of f_outer
+     f_inner]`.
+   - `destruct (least w rest); discriminate` leaves the `if lex_ltb …` of a
+     Some branch. Destruct the condition too.
+   - `intros []` on `In k []` does not reduce In. Use `cbn [In] in H` and
+     destruct H.
+   - Inside try, `exact (Ho' Ho)` with Ho' an equation and Ho a negation
+     fails silently and leaves the case open: the contradiction is
+     `Ho Ho'`.
+   - The bullets of a split over the four cases of schema_cases do not
+     follow the order of the open goals once try closes some of them. Use
+     one `first [...]` over the alternatives.
+   ═══════════════════════════════════════════════════════════════════════ *)
+
+From Stdlib Require Import ZArith.
+
+(* The ASCII bytes of the names of P5. *)
+Module StrP5.
+  Import (notations) Stdlib.Strings.String.
+  Local Open Scope string_scope.
+  Definition size := Str.b "size".
+  Definition cyclic := Str.b "cyclic".
+  Definition priorities := Str.b "priorities".
+  Definition get_space_agent := Str.b "rho:space:getSpaceAgent".
+  Definition assert_equal := Str.b "rho:assert:assertEqual".
+  Definition handle_op := Str.b "rho:reified:internal:handleOp".
+End StrP5.
+
+(* ── 8. Helpers: byte lists, families and lists ───────────────────────── *)
+
+Lemma bytes_eqb_true : forall a b, bytes_eqb a b = true -> a = b.
+Proof. intros a b. unfold bytes_eqb. destruct (list_eq_dec Nat.eq_dec a b); [auto | discriminate]. Qed.
+
+(* The membership of a name in a list of names. *)
+Definition mem (k : bytes) (l : list bytes) : bool := existsb (bytes_eqb k) l.
+
+Lemma mem_spec : forall k l, mem k l = true <-> In k l.
+Proof.
+  intros k l. unfold mem. rewrite existsb_exists. split.
+  - intros [x [Hin Heq]]. apply bytes_eqb_true in Heq. subst x. exact Hin.
+  - intros Hin. exists k. split; [exact Hin | apply bytes_eqb_refl].
+Qed.
+
+Definition outer_eqb (a b : outer) : bool :=
+  match a, b with
+  | HashMap, HashMap | PathMap, PathMap | Array, Array | Vector, Vector | HashSet, HashSet => true
+  | _, _ => false
+  end.
+
+Definition inner_eqb (a b : inner) : bool :=
+  match a, b with
+  | Bag, Bag | Queue, Queue | Stack, Stack | SetC, SetC | Cell, Cell
+  | PriorityQueue, PriorityQueue | VectorDb, VectorDb => true
+  | _, _ => false
+  end.
+
+Definition family_eqb (f g : family) : bool := outer_eqb (f_outer f) (f_outer g) && inner_eqb (f_inner f) (f_inner g).
+
+Lemma outer_eqb_eq : forall a b, outer_eqb a b = true <-> a = b.
+Proof. intros [] []; cbn; split; intros H; solve [reflexivity | discriminate H]. Qed.
+
+Lemma inner_eqb_eq : forall a b, inner_eqb a b = true <-> a = b.
+Proof. intros [] []; cbn; split; intros H; solve [reflexivity | discriminate H]. Qed.
+
+Lemma family_eqb_eq : forall f g, family_eqb f g = true <-> f = g.
+Proof.
+  intros [o1 i1] [o2 i2]. unfold family_eqb. cbn. rewrite andb_true_iff, outer_eqb_eq, inner_eqb_eq.
+  split; [intros [-> ->]; reflexivity | intros H; injection H as -> ->; split; reflexivity].
+Qed.
+
+(* A list of numbers without repetition, as a boolean check. *)
+Fixpoint nodupb (l : list nat) : bool :=
+  match l with [] => true | x :: rest => negb (existsb (Nat.eqb x) rest) && nodupb rest end.
+
+Lemma nodupb_NoDup : forall l, nodupb l = true -> NoDup l.
+Proof.
+  induction l as [| x rest IH]; intros H; [constructor |].
+  cbn in H. apply andb_true_iff in H as [Hx Hr]. constructor; [| exact (IH Hr)].
+  intros Hin. apply negb_true_iff in Hx. rewrite <- not_true_iff_false, existsb_exists in Hx.
+  apply Hx. exists x. split; [exact Hin | apply Nat.eqb_refl].
+Qed.
+
+Lemma find_none_of : forall (A : Type) (p : A -> bool) l, (forall x, In x l -> p x = false) -> find p l = None.
+Proof.
+  intros A p l. induction l as [| x rest IH]; intros H; [reflexivity |].
+  cbn. rewrite (H x (or_introl eq_refl)). apply IH. intros y Hy. exact (H y (or_intror Hy)).
+Qed.
+
+(* A filter of the second part of a list keeps the elements distinct. *)
+Lemma nodup_map_app_filter :
+  forall (A B : Type) (g : A -> B) (p : A -> bool) l1 l2,
+    NoDup (map g (l1 ++ l2)) -> NoDup (map g (l1 ++ filter p l2)).
+Proof.
+  intros A B g p l1 l2. induction l1 as [| a l1 IH]; cbn; intros H.
+  - induction l2 as [| b l2 IH2]; cbn in *; [constructor |].
+    inversion H as [| x l Hb Hl]; subst.
+    destruct (p b); cbn; [constructor |]; try exact (IH2 Hl).
+    intros Hin. apply Hb. apply in_map_iff in Hin as [y [Hy Hin]]. apply filter_In in Hin as [Hin _].
+    rewrite <- Hy. apply in_map. exact Hin.
+  - inversion H as [| x l Ha Hl]; subst. constructor; [| exact (IH Hl)].
+    intros Hin. apply Ha. apply in_map_iff in Hin as [y [Hy Hin]]. rewrite <- Hy. apply in_map.
+    apply in_app_iff in Hin as [Hin | Hin]; apply in_app_iff; [left; exact Hin |].
+    apply filter_In in Hin as [Hin _]. right. exact Hin.
+Qed.
+
+(* ── 9. Registration (spaces/factory/urn.rs, reified/system_channels.rs) ── *)
+
+(* A system channel: its URN, its op and its arity. *)
+Record sys_channel : Type := mkChan { ch_urn : bytes; ch_op : nat; ch_arity : nat }.
+
+(* system_channels.rs body_ref: the body ref of the op op is 200 + op. *)
+Definition body_ref (c : sys_channel) : nat := 200 + ch_op c.
+
+(* The factory channel of the family f with the op op: the URN of f, arity 2. *)
+Definition factory_chan (f : family) (op : nat) : sys_channel := mkChan (urn_of f) op 2.
+
+Definition row (o : outer) (i : inner) (op : nat) : family * sys_channel :=
+  (mkFamily o i, factory_chan (mkFamily o i) op).
+
+Definition queue_family : family := mkFamily HashMap Queue.
+Definition hashmap_bag : family := mkFamily HashMap Bag.
+
+(* REGISTERED_FAMILIES: the row of P4. *)
+Definition p4_rows : list (family * sys_channel) := [row HashMap Queue 1].
+
+(* The three other processes of P4_SYSTEM_CHANNELS. *)
+Definition p4_others : list sys_channel :=
+  [mkChan StrP5.get_space_agent 33 2; mkChan StrP5.assert_equal 34 3; mkChan StrP5.handle_op 48 2].
+
+(* P5_FAMILY_ROWS, in family-index order. *)
+Definition p5_rows : list (family * sys_channel) :=
+  [row HashMap Bag 0; row HashMap Stack 2; row HashMap SetC 3; row HashMap Cell 4;
+   row HashMap PriorityQueue 5;
+   row Array Bag 13; row Array Queue 14; row Array Stack 15; row Array SetC 16;
+   row Array Cell 17; row Array PriorityQueue 18;
+   row Vector Bag 19; row Vector Queue 20; row Vector Stack 21; row Vector SetC 22;
+   row Vector Cell 23; row Vector PriorityQueue 24].
+
+(* P5_ALIAS_ROWS: the channel of the alias and the family that it names. *)
+Definition alias_rows : list (sys_channel * family) := [(mkChan Str.hashmap_bag_alias 0 2, hashmap_bag)].
+
+(* defaults.rs schema: the named params of the factory of f in bytewise
+   order, and the params that it requires. *)
+Definition schema_of (f : family) : option (list bytes * list bytes) :=
+  match f_outer f, f_inner f with
+  | (HashMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])
+  | (HashMap | Vector), PriorityQueue => Some ([StrP5.priorities], [])
+  | Array, (Bag | Queue | Stack | SetC | Cell) => Some ([StrP5.cyclic; StrP5.size], [StrP5.size])
+  | Array, PriorityQueue => Some ([StrP5.cyclic; StrP5.priorities; StrP5.size], [StrP5.size])
+  | _, _ => None
+  end.
+
+(* Every row has the URN of its family, the op of its index, the body ref
+   200 + op, arity 2 and a constructor schema. *)
+Lemma rows_facts :
+  forall f c, In (f, c) (p4_rows ++ p5_rows) ->
+    ch_urn c = urn_of f /\ family_index f = Some (ch_op c) /\ body_ref c = 200 + ch_op c /\
+    ch_arity c = 2 /\ schema_of f <> None.
+Proof.
+  intros f c H. cbn in H.
+  repeat (destruct H as [H | H];
+          [injection H as <- <-; repeat split; solve [reflexivity | discriminate] |]).
+  destruct H.
+Qed.
+
+Lemma alias_rows_facts :
+  forall c f, In (c, f) alias_rows ->
+    parse_urn (ch_urn c) = UrnOk f /\ family_index f = Some (ch_op c) /\ ch_arity c = 2 /\
+    ch_urn c <> urn_of f.
+Proof.
+  intros c f H. cbn in H. destruct H as [H | H]; [| destruct H].
+  injection H as <- <-. repeat split; try reflexivity. vm_compute. discriminate.
+Qed.
+
+Lemma rows_ops_distinct : NoDup (map (fun r => ch_op (snd r)) (p4_rows ++ p5_rows)).
+Proof. apply nodupb_NoDup. vm_compute. reflexivity. Qed.
+
+(* Every definition of the tables, as if every row were registered. *)
+Definition all_definitions : list (sys_channel * option family) :=
+  map (fun r => (snd r, Some (fst r))) p4_rows ++ map (fun c => (c, None)) p4_others ++
+  map (fun r => (snd r, Some (fst r))) p5_rows ++ map (fun a => (fst a, Some (snd a))) alias_rows.
+
+Definition functional_b (l : list (sys_channel * option family)) : bool :=
+  forallb (fun d1 => forallb (fun d2 =>
+    negb (bytes_eqb (ch_urn (fst d1)) (ch_urn (fst d2))) || (ch_op (fst d1) =? ch_op (fst d2))) l) l.
+
+Lemma functional_b_spec :
+  forall l, functional_b l = true ->
+    forall d1 d2, In d1 l -> In d2 l -> ch_urn (fst d1) = ch_urn (fst d2) -> ch_op (fst d1) = ch_op (fst d2).
+Proof.
+  intros l H d1 d2 H1 H2 Hu. unfold functional_b in H. rewrite forallb_forall in H.
+  specialize (H d1 H1). rewrite forallb_forall in H. specialize (H d2 H2).
+  rewrite Hu, bytes_eqb_refl in H. cbn in H. apply Nat.eqb_eq. exact H.
+Qed.
+
+(* The URN map of all definitions is a function: one URN binds one op. *)
+Lemma all_definitions_functional :
+  forall d1 d2, In d1 all_definitions -> In d2 all_definitions ->
+    ch_urn (fst d1) = ch_urn (fst d2) -> ch_op (fst d1) = ch_op (fst d2).
+Proof. apply functional_b_spec. vm_compute. reflexivity. Qed.
+
+Section Registration.
+  (* families.rs Family::of_urn: the families whose dispatch arm is wired. *)
+  Variable wired : family -> bool.
+  (* S1 wires hashmap:queue, the family of P4. *)
+  Hypothesis queue_wired : wired queue_family = true.
+
+  (* urn.rs registered_families: the row of P4, then the rows of P5 whose
+     family is wired. *)
+  Definition registered : list (family * sys_channel) := p4_rows ++ filter (fun r => wired (fst r)) p5_rows.
+
+  Definition is_registered (f : family) : bool := existsb (fun r => family_eqb (fst r) f) registered.
+
+  (* urn.rs registered_aliases: the alias rows whose family is registered. *)
+  Definition registered_aliases : list (sys_channel * family) :=
+    filter (fun a => is_registered (snd a)) alias_rows.
+
+  (* system_processes.rs definitions: the channel of each definition and the
+     family that its factory creates (None for the three other processes of
+     P4), in the order of the code. *)
+  Definition definitions : list (sys_channel * option family) :=
+    map (fun r => (snd r, Some (fst r))) p4_rows ++ map (fun c => (c, None)) p4_others ++
+    map (fun r => (snd r, Some (fst r))) (filter (fun r => wired (fst r)) p5_rows) ++
+    map (fun a => (fst a, Some (snd a))) registered_aliases.
+
+  (* Definition::to_urn_map: the URN of a definition binds the write bundle
+     of its channel, so the op of its channel. *)
+  Definition binds (urn : bytes) (op : nat) : Prop :=
+    exists d, In d definitions /\ ch_urn (fst d) = urn /\ ch_op (fst d) = op.
+
+  Lemma registered_rows :
+    forall f c, In (f, c) registered -> In (f, c) (p4_rows ++ p5_rows) /\ wired f = true.
+  Proof.
+    intros f c H. unfold registered in H. apply in_app_iff in H as [H | H].
+    - split; [apply in_app_iff; left; exact H |].
+      cbn in H. destruct H as [H | H]; [| destruct H]. injection H as <- _. exact queue_wired.
+    - apply filter_In in H as [Hin Hw]. split; [apply in_app_iff; right; exact Hin | exact Hw].
+  Qed.
+
+  Lemma is_registered_spec : forall f, is_registered f = true <-> exists c, In (f, c) registered.
+  Proof.
+    intros f. unfold is_registered. rewrite existsb_exists. split.
+    - intros [[g c] [Hin Heq]]. apply family_eqb_eq in Heq. cbn in Heq. subst g. exists c. exact Hin.
+    - intros [c Hin]. exists (f, c). split; [exact Hin | apply family_eqb_eq; reflexivity].
+  Qed.
+
+  Lemma definitions_incl : forall d, In d definitions -> In d all_definitions.
+  Proof.
+    intros d H. unfold definitions in H. unfold all_definitions.
+    rewrite !in_app_iff in *. destruct H as [H | [H | [H | H]]]; [left | right; left | right; right; left | right; right; right];
+      try exact H.
+    - apply in_map_iff in H as [r [<- Hin]]. apply filter_In in Hin as [Hin _].
+      apply in_map_iff. exists r. split; [reflexivity | exact Hin].
+    - apply in_map_iff in H as [a [<- Hin]]. apply filter_In in Hin as [Hin _].
+      apply in_map_iff. exists a. split; [reflexivity | exact Hin].
+  Qed.
+
+  (* Headline 9 (F26). A registered family has the URN of its family, the op
+     of its index, the body ref 200 + op, arity 2, a constructor schema and
+     a wired dispatch arm. A family is registered exactly when it has a row
+     and an arm, and no two registered families share an op. Every factory
+     definition, an alias included, creates a registered family whose index
+     is its op, so the dispatch table, keyed by the body ref, is a function.
+     Nothing else is defined: the other definitions are the three other
+     processes of P4. *)
+  Theorem registered_families_complete :
+    (forall f c, In (f, c) registered ->
+       ch_urn c = urn_of f /\ family_index f = Some (ch_op c) /\ body_ref c = 200 + ch_op c /\
+       ch_arity c = 2 /\ schema_of f <> None /\ wired f = true) /\
+    (forall f, (exists c, In (f, c) registered) <->
+       ((exists c, In (f, c) (p4_rows ++ p5_rows)) /\ wired f = true)) /\
+    NoDup (map (fun r => ch_op (snd r)) registered) /\
+    (forall c f, In (c, Some f) definitions ->
+       family_index f = Some (ch_op c) /\ exists c', In (f, c') registered /\ ch_op c' = ch_op c) /\
+    (forall c, In (c, None) definitions -> In c p4_others).
+  Proof.
+    split; [| split; [| split; [| split]]].
+    - intros f c H. destruct (registered_rows f c H) as [Hrow Hw].
+      destruct (rows_facts f c Hrow) as [Hu [Hi [Hb [Ha Hs]]]]. repeat split; assumption.
+    - intros f. split.
+      + intros [c H]. destruct (registered_rows f c H) as [Hrow Hw]. split; [exists c; exact Hrow | exact Hw].
+      + intros [[c Hrow] Hw]. exists c. unfold registered. apply in_app_iff in Hrow as [H | H].
+        * apply in_app_iff. left. exact H.
+        * apply in_app_iff. right. apply filter_In. split; [exact H | exact Hw].
+    - unfold registered. apply nodup_map_app_filter. exact rows_ops_distinct.
+    - intros c f H. unfold definitions in H. rewrite !in_app_iff in H.
+      destruct H as [H | [H | [H | H]]].
+      + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
+        destruct (rows_facts f c (proj2 (in_app_iff _ _ _) (or_introl Hin))) as [_ [Hi _]].
+        split; [exact Hi |]. exists c. split; [| reflexivity]. unfold registered. apply in_app_iff. left. exact Hin.
+      + apply in_map_iff in H as [c0 [Heq _]]. discriminate Heq.
+      + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
+        apply filter_In in Hin as [Hin Hw].
+        destruct (rows_facts f c (proj2 (in_app_iff _ _ _) (or_intror Hin))) as [_ [Hi _]].
+        split; [exact Hi |]. exists c. split; [| reflexivity].
+        unfold registered. apply in_app_iff. right. apply filter_In. split; [exact Hin | exact Hw].
+      + apply in_map_iff in H as [[c0 g] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
+        apply filter_In in Hin as [Hin Hreg]. cbn in Hreg.
+        destruct (alias_rows_facts c f Hin) as [_ [Hi _]]. split; [exact Hi |].
+        apply is_registered_spec in Hreg as [c' Hc'].
+        destruct (registered_rows f c' Hc') as [Hrow _].
+        destruct (rows_facts f c' Hrow) as [_ [Hi' _]].
+        exists c'. split; [exact Hc' | congruence].
+    - intros c H. unfold definitions in H. rewrite !in_app_iff in H.
+      destruct H as [H | [H | [H | H]]]; apply in_map_iff in H as [x [Heq Hin]].
+      + discriminate Heq.
+      + injection Heq as ->. exact Hin.
+      + discriminate Heq.
+      + discriminate Heq.
+  Qed.
+
+  (* get_space_agent: the capability of the family that a config names
+     (constructor.rs family_of, urn.rs factory_capability). The factory of a
+     definition (c, Some f) stores a config that names f (factory.rs,
+     FactoryConstructor::config). *)
+  Definition get_space_agent_of (f : family) : option nat :=
+    match family_of_names (outer_name (f_outer f)) (inner_name (f_inner f)) with
+    | Some g => factory_op g
+    | None => None
+    end.
+
+  (* Headline 10 (F27). The alias names the op of its family and is not the
+     URN of the family. An alias is registered exactly when its family is
+     registered. The URN map of the definitions is a function, the alias
+     binds the op of its family, and so does the URN of the family: both
+     bind the capability bundle+{[0xE0, op]}. getSpaceAgent of a space that
+     any factory definition creates, through an alias or through the URN of
+     the family, replies the op of that definition (decision 9.4), so
+     assertEqual(getSpaceAgent(space), alias) holds (decision 33). *)
+  Theorem aliases_bind_family_capability :
+    (forall c f, In (c, f) alias_rows ->
+       parse_urn (ch_urn c) = UrnOk f /\ family_index f = Some (ch_op c) /\ ch_arity c = 2 /\
+       ch_urn c <> urn_of f) /\
+    (forall c f, In (c, f) registered_aliases <->
+       (In (c, f) alias_rows /\ exists cf, In (f, cf) registered)) /\
+    (forall u o1 o2, binds u o1 -> binds u o2 -> o1 = o2) /\
+    (forall c f, In (c, f) registered_aliases ->
+       binds (ch_urn c) (ch_op c) /\ binds (urn_of f) (ch_op c) /\ factory_op f = Some (ch_op c)) /\
+    (forall c f, In (c, Some f) definitions -> get_space_agent_of f = Some (ch_op c)).
+  Proof.
+    destruct registered_families_complete as [Hreg [_ [_ [Hdef _]]]].
+    split; [exact alias_rows_facts |].
+    split; [| split; [| split]].
+    - intros c f. unfold registered_aliases. rewrite filter_In. cbn [snd]. rewrite is_registered_spec. tauto.
+    - intros u o1 o2 [d1 [H1 [Hu1 Ho1]]] [d2 [H2 [Hu2 Ho2]]]. subst o1 o2.
+      apply all_definitions_functional; [apply definitions_incl; exact H1 | apply definitions_incl; exact H2 | congruence].
+    - intros c f H.
+      assert (Hdef_alias : In (c, Some f) definitions).
+      { unfold definitions. rewrite !in_app_iff. right. right. right.
+        apply in_map_iff. exists (c, f). split; [reflexivity | exact H]. }
+      destruct (Hdef c f Hdef_alias) as [Hi [c' [Hc' Hop]]].
+      destruct (Hreg f c' Hc') as [Hu' _].
+      split; [exists (c, Some f); split; [exact Hdef_alias | split; reflexivity] |].
+      split; [| exact Hi].
+      assert (Hdef_family : In (c', Some f) definitions).
+      { unfold registered in Hc'. unfold definitions. rewrite !in_app_iff.
+        apply in_app_iff in Hc' as [Hc' | Hc'].
+        - left. apply in_map_iff. exists (f, c'). split; [reflexivity | exact Hc'].
+        - right. right. left. apply in_map_iff. exists (f, c'). split; [reflexivity | exact Hc']. }
+      exists (c', Some f). split; [exact Hdef_family |]. split; [exact Hu' | exact Hop].
+    - intros c f H. destruct (Hdef c f H) as [Hi _].
+      assert (Hsup : is_supported_pair f = true).
+      { unfold family_index in Hi. destruct (is_supported_pair f); [reflexivity | discriminate Hi]. }
+      destruct aliases_map_to_family as [_ [_ [_ [_ [_ [_ Hnames]]]]]].
+      unfold get_space_agent_of. rewrite (Hnames f (supported_in_all f Hsup)). exact Hi.
+  Qed.
+End Registration.
+
+(* The registration of today (S1 wires only hashmap:queue) and the
+   registration when every row is wired: the theorems of the section hold
+   for both, so they are not vacuous. *)
+Corollary registration_today :
+  registered (fun f => family_eqb f queue_family) = p4_rows /\
+  registered_aliases (fun f => family_eqb f queue_family) = [].
+Proof. split; vm_compute; reflexivity. Qed.
+
+Corollary registration_all_wired :
+  registered (fun _ => true) = p4_rows ++ p5_rows /\ registered_aliases (fun _ => true) = alias_rows.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(* ── 10. The constructor params (defaults.rs, constructor.rs) ──────────── *)
+
+(* The greatest GInt. A GInt is an i64, so the rules below accept
+   [1, i64_max] exactly when they accept every value of at least 1. *)
+Definition i64_max : Z := 9223372036854775807%Z.
+
+(* A param value: a GInt, a GBool, another value (a string, Nil, several
+   expressions or a process), or a value with a connective flag. The bit
+   sets of a value are not modeled: the rules ignore them, and the canonical
+   form has none. *)
+Inductive pvalue : Type :=
+| VInt : Z -> pvalue
+| VBool : bool -> pvalue
+| VOther : nat -> pvalue
+| VFlagged : pvalue -> pvalue.
+
+(* ParamRule. *)
+Inductive rule : Type := RSize | RCyclic | RPriorities.
+
+(* ParamRule::of. *)
+Definition rule_of (k : bytes) : option rule :=
+  if bytes_eqb k StrP5.size then Some RSize
+  else if bytes_eqb k StrP5.cyclic then Some RCyclic
+  else if bytes_eqb k StrP5.priorities then Some RPriorities
+  else None.
+
+(* ParamRule::canonical: size is a GInt in [1, i64_max] (F7), priorities is
+   a GInt of at least 1 (I-10), cyclic is a GBool (F7). *)
+Definition canonical (r : rule) (v : pvalue) : option pvalue :=
+  match r, v with
+  | RSize, VInt z => if (1 <=? z)%Z && (z <=? i64_max)%Z then Some (VInt z) else None
+  | RPriorities, VInt z => if (1 <=? z)%Z && (z <=? i64_max)%Z then Some (VInt z) else None
+  | RCyclic, VBool b => Some (VBool b)
+  | _, _ => None
+  end.
+
+(* The required params of a family (defaults.rs required_params). *)
+Definition required_of (f : family) : list bytes :=
+  match schema_of f with Some (_, required) => required | None => [] end.
+
+(* Bytewise order of names, as the order of Rust strings. *)
+Fixpoint bytes_ltb (a b : bytes) : bool :=
+  match a, b with
+  | [], [] => false
+  | [], _ :: _ => true
+  | _ :: _, [] => false
+  | x :: a', y :: b' => (x <? y) || ((x =? y) && bytes_ltb a' b')
+  end.
+
+Lemma bytes_ltb_irrefl : forall a, bytes_ltb a a = false.
+Proof. induction a as [| x a IH]; [reflexivity |]. cbn [bytes_ltb]. rewrite Nat.ltb_irrefl, Nat.eqb_refl. exact IH. Qed.
+
+Lemma bytes_ltb_trans :
+  forall a b c, bytes_ltb a b = true -> bytes_ltb b c = true -> bytes_ltb a c = true.
+Proof.
+  induction a as [| x a IH]; intros [| y b] [| z c] H1 H2; cbn [bytes_ltb] in *; try discriminate; try reflexivity.
+  apply orb_true_iff in H1, H2. apply orb_true_iff.
+  destruct H1 as [H1 | H1]; destruct H2 as [H2 | H2].
+  - left. apply Nat.ltb_lt in H1, H2. apply Nat.ltb_lt. lia.
+  - left. apply andb_true_iff in H2 as [E2 _]. apply Nat.eqb_eq in E2. subst z. exact H1.
+  - left. apply andb_true_iff in H1 as [E1 _]. apply Nat.eqb_eq in E1. subst y. exact H2.
+  - right. apply andb_true_iff in H1 as [E1 H1], H2 as [E2 H2]. apply Nat.eqb_eq in E1, E2. subst y z.
+    rewrite Nat.eqb_refl. exact (IH b c H1 H2).
+Qed.
+
+Lemma bytes_ltb_total : forall a b, bytes_ltb a b = false -> bytes_ltb b a = false -> a = b.
+Proof.
+  induction a as [| x a IH]; intros [| y b] H1 H2; cbn [bytes_ltb] in *; try discriminate; try reflexivity.
+  apply orb_false_iff in H1 as [L1 R1], H2 as [L2 R2]. apply Nat.ltb_ge in L1, L2.
+  assert (x = y) by lia. subst y. rewrite Nat.eqb_refl in R1, R2. cbn in R1, R2.
+  rewrite (IH b R1 R2). reflexivity.
+Qed.
+
+(* The order of the suggestion: the least distance, then the bytewise least
+   candidate, as the order of the Rust tuple (usize, &str). *)
+Definition lex_ltb (a b : nat * bytes) : bool :=
+  (fst a <? fst b) || ((fst a =? fst b) && bytes_ltb (snd a) (snd b)).
+
+Definition lex_leb (a b : nat * bytes) : bool := negb (lex_ltb b a).
+
+Lemma lex_ltb_trans : forall a b c, lex_ltb a b = true -> lex_ltb b c = true -> lex_ltb a c = true.
+Proof.
+  intros [n a] [m b] [k c]. unfold lex_ltb. cbn [fst snd]. intros H1 H2.
+  apply orb_true_iff in H1, H2. apply orb_true_iff.
+  destruct H1 as [H1 | H1]; destruct H2 as [H2 | H2].
+  - left. apply Nat.ltb_lt in H1, H2. apply Nat.ltb_lt. lia.
+  - left. apply andb_true_iff in H2 as [E2 _]. apply Nat.eqb_eq in E2. subst k. exact H1.
+  - left. apply andb_true_iff in H1 as [E1 _]. apply Nat.eqb_eq in E1. subst m. exact H2.
+  - right. apply andb_true_iff in H1 as [E1 H1], H2 as [E2 H2]. apply Nat.eqb_eq in E1, E2. subst m k.
+    rewrite Nat.eqb_refl. exact (bytes_ltb_trans a b c H1 H2).
+Qed.
+
+Lemma lex_total : forall a b, lex_ltb a b = false -> lex_ltb b a = false -> a = b.
+Proof.
+  intros [n a] [m b]. unfold lex_ltb. cbn [fst snd]. intros H1 H2.
+  apply orb_false_iff in H1 as [L1 R1], H2 as [L2 R2]. apply Nat.ltb_ge in L1, L2.
+  assert (n = m) by lia. subst m. rewrite Nat.eqb_refl in R1, R2. cbn in R1, R2.
+  rewrite (bytes_ltb_total a b R1 R2). reflexivity.
+Qed.
+
+Lemma lex_ltb_irrefl : forall a, lex_ltb a a = false.
+Proof. intros [n a]. unfold lex_ltb. cbn [fst snd]. rewrite Nat.ltb_irrefl, Nat.eqb_refl, bytes_ltb_irrefl. reflexivity. Qed.
+
+Lemma lex_ltb_asym : forall a b, lex_ltb a b = true -> lex_ltb b a = false.
+Proof.
+  intros a b H. destruct (lex_ltb b a) eqn:E; [| reflexivity].
+  pose proof (lex_ltb_trans a b a H E) as Haa. rewrite lex_ltb_irrefl in Haa. discriminate Haa.
+Qed.
+
+Lemma lex_leb_refl : forall a, lex_leb a a = true.
+Proof. intros [n a]. unfold lex_leb, lex_ltb. cbn [fst snd]. rewrite Nat.ltb_irrefl, Nat.eqb_refl, bytes_ltb_irrefl. reflexivity. Qed.
+
+(* The result of the gates of the params. *)
+Inductive perror : Type :=
+| EUnavailable
+| EPositional
+| EUnknown (k : bytes) (s : option bytes)
+| EMissing (k : bytes)
+| EInvalid (k : bytes)
+| EInconsistent.
+
+Inductive presult : Type := POk (ps : list (bytes * pvalue)) | PErr (e : perror).
+
+(* constructor.rs canonical_params: each named param in the canonical form of
+   its rule, in key order. A key without a rule is inconsistent. *)
+Fixpoint canonical_all (named : list (bytes * pvalue)) : presult :=
+  match named with
+  | [] => POk []
+  | (k, v) :: rest =>
+      match rule_of k with
+      | None => PErr EInconsistent
+      | Some r =>
+          match canonical r v with
+          | None => PErr (EInvalid k)
+          | Some v' => match canonical_all rest with POk ps => POk ((k, v') :: ps) | PErr e => PErr e end
+          end
+      end
+  end.
+
+Lemma canonical_all_ok :
+  forall named ps, canonical_all named = POk ps ->
+    map fst ps = map fst named /\
+    Forall2 (fun kv kv' => exists r, rule_of (fst kv) = Some r /\ canonical r (snd kv) = Some (snd kv')) named ps.
+Proof.
+  induction named as [| [k v] rest IH]; intros ps H; cbn in H.
+  - injection H as <-. split; [reflexivity | constructor].
+  - destruct (rule_of k) as [r |] eqn:Er; [| discriminate H].
+    destruct (canonical r v) as [v' |] eqn:Ev; [| discriminate H].
+    destruct (canonical_all rest) as [ps' |] eqn:Erest; [| discriminate H].
+    injection H as <-. destruct (IH ps' eq_refl) as [Hk Hf].
+    split; [cbn; rewrite Hk; reflexivity |]. constructor; [| exact Hf].
+    exists r. split; [exact Er | exact Ev].
+Qed.
+
+Lemma canonical_all_consistent :
+  forall named, (forall kv, In kv named -> rule_of (fst kv) <> None) -> canonical_all named <> PErr EInconsistent.
+Proof.
+  induction named as [| [k v] rest IH]; intros H; cbn; [discriminate |].
+  destruct (rule_of k) as [r |] eqn:Er; [| exfalso; exact (H (k, v) (or_introl eq_refl) Er)].
+  destruct (canonical r v) as [v' |]; [| discriminate].
+  specialize (IH (fun kv Hin => H kv (or_intror Hin))).
+  destruct (canonical_all rest) as [ps | e]; [discriminate |]. exact IH.
+Qed.
+
+(* Every key of a schema has a rule. *)
+Lemma schema_keys_ruled : forall f s r k, schema_of f = Some (s, r) -> In k s -> rule_of k <> None.
+Proof.
+  intros [[] []] s r k H Hk; cbn in H; try discriminate H; injection H as <- <-; cbn in Hk;
+    repeat (destruct Hk as [<- | Hk]; [vm_compute; discriminate |]); destruct Hk.
+Qed.
+
+(* Every required key is a key of the schema. *)
+Lemma required_in_schema : forall f s r k, schema_of f = Some (s, r) -> In k r -> In k s.
+Proof.
+  intros [[] []] s r k H Hk; cbn in H; try discriminate H; injection H as <- <-; cbn in Hk;
+    repeat (destruct Hk as [<- | Hk]; [cbn; tauto |]); destruct Hk.
+Qed.
+
+Section Params.
+  (* defaults.rs distance_within: the Levenshtein distance of two names. *)
+  Variable dist : bytes -> bytes -> nat.
+
+  (* SUGGESTION_DISTANCE. *)
+  Definition suggestion_bound : nat := 2.
+
+  Definition within (w c : bytes) : bool := dist w c <=? suggestion_bound.
+
+  (* defaults.rs suggestion: Iterator::min over the pairs (distance,
+     candidate) of the candidates within the bound. *)
+  Fixpoint least (w : bytes) (cs : list bytes) : option (nat * bytes) :=
+    match cs with
+    | [] => None
+    | c :: rest =>
+        match within w c, least w rest with
+        | true, Some b => if lex_ltb b (dist w c, c) then Some b else Some (dist w c, c)
+        | true, None => Some (dist w c, c)
+        | false, best => best
+        end
+    end.
+
+  Definition suggest (w : bytes) (cs : list bytes) : option bytes := option_map snd (least w cs).
+
+  Lemma least_spec :
+    forall w cs p, least w cs = Some p ->
+      In (snd p) cs /\ within w (snd p) = true /\ fst p = dist w (snd p) /\
+      forall c', In c' cs -> within w c' = true -> lex_leb p (dist w c', c') = true.
+  Proof.
+    intros w. induction cs as [| c rest IH]; intros p H; cbn in H; [discriminate H |].
+    destruct (within w c) eqn:Ec.
+    - destruct (least w rest) as [b |] eqn:Eb.
+      + destruct (IH b eq_refl) as [Hin [Hw [Hd Hle]]].
+        destruct (lex_ltb b (dist w c, c)) eqn:Elt; injection H as <-.
+        * split; [right; exact Hin |]. split; [exact Hw |]. split; [exact Hd |].
+          intros c' [<- | Hin'] Hw'.
+          -- unfold lex_leb. rewrite (lex_ltb_asym _ _ Elt). reflexivity.
+          -- exact (Hle c' Hin' Hw').
+        * split; [left; reflexivity |]. split; [exact Ec |]. split; [reflexivity |].
+          intros c' [<- | Hin'] Hw'; [apply lex_leb_refl |].
+          unfold lex_leb. apply negb_true_iff. destruct (lex_ltb (dist w c', c') (dist w c, c)) eqn:E2; [| reflexivity].
+          exfalso. specialize (Hle c' Hin' Hw'). unfold lex_leb in Hle. apply negb_true_iff in Hle.
+          assert (Hbc : lex_ltb b (dist w c, c) = true).
+          { destruct (lex_ltb b (dist w c', c')) eqn:E3.
+            - exact (lex_ltb_trans _ _ _ E3 E2).
+            - rewrite (lex_total _ _ E3 Hle). exact E2. }
+          rewrite Hbc in Elt. discriminate Elt.
+      + injection H as <-. split; [left; reflexivity |]. split; [exact Ec |]. split; [reflexivity |].
+        intros c' [<- | Hin'] Hw'; [apply lex_leb_refl |].
+        exfalso. clear IH. induction rest as [| x rest' IHr]; [destruct Hin' |].
+        cbn in Eb. destruct (within w x) eqn:Ex.
+        * destruct (least w rest') as [b |]; [destruct (lex_ltb b (dist w x, x)) |]; discriminate Eb.
+        * destruct Hin' as [<- | Hin']; [rewrite Ex in Hw'; discriminate Hw' | exact (IHr Eb Hin')].
+    - destruct (IH p H) as [Hin [Hw [Hd Hle]]].
+      split; [right; exact Hin |]. split; [exact Hw |]. split; [exact Hd |].
+      intros c' [<- | Hin'] Hw'; [rewrite Ec in Hw'; discriminate Hw' | exact (Hle c' Hin' Hw')].
+  Qed.
+
+  Lemma least_none : forall w cs, least w cs = None -> forall c, In c cs -> within w c = false.
+  Proof.
+    intros w. induction cs as [| x rest IH]; intros H c Hin; [destruct Hin |].
+    cbn in H. destruct (within w x) eqn:Ex.
+    - destruct (least w rest) as [b |]; [destruct (lex_ltb b (dist w x, x)) |]; discriminate H.
+    - destruct Hin as [<- | Hin]; [exact Ex | exact (IH H c Hin)].
+  Qed.
+
+  (* The suggestion is the least (distance, key) within the bound: a function
+     of the name and of the set of candidates. *)
+  Lemma suggest_least :
+    forall w cs c, suggest w cs = Some c <->
+      (In c cs /\ within w c = true /\
+       forall c', In c' cs -> within w c' = true -> lex_leb (dist w c, c) (dist w c', c') = true).
+  Proof.
+    intros w cs c. unfold suggest. split.
+    - destruct (least w cs) as [p |] eqn:E; cbn; intros H; [| discriminate H].
+      injection H as <-. destruct (least_spec w cs p E) as [Hin [Hw [Hd Hle]]].
+      split; [exact Hin |]. split; [exact Hw |]. intros c' Hin' Hw'.
+      rewrite <- Hd. replace (fst p, snd p) with p by (destruct p; reflexivity). exact (Hle c' Hin' Hw').
+    - intros [Hin [Hw Hle]]. destruct (least w cs) as [p |] eqn:E.
+      + destruct (least_spec w cs p E) as [Hin' [Hw' [Hd Hle']]]. cbn. f_equal.
+        specialize (Hle (snd p) Hin' Hw'). specialize (Hle' c Hin Hw).
+        unfold lex_leb in Hle, Hle'. apply negb_true_iff in Hle, Hle'.
+        rewrite <- Hd in Hle. replace (fst p, snd p) with p in Hle by (destruct p; reflexivity).
+        pose proof (lex_total _ _ Hle' Hle) as Heq. rewrite <- Heq. reflexivity.
+      + rewrite (least_none w cs E c Hin) in Hw. discriminate Hw.
+  Qed.
+
+  (* constructor.rs validate, the gates 1 and 5 to 8: the family has a
+     schema, the params are not positional, every key is in the schema, every
+     required key is present, and every value is accepted. The gates 2 to 4
+     (the parse, the qualifier and the theory) are the P4 model above. *)
+  Definition validate_params (f : family) (positional : list pvalue) (named : list (bytes * pvalue)) : presult :=
+    match schema_of f with
+    | None => PErr EUnavailable
+    | Some (schema, required) =>
+        match positional with
+        | _ :: _ => PErr EPositional
+        | [] =>
+            match find (fun kv => negb (mem (fst kv) schema)) named with
+            | Some (k, _) => PErr (EUnknown k (suggest k schema))
+            | None =>
+                match find (fun k => negb (mem k (map fst named))) required with
+                | Some k => PErr (EMissing k)
+                | None => canonical_all named
+                end
+            end
+        end
+    end.
+
+  (* Headline 11 (F28). A family without a schema is unavailable. Positional
+     params fail first. The first unknown key fails with the least (distance,
+     key) suggestion within two edits, a deterministic function of the key
+     and of the schema. An accepted call keeps the keys in their order, every
+     key is in the schema, every required key is present, and every value is
+     the canonical form of the value of its rule. The gates are total: no
+     call is inconsistent. *)
+  Theorem constructor_params_validated :
+    (forall f pos named, schema_of f = None -> validate_params f pos named = PErr EUnavailable) /\
+    (forall f s r p pos named, schema_of f = Some (s, r) ->
+       validate_params f (p :: pos) named = PErr EPositional) /\
+    (forall f s r named k v, schema_of f = Some (s, r) ->
+       find (fun kv => negb (mem (fst kv) s)) named = Some (k, v) ->
+       validate_params f [] named = PErr (EUnknown k (suggest k s))) /\
+    (forall w cs c, suggest w cs = Some c <->
+       (In c cs /\ within w c = true /\
+        forall c', In c' cs -> within w c' = true -> lex_leb (dist w c, c) (dist w c', c') = true)) /\
+    (forall f s r named ps, schema_of f = Some (s, r) -> validate_params f [] named = POk ps ->
+       map fst ps = map fst named /\ (forall k, In k (map fst ps) -> In k s) /\
+       (forall k, In k r -> In k (map fst ps)) /\
+       Forall2 (fun kv kv' => exists rl, rule_of (fst kv) = Some rl /\ canonical rl (snd kv) = Some (snd kv'))
+         named ps) /\
+    (forall f pos named, validate_params f pos named <> PErr EInconsistent).
+  Proof.
+    split; [intros f pos named H; unfold validate_params; rewrite H; reflexivity |].
+    split; [intros f s r p pos named H; unfold validate_params; rewrite H; reflexivity |].
+    split; [intros f s r named k v H Hf; unfold validate_params; rewrite H, Hf; reflexivity |].
+    split; [exact suggest_least |].
+    split.
+    - intros f s r named ps H Hok. unfold validate_params in Hok. rewrite H in Hok.
+      destruct (find (fun kv => negb (mem (fst kv) s)) named) as [[k v] |] eqn:Eu; [discriminate Hok |].
+      destruct (find (fun k => negb (mem k (map fst named))) r) as [k |] eqn:Em; [discriminate Hok |].
+      destruct (canonical_all_ok named ps Hok) as [Hkeys Hvals].
+      split; [exact Hkeys |]. split; [| split; [| exact Hvals]].
+      + intros k Hk. rewrite Hkeys in Hk. apply in_map_iff in Hk as [[k' v'] [<- Hin]].
+        pose proof (find_none _ _ Eu (k', v') Hin) as Hm. cbn in Hm.
+        apply negb_false_iff, mem_spec in Hm. exact Hm.
+      + intros k Hk. rewrite Hkeys. pose proof (find_none _ _ Em k Hk) as Hm.
+        apply negb_false_iff, mem_spec in Hm. exact Hm.
+    - intros f pos named. unfold validate_params.
+      destruct (schema_of f) as [[s r] |] eqn:H; [| discriminate].
+      destruct pos; [| discriminate].
+      destruct (find (fun kv => negb (mem (fst kv) s)) named) as [[k v] |] eqn:Eu; [discriminate |].
+      destruct (find (fun k => negb (mem k (map fst named))) r) as [k |]; [discriminate |].
+      apply canonical_all_consistent. intros [k v] Hin.
+      pose proof (find_none _ _ Eu (k, v) Hin) as Hm. cbn in Hm. apply negb_false_iff, mem_spec in Hm.
+      exact (schema_keys_ruled f s r k H Hm).
+  Qed.
+
+  Lemma canonical_int_rule :
+    forall r, r = RSize \/ r = RPriorities ->
+      forall v v', canonical r v = Some v' <-> exists z, v = VInt z /\ (1 <= z <= i64_max)%Z /\ v' = VInt z.
+  Proof.
+    intros r Hr v v'. destruct Hr as [-> | ->]; destruct v as [z | b | n | v0]; cbn;
+      try (split; [discriminate | intros [z' [Hz _]]; discriminate Hz]).
+    - destruct ((1 <=? z)%Z && (z <=? i64_max)%Z) eqn:E.
+      + apply andb_true_iff in E as [E1 E2]. apply Z.leb_le in E1, E2. split.
+        * intros H. injection H as <-. exists z. repeat split; assumption.
+        * intros [z' [Hz [_ ->]]]. injection Hz as <-. reflexivity.
+      + split; [discriminate |]. intros [z' [Hz [[H1 H2] _]]]. injection Hz as <-.
+        apply Z.leb_le in H1, H2. rewrite H1, H2 in E. discriminate E.
+    - destruct ((1 <=? z)%Z && (z <=? i64_max)%Z) eqn:E.
+      + apply andb_true_iff in E as [E1 E2]. apply Z.leb_le in E1, E2. split.
+        * intros H. injection H as <-. exists z. repeat split; assumption.
+        * intros [z' [Hz [_ ->]]]. injection Hz as <-. reflexivity.
+      + split; [discriminate |]. intros [z' [Hz [[H1 H2] _]]]. injection Hz as <-.
+        apply Z.leb_le in H1, H2. rewrite H1, H2 in E. discriminate E.
+  Qed.
+
+  (* The concrete facts of the schemas and the rules, one per statement, so
+     each proof below names the fact that it uses. *)
+  Lemma rule_of_size : rule_of StrP5.size = Some RSize.
+  Proof. vm_compute. reflexivity. Qed.
+
+  Lemma rule_of_cyclic : rule_of StrP5.cyclic = Some RCyclic.
+  Proof. vm_compute. reflexivity. Qed.
+
+  Lemma rule_of_priorities : rule_of StrP5.priorities = Some RPriorities.
+  Proof. vm_compute. reflexivity. Qed.
+
+  Lemma canonical_in_range :
+    forall r z, r = RSize \/ r = RPriorities -> (1 <= z <= i64_max)%Z -> canonical r (VInt z) = Some (VInt z).
+  Proof.
+    intros r z Hr Hz. apply (canonical_int_rule r Hr). exists z. split; [reflexivity | split; [exact Hz | reflexivity]].
+  Qed.
+
+  Lemma find_unknown_none :
+    forall s (named : list (bytes * pvalue)), (forall kv, In kv named -> In (fst kv) s) ->
+      find (fun kv => negb (mem (fst kv) s)) named = None.
+  Proof. intros s named H. apply find_none_of. intros kv Hin. apply negb_false_iff, mem_spec. exact (H kv Hin). Qed.
+
+  Lemma find_required_none :
+    forall r keys, (forall k, In k r -> In k keys) -> find (fun k => negb (mem k keys)) r = None.
+  Proof. intros r keys H. apply find_none_of. intros k Hin. apply negb_false_iff, mem_spec. exact (H k Hin). Qed.
+
+  (* The names of the params differ. *)
+  Lemma param_names_distinct :
+    StrP5.size <> StrP5.cyclic /\ StrP5.size <> StrP5.priorities /\ StrP5.cyclic <> StrP5.priorities.
+  Proof. repeat split; intros H; vm_compute in H; discriminate H. Qed.
+
+  (* The schema of every family with a schema, by outer store and inner
+     collection. *)
+  Lemma schema_cases :
+    forall f s r, schema_of f = Some (s, r) ->
+      (f_outer f = Array /\ f_inner f <> PriorityQueue /\ s = [StrP5.cyclic; StrP5.size] /\ r = [StrP5.size]) \/
+      (f_outer f = Array /\ f_inner f = PriorityQueue /\
+       s = [StrP5.cyclic; StrP5.priorities; StrP5.size] /\ r = [StrP5.size]) \/
+      (f_outer f <> Array /\ f_inner f <> PriorityQueue /\ s = [] /\ r = []) \/
+      (f_outer f <> Array /\ f_inner f = PriorityQueue /\ s = [StrP5.priorities] /\ r = []).
+  Proof.
+    intros [[] []] s r H; cbn [schema_of f_outer f_inner] in H; try discriminate H; injection H as <- <-;
+      cbn [f_outer f_inner];
+      first [ left; repeat split; solve [reflexivity | discriminate]
+            | right; left; repeat split; solve [reflexivity | discriminate]
+            | right; right; left; repeat split; solve [reflexivity | discriminate]
+            | right; right; right; repeat split; solve [reflexivity | discriminate] ].
+  Qed.
+
+  Lemma priorities_in_schema :
+    forall f s r, schema_of f = Some (s, r) -> (In StrP5.priorities s <-> f_inner f = PriorityQueue).
+  Proof.
+    destruct param_names_distinct as [_ [Hsp Hcp]].
+    intros f s r H. destruct (schema_cases f s r H) as [[_ [Hi [-> _]]] | [[_ [Hi [-> _]]] | [[_ [Hi [-> _]]] | [_ [Hi [-> _]]]]]];
+      split; intros Hx;
+      first [ exact Hi
+            | exfalso; apply Hi; exact Hx
+            | left; reflexivity
+            | right; left; reflexivity
+            | exfalso; destruct Hx as [Hx | [Hx | []]]; [exact (Hcp Hx) | exact (Hsp Hx)]
+            | destruct Hx ].
+  Qed.
+
+  (* Headline 12 (I-10). Exactly the priority queue families take the
+     optional priorities, which no family requires. Its rule accepts exactly
+     the GInt values in [1, i64_max], that is every GInt of at least 1, and
+     the config keeps the canonical value. Without it the call is valid, and
+     the levels have no bound. Every other family refuses priorities as an
+     unknown key. *)
+  Theorem priorities_validated :
+    (forall f s r, schema_of f = Some (s, r) -> (In StrP5.priorities s <-> f_inner f = PriorityQueue)) /\
+    (forall f s r, schema_of f = Some (s, r) -> ~ In StrP5.priorities r) /\
+    rule_of StrP5.priorities = Some RPriorities /\
+    (forall v v', canonical RPriorities v = Some v' <->
+       exists z, v = VInt z /\ (1 <= z <= i64_max)%Z /\ v' = VInt z) /\
+    (forall f s v, schema_of f = Some (s, []) -> f_inner f = PriorityQueue ->
+       validate_params f [] [(StrP5.priorities, v)] =
+       match canonical RPriorities v with
+       | Some v' => POk [(StrP5.priorities, v')]
+       | None => PErr (EInvalid StrP5.priorities)
+       end) /\
+    (forall f s r v z, schema_of f = Some (s, r) -> f_inner f = PriorityQueue -> f_outer f = Array ->
+       (1 <= z <= i64_max)%Z ->
+       validate_params f [] [(StrP5.priorities, v); (StrP5.size, VInt z)] =
+       match canonical RPriorities v with
+       | Some v' => POk [(StrP5.priorities, v'); (StrP5.size, VInt z)]
+       | None => PErr (EInvalid StrP5.priorities)
+       end) /\
+    (forall f s, schema_of f = Some (s, []) -> validate_params f [] [] = POk []) /\
+    (forall f s r v, schema_of f = Some (s, r) -> f_inner f <> PriorityQueue ->
+       validate_params f [] [(StrP5.priorities, v)] = PErr (EUnknown StrP5.priorities (suggest StrP5.priorities s))).
+  Proof.
+    split; [exact priorities_in_schema |].
+    split.
+    { destruct param_names_distinct as [Hsc [Hsp Hcp]].
+      intros f s r H Hin. destruct (schema_cases f s r H) as [[_ [_ [_ ->]]] | [[_ [_ [_ ->]]] | [[_ [_ [_ ->]]] | [_ [_ [_ ->]]]]]];
+        cbn [In] in Hin; [destruct Hin as [Hin | []]; exact (Hsp Hin) .. | destruct Hin | destruct Hin]. }
+    split; [exact rule_of_priorities |].
+    split; [apply canonical_int_rule; right; reflexivity |].
+    split.
+    { intros f s v H Hi. unfold validate_params. rewrite H.
+      rewrite find_unknown_none.
+      - cbn [find canonical_all]. rewrite rule_of_priorities.
+        destruct (canonical RPriorities v); reflexivity.
+      - intros kv [<- | []]. cbn [fst]. apply (priorities_in_schema f s [] H). exact Hi. }
+    split.
+    { intros f s r v z H Hi Ho Hz.
+      destruct (schema_cases f s r H) as [[_ [Hi' _]] | [[_ [_ [-> ->]]] | [[Ho' _] | [Ho' _]]]];
+        [exfalso; exact (Hi' Hi) | | exfalso; exact (Ho' Ho) | exfalso; exact (Ho' Ho)].
+      unfold validate_params. rewrite H.
+      rewrite find_unknown_none, find_required_none.
+      - cbn [canonical_all]. rewrite rule_of_priorities.
+        destruct (canonical RPriorities v) as [v' |]; [| reflexivity].
+        cbn [canonical_all]. rewrite rule_of_size, (canonical_in_range RSize z (or_introl eq_refl) Hz).
+        reflexivity.
+      - intros k [<- | []]. cbn [map fst]. right. left. reflexivity.
+      - intros kv [<- | [<- | []]]; cbn [fst]; [right; left | right; right; left]; reflexivity. }
+    split.
+    { intros f s H. unfold validate_params. rewrite H. reflexivity. }
+    { intros f s r v H Hi. unfold validate_params. rewrite H.
+      assert (Hm : mem StrP5.priorities s = false).
+      { apply not_true_iff_false. rewrite mem_spec. intros Hin.
+        exact (Hi (proj1 (priorities_in_schema f s r H) Hin)). }
+      cbn [find fst]. rewrite Hm. reflexivity. }
+  Qed.
+
+  (* The schema of an Array family and of every other family with a schema. *)
+  Lemma array_schema :
+    forall f s r, f_outer f = Array -> schema_of f = Some (s, r) ->
+      In StrP5.size s /\ In StrP5.cyclic s /\ r = [StrP5.size].
+  Proof.
+    intros f s r Ho H.
+    destruct (schema_cases f s r H) as [[_ [_ [-> ->]]] | [[_ [_ [-> ->]]] | [[Ho' _] | [Ho' _]]]];
+      try (exfalso; exact (Ho' Ho)).
+    - split; [right; left; reflexivity | split; [left; reflexivity | reflexivity]].
+    - split; [right; right; left; reflexivity | split; [left; reflexivity | reflexivity]].
+  Qed.
+
+  Lemma other_schema :
+    forall f s r, f_outer f <> Array -> schema_of f = Some (s, r) ->
+      ~ In StrP5.size s /\ ~ In StrP5.cyclic s /\ r = [].
+  Proof.
+    destruct param_names_distinct as [Hsc [Hsp Hcp]].
+    intros f s r Ho H.
+    destruct (schema_cases f s r H) as [[Ho' _] | [[Ho' _] | [[_ [_ [-> ->]]] | [_ [_ [-> ->]]]]]];
+      try (exfalso; exact (Ho Ho')).
+    - split; [intros Hx; cbn [In] in Hx; destruct Hx |].
+      split; [intros Hx; cbn [In] in Hx; destruct Hx | reflexivity].
+    - split; [intros Hx; cbn [In] in Hx; destruct Hx as [Hx | []]; exact (Hsp (eq_sym Hx)) |].
+      split; [intros Hx; cbn [In] in Hx; destruct Hx as [Hx | []]; exact (Hcp (eq_sym Hx)) | reflexivity].
+  Qed.
+
+  Lemma canonical_cyclic_rule :
+    forall v v', canonical RCyclic v = Some v' <-> exists b, v = VBool b /\ v' = VBool b.
+  Proof.
+    intros [z | b | n | v0] v'; cbn [canonical];
+      try (split; [discriminate | intros [b' [Hb _]]; discriminate Hb]).
+    split; [intros H; injection H as <-; exists b; split; reflexivity |].
+    intros [b' [Hb ->]]. injection Hb as <-. reflexivity.
+  Qed.
+
+  (* Headline 13 (F7). Every Array family requires size and takes the
+     optional cyclic, and every other family takes neither. size accepts
+     exactly the GInt values in [1, i64_max], and cyclic exactly the GBool
+     values. A call without size fails with MissingParam after the key
+     check. A call with a valid size and no cyclic flag is valid, and the
+     space is a fixed array. The values are checked in key order, so a bad
+     cyclic flag fails before a bad size. *)
+  Theorem array_size_validated :
+    (forall f s r, f_outer f = Array -> schema_of f = Some (s, r) ->
+       In StrP5.size s /\ In StrP5.cyclic s /\ r = [StrP5.size]) /\
+    (forall f s r, f_outer f <> Array -> schema_of f = Some (s, r) ->
+       ~ In StrP5.size s /\ ~ In StrP5.cyclic s /\ r = []) /\
+    rule_of StrP5.size = Some RSize /\ rule_of StrP5.cyclic = Some RCyclic /\
+    (forall v v', canonical RSize v = Some v' <-> exists z, v = VInt z /\ (1 <= z <= i64_max)%Z /\ v' = VInt z) /\
+    (forall v v', canonical RCyclic v = Some v' <-> exists b, v = VBool b /\ v' = VBool b) /\
+    (forall f s r named, f_outer f = Array -> schema_of f = Some (s, r) ->
+       (forall kv, In kv named -> In (fst kv) s) -> ~ In StrP5.size (map fst named) ->
+       validate_params f [] named = PErr (EMissing StrP5.size)) /\
+    (forall f s r z, f_outer f = Array -> schema_of f = Some (s, r) -> (1 <= z <= i64_max)%Z ->
+       validate_params f [] [(StrP5.size, VInt z)] = POk [(StrP5.size, VInt z)]) /\
+    (forall f s r v w, f_outer f = Array -> schema_of f = Some (s, r) -> canonical RCyclic v = None ->
+       validate_params f [] [(StrP5.cyclic, v); (StrP5.size, w)] = PErr (EInvalid StrP5.cyclic)).
+  Proof.
+    split; [exact array_schema |].
+    split; [exact other_schema |].
+    split; [exact rule_of_size |].
+    split; [exact rule_of_cyclic |].
+    split; [apply canonical_int_rule; left; reflexivity |].
+    split; [exact canonical_cyclic_rule |].
+    split.
+    { intros f s r named Ho H Hkeys Hsize. unfold validate_params. rewrite H.
+      rewrite (find_unknown_none s named Hkeys).
+      destruct (array_schema f s r Ho H) as [_ [_ ->]].
+      cbn [find].
+      replace (mem StrP5.size (map fst named)) with false
+        by (symmetry; apply not_true_iff_false; rewrite mem_spec; exact Hsize).
+      reflexivity. }
+    split.
+    { intros f s r z Ho H Hz. destruct (array_schema f s r Ho H) as [Hs [_ ->]].
+      unfold validate_params. rewrite H.
+      rewrite find_unknown_none, find_required_none.
+      - cbn [canonical_all]. rewrite rule_of_size, (canonical_in_range RSize z (or_introl eq_refl) Hz).
+        reflexivity.
+      - intros k [<- | []]. cbn [map fst]. left. reflexivity.
+      - intros kv [<- | []]. exact Hs. }
+    { intros f s r v w Ho H Hc. destruct (array_schema f s r Ho H) as [Hs [Hcs ->]].
+      unfold validate_params. rewrite H.
+      rewrite find_unknown_none, find_required_none.
+      - cbn [canonical_all]. rewrite rule_of_cyclic, Hc. reflexivity.
+      - intros k [<- | []]. cbn [map fst]. right. left. reflexivity.
+      - intros kv [<- | [<- | []]]; cbn [fst]; [exact Hcs | exact Hs]. }
+  Qed.
+End Params.
+
+(* ── Headline assumptions (P5) ───────────────────────────────────────── *)
+Print Assumptions registered_families_complete.
+Print Assumptions aliases_bind_family_capability.
+Print Assumptions constructor_params_validated.
+Print Assumptions priorities_validated.
+Print Assumptions array_size_validated.

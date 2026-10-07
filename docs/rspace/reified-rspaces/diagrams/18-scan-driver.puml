@@ -1,0 +1,66 @@
+' 18 Scan driver: RECEIVE-SCAN of a bag or a set, with RESTORE-SCAN.
+'
+' Source of Figure N11.2 in ../design.md (section N11.2). The figure restates
+' the receive plan of rholang/src/rust/interpreter/spaces/disciplines/scan.rs
+' and the fire count of the transaction (Cx::rounds in spaces/generic.rs,
+' plan revision I-21). It adds no new fact.
+'
+' Reading order:
+'   1. The plan opens: the settle before it runs, and a full transaction
+'      re-issues the receive before it stages anything (open_plan).
+'   2. The driver visits the records in the canonical order of DR-75 and
+'      takes the first record whose payload the pattern binds.
+'   3. The guard is checked once, on that record. A refusal parks the
+'      receive (decision 37).
+'   4. The fire counts first. A peek of a non-persistent record then sends
+'      the record again (RESTORE-SCAN, decision 45 Rule E).
+'   5. A second send that meets a full transaction re-issues before it fires.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 18-scan-driver.puml   Check: ./render.sh --check
+
+@startuml 18-scan-driver
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam NoteBorderColor $rrs_relation
+title RECEIVE-SCAN with RESTORE-SCAN (the bag, P5a)
+
+start
+:open_plan: the settle before the plan; <<$rrs_agent>>
+if (the transaction made FIRE_ROUND_CAP fires?) then (yes)
+  :re-issue the receive (RoundCap)
+  stage nothing; <<$rrs_reject>>
+  stop
+else (no)
+endif
+while (a record after the tested prefix, in the order of DR-75?) is (yes)
+  if (the pattern binds the payload?) then (yes)
+    break
+  else (no)
+    :next record (one reserved decode); <<$rrs_storage>>
+  endif
+endwhile (no)
+if (a record r was found and the guard admits it?) then (yes)
+  :count the fire on the transaction
+  (FireRounds::after_fire); <<$rrs_agent>>
+  :stage Fire(K, [r]); <<$rrs_effect>>
+  if (K peeks and r is not persistent?) then (yes)
+    if (the transaction is full?) then (yes)
+      :re-issue the second send of r
+      (a produce of its payload); <<$rrs_reject>>
+    else (no)
+      :RESTORE-SCAN: OFFER-SCAN of r
+      with the identity and the authority of r; <<$rrs_flow>>
+    endif
+  else (no)
+  endif
+else (no)
+  :park K (the guard is checked once); <<$rrs_storage>>
+endif
+stop
+@enduml

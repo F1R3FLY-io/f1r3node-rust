@@ -13,23 +13,27 @@
 //! 4. It runs the method, or it replies a typed error `("rho:space:error", code, detail)` on
 //!    `ret`. The detail map holds the method and the facts of the error.
 //!
-//! | Method      | Arguments                | Params       | Reply                          |
-//! |-------------|--------------------------|--------------|--------------------------------|
-//! | `gensym`    | none                     | none         | a fresh name `N(sid‖tail)`     |
-//! | `qualifier` | none                     | none         | the qualifier of the config    |
-//! | `config`    | none                     | none         | the config map                 |
-//! | `produce`   | `ch`, `msg`              | `persistent` | `Nil`, after the operation     |
-//! | `consume`   | `pairs`, `arrow`, `body` | none         | none: P8 runs it (abort)       |
+//! | Method      | Arguments                | Params                         | Reply                      |
+//! |-------------|--------------------------|--------------------------------|----------------------------|
+//! | `gensym`    | none                     | none                           | a fresh name of the space  |
+//! | `qualifier` | none                     | none                           | the qualifier of the config |
+//! | `config`    | none                     | none                           | the config map             |
+//! | `produce`   | `ch`, `msg`              | `persistent`, the send schema  | `Nil`, after the operation |
+//! | `consume`   | `pairs`, `arrow`, `body` | none                           | none: P8 runs it (abort)   |
 //!
 //! The checks of a method run in this order: positional params (abort, as the send hook does),
 //! the method name (`UnknownMethod`), the argument count (`BadArgument`), the named params
-//! (`UnknownParam`, keys in bytewise order), and then the arguments. `gensym`, `qualifier` and
-//! `config` stage nothing and commit nothing. `produce` runs one collection operation with
-//! the random state and the cost authority of the call (A16). Its fires, its re-issue and its
-//! reply `Nil` are the branches of the outcome, and the reply is the last branch: a dispatch
-//! ends the reduction participant that makes it, so the participant cannot send the reply after
-//! a fire. `consume` accepts only matchers of user agents, so in P4 it ends with a typed error
-//! or with the abort `AgentSpacesUnavailable` (A9).
+//! (`UnknownParam`, keys in bytewise order), and then the arguments. `qualifier` and `config`
+//! stage nothing and commit nothing. `gensym` runs one allocation job first (P5d, F11): an
+//! Array or a Vector space gives its next index name `N(sid‖u64_be(i))`, and every other store
+//! answers `Baseline` and commits nothing, so the reply is the random-tail name `N(sid‖tail)`
+//! of P4. `produce` runs one collection operation with the random state and the cost authority
+//! of the call (A16). Its named params other than `persistent` go to the agent, which checks
+//! their values (P5b). Its fires, its re-issue and its reply `Nil` are the branches of the
+//! outcome, and the reply is the last branch: a dispatch ends the reduction participant that
+//! makes it, so the participant cannot send the reply after a fire. `consume` accepts only
+//! matchers of user agents, so it ends with a typed error or with the abort
+//! `AgentSpacesUnavailable` until P8 (A9).
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -53,12 +57,14 @@ use crate::rust::interpreter::contract_call::ContractCall;
 use crate::rust::interpreter::dispatch::{DispatchType, RhoDispatch};
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::reduce::ReducerCore;
-use crate::rust::interpreter::spaces::agent::{ProduceOp, SpaceAgent, SpaceOp};
+use crate::rust::interpreter::spaces::agent::{AllocOp, ProduceOp, SpaceAgent, SpaceOp};
 use crate::rust::interpreter::spaces::errors::{SpaceError, SpaceReplyCode, SPACE_ERROR_REPLY_TAG};
 use crate::rust::interpreter::spaces::factory::constructor::family_of;
 use crate::rust::interpreter::spaces::factory::defaults::suggestion;
 use crate::rust::interpreter::spaces::families::send_params;
-use crate::rust::interpreter::spaces::namespace::{self, CollectionKey, NativeSpace, ReifiedId};
+use crate::rust::interpreter::spaces::namespace::{
+    self, CollectionKey, NameTail, NativeSpace, ReifiedId,
+};
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 
 /// The methods of a handle, in bytewise order.
@@ -307,16 +313,57 @@ impl HandleProcess {
             )));
         }
         match handle_method {
-            HandleMethod::Gensym => {
-                let random = Blake2b512Random::from_bytes(&call.random_state);
-                Ok(MethodEffect::Reply(self.agent.gensym(space, &random)?))
-            }
+            // Replaced by P5d (P5 design v3 A.10, F11): `gensym` runs the allocation job of the
+            // space first, so an Array or a Vector space gives its next index name.
+            // HandleMethod::Gensym => {
+            //     let random = Blake2b512Random::from_bytes(&call.random_state);
+            //     Ok(MethodEffect::Reply(self.agent.gensym(space, &random)?))
+            // }
+            HandleMethod::Gensym => self.gensym(space, call).await.map(MethodEffect::Reply),
             HandleMethod::Qualifier => {
                 Ok(MethodEffect::Reply(string_par(config.qualifier.as_str())))
             }
             HandleMethod::Config => Ok(MethodEffect::Reply(config_map.clone())),
-            HandleMethod::Produce => produce_method(space, call, &method, &args, &named),
+            HandleMethod::Produce => produce_method(space, call, &method, &args, named),
             HandleMethod::Consume => consume_method(&method, &args).map(MethodEffect::Reply),
+        }
+    }
+
+    /// `gensym` (P4 design C.8, P5 design v3 A.10, F11): one allocation job of one name first,
+    /// with the random state and the cost authority of the call (A16).
+    ///
+    /// * An Array or a Vector space allocates one index `i`, and the reply is the index name
+    ///   `N(sid‖u64_be(i))`.
+    /// * Every other store answers `Baseline` and commits nothing. The reply is then the name of
+    ///   `SpaceAgent::gensym`, the random-tail name `N(sid‖tail)` of P4.
+    ///
+    /// The job fails closed in native execution (decision 46), as every space entry does.
+    async fn gensym(
+        &self,
+        space: NativeSpace,
+        call: &ListParWithRandom,
+    ) -> Result<Par, InterpreterError> {
+        let op = AllocOp {
+            space,
+            count: 1,
+            random_state: call.random_state.clone(),
+            authority: call.cost_authority.clone().unwrap_or_default(),
+        };
+        match self.runtime.allocate(Arc::clone(&self.agent), op).await? {
+            None => {
+                let random = Blake2b512Random::from_bytes(&call.random_state);
+                Ok(self.agent.gensym(space, &random)?)
+            }
+            Some(indices) => match indices.as_slice() {
+                [index] => Ok(namespace::gprivate(namespace::name_id(
+                    space,
+                    NameTail::Index(*index),
+                ))),
+                _ => Err(SpaceError::Inconsistent(
+                    "an allocation of one name gave another number of names",
+                )
+                .into()),
+            },
         }
     }
 }
@@ -345,14 +392,16 @@ fn param_schema(
     }
 }
 
-/// `produce(ch, msg; persistent = b)`: one collection operation on the key of `ch`, then
-/// `Nil`. A bad argument is a typed error reply.
+/// `produce(ch, msg; persistent = b, k = v…)`: one collection operation on the key of `ch`,
+/// then `Nil`. A bad argument is a typed error reply. The named params other than `persistent`
+/// go to the agent in `ProduceOp::params` (P5b), which checks their values before the bump.
+/// `run` has already checked their keys against the send schema of the family.
 fn produce_method(
     space: NativeSpace,
     call: &ListParWithRandom,
     method: &str,
     args: &[Par],
-    named: &BTreeMap<String, Par>,
+    mut named: BTreeMap<String, Par>,
 ) -> Result<MethodEffect, InterpreterError> {
     let [ch, msg] = args else {
         return Ok(MethodEffect::Reply(bad_argument(method, "arguments")));
@@ -363,9 +412,9 @@ fn produce_method(
     let Some(payload) = sole_list(msg) else {
         return Ok(MethodEffect::Reply(bad_argument(method, "msg")));
     };
-    let persistent = match named.get(PERSISTENT_PARAM) {
+    let persistent = match named.remove(PERSISTENT_PARAM) {
         None => false,
-        Some(value) => match sole_bool(value) {
+        Some(value) => match sole_bool(&value) {
             Some(persistent) => persistent,
             None => return Ok(MethodEffect::Reply(bad_argument(method, PERSISTENT_PARAM))),
         },
@@ -381,7 +430,10 @@ fn produce_method(
             cost_stack: None,
         },
         persistent,
-        params: BTreeMap::new(),
+        // Replaced by P5b (P5 design v3 A.8): the named params of the discipline go to the
+        // agent, so a priority queue gets the `priority` of the call.
+        // params: BTreeMap::new(),
+        params: named,
         authority: call.cost_authority.clone().unwrap_or_default(),
         reissued_ord: None,
     };
@@ -614,6 +666,229 @@ fn sole_bool(par: &Par) -> Option<bool> {
     match sole_expr(par) {
         Some(ExprInstance::GBool(value)) => Some(*value),
         _ => None,
+    }
+}
+
+/// A test family with an allocator, for the tests of the allocation jobs of P5d (F11): the
+/// names of `new` in the reducer hooks, and the handle method `gensym`. The Array and Vector
+/// stores are not wired into the family agent yet, so these tests use the store `counted`, as
+/// the engine tests of `spaces/generic.rs` do.
+#[cfg(test)]
+pub(crate) mod alloc_harness {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    use models::rhoapi::{
+        BindPattern, CostAuthority, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
+    };
+    use models::rust::space_factory_urn::SpaceFactoryUrn;
+    use models::rust::utils::new_freevar_var;
+    use rspace_plus_plus::rspace::internal::Datum;
+
+    use crate::rust::interpreter::reified::costs::ScanMeter;
+    use crate::rust::interpreter::spaces::agent::{
+        AllocOp, Allocation, ConsumeOp, Prepared, ProduceOp, SettleOp, SpaceAgent, SpaceCreation,
+        SpaceEnv, SpaceOutcome,
+    };
+    use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
+    use crate::rust::interpreter::spaces::errors::SpaceError;
+    use crate::rust::interpreter::spaces::families::{Family, FamilyAgent};
+    use crate::rust::interpreter::spaces::generic::{
+        begin_allocation, family_matches, family_unavailable, AllocCx, Discipline, FamilySpace,
+        GenericSpace, OuterStore,
+    };
+    use crate::rust::interpreter::spaces::namespace::{
+        self, CollectionKey, NativeSpace, RandomPurpose,
+    };
+    use crate::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
+    use crate::rust::interpreter::spaces::record;
+    use crate::rust::interpreter::spaces::types::config::SpaceConfig;
+    use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
+
+    /// A HashMap store with an allocator: the creation stages `A(sid) = 0`, and an allocation of
+    /// `k` names takes the value `n` and puts `n + k`. It gives the indices `n..n + k`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Counted;
+
+    impl OuterStore for Counted {
+        const NAME: &'static str = "counted";
+        const ALLOCATOR: bool = true;
+
+        fn key(&self, channel: &Par) -> Result<CollectionKey, SpaceError> {
+            HashMapOuter.key(channel)
+        }
+
+        fn data_channel(&self, space: NativeSpace, key: &CollectionKey) -> Par {
+            HashMapOuter.data_channel(space, key)
+        }
+
+        fn counter_channel(&self, space: NativeSpace, key: &CollectionKey) -> Par {
+            HashMapOuter.counter_channel(space, key)
+        }
+
+        fn creation_records(
+            &self,
+            space: NativeSpace,
+            random: &Blake2b512Random,
+            authority: &CostAuthority,
+            meter: &ScanMeter,
+        ) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
+            let record = record::counter_record_metered(
+                0,
+                &RandomPurpose::Allocator.derive(random).split_byte(1),
+                record::cost_authority_metered(authority, meter)?,
+                meter,
+            )?;
+            Ok(vec![(
+                namespace::gprivate(namespace::allocator_channel(space)),
+                record,
+            )])
+        }
+
+        fn allocate(
+            &self,
+            cx: &mut AllocCx<'_>,
+            _config: &SpaceConfig,
+            op: &AllocOp,
+        ) -> Result<Vec<u64>, SpaceError> {
+            let stored = cx.allocator_record()?.ok_or(SpaceError::Inconsistent(
+                "a space without an allocator record",
+            ))?;
+            let value = record::counter_value_metered(&stored.a, cx.meter())?;
+            let count = i64::try_from(op.count).map_err(|_| SpaceError::OutOfNames)?;
+            let next = value.checked_add(count).ok_or(SpaceError::OutOfNames)?;
+            cx.take(stored, value)?;
+            cx.put(next)?;
+            (value..next)
+                .map(|index| {
+                    u64::try_from(index)
+                        .map_err(|_| SpaceError::Inconsistent("a negative allocator value"))
+                })
+                .collect()
+        }
+
+        fn gensym(&self, space: NativeSpace, random: &Blake2b512Random) -> Result<Par, SpaceError> {
+            HashMapOuter.gensym(space, random)
+        }
+    }
+
+    /// The agent of the family `counted:queue`.
+    pub(crate) static COUNTED: GenericSpace<Counted, QueueDiscipline> =
+        GenericSpace::new(Counted, QueueDiscipline);
+
+    /// The agent of the tests: the family `counted:queue` runs with [`COUNTED`], and every other
+    /// family runs with the family agent of production.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct TestFamilies;
+
+    impl TestFamilies {
+        /// The agent as a shared space agent.
+        pub(crate) fn agent() -> Arc<dyn SpaceAgent> { Arc::new(TestFamilies) }
+    }
+
+    #[async_trait]
+    impl SpaceAgent for TestFamilies {
+        async fn prepare_produce(
+            &self,
+            env: &SpaceEnv,
+            op: ProduceOp,
+        ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+            FamilyAgent.prepare_produce(env, op).await
+        }
+
+        async fn prepare_consume(
+            &self,
+            env: &SpaceEnv,
+            op: ConsumeOp,
+        ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+            FamilyAgent.prepare_consume(env, op).await
+        }
+
+        async fn prepare_settle(
+            &self,
+            env: &SpaceEnv,
+            op: SettleOp,
+        ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+            FamilyAgent.prepare_settle(env, op).await
+        }
+
+        async fn allocate(&self, env: &SpaceEnv, op: AllocOp) -> Result<Allocation, SpaceError> {
+            let opened = begin_allocation(env, op.space).await?;
+            match family_matches::<Counted, QueueDiscipline>(&opened.config, &env.meter)? {
+                true => COUNTED.run_allocate(env, opened, &op),
+                false => match Family::of_config(&opened.config, &env.meter)? {
+                    Some(family) => family.agent().run_allocate(env, opened, &op),
+                    None => Err(family_unavailable(opened.config)),
+                },
+            }
+        }
+
+        async fn prepare_create(
+            &self,
+            env: &SpaceEnv,
+            creation: SpaceCreation,
+        ) -> Result<Prepared<()>, SpaceError> {
+            let counted = SpaceConfig::from_par(&creation.config)
+                .map(|config| config.is_family(Counted::NAME, QueueDiscipline::NAME))
+                .map_err(SpaceError::from)?;
+            match counted {
+                true => COUNTED.prepare_create(env, creation).await,
+                false => FamilyAgent.prepare_create(env, creation).await,
+            }
+        }
+
+        async fn read_config(&self, env: &SpaceEnv, space: NativeSpace) -> Result<Par, SpaceError> {
+            FamilyAgent.read_config(env, space).await
+        }
+
+        fn gensym(&self, space: NativeSpace, random: &Blake2b512Random) -> Result<Par, SpaceError> {
+            FamilyAgent.gensym(space, random)
+        }
+    }
+
+    /// The creation of `space` with the config of `counted:queue`, with the random state of
+    /// `seed`.
+    pub(crate) fn counted_creation(space: NativeSpace, seed: &[u8]) -> SpaceCreation {
+        SpaceCreation {
+            space,
+            config: SpaceConfig::new(
+                space.sid,
+                Counted::NAME,
+                QueueDiscipline::NAME,
+                SpaceQualifier::Default,
+            )
+            .to_par(),
+            handle_pattern: BindPattern {
+                patterns: Vec::new(),
+                remainder: Some(new_freevar_var(0)),
+                free_count: 1,
+            },
+            handle_continuation: TaggedContinuation {
+                tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                    body: Some(Par::default()),
+                    random_state: Blake2b512Random::create_from_bytes(seed).to_bytes(),
+                })),
+                guard: None,
+                cost_authority: None,
+            },
+            random: Blake2b512Random::create_from_bytes(seed),
+            authority: CostAuthority::default(),
+            family: SpaceFactoryUrn::HASHMAP_QUEUE,
+        }
+    }
+
+    /// The values of the allocator records of `space` in `data`, the data on `A(sid)`.
+    pub(crate) fn allocator_values(data: &[Datum<ListParWithRandom>]) -> Vec<i64> {
+        data.iter()
+            .map(|datum| record::counter_value(&datum.a).expect("an allocator record"))
+            .collect()
+    }
+
+    /// The allocator channel `A(sid)` of `space`.
+    pub(crate) fn allocator(space: NativeSpace) -> Par {
+        namespace::gprivate(namespace::allocator_channel(space))
     }
 }
 
@@ -1386,5 +1661,158 @@ mod tests {
             .get_waiting_continuations(vec![this(space)])
             .await;
         assert_eq!(waiting.len(), 1);
+    }
+
+    /// `gensym` runs one allocation job first (P5d, F11). A space whose store allocates gives
+    /// its next index names in call order, and its allocator record counts them. A HashMap space
+    /// answers `Baseline`, so the reply is the random-tail name of the agent, and the job makes
+    /// no event.
+    #[tokio::test]
+    async fn space_handle_methods_gensym_allocates_index_names() {
+        use super::alloc_harness::{allocator, allocator_values, counted_creation, TestFamilies};
+
+        let fixture = Fixture::new().await;
+        let agent = TestFamilies::agent();
+        let handle = HandleProcess::new(Arc::clone(&fixture.runtime), Arc::clone(&agent));
+        let counted = space_of(b"counted gensym");
+        fixture
+            .runtime
+            .create_space(
+                Arc::clone(&agent),
+                counted_creation(counted, b"counted gensym"),
+            )
+            .await
+            .expect("the counted space is created");
+        for (index, seed) in [(0_u64, b"first".as_slice()), (1, b"second".as_slice())] {
+            let ret = reply_name(u8::try_from(index).expect("a small index"));
+            fixture.rspace.take_event_log().await;
+            let reply = handle
+                .call(
+                    &fixture.contract,
+                    call(
+                        vec![this(counted), list(vec![ret.clone(), string("gensym")])],
+                        seed,
+                    ),
+                )
+                .await
+                .expect("gensym replies");
+            let index_name =
+                namespace::gprivate(namespace::name_id(counted, NameTail::Index(index)));
+            assert_eq!(reply, vec![index_name.clone()]);
+            assert_eq!(
+                classify_channel(&index_name),
+                ChannelClass::SpaceName(counted)
+            );
+            assert_eq!(fixture.data(&ret).await, vec![reply]);
+            let log = fixture.rspace.take_event_log().await;
+            assert!(
+                log.iter().any(|event| match event {
+                    Event::IoEvent(IOEvent::Produce(produce)) => {
+                        produce.channel_hash
+                            == rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(
+                                &allocator(counted),
+                            )
+                    }
+                    Event::IoEvent(IOEvent::Consume(_)) | Event::Comm(_) => false,
+                }),
+                "the job puts the allocator record"
+            );
+        }
+        assert_eq!(
+            allocator_values(&fixture.rspace.get_data(&allocator(counted)).await),
+            vec![2]
+        );
+
+        let plain = fixture
+            .create(b"plain gensym")
+            .await
+            .expect("the factory creates the HashMap space");
+        fixture.rspace.take_event_log().await;
+        let ret = reply_name(9);
+        let reply = handle
+            .call(
+                &fixture.contract,
+                call(
+                    vec![this(plain), list(vec![ret.clone(), string("gensym")])],
+                    b"plain",
+                ),
+            )
+            .await
+            .expect("gensym replies");
+        let expected = fixture
+            .agent
+            .gensym(plain, &Blake2b512Random::create_from_bytes(b"plain"))
+            .expect("the agent makes a name");
+        assert_eq!(reply, vec![expected]);
+        let reply_datum = ListParWithRandom {
+            pars: reply,
+            random_state: Blake2b512Random::create_from_bytes(b"plain").to_bytes(),
+            cost_authority: None,
+            cost_stack: None,
+        };
+        assert_eq!(
+            fixture.rspace.take_event_log().await,
+            vec![Event::IoEvent(IOEvent::Produce(Produce::create(
+                &ret,
+                &reply_datum,
+                false
+            )))],
+            "the job of a HashMap space makes no event"
+        );
+        assert!(fixture.rspace.get_data(&allocator(plain)).await.is_empty());
+    }
+
+    /// The method `produce` keeps `persistent` for the operation and passes every other named
+    /// param of the call to the agent (P5b). A `persistent` that is no Bool is a typed error.
+    #[test]
+    fn space_handle_methods_produce_passes_discipline_params() {
+        let space = space_of(b"params");
+        let call = ListParWithRandom {
+            pars: Vec::new(),
+            random_state: Blake2b512Random::create_from_bytes(b"params").to_bytes(),
+            cost_authority: None,
+            cost_stack: None,
+        };
+        let args = vec![string("jobs"), list(vec![int(1)])];
+        let persistent = new_gbool_par(true, Vec::new(), false);
+        for (named, expected_persistent, expected_params) in [
+            (
+                BTreeMap::from([
+                    (PERSISTENT_PARAM.to_string(), persistent.clone()),
+                    ("priority".to_string(), int(3)),
+                ]),
+                true,
+                BTreeMap::from([("priority".to_string(), int(3))]),
+            ),
+            (
+                BTreeMap::from([("priority".to_string(), int(0))]),
+                false,
+                BTreeMap::from([("priority".to_string(), int(0))]),
+            ),
+            (BTreeMap::new(), false, BTreeMap::new()),
+        ] {
+            match produce_method(space, &call, "produce", &args, named) {
+                Ok(MethodEffect::Operation(SpaceOp::Produce(op))) => {
+                    assert_eq!(op.persistent, expected_persistent);
+                    assert_eq!(op.params, expected_params);
+                    assert_eq!(op.data.pars, vec![int(1)]);
+                    assert_eq!(op.channel, string("jobs"));
+                }
+                other => panic!("produce made {other:?}"),
+            }
+        }
+        assert_eq!(
+            produce_method(
+                space,
+                &call,
+                "produce",
+                &args,
+                BTreeMap::from([(PERSISTENT_PARAM.to_string(), int(1))]),
+            ),
+            Ok(MethodEffect::Reply(bad_argument(
+                "produce",
+                PERSISTENT_PARAM
+            )))
+        );
     }
 }

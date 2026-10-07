@@ -6,6 +6,7 @@
 //! operation goes through the substrate `SpaceStoreHandle` and `SpaceTxn`.
 
 pub mod agent;
+pub mod allocator;
 pub mod counter;
 pub mod disciplines;
 pub mod errors;
@@ -15,5 +16,7 @@ pub mod generic;
 pub mod matching;
 pub mod namespace;
 pub mod outer;
+pub mod pathmap;
 pub mod record;
+pub mod settle;
 pub mod types;

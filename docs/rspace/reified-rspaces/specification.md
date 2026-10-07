@@ -38,9 +38,9 @@ Each new section must state the items that its extension point lists, so that a 
 
 | Phase | Section | Content |
 |---|---|---|
-| P5 | [2.2](#22-outer-stores-of-later-phases) | The PathMap, Array, Vector, and HashSet outer stores |
-| P5 | [3.2](#32-disciplines-of-later-phases) | The bag, set, stack, cell, and priority queue disciplines, the query of a priority queue, and joins on ordered collections ([decision 29](decision-register.md#decision-29)) |
-| P6 | [3.2](#32-disciplines-of-later-phases) | The VectorDB discipline, its query, and its bounds |
+| P5 | [2.2](#22-array) to [2.6](#26-outer-stores-of-later-phases) | The Array and Vector outer stores with their allocator, the PathMap paths, and the PathMap and HashSet stores of later waves |
+| P5 | [3.2](#32-bag) to [3.6](#36-disciplines-of-later-phases) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and joins on ordered collections ([decision 29](decision-register.md#decision-29)) |
+| P6 | [3.6](#36-disciplines-of-later-phases) | The VectorDB discipline, its query, and its bounds |
 | P7 | [4.2](#42-qualifiers-of-later-phases) and [5](#5-theories) | The `temp` and `seq` qualifiers, the sweep of their state, and the theories |
 | P8 | [6](#6-constructs-that-fail-closed) | Spaces that user agents implement |
 
@@ -155,6 +155,55 @@ A program that uses no Reified syntax and holds no space name must route every c
 | R6 | A channel that routes to a collection of a native space | The operation uses the data channel $`D(\mathit{sid}, k)`$ of the collection |
 | R7 | The reply channel of a system process | The rules R1 to R5 without a use context |
 
+### 1.5 Families
+
+A family pairs one outer store with one inner collection, for example `hashmap:queue`.
+Its factory creates the spaces of the family, and its agent runs their operations.
+
+**Rule FA-1: registration.** A family is registered exactly when it has a factory row and the family dispatch has its arm (`rholang/src/rust/interpreter/spaces/factory/urn.rs:124`, `rholang/src/rust/interpreter/spaces/factory/urn.rs:136-140`).
+A registered family with the index $`i`$ binds its URN to `bundle+{[0xE0, i]}`, and it installs its factory with the body reference $`200 + i`$.
+An unregistered family has no URN binding, so a program that names it fails before any space work.
+
+**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:199-208`).
+The dispatch tries the arms in a fixed order: `hashmap:queue` first, then ascending family index.
+Each arm that it tries reserves one comparison of the names, so a queue operation keeps the host work of P4.
+A config that names no wired family fails with `FamilyUnavailable`.
+
+**Rule FA-3: alias.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:247-251`).
+The alias is registered exactly when `hashmap:bag` is registered, and both URNs bind the same capability.
+`getSpaceAgent` replies that capability for every space of the family ([decision 33](decision-register.md#decision-33)).
+
+**Rule FA-4: constructor schemas.** Table 1a lists the named params that the factory of each family accepts and requires (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:69-96`).
+
+*Table 1a. The constructor schemas of the P5 families.*
+
+| Families | Params | Required |
+|---|---|---|
+| `hashmap`, `vector`: bag, queue, stack, set, cell | none | none |
+| `hashmap`, `vector`: `priorityqueue` | `priorities` | none |
+| `array`: bag, queue, stack, set, cell | `cyclic`, `size` | `size` |
+| `array`: `priorityqueue` | `cyclic`, `priorities`, `size` | `size` |
+
+The VectorDB, PathMap and HashSet families have no schema yet.
+
+**Rule FA-5: param values.** `size` is a `GInt` in $`[1, 2^{63}-1]`$, and `cyclic` is a `GBool` (F7).
+`priorities` is a `GInt` of at least 1 ([decision I-10](decision-register.md#i-10)).
+The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:112-119`).
+
+**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:60-112`):
+
+1. the schema (`FamilyUnavailable`)
+2. the parse (`BadConstructorArgument`)
+3. the qualifier (`BadConstructorArgument`, `QualifierUnavailable`)
+4. the theory (`TheoryUnavailable`)
+5. positional params (`PositionalParamsUnsupported`)
+6. unknown keys in bytewise order (`UnknownParam` with the nearest key within two edits)
+7. missing required keys (`MissingParam`)
+8. values in bytewise key order (`InvalidParam`)
+
+**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:146-160`).
+The readers apply the defaults: an Array space without `cyclic` is fixed, and a priority queue without `priorities` has no bound on its levels.
+
 ## 2. Outer stores
 
 An [outer store](glossary.md#outer-store) maps the channels of a space to collection keys.
@@ -180,9 +229,128 @@ So `@[1, 2]` and `@[2, 1]` name two collections, as they name two channels of th
 The tail comes from the random state of the call, under the purpose byte `0x02` ([decision I-3](decision-register.md#i-3)).
 The name routes to its space by rule R3, and its key follows rule HM-1.
 
-### 2.2 Outer stores of later phases
+### 2.2 Array
 
-Phase P5 adds the PathMap, Array, Vector, and HashSet outer stores.
+An Array space has a fixed number of names.
+Its config holds the param `size` and the optional param `cyclic`, as rules FA-5 and FA-7 state.
+
+**Rule AR-1: index names.** A name of an Array space is the index name $`N(\mathit{sid} \Vert \mathrm{u64\_be}(i))`$ of 42 bytes, with the index $`i`$ as its tail.
+Only the allocator makes index names (rule AL-1), so a program never forges one.
+
+**Rule AR-2: collection key.** An Array space keys, names and counts its collections as the HashMap store does, so rules HM-1 to HM-3 hold (`rholang/src/rust/interpreter/spaces/outer/array.rs:130-197`).
+The data channel of the index name $`c`$ is $`D(\mathit{sid}, \mathrm{key}(c))`$.
+
+**Rule AR-3: accepted channels.** A collection operation on an Array space accepts the channel $`c`$ only when $`c`$ is an index name of the space with $`i < \mathit{size}`$.
+Every other channel fails with `NotAnIndexName` before the operation stages anything (F8, `rholang/src/rust/interpreter/spaces/outer/array.rs:142-152`).
+This includes a forged channel, a name with a random tail and a name of another space.
+
+**Rule AR-4: fixed and cyclic allocation.** A fixed Array space allocates the indices $`0, 1, \ldots, \mathit{size}-1`$ once each, in order.
+A cyclic Array space allocates them in order modulo the size, so it gives each name again after $`\mathit{size}`$ allocations.
+Two holders of one name then share its collection.
+
+**Rule AR-5: no storage before use.** A collection exists from its first operation. The space preallocates nothing.
+
+### 2.3 Vector
+
+**Rule VE-1: index names.** A Vector space names its collections by index names, as rule AR-1 states. It has no size, and it takes no `size` param.
+
+**Rule VE-2: collection key.** Rule AR-2 holds for a Vector space (`rholang/src/rust/interpreter/spaces/outer/vector.rs:34-98`).
+
+**Rule VE-3: accepted channels.** A collection operation on a Vector space accepts every index name of the space and no other channel (`NotAnIndexName`, F8, `rholang/src/rust/interpreter/spaces/outer/vector.rs:46-54`).
+
+**Rule VE-4: allocation.** A Vector space allocates the indices $`0, 1, 2, \ldots`$ once each, in order, up to $`2^{63}-1`$ names.
+
+### 2.4 The allocator of Array and Vector spaces
+
+**Rule AL-1: the allocator record.** The record $`A(\mathit{sid})`$ holds the next index $`n`$ in the counter format (`rholang/src/rust/interpreter/spaces/allocator.rs:259-277`).
+The creation of an Array or a Vector space stages $`A(\mathit{sid}) = 0`$ after the space counter.
+The record takes the random state $`\mathrm{Allocator}.\mathrm{derive}(r).\mathrm{split\_byte}(1)`$ of the factory call $`r`$ and the cost authority of the caller.
+
+**Rule AL-2: allocation.** An allocation of $`k`$ names is one job over the lock keys $`[C(\mathit{sid}), A(\mathit{sid})]`$ (`rholang/src/rust/interpreter/spaces/allocator.rs:283-296`).
+It plans first, and then it takes $`A(\mathit{sid}) = n`$ and puts $`A(\mathit{sid}) = \mathit{next}`$ (`rholang/src/rust/interpreter/spaces/allocator.rs:109-162`):
+
+| Store | Indices | Next value | Failure |
+|---|---|---|---|
+| Fixed Array of size $`s`$ | $`n, \ldots, n+k-1`$ | $`n+k`$ | `OutOfNames` when $`n + k > s`$ |
+| Cyclic Array of size $`s`$ | $`(n+i) \bmod s`$ for $`0 \le i < k`$ | $`(n+k) \bmod s`$ | none |
+| Vector | $`n, \ldots, n+k-1`$ | $`n+k`$ | `OutOfNames` when $`n + k > 2^{63}-1`$ |
+
+**Rule AL-3: no partial allocation.** An allocation that fails stages nothing, so it allocates no name and leaves $`A(\mathit{sid})`$ as it was.
+An allocation that succeeds stages exactly one take and one put, also for $`k = 0`$.
+
+**Rule AL-4: identities.** The take uses the random state $`\mathrm{Allocator}.\mathrm{derive}(r_{\mathrm{job}}).\mathrm{split\_byte}(0)`$, and the put uses $`\mathrm{split\_byte}(1)`$.
+So the identities of each job are new, also when a cyclic allocator takes a value again.
+
+**Rule AL-5: races.** Two branches that allocate from one space consume one produce of $`A(\mathit{sid})`$.
+So merge check #1 sees their race, and a merge never hands one index to both branches (`NoDuplicateIndex`).
+
+**Rule AL-6: other stores.** A HashMap or PathMap space has no allocator.
+Its allocation job answers `Baseline`: it reads the config, commits nothing, and charges no phlo.
+The reducer then draws the names as it does for every `new`.
+
+**Rule AL-7: metering and native execution.** An allocation reserves each read and copy before it makes it ([decision 42](decision-register.md#decision-42)).
+This covers the names of its lock keys, the config and the shape of an Array space.
+It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
+An allocation job fails closed in native play and native replay ([decision 46](decision-register.md#decision-46)).
+
+**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:563-590`).
+That process evaluates the `new`, or it calls the handle method `gensym`.
+So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
+
+### 2.5 PathMap paths and re-rooting
+
+The PathMap store of wave W3 uses this pure layer of paths, keys and re-rooting.
+
+**Rule PP-1: paths.** A channel of a PathMap space names a path, a list of path elements (`rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:281-286`).
+When the channel $`c`$ is a plain list, its path holds the elements of $`c`$. For every other channel, the path is $`[c]`$.
+A plain list is one `EList` with no remainder, empty bit sets and no other part.
+So `@c` and `@[c]` name one path, and a fresh name roots a private subtree.
+
+**Rule PP-2: keys.** The path key of a path $`p = [e_1, \ldots, e_n]`$ and the prefix key of a prefix $`q = [e_1, \ldots, e_k]`$ are these byte strings (`rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:343-347`):
+
+```math
+\mathrm{path\_key}(p) = \mathrm{seg}(e_1) \,\Vert\, \cdots \,\Vert\, \mathrm{seg}(e_n) \,\Vert\, \mathtt{0x00}
+\qquad
+\mathrm{prefix\_key}(q) = \mathrm{seg}(e_1) \,\Vert\, \cdots \,\Vert\, \mathrm{seg}(e_k)
+```
+
+The segments are a prefix code, and no segment starts with the terminator $`\mathtt{0x00}`$.
+So the prefix order of paths is the byte-prefix order of their keys (`prefix_key_iff_prefix`):
+
+```math
+q \preceq p \iff \exists z.\; \mathrm{path\_key}(p) = \mathrm{prefix\_key}(q) \mathbin{+\!\!+} z
+```
+
+The terminator is below every tag, so the exact path is the first candidate of a receive (`candidate_order_total`).
+
+**Rule PP-3: depth.** A channel path or a prefix with more than 64 elements fails with `PathTooDeep` (F9).
+A payload entry is not a channel, so the key of an entry has no bound.
+
+**Rule PP-4: segments.** The segment codec is byte-identical to EPM1 for every element that both codecs accept (`rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:369-371`).
+An element that holds an `EPathMap` or an `EZipper` at any depth fails with `UnsupportedPathElement`.
+An element outside the structural grammar takes the escape arm, which holds the Protocol Buffers bytes of the sorted `Par`.
+
+**Rule PP-5: re-rooting.** A send on $`p`$ is a send on every prefix $`q \preceq p`$.
+A receive on $`q`$ gets each argument re-rooted under the suffix $`s = p \setminus q`$ (`rholang/src/rust/interpreter/spaces/pathmap/reroot.rs:51-75`):
+
+```math
+R(\varepsilon, v) = v \qquad
+R(s, \{\!|\,|\!\}) = \{\!|\, s \,|\!\} \qquad
+R(s, m) = \{\!|\, s \mathbin{+\!\!+} \mathrm{elems}(e) : e \in m \,|\!\} \qquad
+R(s, v) = [s_1, \ldots, s_k, v]
+```
+
+The last three rules apply only when $`s \neq \varepsilon`$.
+The third rule applies to a PathMap with entries, and the fourth rule to every value that is not a PathMap.
+The FIPS example holds: `@[0,1,2]!({|"hi"|})` on `@[0,1]` binds `{|[2, "hi"]|}`, and `@[0,1,2]!(42)` on `@[0,1]` binds `[2, 42]`.
+
+**Rule PP-6: the adapter.** The adapter turns an `EPathMap` into its logical map and back (`rholang/src/rust/interpreter/spaces/pathmap/adapter.rs:293-337`).
+The decode orders the paths by entry key and keeps the first entry of each key.
+The encode writes each path in its canonical entry form, so $`\mathrm{decode}(\mathrm{encode}(m)) = m`$.
+
+### 2.6 Outer stores of later phases
+
+Wave W3 adds the PathMap store: its markers, its waiters and its delivery. Phase P7 adds the HashSet store.
 The section of each store must state these items:
 
 - the key function of the store, and the channels that share a key
@@ -372,9 +540,103 @@ Figure 1 shows the states of one queue collection and the transitions between th
 
 *Figure 1. Source: [diagrams/05-head-only-queue.puml](diagrams/05-head-only-queue.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
-### 3.2 Disciplines of later phases
+### 3.2 Bag
 
-Phases P5 and P6 add the other disciplines.
+A bag collection is a multiset on both sides.
+The scan driver plans its operations (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:178-217`, `rholang/src/rust/interpreter/spaces/disciplines/scan.rs:228-314`), and `BagDiscipline` uses it (`rholang/src/rust/interpreter/spaces/disciplines/bag.rs:35-97`).
+
+**Rule BG-1: canonical order.** The driver visits the records and the waiters of a collection in the canonical order of DR-75 ([decision 41](decision-register.md#decision-41)).
+The order sorts by the hash of the source produce or consume of each entry, and then by digest inside a run of equal hashes. It depends on the entry set only.
+
+**Rule BG-2: receive.** A receive takes the first record in canonical order whose payload its pattern binds.
+It checks its `where` guard once, on that record, and a refusal parks the receive, whatever the later records ([decision 37](decision-register.md#decision-37)).
+
+**Rule BG-3: send.** A send fires the first waiter in canonical order whose pattern binds the datum and whose guard admits it.
+A guard refusal moves the send to the next waiter ([decision 37](decision-register.md#decision-37)).
+
+**Rule BG-4: multiset.** A store adds one record. A fire removes the one record that it binds, unless the record is persistent. Equal sends store equal records.
+For a record key $`j`$ and an operation $`o`$ on the records $`R`$:
+
+```math
+\#_j(o(R)) + \mathrm{taken}(o, R, j) = \#_j(R) + \mathrm{added}(o, j)
+```
+
+Here $`\#_j(R)`$ is the number of records with the key $`j`$ in $`R`$, and $`\mathrm{added}(o, j)`$ is 1 for a store of $`j`$.
+$`\mathrm{taken}(o, R, j)`$ is 1 for a fire that binds a non-persistent record $`j`$ of $`R`$.
+
+**Rule BG-5: peeks.** A peek fire removes a non-persistent record, as the host COMM does ([decision 45](decision-register.md#decision-45), Rule E).
+The same operation sends the record again: the record is offered to the waiters first, and it is stored when no waiter takes it.
+The second send has the identity of the record and registers the cost authority of the record (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:715-747`).
+
+**Rule BG-6: peek waiters.** A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
+
+**Rule BG-7: no counter.** A bag has no counter. Every record and every waiter has the order 0, so a re-issued element keeps its record and its identity ([decision 43](decision-register.md#decision-43)).
+
+**Rule BG-8: bounds.** One transaction makes at most `FIRE_ROUND_CAP` fires, the fires of a peek re-store included ([decision I-21](decision-register.md#i-21)).
+A divergent pair or the cap re-issues the element in flight, and every read and copy is reserved before it is made ([decision 42](decision-register.md#decision-42)).
+
+### 3.3 Cell
+
+A cell collection holds at most one record and at most one waiting continuation (F15).
+The family `hashmap:cell` runs `CellDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/cell.rs:53-88`) on the head driver of the engine.
+
+**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:772-783`).
+The job drops the transaction, so the failed operation logs no event, bumps no counter, and makes no legacy charge.
+
+**Rule CL-2: both sides meet.** A fresh send always meets the waiting continuation of the cell, and a fresh receive always meets the record of the cell.
+Only an element that does not fire is stored or parked, so a receive can fire the record while the waiter slot is full.
+
+**Rule CL-3: counter.** Every operation that commits bumps the counter of the collection once ([decision 31](decision-register.md#decision-31)).
+Two branches that operate on one cell race under merge check #1, so a merge never puts two records into one cell.
+
+**Rule CL-4: peeks.** A consume-side peek removes a non-persistent record, and the same transaction stores the record again with its identity (Rule E).
+The fire left the record slot empty, so the re-store is never `CellOccupied`.
+A produce-side peek waiter keeps the datum in flight. The datum is then stored, or the operation fails with `CellOccupied` when the record slot is full.
+
+**Rule CL-5: re-entry.** A re-issued persistent element keeps its first-round order and identity ([decision 43](decision-register.md#decision-43)).
+It re-enters as a fresh element, so an older entry on its side does not hold it back.
+
+### 3.4 Stack
+
+A stack collection is head-only on both sides, and its head is the entry with the greatest order.
+The family `hashmap:stack` runs `StackDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/stack.rs:69-139`) on the head driver and the settle loop.
+
+**Rule SK-1: head.** The head of each side is the entry with the greatest pair (ord, bincode bytes).
+Only the head record and the head waiter interact, and a head that does not match blocks the side ([decision 11](decision-register.md#decision-11)).
+
+**Rule SK-2: entries.** A fresh element always reaches the top of its side.
+A re-issued persistent element keeps its first-round order, and it precedes the top only when that order is greater ([decision 43](decision-register.md#decision-43)).
+So it re-enters at its LIFO place.
+
+**Rule SK-3: settle.** A fire can expose an older pair of a record and a waiter below the tops.
+So the stack settles before and after each plan, and in a settle job (`rholang/src/rust/interpreter/spaces/settle.rs:404-498`).
+The settle fires the top pair. It lifts a stored record that is not persistent with a consume of `K_lift`, and it offers the record again with its own identity.
+
+**Rule SK-4: peeks in a settle.** A record that a peek waiter did not spend stays in flight, and it lands at its order when the settle ends (Rule E).
+
+**Rule SK-5: fire count.** One transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21)).
+The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1156-1169`).
+A plan whose transaction is full after the settle before it stages nothing, and its operation re-issues.
+
+**Rule SK-6: re-issues.** At the cap or at a divergent pair, the settle before the plan re-issues the operation, which it has not inserted yet.
+The settle after the plan and a settle job re-issue a settle job, because the element of the operation is spent, stored or parked.
+
+**Rule SK-7: order.** Records and waiters leave in LIFO order, and no record and waiter pair matches when a transaction ends (`stack_lifo`, `stack_produce_preserves_inv`).
+
+### 3.5 Receive queries
+
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:736-750`).
+The inner channel takes the read rule of a receive source.
+
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:767-797`).
+A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
+The default space fails with `QuerySpecUnsupported`, and a user agent fails closed until P8.
+
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:723-725`).
+
+### 3.6 Disciplines of later phases
+
+Wave W3 adds the set and the priority queue (P5b), the joins (P5c), and the PathMap delivery, and phase P6 adds the VectorDB discipline.
 The section of each discipline must state these items, which the trait `Discipline` of the design also names:
 
 - the head rule of each side, and whether an incoming entry reaches the head
@@ -436,7 +698,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:727`), `space_and_collection_counters_distinct` (`Namespace.v:784`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
 | SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
-| SM-10 | `route_rules` (`SpaceRefs.v:624`), `space_name_route_ignores_ctx` (`SpaceRefs.v:645`), `ordinary_channels_route_default` (`SpaceRefs.v:710`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
+| SM-10 | `route_rules` (`SpaceRefs.v:660`), `space_name_route_ignores_ctx` (`SpaceRefs.v:681`), `ordinary_channels_route_default` (`SpaceRefs.v:746`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1035`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:995`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
@@ -454,8 +716,42 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:372`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
 | QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay` |
 | QF-3 | The TLA+ invariant `HandleCallsMergeLikeContracts` (U8) | `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks`, `reified_handle_cross_block_merge_no_conflict` |
+| FA-1 | `registered_families_complete` (`SpaceFactory.v:1212`) | `prop_registered_families_complete`, `space_factory_families_registered` |
+| FA-2 | `space_match_is_injected_match` (`Match.v:615`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
+| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1276`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
+| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1621`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
+| FA-5 | `priorities_validated` (`SpaceFactory.v:1752`), `array_size_validated` (`SpaceFactory.v:1851`) | `prop_priorities_validated`, `prop_array_size_validated` |
+| FA-7 | `array_size_validated` (`SpaceFactory.v:1851`) | `space_factory_kwargs_are_stored_canonical` |
+| AR-1, AR-3, VE-1, VE-3 | `fixed_array_allocates_at_most_size` (`OuterStorage.v:313`), `vector_index_is_counter` (`VectorStore.v:184`) | `prop_fixed_array_allocates_at_most_size`, `prop_vector_index_is_counter` |
+| AR-2, VE-2 | `hashmap_get_put_other` (`HashMapStore.v:213`), `hashmap_iteration_permutation_invariant` (`HashMapStore.v:168`) | `prop_hashmap_get_put_other`, `prop_hashmap_iteration_permutation_invariant` |
+| AR-4, VE-4, AL-2 | `fixed_array_indices_sequential` (`OuterStorage.v:345`), `cyclic_array_index_mod_size` (`OuterStorage.v:376`), `vector_gensym_monotonic` (`VectorStore.v:219`) | `prop_fixed_array_indices_sequential`, `prop_cyclic_array_index_mod_size`, `prop_vector_gensym_monotonic` |
+| AL-3 | `allocation_batch_atomic` (`OuterStorage.v:402`), `fixed_array_out_of_names_exact` (`OuterStorage.v:330`) | `prop_allocation_batch_atomic`, `prop_fixed_array_out_of_names_exact` |
+| AL-4 | `allocator_identities_unique` (`OuterStorage.v:555`) | `prop_allocator_identities_unique` |
+| AL-5 | The TLA+ invariants `NoDuplicateIndex` (V9) and `AllocationsRace` (V10) | `prop_no_duplicate_index`, `prop_allocations_race`, `space_allocator_race_conflict` |
+| AL-7 | `alloc_trace_covered` (`OuterStorage.v:695`) | `prop_alloc_trace_covered` |
+| AL-6, AL-8 | None | `reducer_space_routing_allocation_jobs_give_index_names`, `reducer_space_routing_baseline_job_reserves_its_reads` |
+| PP-1, PP-2 | `prefix_key_iff_prefix` (`PathMapPrefix.v:584`), `candidate_order_total` (`PathMapPrefix.v:1014`) | `prop_prefix_key_iff_prefix`, `prop_candidate_order_total` |
+| PP-3, PP-4 | None | `the_depth_cap_bounds_channel_paths_and_prefixes`, `pathmaps_and_zippers_are_unsupported_at_any_depth` |
+| PP-5 | `reroot_ident` (`PathMapPrefix.v:843`), `reroot_compose` (`PathMapPrefix.v:850`), `fips_example` (`PathMapPrefix.v:959`) | `prop_reroot_ident`, `prop_reroot_compose`, `prop_unit_shift`, `fips_example` |
+| PP-6 | `reroot_injective` (`PathMapPrefix.v:922`) | `prop_head_adapter_roundtrip`, `prop_reroot_injective` |
+| BG-1 | `bag_visit_order_canonical` (`DataCollection.v:243`), `waiter_visit_order_canonical` (`ContinuationCollection.v:337`) | `prop_bag_visit_order_canonical`, `prop_bag_waiter_visit_order_canonical` |
+| BG-2, BG-3 | `bag_consume_first_spatial_match` (`DataCollection.v:445`), `guard_once_greedy_like_head` (`Match.v:658`) | `prop_bag_consume_first_spatial_match`, `prop_engine_guard_checked_once_as_the_host_checks_it` |
+| BG-4 | `bag_multiplicity_preserved` (`DataCollection.v:559`), `bag_removal_keeps_equal_duplicate` (`DataCollection.v:578`), `bag_persistent_match_not_removed` (`DataCollection.v:536`) | `prop_bag_multiplicity_preserved`, `prop_bag_removal_keeps_equal_duplicate` |
+| BG-5, BG-6 | `bag_peek_restore_is_host_second_send` (`DataCollection.v:725`), `peek_restore_equals_host_reproduce` (`GenericRSpace.v:1156`), the TLA+ invariant `PeekRestoresRecord` (V8) | `prop_bag_legacy_charges_equal_host`, `prop_bag_restore_registers_the_record_authority` |
+| BG-7 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`) | `prop_engine_scan_reissue_keeps_identity` |
+| BG-8 | `scan_trace_covered` (`DataCollection.v:856`) | `prop_bag_reservation_cut_rejects_without_effect` |
+| CL-1 | `cell_capacity_one` (`CellDiscipline.v:672`), the TLA+ invariant `CellCapacity` (V7) | `prop_cell_capacity_one`, `space_disciplines_cell_second_produce_occupied` |
+| CL-2, CL-3 | `cell_capacity_one` (`CellDiscipline.v:672`) | `space_disciplines_cell_every_operation_bumps_counter`, `space_disciplines_cell_branch_writes_race_on_the_counter` |
+| CL-4 | `cell_restore_never_occupied` (`CellDiscipline.v:858`) | `prop_cell_restore_never_occupied` |
+| CL-5 | `cell_reentry_as_fresh` (`CellDiscipline.v:889`) | `prop_cell_reentry_as_fresh` |
+| RQ-1 to RQ-3 | `query_source_routes_inner_channel` (`SpaceRefs.v:1292`) | `prop_query_bind_routes_inner_channel`, `prop_query_source_routes_inner_channel` |
+| SK-1 | `stack_head_is_max_ord` (`StackDiscipline.v:556`), `stack_head_blocks` (`StackDiscipline.v:1348`) | `prop_stack_head_is_max_ord` |
+| SK-2 | `stack_reentry_at_lifo_place` (`StackDiscipline.v:1444`), `stack_reissue_keeps_ord` (`StackDiscipline.v:1576`), the TLA+ invariant `ReissueKeepsOrd` (V14) | `prop_stack_reissue_keeps_ord_any_schedule` |
+| SK-3, SK-4 | `stack_produce_preserves_inv` (`StackDiscipline.v:1043`), `stack_settle_keeps_unspent_records` (`StackDiscipline.v:2151`), `stack_peek_restore_needs_no_settle` (`StackDiscipline.v:1405`), the TLA+ invariants `StackNoPendingMatch` (V12) and `NoRecordLost` (V13) | `prop_stack_no_pending_match_any_schedule` |
+| SK-5, SK-6 | `stack_settle_terminates` (`StackDiscipline.v:1959`), the TLA+ invariant `TxnFiresBounded` (V15) | `prop_stack_txn_fires_bounded_at_the_cap`, `prop_stack_settle_bounded_any_schedule`, `space_stack_plan_after_a_full_settle_reissues_the_operation` |
+| SK-7 | `stack_lifo` (`StackDiscipline.v:1255`), the TLA+ invariant `LifoOrder` (V11) | `prop_stack_lifo_order_any_schedule` |
 
-No model states the rules OC-4 and QD-8, because they are checks of limits and of input.
+No model states the rules OC-4, QD-8, AL-6, AL-8, PP-3 and PP-4, because they are checks of limits, of input and of the fail-closed rules.
 Their tests show each abort.
 
 ## References

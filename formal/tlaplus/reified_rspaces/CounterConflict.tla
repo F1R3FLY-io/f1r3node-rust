@@ -25,6 +25,20 @@
 (*   FirstOpsRace              two branches that open queues of one space  *)
 (*                             race on S(sid)                              *)
 (*                                                                         *)
+(* Allocations (P5d, F11, when Allocations = TRUE). An Array or a Vector   *)
+(* space allocates its index names from the allocator record A(sid). An    *)
+(* allocation of k names consumes A(sid) = n and produces A(sid) = n + k,  *)
+(* and it observes the indices n..n+k-1. The creation of the space stages  *)
+(* A(sid) = 0 (EagerAllocator), so the pre-state of every block holds the  *)
+(* record, and two branches that allocate consume one produce.             *)
+(*   NoDuplicateIndex          when check #1 finds no race, the branches   *)
+(*                             allocated disjoint indices                  *)
+(*   AllocationsRace           two branches that both allocate race on     *)
+(*                             A(sid)                                      *)
+(* An allocation of a fixed or cyclic Array space differs only in its      *)
+(* bound and in its modulo rule (OuterStorage.v). Its race on A(sid) is    *)
+(* the same, so the model allocates with the vector rule.                  *)
+(*                                                                         *)
 (* Unsafe controls (each refutes exactly NoMergedOrderFabrication):        *)
 (*   CounterDroppedUnsafe     WriteCounters = ReadCounters = FALSE: no     *)
 (*                            operation uses a counter, and an enqueue     *)
@@ -37,12 +51,22 @@
 (*                            q2 and a dequeue of q1 then merge, though    *)
 (*                            no serial order gives both peeks (the        *)
 (*                            write skew of P4 design D.2).                *)
+(* Unsafe control (it refutes exactly NoDuplicateIndex):                   *)
+(*   LazyAllocatorUnsafe      EagerAllocator = FALSE: the creation stages  *)
+(*                            no allocator, and the first allocation       *)
+(*                            creates A(sid) at its next value without a   *)
+(*                            consume. Two branches that each make the     *)
+(*                            first allocation of a space both hand out    *)
+(*                            the index 0, and check #1 sees no race.      *)
 (*                                                                         *)
 (* Code (the P4 commit, with the paths without a prefix under              *)
 (* rholang/src/rust/interpreter, rs = rspace++/src/rspace):                *)
 (*   the counter bump     spaces/counter.rs:165-245, 251-309 (the          *)
 (*                        counter COMM has no peeks)                       *)
-(*   the plans            spaces/generic.rs:1134-1199, 1208-1290,          *)
+(*   the allocator        spaces/allocator.rs (creation_records,           *)
+(*                        allocate), spaces/generic.rs (run_allocate,      *)
+(*                        AllocCx::take, AllocCx::put)                     *)
+(*   the plans            spaces/generic.rs:1177-1244, 1253-1337,          *)
 (*                        1705-1809 (offer_head, receive_head, run_with)   *)
 (*   the peek COMM        rs/merger/event_log_index.rs:253-272 (a COMM     *)
 (*                        with peeks files its produces under              *)
@@ -75,19 +99,29 @@ CONSTANTS
     \* the counter value as its ord (M-1).
     WriteCounters,
     \* TRUE: a peek bumps the counter too (A2, decision 31).
-    ReadCounters
+    ReadCounters,
+    \* TRUE: the branches can also allocate index names (P5d).
+    Allocations,
+    \* TRUE: the creation of a space stages A(sid) = 0 (the code). FALSE: the
+    \* first allocation creates A(sid) (the Unsafe control LazyAllocator).
+    EagerAllocator
 
 ASSUME WriteCounters \in BOOLEAN
 ASSUME ReadCounters \in BOOLEAN
+ASSUME Allocations \in BOOLEAN
+ASSUME EagerAllocator \in BOOLEAN
 
 VARIABLES
     \* The pre-state of the space.
     pre,
+    \* The allocator A(sid) of the pre-state: its value, or NoAllocator when
+    \* the space has no allocator record.
+    preAlloc,
     \* The operations of the deploy of branch A, and of branch B.
     opsA,
     opsB
 
-vars == <<pre, opsA, opsB>>
+vars == <<pre, preAlloc, opsA, opsB>>
 
 Qs == {"q1", "q2"}
 Vals == {"x", "y"}
@@ -103,8 +137,23 @@ SpaceCounter(p) == Cardinality({q \in Qs : p[q].open})
 
 PreStates == [Qs -> PreQueues]
 
-Ops == {[kind |-> "enq", q |-> q, v |-> v] : q \in Qs, v \in Vals}
-       \cup {[kind |-> k, q |-> q, v |-> "none"] : k \in {"deq", "peek"}, q \in Qs}
+\* The pre-state value of a space without an allocator record.
+NoAllocator == -1
+
+\* The allocator values of the pre-state. Without allocations the model is
+\* the P4 model, with one allocator value that no operation reads.
+PreAllocs ==
+    IF ~Allocations THEN {0}
+    ELSE IF EagerAllocator THEN {0, 1, 2}
+    ELSE {NoAllocator, 0, 1}
+
+QueueOps == {[kind |-> "enq", q |-> q, v |-> v] : q \in Qs, v \in Vals}
+            \cup {[kind |-> k, q |-> q, v |-> "none"] : k \in {"deq", "peek"}, q \in Qs}
+
+\* An allocation of k index names.
+AllocOps == {[kind |-> "alloc", k |-> k] : k \in {1, 2}}
+
+Ops == QueueOps \cup (IF Allocations THEN AllocOps ELSE {})
 
 BranchOps == {<<o>> : o \in Ops} \cup {<<o1, o2>> : o1 \in Ops, o2 \in Ops}
 
@@ -113,9 +162,13 @@ BranchOps == {<<o>> : o \in Ops} \cup {<<o1, o2>> : o1 \in Ops, o2 \in Ops}
 
 \* The state of a run: the queues (with "mine" when the branch already made
 \* the counter record of the queue), the space counter and its maker.
-StartState(p) ==
+StartState(p, a) ==
     [qs |-> [q \in Qs |-> [recs |-> p[q].recs, ctr |-> p[q].ctr, open |-> p[q].open, mine |-> FALSE]],
-     sp |-> [ctr |-> SpaceCounter(p), mine |-> FALSE]]
+     sp |-> [ctr |-> SpaceCounter(p), mine |-> FALSE],
+     al |-> IF a = NoAllocator
+            THEN [exists |-> FALSE, val |-> 0, mk |-> "base"]
+            ELSE [exists |-> TRUE, val |-> a, mk |-> "base"],
+     idx |-> {}]
 
 \* Does the operation bump a counter?
 Bumps(op) == IF op.kind = "peek" THEN ReadCounters ELSE WriteCounters
@@ -137,9 +190,25 @@ EnqOrd(st, q) ==
     THEN IF st.qs[q].open THEN st.qs[q].ctr ELSE 0
     ELSE IF st.qs[q].recs = <<>> THEN 0 ELSE st.qs[q].recs[Len(st.qs[q].recs)].ord + 1
 
-\* One operation of branch b: the next state, the observation and the
+\* The indices n..n+k-1 of an allocation of k names from the value n.
+Indices(n, k) == {n + i : i \in 0..(k - 1)}
+
+\* One allocation of op.k names by branch b. With an allocator record, it
+\* consumes the produce of A(sid) = n and produces A(sid) = n + k. Without
+\* one (LazyAllocator), it creates A(sid) = k and consumes nothing.
+AllocExec(st, op, b) ==
+    IF ~st.al.exists
+    THEN [st |-> [st EXCEPT !.al = [exists |-> TRUE, val |-> op.k, mk |-> b],
+                            !.idx = @ \cup Indices(0, op.k)],
+          obs |-> Indices(0, op.k), ev |-> {}]
+    ELSE [st |-> [st EXCEPT !.al = [exists |-> TRUE, val |-> st.al.val + op.k, mk |-> b],
+                            !.idx = @ \cup Indices(st.al.val, op.k)],
+          obs |-> Indices(st.al.val, op.k),
+          ev |-> {<<"A", st.al.val, st.al.mk>>}]
+
+\* One queue operation of branch b: the next state, the observation and the
 \* consumed produces.
-Exec(st, op, b) ==
+QueueExec(st, op, b) ==
     LET q == op.q
         bump == IF Bumps(op) THEN CounterStep(st, q, b) ELSE [st |-> st, ev |-> {}]
         s1 == bump.st
@@ -156,6 +225,9 @@ Exec(st, op, b) ==
               \* a peek: a COMM with peeks, filed under produces_peeked
               [st |-> s1, obs |-> IF recs = <<>> THEN "none" ELSE recs[1].val, ev |-> bump.ev]
 
+\* One operation of branch b.
+Exec(st, op, b) == IF op.kind = "alloc" THEN AllocExec(st, op, b) ELSE QueueExec(st, op, b)
+
 \* The run of the deploy ops of branch b from the state st: the end state,
 \* the observations in order, and every consumed produce.
 Run(st, ops, b) ==
@@ -165,8 +237,8 @@ Run(st, ops, b) ==
     ELSE LET r2 == Exec(r1.st, ops[2], b) IN
          [st |-> r2.st, obs |-> <<r1.obs, r2.obs>>, ev |-> r1.ev \cup r2.ev]
 
-RunA == Run(StartState(pre), opsA, "A")
-RunB == Run(StartState(pre), opsB, "B")
+RunA == Run(StartState(pre, preAlloc), opsA, "A")
+RunB == Run(StartState(pre, preAlloc), opsB, "B")
 
 -----------------------------------------------------------------------------
 (* The merge                                                               *)
@@ -187,10 +259,22 @@ Merged(q) ==
 
 \* The serial run of first, then second, gives the merged queues and the
 \* observations of both branches.
+\* The allocator records of a state: none, or its one record.
+AlSet(al) == IF al.exists THEN {[val |-> al.val, mk |-> al.mk]} ELSE {}
+
+\* The merged allocator record: the pre-state record minus what either
+\* branch consumed, plus what either branch produced.
+MergedAlloc ==
+    LET base == AlSet(StartState(pre, preAlloc).al)
+        endA == AlSet(RunA.st.al)
+        endB == AlSet(RunB.st.al)
+    IN (base \ ((base \ endA) \cup (base \ endB))) \cup (endA \ base) \cup (endB \ base)
+
 SerialMatches(first, second, bf, bs, obsFirst, obsSecond) ==
-    LET r1 == Run(StartState(pre), first, bf)
+    LET r1 == Run(StartState(pre, preAlloc), first, bf)
         r2 == Run(r1.st, second, bs)
     IN /\ \A q \in Qs : RecSet(r2.st.qs[q].recs) = Merged(q)
+       /\ AlSet(r2.st.al) = MergedAlloc
        /\ r1.obs = obsFirst
        /\ r2.obs = obsSecond
 
@@ -200,7 +284,17 @@ NoMergedOrderFabrication ==
        \/ SerialMatches(opsB, opsA, "B", "A", RunB.obs, RunA.obs)
 
 \* The queues that a deploy uses.
-Touched(ops) == {ops[i].q : i \in DOMAIN ops}
+Touched(ops) == {ops[i].q : i \in {j \in DOMAIN ops : ops[j].kind /= "alloc"}}
+
+\* True when a deploy allocates index names.
+Allocates(ops) == \E i \in DOMAIN ops : ops[i].kind = "alloc"
+
+\* NoDuplicateIndex: a merge without a race never hands one index name to
+\* both branches.
+NoDuplicateIndex == ~Race => RunA.st.idx \cap RunB.st.idx = {}
+
+\* Two branches that both allocate race on the allocator record.
+AllocationsRace == (Allocates(opsA) /\ Allocates(opsB)) => Race
 
 SharedQueueRaces == (Touched(opsA) \cap Touched(opsB) /= {}) => Race
 
@@ -209,6 +303,7 @@ FirstOpsRace ==
 
 TypeOK ==
     /\ pre \in PreStates
+    /\ preAlloc \in PreAllocs
     /\ opsA \in BranchOps
     /\ opsB \in BranchOps
 
@@ -216,6 +311,7 @@ TypeOK ==
 
 Init ==
     /\ pre \in PreStates
+    /\ preAlloc \in PreAllocs
     /\ opsA \in BranchOps
     /\ opsB \in BranchOps
 
