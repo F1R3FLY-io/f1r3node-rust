@@ -110,7 +110,19 @@ behaviors:
     deep_module: false
     done: false
     notes: "Counter block.requests.recovery. Today recovery and ordinary retries share block.requests.retries with no label."
-    cycle_log: []
+    cycle_log:
+      - date: 2026-10-07
+        test: "casper --test mod sync::block_retriever_spec::tests::recovery_requests::a_recovery_re_request_is_counted_apart_from_ordinary_retries"
+        red: "left: 0, right: 1. One recover_dependency call for an admitted dependency recorded no recovery count."
+        green: "recover_dependency increments block.requests.recovery (source f1r3fly.casper.block-retriever) next to block.requests.retries when it issues a recovery re-request."
+        files:
+          - casper/src/rust/engine/block_retriever.rs
+          - casper/src/rust/metrics_constants.rs
+          - casper/tests/sync/block_retriever_spec.rs
+        observations:
+          - "block.requests.retries stays the total of all retries, so its meaning for existing dashboards does not change. Ordinary retries are retries minus recovery."
+          - "The test uses metrics::set_default_local_recorder, because recover_dependency is async. A single-thread tokio test keeps the call on the thread that holds the recorder."
+          - "A recovery call that a cooldown or the retry-budget quarantine skips records nothing, because no re-request is sent."
   - id: B5
     statement: "A buffered block whose dependencies are all validated is released and processed, even when a stale parent link remains"
     priority: must
