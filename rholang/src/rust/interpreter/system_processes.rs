@@ -928,6 +928,57 @@ impl SystemProcesses {
         self.print_std_out(&str)
     }
 
+    /// Trait-exempt `fs_remove_dir` stub.  The real handler
+    /// (DD-RemoveDirReplyShape with its 4 divergence shapes) lands at
+    /// a future Wave 4 handler slice; until then this stub replies
+    /// `[false, "FSERR_UNSUPPORTED", "fs_remove_dir handler not yet
+    /// implemented"]` on the ack channel so a user-held Dir cap that
+    /// invokes `removeDir` at state-execution gets a well-formed
+    /// error reply instead of (a) hanging on the ack channel because
+    /// the dispatcher has no entry for body_ref 58, or (b) tripping a
+    /// deploy-level `BugFoundError`.  Dir.rho's `_ => return!(reply)`
+    /// default arm forwards the 3-element shape verbatim, so the
+    /// caller observes a uniform-failure reply shape.
+    ///
+    /// Arity 5 matches Dir.rho's call site: `fsRemoveDir!(canonRoot,
+    /// rel, recursive, cmode, *retCh)`.  Only `ack` (`retCh`) is read
+    /// here — the four leading args are discarded because the stub
+    /// does no I/O.  See `BodyRefs::FS_REMOVE_DIR` and
+    /// `FixedChannels::fs_remove_dir` for the dispatch wiring + slice
+    /// 5.43 for the urn_map/proc_defs registration.
+    pub async fn fs_remove_dir_stub(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use models::rust::utils::{new_elist_par, new_gstring_par};
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("fs_remove_dir_stub"));
+        };
+        let [_root_canon, _rel, _recursive, _cmode, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("fs_remove_dir_stub"));
+        };
+        let reply = new_elist_par(
+            vec![
+                new_gbool_par(false, Vec::new(), false),
+                new_gstring_par("FSERR_UNSUPPORTED".to_string(), Vec::new(), false),
+                new_gstring_par(
+                    "fs_remove_dir handler not yet implemented".to_string(),
+                    Vec::new(),
+                    false,
+                ),
+            ],
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let output = vec![reply];
+        let ret = output.clone();
+        produce(&output, ack).await?;
+        Ok(ret)
+    }
+
     pub async fn std_out_ack(
         mut self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),

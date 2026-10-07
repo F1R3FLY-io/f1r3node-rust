@@ -1119,6 +1119,31 @@ fn dispatch_table_creator(
         space.clone(),
     ));
 
+    // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
+    // URN + fixed_channel + proc_defs so FsGenesis composition could
+    // resolve the URN at genesis-time, but there was no dispatch_table
+    // entry — a user-held Dir cap that invoked removeDir at state-
+    // execution would send to the channel, trigger the body_ref=58
+    // reader, and hit "dispatch: no function for 58".  This stub
+    // replies with [false, "FSERR_UNSUPPORTED", "..."] so the caller
+    // gets a well-formed error reply.  The real handler (DD-RemoveDir
+    // ReplyShape) lands at a future Wave 4 handler slice.  See
+    // SystemProcesses::fs_remove_dir_stub for the body.
+    all_processes.push(Definition {
+        urn: format!("{}removeDir", super::io::FS_NATIVE_URN_PREFIX_VERSIONED),
+        fixed_channel: FixedChannels::fs_remove_dir(),
+        arity: 5,
+        body_ref: BodyRefs::FS_REMOVE_DIR,
+        handler: Box::new(|ctx| {
+            let sp = ctx.system_processes.clone();
+            Box::new(move |args| {
+                let sp = sp.clone();
+                Box::pin(async move { sp.fs_remove_dir_stub(args).await })
+            })
+        }),
+        remainder: None,
+    });
+
     all_processes.append(extra_system_processes);
 
     for def in all_processes.iter_mut() {
@@ -1796,5 +1821,73 @@ mod tests {
                 expected_urn,
             );
         }
+    }
+
+    /// Trait-exempt `fs_remove_dir` URN must appear in `urn_map`
+    /// after `setup_maps_and_refs` runs.  Slice 5.43 added the
+    /// registration so FsGenesis composition can bind
+    /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)` without
+    /// tripping eval_new's "No value set for URN" check.  Pinning the
+    /// urn_map entry here catches a regression that removes the
+    /// explicit registration (which is NOT auto-generated from
+    /// FS_HANDLERS — the handler is trait-exempt).
+    #[test]
+    fn setup_maps_and_refs_registers_fs_remove_dir_urn() {
+        let (_, _, _, urn_map, _) = setup_maps_and_refs(&Vec::new());
+        let expected_urn = format!(
+            "{}removeDir",
+            crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED
+        );
+        assert!(
+            urn_map.contains_key(&expected_urn),
+            "urn_map missing `{expected_urn}`.  Trait-exempt fs_remove_dir \
+             registration (slice 5.43) was removed — FsGenesis composition \
+             will trip `BugFoundError` on `new fsRemoveDir(`...`)` at \
+             genesis-time.  See `setup_maps_and_refs` for the explicit \
+             registration site."
+        );
+    }
+
+    /// Trait-exempt `fs_remove_dir` proc_def must carry arity 5 (so
+    /// `fsRemoveDir!(rootCanon, rel, recursive, cmode, ack)` matches
+    /// the system-process reader) and `BodyRefs::FS_REMOVE_DIR` =
+    /// 58 (so the dispatcher routes to the stub handler registered
+    /// in `dispatch_table_creator`).  Slice 5.44 added the stub
+    /// handler to prevent a user-held Dir cap from hitting
+    /// "dispatch: no function for 58" when invoking `removeDir` at
+    /// state-execution; this test catches a regression that reverts
+    /// the proc_def entry or renumbers the body_ref.
+    #[test]
+    fn setup_maps_and_refs_registers_fs_remove_dir_proc_def() {
+        let (_, _, _, _, proc_defs) = setup_maps_and_refs(&Vec::new());
+        let expected_fixed_channel = FixedChannels::fs_remove_dir();
+        let found = proc_defs
+            .iter()
+            .find(|(fc, _, _, br)| *fc == expected_fixed_channel && *br == BodyRefs::FS_REMOVE_DIR);
+        let Some((_, arity, remainder, body_ref)) = found else {
+            panic!(
+                "proc_defs missing an entry with fixed_channel = \
+                 FixedChannels::fs_remove_dir() AND body_ref = \
+                 BodyRefs::FS_REMOVE_DIR ({}).  Trait-exempt \
+                 fs_remove_dir registration (slice 5.43) was removed; \
+                 Dir.rho's `fsRemoveDir!(...)` would hit \"dispatch: \
+                 no function for {}\".",
+                BodyRefs::FS_REMOVE_DIR,
+                BodyRefs::FS_REMOVE_DIR,
+            );
+        };
+        assert_eq!(
+            *arity, 5,
+            "fs_remove_dir proc_def arity must be 5 to match \
+             Dir.rho's `fsRemoveDir!(canonRoot, rel, recursive, \
+             cmode, *retCh)` call site; got {}",
+            arity
+        );
+        assert!(
+            remainder.is_none(),
+            "fs_remove_dir proc_def remainder must be None (no \
+             rest-pattern); got {remainder:?}"
+        );
+        assert_eq!(*body_ref, BodyRefs::FS_REMOVE_DIR);
     }
 }
