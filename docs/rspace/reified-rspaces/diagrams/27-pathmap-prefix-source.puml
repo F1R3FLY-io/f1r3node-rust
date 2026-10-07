@@ -1,0 +1,110 @@
+' 27 PathMap prefix source: one PathMap operation on the join engine (P5e, Phase 2).
+'
+' Source of Figure 2 in ../pathmap-prefix-delivery.md. The figure restates
+' classify and run_join of rholang/src/rust/interpreter/spaces/pathmap/join.rs
+' (the prefix scope and the prefix source), the hooks of PathMapOuter in
+' spaces/outer/pathmap.rs, and the steps of the join engine of
+' spaces/join.rs that the prefix source serves (decisions 31, 45, 49 and 51,
+' and the arbitration of the seams of the join engine). It adds no new fact.
+'
+' Reading order:
+'   1. CLASSIFY runs in the first transaction. It checks the paths, the
+'      params and the joins, and it computes the prefix scope.
+'   2. Every PathMap operation escalates once: one transaction over the lock
+'      keys of the scope.
+'   3. RUN-JOIN keys each channel by its prefix and runs the engine with the
+'      prefix source: TOUCH, the windows of each path, OFFER and RECEIVE.
+'   4. A fire is one COMM on I(q). A peek owes the markers of its second
+'      sends. A spend retires the datum at every fire site.
+'   5. FINISH stores each owed marker again, and a bag or a set bumps the
+'      token when the transaction changed the state. COMMIT re-issues a
+'      settle job after a stop with owed work.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 27-pathmap-prefix-source.puml   Check: ./render.sh --check
+
+@startuml 27-pathmap-prefix-source
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title One PathMap operation on the join engine through the prefix source (P5e, Phase 2)
+
+start
+partition "CLASSIFY: the first transaction" {
+  :begin over the channels of the routed key
+  read the config once; <<$rrs_substrate>>
+  :check the path of each channel (check_key),
+  the params and the query of the discipline,
+  and the arrows and the orders of a join; <<$rrs_agent>>
+  if (a check fails?) then (yes)
+    :PathTooDeep, UnsupportedPathElement
+    or Inconsistent: nothing is staged; <<$rrs_reject>>
+    stop
+  else (no)
+  endif
+  :PREFIX-SCOPE: the own prefixes (a send adds every prefix of its path),
+  closed under the join groups of each index channel, and every prefix
+  of every stored datum once a prefix holds a marker (one read of I(ε)); <<$rrs_agent>>
+  :ALWAYS_ESCALATES: drop the first transaction, then begin once
+  over C(sid), S(sid), D(p) of each data path and I(q) of each prefix; <<$rrs_substrate>>
+}
+partition "RUN-JOIN with the prefix source" {
+  :the key of each channel becomes [0x49] ‖ prefix_key(path)
+  a join takes its binds in the order of (hash(I(q_i)), i); <<$rrs_agent>>
+  :TOUCH: an ordered discipline bumps S(sid) once in the transaction,
+  with S(sid) as both counter channels (shares_counter); <<$rrs_storage>>
+  :WINDOW(q, need): for each path p ⪰ q in path-key order,
+  the window of the discipline on D(p), without the datums in flight; <<$rrs_agent>>
+  :OFFER: the waiters of I(p), I(parent(p)), …, I(ε), the most specific first,
+  one head waiter for each prefix (a refusal moves to the next prefix)
+  RECEIVE: the greedy search over the windows, the guard once; <<$rrs_agent>>
+  if (a waiter fires?) then (yes)
+    :one COMM on I(q): the vehicle of the element on the produce side,
+    the markers of the bound datums on the consume side; <<$rrs_effect>>
+    if (the waiter peeks?) then (yes)
+      :each bound datum that is not persistent becomes a second send
+      with restore = depth of q: its marker is owed (Rule E); <<$rrs_flow>>
+    else (no)
+      :retire_spent at every fire site (Single, Offer, Join, Cascade):
+      RETIRE-PLAN of each spent datum, then RETIRE-CLASS of a set; <<$rrs_fail>>
+    endif
+  else (no)
+    :land: STORE-MARKERS of a fresh element (D(p), then each I(q)),
+    or the restore of an owed marker with its bytes
+    park: the waiter on the index channels of its prefixes; <<$rrs_storage>>
+  endif
+}
+partition "FINISH and COMMIT" {
+  :FINISH: store again each marker that the transaction still owes
+  (only a stop at FIRE_ROUND_CAP owes one: open item O-2); <<$rrs_storage>>
+  if (a bag or a set changed the state?) then (yes)
+    :bump S(sid) once (decision 51); <<$rrs_storage>>
+  else (no)
+  endif
+  if (stopped with owed work?) then (yes)
+    :commit, and re-issue one settle job: the offers of the second sends,
+    the dirty prefixes and the resume of the operation; <<$rrs_reject>>
+  else (no)
+    :commit; <<$rrs_effect>>
+  endif
+}
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_substrate> | the substrate: transactions, lock keys, staging |
+|<$rrs_agent>     | the prefix source and the join engine: keys, windows, searches |
+|<$rrs_effect>    | a COMM of a fire, or a quiescent commit |
+|<$rrs_flow>      | a second send in flight with its owed marker |
+|<$rrs_fail>      | a retire: K_retire COMMs on single channels |
+|<$rrs_storage>   | the token, a stored record or marker, or a parked waiter |
+|<$rrs_reject>    | a failure, or a stop that commits and re-issues |
+endlegend
+@enduml

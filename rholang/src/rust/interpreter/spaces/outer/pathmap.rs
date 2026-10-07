@@ -41,10 +41,16 @@ use rspace_plus_plus::rspace::errors::RSpaceError;
 
 use super::hashmap::HashMapOuter;
 use crate::rust::interpreter::reified::costs::ScanMeter;
+use crate::rust::interpreter::spaces::agent::{Prepared, SpaceEnv, SpaceOp, SpaceOutcome};
 use crate::rust::interpreter::spaces::errors::SpaceError;
-use crate::rust::interpreter::spaces::generic::OuterStore;
+use crate::rust::interpreter::spaces::generic::{
+    CollectionTxn, Discipline, GenericSpace, OuterStore,
+};
+use crate::rust::interpreter::spaces::join::{JoinRoute, JoinScope};
 use crate::rust::interpreter::spaces::namespace::{self, CollectionKey, NativeSpace};
-use crate::rust::interpreter::spaces::pathmap::{channel_path, encode_path, path_key, EncodedPath};
+use crate::rust::interpreter::spaces::pathmap::{
+    channel_path, encode_path, join as pathmap_join, path_key, EncodedPath,
+};
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 
 /// The PathMap outer store.
@@ -149,6 +155,34 @@ fn reserve_name(tail: usize, meter: &ScanMeter) -> Result<(), SpaceError> {
 
 impl OuterStore for PathMapOuter {
     const NAME: &'static str = "pathmap";
+
+    /// Every PathMap operation runs in a new transaction over the lock keys of its prefix scope.
+    /// The first transaction locks the channels of the routed key, which no PathMap scope holds
+    /// (joins plan section 9).
+    const ALWAYS_ESCALATES: bool = true;
+
+    /// Every PathMap operation runs on the join engine over its prefix scope, also a single-bind
+    /// one (`pathmap::join::classify`).
+    fn classify<D: Discipline>(
+        agent: &GenericSpace<Self, D>,
+        env: &SpaceEnv,
+        opened: &mut CollectionTxn,
+        op: &SpaceOp,
+    ) -> Result<JoinRoute, SpaceError> {
+        pathmap_join::classify(agent, env, opened, op)
+    }
+
+    /// The join engine runs a PathMap operation with the prefix source
+    /// (`pathmap::join::run_join`).
+    fn run_join<D: Discipline>(
+        agent: &GenericSpace<Self, D>,
+        env: &SpaceEnv,
+        opened: CollectionTxn,
+        scope: JoinScope,
+        op: SpaceOp,
+    ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+        pathmap_join::run_join(agent, env, opened, scope, op)
+    }
 
     /// The path key of the path of `channel` (module docs, "Keys"). A path that breaks a path
     /// rule fails as [`OuterStore::check_key`] fails. A path key ends with its terminator, so it

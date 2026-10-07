@@ -161,35 +161,37 @@ A program that uses no Reified syntax and holds no space name must route every c
 A family pairs one outer store with one inner collection, for example `hashmap:queue`.
 Its factory creates the spaces of the family, and its agent runs their operations.
 
-**Rule FA-1: registration.** A family is registered exactly when it has a factory row and the family dispatch has its arm (`rholang/src/rust/interpreter/spaces/factory/urn.rs:124`, `rholang/src/rust/interpreter/spaces/factory/urn.rs:136-140`).
+**Rule FA-1: registration.** A family is registered exactly when it has a factory row and the family dispatch has its arm (`rholang/src/rust/interpreter/spaces/factory/urn.rs:156`, `rholang/src/rust/interpreter/spaces/factory/urn.rs:168-172`).
 A registered family with the index $`i`$ binds its URN to `bundle+{[0xE0, i]}`, and it installs its factory with the body reference $`200 + i`$.
 An unregistered family has no URN binding, so a program that names it fails before any space work.
 
-**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:349-358`).
-The dispatch tries the arms in a fixed order: `hashmap:queue` first, then ascending family index.
+**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:427-436`).
+The dispatch tries the arms in a fixed order: `hashmap:queue` first, then ascending family index, and the PathMap families last (`rholang/src/rust/interpreter/spaces/families.rs:206-231`).
 Each arm that it tries reserves one comparison of the names, so a queue operation keeps the host work of P4.
+The PathMap arms come last, so the dispatch of each family that was wired before them reserves the comparisons that it reserved before.
 A config that names no wired family fails with `FamilyUnavailable`.
 
-**Rule FA-3: alias.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:247-251`).
-The alias is registered exactly when `hashmap:bag` is registered, and both URNs bind the same capability.
+**Rule FA-3: aliases.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:289-293`).
+The FIPS alias `rho:space:PathMapSpace` names the channel of `pathmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:297-301`).
+An alias is registered exactly when its family is registered, and both URNs bind the same capability.
 `getSpaceAgent` replies that capability for every space of the family ([decision 33](decision-register.md#decision-33)).
 
-**Rule FA-4: constructor schemas.** Table 1a lists the named params that the factory of each family accepts and requires (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:69-96`).
+**Rule FA-4: constructor schemas.** Table 1a lists the named params that the factory of each family accepts and requires (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:68-99`).
 
 *Table 1a. The constructor schemas of the P5 families.*
 
 | Families | Params | Required |
 |---|---|---|
-| `hashmap`, `vector`: bag, queue, stack, set, cell | none | none |
-| `hashmap`, `vector`: `priorityqueue` | `priorities` | none |
+| `hashmap`, `pathmap`, `vector`: bag, queue, stack, set, cell | none | none |
+| `hashmap`, `pathmap`, `vector`: `priorityqueue` | `priorities` | none |
 | `array`: bag, queue, stack, set, cell | `cyclic`, `size` | `size` |
 | `array`: `priorityqueue` | `cyclic`, `priorities`, `size` | `size` |
 
-The VectorDB, PathMap and HashSet families have no schema yet.
+The VectorDB and HashSet families have no schema yet.
 
 **Rule FA-5: param values.** `size` is a `GInt` in $`[1, 2^{63}-1]`$, and `cyclic` is a `GBool` (F7).
 `priorities` is a `GInt` of at least 1 ([decision I-10](decision-register.md#i-10)).
-The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:112-119`).
+The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:115-122`).
 
 **Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:60-112`):
 
@@ -360,44 +362,47 @@ Phase 2 runs the plans on the join engine and registers the PathMap families ([d
 
 **Rule PS-1: channels.** The data channel $`D(\mathit{sid}, \mathrm{path\_key}(p))`$ holds the records of the path $`p`$.
 The index channel $`I(\mathit{sid}, \mathrm{prefix\_key}(q))`$ holds the markers and the waiters of the prefix $`q`$.
-The [token](glossary.md#token) $`S(\mathit{sid})`$ is the counter of every path, and the store has no allocator (`rholang/src/rust/interpreter/spaces/outer/pathmap.rs:79-90`, `184-186`).
+The [token](glossary.md#token) $`S(\mathit{sid})`$ is the counter of every path, and the store has no allocator (`rholang/src/rust/interpreter/spaces/outer/pathmap.rs:85-96`, `218-220`).
 
 **Rule PS-2: keys and names.** The store keeps the rules HM-2 to HM-4.
 Its collection key is the path key of rule PP-2 instead of the key of rule HM-1.
-Its key check applies the rules PP-3 and PP-4 before any staging (`rholang/src/rust/interpreter/spaces/outer/pathmap.rs:167-176`).
+Its key check applies the rules PP-3 and PP-4 before any staging (`rholang/src/rust/interpreter/spaces/outer/pathmap.rs:201-210`).
 A name that the space makes is a fresh name, so it roots a private subtree (rule PP-1).
 
 **Rule PS-3: markers.** A stored datum $`d`$ on $`p`$ has exactly one marker on $`I(q)`$ for each prefix $`q \preceq p`$, and no other marker exists.
 The marker holds the pars `[EList[tag_I, GByteArray(src(d))], EList(p∖q)]`, with the tag `[0xE0, 0x52, 0x49, 0x01]` and the source hash $`\mathrm{src}(d)`$ of $`d`$.
-Its random state derives from the random state of $`d`$ under the purpose `PathMarker` and the depth of $`q`$ (`rholang/src/rust/interpreter/spaces/pathmap/markers.rs:128-156`).
-Its persistence equals that of $`d`$, and it holds the authority of the store and no cost stack.
+Its random state derives from the random state of $`d`$ under the purpose `PathMarker` and the depth of $`q`$ (`rholang/src/rust/interpreter/spaces/pathmap/markers.rs:137-165`).
+Its persistence equals that of $`d`$, and it holds the cost authority of the record of $`d`$ and no cost stack (`marker_authority`, `rholang/src/rust/interpreter/spaces/pathmap/markers.rs:130-132`).
 
 **Rule PS-4: vehicle.** The [vehicle](glossary.md#vehicle) of $`d`$ on $`q`$ is the marker pars of $`d`$ on $`q`$, followed by the payload of $`d`$.
-It has the random state, the authority and the cost stack of $`d`$, and no store keeps it (`rholang/src/rust/interpreter/spaces/pathmap/markers.rs:188-204`, [decision 40](decision-register.md#decision-40), Q3).
+It has the random state, the authority and the cost stack of $`d`$, and no store keeps it (`rholang/src/rust/interpreter/spaces/pathmap/markers.rs:197-213`, [decision 40](decision-register.md#decision-40), Q3).
 
 **Rule PS-5: receive.** The candidates of a receive on $`q`$ are the datums under $`q`$, in path-key order, with the exact path first.
 Within one path they follow the order of the discipline.
 The receive takes the first candidate whose re-rooted payload its pattern binds, and it checks its guard once on that candidate ([decision 37](decision-register.md#decision-37)).
-A refusal parks the receive on $`I(q)`$. The delivery COMM is on $`I(q)`$, over the marker of the datum on $`q`$ (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:173-219`).
+A refusal parks the receive on $`I(q)`$. The delivery COMM is on $`I(q)`$, over the marker of the datum on $`q`$ (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:175-249`).
 
 **Rule PS-6: send.** A send on $`p`$ offers its vehicle to the waiters of $`I(p)`$, and then to the waiters of each shorter prefix, up to $`I(\varepsilon)`$.
 The first waiter whose pattern binds the re-rooted payload and whose guard admits it fires, and a refusal moves on.
-Without a fire, the send stores its record on $`D(p)`$ and then its markers in depth order (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:338-380`, `409-436`).
+Without a fire, the send stores its record on $`D(p)`$ and then its markers in depth order (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:389-431`, `460-487`).
 
 **Rule PS-7: retire.** A removal of a datum stages a single-channel `K_retire` on $`D(p)`$.
-It then stages one on each marker of the datum, except the marker of the delivery COMM (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:444-453`).
+It then stages one on each marker of the datum, except the marker of the delivery COMM (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:542-551`).
 
 **Rule PS-8: peeks.** A peek COMM removes only the marker of the datum on the prefix of the receive ([decision 45](decision-register.md#decision-45), Rule E).
 The second send then offers the datum to the waiters of its path and its prefixes, the most specific first.
 A fire of a waiter that does not peek spends the datum by rule PS-7.
-Without such a fire, the second send restores the marker with its identity, and at the fire cap the re-issue carries the marker.
+Without such a fire, the second send restores the marker with its identity.
+
+At the fire cap, the transaction stores the marker again before its commit (open item O-2).
+The settle job then carries only the offer of the datum.
 
 **Rule PS-9: token.** Every operation of an ordered discipline bumps the token, and a re-issued persistent operation keeps its first-round order ([decision 31](decision-register.md#decision-31), [decision 43](decision-register.md#decision-43)).
 On a bag or a set, every operation that changes the state bumps the token, and every order is 0.
 A peek of a bag or a set bumps the token only when its second send changes the state ([decision 51](decision-register.md#decision-51)).
 
 **Rule PS-10: merges.** A new datum on $`p`$ and a new waiter on a prefix $`q \preceq p`$ meet on $`I(q)`$, so merge check #2 sees the contact.
-Two branches that change one PathMap space race on its token under merge check #1.
+Two branches that change one PathMap space race on its token under merge check #1 (`pathmap_token_race`, headline 15 of `CounterConflict.v`).
 
 ### 2.7 Outer stores of later phases
 
@@ -435,7 +440,7 @@ A collection with two counter records, or with a persistent counter record, is `
 **Rule OC-5: races and chains.** Two branches that both operate on one collection consume one counter produce, so merge check 1 must report a race.
 Two branches whose first operations open collections of one space race on the space counter in the same way.
 Two deploys of one block that operate on one collection form one chain, so a rejection removes both.
-This holds for every family with a counter: the queue, the stack and the cell, also in Array and Vector spaces (`shared_collection_race`, `CounterConflict.v:833`).
+This holds for every family with a counter: the queue, the stack and the cell, also in Array and Vector spaces (`shared_collection_race`, `CounterConflict.v:877`).
 
 **Rule OC-6: serializable merges.** When merge check 1 finds no race, the merged state must equal the state of a serial run of the two branches.
 
@@ -452,7 +457,7 @@ The pushes bump different counters and the pops take different records, so no ch
 
 In the merge A pops 20 and B pops 10.
 But after A, B pops 1, and after B, A pops 2, so no serial order gives the merged pops.
-Rule OC-1 makes both branches race on both counters instead (`crossed_stacks_without_removal_counters_fabricate`, `CounterConflict.v:2146`).
+Rule OC-1 makes both branches race on both counters instead (`crossed_stacks_without_removal_counters_fabricate`, `CounterConflict.v:2459`).
 
 ### 3.1 Queue
 
@@ -978,10 +983,10 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1035`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:995`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
-| OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:883`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
+| OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:927`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
 | OC-4 | None | `space_counter_rejects_corrupt_counters` |
-| OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:854`), `ordered_reads_race_on_counter` (`CounterConflict.v:868`), `same_block_ops_chain` (`CounterConflict.v:1057`), `shared_collection_race` (`CounterConflict.v:833`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain`, `space_collection_conflicts_cell_writes_race`, `space_collection_conflicts_stack_push_pop_race`, `prop_cell_ops_race_on_counter` |
-| OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1433`), `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2146`), the TLA+ invariant `NoMergedOrderFabrication` (U4, and V16 with `MC_CounterConflict_Stacks.cfg`) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge`, `prop_merged_stack_state_is_serial`, `space_collection_conflicts_crossed_stacks` |
+| OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:898`), `ordered_reads_race_on_counter` (`CounterConflict.v:912`), `same_block_ops_chain` (`CounterConflict.v:1101`), `shared_collection_race` (`CounterConflict.v:877`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain`, `space_collection_conflicts_cell_writes_race`, `space_collection_conflicts_stack_push_pop_race`, `prop_cell_ops_race_on_counter` |
+| OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1477`), `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2459`), the TLA+ invariant `NoMergedOrderFabrication` (U4, and V16 with `MC_CounterConflict_Stacks.cfg`) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge`, `prop_merged_stack_state_is_serial`, `space_collection_conflicts_crossed_stacks` |
 | QD-1 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:530`) | `prop_queue_candidates_head_only` |
 | QD-2, QD-3 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`), the TLA+ invariant `HeadBlocks` (U2) | `space_queue_head_only_data_head_blocks`, `space_queue_head_only_waiter_head_blocks` |
 | QD-4, QD-5 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1380`) | `space_queue_reissue_persistent_send`, `space_queue_reissue_peek_produce`, `space_queue_divergent_pair_exhausts_phlo` |
@@ -1042,7 +1047,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | ST-6 | `set_produce_fire_retires_stored_class` (`SetDiscipline.v:1151`), the TLA+ invariant `SetClassRetired` (V6) | `prop_set_produce_fire_retires_stored_class`, `prop_set_class_retired_any_schedule`, `space_set_discipline_guarded_waiter_then_equal_send_retires_class` |
 | ST-7 | `set_peek_restores_representative_only` (`SetDiscipline.v:1205`) | `prop_set_peek_restores_representative_only`, `space_set_discipline_peek_restore_reoffer_retires_class` |
 | ST-8 | `set_membership_full_compare_on_equal_hash` (`SetDiscipline.v:1274`) | `prop_set_membership_full_compare_on_equal_hash` |
-| ST-9 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`), `set_retirements_race` (`CounterConflict.v:1936`), `unordered_set_writes_commute` (`CounterConflict.v:1968`) | `space_set_discipline_persistent_reissue_keeps_identity`, `space_set_discipline_equal_receives_stay_two_waiters`, `prop_set_retirements_race`, `prop_unordered_set_writes_commute`, `space_collection_conflicts_set_retirements_race`, `space_collection_conflicts_set_writes_merge` |
+| ST-9 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`), `set_retirements_race` (`CounterConflict.v:1980`), `unordered_set_writes_commute` (`CounterConflict.v:2012`) | `space_set_discipline_persistent_reissue_keeps_identity`, `space_set_discipline_equal_receives_stay_two_waiters`, `prop_set_retirements_race`, `prop_unordered_set_writes_commute`, `space_collection_conflicts_set_retirements_race`, `space_collection_conflicts_set_writes_merge` |
 | ST-10 | `set_key_trace_covered` (`SetDiscipline.v:1389`) | `prop_set_key_trace_covered`, `space_set_discipline_failed_canonicalization_rejects_before_staging` |
 | PQ-1 | `pq_level_order` (`PriorityQueue.v:863`), `pq_unprioritized_lowest` (`PriorityQueue.v:887`), the TLA+ invariant `PqLevelOrder` (V17) | `prop_pq_level_order`, `space_disciplines_pq_ascending_levels`, `space_disciplines_pq_unprioritized_lowest` |
 | PQ-2, PQ-4 | `pq_restricted_waiter_in_level_queue` (`PriorityQueue.v:1921`), `pq_unrestricted_first_matching_level` (`PriorityQueue.v:1943`), `pq_fifo_within_level` (`PriorityQueue.v:2151`), `pq_head_blocks_within_level` (`PriorityQueue.v:2324`) | `prop_pq_fifo_order_any_schedule`, `space_disciplines_pq_restricted_waiter_waits_in_level_queue`, `space_disciplines_pq_head_blocks_within_level` |
@@ -1065,7 +1070,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | JN-12 | `peek_join_restores_stored_candidates` (`JoinCascade.v:5156`), the TLA+ invariant `NoRecordLost` (V32) | `prop_peek_join_restores_stored_candidates`, `prop_no_record_lost_any_schedule`, `space_joins_peek_join_restores_stored_candidates`, `space_joins_produce_side_peek_reproduces_in_receipt_order` |
 | JN-13 | `join_txn_fires_bounded` (`JoinCascade.v:4642`), the TLA+ invariant `TxnFiresBounded` (V31) | `prop_join_txn_fires_bounded_at_the_cap`, `space_joins_txn_fires_bounded_at_the_cap`, `space_joins_cascade_round_cap_reissues_settle`, `space_joins_cap_carries_pending_second_sends`, `space_joins_settle_before_cap_resumes_the_operation` |
 | JN-14 | `cascade_restores_inv` (`JoinCascade.v:7230`), the TLA+ invariant `QuiescentNoPendingMatch` (V26) | `prop_cascade_restores_inv_any_schedule`, `prop_quiescent_no_pending_match_any_schedule`, `prop_join_engine_agrees_with_drivers_without_joins` |
-| JN-15 | `join_ops_race_on_every_counter` (`CounterConflict.v:1891`) | `prop_join_ops_race_on_every_counter`, `space_collection_conflicts_join_ops_race_all_counters`, `space_collection_conflicts_unrelated_collections_merge`, `space_collection_conflicts_bag_join_potential_comm`, `space_joins_persisted_waiter_check3_conflict`, `reified_p5c_only_user_joins_persist` |
+| JN-15 | `join_ops_race_on_every_counter` (`CounterConflict.v:1935`) | `prop_join_ops_race_on_every_counter`, `space_collection_conflicts_join_ops_race_all_counters`, `space_collection_conflicts_unrelated_collections_merge`, `space_collection_conflicts_bag_join_potential_comm`, `space_joins_persisted_waiter_check3_conflict`, `reified_p5c_only_user_joins_persist` |
 
 No model states the rules OC-4, QD-8, AL-6, AL-8, PP-3, PP-4 and JN-1, because they are checks of limits, of input or of fail-closed rules.
 Their tests show each abort.

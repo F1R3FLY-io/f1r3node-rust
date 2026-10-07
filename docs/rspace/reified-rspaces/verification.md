@@ -1456,15 +1456,15 @@ CounterConflict.v restates merge check 1 of the baseline, and it proves the race
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q20 | `check1_race_iff` (`CounterConflict.v:439`) | Check 1 reports a race exactly for a shared non-persistent event that is not mergeable in both logs. | `prop_check1_restatement_matches_merger` |
-| Q21 | `ordered_writes_race_on_counter` (`CounterConflict.v:854`) | Two branches that write one queue race on its counter. | `prop_queue_writes_race_on_counter` |
-| Q22 | `ordered_reads_race_on_counter` (`CounterConflict.v:868`) | A peek bumps the counter too, so two branches that read one queue race. | `prop_queue_reads_race_on_counter` |
-| Q23 | `first_ops_race_on_space_counter` (`CounterConflict.v:883`) | Two branches whose first operations open collections of one space race on the space counter. | `prop_first_ops_race_on_space_counter` |
-| Q24 | `crossed_collections_race` (`CounterConflict.v:897`) | Branches that use two queues in crossed orders race on both counters. | `prop_crossed_collections_race` |
-| Q25 | `same_block_ops_chain` (`CounterConflict.v:1057`) | Two deploys of one block that use one queue form one chain. | `prop_same_block_queue_ops_chain` |
-| Q26 | `unordered_writes_commute` (`CounterConflict.v:1595`) | Writes to a collection without a counter never race, and the merge holds both serial orders. | `prop_counter_free_writes_commute` |
-| Q27 | `merge_without_race_is_serializable` (`CounterConflict.v:1433`) | Without a race, the merged state and the observations are those of a serial run. | `prop_nonracing_queue_branches_serializable` |
-| Q28 | `counter_free_peek_admits_write_skew` (`CounterConflict.v:2053`) | A peek without the counter admits the write skew of a peek and a dequeue, as a computed counterexample. | `prop_counter_free_peek_admits_write_skew` |
+| Q20 | `check1_race_iff` (`CounterConflict.v:483`) | Check 1 reports a race exactly for a shared non-persistent event that is not mergeable in both logs. | `prop_check1_restatement_matches_merger` |
+| Q21 | `ordered_writes_race_on_counter` (`CounterConflict.v:898`) | Two branches that write one queue race on its counter. | `prop_queue_writes_race_on_counter` |
+| Q22 | `ordered_reads_race_on_counter` (`CounterConflict.v:912`) | A peek bumps the counter too, so two branches that read one queue race. | `prop_queue_reads_race_on_counter` |
+| Q23 | `first_ops_race_on_space_counter` (`CounterConflict.v:927`) | Two branches whose first operations open collections of one space race on the space counter. | `prop_first_ops_race_on_space_counter` |
+| Q24 | `crossed_collections_race` (`CounterConflict.v:941`) | Branches that use two queues in crossed orders race on both counters. | `prop_crossed_collections_race` |
+| Q25 | `same_block_ops_chain` (`CounterConflict.v:1101`) | Two deploys of one block that use one queue form one chain. | `prop_same_block_queue_ops_chain` |
+| Q26 | `unordered_writes_commute` (`CounterConflict.v:1639`) | Writes to a collection without a counter never race, and the merge holds both serial orders. | `prop_counter_free_writes_commute` |
+| Q27 | `merge_without_race_is_serializable` (`CounterConflict.v:1477`) | Without a race, the merged state and the observations are those of a serial run. | `prop_nonracing_queue_branches_serializable` |
+| Q28 | `counter_free_peek_admits_write_skew` (`CounterConflict.v:2366`) | A peek without the counter admits the write skew of a peek and a dequeue, as a computed counterexample. | `prop_counter_free_peek_admits_write_skew` |
 
 P5 adds two headlines to the module, and section [12.11](#1211-the-merge-of-the-p5-families) describes them.
 
@@ -1731,7 +1731,7 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 | `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1720` | Q57 |
 | `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1770` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:193` | Q55 |
-| `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:440` | Q54 |
+| `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:513` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
 | `agent_tagged_names_route_to_the_agent` | `reified/route.rs:312` | Q42 |
 | `space_names_route_intrinsically` | `reified/route.rs:269` | Q43 |
@@ -2342,7 +2342,7 @@ It wires no new family. The family agent has one arm, `hashmap:queue`, and the b
 
 S1 makes these changes:
 
-- `FamilyAgent` (`spaces/families.rs:344-435`) reads the config once and runs the agent of the family that the config names. The runtime installs it.
+- `FamilyAgent` (`spaces/families.rs:422-513`) reads the config once and runs the agent of the family that the config names. The runtime installs it.
 - `Discipline` holds the plans of the operations. The default plans are the head driver `offer_head` and `receive_head`, the P4 plans as free functions over the discipline.
 - `Cx` (`spaces/generic.rs:664-667`) is the only path from a plan to the transaction. It adds group fires over `[D; n]`, retirements and lifts.
   `Cx` and `AllocCx` expose no raw transaction, and the legacy chain of a plan is private to `generic.rs`. So the types keep the design rule that only `generic.rs` and `counter.rs` stage operations.
@@ -2372,8 +2372,8 @@ So the golden pins the one comparison of the family check.
 | `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:5813` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
 | `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:5857` | The family agent gives the fires, events, records, waiters and host work of the queue agent. |
 | `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:5909` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
-| `space_families_wire_exactly_the_listed_families` | `families.rs:482` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
-| `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:597` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
+| `space_families_wire_exactly_the_listed_families` | `families.rs:566` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
+| `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:711` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
 | `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3212` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
 | `harness_session_runs_a_queue_space_under_the_family_agent` | `reified_p5_harness.rs:28` | The shared session creates a space and runs deploys under the family agent. |
 | `harness_agent_env_runs_the_family_agent_in_fifo_order` | `reified_p5_harness.rs:65` | Over the shared agent environment, the family agent delivers in send order and bumps once for each operation (64 cases). |
@@ -2620,12 +2620,13 @@ The second wave of W2 checks this rule for the bag, the cell, the stack, and the
 
 | Headline | Location | Design name | Property test |
 |---|---|---|---|
-| `shared_collection_race` | `CounterConflict.v:833` | F23 `cell_ops_race_on_counter` | `prop_cell_ops_race_on_counter` |
-| `crossed_stacks_without_removal_counters_fabricate` | `CounterConflict.v:2146` | the same name | `prop_crossed_stacks_without_removal_counters_fabricate` |
-| `crossed_collections_race` (Q24 of P4) | `CounterConflict.v:897` | `crossed_stacks_race` | `prop_crossed_stacks_race` |
-| `unordered_writes_commute` (Q26 of P4) | `CounterConflict.v:1595` | the bag row | `prop_bag_writes_commute` |
-| `set_retirements_race` | `CounterConflict.v:1936` | F24, the same name | `prop_set_retirements_race` |
-| `unordered_set_writes_commute` | `CounterConflict.v:1968` | F25, the same name | `prop_unordered_set_writes_commute` |
+| `shared_collection_race` | `CounterConflict.v:877` | F23 `cell_ops_race_on_counter` | `prop_cell_ops_race_on_counter` |
+| `crossed_stacks_without_removal_counters_fabricate` | `CounterConflict.v:2459` | the same name | `prop_crossed_stacks_without_removal_counters_fabricate` |
+| `crossed_collections_race` (Q24 of P4) | `CounterConflict.v:941` | `crossed_stacks_race` | `prop_crossed_stacks_race` |
+| `unordered_writes_commute` (Q26 of P4) | `CounterConflict.v:1639` | the bag row | `prop_bag_writes_commute` |
+| `set_retirements_race` | `CounterConflict.v:1980` | F24, the same name | `prop_set_retirements_race` |
+| `unordered_set_writes_commute` | `CounterConflict.v:2012` | F25, the same name | `prop_unordered_set_writes_commute` |
+| `pathmap_token_race` | `CounterConflict.v:2193` | the same name ([decision 51](decision-register.md#decision-51)) | `prop_pathmap_token_race` |
 
 The plan of the model is a section variable, so the race theorems of P4 also hold for the stack and the cell.
 A cell operation that fails with `CellOccupied` fails its deploy before it stages anything.
@@ -2656,6 +2657,18 @@ The merge index counts no consume of a peek COMM, so without the counter events 
 A join races on the counter of each of its collections, and it merges with operations on other collections (`rholang/tests/reified_merge_p5.rs:1968-2018`).
 A bag join has no counter, and it meets a send on one of its collections as a potential COMM in check #2 (`rholang/tests/reified_merge_p5.rs:2020-2048`).
 The properties `prop_set_retirements_race` and `prop_unordered_set_writes_commute` run 16 cases each (`rholang/tests/reified_merge_p5.rs:2183-2255`).
+
+Phase 2 of the PathMap engine adds headline 15, `pathmap_token_race`, to `CounterConflict.v` (R129).
+Two deploys from one pre-state that each run a PathMap step that bumps the token race in check #1 on $`S(\mathit{sid})`$.
+A step bumps the token when its discipline is ordered, or when its transaction changed the state ([decision 51](decision-register.md#decision-51)).
+The predicate `pstep_changes` of the model is the `changed` rule of the engine, with the class retire of a set added.
+Its two new negative controls fail inside `exec_pmap_consumes_token` and `store_changes`.
+
+The test `space_collection_conflicts_pathmap_token_race` checks that two writes to disjoint paths of one bag space race on the token (`rholang/tests/reified_merge_p5.rs:2319-2360`).
+A bag branch that only peeks bumps no token, so it merges with a write, and a peek of a queue races with a write.
+The property `prop_pathmap_token_race` generates pairs of sends and peeks on the bag and the queue (`rholang/tests/reified_merge_p5.rs:2401-2461`).
+Two branches race exactly when both bump the token, and the same logs without the token events merge.
+So `reified_merge_p5.rs` now holds 17 tests and 8 properties.
 
 ### 12.12 Determinism and the pattern-enforcement matrix
 
@@ -2718,10 +2731,11 @@ The qualifiers `temp` and `seq` give `QualifierUnavailable` until P7 (F17), and 
 |---|---|---|---|
 | the 18 wired rows: the bag, set, cell, queue, stack and priority queue of `hashmap`, `array` and `vector` | runs: a pattern for 42 never receives 43 | `QualifierUnavailable` | `QualifierUnavailable` |
 | the join rows: the queue, the bag and the set of `hashmap` | runs: a join for 42 never receives 43 | `QualifierUnavailable` | `QualifierUnavailable` |
+| the 6 PathMap rows: the bag, queue, stack, set, cell and priority queue of `pathmap` | runs: a pattern for 42 never receives 43 | `QualifierUnavailable` | `QualifierUnavailable` |
 | the HashSet families, `hashmap:vectordb`, `vector:vectordb` | no factory | no factory | no factory |
 | `pathmap:vectordb`, `array:vectordb`, `hashset:vectordb` | `UnsupportedPair` | `UnsupportedPair` | `UnsupportedPair` |
 
-The PathMap families have no factory until Phase 2 of the PathMap engine (section [12.16](#1216-the-pathmap-engine)), which adds their rows.
+Phase 2 of the PathMap engine (section [12.16](#1216-the-pathmap-engine)) wires the PathMap families and adds their six rows.
 
 **Wave W3.**
 The joins batch extends both suites to the 18 wired families and to the joins.
@@ -2735,6 +2749,13 @@ Three join rows check that `for (@42 <- a & @y <- b)` never receives the record 
 The rows use the queue, the bag and the set of `hashmap`, and the records and the join waiter stay.
 A join for 42 on two fresh names receives 42.
 Now `reified_determinism.rs` holds 13 tests and 3 properties, and `reified_pattern_enforcement.rs` holds 23 tests and 1 property.
+
+**Phase 2 of the PathMap engine.**
+`reified_pattern_enforcement.rs` adds the six rows `pattern_enforcement_pathmap_*` (`rholang/tests/reified_pattern_enforcement.rs:986-1066`).
+A name of a PathMap space is the path of one element, so its record stays on the data channel of that path.
+The waiter for 42 stays on the index channel of the name, and no COMM touches these channels or the root index channel $`I(\varepsilon)`$.
+The token orders every operation of the space, so the orders of a counted discipline run across the two names.
+Now `reified_pattern_enforcement.rs` holds 29 tests and 1 property.
 
 ### 12.13 The set
 
@@ -2839,7 +2860,7 @@ The property `prop_pq_txn_fires_bounded_at_the_cap` reaches 54 settle jobs at th
 | `peek_join_restores_stored_candidates` | `JoinCascade.v:5156` | `prop_peek_join_restores_stored_candidates` |
 | `greedy_join_can_miss_assignment` | `JoinCascade.v:1345` | `prop_greedy_join_limit` |
 | `continuation_v2_roundtrip` | `RecordEnvelope.v:1734` | `prop_continuation_v2_roundtrip` |
-| `join_ops_race_on_every_counter` | `CounterConflict.v:1891` | `prop_join_ops_race_on_every_counter` |
+| `join_ops_race_on_every_counter` | `CounterConflict.v:1935` | `prop_join_ops_race_on_every_counter` |
 
 The cascade invariant (CI) has one argument for every discipline that cascades: the head-only disciplines (decision 11) and the set (decision 50).
 CI says that every fireable waiter has a dirty collection.
@@ -2937,17 +2958,17 @@ Its 37 new negative controls fail inside their expected lemmas, and the 17 contr
 | R97 | `marker_record_roundtrip` | `PathMapPrefix.v:1350` | `prop_marker_record_roundtrip` |
 | R98 | `vehicle_carries_payload` | `PathMapPrefix.v:1382` | `prop_vehicle_carries_payload` |
 | R99 | `path_element_rules` | `PathMapPrefix.v:1455` | `prop_path_element_rules` |
-| R100 | `delivery_vehicle_single_channel` | `PathMapPrefix.v:1911` | `prop_pathmap_delivery_is_single_channel` (Phase 2) |
+| R100 | `delivery_vehicle_single_channel` | `PathMapPrefix.v:1911` | `prop_pathmap_delivery_is_single_channel` |
 | R101 | `prefix_contact_anchored` | `PathMapPrefix.v:1948` | `prop_candidates_cover_the_prefix_in_key_order` |
 | R102 | `peek_restores_delivered_marker` | `PathMapPrefix.v:2010` | `prop_marker_invariant_preserved`, `prop_waiter_prefixes_are_most_specific_first` |
-| R103 | `no_match_remains` | `PathMapPrefix.v:2380` | `prop_candidates_cover_the_prefix_in_key_order`, `prop_waiter_prefixes_are_most_specific_first`, `prop_pathmap_no_match_remains_any_schedule` (Phase 2) |
+| R103 | `no_match_remains` | `PathMapPrefix.v:2380` | `prop_candidates_cover_the_prefix_in_key_order`, `prop_waiter_prefixes_are_most_specific_first`, `prop_pathmap_no_match_remains_any_schedule` |
 | R104 | `marker_invariant_preserved` | `PathMapPrefix.v:2560` | `prop_marker_invariant_preserved` |
-| R105 | `heads_no_match` | `PathMapPrefix.v:3038` | `prop_pathmap_head_cascade_leaves_no_fireable_head` (Phase 2) |
-| R106 | `token_ord_reentry` | `PathMapPrefix.v:3126` | `prop_pathmap_token_orders_reenter_at_their_place` (Phase 2) |
-| R107 | `prefix_scan_trace_covered` | `PathMapPrefix.v:3268` | `prop_pathmap_reservation_cut_rejects_without_effect` (Phase 2) |
+| R105 | `heads_no_match` | `PathMapPrefix.v:3038` | `prop_pathmap_head_cascade_leaves_no_fireable_head` |
+| R106 | `token_ord_reentry` | `PathMapPrefix.v:3126` | `prop_pathmap_token_orders_reenter_at_their_place` |
+| R107 | `prefix_scan_trace_covered` | `PathMapPrefix.v:3268` | `prop_pathmap_reservation_cut_rejects_without_effect` |
 
-The rows marked "Phase 2" are pending in the invariant map: the integration suite `rholang/tests/reified_pathmap.rs` of Phase 2 writes them ([decision 51](decision-register.md#decision-51)).
-Until then, deterministic witness tests cover these headlines: for example `a_removal_retires_the_record_and_every_other_marker` and `head_orders_take_the_heads_of_a_path`.
+The integration suite `rholang/tests/reified_pathmap.rs` of Phase 2 holds the five properties of Table 85 that Phase 1 left pending, and `prop_pathmap_merge_detects_prefix_contact` of V25.
+Deterministic witness tests cover these headlines too, for example `a_removal_retires_the_record_and_every_other_marker` and `head_orders_take_the_heads_of_a_path`.
 
 `PathMapPrefix.tla` runs the bag discipline on prefixes, with the second send of Rule E and a fork into two branches that merge under check #2.
 It checks `NoMatchRemains` (V23), `MarkerCount` (V24) and `MergeDetectsPrefixContact` (V25), and Table 86 lists its configurations.
@@ -2975,6 +2996,21 @@ So the merge configuration forks after two operations.
 
 The modules `markers.rs`, `delivery.rs` and `outer/pathmap.rs` hold 27 unit tests, 7 of them properties.
 The test `pathmap_segment_codec_matches_epm1_vectors` checks the channel ids of the store against the EPM1 transcription vectors.
+
+**Phase 2.** The prefix source `spaces/pathmap/join.rs` runs every PathMap operation on the join engine ([design N13](design.md#n13-wave-w3-of-p5-the-pathmap-engine)).
+It also runs the joins over prefixes of wave W4, and five unit tests in the module check its keys and depths.
+
+Phase 2 adds no headline to `PathMapPrefix.v`, whose 17 headlines keep their lines, and its 54 negative controls still fail inside their lemmas.
+An addendum of the module traces each method of the prefix source to its definitions.
+It also records the marker authority and the restore of FINISH.
+`PathMapPrefix.tla` does not change, because it models no fire cap and the engine adds no modeled step.
+
+`rholang/tests/reified_pathmap.rs` holds 33 tests and 6 properties.
+Section [11.4](pathmap-prefix-delivery.md#114-integration-tests-and-properties) of the PathMap delivery describes the tests, and its Table 6a lists the properties.
+The tests drive the six PathMap families through the agent and through Rholang programs.
+They cover the FIPS example, the unit rule, the most specific waiter, the markers, the vehicle, the merge contact, replay, restart and the legacy charges.
+Three cap tests check the restore of FINISH: the owed markers return before the commit, and a stale carried offer stores nothing.
+The invariant map now has no pending property.
 
 ### 12.17 Running the P5 checks
 
@@ -3007,13 +3043,14 @@ Step 10 is necessary because `cargo check` computes no layout of an async state 
 | `reified_families` | 16 | [12.8](#128-the-families) |
 | `reified_hooks_p5` | 10 | [12.9](#129-the-receive-queries-and-the-allocation-jobs) |
 | `reified_stack` | 34 | [12.10](#1210-the-stack-and-the-fire-count-of-a-transaction) |
-| `reified_merge_p5` | 23 | [12.11](#1211-the-merge-of-the-p5-families) |
+| `reified_merge_p5` | 25 | [12.11](#1211-the-merge-of-the-p5-families) |
 | `reified_determinism` | 16 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
-| `reified_pattern_enforcement` | 24 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
+| `reified_pattern_enforcement` | 30 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
 | `reified_set` | 31 | [12.13](#1213-the-set) |
 | `reified_priority_queue` | 40 | [12.14](#1214-the-priority-queue) |
 | `reified_joins` | 34 | [12.15](#1215-the-joins-of-one-space) |
 | `reified_join_props` | 25 | [12.15](#1215-the-joins-of-one-space) |
+| `reified_pathmap` | 39 | [12.16](#1216-the-pathmap-engine) |
 
 The unit tests of the PathMap layer and of the PathMap engine (sections [12.7](#127-the-pathmap-layer) and [12.16](#1216-the-pathmap-engine)) run in `cargo test -p rholang --lib`.
 

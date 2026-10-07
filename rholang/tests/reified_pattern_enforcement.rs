@@ -885,3 +885,182 @@ fn prop_pattern_enforcement_any_wired_family() {
         tokio_runtime().block_on(run_case(case))
     });
 }
+
+// ─── The PathMap rows (P5e) ──────────────────────────────────────────────────────────────────
+
+// Phase 2 of the PathMap engine adds the six rows of `pathmap:<inner>`. A name of a PathMap space
+// is the path of one element, so its records lie on the data channel of that path, and its
+// waiters and markers on the index channel of that prefix. The token of the space orders every
+// operation of the space, so the orders of a counted discipline run across the names.
+
+/// The PathMap rows: the six disciplines of `pathmap:<inner>`, which Phase 2 of the PathMap
+/// engine wires (wave W3).
+const PATHMAP_ROWS: [Row; 6] = [
+    Row {
+        outer: SpaceOuter::PathMap,
+        inner: SpaceInner::Bag,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::PathMap,
+        inner: SpaceInner::Queue,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::PathMap,
+        inner: SpaceInner::Stack,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::PathMap,
+        inner: SpaceInner::Set,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::PathMap,
+        inner: SpaceInner::Cell,
+        constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::PathMap,
+        inner: SpaceInner::PriorityQueue,
+        constructor: DEFAULT,
+    },
+];
+
+/// The channels of the name `name` in the PathMap space `space`. A name is the path of one
+/// element (`@c ≡ @[c]`), so its records lie on `D(sid, path_key([name]))`, and its waiters and
+/// markers on `I(sid, prefix_key([name]))`.
+fn path_channels(space: NativeSpace, name: &Par) -> (Par, Par) {
+    let meter = rholang::rust::interpreter::reified::costs::ScanMeter::new(None);
+    let path = std::slice::from_ref(name);
+    let key = rholang::rust::interpreter::spaces::pathmap::path_key(path, &meter)
+        .expect("the path key of a name");
+    let encoded = rholang::rust::interpreter::spaces::pathmap::encode_path(path, &meter)
+        .expect("the path of a name");
+    let prefix = encoded.prefix_key(1).expect("the prefix key of a name");
+    (
+        rholang::rust::interpreter::spaces::outer::pathmap::PathMapOuter::path_data(space, &key),
+        rholang::rust::interpreter::spaces::outer::pathmap::PathMapOuter::index(space, prefix),
+    )
+}
+
+/// The records on the data channel `data` of a path: `(ord, payload, persistent)`, by `ord`.
+async fn path_records(session: &Session, data: &Par) -> Vec<(i64, Vec<Par>, bool)> {
+    let mut records: Vec<(i64, Vec<Par>, bool)> = session
+        .data(data)
+        .await
+        .into_iter()
+        .map(|datum| {
+            let decoded = record::unwrap_pq_datum(&datum.a).expect("a datum record decodes");
+            (decoded.ord, decoded.datum.pars, datum.persist)
+        })
+        .collect();
+    records.sort_by_key(|(ord, _, _)| *ord);
+    records
+}
+
+/// The single-bind waiters on the index channel `index` of a prefix: `(ord, persistent,
+/// peek)`, by `ord`.
+async fn path_parked(session: &Session, index: &Par) -> Vec<(i64, bool, bool)> {
+    let mut parked: Vec<(i64, bool, bool)> = session
+        .waiters(index)
+        .await
+        .into_iter()
+        .map(|waiter| {
+            let ord = record::continuation_ord(&waiter.continuation)
+                .expect("a parked continuation decodes");
+            (ord, waiter.persist, !waiter.peeks.is_empty())
+        })
+        .collect();
+    parked.sort_by_key(|(ord, _, _)| *ord);
+    parked
+}
+
+/// The PathMap row of `row`: a pattern for 42 never receives 43, in both orders, and a pattern
+/// for 42 receives 42. The record 43 stays on the data channel of its name, the waiter for 42
+/// stays on the index channel of the name, and no COMM touches these channels or the root index
+/// channel `I(ε)`. The token `S(sid)` orders every operation of the space (decision 31), so the
+/// orders of a counted discipline run across the two names: 0 and 1 on `a`, then 2 and 3 on `b`.
+/// A bag and a set have the order 0.
+async fn check_pathmap_row(row: Row) {
+    let urn = row.family().to_string();
+    let mut session = Session::new().await;
+    let space = session.setup(&urn, row.constructor).await;
+    let root =
+        rholang::rust::interpreter::spaces::outer::pathmap::PathMapOuter::index(space.space, &[]);
+    for (name, par, send_first, (send_ord, receive_ord)) in [
+        ("a", &space.a, true, (0, 1)),
+        ("b", &space.b, false, (3, 2)),
+    ] {
+        let (data, index) = path_channels(space.space, par);
+        let [first, second] = negative_deploys(name, send_first, &urn);
+        for (position, source) in [first, second].iter().enumerate() {
+            let deploy = session
+                .run(source, &format!("rrs-n3 {urn} {name} {position}"))
+                .await;
+            for channel in [&data, &index, &root] {
+                assert_eq!(
+                    comms_on(&deploy.log, channel),
+                    0,
+                    "{urn}: no COMM touches the channels of {name}"
+                );
+            }
+        }
+        assert!(
+            session.values(GOT).await.is_empty(),
+            "{urn}: a pattern for 42 never receives 43 ({name})"
+        );
+        let (send_ord, receive_ord) = match row.counted() {
+            true => (send_ord, receive_ord),
+            false => (0, 0),
+        };
+        assert_eq!(
+            path_records(&session, &data).await,
+            vec![(send_ord, vec![gint(43)], false)],
+            "{urn}: the record 43 stays on the path of {name}"
+        );
+        assert_eq!(
+            path_parked(&session, &index).await,
+            vec![(receive_ord, false, false)],
+            "{urn}: the waiter for 42 stays on the prefix of {name}"
+        );
+    }
+    session
+        .run(
+            &with_space(&positive_source(42)),
+            &format!("rrs-n3 {urn} positive"),
+        )
+        .await;
+    assert_eq!(
+        session.values(GOT).await,
+        vec![got("positive", 42)],
+        "{urn}: a pattern for 42 receives 42"
+    );
+}
+
+/// `pathmap:bag`: a pattern for 42 never receives 43 on a name of the space, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_pathmap_bag() { check_pathmap_row(PATHMAP_ROWS[0]).await; }
+
+/// `pathmap:queue`: a pattern for 42 never receives 43 on a name of the space, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_pathmap_queue() { check_pathmap_row(PATHMAP_ROWS[1]).await; }
+
+/// `pathmap:stack`: a pattern for 42 never receives 43 on a name of the space, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_pathmap_stack() { check_pathmap_row(PATHMAP_ROWS[2]).await; }
+
+/// `pathmap:set`: a pattern for 42 never receives 43 on a name of the space, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_pathmap_set() { check_pathmap_row(PATHMAP_ROWS[3]).await; }
+
+/// `pathmap:cell`: a pattern for 42 never receives 43 on a name of the space, in both orders. The
+/// path of the name then holds the record 43, and its prefix the waiter for 42.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_pathmap_cell() { check_pathmap_row(PATHMAP_ROWS[4]).await; }
+
+/// `pathmap:priorityqueue`: a pattern for 42 never receives 43 on a name of the space, in both
+/// orders, with sends and receives without a priority.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_pathmap_priorityqueue() { check_pathmap_row(PATHMAP_ROWS[5]).await; }

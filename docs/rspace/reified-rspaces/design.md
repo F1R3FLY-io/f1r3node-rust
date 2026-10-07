@@ -1730,8 +1730,8 @@ The two consumed sets do not overlap, but no serial order of the branches gives 
 A second example uses persistent receives: each branch fires the persistent head waiter of one queue and stores a datum on the other queue.
 With a bump on every operation, both examples race on the counters.
 
-The headline `merge_without_race_is_serializable` (`CounterConflict.v:1433`) proves that a merge without a race gives the state of some serial run of whole deploys [[Pap79](#ref-pap79)].
-The headline `counter_free_peek_admits_write_skew` (`CounterConflict.v:2053`) computes the write skew of the counter-free peek.
+The headline `merge_without_race_is_serializable` (`CounterConflict.v:1477`) proves that a merge without a race gives the state of some serial run of whole deploys [[Pap79](#ref-pap79)].
+The headline `counter_free_peek_admits_write_skew` (`CounterConflict.v:2366`) computes the write skew of the counter-free peek.
 
 **Cost.** Each operation on a queue pays three extra events: the Consume and the COMM of the take, and the Produce of the put.
 The first operation on a collection pays four extra events, because it also produces the space counter.
@@ -1745,7 +1745,7 @@ Figure N3 shows the merge flow of the counter conflict.
 A removal must bump the counter too.
 The M-1 arbitration found this with two [crossed stacks](glossary.md#crossed-stacks), and Figure N3b shows the case.
 `CounterConflict.tla` runs the same merge for stacks, and its Unsafe control `RemovalCounterFreeUnsafe.cfg` drops the bump of a pop.
-The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2146`) computes the counterexample.
+The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2459`) computes the counterexample.
 
 ![The crossed stacks, as an activity diagram. The pre-state holds the stack a with the record 10 and the stack b with the record 20, each with its counter record. Branch A pushes 1 onto a and pops b, and branch B pushes 2 onto b and pops a. In lane 1, the code, every operation bumps its counter, so both branches consume the pre-state counter produces of a and b, check 1 finds the shared produces, and the merge rejects one branch. In lane 2 a pop does not bump the counter: the branches consume different produces, checks 1, 2 and 3 find nothing, and the merge keeps both pops, A popped 20 and B popped 10. But the serial order A then B makes B pop 1, and the order B then A makes A pop 2, so no serial order gives the merged outcome.](diagrams/23-crossed-stacks-merge.svg)
 
@@ -1755,7 +1755,7 @@ The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConfli
 
 `GenericSpace<S, D>` (`spaces/generic.rs:488-491`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
 The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:54`).
-The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:219-229`, `344-435`).
+The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:273-283`, `422-513`).
 Two traits separate the parts of a family:
 
 - `OuterStore` (`spaces/generic.rs:134-226`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`. Its P5 hooks check a routed key, stage the records of a creation, and allocate index names. The defaults of the hooks do no work.
@@ -2361,7 +2361,7 @@ A second creation of one id fails with `SpaceAlreadyExists` in play and in repla
 | 6 | The params are named. | `PositionalParamsUnsupported` |
 | 7 | Each named param is in the schema of the family, in bytewise order of the keys. The schema of `hashmap:queue` is empty. | `UnknownParam`, with a suggestion |
 
-The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:167-176`). A tie goes to the bytewise least candidate.
+The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:170-179`). A tie goes to the bytewise least candidate.
 
 **The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:117-151`).
 Its pattern `[...@args]` binds the whole call as one list, and its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP`.
@@ -2621,13 +2621,16 @@ Every new family runs on the engine of S1. A discipline and an outer store plug 
 
 #### N11.1 Family dispatch and registration
 
-`Family` lists the wired families, and `FamilyAgent` runs the agent of the family that the config of the space names (`spaces/families.rs:123-160`, `spaces/families.rs:349-358`).
-The dispatch tries the arms in the order of `Family::WIRED`: `hashmap:queue` first, then ascending family index.
-Each arm that it tries reserves one comparison of the names of the config and of the arm (`spaces/families.rs:219-229`).
+`Family` lists the wired families, and `FamilyAgent` runs the agent of the family that the config of the space names (`spaces/families.rs:151-200`, `spaces/families.rs:427-436`).
+The dispatch tries the arms in the order of `Family::WIRED`: `hashmap:queue` first, then ascending family index, and the PathMap families of P5e last.
+Each arm that it tries reserves one comparison of the names of the config and of the arm (`spaces/families.rs:273-283`).
 So the arm at the position $`i`$ reserves $`i + 1`$ comparisons, and a queue operation keeps the host work of P4.
-At this commit eighteen families are wired: the bag, queue, stack, set, cell and priority queue families of the `hashmap`, `array` and `vector` stores.
 
-The registration reads the family dispatch (`spaces/factory/urn.rs:124`).
+At the end of P5, twenty-four families are wired.
+They are the bag, queue, stack, set, cell and priority queue families of four stores: `hashmap`, `pathmap`, `array` and `vector`.
+The PathMap arms come last, so the dispatch of each family that was wired before them reserves the comparisons that it reserved before.
+
+The registration reads the family dispatch (`spaces/factory/urn.rs:156`).
 A factory row is registered exactly when its family has an arm.
 So no manual step can register a family without an agent or forget a wired family.
 `definitions` installs the four P4 processes, then the factory of each registered P5 family in family-index order, then the factory of each registered alias (`reified/system_processes.rs:63-104`).
@@ -3242,14 +3245,16 @@ A differential test runs 80 programs and compares their staged operations, event
 
 The [PathMap delivery](pathmap-prefix-delivery.md) explains the PathMap store in full, and the [specification](specification.md#26-the-pathmap-store) states its rules PS-1 to PS-10.
 Phase 1 of wave W3 adds three modules. Phase 2 runs their plans on the join engine of N12 and registers the PathMap families ([decision 51](decision-register.md#decision-51)).
+Phase 2 adds the fourth module of Table N13, the [prefix source](glossary.md#prefix-source), and the joins over prefixes of wave W4.
 
-*Table N13. The modules of Phase 1 of the PathMap engine.*
+*Table N13. The modules of the PathMap engine.*
 
 | Module | Content |
 |---|---|
 | `spaces/outer/pathmap.rs` | `PathMapOuter`: the key check with the path rules, the data channel of a path, the index channel of a prefix, and the token. |
 | `spaces/pathmap/markers.rs` | The marker record, its random state, the vehicle, and their strict and metered decoders. |
 | `spaces/pathmap/delivery.rs` | The pure plans over a staged view: CONSUME-CANDIDATES, PRODUCE-WAITERS, REROOT, STORE-MARKERS, RETIRE-PLAN, and the head and scan orders on prefixes. |
+| `spaces/pathmap/join.rs` | `PrefixSource`, the store seam `JoinSource` of a PathMap space (Phase 2). PREFIX-SCOPE gives the own prefixes of an operation, the closure of their join groups and of the stored datums, and the lock keys. The windows, the vehicles, the second sends, RETIRE-PLAN at each fire site and FINISH run there. |
 
 The PATHMAP-ENGINE batch took five design choices within the recorded decisions:
 
@@ -3262,6 +3267,32 @@ The PATHMAP-ENGINE batch took five design choices within the recorded decisions:
 The choice D-1 keeps the second send of a peek exactly as the host's second send ([decision 45](decision-register.md#decision-45)).
 The other reading, a peek that retires the record and the markers itself, would mark records of the pre-state as consumed.
 It would also change shared index channels without a bump of the token.
+
+Phase 2 connects the plans to the join engine through the record seams of N12.11.
+`PathMapOuter` sets `ALWAYS_ESCALATES`, and its hooks `classify` and `run_join` send every PathMap operation to the engine, also a single-bind one.
+The scope key of a prefix $`q`$ is `[0x49] ‖ prefix_key(q)`, so no scope key of a PathMap space is equal to a keyed collection key.
+A receive with two or more binds on prefixes of one space is a join over prefixes (wave W4).
+Its group order is ascending by the hash of each index channel $`I(q_i)`$, then by bind index.
+The [PathMap delivery](pathmap-prefix-delivery.md#510-the-prefix-source-on-the-join-engine) gives each method of the source with its pseudocode.
+
+Phase 2 took three more design choices within the recorded decisions:
+
+6. **D-6: the marker authority.** Every marker of a datum $`d`$ carries the cost authority of the record of $`d`$ on $`D(p)`$ (rule PS-3).
+   One function, `marker_authority`, gives it to STORE-MARKERS and to the restore of a marker.
+   So a restored marker has the bytes and the produce identity of the removed marker.
+   This holds also when the record carries no authority or an empty one.
+7. **D-7: a fire cap that leaves a marker owed** (open item O-2 of the seam arbitration).
+   FINISH stores again each marker that the capped transaction still owes, before its commit.
+   The settle job carries only the offer of the datum, with its depth in `restore` (rule PS-8).
+   When another job of the deploy spends the datum first, the offer meets no waiter and stores nothing.
+   So no job sees a stored datum without one of its markers.
+8. **D-8: the full closure.** When a prefix of the scope holds a marker, PREFIX-SCOPE reads the root $`I(\varepsilon)`$ and adds each prefix of each stored datum.
+   So the work of an operation grows with the number of datums of the space, and the meter reserves each read first.
+   The scheduler already runs the operations of one space one at a time ([I-11](decision-register.md#i-11)), so the wider scope removes no parallel work.
+
+The choice D-7 keeps the marker invariant at every commit.
+The other reading of O-2, a settle job that restores the marker, would leave the invariant broken between two commits.
+Each other job of the deploy could then read a datum without one of its markers.
 
 ## References
 

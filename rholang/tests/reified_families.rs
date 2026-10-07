@@ -551,8 +551,9 @@ new alias(`rho:space:HashMapBagSpace`), bag(`rho:space:hashmap:bag`),
             }
         }
     }
-    // The PathMap alias is never registered in this phase.
-    assert!(!registered_aliases().any(|(channel, _)| channel.urn == PATHMAP_BAG_ALIAS));
+    // Phase 2 of P5e wires `pathmap:bag`, so its FIPS alias is registered too
+    // (`reified_pathmap.rs`, `reified_pathmapspace_alias_equal`).
+    assert!(registered_aliases().any(|(channel, _)| channel.urn == PATHMAP_BAG_ALIAS));
 }
 
 /// A registered alias adds a definition with the channel, the arity and the body ref of its
@@ -601,20 +602,26 @@ async fn space_factory_alias_install_idempotent() {
                 assert_eq!(installed.len(), 1, "one install on the shared channel");
                 assert_eq!(urn_map.get(alias.urn), urn_map.get(&family.to_string()));
                 assert_eq!(urn_map.get(alias.urn), factory_capability(family).as_ref());
-                // Both URNs create spaces of the family.
+                // Both URNs create spaces of the family. Each alias row runs a deploy of its own
+                // label, so the factory calls of two rows derive distinct space ids, and replies
+                // on channels of its own.
+                let (one, two) = (
+                    format!("rrs-p5-one-{}", alias.op),
+                    format!("rrs-p5-two-{}", alias.op),
+                );
                 session
                     .run(
                         &format!(
                             "new viaAlias(`{}`), viaFamily(`{family}`) in {{ \
-                             for (one <- viaAlias!?(\"default\")) {{ @\"rrs-p5-one\"!(*one) }} | \
-                             for (two <- viaFamily!?(\"default\")) {{ @\"rrs-p5-two\"!(*two) }} }}",
+                             for (one <- viaAlias!?(\"default\")) {{ @\"{one}\"!(*one) }} | \
+                             for (two <- viaFamily!?(\"default\")) {{ @\"{two}\"!(*two) }} }}",
                             alias.urn
                         ),
-                        "rrs-p5-alias-both",
+                        &format!("rrs-p5-alias-both {}", alias.urn),
                     )
                     .await;
-                let one = native(&session.sole("rrs-p5-one").await);
-                let two = native(&session.sole("rrs-p5-two").await);
+                let one = native(&session.sole(&one).await);
+                let two = native(&session.sole(&two).await);
                 assert_ne!(one.sid, two.sid);
                 for space in [one, two] {
                     assert_eq!(family_of(&stored_config(&session, space).await), Ok(family));

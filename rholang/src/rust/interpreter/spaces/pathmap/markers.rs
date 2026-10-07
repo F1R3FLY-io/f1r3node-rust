@@ -23,7 +23,7 @@
 //!   `PathMarker.derive(d.rs).split_short(k)`. So the markers of one datum have distinct random
 //!   states, and a marker is a function of `d` and `k` alone.
 //! * A marker is persistent exactly when `d` is persistent. It has no cost stack, and it carries
-//!   the cost authority that its store registers.
+//!   the cost authority of the record of `d` on `D(p)` ([`marker_authority`]).
 //!
 //! The vehicle of `d` on `I(q)` is the incoming record of a produce-side delivery (decision 40,
 //! Q3). It is the marker of `d` on `q` followed by the payload of `d`, with the random state, the
@@ -121,6 +121,15 @@ fn envelope_of(source: Vec<u8>) -> Par {
 /// envelope has its shape, so a reserved copy of the template reserves the allocations of a new
 /// envelope before the builder makes them.
 static ENVELOPE: LazyLock<Par> = LazyLock::new(|| envelope_of(vec![0; SOURCE_LEN]));
+
+/// The cost authority of every marker of the datum whose record on `D(p)` is `datum_record`: the
+/// cost authority of that record (open point 6 of the seams arbitration). The store of the
+/// markers and the restore of a marker that a peek removed take the authority from this one
+/// function. So a restored marker has the bytes and the produce identity of the removed marker,
+/// also when the record carries no authority or an empty one.
+pub fn marker_authority(datum_record: &ListParWithRandom) -> Option<&CostAuthority> {
+    datum_record.cost_authority.as_ref()
+}
 
 /// The random state of the marker of a datum on the prefix of depth `depth`:
 /// `PathMarker.derive(datum_random).split_short(depth)`. A prefix is at most

@@ -1252,6 +1252,22 @@ CONTROLS = (
     # ── P5 W3: CounterConflict.v, the merges of set collections (F24, F25; main session) ──
     ('cc-set-retire-peeks', 'CounterConflict', 'a retirement of a set member is a peek COMM, so its produce is filed as peeked and check #1 does not see the race of two retirements (F24)', '    exists kont ps, In (EvComm kont ps false) log /\\ In p ps.\n', '    exists kont ps, In (EvComm kont ps true) log /\\ In p ps.\n', ('retires_consumed',)),
     ('cc-set-view-list-order', 'CounterConflict', 'the view of a set depends on the list order of its records, not on the canonical order of DR-75 (decision 41 reverted), so the merged view need not be a serial view (F25)', "      (forall l l', Permutation l l' -> set_view l = set_view l') ->\n", "      (forall l l', l = l' -> set_view l = set_view l') ->\n", ('unordered_set_writes_commute',)),
+    # ── P5 W3 Phase 2: CounterConflict.v, the PathMap token race (batch PATHMAP-ENGINE, headline 15) ──
+    ("cc-pathmap-write-skips-token", "CounterConflict",
+     "a bag or a set step that changed the state stages no token bump, so a PathMap write does "
+     "not consume the token record and two writing branches need not race on S(sid)",
+     "    | false, true =>\n"
+     "        let b := token_bump tag st s in (fst b, pmap_events tag st s j ++ snd b)\n",
+     "    | false, true => (st, pmap_events tag st s j)\n",
+     ("exec_pmap_consumes_token",)),
+    ("cc-pathmap-store-not-a-change", "CounterConflict",
+     "a store that is not a restore does not count as a change of the state (decision 51 "
+     "reverted for stores), so a bag or a set branch that only stores bumps no token",
+     "    | PStore | PPark | PSpendDatum | PSpendWaiter | PRetireClass => true\n"
+     "    | PRestore | PRead => false\n",
+     "    | PPark | PSpendDatum | PSpendWaiter | PRetireClass => true\n"
+     "    | PStore | PRestore | PRead => false\n",
+     ("store_changes",)),
     # ── P5 W2: DataCollection.v, ContinuationCollection.v (batch BAG, P5a) ──────────────
     ("dc-order-by-list-position", "DataCollection",
      "the driver visits the records in list order, not in the canonical order of DR-75 (decision 41)",

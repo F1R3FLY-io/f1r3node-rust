@@ -1007,6 +1007,12 @@
       "name": "TouchedCountersBumped",
       "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
       "statement": "Each staging of a join transaction on a collection follows a bump of its counter in the same transaction (queue, stack)."
+    },
+    "R129": {
+      "kind": "rocq",
+      "name": "pathmap_token_race",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Two branches that each run a PathMap step that bumps the token of one space race on S(sid) in check #1. A step bumps the token when its discipline is ordered, or when its transaction changes the state (decision 51)."
     }
   },
   "items": [
@@ -1016,7 +1022,7 @@
       "file": "rholang/src/rust/interpreter/spaces/families.rs",
       "kind": "struct",
       "name": "FamilyAgent",
-      "line": 344,
+      "line": 422,
       "role": "The space agent of every wired family.",
       "rocq": [
         "receive_plan",
@@ -1042,7 +1048,7 @@
       "scope": "Family",
       "kind": "fn",
       "name": "of_config",
-      "line": 219,
+      "line": 273,
       "role": "The family that a config names, one reserved comparison for each arm.",
       "covers": [
         "R44",
@@ -2422,7 +2428,7 @@
       "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
       "kind": "const",
       "name": "HASHMAP_BAG_SPACE_ALIAS",
-      "line": 247,
+      "line": 289,
       "role": "The FIPS alias of hashmap:bag.",
       "rocq": [
         "alias_rows"
@@ -2437,7 +2443,7 @@
       "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
       "kind": "const",
       "name": "P5_SYSTEM_CHANNELS",
-      "line": 272,
+      "line": 323,
       "role": "The op channels of the P5 factories.",
       "rocq": [
         "p5_rows",
@@ -2454,7 +2460,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "const",
       "name": "REGISTERED_FAMILIES",
-      "line": 33,
+      "line": 35,
       "role": "The P4 factory row.",
       "rocq": [
         "p4_rows"
@@ -2469,7 +2475,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "const",
       "name": "P5_FAMILY_ROWS",
-      "line": 45,
+      "line": 47,
       "role": "The P5 factory rows.",
       "rocq": [
         "p5_rows"
@@ -2484,7 +2490,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "const",
       "name": "P5_ALIAS_ROWS",
-      "line": 118,
+      "line": 144,
       "role": "The P5 alias rows.",
       "rocq": [
         "alias_rows"
@@ -2499,7 +2505,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "fn",
       "name": "is_wired",
-      "line": 124,
+      "line": 156,
       "role": "A family is wired when the dispatch has its arm.",
       "covers": [
         "R18"
@@ -2511,7 +2517,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "fn",
       "name": "registered_p5_families",
-      "line": 128,
+      "line": 160,
       "role": "The P5 rows of the wired families.",
       "rocq": [
         "registered"
@@ -2526,7 +2532,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "fn",
       "name": "registered_families",
-      "line": 136,
+      "line": 168,
       "role": "Every registered family and its channel.",
       "rocq": [
         "registered"
@@ -2541,7 +2547,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "fn",
       "name": "registered_aliases",
-      "line": 144,
+      "line": 176,
       "role": "The aliases of the registered families.",
       "rocq": [
         "registered_aliases"
@@ -2556,7 +2562,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "fn",
       "name": "registered_channel",
-      "line": 151,
+      "line": 183,
       "role": "The channel of a registered URN.",
       "rocq": [
         "is_registered"
@@ -2572,7 +2578,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "fn",
       "name": "factory_capability",
-      "line": 166,
+      "line": 198,
       "role": "The capability of the factory of a family.",
       "rocq": [
         "factory_op"
@@ -2619,7 +2625,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
       "kind": "fn",
       "name": "schema",
-      "line": 69,
+      "line": 68,
       "role": "The constructor schema of a family.",
       "rocq": [
         "schema_of"
@@ -2636,7 +2642,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
       "kind": "fn",
       "name": "constructor_schema",
-      "line": 100,
+      "line": 103,
       "role": "The params that the factory of a family takes.",
       "rocq": [
         "schema_of"
@@ -2651,7 +2657,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
       "kind": "fn",
       "name": "required_params",
-      "line": 106,
+      "line": 109,
       "role": "The params that the factory of a family requires.",
       "rocq": [
         "required_of"
@@ -2667,7 +2673,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
       "kind": "struct",
       "name": "ParamRule",
-      "line": 112,
+      "line": 115,
       "role": "The value rule of one constructor param.",
       "rocq": [
         "rule"
@@ -2685,7 +2691,7 @@
       "scope": "ParamRule",
       "kind": "fn",
       "name": "of",
-      "line": 123,
+      "line": 126,
       "role": "The rule of a param name.",
       "rocq": [
         "rule_of"
@@ -2701,7 +2707,7 @@
       "scope": "ParamRule",
       "kind": "fn",
       "name": "canonical",
-      "line": 135,
+      "line": 138,
       "role": "The canonical value of a param, or none.",
       "rocq": [
         "canonical"
@@ -2718,7 +2724,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
       "kind": "fn",
       "name": "suggestion",
-      "line": 167,
+      "line": 170,
       "role": "The least (distance, key) suggestion within two edits.",
       "rocq": [
         "suggest",
@@ -4488,7 +4494,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "marker_random",
-      "line": 128,
+      "line": 137,
       "role": "The random state of the marker of a datum on a prefix.",
       "unmodeled": "The model names a marker by its datum and its prefix. The witness test marker_random_states_differ_by_depth_and_follow_the_path_marker_purpose checks the derivation."
     },
@@ -4498,7 +4504,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "marker_record",
-      "line": 143,
+      "line": 152,
       "role": "The marker record of a stored datum on a prefix.",
       "rocq": [
         "marker_pars",
@@ -4517,7 +4523,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "marker_record_metered",
-      "line": 161,
+      "line": 170,
       "role": "The marker record with each read and copy reserved first (decision 42).",
       "rocq": [
         "marker_pars",
@@ -4534,7 +4540,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "vehicle",
-      "line": 188,
+      "line": 197,
       "role": "The vehicle of a delivery: the marker pars followed by the payload, never stored (decision 40, Q3).",
       "rocq": [
         "vehicle_pars"
@@ -4553,7 +4559,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "vehicle_metered",
-      "line": 209,
+      "line": 218,
       "role": "The vehicle with each read and copy reserved first.",
       "rocq": [
         "vehicle_pars"
@@ -4569,7 +4575,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "decode_marker",
-      "line": 269,
+      "line": 278,
       "role": "The strict decoder of a marker record.",
       "rocq": [
         "decode_marker",
@@ -4585,7 +4591,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "decode_marker_metered",
-      "line": 279,
+      "line": 288,
       "role": "The strict marker decoder with its reads reserved first.",
       "rocq": [
         "decode_marker"
@@ -4601,7 +4607,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "decode_vehicle",
-      "line": 288,
+      "line": 297,
       "role": "The strict decoder of a vehicle.",
       "rocq": [
         "decode_vehicle"
@@ -4616,7 +4622,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
       "kind": "fn",
       "name": "decode_vehicle_metered",
-      "line": 301,
+      "line": 310,
       "role": "The strict vehicle decoder with its reads reserved first.",
       "rocq": [
         "decode_vehicle"
@@ -4632,7 +4638,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "consume_candidates",
-      "line": 173,
+      "line": 175,
       "role": "CONSUME-CANDIDATES: the datums under a prefix in path-key order, the exact path first, the discipline order within a path.",
       "rocq": [
         "candidates",
@@ -4655,7 +4661,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "produce_waiters",
-      "line": 338,
+      "line": 389,
       "role": "PRODUCE-WAITERS: the waiters of the path and of each prefix, the most specific first.",
       "rocq": [
         "offer_list",
@@ -4677,7 +4683,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "rerooted",
-      "line": 385,
+      "line": 436,
       "role": "REROOT: the delivery of each argument under the suffix of the path.",
       "rocq": [
         "reroot"
@@ -4699,7 +4705,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "store_markers",
-      "line": 409,
+      "line": 460,
       "role": "STORE-MARKERS: the record on D(p), then one marker on each I(q) in depth order.",
       "rocq": [
         "store_datum",
@@ -4722,7 +4728,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "retire_plan",
-      "line": 444,
+      "line": 542,
       "role": "RETIRE-PLAN: single-channel retires of the record and of every marker but the delivered one.",
       "rocq": [
         "retired_depths",
@@ -4745,7 +4751,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "marker_index",
-      "line": 458,
+      "line": 556,
       "role": "The marker of a datum on one prefix, which a second send restores (decision 45).",
       "rocq": [
         "take_marker",
@@ -4764,7 +4770,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "head_order",
-      "line": 479,
+      "line": 577,
       "role": "The head order of a path for a head-only discipline on prefixes.",
       "rocq": [
         "oldest",
@@ -4781,7 +4787,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "scan_data_order",
-      "line": 516,
+      "line": 614,
       "role": "The canonical order of DR-75 of the records of a path. The model takes it as the order parameter of candidates.",
       "rocq": [
         "candidates"
@@ -4796,7 +4802,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "scan_waiter_order",
-      "line": 522,
+      "line": 620,
       "role": "The canonical order of DR-75 of the waiters of a prefix. The model takes it as the waiter order parameter of offer_list.",
       "rocq": [
         "offer_list"
@@ -4811,7 +4817,7 @@
       "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
       "kind": "fn",
       "name": "candidate_cmp",
-      "line": 532,
+      "line": 630,
       "role": "The candidate order: the path key, then the discipline rank.",
       "rocq": [
         "cand_lt"
@@ -4830,7 +4836,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "token",
-      "line": 79,
+      "line": 85,
       "role": "The token of a PathMap space: its space counter S(sid).",
       "rocq": [
         "bump",
@@ -4847,7 +4853,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "path_data",
-      "line": 82,
+      "line": 88,
       "role": "The data channel D(sid, path_key(p)) of a path.",
       "rocq": [
         "data_chan"
@@ -4866,7 +4872,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "index",
-      "line": 88,
+      "line": 94,
       "role": "The index channel I(sid, prefix_key(q)) of a prefix.",
       "rocq": [
         "index_chan"
@@ -4887,7 +4893,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "path_channels",
-      "line": 121,
+      "line": 127,
       "role": "The data channel of a path and the index channel of each prefix, depth 0 first.",
       "rocq": [
         "prefixes",
@@ -4909,7 +4915,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "key",
-      "line": 156,
+      "line": 190,
       "role": "The collection key of a channel of a PathMap space: its path key.",
       "rocq": [
         "path_key"
@@ -4928,7 +4934,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "check_key",
-      "line": 167,
+      "line": 201,
       "role": "The path rules: PathTooDeep, then UnsupportedPathElement at any depth (F9).",
       "rocq": [
         "check_path",
@@ -4946,7 +4952,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "counter_channel",
-      "line": 184,
+      "line": 218,
       "role": "The counter of every path of a PathMap space is its token.",
       "rocq": [
         "bump",
@@ -4963,7 +4969,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "creation_records",
-      "line": 191,
+      "line": 225,
       "role": "A new PathMap space stages no record of the store.",
       "unmodeled": "The generic creation stages the token with the value 0. The witness test a_creation_stages_no_record_of_the_store checks the store adds nothing."
     },
@@ -4974,7 +4980,7 @@
       "scope": "PathMapOuter",
       "kind": "fn",
       "name": "gensym",
-      "line": 203,
+      "line": 237,
       "role": "A name of a PathMap space roots a private subtree.",
       "unmodeled": "The HashMap gensym. The witness test gensym_names_root_a_private_subtree checks it."
     },
@@ -6079,6 +6085,448 @@
       ],
       "covers": [
         "R123"
+      ]
+    },
+    {
+      "item": "pathmap::marker_authority",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+      "kind": "fn",
+      "name": "marker_authority",
+      "line": 130,
+      "role": "The cost authority of every marker of a datum: the authority of the record of the datum, for the store and the restore (arbitration item 6).",
+      "unmodeled": "The model keeps the pars of a record, not its authority. The Rust test pathmap_peek_restores_marker checks that a restore rebuilds the bytes and the produce hash for no authority, an empty authority and a region."
+    },
+    {
+      "item": "pathmap::consume_candidates_excluding",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+      "kind": "fn",
+      "name": "consume_candidates_excluding",
+      "line": 190,
+      "role": "CONSUME-CANDIDATES without the datums in flight of the transaction (arbitration section 5).",
+      "rocq": [
+        "candidates",
+        "cand_lt"
+      ],
+      "tla": [
+        "Receive",
+        "KeyLess"
+      ],
+      "covers": [
+        "R28",
+        "R101",
+        "R103",
+        "V23"
+      ]
+    },
+    {
+      "item": "pathmap::is_excluded",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+      "kind": "fn",
+      "name": "is_excluded",
+      "line": 368,
+      "role": "True when a source hash is one of the datums in flight.",
+      "rocq": [
+        "take_marker",
+        "put_marker"
+      ],
+      "covers": [
+        "R102"
+      ]
+    },
+    {
+      "item": "pathmap::datum_markers",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+      "kind": "fn",
+      "name": "datum_markers",
+      "line": 494,
+      "role": "STORE-MARKERS of a datum with the random state and the authority of its record.",
+      "rocq": [
+        "markers_of",
+        "marker_at"
+      ],
+      "tla": [
+        "MarkersOf"
+      ],
+      "covers": [
+        "R101",
+        "R104",
+        "V24"
+      ]
+    },
+    {
+      "item": "pathmap::datum_marker",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+      "kind": "fn",
+      "name": "datum_marker",
+      "line": 515,
+      "role": "The marker of one depth of a datum, built again for its restore with the bytes of the stored marker.",
+      "rocq": [
+        "marker_at",
+        "put_marker"
+      ],
+      "covers": [
+        "R102",
+        "R104"
+      ]
+    },
+    {
+      "item": "PathMapOuter::ALWAYS_ESCALATES",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+      "scope": "PathMapOuter",
+      "kind": "const",
+      "name": "ALWAYS_ESCALATES",
+      "line": 162,
+      "role": "Every PathMap operation runs in one new transaction over the lock keys of its prefix scope (joins plan 9).",
+      "unmodeled": "The escalation is a lock-key rule of the substrate. The Rust test pathmap_staging_stays_in_the_lock_keys checks one escalation and the lock keys of every staged channel."
+    },
+    {
+      "item": "PathMapOuter::classify",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+      "scope": "PathMapOuter",
+      "kind": "fn",
+      "name": "classify",
+      "line": 166,
+      "role": "The PathMap hook of CLASSIFY: every operation runs on the join engine over its prefix scope.",
+      "unmodeled": "The classification checks the operation and computes its lock keys. The Rust tests of the path rules and of the lock keys check it."
+    },
+    {
+      "item": "PathMapOuter::run_join",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+      "scope": "PathMapOuter",
+      "kind": "fn",
+      "name": "run_join",
+      "line": 177,
+      "role": "The PathMap hook of RUN-JOIN: the engine runs the operation with the prefix source.",
+      "rocq": [
+        "offer_loop",
+        "receive_loop"
+      ],
+      "covers": [
+        "R102",
+        "R103",
+        "V23"
+      ]
+    },
+    {
+      "item": "pathmap_join::classify",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "kind": "fn",
+      "name": "classify",
+      "line": 123,
+      "role": "CLASSIFY of a PathMap operation: the checks, then the prefix scope.",
+      "rocq": [
+        "check_path"
+      ],
+      "covers": [
+        "R99"
+      ]
+    },
+    {
+      "item": "pathmap_join::prefix_scope",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "kind": "fn",
+      "name": "prefix_scope",
+      "line": 700,
+      "role": "PREFIX-SCOPE: the own prefixes, the closure under the join groups and the paths of the stored datums, and the lock keys.",
+      "rocq": [
+        "prefixes",
+        "index_chan"
+      ],
+      "tla": [
+        "PrefixesOf"
+      ],
+      "covers": [
+        "R101",
+        "V25"
+      ]
+    },
+    {
+      "item": "pathmap_join::run_join",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "kind": "fn",
+      "name": "run_join",
+      "line": 136,
+      "role": "RUN-JOIN of a PathMap operation: the scope keys of its channels and the engine with the prefix source.",
+      "rocq": [
+        "offer_loop",
+        "receive_loop"
+      ],
+      "covers": [
+        "R102",
+        "R103",
+        "V23"
+      ]
+    },
+    {
+      "item": "PrefixSource",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "kind": "struct",
+      "name": "PrefixSource",
+      "line": 736,
+      "role": "The store seam of the join engine for a PathMap space (joins plan 9).",
+      "rocq": [
+        "state"
+      ],
+      "covers": [
+        "R104"
+      ]
+    },
+    {
+      "item": "PrefixSource::window",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "window",
+      "line": 2211,
+      "role": "The window of need binds on a prefix: for each path under it in path-key order, the discipline window without the datums in flight.",
+      "rocq": [
+        "window",
+        "fireable"
+      ],
+      "covers": [
+        "R103",
+        "R105",
+        "V23"
+      ]
+    },
+    {
+      "item": "PrefixSource::offer_order",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "offer_order",
+      "line": 2287,
+      "role": "PRODUCE-WAITERS on the engine: the waiters of each prefix of the path, the most specific first.",
+      "rocq": [
+        "offer_list",
+        "send_prefixes"
+      ],
+      "tla": [
+        "SendSees",
+        "Offer"
+      ],
+      "covers": [
+        "R102",
+        "R103",
+        "V23"
+      ]
+    },
+    {
+      "item": "PrefixSource::cascade_order",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "cascade_order",
+      "line": 2322,
+      "role": "The heads of a prefix that a cascade tests.",
+      "rocq": [
+        "cascade"
+      ],
+      "covers": [
+        "R105"
+      ]
+    },
+    {
+      "item": "PrefixSource::stored_entry",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "stored_entry",
+      "line": 2488,
+      "role": "The marker of a window as a bind sees it: the re-rooted payload of its datum and its claim on its path.",
+      "rocq": [
+        "reroot"
+      ],
+      "covers": [
+        "R24",
+        "R27"
+      ]
+    },
+    {
+      "item": "PrefixSource::second_send",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "second_send",
+      "line": 2607,
+      "role": "The second send of a peeked datum with the depth of the prefix as its restore depth (Rule E).",
+      "rocq": [
+        "take_marker",
+        "spend_after_peek"
+      ],
+      "covers": [
+        "R102"
+      ]
+    },
+    {
+      "item": "PrefixSource::land",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "land",
+      "line": 2754,
+      "role": "STORE-MARKERS of a fresh element, or the restore of an owed marker.",
+      "rocq": [
+        "store_datum",
+        "put_marker"
+      ],
+      "tla": [
+        "Land"
+      ],
+      "covers": [
+        "R101",
+        "R102",
+        "R104",
+        "V24"
+      ]
+    },
+    {
+      "item": "PrefixSource::before_fire",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "before_fire",
+      "line": 2798,
+      "role": "The datums that a fire spends at every fire site, and the classes of a set.",
+      "rocq": [
+        "deliver_remove",
+        "spend_after_peek"
+      ],
+      "covers": [
+        "R100",
+        "R104"
+      ]
+    },
+    {
+      "item": "PrefixSource::retire_spent",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "retire_spent",
+      "line": 2860,
+      "role": "RETIRE-PLAN of each spent datum, then RETIRE-CLASS of a set.",
+      "rocq": [
+        "retired_depths",
+        "deliver_remove"
+      ],
+      "tla": [
+        "Spend"
+      ],
+      "covers": [
+        "R100",
+        "R104",
+        "V24"
+      ]
+    },
+    {
+      "item": "PrefixSource::touch",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "touch",
+      "line": 2091,
+      "role": "TOUCH: an ordered discipline bumps the token S(sid) once in a transaction.",
+      "rocq": [
+        "bump",
+        "operation_ord",
+        "token_bump",
+        "exec_pmap"
+      ],
+      "covers": [
+        "R106",
+        "R129"
+      ]
+    },
+    {
+      "item": "PrefixSource::finish",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "finish",
+      "line": 2711,
+      "role": "FINISH: the owed markers again (O-2), then the token of a bag or a set when the transaction changed the state (decision 51).",
+      "rocq": [
+        "put_marker",
+        "pstep_changes",
+        "exec_pmap"
+      ],
+      "covers": [
+        "R104",
+        "R129"
+      ]
+    },
+    {
+      "item": "PrefixSource::in_flight",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "in_flight",
+      "line": 1168,
+      "role": "The datums in flight: the owed second sends, the element of the offer and the pending work with a restore depth.",
+      "rocq": [
+        "take_marker",
+        "put_marker"
+      ],
+      "covers": [
+        "R102"
+      ]
+    },
+    {
+      "item": "PrefixSource::restore_marker",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "restore_marker",
+      "line": 1828,
+      "role": "The restore of an owed marker with the bytes of the stored marker.",
+      "rocq": [
+        "put_marker"
+      ],
+      "covers": [
+        "R102",
+        "R104"
+      ]
+    },
+    {
+      "item": "PrefixSource::retire_datum",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+      "scope": "PrefixSource",
+      "kind": "fn",
+      "name": "retire_datum",
+      "line": 1919,
+      "role": "RETIRE-PLAN of one spent datum, which marks every prefix of its path dirty.",
+      "rocq": [
+        "retired_depths",
+        "dirty_of"
+      ],
+      "covers": [
+        "R104",
+        "R105"
       ]
     }
   ]

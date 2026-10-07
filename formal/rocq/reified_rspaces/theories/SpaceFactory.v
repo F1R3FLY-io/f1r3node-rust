@@ -43,7 +43,7 @@
    family_of_names          rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:163-181 (family_of)
    factory_op               rholang/src/rust/interpreter/spaces/factory/urn.rs:
-                            158-162, 166-168 (the factory channel and the
+                            190-194, 198-200 (the factory channel and the
                             capability that getSpaceAgent replies)
    validate_qualifier, durability_of
                             rholang/src/rust/interpreter/spaces/factory/
@@ -851,26 +851,26 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    sys_channel, body_ref    rholang/src/rust/interpreter/reified/
                             system_channels.rs:30, 34-38, 42
    p4_rows, p4_others       rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:33-34 (REGISTERED_FAMILIES),
+                            urn.rs:35-36 (REGISTERED_FAMILIES),
                             rholang/src/rust/interpreter/reified/
                             system_channels.rs:49-53, 56-60, 63-67, 70-74,
                             77-82 (P4_SYSTEM_CHANNELS)
    p5_rows                  rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:45-114 (P5_FAMILY_ROWS),
+                            urn.rs:47-140 (P5_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:125-241 (the factories)
+                            system_channels.rs:125-283 (the factories)
    alias_rows               rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:118-121 (P5_ALIAS_ROWS),
+                            urn.rs:144-153 (P5_ALIAS_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:247-251, 272-291
+                            system_channels.rs:289-293, 323-349
    schema_of, required_of   rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:69-96, 100-102, 106-108
+                            defaults.rs:68-99, 103-105, 109-111
    wired                    families::Family::of_urn, through
                             rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:124 (is_wired)
+                            urn.rs:156 (is_wired)
    registered, is_registered, registered_aliases
                             rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:128-132, 136-140, 144-148, 151-155
+                            urn.rs:160-164, 168-172, 176-180, 183-187
    definitions, binds       rholang/src/rust/interpreter/
                             reified/system_processes.rs:63-104 (definitions),
                             rholang/src/rust/
@@ -878,13 +878,13 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    get_space_agent_of       rholang/src/rust/interpreter/
                             reified/system_processes.rs:164-200 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:163-181 (family_of), urn.rs:166-168
+                            constructor.rs:163-181 (family_of), urn.rs:198-200
                             (factory_capability)
    rule, rule_of, canonical rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:112-119, 123-130, 135-147 (ParamRule)
+                            defaults.rs:115-122, 126-133, 138-150 (ParamRule)
    suggest, least, within, suggestion_bound
                             rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:40, 167-176, 181-208
+                            defaults.rs:39, 170-179, 184-211
    validate_params, canonical_all
                             rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:60-112 (validate), 146-160

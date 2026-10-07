@@ -25,7 +25,9 @@
 '      markers with single-channel K_retire COMMs.
 '   7. A peek of a non-persistent datum sends it again (decision 45, Rule E).
 '      A fire of a waiter that does not peek spends it. With no such fire,
-'      the marker of the COMM is stored again with its identity.
+'      the marker of the COMM is stored again with its identity. At the fire
+'      cap, FINISH stores the marker again before the commit, and the settle
+'      job carries the offer of the datum (open item O-2).
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 09-pathmap-delivery.puml   Check: ./render.sh --check
@@ -95,8 +97,9 @@ else (receive K on q)
       The second send of d (decision 45, Rule E)
       has the identity and the cost authority of d; <<$rrs_flow>>
       if (the transaction made FIRE_ROUND_CAP fires?) then (yes)
-        :re-issue the second send of d.
-        It carries m_q(d), which is pending; <<$rrs_reject>>
+        :FINISH stores m_q(d) again before the commit (O-2).
+        The settle job carries the offer of d, and the offer
+        of a d that another job spent stores nothing; <<$rrs_storage>>
       else (no)
         :PRODUCE-WAITERS(p), the most specific prefix first; <<$rrs_agent>>
         if (a waiter that does not peek fires on d?) then (yes)

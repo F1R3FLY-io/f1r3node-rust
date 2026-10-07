@@ -348,12 +348,18 @@ fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
 /// The system processes of P5 (P5 design v3, A.7, A.8 and A.10) as `(urn, op, arity, body
 /// ref)`, in the order of the definitions: the families in family-index order, then the alias.
 /// A row is defined only when it is registered, so the pins below keep the registered rows.
-const P5_PINNED: [(&str, u8, i32, i64); 18] = [
+const P5_PINNED: [(&str, u8, i32, i64); 25] = [
     ("rho:space:hashmap:bag", 0x00, 2, 200),
     ("rho:space:hashmap:stack", 0x02, 2, 202),
     ("rho:space:hashmap:set", 0x03, 2, 203),
     ("rho:space:hashmap:cell", 0x04, 2, 204),
     ("rho:space:hashmap:priorityqueue", 0x05, 2, 205),
+    ("rho:space:pathmap:bag", 0x07, 2, 207),
+    ("rho:space:pathmap:queue", 0x08, 2, 208),
+    ("rho:space:pathmap:stack", 0x09, 2, 209),
+    ("rho:space:pathmap:set", 0x0A, 2, 210),
+    ("rho:space:pathmap:cell", 0x0B, 2, 211),
+    ("rho:space:pathmap:priorityqueue", 0x0C, 2, 212),
     ("rho:space:array:bag", 0x0D, 2, 213),
     ("rho:space:array:queue", 0x0E, 2, 214),
     ("rho:space:array:stack", 0x0F, 2, 215),
@@ -367,6 +373,7 @@ const P5_PINNED: [(&str, u8, i32, i64); 18] = [
     ("rho:space:vector:cell", 0x17, 2, 223),
     ("rho:space:vector:priorityqueue", 0x18, 2, 224),
     ("rho:space:HashMapBagSpace", 0x00, 2, 200),
+    ("rho:space:PathMapSpace", 0x07, 2, 207),
 ];
 
 /// The system channels of the registered families of P5 and of the registered aliases, in the
@@ -1061,17 +1068,17 @@ async fn reified_factory_p4_gates_fail_closed() {
     }
     // A family or a FIPS alias without a registration has no binding, so a program that names it
     // fails before any space operation. P5 registers a family only when the family dispatch
-    // wires it, and it never registers the PathMap and VectorDB families or the PathMap alias.
+    // wires it, and it never registers the VectorDB families. Phase 2 of P5e wires the PathMap
+    // families, so their factories and the PathMap alias are registered.
     let registered: BTreeSet<&str> = registered_p5_channels()
         .into_iter()
         .map(|channel| channel.urn)
         .collect();
-    for never in [
-        "rho:space:pathmap:queue",
-        "rho:space:vector:vectordb",
-        PATHMAP_BAG_ALIAS,
-    ] {
+    for never in ["rho:space:hashmap:vectordb", "rho:space:vector:vectordb"] {
         assert!(!registered.contains(never), "{never}");
+    }
+    for wired in ["rho:space:pathmap:queue", PATHMAP_BAG_ALIAS] {
+        assert!(registered.contains(wired), "{wired}");
     }
     for urn in [
         "rho:space:hashmap:bag",

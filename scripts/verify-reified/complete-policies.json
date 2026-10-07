@@ -937,7 +937,8 @@
         "rholang/src/rust/interpreter/spaces/join.rs",
         "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
         "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
-        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs"
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/join.rs"
       ],
       "entry_points": [
         {
@@ -1174,11 +1175,11 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
-          "pattern": "pub const P5_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 17]"
+          "pattern": "pub const P5_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 23]"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
-          "pattern": "pub const P5_SYSTEM_CHANNELS: [SystemChannel; 18]"
+          "pattern": "pub const P5_SYSTEM_CHANNELS: [SystemChannel; 25]"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
@@ -1227,6 +1228,38 @@
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
           "pattern": "pub(crate) fn run_join<S: OuterStore, D: Discipline>("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/mod.rs",
+          "pattern": "pub mod join;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+          "pattern": "pub(crate) fn classify<D: Discipline>("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+          "pattern": "pub(crate) fn run_join<D: Discipline>("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+          "pattern": "impl<D: Discipline> JoinSource for PrefixSource<'_, D> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+          "pattern": "    const ALWAYS_ESCALATES: bool = true;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/families.rs",
+          "pattern": "    pub const WIRED: [Family; 24] = ["
+        },
+        {
+          "file": "rholang/tests/reified_pathmap.rs",
+          "pattern": "async fn pathmap_joins_over_prefixes() {"
+        },
+        {
+          "file": "rholang/tests/reified_pathmap.rs",
+          "pattern": "async fn pathmap_cap_restores_owed_markers() {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/agent.rs",
@@ -1297,7 +1330,8 @@
         "rholang/tests/reified_set.rs",
         "rholang/tests/reified_priority_queue.rs",
         "rholang/tests/reified_joins.rs",
-        "rholang/tests/reified_join_props.rs"
+        "rholang/tests/reified_join_props.rs",
+        "rholang/tests/reified_pathmap.rs"
       ],
       "property_files": [
         "rholang/tests/support/props.rs"

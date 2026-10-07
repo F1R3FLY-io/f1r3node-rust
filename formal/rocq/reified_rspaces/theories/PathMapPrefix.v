@@ -1068,51 +1068,51 @@ Qed.
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code (wave W3)
    ─────────────────────────────────────────────────────────────────────────
-   cand_lt            candidate_cmp (delivery.rs:532-538) and the order of
-                      consume_candidates (delivery.rs:173-219)
+   cand_lt            candidate_cmp (delivery.rs:630-636) and the order of
+                      consume_candidates (delivery.rs:175-182, 190-249)
    rpar, marker_tag, record_tag, envelope, marker_pars
                       MARKER_TAG, marker_tag, marker_envelope, envelope_of
-                      and marker_record (markers.rs:61, 98-118, 143-156)
+                      and marker_record (markers.rs:61, 98-118, 152-165)
    decode_marker, marker_part, elems_of
                       decode_marker, marker_parts, strict_list
-                      (markers.rs:269-275, 335-383)
+                      (markers.rs:278-284, 344-392)
    vehicle_pars, decode_vehicle
-                      vehicle and decode_vehicle (markers.rs:188-204,
-                      288-297)
+                      vehicle and decode_vehicle (markers.rs:197-213,
+                      297-306)
    size_pars          the introduction bytes of a record: the observer
                       charges the size of the record of each produce
    pelem, holds_map, check_path
-                      check_key of PathMapOuter (pathmap.rs:167-176) with
+                      check_key of PathMapOuter (pathmap.rs:201-210) with
                       channel_path and encode_path (path_codec.rs:281-286,
                       343-347)
    prefixes           EncodedPath::prefix_keys (path_codec.rs:328-334) and
-                      PathMapOuter::path_channels (pathmap.rs:121-136)
+                      PathMapOuter::path_channels (pathmap.rs:127-142)
    bprefix, prefixb   is_prefix_key (path_codec.rs:376-379)
    path_eqb           the byte equality of path keys
    datum, waiter, marker, state
                       the records of D(p), the waiters and the markers of
                       I(q), and the token S(sid) of the staged view
    marker_at, markers_of
-                      store_markers (delivery.rs:409-436) with
-                      marker_record_metered (markers.rs:161-183)
+                      store_markers (delivery.rs:460-487) with
+                      marker_record_metered (markers.rs:170-192)
    MI                 the marker invariant of the module docs of delivery.rs
-   retired_depths     retire_plan (delivery.rs:444-453)
+   retired_depths     retire_plan (delivery.rs:542-551)
    store_datum, deliver_remove, take_marker, put_marker, spend_after_peek
-                      the stagings of the engine (P5 phase 2: the prefix
-                      source of the join engine)
+                      the stagings of the prefix source of the join engine
+                      (Phase 2, see the addendum before section 18)
    chan, ev, *_events the channels D, I and S (PathMapOuter::path_data,
-                      ::index, ::token, pathmap.rs:79-90) and the events of
+                      ::index, ::token, pathmap.rs:85-96) and the events of
                       the substrate
    send_prefixes, offer_list
-                      produce_waiters (delivery.rs:338-380)
-   candidates         consume_candidates (delivery.rs:173-219)
+                      produce_waiters (delivery.rs:389-431)
+   candidates         consume_candidates (delivery.rs:175-182, 190-249)
    offer_loop, receive_loop
                       OFFER and RECEIVE of the scan shapes on prefixes
    window, fireable, inv_head, clean, change, dirty_of, cascade
                       the windows, FIREABLE, NEXT-FIRE and DRAIN-AND-CASCADE
                       of the join engine on prefixes (joins plan 3.2, 4.9)
    oldest             Discipline::head_metered with head_order
-                      (delivery.rs:479-512)
+                      (delivery.rs:577-610)
    bump, operation_ord, operation_ord_scan, at_head_queue
                       the token bump, generic.rs operation_ord and
                       Cx::at_head with QueueDiscipline::precedes
@@ -1140,7 +1140,7 @@ Qed.
    - The second send of a peek (decision 45) restores the marker of its
      COMM or spends the datum (put_marker, spend_after_peek). At the cap the
      marker of the COMM is pending: storing it restores the invariant
-     (marker_invariant_preserved).
+     (marker_invariant_preserved). The addendum before section 18 adds O-2.
    - The metering of decision 42 is the trace model of section 17
      (AgentReadCoverage.v states the rule). The Rust cut tests cover each
      metered function.
@@ -3281,6 +3281,53 @@ Proof.
       repeat (apply balanced_flat_map; intros); repeat apply balanced_app; apply balanced_mstep. }
   exact (proj1 H).
 Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Addendum of Phase 2 of wave W3: the prefix source of the join engine
+
+   Phase 2 connects the engine model of sections 12 to 15 to the join engine
+   of spaces/join.rs through the prefix source of
+   rholang/src/rust/interpreter/spaces/pathmap/join.rs. The text sits here,
+   so the line citations of the headlines above stay valid.
+
+   Traceability: Rocq definition → Rust code (Phase 2)
+   store_datum        land of the prefix source (STORE-MARKERS,
+                      pathmap/join.rs:2754-2793) with datum_markers
+                      (delivery.rs:494-508)
+   deliver_remove, take_marker
+                      before_fire and retire_spent (pathmap/join.rs:
+                      2798-2855, 2860-2893) with retire_datum
+                      (RETIRE-PLAN, pathmap/join.rs:1919-1952)
+   put_marker         restore_marker (pathmap/join.rs:1828-1847) with
+                      datum_marker (delivery.rs:515-534)
+   spend_after_peek   spent_element (pathmap/join.rs:2028-2049)
+   send_prefixes, offer_list
+                      offer_order of the prefix source (pathmap/join.rs:
+                      2287-2317), the most specific prefix first
+   window, fireable   window and path_window of the prefix source
+                      (pathmap/join.rs:2211-2271, 1266-1385): for each path
+                      p under q in path-key order, the window of the
+                      discipline on D(p), without the datums in flight
+   bump               touch and finish of the prefix source
+                      (pathmap/join.rs:2091-2107, 2711-2732)
+
+   Abstraction (Phase 2)
+   - A marker carries the cost authority of the record of its datum
+     (marker_authority, markers.rs:130-132). The store of the markers and
+     the restore of a marker take the authority from this one function, so
+     a restored marker has the bytes and the produce identity of the stored
+     one. The model keeps the pars of a record. The Rust test
+     pathmap_peek_restores_marker checks the equal bytes for no authority,
+     an empty authority and a region.
+   - Open item O-2 (a second send at the fire cap) is closed by a choice of
+     the implementation. A transaction that stops at FIRE_ROUND_CAP stores
+     each pending marker again in FINISH, before its commit. So no commit
+     leaves a pending marker, and MI holds in every state that another job
+     can read. The settle job carries only the offer of the datum. When
+     another job spent the datum first, the offer meets no waiter and stores
+     nothing. The step that stores the pending marker is the restore step of
+     marker_invariant_preserved.
+   ═══════════════════════════════════════════════════════════════════════ *)
 
 (* ── 18. Assumption audit ──────────────────────────────────────────────── *)
 

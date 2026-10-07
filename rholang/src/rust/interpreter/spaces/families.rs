@@ -11,12 +11,15 @@
 //! read the param schemas from it.
 //!
 //! The HashMap, Array and Vector stores key a collection by the canonical bytes of its channel
-//! (A5), so the agent opens every collection with the channels of the HashMap store.
+//! (A5), so the agent opens every collection with the channels of the HashMap store. A PathMap
+//! operation opens the same first transaction to read the config. The PathMap store then runs it
+//! in a new transaction over the lock keys of its prefix scope (`pathmap::join`).
 //!
 //! Each arm of the dispatch reserves the comparison of the config names with its family before
 //! it compares them. So `hashmap:queue`, the first arm, reserves exactly the one comparison of
 //! the P4 agent, and the host work of a queue operation does not change. The other arms follow
-//! in ascending family index, so the arm at dispatch position `i` reserves `i + 1` comparisons.
+//! in ascending family index, and the PathMap arms of P5e come last. So the arm at dispatch
+//! position `i` reserves `i + 1` comparisons, and P5e changes the dispatch of no earlier family.
 
 use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -42,6 +45,7 @@ use super::generic::{
 use super::namespace::NativeSpace;
 use super::outer::array::ArrayOuter;
 use super::outer::hashmap::HashMapOuter;
+use super::outer::pathmap::PathMapOuter;
 use super::outer::vector::VectorOuter;
 use super::types::config::SpaceConfig;
 use crate::rust::interpreter::reified::costs::ScanMeter;
@@ -118,6 +122,30 @@ static VECTOR_CELL: GenericSpace<VectorOuter, CellDiscipline> =
 static VECTOR_PRIORITY_QUEUE: GenericSpace<VectorOuter, PriorityQueueDiscipline> =
     GenericSpace::new(VectorOuter, PriorityQueueDiscipline);
 
+/// The agent of the family `pathmap:bag` (P5e).
+static PATHMAP_BAG: GenericSpace<PathMapOuter, BagDiscipline> =
+    GenericSpace::new(PathMapOuter, BagDiscipline);
+
+/// The agent of the family `pathmap:queue` (P5e).
+static PATHMAP_QUEUE: GenericSpace<PathMapOuter, QueueDiscipline> =
+    GenericSpace::new(PathMapOuter, QueueDiscipline);
+
+/// The agent of the family `pathmap:stack` (P5e).
+static PATHMAP_STACK: GenericSpace<PathMapOuter, StackDiscipline> =
+    GenericSpace::new(PathMapOuter, StackDiscipline);
+
+/// The agent of the family `pathmap:set` (P5e).
+static PATHMAP_SET: GenericSpace<PathMapOuter, SetDiscipline> =
+    GenericSpace::new(PathMapOuter, SetDiscipline);
+
+/// The agent of the family `pathmap:cell` (P5e).
+static PATHMAP_CELL: GenericSpace<PathMapOuter, CellDiscipline> =
+    GenericSpace::new(PathMapOuter, CellDiscipline);
+
+/// The agent of the family `pathmap:priorityqueue` (P5e).
+static PATHMAP_PRIORITY_QUEUE: GenericSpace<PathMapOuter, PriorityQueueDiscipline> =
+    GenericSpace::new(PathMapOuter, PriorityQueueDiscipline);
+
 /// A wired family of native spaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Family {
@@ -157,11 +185,25 @@ pub enum Family {
     VectorCell,
     /// `vector:priorityqueue` (P5d).
     VectorPriorityQueue,
+    /// `pathmap:bag` (P5e).
+    PathMapBag,
+    /// `pathmap:queue` (P5e).
+    PathMapQueue,
+    /// `pathmap:stack` (P5e).
+    PathMapStack,
+    /// `pathmap:set` (P5e).
+    PathMapSet,
+    /// `pathmap:cell` (P5e).
+    PathMapCell,
+    /// `pathmap:priorityqueue` (P5e).
+    PathMapPriorityQueue,
 }
 
 impl Family {
-    /// The wired families, in dispatch order: `hashmap:queue` first, then ascending family index.
-    pub const WIRED: [Family; 18] = [
+    /// The wired families, in dispatch order: `hashmap:queue` first, then ascending family index,
+    /// and the PathMap families of P5e last. So the dispatch of each family that P5e found wired
+    /// reserves the comparisons that it reserved before.
+    pub const WIRED: [Family; 24] = [
         Family::HashMapQueue,
         Family::HashMapBag,
         Family::HashMapStack,
@@ -180,6 +222,12 @@ impl Family {
         Family::VectorSet,
         Family::VectorCell,
         Family::VectorPriorityQueue,
+        Family::PathMapBag,
+        Family::PathMapQueue,
+        Family::PathMapStack,
+        Family::PathMapSet,
+        Family::PathMapCell,
+        Family::PathMapPriorityQueue,
     ];
 
     /// The family of the factory URN `urn`, or `None` when it is not wired.
@@ -203,6 +251,12 @@ impl Family {
             (SpaceOuter::Vector, SpaceInner::Set) => Some(Family::VectorSet),
             (SpaceOuter::Vector, SpaceInner::Cell) => Some(Family::VectorCell),
             (SpaceOuter::Vector, SpaceInner::PriorityQueue) => Some(Family::VectorPriorityQueue),
+            (SpaceOuter::PathMap, SpaceInner::Bag) => Some(Family::PathMapBag),
+            (SpaceOuter::PathMap, SpaceInner::Queue) => Some(Family::PathMapQueue),
+            (SpaceOuter::PathMap, SpaceInner::Stack) => Some(Family::PathMapStack),
+            (SpaceOuter::PathMap, SpaceInner::Set) => Some(Family::PathMapSet),
+            (SpaceOuter::PathMap, SpaceInner::Cell) => Some(Family::PathMapCell),
+            (SpaceOuter::PathMap, SpaceInner::PriorityQueue) => Some(Family::PathMapPriorityQueue),
             (
                 SpaceOuter::HashMap
                 | SpaceOuter::PathMap
@@ -255,6 +309,14 @@ impl Family {
             Family::VectorPriorityQueue => {
                 family_matches::<VectorOuter, PriorityQueueDiscipline>(config, meter)
             }
+            Family::PathMapBag => family_matches::<PathMapOuter, BagDiscipline>(config, meter),
+            Family::PathMapQueue => family_matches::<PathMapOuter, QueueDiscipline>(config, meter),
+            Family::PathMapStack => family_matches::<PathMapOuter, StackDiscipline>(config, meter),
+            Family::PathMapSet => family_matches::<PathMapOuter, SetDiscipline>(config, meter),
+            Family::PathMapCell => family_matches::<PathMapOuter, CellDiscipline>(config, meter),
+            Family::PathMapPriorityQueue => {
+                family_matches::<PathMapOuter, PriorityQueueDiscipline>(config, meter)
+            }
         }
     }
 
@@ -279,50 +341,66 @@ impl Family {
             Family::VectorSet => &VECTOR_SET,
             Family::VectorCell => &VECTOR_CELL,
             Family::VectorPriorityQueue => &VECTOR_PRIORITY_QUEUE,
+            Family::PathMapBag => &PATHMAP_BAG,
+            Family::PathMapQueue => &PATHMAP_QUEUE,
+            Family::PathMapStack => &PATHMAP_STACK,
+            Family::PathMapSet => &PATHMAP_SET,
+            Family::PathMapCell => &PATHMAP_CELL,
+            Family::PathMapPriorityQueue => &PATHMAP_PRIORITY_QUEUE,
         }
     }
 
     /// The named params of a send to a collection of this family: the schema of its discipline.
     pub fn send_params(self) -> &'static [&'static str] {
         match self {
-            Family::HashMapQueue | Family::ArrayQueue | Family::VectorQueue => {
-                QueueDiscipline::SEND_PARAMS
+            Family::HashMapQueue
+            | Family::ArrayQueue
+            | Family::VectorQueue
+            | Family::PathMapQueue => QueueDiscipline::SEND_PARAMS,
+            Family::HashMapBag | Family::ArrayBag | Family::VectorBag | Family::PathMapBag => {
+                BagDiscipline::SEND_PARAMS
             }
-            Family::HashMapBag | Family::ArrayBag | Family::VectorBag => BagDiscipline::SEND_PARAMS,
-            Family::HashMapStack | Family::ArrayStack | Family::VectorStack => {
-                StackDiscipline::SEND_PARAMS
-            }
-            Family::HashMapCell | Family::ArrayCell | Family::VectorCell => {
+            Family::HashMapStack
+            | Family::ArrayStack
+            | Family::VectorStack
+            | Family::PathMapStack => StackDiscipline::SEND_PARAMS,
+            Family::HashMapCell | Family::ArrayCell | Family::VectorCell | Family::PathMapCell => {
                 CellDiscipline::SEND_PARAMS
             }
-            Family::HashMapSet | Family::ArraySet | Family::VectorSet => SetDiscipline::SEND_PARAMS,
+            Family::HashMapSet | Family::ArraySet | Family::VectorSet | Family::PathMapSet => {
+                SetDiscipline::SEND_PARAMS
+            }
             Family::HashMapPriorityQueue
             | Family::ArrayPriorityQueue
-            | Family::VectorPriorityQueue => PriorityQueueDiscipline::SEND_PARAMS,
+            | Family::VectorPriorityQueue
+            | Family::PathMapPriorityQueue => PriorityQueueDiscipline::SEND_PARAMS,
         }
     }
 
     /// The named query params of a receive on a collection of this family.
     pub fn query_params(self) -> &'static [&'static str] {
         match self {
-            Family::HashMapQueue | Family::ArrayQueue | Family::VectorQueue => {
-                QueueDiscipline::QUERY_PARAMS
-            }
-            Family::HashMapBag | Family::ArrayBag | Family::VectorBag => {
+            Family::HashMapQueue
+            | Family::ArrayQueue
+            | Family::VectorQueue
+            | Family::PathMapQueue => QueueDiscipline::QUERY_PARAMS,
+            Family::HashMapBag | Family::ArrayBag | Family::VectorBag | Family::PathMapBag => {
                 BagDiscipline::QUERY_PARAMS
             }
-            Family::HashMapStack | Family::ArrayStack | Family::VectorStack => {
-                StackDiscipline::QUERY_PARAMS
-            }
-            Family::HashMapCell | Family::ArrayCell | Family::VectorCell => {
+            Family::HashMapStack
+            | Family::ArrayStack
+            | Family::VectorStack
+            | Family::PathMapStack => StackDiscipline::QUERY_PARAMS,
+            Family::HashMapCell | Family::ArrayCell | Family::VectorCell | Family::PathMapCell => {
                 CellDiscipline::QUERY_PARAMS
             }
-            Family::HashMapSet | Family::ArraySet | Family::VectorSet => {
+            Family::HashMapSet | Family::ArraySet | Family::VectorSet | Family::PathMapSet => {
                 SetDiscipline::QUERY_PARAMS
             }
             Family::HashMapPriorityQueue
             | Family::ArrayPriorityQueue
-            | Family::VectorPriorityQueue => PriorityQueueDiscipline::QUERY_PARAMS,
+            | Family::VectorPriorityQueue
+            | Family::PathMapPriorityQueue => PriorityQueueDiscipline::QUERY_PARAMS,
         }
     }
 }
@@ -457,7 +535,7 @@ mod tests {
     }
 
     /// The wired families in dispatch order, with the names of their configs.
-    const WIRED_NAMES: [(Family, &str, &str); 18] = [
+    const WIRED_NAMES: [(Family, &str, &str); 24] = [
         (Family::HashMapQueue, "hashmap", "queue"),
         (Family::HashMapBag, "hashmap", "bag"),
         (Family::HashMapStack, "hashmap", "stack"),
@@ -476,6 +554,12 @@ mod tests {
         (Family::VectorSet, "vector", "set"),
         (Family::VectorCell, "vector", "cell"),
         (Family::VectorPriorityQueue, "vector", "priorityqueue"),
+        (Family::PathMapBag, "pathmap", "bag"),
+        (Family::PathMapQueue, "pathmap", "queue"),
+        (Family::PathMapStack, "pathmap", "stack"),
+        (Family::PathMapSet, "pathmap", "set"),
+        (Family::PathMapCell, "pathmap", "cell"),
+        (Family::PathMapPriorityQueue, "pathmap", "priorityqueue"),
     ];
 
     #[test]
@@ -587,6 +671,36 @@ mod tests {
                 PriorityQueueDiscipline::SEND_PARAMS,
                 PriorityQueueDiscipline::QUERY_PARAMS,
             ),
+            (
+                Family::PathMapBag,
+                BagDiscipline::SEND_PARAMS,
+                BagDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::PathMapQueue,
+                QueueDiscipline::SEND_PARAMS,
+                QueueDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::PathMapStack,
+                StackDiscipline::SEND_PARAMS,
+                StackDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::PathMapCell,
+                CellDiscipline::SEND_PARAMS,
+                CellDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::PathMapSet,
+                SetDiscipline::SEND_PARAMS,
+                SetDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::PathMapPriorityQueue,
+                PriorityQueueDiscipline::SEND_PARAMS,
+                PriorityQueueDiscipline::QUERY_PARAMS,
+            ),
         ] {
             assert_eq!(family.send_params(), send, "{family:?}");
             assert_eq!(family.query_params(), query, "{family:?}");
@@ -603,7 +717,7 @@ mod tests {
         };
         let unwired = [
             ("hashmap", "deque"),
-            ("pathmap", "queue"),
+            ("pathmap", "vectordb"),
             ("hashset", "set"),
         ];
         let mut cases = Vec::with_capacity(WIRED_NAMES.len() + unwired.len());

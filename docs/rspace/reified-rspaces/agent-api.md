@@ -80,7 +80,7 @@ The URN map binds each URN to the write bundle of its op channel. So a program c
 | `rho:assert:assertEqual` | `[0xE0, 0x22]` | 3 | 234 | `assertEqual!(ret, a, b)` | A Boolean |
 | `rho:reified:internal:handleOp` | `[0xE0, 0x30]` | 2 | 248 | `(this, message)`, from the handle continuation of a space | The reply of the method, or a typed reply |
 
-*Table 2a. The factories of P5 (`reified/system_channels.rs:272-291`).*
+*Table 2a. The factories of P5 (`reified/system_channels.rs:323-349`).*
 
 | URN | Op channel | Arity | Body reference | Constructor params |
 |---|---|---|---|---|
@@ -89,9 +89,11 @@ The URN map binds each URN to the write bundle of its op channel. So a program c
 | `rho:space:hashmap:set` | `[0xE0, 0x03]` | 2 | 203 | none |
 | `rho:space:hashmap:cell` | `[0xE0, 0x04]` | 2 | 204 | none |
 | `rho:space:hashmap:priorityqueue` | `[0xE0, 0x05]` | 2 | 205 | `priorities` |
+| `rho:space:pathmap:<inner>` | `[0xE0, 0x07]` to `[0xE0, 0x0C]` | 2 | 207 to 212 | `priorities` for a priority queue |
 | `rho:space:array:<inner>` | `[0xE0, 0x0D]` to `[0xE0, 0x12]` | 2 | 213 to 218 | `size` (required), `cyclic`, and `priorities` for a priority queue |
 | `rho:space:vector:<inner>` | `[0xE0, 0x13]` to `[0xE0, 0x18]` | 2 | 219 to 224 | `priorities` for a priority queue |
 | `rho:space:HashMapBagSpace` | `[0xE0, 0x00]` | 2 | 200 | none: the alias of `hashmap:bag` |
+| `rho:space:PathMapSpace` | `[0xE0, 0x07]` | 2 | 207 | none: the alias of `pathmap:bag` |
 
 A row of Table 2a is active only when its family is registered, which is exactly when the family dispatch has its arm ([specification FA-1](specification.md#15-families)).
 At this commit every row of Table 2a is active. The PathMap families join the table in wave W4 of P5.

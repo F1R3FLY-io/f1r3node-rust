@@ -2300,3 +2300,162 @@ async fn set_writes_commute_case(
     prop_assert_eq!(&merged, &reversed);
     Ok(())
 }
+
+// ─── PathMap (P5e): one token for every prefix (decision 51) ─────────────────────────────────
+
+/// The factory of the PathMap family with the bag discipline (P5e).
+const PATHMAP_BAG: &str = "rho:space:pathmap:bag";
+
+/// The factory of the PathMap family with the queue discipline (P5e).
+const PATHMAP_QUEUE: &str = "rho:space:pathmap:queue";
+
+/// `pathmap_token_race` (headline 15 of `CounterConflict.v`, decision 51). A PathMap space orders
+/// every prefix with one token, the space counter `S(sid)`. Two branches that each change one
+/// PathMap space race on the token in check #1, also when they write disjoint paths, and the same
+/// logs without the token merge. A bag branch that only peeks restores the marker of its COMM and
+/// bumps no token, so it merges with a write. An ordered discipline bumps the token in every
+/// operation, so a peek of a queue races with a write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_pathmap_token_race() {
+    let label = "rrs-p5-merge-pathmap-token";
+    let mut rig = Rig::new(PATHMAP_BAG, DEFAULT, "a!(10)", label).await;
+    let token = rig.space_counter();
+    assert_counter_race(
+        &mut rig,
+        "a!(1)",
+        "b!(2)",
+        BTreeSet::from([token.clone()]),
+        label,
+    )
+    .await;
+    let read = format!("for (@x <<- a) {{ {} }}", out("read", "x"));
+    let left = rig.branch_ok(&read, &format!("{label}-read")).await;
+    let right = rig.branch_ok("b!(2)", &format!("{label}-write")).await;
+    assert_eq!(
+        left.out,
+        vec![("read".to_string(), 10)],
+        "the peek reads the seed"
+    );
+    assert_eq!(
+        touching(left.log(), &token),
+        0,
+        "a pure read bumps no token"
+    );
+    assert_eq!(
+        touching(right.log(), &token),
+        3,
+        "a write bumps the token once"
+    );
+    assert!(
+        rig.conflicts(left.log(), right.log()).is_empty(),
+        "a pure read merges with a write: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let label = "rrs-p5-merge-pathmap-queue-token";
+    let mut rig = Rig::new(PATHMAP_QUEUE, DEFAULT, "a!(10)", label).await;
+    let token = rig.space_counter();
+    let (left, _) =
+        assert_counter_race(&mut rig, &read, "b!(2)", BTreeSet::from([token]), label).await;
+    assert_eq!(left.out, vec![("read".to_string(), 10)]);
+}
+
+/// A generated branch of `prop_pathmap_token_race`: a send on the name `a` or `b` of a PathMap
+/// space, or a peek of the seeded record of `a`.
+#[derive(Clone, Copy, Debug)]
+enum PathMapBranch {
+    /// A send of the value on `a` (false) or on `b` (true).
+    Send(bool, u8),
+    /// A peek of the record of `a`.
+    Peek,
+}
+
+impl PathMapBranch {
+    /// The body of the branch.
+    fn body(self) -> String {
+        match self {
+            PathMapBranch::Send(false, value) => format!("a!({value})"),
+            PathMapBranch::Send(true, value) => format!("b!({value})"),
+            PathMapBranch::Peek => format!("for (@x <<- a) {{ {} }}", out("read", "x")),
+        }
+    }
+
+    /// True when the branch changes the state of a bag space: a send stores its record, and a
+    /// peek restores the marker of its COMM.
+    fn changes(self) -> bool { matches!(self, PathMapBranch::Send(..)) }
+}
+
+/// A generated branch of `prop_pathmap_token_race`.
+fn arb_pathmap_branch() -> BoxedStrategy<PathMapBranch> {
+    prop_oneof![
+        2 => (any::<bool>(), 0u8..4).prop_map(|(name, value)| PathMapBranch::Send(name, value)),
+        1 => Just(PathMapBranch::Peek),
+    ]
+    .boxed()
+}
+
+/// `pathmap_token_race` (headline 15 of `CounterConflict.v`, decision 51). For generated pairs of
+/// branches on a PathMap space with the seed `a!(10)`, the branches race in check #1 on the token
+/// `S(sid)` exactly when both bump it: always for the queue, which bumps in every operation, and
+/// for the bag when both branches change the state. The same logs without the token merge.
+#[test]
+fn prop_pathmap_token_race() {
+    check(
+        runtime_config(),
+        (
+            any::<bool>(),
+            arb_pathmap_branch(),
+            arb_pathmap_branch(),
+            vec(any::<u8>(), 4),
+        ),
+        |(ordered, left, right, seed)| {
+            tokio_runtime().block_on(pathmap_token_race_case(ordered, left, right, seed))
+        },
+    );
+}
+
+/// One case of `prop_pathmap_token_race`.
+async fn pathmap_token_race_case(
+    ordered: bool,
+    left: PathMapBranch,
+    right: PathMapBranch,
+    seed_bytes: Vec<u8>,
+) -> Result<(), TestCaseError> {
+    let label = case_label("rrs-p5-prop-pathmap-token", &seed_bytes);
+    let urn = match ordered {
+        true => PATHMAP_QUEUE,
+        false => PATHMAP_BAG,
+    };
+    let mut rig = Rig::new(urn, DEFAULT, "a!(10)", &label).await;
+    let token = rig.space_counter();
+    let left_branch = rig.branch_ok(&left.body(), &format!("{label}-left")).await;
+    let right_branch = rig
+        .branch_ok(&right.body(), &format!("{label}-right"))
+        .await;
+    let bumps = ordered || (left.changes() && right.changes());
+    let expected = match bumps {
+        true => BTreeSet::from([token.clone()]),
+        false => BTreeSet::new(),
+    };
+    prop_assert_eq!(
+        rig.conflicts(left_branch.log(), right_branch.log()),
+        expected,
+        "{:?} {:?} ordered {}: {:?}",
+        left,
+        right,
+        ordered,
+        rig.reason(left_branch.log(), right_branch.log())
+    );
+    for (branch, op) in [(&left_branch, left), (&right_branch, right)] {
+        let touched = touching(branch.log(), &token) > 0;
+        prop_assert_eq!(touched, ordered || op.changes(), "{:?}", op);
+    }
+    prop_assert!(
+        rig.conflicts(
+            &without_channels(left_branch.log(), std::slice::from_ref(&token)),
+            &without_channels(right_branch.log(), std::slice::from_ref(&token))
+        )
+        .is_empty(),
+        "without the token the branches merge"
+    );
+    Ok(())
+}

@@ -29,6 +29,7 @@
 
 pub mod adapter;
 pub mod delivery;
+pub mod join;
 pub mod markers;
 pub mod path_codec;
 pub mod reroot;

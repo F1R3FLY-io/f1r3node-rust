@@ -3007,7 +3007,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "fn",
       "name": "factory_channel",
-      "line": 158,
+      "line": 190,
       "role": "[E0, i].",
       "rocq": [
         "factory_op"
@@ -3022,7 +3022,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
       "kind": "fn",
       "name": "factory_capability",
-      "line": 166,
+      "line": 198,
       "role": "bundle+{[E0, i]}, the reply of getSpaceAgent.",
       "rocq": [
         "factory_op"

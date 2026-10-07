@@ -22,7 +22,9 @@ use crate::rust::interpreter::reified::system_channels::{
     SystemChannel, ARRAY_BAG_FACTORY, ARRAY_CELL_FACTORY, ARRAY_PRIORITY_QUEUE_FACTORY,
     ARRAY_QUEUE_FACTORY, ARRAY_SET_FACTORY, ARRAY_STACK_FACTORY, HASHMAP_BAG_FACTORY,
     HASHMAP_BAG_SPACE_ALIAS, HASHMAP_CELL_FACTORY, HASHMAP_PRIORITY_QUEUE_FACTORY,
-    HASHMAP_QUEUE_FACTORY, HASHMAP_SET_FACTORY, HASHMAP_STACK_FACTORY, VECTOR_BAG_FACTORY,
+    HASHMAP_QUEUE_FACTORY, HASHMAP_SET_FACTORY, HASHMAP_STACK_FACTORY, PATHMAP_BAG_FACTORY,
+    PATHMAP_CELL_FACTORY, PATHMAP_PRIORITY_QUEUE_FACTORY, PATHMAP_QUEUE_FACTORY,
+    PATHMAP_SET_FACTORY, PATHMAP_SPACE_ALIAS, PATHMAP_STACK_FACTORY, VECTOR_BAG_FACTORY,
     VECTOR_CELL_FACTORY, VECTOR_PRIORITY_QUEUE_FACTORY, VECTOR_QUEUE_FACTORY, VECTOR_SET_FACTORY,
     VECTOR_STACK_FACTORY,
 };
@@ -40,9 +42,9 @@ const fn family(outer: SpaceOuter, inner: SpaceInner) -> SpaceFactoryUrn {
 
 /// The families that P5 registers once the family dispatch wires them, with their factory
 /// system channels, in family-index order: `hashmap` bag, stack, set, cell and priority queue
-/// (P5a, P5b), then the six `array` families (13 to 18) and the six `vector` families (19 to
-/// 24) of P5d.
-pub const P5_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 17] = [
+/// (P5a, P5b), the six `pathmap` families (7 to 12) of P5e, then the six `array` families (13
+/// to 18) and the six `vector` families (19 to 24) of P5d.
+pub const P5_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 23] = [
     (
         family(SpaceOuter::HashMap, SpaceInner::Bag),
         HASHMAP_BAG_FACTORY,
@@ -62,6 +64,30 @@ pub const P5_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 17] = [
     (
         family(SpaceOuter::HashMap, SpaceInner::PriorityQueue),
         HASHMAP_PRIORITY_QUEUE_FACTORY,
+    ),
+    (
+        family(SpaceOuter::PathMap, SpaceInner::Bag),
+        PATHMAP_BAG_FACTORY,
+    ),
+    (
+        family(SpaceOuter::PathMap, SpaceInner::Queue),
+        PATHMAP_QUEUE_FACTORY,
+    ),
+    (
+        family(SpaceOuter::PathMap, SpaceInner::Stack),
+        PATHMAP_STACK_FACTORY,
+    ),
+    (
+        family(SpaceOuter::PathMap, SpaceInner::Set),
+        PATHMAP_SET_FACTORY,
+    ),
+    (
+        family(SpaceOuter::PathMap, SpaceInner::Cell),
+        PATHMAP_CELL_FACTORY,
+    ),
+    (
+        family(SpaceOuter::PathMap, SpaceInner::PriorityQueue),
+        PATHMAP_PRIORITY_QUEUE_FACTORY,
     ),
     (
         family(SpaceOuter::Array, SpaceInner::Bag),
@@ -115,10 +141,16 @@ pub const P5_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 17] = [
 
 /// The FIPS aliases that P5 registers once their family is registered: the system channel of
 /// each alias, with the family that the alias names.
-pub const P5_ALIAS_ROWS: [(SystemChannel, SpaceFactoryUrn); 1] = [(
-    HASHMAP_BAG_SPACE_ALIAS,
-    family(SpaceOuter::HashMap, SpaceInner::Bag),
-)];
+pub const P5_ALIAS_ROWS: [(SystemChannel, SpaceFactoryUrn); 2] = [
+    (
+        HASHMAP_BAG_SPACE_ALIAS,
+        family(SpaceOuter::HashMap, SpaceInner::Bag),
+    ),
+    (
+        PATHMAP_SPACE_ALIAS,
+        family(SpaceOuter::PathMap, SpaceInner::Bag),
+    ),
+];
 
 /// True when the family dispatch wires `family`, so an agent runs the spaces of the family.
 pub fn is_wired(family: SpaceFactoryUrn) -> bool { Family::of_urn(family).is_some() }

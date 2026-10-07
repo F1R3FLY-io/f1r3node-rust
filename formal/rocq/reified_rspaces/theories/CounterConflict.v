@@ -51,6 +51,15 @@
    canonical order of DR-75 does, gives the merge the view of both serial
    orders (unordered_set_writes_commute, headline 14, F25).
 
+   P5e (the PathMap engine, Phase 2 of wave W3) adds the token of a PathMap
+   space. A PathMap space orders all of its prefixes with one token, the
+   space counter S(sid). An ordered discipline bumps the token once in every
+   transaction. A bag or a set bumps it once in a transaction that changed
+   the state: a store that is not a restore, a park, a spend, or the retire
+   of a class member (decision 51). So two branches that each change one
+   PathMap space race on S(sid) (pathmap_token_race, headline 15). A branch
+   of pure reads consumes no token record (pmap_reads_consume_no_token).
+
    Sources
    - Design: the P4 design report B.3 (counters), D.2 (check #1 and the
      two A2 counterexamples), D.3 (one block, one chain) and E.1 (the
@@ -62,6 +71,10 @@
    - P5: the P5 design v3 (A.7, A.8, A.13), v2 (F23, section 3.1) and the
      M-1 arbitration of the plan ("Why removals must touch it"). The P5
      rows below cite the lines of the W2 checkpoint commit bc43b8653.
+   - P5e: the PathMap engine (rholang/src/rust/interpreter/spaces/pathmap/
+     join.rs), decision 51 and item 7 of the arbitration of the seams of
+     the join engine. The P5e rows cite the lines of the working tree of
+     Phase 2 of the PathMap engine (2026-10-07).
    - P5c: the joins plan (.reified-rspaces-work/p5/joins-plan.md),
      sections 4.3 (TOUCH) and 8.3, and the join engine
      (rholang/src/rust/interpreter/spaces/join.rs) in the working tree of
@@ -164,6 +177,22 @@
    set_view (W3)            the class view of a set: one representative of
                             each class in the canonical order of DR-75
                             (decision 41), a parameter of headline 14
+   token_bump, exec_pmap    the token of a PathMap space: TOUCH of the
+   (P5e)                    prefix source, spaces/pathmap/join.rs:
+                            2091-2107 (an ordered discipline bumps S(sid)
+                            as both counter channels of counter.rs bump),
+                            FINISH, spaces/pathmap/join.rs:2711-2732 (a bag
+                            or a set bumps S(sid) once when the transaction
+                            changed the state), and the shared bump of the
+                            engine, spaces/join.rs:2458-2487 (once in a
+                            transaction)
+   peffect, pstep_changes   the changed flag of a transaction: spaces/
+   (P5e)                    join.rs:3273-3275 (a store that is not a
+                            restore), 3333-3341 (an offer fire), 3581-3583
+                            and 3625-3628 (the fires of a receive), 3738-
+                            3739 (a park), 3832-3834 (a cascade fire), and
+                            the class retire of the prefix source,
+                            spaces/pathmap/join.rs:2887-2888
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -203,6 +232,12 @@
      matter for check #1. The plan of a join (its new records and its
      events on the D channels) is a section variable, as the plan of one
      collection is.
+   - The records, the markers and the waiters of a PathMap space are
+     abstract. A PathMap step is its plan of effects and the events of these
+     effects on the D and I channels, both section variables. The store of
+     the model keeps only the token of the space. The race theorem needs
+     only the token events, and the pure-read lemma needs the premise that
+     the plan events consume no counter record (pmap_events_data).
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. check1_race_iff                    check #1 finds a race exactly for a
@@ -235,12 +270,21 @@
    14. unordered_set_writes_commute      set writes commute, and the merge
                                           has the view of both serial
                                           orders (P5 wave W3, F25)
+   15. pathmap_token_race                two branches that each change one
+                                          PathMap space, or that run an
+                                          ordered discipline on it, race on
+                                          its token S(sid) (P5e, decision
+                                          51)
 
    The negative control cc-join-bumps-first-only (a join step bumps only
    the first collection of its group) fails in headline 12. The control
    cc-set-retire-peeks (a retirement as a peek COMM) fails in
    retires_consumed, and cc-set-view-list-order (a set view in the list order
-   of the records) fails in headline 14.
+   of the records) fails in headline 14. The control
+   cc-pathmap-write-skips-token (a bag or a set step that changed the state
+   stages no token bump) fails in exec_pmap_consumes_token, and
+   cc-pathmap-store-not-a-change (a store does not count as a change) fails
+   in store_changes.
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -1985,6 +2029,275 @@ Section Spaces.
     - apply Hperm. apply Permutation_sym. exact Hds.
     - apply Hperm. apply perm_ditems. apply Permutation_sym. exact HpA.
   Qed.
+
+  (* ── 14. Headline 15: the token race of a PathMap space (P5e) ──────── *)
+
+  (* A PathMap space orders all of its prefixes with one token, the space
+     counter S(sid): ChSP s of the model. Its records, markers and waiters
+     lie on the channels D(sid,p) and I(sid,q), which this section keeps
+     abstract. A PathMap step runs one operation in its own transaction. Its
+     plan is a section variable: the effects that the engine and the prefix
+     source stage, and the events of these effects on the D and I channels.
+     The race needs only the events of the token. *)
+
+  (* The effects of the plan of a PathMap step. *)
+  Inductive peffect : Type :=
+  (* the store of a datum with its markers, which is not a restore *)
+  | PStore
+  (* the restore of the marker of a second send (Rule E, decision 45) *)
+  | PRestore
+  (* the park of a waiter on the index channels of its prefixes *)
+  | PPark
+  (* the spend of a stored datum that is not persistent (RETIRE-PLAN) *)
+  | PSpendDatum
+  (* the removal of a stored waiter that is not persistent *)
+  | PSpendWaiter
+  (* the K_retire of another member of a set class (RETIRE-CLASS) *)
+  | PRetireClass
+  (* a fire that changes no state: a peek, or a persistent entry *)
+  | PRead.
+
+  (* True when the effect changes the state of the space (decision 51). *)
+  Definition effect_changes (e : peffect) : bool :=
+    match e with
+    | PStore | PPark | PSpendDatum | PSpendWaiter | PRetireClass => true
+    | PRestore | PRead => false
+    end.
+
+  (* The changed flag of a transaction: the flag of the engine, or the flag
+     of the prefix source for the retire of a class member. *)
+  Definition pstep_changes (es : list peffect) : bool := existsb effect_changes es.
+
+  (* True for a discipline with a counter: the queue, the stack, the cell
+     and the priority queue bump the token in every transaction (decision
+     31). The bag and the set have no counter. *)
+  Variable ordered : bool.
+  (* The plan of the PathMap step j of the deploy tag on the space s. *)
+  Variable pmap_plan : nat -> store -> Space -> nat -> list peffect.
+  (* The events of that plan on the D and I channels of s. *)
+  Variable pmap_events : nat -> store -> Space -> nat -> list ev.
+
+  (* The bump of the token of s (counter.rs bump with S(sid) as both counter
+     channels): consume S(sid) = m with a COMM without peeks, and produce
+     m + 1. *)
+  Definition token_bump (tag : nat) (st : store) (s : Space) : store * list ev :=
+    let m := fst (ss st s) in
+    let crs := snd (ss st s) in
+    let kont := mkConsume [ChSP s] (CidCounter tag (ChSP s) m) false in
+    (mkStore (sd st) (sc st) (upd_s (ss st) s (S m, Made tag)),
+     [EvConsume kont; EvComm kont [counter_produce (ChSP s) m crs] false;
+      EvProduce (counter_produce (ChSP s) (S m) (Made tag))]).
+
+  (* True when the PathMap step j bumps the token. *)
+  Definition pbumps (tag : nat) (st : store) (s : Space) (j : nat) : bool :=
+    ordered || pstep_changes (pmap_plan tag st s j).
+
+  (* One PathMap step. An ordered discipline bumps the token before its plan
+     (TOUCH). A bag or a set bumps it after its plan (FINISH), and only when
+     the transaction changed the state. A pure read stages only its plan. *)
+  Definition exec_pmap (tag : nat) (st : store) (s : Space) (j : nat) : store * list ev :=
+    match ordered, pstep_changes (pmap_plan tag st s j) with
+    | true, _ =>
+        let b := token_bump tag st s in (fst b, snd b ++ pmap_events tag st s j)
+    | false, true =>
+        let b := token_bump tag st s in (fst b, pmap_events tag st s j ++ snd b)
+    | false, false => (st, pmap_events tag st s j)
+    end.
+
+  Lemma token_bump_consumes :
+    forall tag st s,
+      In (counter_produce (ChSP s) (fst (ss st s)) (snd (ss st s)))
+         (consumed (snd (token_bump tag st s))).
+  Proof. intros tag st s. unfold token_bump, consumed. cbn. left. reflexivity. Qed.
+
+  (* A step that bumps the token consumes the token record that it finds. *)
+  Lemma exec_pmap_consumes_token :
+    forall tag st s j,
+      pbumps tag st s j = true ->
+      In (counter_produce (ChSP s) (fst (ss st s)) (snd (ss st s)))
+         (consumed (snd (exec_pmap tag st s j))).
+  Proof.
+    intros tag st s j H. unfold pbumps in H. unfold exec_pmap.
+    destruct ordered.
+    - cbn zeta. cbn [snd]. rewrite consumed_app. apply in_or_app. left.
+      apply token_bump_consumes.
+    - cbn [orb] in H. rewrite H. cbn zeta. cbn [snd]. rewrite consumed_app.
+      apply in_or_app. right. apply token_bump_consumes.
+  Qed.
+
+  (* A step that does not bump the token leaves the store as it is. *)
+  Lemma exec_pmap_quiet :
+    forall tag st s j, pbumps tag st s j = false -> fst (exec_pmap tag st s j) = st.
+  Proof.
+    intros tag st s j H. unfold pbumps in H. apply orb_false_iff in H as [Ho Hc].
+    unfold exec_pmap. rewrite Ho, Hc. reflexivity.
+  Qed.
+
+  (* A step on another space leaves the token of s as it is. *)
+  Lemma exec_pmap_ss_other :
+    forall tag st s' j s, s' <> s -> ss (fst (exec_pmap tag st s' j)) s = ss st s.
+  Proof.
+    intros tag st s' j s H. unfold exec_pmap.
+    destruct ordered; [| destruct (pstep_changes (pmap_plan tag st s' j))];
+      cbn zeta; cbn [fst]; unfold token_bump; cbn zeta; cbn [fst ss];
+      first [reflexivity | apply upd_s_neq; exact H].
+  Qed.
+
+  (* A deploy of PathMap steps, each in its own transaction. *)
+  Fixpoint run_pmap (tag : nat) (st : store) (js : list (Space * nat)) : store * list ev :=
+    match js with
+    | [] => (st, [])
+    | (s, j) :: rest =>
+        let e := exec_pmap tag st s j in
+        let r := run_pmap tag (fst e) rest in
+        (fst r, snd e ++ snd r)
+    end.
+
+  (* True when a step of the deploy js on the space s bumps the token, each
+     step at the state that the steps before it leave. *)
+  Fixpoint pmap_writes (tag : nat) (st : store) (js : list (Space * nat)) (s : Space) : bool :=
+    match js with
+    | [] => false
+    | (s', j) :: rest =>
+        (if space_eq_dec s' s then pbumps tag st s' j else false)
+        || pmap_writes tag (fst (exec_pmap tag st s' j)) rest s
+    end.
+
+  (* The first step of a deploy that bumps the token of s consumes the token
+     record of the state where the deploy starts: the steps before it leave
+     the token as it is. *)
+  Lemma pmap_writes_consume_token :
+    forall tag js st s,
+      pmap_writes tag st js s = true ->
+      In (counter_produce (ChSP s) (fst (ss st s)) (snd (ss st s)))
+         (consumed (snd (run_pmap tag st js))).
+  Proof.
+    intros tag js. induction js as [| [s' j] rest IH]; intros st s H; [discriminate H |].
+    cbn [pmap_writes] in H. cbn [run_pmap]. cbn zeta. cbn [snd].
+    rewrite consumed_app. apply in_or_app.
+    destruct (space_eq_dec s' s) as [-> | Hne].
+    - destruct (pbumps tag st s j) eqn:Eb.
+      + left. apply exec_pmap_consumes_token. exact Eb.
+      + right. cbn [orb] in H. rewrite (exec_pmap_quiet tag st s j Eb) in *.
+        apply IH. exact H.
+    - right. cbn [orb] in H. rewrite <- (exec_pmap_ss_other tag st s' j s Hne).
+      apply IH. exact H.
+  Qed.
+
+  (* Headline 15 (P5 design v2 acceptance, decision 51). Two deploys from one
+     pre-state that each run a PathMap step on the space s that bumps the
+     token race in check #1 on S(sid): both consume the pre-state token record
+     without a peek. A step bumps the token when its discipline is ordered,
+     or when its transaction changed the state: a store that is not a
+     restore, a park, a spend or the retire of a class member. *)
+  Theorem pathmap_token_race :
+    forall tA tB base jsA jsB s,
+      pmap_writes tA base jsA s = true -> pmap_writes tB base jsB s = true ->
+      In (ChSP s) (check1_spaces (snd (run_pmap tA base jsA)) (snd (run_pmap tB base jsB))).
+  Proof.
+    intros tA tB base jsA jsB s HA HB.
+    apply (check1_counter_race _ _ (ChSP s) (fst (ss base s)) (snd (ss base s)));
+      apply pmap_writes_consume_token; assumption.
+  Qed.
+
+  (* An ordered discipline writes with every step on s (decision 31). *)
+  Lemma ordered_steps_write :
+    forall tag js st s j, ordered = true -> In (s, j) js -> pmap_writes tag st js s = true.
+  Proof.
+    intros tag js. induction js as [| [s' j'] rest IH]; intros st s j Ho Hin; [destruct Hin |].
+    cbn [pmap_writes]. apply orb_true_iff.
+    destruct Hin as [E | Hin].
+    - left. injection E as -> ->. destruct (space_eq_dec s s) as [_ | C]; [| contradiction].
+      unfold pbumps. rewrite Ho. reflexivity.
+    - right. exact (IH _ s j Ho Hin).
+  Qed.
+
+  (* A first step whose plan changes the state writes (decision 51). *)
+  Lemma changing_step_writes :
+    forall tag st s j rest,
+      pstep_changes (pmap_plan tag st s j) = true -> pmap_writes tag st ((s, j) :: rest) s = true.
+  Proof.
+    intros tag st s j rest H. cbn [pmap_writes]. apply orb_true_iff. left.
+    destruct (space_eq_dec s s) as [_ | C]; [| contradiction].
+    unfold pbumps. rewrite H. apply orb_true_r.
+  Qed.
+
+  (* A store that is not a restore changes the state (Engine::store). *)
+  Lemma store_changes : forall es, In PStore es -> pstep_changes es = true.
+  Proof.
+    intros es H. unfold pstep_changes. apply existsb_exists. exists PStore.
+    split; [exact H | reflexivity].
+  Qed.
+
+  (* A plan of restores and reads changes nothing: a pure read (F16). *)
+  Lemma pure_read_unchanged :
+    forall es, (forall e, In e es -> e = PRestore \/ e = PRead) -> pstep_changes es = false.
+  Proof.
+    intros es H. unfold pstep_changes. apply not_true_iff_false. intros Hx.
+    apply existsb_exists in Hx as [e [He Hc]]. destruct (H e He) as [-> | ->]; discriminate.
+  Qed.
+
+  (* The plan events of a PathMap step consume no counter record: they are
+     the events on the D and I channels. *)
+  Definition pmap_events_data : Prop :=
+    forall tag st s j e, In e (pmap_events tag st s j) ->
+      match e with
+      | EvComm _ ps _ => forall p, In p ps -> counter_pid (p_id p) = false
+      | _ => True
+      end.
+
+  Lemma pmap_events_consume_no_counter :
+    forall tag st s j c v cr,
+      pmap_events_data -> ~ In (counter_produce c v cr) (consumed (pmap_events tag st s j)).
+  Proof.
+    intros tag st s j c v cr Hdata Hin. unfold consumed, produces_consumed in Hin.
+    apply in_flat_map in Hin as [e [He Hp]].
+    specialize (Hdata tag st s j e He).
+    destruct e as [p | c0 | c0 ps peeks]; cbn in Hp; try destruct Hp.
+    destruct peeks; cbn in Hp; [destruct Hp |].
+    specialize (Hdata _ Hp). cbn in Hdata. discriminate.
+  Qed.
+
+  (* The token records that one step consumes: the record of its own space
+     when it bumps, and no other. *)
+  Lemma exec_pmap_consumed_counter :
+    forall tag st s' j c v cr,
+      pmap_events_data ->
+      In (counter_produce c v cr) (consumed (snd (exec_pmap tag st s' j))) ->
+      c = ChSP s' /\ pbumps tag st s' j = true.
+  Proof.
+    intros tag st s' j c v cr Hdata Hin. unfold exec_pmap, pbumps in *.
+    destruct ordered; [| destruct (pstep_changes (pmap_plan tag st s' j))];
+      cbn zeta in Hin; cbn [snd] in Hin; try rewrite consumed_app in Hin.
+    - apply in_app_or in Hin as [Hin | Hin].
+      + unfold token_bump, consumed in Hin. cbn in Hin. destruct Hin as [Hin | []].
+        inversion Hin. split; reflexivity.
+      + exfalso. exact (pmap_events_consume_no_counter _ _ _ _ _ _ _ Hdata Hin).
+    - apply in_app_or in Hin as [Hin | Hin].
+      + exfalso. exact (pmap_events_consume_no_counter _ _ _ _ _ _ _ Hdata Hin).
+      + unfold token_bump, consumed in Hin. cbn in Hin. destruct Hin as [Hin | []].
+        inversion Hin. split; reflexivity.
+    - exfalso. exact (pmap_events_consume_no_counter _ _ _ _ _ _ _ Hdata Hin).
+  Qed.
+
+  (* A deploy whose steps on s never bump the token consumes no token record
+     of s. So two deploys that only read s never race on S(sid) (decision 51,
+     F16 for pure reads). *)
+  Lemma pmap_reads_consume_no_token :
+    forall tag js st s v cr,
+      pmap_events_data -> pmap_writes tag st js s = false ->
+      ~ In (counter_produce (ChSP s) v cr) (consumed (snd (run_pmap tag st js))).
+  Proof.
+    intros tag js. induction js as [| [s' j] rest IH]; intros st s v cr Hdata H Hin;
+      [destruct Hin |].
+    cbn [pmap_writes] in H. apply orb_false_iff in H as [Hfirst Hrest].
+    cbn [run_pmap] in Hin. cbn zeta in Hin. cbn [snd] in Hin.
+    rewrite consumed_app in Hin. apply in_app_or in Hin as [Hin | Hin].
+    - destruct (exec_pmap_consumed_counter _ _ _ _ _ _ _ Hdata Hin) as [Hc Hb].
+      injection Hc as Hs. subst s'. destruct (space_eq_dec s s) as [_ | C]; [| contradiction].
+      rewrite Hb in Hfirst. discriminate.
+    - exact (IH _ s v cr Hdata Hrest Hin).
+  Qed.
 End Spaces.
 
 Arguments QEnqueue {D} d.
@@ -2180,3 +2493,4 @@ Print Assumptions CrossedStacks.crossed_stacks_without_removal_counters_fabricat
 Print Assumptions join_ops_race_on_every_counter.
 Print Assumptions set_retirements_race.
 Print Assumptions unordered_set_writes_commute.
+Print Assumptions pathmap_token_race.

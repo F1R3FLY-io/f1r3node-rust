@@ -97,7 +97,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 48](#decision-48) | The work order after decision 43 | 2026-10-06 | In force |
 | [Decision 49](#decision-49) | One fire count for each space transaction | 2026-10-06 | In force. Implemented in P5 wave W2 |
 | [Decision 50](#decision-50) | Joined set collections cascade | 2026-10-07 | In force. Implemented in P5 wave W3 |
-| [Decision 51](#decision-51) | A PathMap bag or set peek bumps the token when its second send changes state | 2026-10-07 | In force. Implementation with the PathMap engine |
+| [Decision 51](#decision-51) | A PathMap bag or set peek bumps the token when its second send changes state | 2026-10-07 | In force. Implemented in P5 wave W3 (Phase 2 of the PathMap engine) |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -1432,7 +1432,7 @@ So each lift of a set has an identity of its own.
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation with the PathMap engine of P5 wave W3 |
+| Status | In force. Implemented in P5 wave W3 (Phase 2 of the PathMap engine) |
 | Amends | F16 of [decision 39](#decision-39) |
 | Related | [Decision 45](#decision-45), [decision 31](#decision-31), [M-1](#m-1) |
 

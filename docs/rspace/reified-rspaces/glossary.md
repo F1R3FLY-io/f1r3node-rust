@@ -34,71 +34,71 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Channel](#channel) | 1 | [Phlo](#phlo) | 1 |
 | [Checkpoint](#checkpoint) | 1 | [Play](#play) | 1 |
 | [Class fire](#class-fire) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Class key](#class-key) | 2 | [Process](#process) | 1 |
-| [Collection](#collection) | 2 | [Produce counter](#produce-counter) | 2 |
-| [Collection counter](#collection-counter) | 2 | [Property-based test](#property-based-test) | 1 |
-| [Collection key](#collection-key) | 2 | [Qualifier](#qualifier) | 2 |
-| [COMM event](#comm-event) | 1 | [Random state](#random-state) | 1 |
-| [Config record](#config-record) | 2 | [Re-issue](#re-issue) | 2 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-offer](#re-offer) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Re-rooting](#re-rooting) | 2 |
-| [Constructor schema](#constructor-schema) | 2 | [Re-store](#re-store) | 2 |
-| [Continuation](#continuation) | 1 | [Receive](#receive) | 1 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Recognized position](#recognized-position) | 2 |
-| [Crossed stacks](#crossed-stacks) | 2 | [Record envelope](#record-envelope) | 2 |
-| [Datum](#datum) | 1 | [Reduction participant](#reduction-participant) | 2 |
-| [Deploy](#deploy) | 1 | [Registered family](#registered-family) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Regression corpus](#regression-corpus) | 2 |
-| [Event log](#event-log) | 1 | [Reified RSpace](#reified-rspace) | 2 |
-| [Exact cut](#exact-cut) | 2 | [Replay](#replay) | 1 |
-| [F1r3lang](#f1r3lang) | 1 | [Reporting](#reporting) | 1 |
-| [Factory](#factory) | 2 | [Representative](#representative) | 2 |
-| [Factory capability](#factory-capability) | 2 | [Retention](#retention) | 2 |
-| [Factory row](#factory-row) | 2 | [Rholang](#rholang) | 1 |
-| [FIPS](#fips) | 1 | [Rocq](#rocq) | 1 |
-| [Fire count](#fire-count) | 2 | [Routing class](#routing-class) | 2 |
-| [Fire round](#fire-round) | 2 | [RSpace](#rspace) | 1 |
-| [First admitting waiter](#first-admitting-waiter) | 2 | [Scan discipline](#scan-discipline) | 2 |
-| [Footprint policy](#footprint-policy) | 2 | [Scan driver](#scan-driver) | 2 |
-| [Frontend](#frontend) | 1 | [Second send](#second-send) | 2 |
-| [Gate](#gate) | 2 | [Send](#send) | 1 |
-| [getSpaceAgent](#getspaceagent) | 2 | [Settle](#settle) | 2 |
-| [Handle](#handle) | 2 | [Space](#space) | 2 |
-| [Handle capability](#handle-capability) | 2 | [Space agent](#space-agent) | 2 |
-| [Head record](#head-record) | 2 | [Space counter](#space-counter) | 2 |
-| [Head waiter](#head-waiter) | 2 | [Space family](#space-family) | 2 |
-| [Head-only matching](#head-only-matching) | 2 | [Space id](#space-id) | 2 |
-| [Headline](#headline) | 2 | [Space intent](#space-intent) | 2 |
-| [History trie](#history-trie) | 1 | [Space name](#space-name) | 2 |
-| [Host operation](#host-operation) | 2 | [Space reference](#space-reference) | 2 |
-| [Host work](#host-work) | 1 | [Space transaction](#space-transaction) | 2 |
-| [Hot store](#hot-store) | 1 | [Staged view](#staged-view) | 2 |
-| [Index channel](#index-channel) | 2 | [Storage channel](#storage-channel) | 2 |
-| [Index name](#index-name) | 2 | [Store identity](#store-identity) | 2 |
-| [Inductive invariant](#inductive-invariant) | 1 | [Sub-order](#sub-order) | 2 |
-| [Inert](#inert) | 2 | [Sweep](#sweep) | 2 |
-| [Inner collection](#inner-collection) | 2 | [System process](#system-process) | 1 |
-| [Internal operation](#internal-operation) | 2 | [Tested prefix](#tested-prefix) | 2 |
-| [Invariant map](#invariant-map) | 2 | [Theory](#theory) | 2 |
-| [Join](#join) | 1 | [Theory identity](#theory-identity) | 2 |
-| [Join engine](#join-engine) | 2 | [Times-repeated](#times-repeated) | 2 |
-| [Join scope](#join-scope) | 2 | [TLA+](#tla) | 1 |
-| [Join slot](#join-slot) | 2 | [Token](#token) | 2 |
-| [KIND](#kind) | 2 | [Trigger event](#trigger-event) | 2 |
-| [Lane](#lane) | 2 | [Tuple space](#tuple-space) | 1 |
-| [Legacy charge](#legacy-charge) | 2 | [Typed reply](#typed-reply) | 2 |
-| [Level](#level) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
-| [LFS](#lfs) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
-| [Lift](#lift) | 2 | [URN](#urn) | 1 |
-| [List order](#list-order) | 2 | [Use context](#use-context) | 2 |
-| [Lock coverage](#lock-coverage) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
-| [Lock stripe](#lock-stripe) | 1 | [Vehicle](#vehicle) | 2 |
-| [Marker](#marker) | 2 | [Verification recipe](#verification-recipe) | 2 |
-| [Marker tuple](#marker-tuple) | 2 | [Volatile channel](#volatile-channel) | 2 |
-| [Matcher](#matcher) | 2 | [Waiter](#waiter) | 2 |
-| [Merge](#merge) | 1 | [Witness test](#witness-test) | 2 |
-| [Model map](#model-map) | 2 | [Write skew](#write-skew) | 2 |
-| [Name](#name) | 1 |  |  |
+| [Class key](#class-key) | 2 | [Prefix source](#prefix-source) | 2 |
+| [Collection](#collection) | 2 | [Process](#process) | 1 |
+| [Collection counter](#collection-counter) | 2 | [Produce counter](#produce-counter) | 2 |
+| [Collection key](#collection-key) | 2 | [Property-based test](#property-based-test) | 1 |
+| [COMM event](#comm-event) | 1 | [Qualifier](#qualifier) | 2 |
+| [Config record](#config-record) | 2 | [Random state](#random-state) | 1 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-issue](#re-issue) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Re-offer](#re-offer) | 2 |
+| [Constructor schema](#constructor-schema) | 2 | [Re-rooting](#re-rooting) | 2 |
+| [Continuation](#continuation) | 1 | [Re-store](#re-store) | 2 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Receive](#receive) | 1 |
+| [Crossed stacks](#crossed-stacks) | 2 | [Recognized position](#recognized-position) | 2 |
+| [Datum](#datum) | 1 | [Record envelope](#record-envelope) | 2 |
+| [Deploy](#deploy) | 1 | [Reduction participant](#reduction-participant) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Registered family](#registered-family) | 2 |
+| [Event log](#event-log) | 1 | [Regression corpus](#regression-corpus) | 2 |
+| [Exact cut](#exact-cut) | 2 | [Reified RSpace](#reified-rspace) | 2 |
+| [F1r3lang](#f1r3lang) | 1 | [Replay](#replay) | 1 |
+| [Factory](#factory) | 2 | [Reporting](#reporting) | 1 |
+| [Factory capability](#factory-capability) | 2 | [Representative](#representative) | 2 |
+| [Factory row](#factory-row) | 2 | [Retention](#retention) | 2 |
+| [FIPS](#fips) | 1 | [Rholang](#rholang) | 1 |
+| [Fire count](#fire-count) | 2 | [Rocq](#rocq) | 1 |
+| [Fire round](#fire-round) | 2 | [Routing class](#routing-class) | 2 |
+| [First admitting waiter](#first-admitting-waiter) | 2 | [RSpace](#rspace) | 1 |
+| [Footprint policy](#footprint-policy) | 2 | [Scan discipline](#scan-discipline) | 2 |
+| [Frontend](#frontend) | 1 | [Scan driver](#scan-driver) | 2 |
+| [Gate](#gate) | 2 | [Second send](#second-send) | 2 |
+| [getSpaceAgent](#getspaceagent) | 2 | [Send](#send) | 1 |
+| [Handle](#handle) | 2 | [Settle](#settle) | 2 |
+| [Handle capability](#handle-capability) | 2 | [Space](#space) | 2 |
+| [Head record](#head-record) | 2 | [Space agent](#space-agent) | 2 |
+| [Head waiter](#head-waiter) | 2 | [Space counter](#space-counter) | 2 |
+| [Head-only matching](#head-only-matching) | 2 | [Space family](#space-family) | 2 |
+| [Headline](#headline) | 2 | [Space id](#space-id) | 2 |
+| [History trie](#history-trie) | 1 | [Space intent](#space-intent) | 2 |
+| [Host operation](#host-operation) | 2 | [Space name](#space-name) | 2 |
+| [Host work](#host-work) | 1 | [Space reference](#space-reference) | 2 |
+| [Hot store](#hot-store) | 1 | [Space transaction](#space-transaction) | 2 |
+| [Index channel](#index-channel) | 2 | [Staged view](#staged-view) | 2 |
+| [Index name](#index-name) | 2 | [Storage channel](#storage-channel) | 2 |
+| [Inductive invariant](#inductive-invariant) | 1 | [Store identity](#store-identity) | 2 |
+| [Inert](#inert) | 2 | [Sub-order](#sub-order) | 2 |
+| [Inner collection](#inner-collection) | 2 | [Sweep](#sweep) | 2 |
+| [Internal operation](#internal-operation) | 2 | [System process](#system-process) | 1 |
+| [Invariant map](#invariant-map) | 2 | [Tested prefix](#tested-prefix) | 2 |
+| [Join](#join) | 1 | [Theory](#theory) | 2 |
+| [Join engine](#join-engine) | 2 | [Theory identity](#theory-identity) | 2 |
+| [Join scope](#join-scope) | 2 | [Times-repeated](#times-repeated) | 2 |
+| [Join slot](#join-slot) | 2 | [TLA+](#tla) | 1 |
+| [KIND](#kind) | 2 | [Token](#token) | 2 |
+| [Lane](#lane) | 2 | [Trigger event](#trigger-event) | 2 |
+| [Legacy charge](#legacy-charge) | 2 | [Tuple space](#tuple-space) | 1 |
+| [Level](#level) | 2 | [Typed reply](#typed-reply) | 2 |
+| [LFS](#lfs) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [Lift](#lift) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
+| [List order](#list-order) | 2 | [URN](#urn) | 1 |
+| [Lock coverage](#lock-coverage) | 2 | [Use context](#use-context) | 2 |
+| [Lock stripe](#lock-stripe) | 1 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Marker](#marker) | 2 | [Vehicle](#vehicle) | 2 |
+| [Marker tuple](#marker-tuple) | 2 | [Verification recipe](#verification-recipe) | 2 |
+| [Matcher](#matcher) | 2 | [Volatile channel](#volatile-channel) | 2 |
+| [Merge](#merge) | 1 | [Waiter](#waiter) | 2 |
+| [Model map](#model-map) | 2 | [Witness test](#witness-test) | 2 |
+| [Name](#name) | 1 | [Write skew](#write-skew) | 2 |
 
 ## Part 1: background terms
 
@@ -1111,6 +1111,13 @@ It is the incoming record of a delivery to a waiter on $`q`$, and no store keeps
 
 The token of a PathMap space is its [space counter](#space-counter) $`S(\mathit{sid})`$.
 Every operation of an ordered discipline bumps it, and so does every change of state of a bag or a set ([decision 51](decision-register.md#decision-51)).
+
+### Prefix source
+
+The prefix source is the store seam `JoinSource` of the [join engine](#join-engine) for a PathMap space ([design N13](design.md#n13-wave-w3-of-p5-the-pathmap-engine)).
+Each collection of its [join scope](#join-scope) is a prefix of a path, with the [index channel](#index-channel) of that prefix.
+The window of a bind on a prefix holds the datums of each path under the prefix, re-rooted under the suffix of the path.
+A delivery uses the [vehicle](#vehicle) of the datum, and a removal retires the datum and its other [path markers](#path-marker).
 
 ### LFS
 

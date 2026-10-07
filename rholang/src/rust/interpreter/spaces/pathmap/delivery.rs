@@ -72,7 +72,9 @@ use serde::Serialize;
 use shared::rust::fallible_sort;
 
 use super::adapter::EPathMapAdapter;
-use super::markers::{decode_marker_metered, marker_random, marker_record_metered, SOURCE_LEN};
+use super::markers::{
+    decode_marker_metered, marker_authority, marker_random, marker_record_metered, SOURCE_LEN,
+};
 use super::path_codec::{compare_keys, path_key, EncodedPath};
 use super::reroot::reroot_payload;
 use crate::rust::interpreter::reified::costs::ScanMeter;
@@ -176,7 +178,32 @@ pub fn consume_candidates<V: PrefixView>(
     data_order: &mut EntryOrder<'_, ParDatum>,
     meter: &ScanMeter,
 ) -> Result<Vec<PathCandidates>, SpaceError> {
+    consume_candidates_excluding(view, prefix_key, &[], data_order, meter)
+}
+
+/// [`consume_candidates`] without the datums whose source hash is one of `excluded`: the datums
+/// in flight of the transaction (seams arbitration, section 5). A second send or a lifted
+/// element keeps its record and some of its markers in the store while it is in flight, and a
+/// peek or a lift removed one of its markers. So the planner leaves out every record and every
+/// marker of such a datum, and the marker invariant holds for the other datums. Each comparison
+/// with an excluded hash is reserved first.
+pub fn consume_candidates_excluding<V: PrefixView>(
+    view: &mut V,
+    prefix_key: &[u8],
+    excluded: &[Blake2b256Hash],
+    data_order: &mut EntryOrder<'_, ParDatum>,
+    meter: &ScanMeter,
+) -> Result<Vec<PathCandidates>, SpaceError> {
     let mut keyed = keyed_markers(view.markers(prefix_key)?, meter)?;
+    if !excluded.is_empty() {
+        let mut kept = meter.buffer::<KeyedMarker>(keyed.len())?;
+        for marker in keyed {
+            if !is_excluded(&marker.source, excluded, meter)? {
+                kept.push(marker);
+            }
+        }
+        keyed = kept;
+    }
     sort_by_key(&mut keyed, meter)?;
     let groups = group_bounds(&keyed, meter)?;
     let mut paths = meter.buffer::<PathCandidates>(groups.len())?;
@@ -196,13 +223,16 @@ pub fn consume_candidates<V: PrefixView>(
         };
         let path_key = joined_key(prefix_key, &first.key, meter)?;
         let records = view.records(&path_key)?;
-        let pairs = pair_records(group, records, meter)?;
+        let pairs = pair_records(group, records, excluded, meter)?;
         let order = data_order(records, meter)?;
         let mut entries = meter.buffer::<PathEntry>(order.len())?;
         for record_index in order {
-            let marker = pairs.get(record_index).ok_or(SpaceError::Inconsistent(
+            let paired = pairs.get(record_index).ok_or(SpaceError::Inconsistent(
                 "a discipline order names a record outside its path",
             ))?;
+            let Some(marker) = paired else {
+                continue;
+            };
             entries.push(PathEntry {
                 record_index,
                 marker_index: marker.index,
@@ -291,22 +321,28 @@ fn joined_key(left: &[u8], right: &[u8], meter: &ScanMeter) -> Result<Vec<u8>, S
     Ok(key)
 }
 
-/// The marker of each record of one path, by the position of the record in `records`. The
-/// markers of the group carry the source hashes of the datums of the path. Each record pairs with
-/// an unused marker of its source hash, in view order, so a repeated identity pairs once for each
-/// record. A record without a marker, or a marker left over, is `Inconsistent`. Each comparison is
-/// reserved first.
+/// The marker of each record of one path, by the position of the record in `records`, or `None`
+/// for a record whose source hash is one of `excluded`. The markers of the group carry the source
+/// hashes of the datums of the path, and the group holds no marker of an excluded datum. Each
+/// other record pairs with an unused marker of its source hash, in view order, so a repeated
+/// identity pairs once for each record. A record without a marker, or a marker left over, is
+/// `Inconsistent`. Each comparison is reserved first.
 fn pair_records<'g>(
     group: &'g [KeyedMarker],
     records: &[ParDatum],
+    excluded: &[Blake2b256Hash],
     meter: &ScanMeter,
-) -> Result<Vec<&'g KeyedMarker>, SpaceError> {
+) -> Result<Vec<Option<&'g KeyedMarker>>, SpaceError> {
     let unpaired =
         SpaceError::Inconsistent("the markers of a prefix differ from the datums of a path");
     let mut used = meter.buffer::<bool>(group.len())?;
     used.resize(group.len(), false);
-    let mut pairs = meter.buffer::<&KeyedMarker>(records.len())?;
+    let mut pairs = meter.buffer::<Option<&KeyedMarker>>(records.len())?;
     for record in records {
+        if is_excluded(&record.source.hash, excluded, meter)? {
+            pairs.push(None);
+            continue;
+        }
         let mut found = None;
         for (position, marker) in group.iter().enumerate() {
             meter.compare(SOURCE_LEN, SOURCE_LEN)?;
@@ -320,12 +356,27 @@ fn pair_records<'g>(
         if let Some(slot) = used.get_mut(position) {
             *slot = true;
         }
-        pairs.push(group.get(position).ok_or(unpaired.clone())?);
+        pairs.push(Some(group.get(position).ok_or(unpaired.clone())?));
     }
     match used.iter().all(|taken| *taken) {
         true => Ok(pairs),
         false => Err(unpaired),
     }
+}
+
+/// True when `source` is one of `excluded`. Each comparison is reserved first.
+pub fn is_excluded(
+    source: &Blake2b256Hash,
+    excluded: &[Blake2b256Hash],
+    meter: &ScanMeter,
+) -> Result<bool, SpaceError> {
+    for other in excluded {
+        meter.compare(source.0.len(), other.0.len())?;
+        if other == source {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The waiters that a send on the path `path` meets (PRODUCE-WAITERS): the waiters of `I(p)`,
@@ -433,6 +484,53 @@ pub fn store_markers(
         planned.push(PlannedMarker { depth, record });
     }
     Ok(planned)
+}
+
+/// The markers of the datum whose record on `D(p)` is `datum_record` and whose source hash is
+/// `source`, for its store on the path `path` (STORE-MARKERS): [`store_markers`] with the random
+/// state of the record and the authority of [`marker_authority`]. The restore of a marker uses
+/// [`datum_marker`], which builds the marker of one depth from the same parts, so a restored
+/// marker has the bytes of the stored one.
+pub fn datum_markers(
+    path: &[Par],
+    source: &Blake2b256Hash,
+    datum_record: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<Vec<PlannedMarker>, SpaceError> {
+    let datum_random = Blake2b512Random::from_bytes(&datum_record.random_state);
+    store_markers(
+        path,
+        source,
+        &datum_random,
+        marker_authority(datum_record),
+        meter,
+    )
+}
+
+/// The marker of depth `depth` of the datum whose record on `D(p)` is `datum_record` and whose
+/// source hash is `source`, on the path `path`: the marker that [`datum_markers`] stores at that
+/// depth, built again. A peek or a lift removed it, and the second send restores it with these
+/// bytes, so the restored marker keeps its produce identity. The suffix copy and the marker are
+/// reserved first. A depth below the path is `Inconsistent`.
+pub fn datum_marker(
+    path: &[Par],
+    source: &Blake2b256Hash,
+    datum_record: &ListParWithRandom,
+    depth: usize,
+    meter: &ScanMeter,
+) -> Result<ListParWithRandom, SpaceError> {
+    let suffix = path
+        .get(depth..)
+        .ok_or(SpaceError::Inconsistent("a prefix is deeper than its path"))?;
+    let datum_random = Blake2b512Random::from_bytes(&datum_record.random_state);
+    let random = marker_random(&datum_random, depth)?;
+    marker_record_metered(
+        source,
+        meter.copy_slice(suffix)?,
+        &random,
+        marker_authority(datum_record),
+        meter,
+    )
 }
 
 /// The records that the removal of a datum on a path of `depth` elements retires (RETIRE-PLAN),

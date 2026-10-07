@@ -2705,12 +2705,13 @@
         "rholang/tests/reified_join_props.rs",
         "rholang/tests/reified_joins.rs",
         "rholang/tests/reified_merge_p5.rs",
+        "rholang/tests/reified_pathmap.rs",
         "rholang/tests/reified_pattern_enforcement.rs",
         "rholang/tests/reified_priority_queue.rs",
         "rholang/tests/reified_set.rs",
         "rholang/tests/reified_stack.rs"
       ],
-      "expected_properties": 144,
+      "expected_properties": 145,
       "formal": {
         "R1": {
           "kind": "rocq",
@@ -4210,6 +4211,15 @@
           "tests": [
             "prop_unordered_set_writes_commute"
           ]
+        },
+        "R129": {
+          "kind": "rocq",
+          "name": "pathmap_token_race",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Two branches that each run a PathMap step that bumps the token of one space race on S(sid) in check #1. A step bumps the token when its discipline is ordered, or when its transaction changes the state (decision 51).",
+          "tests": [
+            "prop_pathmap_token_race"
+          ]
         }
       },
       "properties": [
@@ -5171,51 +5181,51 @@
         {
           "number": 114,
           "test": "prop_pathmap_delivery_is_single_channel",
+          "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
             "R100"
-          ],
-          "status": "pending"
+          ]
         },
         {
           "number": 115,
           "test": "prop_pathmap_no_match_remains_any_schedule",
+          "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
             "R103",
             "V23"
-          ],
-          "status": "pending"
+          ]
         },
         {
           "number": 116,
           "test": "prop_pathmap_head_cascade_leaves_no_fireable_head",
+          "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
             "R105"
-          ],
-          "status": "pending"
+          ]
         },
         {
           "number": 117,
           "test": "prop_pathmap_token_orders_reenter_at_their_place",
+          "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
             "R106"
-          ],
-          "status": "pending"
+          ]
         },
         {
           "number": 118,
           "test": "prop_pathmap_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
             "R107"
-          ],
-          "status": "pending"
+          ]
         },
         {
           "number": 119,
           "test": "prop_pathmap_merge_detects_prefix_contact",
+          "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
             "V25"
-          ],
-          "status": "pending"
+          ]
         },
         {
           "number": 120,
@@ -5422,6 +5432,14 @@
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
             "R128"
+          ]
+        },
+        {
+          "number": 145,
+          "test": "prop_pathmap_token_race",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R129"
           ]
         }
       ],
@@ -6613,6 +6631,79 @@
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
             "R128"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_pathmap_token_race",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R129"
+          ]
+        },
+        {
+          "test": "pathmap_marker_vehicle_comm_shape",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R100"
+          ]
+        },
+        {
+          "test": "pathmap_merge_prefix_contact_conflicts",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R101",
+            "V25"
+          ]
+        },
+        {
+          "test": "pathmap_peek_restores_marker",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R102"
+          ]
+        },
+        {
+          "test": "pathmap_most_specific_waiter_first",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R103"
+          ]
+        },
+        {
+          "test": "pathmap_consume_removes_all_markers",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R104",
+            "V24"
+          ]
+        },
+        {
+          "test": "pathmap_cap_restores_owed_markers",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R102",
+            "R104"
+          ]
+        },
+        {
+          "test": "pathmap_queue_head_blocks",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R105"
+          ]
+        },
+        {
+          "test": "pathmap_cap_reissues_a_persistent_send_at_its_place",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R106"
+          ]
+        },
+        {
+          "test": "pathmap_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_pathmap.rs",
+          "covers": [
+            "R107"
           ]
         }
       ]

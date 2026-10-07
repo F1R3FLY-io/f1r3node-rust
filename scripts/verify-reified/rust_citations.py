@@ -36,6 +36,9 @@ ALIASES = {
     "accounting/mod.rs": "rholang/src/rust/interpreter/accounting/mod.rs",
     "util/mod.rs": "rholang/src/rust/interpreter/util/mod.rs",
     "scan.rs": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+    # The join engine and the prefix source of the PathMap store (P5e) share the name join.rs.
+    "join.rs": "rholang/src/rust/interpreter/spaces/join.rs",
+    "pathmap/join.rs": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
 }
 SKIP_DIRECTORIES = ("target", ".git")
 _RANGE = r"\d+(?:-\d+)?"
