@@ -26,7 +26,10 @@ fn eval_inner(
     meter: Option<&dyn BackingMeter>,
 ) -> Result<Par, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve_copy_and_cleanup(par, meter)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // clone_backing::reserve_copy_and_cleanup(par, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
         meter.reserve(
             1,
             par.exprs.len(),
@@ -59,8 +62,12 @@ fn eval_inner(
 
 fn concatenate(a: Par, b: Par, meter: Option<&dyn BackingMeter>) -> Result<Par, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve_copy_and_cleanup(&a, meter)?;
-        clone_backing::reserve_copy_and_cleanup(&b, meter)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // clone_backing::reserve_copy_and_cleanup(&a, meter)?;
+        // clone_backing::reserve_copy_and_cleanup(&b, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&a, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&b, meter)?;
         let scanned = a
             .locally_free
             .len()
@@ -101,7 +108,10 @@ fn eval_expr_to_par(
     meter: Option<&dyn BackingMeter>,
 ) -> Result<Par, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve_copy_and_cleanup(expr, meter)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // clone_backing::reserve_copy_and_cleanup(expr, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(expr, meter)?;
         meter.reserve(
             4,
             0,
@@ -286,7 +296,15 @@ fn single_expr_instance(
     meter: Option<&dyn BackingMeter>,
 ) -> Result<ExprInstance, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve_copy_and_cleanup(par, meter)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // clone_backing::reserve_copy_and_cleanup(par, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
+        // Added by D-E2 (DR-109): every caller passes an owned evaluation
+        // result and drops it after this call. A block copy and cleanup pays
+        // the copy of the value and its release, so one more inspection pays
+        // the release of `par`.
+        clone_backing::inspect_blocks(par, meter)?;
     }
     if !par.sends.is_empty()
         || !par.receives.is_empty()
@@ -339,8 +357,15 @@ fn eq_binop(
     let lhs = eval_inner(require_par(p1)?, env, meter)?;
     let rhs = eval_inner(require_par(p2)?, env, meter)?;
     if let Some(meter) = meter {
-        clone_backing::inspect(&lhs, meter)?;
-        clone_backing::inspect(&rhs, meter)?;
+        // Changed by D-O1 (DR-109): a block inspection prepays one traversal.
+        // The NaN scan, the comparison and the release each traverse an owned
+        // operand once, so each operand gets three inspections.
+        // clone_backing::inspect(&lhs, meter)?;
+        // clone_backing::inspect(&rhs, meter)?;
+        for _ in 0..3 {
+            clone_backing::inspect_blocks(&lhs, meter)?;
+            clone_backing::inspect_blocks(&rhs, meter)?;
+        }
     }
     // IEEE 754: any comparison involving NaN is false (so == is false and
     // != is true). Mirrors `par_contains_nan_double` in the full reducer.

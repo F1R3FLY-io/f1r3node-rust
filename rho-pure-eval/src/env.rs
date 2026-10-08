@@ -104,7 +104,10 @@ impl<A: Clone> Env<A> {
         )?;
         match self.env_map.get(&position) {
             Some(value) => {
-                clone_backing::reserve_copy_and_cleanup(value, meter)?;
+                // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                // once per enclosing block.
+                // clone_backing::reserve_copy_and_cleanup(value, meter)?;
+                clone_backing::reserve_blocks_copy_and_cleanup(value, meter)?;
                 Ok(Some(value.clone()))
             }
             None => Ok(None),

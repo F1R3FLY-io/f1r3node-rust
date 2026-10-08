@@ -10189,7 +10189,8 @@ is a chain of smaller entries (DR-109).
 
 **Status.** Part 1, the walker sites of the rholang matcher (decisions 1 to
 6), implemented 2026-10-08 for Phase D item D-E2 of epic 8946 (D-O1 Stage
-B). Part 2, the walker sites of `rho-pure-eval`, follows. A read-only design
+B). Part 2, the walker sites of `rho-pure-eval` (decisions 7 to 9),
+implemented 2026-10-08 as the second commit of D-E2. A read-only design
 pass took the inventory of the matcher sites. The user decided to put the
 `rho-pure-eval` sites into D-E2 as a second commit.
 
@@ -10506,6 +10507,187 @@ MiB to 10, 14 and 8 MiB. The design estimated −23 MB (±30 %) and 10 to 14
 MiB. The producer's execution does not change, because it has no matcher
 frames. In multiples of the original caps, the replay of the gateway block
 is now at 2.49 in VerificationBytes and 0.90 in SearchStateBytes.
+
+**Context (part 2).**
+
+- `rho-pure-eval` evaluates the guards of guarded continuations. The
+  metered matcher calls `eval_metered` from `guard_passes_metered`
+  (`rholang/src/rust/interpreter/matcher/match.rs:251`). The crate has
+  eight walker sites in `eval.rs` and `env.rs`. All eight were per-level
+  walks before part 2.
+- An audit of the eight sites against the precondition of DR-94 found two
+  kinds of site where one per-level charge paid more than one traversal:
+  - `single_expr_instance` gets an owned evaluation result from each of
+    its ten callers, and each caller drops the result after the call. The
+    per-level copy and cleanup of the result also paid that release.
+  - `eq_binop` traverses each owned operand three times: the NaN scan, the
+    comparison and the release. The per-level inspection of each operand
+    counted each inline byte three times.
+- The 111 sample files of the three D-G0 probe runs of part 1 hold no stack
+  with a `rho-pure-eval` frame or with `guard_passes_metered`.
+
+**Decision (part 2).**
+
+7. The site switch. Six sites move to the block copy and cleanup:
+   `eval_inner`, the two arguments of `concatenate`, `eval_expr_to_par`,
+   `single_expr_instance` and `Env::get_metered`.
+8. The single-value extraction. `single_expr_instance` inspects its
+   argument a second time. This inspection pays the release of the owned
+   result by the caller.
+9. The equality. `eq_binop` inspects each operand three times, once for
+   each traversal. The per-level code inspected each operand once.
+
+Decision 6 also applies to part 2.
+
+**Algorithm (part 2, literate form).**
+
+```text
+⟨evaluate Par p⟩ ≡
+  reserve_blocks_copy_and_cleanup(p)        -- the accumulator copies the other fields of p
+  reserve(1, |p.exprs|, size(Par) + size(Vec<Expr>))
+  acc ← p without its expressions
+  for each expression e of p:
+    acc ← ⟨concatenate acc and ⟨evaluate expression e⟩⟩
+
+⟨concatenate owned a and b⟩ ≡
+  reserve_blocks_copy_and_cleanup(a)
+  reserve_blocks_copy_and_cleanup(b)
+  reserve(2, |a.locally_free| + |b.locally_free|, 0)
+  clone the elements of a and b into the result, then release a and b
+
+⟨evaluate expression e⟩ ≡
+  reserve_blocks_copy_and_cleanup(e)        -- a ground value or a collection is copied into the result
+  reserve(4, 0, size(Par) + size(Expr))
+  the arm of e
+
+⟨single value of an owned result r⟩ ≡
+  reserve_blocks_copy_and_cleanup(r)        -- the copy of the expression, or of r for the error, and its release
+  inspect_blocks(r)                         -- the release of r by the caller (decision 8)
+
+⟨equality of owned results l and r⟩ ≡
+  repeat 3 times:
+    inspect_blocks(l); inspect_blocks(r)    -- the NaN scan, the comparison, the release (decision 9)
+  the NaN scan of l and r, then l == r
+
+⟨lookup of position i⟩ ≡
+  reserve(probes + 3, probes × size(i32), 0)
+  reserve_blocks_copy_and_cleanup(v)        -- the returned copy of v and its release by the caller
+```
+
+**Soundness (part 2).**
+
+- Each copy-and-cleanup site makes at most one copy of its value and
+  releases the copy once. A block copy and cleanup pays one clone and one
+  release (`WalkerBlockCharge.block_copy_covers_walk_and_clone`).
+- `concatenate` clones the elements of its two owned arguments into new
+  vectors and then releases the arguments. The block copy and cleanup of
+  each argument pays both steps.
+- `single_expr_instance` copies the only expression of its argument, or
+  the whole argument for the error. That copy is a part of the argument, so
+  the block copy pays it. The added inspection pays the release of the
+  argument (`WalkerBlockCharge.block_inspection_covers_walk_and_traversal`).
+- The ten callers of `single_expr_instance` are `ENot`, `ENeg` and the two
+  operands of `bool_binop`, `cmp_binop`, `int_binop_checked` and
+  `int_div_or_mod`. Each caller passes an owned evaluation result and drops
+  it after the call.
+- The NaN scan stops at the first NaN, and the comparison stops at the
+  first difference. Each reads at most one traversal of each operand. The
+  release is one traversal. So three inspections of each operand cover the
+  three traversals.
+- The charge of every site depends only on the values, so every role
+  charges the same.
+
+**Audit (part 2).** All paths are under `rho-pure-eval/src/`. The columns
+are the same as in the audit of part 1.
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `eval.rs:32` (`eval_inner`) | Par | the copy of its other fields into the accumulator, and its release | block copy | every evaluation |
+| `eval.rs:69`, `:70` (`concatenate`) | owned accumulator and result | the clone of their elements into the result, and their release | block copy, twice | each expression of a Par |
+| `eval.rs:114` (`eval_expr_to_par`) | expression | the copy of a ground value or a collection into the result | block copy | each expression |
+| `eval.rs:302` (`single_expr_instance`) | owned result | the copy of its only expression, or of the result for the error, and the release of that copy | block copy | each operand of a unary, Boolean, ordering or arithmetic operator |
+| `eval.rs:307` (`single_expr_instance`) | owned result | the release of the result by the caller (decision 8) | block inspection | as above |
+| `eval.rs:366`, `:367` (`eq_binop`) | owned operands | the NaN scan, the comparison and the release (decision 9) | block inspection, three times each | each `==` and `!=` |
+| `env.rs:110` (`Env::get_metered`) | bound value | the returned copy and its release | block copy | each bound variable of a guard |
+
+**Comparison (part 2).** A scratch test, which is not committed, measured
+the total charge of eleven evaluations. It ran once with the per-level code
+that precedes part 2 and once with part 2. Each cell gives the per-level
+charge and then the block charge.
+
+| Evaluation | VerificationOperations | VerificationBytes | SearchStateBytes |
+| --- | ---: | ---: | ---: |
+| ground integer | 401 → 339 | 48,643 → 15,649 | 4,976 → 2,928 |
+| ground 4 KiB string | 401 → 339 | 98,083 → 52,801 | 17,264 → 15,216 |
+| ground list of 16 integers | 6,161 → 5,979 | 913,685 → 268,321 | 51,568 → 51,696 |
+| equality of integers | 1,825 → 1,825 | 244,301 → 75,715 | 18,608 → 11,824 |
+| equality of 4 KiB strings | 1,825 → 1,825 | 425,581 → 224,419 | 59,568 → 52,784 |
+| equality of lists of 16 integers | 22,913 → 26,265 | 3,415,695 → 1,127,619 | 174,256 → 180,144 |
+| negation | 1,188 → 1,082 | 154,786 → 46,674 | 13,032 → 7,848 |
+| addition | 1,957 → 1,825 | 261,357 → 77,507 | 20,576 → 13,024 |
+| ordering of 4 KiB strings | 1,958 → 1,826 | 467,267 → 242,595 | 69,728 → 62,176 |
+| lookup of a 4 KiB string | 1,000 → 856 | 197,144 → 99,598 | 31,800 → 27,064 |
+| guard `x == 7 && true` | 4,606 → 4,420 | 605,300 → 177,554 | 43,976 → 28,232 |
+
+Block mode lowers VerificationBytes by 46 to 71 % in every evaluation. It
+lowers SearchStateBytes by 11 to 41 % and VerificationOperations by 0 to
+15 %, except for two lists:
+
+- The equality of two lists of 16 integers charges 14.6 % more
+  VerificationOperations and 3.4 % more SearchStateBytes. Decision 9
+  inspects its operands six times instead of twice. Each inspection charges
+  an operation for each entry that it visits and the backing of its own
+  worklist. A walk that charges several traversals at once would remove
+  this excess. D-E2 does not add such a walk.
+- The ground list of 16 integers charges 128 more bytes of
+  SearchStateBytes (0.2 %). In block mode, each element of the list costs a
+  worklist entry constant of 64 bytes (D-B3, DR-92). The per-level walk
+  charged a doubling worklist instead.
+
+**Verification (part 2).** Part 2 adds no proof. Its soundness uses the
+lemmas of `WalkerBlockCharge.v` that part 1 also uses.
+
+Tests in `rho-pure-eval/src/tests.rs`:
+
+- `equality_charges_three_traversals_of_each_operand` builds the exact
+  charge of an equality of two 4 KiB strings from the crate's functions and
+  the shared walks. The parts are the outer evaluation, the two operand
+  evaluations and three block inspections of each result.
+- `single_value_extraction_charges_a_copy_and_the_release_of_its_operand`
+  builds the exact charge of a negation in the same way: the outer
+  evaluation, the operand evaluation, and a block copy and an inspection of
+  the operand's result.
+- `metered_environment_copy_rejects_unfunded_arc_cleanup` now uses the
+  block copy for its limit. A credit for the lookup and the block copy
+  rejects the lookup, and so does a credit that is one byte short of the
+  cleanup. The full credit passes.
+- The existing checks of exact credit and of rejection one unit short in
+  each dimension pass without change. They cover the guard
+  `x == 7 && true` and the environment push and lookup.
+
+Six mutations in a scratch copy fail tests:
+
+- An equality with two inspections of each operand fails the exact
+  equality test.
+- A single-value extraction without the inspection of decision 8 fails the
+  exact negation test.
+- An evaluation with the per-level copy of its Par, or a concatenation that
+  inspects its result instead of copying it, fails both exact tests.
+- A lookup that reserves only the block copy, or the per-level copy and
+  cleanup, fails the environment test.
+
+Suites (part 2):
+
+- Shared, rspace++, rholang and `rho-pure-eval`: 4,314 of 4,314 tests pass.
+- Casper and models with the original caps: 2,142 of 2,148 tests pass. The
+  6 failures are the same as after part 1.
+- Casper with the provisional caps: 1,688 of 1,692 tests pass. The 4
+  failures are the same as after part 1.
+- The doctests pass.
+
+**Measurement (part 2).** Part 2 does not run the D-G0 probe. The probe
+runs of part 1 sample no `rho-pure-eval` frame (see the context of part 2),
+so part 2 cannot change the measured usage of the gateway block.
 
 **Cross-refs.** DR-88, DR-92, DR-94, DR-103, DR-104, DR-105, DR-108. Leaf
 `ofp-2-cap-d-e2-matcher-sites`.
