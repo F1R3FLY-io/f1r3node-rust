@@ -1650,6 +1650,23 @@ fn invalid_blocks_par(invalid_blocks: HashMap<BlockHash, Validator>) -> Par {
     }])
 }
 
+/// D-E3 (DR-110): the checkpoint copy of the mergeable channels. The block
+/// copy and cleanup prepays the copy of the map and the release of the copy.
+/// `evaluate`, the only caller of `checkpoint`, clears the map after the
+/// checkpoint, which releases the original entries, so one more block
+/// inspection prepays that release. A block walk charges the same for every
+/// iteration order of the map.
+fn copy_mergeable_for_checkpoint<
+    S: std::hash::BuildHasher + Clone + shared::rust::clone_backing::CloneBacking,
+>(
+    mergeable: &HashMap<Par, MergeType, S>,
+    host: &HostWorkBudget,
+) -> Result<HashMap<Par, MergeType, S>, InterpreterError> {
+    super::accounting::clone_backing::reserve_blocks_copy_and_cleanup(mergeable, host)?;
+    super::accounting::clone_backing::inspect_blocks(mergeable, host)?;
+    Ok(mergeable.clone())
+}
+
 pub struct NativeReplayEnvironment {
     session:
         Arc<NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
@@ -1723,8 +1740,11 @@ impl NativeReplayEnvironment {
         let authority = self.budget.native_authority_checkpoint()?;
         let session = self.session.checkpoint().await?;
         let mergeable = self.merge_chs.read().await;
-        super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &self.host)?;
-        let mergeable = mergeable.clone();
+        // Changed by D-O1 (DR-110): the copy charges block walks, and it also
+        // prepays the release of the entries that `evaluate` clears.
+        // super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &self.host)?;
+        // let mergeable = mergeable.clone();
+        let mergeable = copy_mergeable_for_checkpoint(&mergeable, &self.host)?;
         Ok(NativeReplayEnvironmentCheckpoint {
             session,
             authority,
@@ -2257,4 +2277,163 @@ pub async fn create_runtime_from_kv_store(
         external_services,
     )
     .await
+}
+
+#[cfg(test)]
+mod mergeable_checkpoint_tests {
+    use std::collections::{BTreeSet, HashMap};
+
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{Expr, Par};
+    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+    use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+    use shared::rust::clone_backing::{self as walks, BackingError, CloneBacking, Walker};
+
+    use super::{copy_mergeable_for_checkpoint, HostWorkBudget};
+
+    /// D-E3 (DR-110): a hasher with a runtime seed, so that one test can build
+    /// equal maps with different iteration orders.
+    #[derive(Clone, Copy)]
+    pub(crate) struct Seeded(pub(crate) u64);
+
+    pub(crate) struct SeededHasher(u64);
+
+    impl std::hash::Hasher for SeededHasher {
+        fn write(&mut self, bytes: &[u8]) {
+            for byte in bytes {
+                self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+
+        fn finish(&self) -> u64 { self.0 }
+    }
+
+    impl std::hash::BuildHasher for Seeded {
+        type Hasher = SeededHasher;
+
+        fn build_hasher(&self) -> SeededHasher {
+            SeededHasher(0xcbf2_9ce4_8422_2325 ^ self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        }
+    }
+
+    impl CloneBacking for Seeded {
+        fn children<'a>(&'a self, _: &mut Walker<'a>) -> Result<(), BackingError> { Ok(()) }
+        fn inline() -> bool { true }
+    }
+
+    fn integers(values: impl IntoIterator<Item = i64>) -> Par {
+        Par {
+            exprs: values
+                .into_iter()
+                .map(|value| Expr {
+                    expr_instance: Some(ExprInstance::GInt(value)),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn walker_usage(host: &HostWorkBudget) -> [u64; 3] {
+        [
+            HostWorkDimension::VerificationOperations,
+            HostWorkDimension::VerificationBytes,
+            HostWorkDimension::SearchStateBytes,
+        ]
+        .map(|dimension| host.usage(dimension).get())
+    }
+
+    fn walk_usage(
+        walk: impl FnOnce(&dyn walks::BackingMeter) -> Result<(), BackingError>,
+    ) -> [u64; 3] {
+        let used = std::cell::Cell::new([0u64; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [o, s, b] = used.get();
+            used.set([
+                o + operations as u64,
+                s + scanned as u64,
+                b + backing as u64,
+            ]);
+            Ok::<(), BackingError>(())
+        };
+        walk(&meter).expect("an unlimited walk");
+        used.get()
+    }
+
+    fn unlimited() -> HostWorkBudget {
+        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
+    }
+
+    /// Seven small keys and one key with 25 expressions. The per-level walk
+    /// pushes every key first and then expands the keys in the reverse order.
+    /// Its pending peak passes 32 entries only when at least five other keys
+    /// still wait while the large key expands its expressions, so the peak
+    /// depends on the iteration order.
+    fn mergeable(seed: u64) -> HashMap<Par, MergeType, Seeded> {
+        let mut map = HashMap::with_hasher(Seeded(seed));
+        for value in 0..7 {
+            map.insert(integers([value]), MergeType::IntegerAdd);
+        }
+        map.insert(integers(100..125), MergeType::BitmaskOr);
+        map
+    }
+
+    /// D-E3 (DR-110): the checkpoint copy charges exactly a block copy and
+    /// cleanup of the map and one more block inspection for the release of
+    /// the entries that `evaluate` clears, and it returns an equal copy.
+    #[test]
+    fn replay_checkpoint_charges_mergeable_copy_and_clear() {
+        let mut map = mergeable(1);
+        map.insert(
+            models::rust::utils::new_gstring_par("m".repeat(4_096), Vec::new(), false),
+            MergeType::IntegerAdd,
+        );
+        let host = unlimited();
+        let copy = copy_mergeable_for_checkpoint(&map, &host).expect("an unlimited copy");
+        assert_eq!(copy, map);
+        let copy_charge = walk_usage(|meter| walks::reserve_blocks_copy_and_cleanup(&map, meter));
+        let clear_charge = walk_usage(|meter| walks::inspect_blocks(&map, meter));
+        assert_eq!(
+            walker_usage(&host),
+            [0, 1, 2].map(|index| copy_charge[index] + clear_charge[index])
+        );
+    }
+
+    /// D-E3 (DR-110): equal maps whose iteration orders differ charge the same
+    /// block copy. The per-level walk, the negative control, charges a
+    /// pending-vector growth that depends on the order (pgmcp bug
+    /// per-level-walks-of-randomstate-hashmaps-...-a8bd6b).
+    #[test]
+    fn mergeable_and_env_copies_are_independent_of_hash_order() {
+        let mut orders = BTreeSet::new();
+        let mut block_charges = BTreeSet::new();
+        let mut level_charges = BTreeSet::new();
+        let mut env_charges = BTreeSet::new();
+        for seed in 0..64 {
+            let map = mergeable(seed);
+            orders.insert(map.keys().map(|key| key.exprs.len()).collect::<Vec<_>>());
+            let host = unlimited();
+            copy_mergeable_for_checkpoint(&map, &host).expect("an unlimited copy");
+            block_charges.insert(walker_usage(&host));
+            level_charges.insert(walk_usage(|meter| {
+                walks::reserve_copy_and_cleanup(&map, meter)
+            }));
+            let mut env = HashMap::with_hasher(Seeded(seed));
+            for (index, key) in map.keys().enumerate() {
+                env.insert(index as i32, key.clone());
+            }
+            env_charges.insert(walk_usage(|meter| {
+                walks::reserve_blocks_copy_and_cleanup(&env, meter)
+            }));
+        }
+        assert!(
+            orders.len() > 1,
+            "the seeds must give different iteration orders"
+        );
+        assert_eq!(block_charges.len(), 1, "block charges {block_charges:?}");
+        assert!(
+            level_charges.len() > 1,
+            "per-level charges {level_charges:?}"
+        );
+        assert_eq!(env_charges.len(), 1, "environment charges {env_charges:?}");
+    }
 }

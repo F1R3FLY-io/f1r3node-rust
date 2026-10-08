@@ -22,6 +22,55 @@ fn decision(
         .map_err(error)
 }
 
+/// D-E3 (DR-110): the charge of the produce source preparation. The source
+/// pass hashes the channel and encodes the data with bincode, and its writer
+/// reserves only the bytes that it writes (`native_source::produce`). Each
+/// value is released once after the operation. A block inspection prepays one
+/// traversal, so each value gets two inspections: the source pass and the
+/// release.
+fn charge_produce_source(
+    host: &HostWorkBudget,
+    channel: &Par,
+    data: &ListParWithRandom,
+) -> Result<(), InterpreterError> {
+    use crate::rust::interpreter::accounting::native_runtime::clone_backing;
+    // Changed by D-O1 (DR-110): a per-level inspection charges each inline
+    // byte three times, which paid the source pass and the release.
+    // clone_backing::inspect(channel, &self.host).map_err(error)?;
+    // clone_backing::inspect(data, &self.host).map_err(error)
+    clone_backing::inspect_blocks(channel, host)?;
+    clone_backing::inspect_blocks(data, host)?;
+    // Added by D-E3 (DR-110): the release of each value.
+    clone_backing::inspect_blocks(channel, host)?;
+    clone_backing::inspect_blocks(data, host)
+}
+
+/// D-E3 (DR-110): the charge of the consume source preparation. The source
+/// pass hashes each channel and encodes each pattern and the continuation
+/// with bincode, and its writer reserves only the bytes that it writes
+/// (`native_source::consume_keys`). Each value is released once after the
+/// operation, so each value gets two block inspections, as in the produce.
+fn charge_consume_source(
+    host: &HostWorkBudget,
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
+) -> Result<(), InterpreterError> {
+    use crate::rust::interpreter::accounting::native_runtime::clone_backing;
+    // Changed by D-O1 (DR-110): a per-level inspection charges each inline
+    // byte three times, which paid the source pass and the release.
+    // clone_backing::inspect_slice(channels, &self.host).map_err(error)?;
+    // clone_backing::inspect_slice(patterns, &self.host).map_err(error)?;
+    // clone_backing::inspect(continuation, &self.host).map_err(error)
+    clone_backing::inspect_blocks_slice(channels, host)?;
+    clone_backing::inspect_blocks_slice(patterns, host)?;
+    clone_backing::inspect_blocks(continuation, host)?;
+    // Added by D-E3 (DR-110): the release of each value.
+    clone_backing::inspect_blocks_slice(channels, host)?;
+    clone_backing::inspect_blocks_slice(patterns, host)?;
+    clone_backing::inspect_blocks(continuation, host)
+}
+
 #[async_trait::async_trait]
 impl NativeOperationEpoch<Par, BindPattern, ListParWithRandom, TaggedContinuation>
     for SessionEpoch
@@ -33,9 +82,7 @@ impl NativeOperationEpoch<Par, BindPattern, ListParWithRandom, TaggedContinuatio
         channel: &Par,
         data: &ListParWithRandom,
     ) -> Result<(), RSpaceError> {
-        use crate::rust::interpreter::accounting::native_runtime::clone_backing;
-        clone_backing::inspect(channel, &self.host).map_err(error)?;
-        clone_backing::inspect(data, &self.host).map_err(error)
+        charge_produce_source(&self.host, channel, data).map_err(error)
     }
 
     fn prepare_consume_source(
@@ -44,10 +91,7 @@ impl NativeOperationEpoch<Par, BindPattern, ListParWithRandom, TaggedContinuatio
         patterns: &[BindPattern],
         continuation: &TaggedContinuation,
     ) -> Result<(), RSpaceError> {
-        use crate::rust::interpreter::accounting::native_runtime::clone_backing;
-        clone_backing::inspect_slice(channels, &self.host).map_err(error)?;
-        clone_backing::inspect_slice(patterns, &self.host).map_err(error)?;
-        clone_backing::inspect(continuation, &self.host).map_err(error)
+        charge_consume_source(&self.host, channels, patterns, continuation).map_err(error)
     }
 
     async fn wait_ready(&self, source: RSpaceOperationSource<'_>) -> Result<(), RSpaceError> {

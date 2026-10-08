@@ -144,7 +144,17 @@ pub fn canonical_cost_signature_metered(
         .map_err(authority_backing_error)?
         .term;
     validate_cost_signature_metered(&canonical, &meter)?;
-    meter.inspect(&canonical).map_err(authority_backing_error)?;
+    // Changed by D-O1 (DR-110): a block inspection prepays one traversal. The
+    // comparison below reads `canonical`, and the surplus of the per-level
+    // charge was the only payment for its release. The second inspection
+    // prepays that release where the signature is born, on every path. Its
+    // consumers then pay no release for the signature or its parts (Rule B).
+    // meter.inspect(&canonical).map_err(authority_backing_error)?;
+    for _ in 0..2 {
+        meter
+            .inspect_blocks(&canonical)
+            .map_err(authority_backing_error)?;
+    }
     // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
     // meter.inspect(signature).map_err(authority_backing_error)?;
     meter
@@ -182,12 +192,20 @@ fn validate_cost_signature_metered(
                 // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
                 // meter.inspect(par).map_err(authority_backing_error)?;
                 meter.inspect_blocks(par).map_err(authority_backing_error)?;
-                // Kept legacy by D-O1 (DR-94): the owned `sorted` is dropped at
-                // the end of this arm, and the legacy per-level charge also pays
-                // that release.
-                meter
-                    .inspect(&sorted.term)
-                    .map_err(authority_backing_error)?;
+                // Changed by D-O1 (DR-110): the owned `sorted` is compared and
+                // then dropped at the end of this arm. A block inspection
+                // prepays one traversal, so the comparison and the release
+                // each get one.
+                // Was (D-O1, DR-94): kept legacy because the per-level charge
+                // also paid that release.
+                // meter
+                //     .inspect(&sorted.term)
+                //     .map_err(authority_backing_error)?;
+                for _ in 0..2 {
+                    meter
+                        .inspect_blocks(&sorted.term)
+                        .map_err(authority_backing_error)?;
+                }
                 if sorted.term != *par {
                     return Err(AuthorityError::NonCanonicalSignature);
                 }
@@ -306,7 +324,15 @@ fn cost_atom_to_sig_metered(
         Some(CostSignatureValue::Ground(bytes)) => Ok(Sig::Ground(bytes)),
         Some(CostSignatureValue::Unit(true)) => Ok(Sig::Unit),
         Some(CostSignatureValue::Quote(par)) => {
-            meter.inspect(&par).map_err(authority_backing_error)?;
+            // Changed by D-O1 (DR-110): the inspection prepays the length
+            // computation, as at the sibling encode sites (DR-94). The nested
+            // encode reservation prepays the encode, and the release of `par`,
+            // a part of a canonical signature, was prepaid at its birth
+            // (Rule B).
+            // meter.inspect(&par).map_err(authority_backing_error)?;
+            meter
+                .inspect_blocks(&par)
+                .map_err(authority_backing_error)?;
             let encoded_len = par.encoded_len();
             let mut bytes = meter
                 .vec::<u8>(encoded_len)
@@ -319,7 +345,11 @@ fn cost_atom_to_sig_metered(
             Ok(Sig::Quote(bytes))
         }
         Some(CostSignatureValue::Name(par)) => {
-            meter.inspect(&par).map_err(authority_backing_error)?;
+            // Changed by D-O1 (DR-110): as in the `Quote` arm above.
+            // meter.inspect(&par).map_err(authority_backing_error)?;
+            meter
+                .inspect_blocks(&par)
+                .map_err(authority_backing_error)?;
             let encoded_len = par.encoded_len();
             let mut bytes = meter
                 .vec::<u8>(encoded_len)
@@ -463,10 +493,15 @@ pub fn canonical_authority_metered(
                 meter
                     .inspect_blocks(existing)
                     .map_err(authority_backing_error)?;
-                // Kept legacy by D-O1 (DR-94): the owned `signature` is dropped
-                // at the end of this iteration, and the legacy per-level charge
-                // also pays that release.
-                meter.inspect(&signature).map_err(authority_backing_error)?;
+                // Changed by D-O1 (DR-110): the owned `signature` is canonical,
+                // so its release was prepaid at its birth (Rule B). The block
+                // inspection prepays the comparison.
+                // Was (D-O1, DR-94): kept legacy because the per-level charge
+                // also paid that release.
+                // meter.inspect(&signature).map_err(authority_backing_error)?;
+                meter
+                    .inspect_blocks(&signature)
+                    .map_err(authority_backing_error)?;
                 if existing != &signature {
                     return Err(AuthorityError::RegionIdentityConflict);
                 }
@@ -665,7 +700,17 @@ fn cost_signature_lane_metered(
     let channel = ParSortMatcher::sort_match_metered(&channel, meter)
         .map_err(authority_backing_error)?
         .term;
-    meter.inspect(&channel).map_err(authority_backing_error)?;
+    // Changed by D-O1 (DR-110): a block inspection prepays one traversal. The
+    // first prepays the length computation, as at the sibling encode sites
+    // (DR-94). The second prepays the release of the sorted channel. The third
+    // (added by D-E3) prepays the release of the shadowed unsorted channel,
+    // which also lives until the return.
+    // meter.inspect(&channel).map_err(authority_backing_error)?;
+    for _ in 0..3 {
+        meter
+            .inspect_blocks(&channel)
+            .map_err(authority_backing_error)?;
+    }
     let encoded_len = channel.encoded_len();
     let mut encoded = meter
         .vec::<u8>(encoded_len)
@@ -743,8 +788,15 @@ pub fn funding_sig_channel_metered(
     }
     let sorted =
         ParSortMatcher::sort_match_metered(&channel, &meter).map_err(authority_backing_error)?;
+    // Changed by D-O1 (DR-110): the unsorted `channel` is dropped at the
+    // return, and the sorted term holds the same blocks. A block inspection
+    // prepays that release. The caller reserves its own read of the returned
+    // channel.
+    // meter
+    //     .inspect(&sorted.term)
+    //     .map_err(authority_backing_error)?;
     meter
-        .inspect(&sorted.term)
+        .inspect_blocks(&sorted.term)
         .map_err(authority_backing_error)?;
     Ok(sorted.term)
 }
@@ -5691,5 +5743,162 @@ mod tests {
                 merge_authorities_metered([&authority, &authority], meter).map(drop)
             });
         }
+    }
+
+    /// D-E3 (DR-110): every reservation that `charge` makes, in order.
+    fn reservation_log(
+        charge: impl FnOnce(&dyn BackingMeter) -> Result<(), AuthorityError>,
+    ) -> Vec<[usize; 3]> {
+        let log = std::cell::RefCell::new(Vec::with_capacity(4_096));
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            log.borrow_mut().push([operations, scanned, backing]);
+            Ok(())
+        };
+        charge(&meter).expect("charge");
+        log.into_inner()
+    }
+
+    /// D-E3 (DR-110): every reservation of one block inspection of `value`.
+    fn inspection_log<T: shared::rust::clone_backing::CloneBacking>(value: &T) -> Vec<[usize; 3]> {
+        reservation_log(|meter| {
+            shared::rust::clone_backing::inspect_blocks(value, meter)
+                .map_err(authority_backing_error)
+        })
+    }
+
+    /// D-E3 (DR-110): the lengths of the maximal runs of consecutive copies
+    /// of `pattern` in `log`, in order.
+    fn runs(log: &[[usize; 3]], pattern: &[[usize; 3]]) -> Vec<usize> {
+        let mut lengths = Vec::new();
+        let mut index = 0;
+        while index + pattern.len() <= log.len() {
+            if log[index..].starts_with(pattern) {
+                let mut length = 0;
+                while log[index..].starts_with(pattern) {
+                    length += 1;
+                    index += pattern.len();
+                }
+                lengths.push(length);
+            } else {
+                index += 1;
+            }
+        }
+        lengths
+    }
+
+    fn total(log: &[[usize; 3]]) -> [usize; 3] {
+        log.iter()
+            .fold([0; 3], |[o, s, b], [operations, scanned, backing]| {
+                [o + operations, s + scanned, b + backing]
+            })
+    }
+
+    /// D-E3 (DR-110), Rule B: `canonical_cost_signature_metered` inspects the
+    /// canonical signature twice (the comparison and its release) and the
+    /// input once. For a canonical input the three inspections are equal
+    /// runs. The comparison of a repeated region then inspects the canonical
+    /// signature once more, because its release was prepaid at its birth.
+    #[test]
+    fn canonical_signature_inspected_twice_and_parts_once() {
+        let signature = quoted_chain(3);
+        let pattern = inspection_log(&signature);
+        let log =
+            reservation_log(|meter| canonical_cost_signature_metered(&signature, meter).map(drop));
+        assert_eq!(runs(&log, &pattern), vec![3]);
+        let region = CostRegion {
+            instance_id: vec![1; 32],
+            signature: Some(signature.clone()),
+        };
+        let authority = CostAuthority {
+            regions: vec![region.clone(), region],
+        };
+        let log = reservation_log(|meter| canonical_authority_metered(&authority, meter).map(drop));
+        assert_eq!(runs(&log, &pattern), vec![3, 3, 2]);
+    }
+
+    /// D-E3 (DR-110): the validation of a quoted part inspects the part once
+    /// (DR-94) and the owned sorted part twice, for the comparison and for
+    /// its release. For a canonical part the three inspections are equal
+    /// runs.
+    #[test]
+    fn validated_quoted_part_charges_comparison_and_release() {
+        let par = send_chain(3);
+        let signature = CostSignature {
+            value: Some(CostSignatureValue::Quote(par.clone())),
+        };
+        let log = reservation_log(|meter| {
+            validate_cost_signature_metered(&signature, &SorterMeter::new(meter))
+        });
+        assert_eq!(runs(&log, &inspection_log(&par)), vec![3]);
+    }
+
+    /// D-E3 (DR-110): the conversion of a canonical quoted atom charges
+    /// exactly its header, one block inspection of the quoted Par (the length
+    /// computation), the key bytes and the nested encode (DR-93). The release
+    /// of the part was prepaid at the birth of its canonical signature.
+    #[test]
+    fn quoted_atom_conversion_inspects_its_part_once() {
+        let par = send_chain(4);
+        let atom = CostSignature {
+            value: Some(CostSignatureValue::Quote(par.clone())),
+        };
+        let log = reservation_log(|meter| {
+            cost_atom_to_sig_metered(atom.clone(), &SorterMeter::new(meter)).map(drop)
+        });
+        let encoded_len = par.encoded_len();
+        let encode = reservation_log(|meter| {
+            shared::rust::clone_backing::reserve_nested_encode(&par, encoded_len, meter)
+                .map_err(authority_backing_error)
+        });
+        let expected = total(
+            &[
+                vec![[1, std::mem::size_of::<CostSignature>(), 0]],
+                inspection_log(&par),
+                vec![[encoded_len, 0, encoded_len]],
+                encode,
+            ]
+            .concat(),
+        );
+        assert_eq!(total(&log), expected);
+    }
+
+    /// D-E3 (DR-110): the lane of a signature inspects its sorted channel three
+    /// times: the length computation, the release of the sorted channel and
+    /// the release of the shadowed unsorted channel. The funding channel
+    /// inspects its sorted channel once, for the release of the unsorted
+    /// channel.
+    #[test]
+    fn lane_channel_inspected_three_times_and_funding_channel_once() {
+        let ground = |byte: u8| CostSignature {
+            value: Some(CostSignatureValue::Ground(vec![byte; 32])),
+        };
+        let signature = CostSignature {
+            value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+                elements: vec![ground(9), ground(3)],
+            })),
+        };
+        let unlimited = |_: usize, _: usize, _: usize| Ok(());
+        let mut channel = Par::default();
+        for byte in [9, 3] {
+            append_signature_channel_atom_metered(
+                &[byte; 32],
+                &mut channel,
+                &SorterMeter::new(&unlimited),
+            )
+            .expect("an unlimited append");
+        }
+        let sorted = ParSortMatcher::sort_match_metered(&channel, &SorterMeter::new(&unlimited))
+            .expect("an unlimited sort")
+            .term;
+        let log = reservation_log(|meter| {
+            cost_signature_lane_metered(&signature, &SorterMeter::new(meter)).map(drop)
+        });
+        assert_eq!(runs(&log, &inspection_log(&sorted)), vec![3]);
+        let funding = Sig::And(
+            Box::new(Sig::Ground(vec![9; 32])),
+            Box::new(Sig::Ground(vec![3; 32])),
+        );
+        let log = reservation_log(|meter| funding_sig_channel_metered(&funding, meter).map(drop));
+        assert_eq!(runs(&log, &inspection_log(&sorted)), vec![1]);
     }
 }

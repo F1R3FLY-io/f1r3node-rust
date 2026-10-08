@@ -79,7 +79,10 @@ fn copy_metered<T: Clone + CloneBacking>(
     value: &T,
     backing: &dyn BackingMeter,
 ) -> Result<T, InterpreterError> {
-    clone_backing::reserve_copy_and_cleanup(value, backing).map_err(rejected)?;
+    // Changed by D-O1 (DR-110): block accounting charges inline bytes once per
+    // enclosing block. The copy is released once by its owner.
+    // clone_backing::reserve_copy_and_cleanup(value, backing).map_err(rejected)?;
+    clone_backing::reserve_blocks_copy_and_cleanup(value, backing).map_err(rejected)?;
     Ok(value.clone())
 }
 
@@ -974,5 +977,37 @@ mod tests {
             Err(InterpreterError::HostWorkRejected)
         ));
         assert!(rejected.get());
+    }
+
+    /// D-E3 (DR-110): a substitution copy charges exactly a block copy and
+    /// cleanup of its value: the copy and the release of the copy by its
+    /// owner. The test covers a Par and the locally free bits. The hash-order
+    /// independence of the environment map copy is tested with the
+    /// mergeable checkpoint (`rho_runtime.rs`).
+    #[test]
+    fn copy_metered_charges_exactly_a_block_copy_and_cleanup() {
+        let charge = |action: &dyn Fn(&dyn BackingMeter) -> Result<(), InterpreterError>| {
+            let used = Cell::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let [o, s, b] = used.get();
+                used.set([o + operations, s + scanned, b + backing]);
+                Ok::<(), shared::rust::clone_backing::BackingError>(())
+            };
+            action(&meter).expect("an unlimited meter");
+            used.get()
+        };
+        let value = models::rust::utils::new_gstring_par("e".repeat(4_096), vec![0xFF; 64], false);
+        let copied = charge(&|meter| copy_metered(&value, meter).map(drop));
+        let expected = charge(&|meter| {
+            clone_backing::reserve_blocks_copy_and_cleanup(&value, meter).map_err(rejected)
+        });
+        assert_eq!(copied, expected);
+        let bits = vec![0x0F_u8; 4_096];
+        assert_eq!(
+            charge(&|meter| copy_metered(&bits, meter).map(drop)),
+            charge(&|meter| {
+                clone_backing::reserve_blocks_copy_and_cleanup(&bits, meter).map_err(rejected)
+            })
+        );
     }
 }

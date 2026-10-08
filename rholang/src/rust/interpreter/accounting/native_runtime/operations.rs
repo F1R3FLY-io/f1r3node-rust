@@ -188,7 +188,10 @@ pub(super) fn sort<T>(
     shared::rust::fallible_sort::sort(values, compare)
 }
 
-pub(super) fn locked_footprint<C: Serialize>(
+// Changed by D-E3 (DR-110): the footprint inspects each channel before its
+// bincode pass.
+// pub(super) fn locked_footprint<C: Serialize>(
+pub(super) fn locked_footprint<C: Serialize + super::clone_backing::CloneBacking>(
     channels: &[C],
     joins: &[Vec<C>],
     host: &super::HostWorkBudget,
@@ -200,6 +203,11 @@ pub(super) fn locked_footprint<C: Serialize>(
         .ok_or(InterpreterError::HostWorkRejected)?;
     let mut footprint = allocate(count, host)?;
     for channel in channels.iter().chain(joins.iter().flatten()) {
+        // Added by D-E3 (DR-110): the bincode pass of the footprint reads the
+        // whole channel, and its writer reserves only the bytes that it
+        // writes. A block inspection prepays that traversal (DR-108,
+        // decision 6).
+        super::clone_backing::inspect_blocks(channel, host)?;
         footprint.push(channel_bytes(channel, host)?);
     }
     sort(&mut footprint, |a, b| {

@@ -308,6 +308,12 @@ fn born_resource<'a>(
         return Err(invalid("native retained cell is not a funding former"));
     }
     let channel = funding_sig_channel_metered(&authority, &backing).map_err(invalid)?;
+    // Added by D-E3 (DR-110): `funding_sig_channel_metered` prepays only the
+    // release of its unsorted channel. The surplus of its per-level inspection
+    // paid the length computation below, so a block inspection prepays it
+    // here.
+    clone_backing::inspect_blocks(&channel, &backing)
+        .map_err(|_| invalid("native retained channel inspection is rejected"))?;
     let size = channel.encoded_len();
     reserve(
         budget,
@@ -1457,5 +1463,46 @@ mod tests {
             unique_retained_position(&keys[..1], &authority, &budget()).unwrap(),
             0
         );
+    }
+
+    /// D-E3 (DR-110): a retained cell charges the conversion of the cell, the
+    /// funding channel, one block inspection of the returned channel for its
+    /// length computation, and the location bytes, all before it compares the
+    /// permissions. With no permission it fails after those charges, and a
+    /// budget that runs the same steps charges the same in every dimension.
+    #[test]
+    fn born_resource_inspects_the_returned_channel_once() {
+        let cell = CostSignature {
+            value: Some(Value::Ground(vec![6; 32])),
+        };
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        assert!(born_resource(&cell, &[], b"terms", &budget).is_err());
+        let mirror = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let backing = |operations: usize, scanned: usize, allocation: usize| {
+            reserve(
+                &mirror,
+                HostWorkDimension::VerificationOperations,
+                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+            )
+            .map_err(|_| BackingError::Rejected)?;
+            reserve(&mirror, HostWorkDimension::VerificationBytes, scanned)
+                .map_err(|_| BackingError::Rejected)?;
+            reserve(&mirror, HostWorkDimension::SearchStateBytes, allocation)
+                .map_err(|_| BackingError::Rejected)
+        };
+        let authority = cost_signature_to_sig_metered(&cell, &backing).expect("a signature");
+        let channel = funding_sig_channel_metered(&authority, &backing).expect("a channel");
+        clone_backing::inspect_blocks(&channel, &backing).expect("an inspection");
+        let size = channel.encoded_len();
+        reserve(&mirror, HostWorkDimension::VerificationOperations, size * 2)
+            .expect("an unlimited budget");
+        reserve(&mirror, HostWorkDimension::SearchStateBytes, size).expect("an unlimited budget");
+        for dimension in HostWorkDimension::ALL {
+            assert_eq!(
+                budget.usage(dimension).get(),
+                mirror.usage(dimension).get(),
+                "{dimension:?}"
+            );
+        }
     }
 }

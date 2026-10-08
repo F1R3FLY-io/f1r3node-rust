@@ -334,13 +334,32 @@ impl RuntimeBudget {
             return Err(invalid());
         }
         let host = native.host_work();
-        clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
-        clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.reserved, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.frontier, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&*introductions, &host)?;
+        // Changed by D-O1 (DR-110): block accounting charges inline bytes once
+        // per enclosing block. The events and the rows hold shared byte
+        // observations whose payloads were prepaid at birth, so the cleanup of
+        // their copies visits each shared pointer but not its payload (the C5
+        // rule, DR-83).
+        // clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
+        // clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.reserved, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.frontier, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&*introductions, &host)?;
+        clone_backing::reserve_blocks(&state.events, &host)?;
+        clone_backing::inspect_shared_pointers_blocks(&state.events, &host)?;
+        let rows = state.byte_observations.rows();
+        clone_backing::reserve_blocks_slice(rows, &host)?;
+        clone_backing::inspect_shared_pointer_slice_blocks(rows, &host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.realized, &host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.reserved, &host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.frontier, &host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.stack_births, &host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&*introductions, &host)?;
+        // Added by D-E3 (DR-110): the copy of the generation pointer updates
+        // its strong count, and so does the release of the copy.
+        clone_backing::reserve_blocks(&native.generation, &host)?;
+        clone_backing::inspect_shared_pointers_blocks(&native.generation, &host)?;
         Ok(NativeAuthorityCheckpoint {
             generation: Arc::clone(&native.generation),
             events: state.events.clone(),

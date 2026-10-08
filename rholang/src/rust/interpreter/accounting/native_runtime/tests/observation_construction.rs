@@ -950,3 +950,115 @@ fn a_replay_in_another_residue_context_observes_another_comm() {
         assert!(other != played);
     }
 }
+
+/// D-E3 (DR-110): reserved units of the walk that `walk` runs.
+fn walk_charge(
+    walk: impl FnOnce(
+        &dyn shared::rust::clone_backing::BackingMeter,
+    ) -> Result<(), shared::rust::clone_backing::BackingError>,
+) -> [usize; 3] {
+    let totals = std::cell::Cell::new([0usize; 3]);
+    let meter = |operations: usize, scanned: usize, backing: usize| {
+        let [o, s, b] = totals.get();
+        totals.set([o + operations, s + scanned, b + backing]);
+        Ok::<(), shared::rust::clone_backing::BackingError>(())
+    };
+    walk(&meter).expect("an unlimited walk");
+    totals.get()
+}
+
+/// D-E3 (DR-110): the introduction observations inspect each channel once,
+/// for its prost length. The scheduler footprint, the join keys and the
+/// source preparation reserve their own channel traversals. So a produce
+/// introduction charges exactly one block inspection of the channel and of
+/// the data, and a consume introduction one block inspection of the
+/// channels, the patterns and the continuation.
+#[test]
+fn introduction_channel_inspections_are_single_block_traversals() {
+    use shared::rust::clone_backing as walks;
+
+    let text = "c".repeat(4_096);
+    let channel = models::rust::utils::new_gstring_par(text.clone(), Vec::new(), false);
+    let data = ListParWithRandom {
+        pars: vec![models::rust::utils::new_gstring_par(
+            text.clone(),
+            Vec::new(),
+            false,
+        )],
+        random_state: vec![7; 64],
+        cost_authority: Some(authority(1)),
+        ..Default::default()
+    };
+    let introduction = authority(1);
+    let charge = |action: &dyn Fn(
+        &dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter,
+    ) -> Result<(), RSpaceError>| {
+        let totals = std::cell::Cell::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [o, s, b] = totals.get();
+            totals.set([o + operations, s + scanned, b + backing]);
+            Ok(())
+        };
+        action(&meter).expect("an unlimited meter");
+        totals.get()
+    };
+    let add = |parts: &[[usize; 3]]| {
+        parts
+            .iter()
+            .fold([0; 3], |[o, s, b], [operations, scanned, backing]| {
+                [o + operations, s + scanned, b + backing]
+            })
+    };
+    let produce = charge(&|meter| {
+        build::produce_introduction_metered_with_identity(
+            [1; 32],
+            &channel,
+            &data,
+            &introduction,
+            meter,
+        )
+        .map(drop)
+    });
+    assert_eq!(
+        produce,
+        add(&[
+            walk_charge(|meter| walks::inspect_blocks(&channel, meter)),
+            walk_charge(|meter| walks::inspect_blocks(&data, meter)),
+        ])
+    );
+    let channels = vec![
+        channel.clone(),
+        models::rust::utils::new_gstring_par("d".to_owned(), Vec::new(), false),
+    ];
+    let patterns = vec![
+        BindPattern {
+            patterns: vec![models::rust::utils::new_gstring_par(
+                text.clone(),
+                Vec::new(),
+                false,
+            )],
+            ..Default::default()
+        },
+        BindPattern::default(),
+    ];
+    let continuation = continuation_with(256, 0);
+    let consume = charge(&|meter| {
+        build::consume_introduction_metered_with_identity(
+            [2; 32],
+            &channels,
+            &patterns,
+            &continuation,
+            &introduction,
+            meter,
+        )
+        .map(drop)
+    });
+    assert_eq!(
+        consume,
+        add(&[
+            walk_charge(|meter| walks::inspect_blocks_slice(&channels, meter)),
+            walk_charge(|meter| walks::inspect_blocks_slice(&patterns, meter)),
+            walk_charge(|meter| walks::inspect_blocks(&continuation, meter)),
+        ])
+    );
+}

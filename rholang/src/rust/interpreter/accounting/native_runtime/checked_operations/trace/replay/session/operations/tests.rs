@@ -701,3 +701,160 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for SharedMatcher
 async fn actual_private_session_runs_independent_matches_concurrently() {
     exercise_readiness(false, true).await;
 }
+
+/// D-E3 (DR-110): the operations, scanned bytes and backing bytes that a block
+/// walk of the shared walker reserves.
+fn shared_walk_usage(
+    walk: impl FnOnce(
+        &dyn shared::rust::clone_backing::BackingMeter,
+    ) -> Result<(), shared::rust::clone_backing::BackingError>,
+) -> [u64; 3] {
+    let used = std::cell::Cell::new([0u64; 3]);
+    let meter = |operations: usize, scanned: usize, backing: usize| {
+        let [o, s, b] = used.get();
+        used.set([
+            o + operations as u64,
+            s + scanned as u64,
+            b + backing as u64,
+        ]);
+        Ok::<(), shared::rust::clone_backing::BackingError>(())
+    };
+    walk(&meter).expect("an unlimited meter");
+    used.get()
+}
+
+fn walker_usage(host: &HostWorkBudget) -> [u64; 3] {
+    [
+        HostWorkDimension::VerificationOperations,
+        HostWorkDimension::VerificationBytes,
+        HostWorkDimension::SearchStateBytes,
+    ]
+    .map(|dimension| host.usage(dimension).get())
+}
+
+fn limited(usage: [u64; 3]) -> HostWorkBudget {
+    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+    for (dimension, amount) in [
+        HostWorkDimension::VerificationOperations,
+        HostWorkDimension::VerificationBytes,
+        HostWorkDimension::SearchStateBytes,
+    ]
+    .into_iter()
+    .zip(usage)
+    {
+        limits.set(dimension, HostWorkLimit::new(amount));
+    }
+    HostWorkBudget::new(limits)
+}
+
+/// D-E3 (DR-110): a charge succeeds with exactly its usage and is rejected
+/// one unit short in each dimension that it uses.
+fn assert_exact_credit(
+    expected: [u64; 3],
+    charge: impl Fn(&HostWorkBudget) -> Result<(), InterpreterError>,
+) {
+    let exact = limited(expected);
+    charge(&exact).expect("the exact credit");
+    assert_eq!(walker_usage(&exact), expected);
+    for dimension in 0..3 {
+        if expected[dimension] == 0 {
+            continue;
+        }
+        let mut short = expected;
+        short[dimension] -= 1;
+        let rejected = limited(short);
+        assert!(matches!(
+            charge(&rejected),
+            Err(InterpreterError::HostWorkRejected)
+        ));
+        assert!(rejected.is_rejected());
+    }
+}
+
+fn add_usage(total: &mut [u64; 3], part: [u64; 3]) {
+    for (sum, amount) in total.iter_mut().zip(part) {
+        *sum += amount;
+    }
+}
+
+/// D-E3 (DR-110): the source preparation charges two block traversals of
+/// each value: the source pass, whose writer reserves only the bytes that it
+/// writes, and the release of the value after the operation. The expected
+/// charge comes from the shared block walks, for small values and for 4 KiB
+/// values.
+#[test]
+fn source_preparation_charges_two_block_traversals_of_each_value() {
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    use models::rhoapi::ParWithRandom;
+    use models::rust::utils::new_gstring_par;
+    use shared::rust::clone_backing as walks;
+
+    for size in [1, 4_096] {
+        let text = "s".repeat(size);
+        let channel = new_gstring_par(text.clone(), Vec::new(), false);
+        let data = ListParWithRandom {
+            pars: vec![new_gstring_par(text.clone(), Vec::new(), false)],
+            random_state: vec![7; 64],
+            ..Default::default()
+        };
+        let mut expected = [0; 3];
+        for _ in 0..2 {
+            add_usage(
+                &mut expected,
+                shared_walk_usage(|meter| walks::inspect_blocks(&channel, meter)),
+            );
+            add_usage(
+                &mut expected,
+                shared_walk_usage(|meter| walks::inspect_blocks(&data, meter)),
+            );
+        }
+        let host = limited([u64::MAX; 3]);
+        super::charge_produce_source(&host, &channel, &data).expect("produce source charge");
+        assert_eq!(walker_usage(&host), expected);
+        assert_exact_credit(expected, |host| {
+            super::charge_produce_source(host, &channel, &data)
+        });
+
+        let channels = vec![
+            channel.clone(),
+            new_gstring_par(text.clone(), Vec::new(), false),
+        ];
+        let patterns = vec![
+            BindPattern {
+                patterns: vec![new_gstring_par(text.clone(), Vec::new(), false)],
+                ..Default::default()
+            },
+            BindPattern::default(),
+        ];
+        let continuation = TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(new_gstring_par(text.clone(), Vec::new(), false)),
+                random_state: vec![9; 64],
+            })),
+            ..Default::default()
+        };
+        let mut expected = [0; 3];
+        for _ in 0..2 {
+            add_usage(
+                &mut expected,
+                shared_walk_usage(|meter| walks::inspect_blocks_slice(&channels, meter)),
+            );
+            add_usage(
+                &mut expected,
+                shared_walk_usage(|meter| walks::inspect_blocks_slice(&patterns, meter)),
+            );
+            add_usage(
+                &mut expected,
+                shared_walk_usage(|meter| walks::inspect_blocks(&continuation, meter)),
+            );
+        }
+        let host = limited([u64::MAX; 3]);
+        super::charge_consume_source(&host, &channels, &patterns, &continuation)
+            .expect("consume source charge");
+        assert_eq!(walker_usage(&host), expected);
+        assert_exact_credit(expected, |host| {
+            super::charge_consume_source(host, &channels, &patterns, &continuation)
+        });
+    }
+}

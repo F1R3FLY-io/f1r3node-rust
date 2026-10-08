@@ -134,7 +134,11 @@ impl Substitute {
         backing: &dyn BackingMeter,
     ) -> Result<Expr, InterpreterError> {
         let owned = OwnedMeter(backing);
-        clone_backing::reserve(&term, &owned).map_err(rejected)?;
+        // Changed by D-O1 (DR-110): block accounting charges inline bytes once
+        // per enclosing block. The owned meter still doubles the operations
+        // for the release of the consumed input.
+        // clone_backing::reserve(&term, &owned).map_err(rejected)?;
+        clone_backing::reserve_blocks(&term, &owned).map_err(rejected)?;
         let instance = unwrap_option_safe(term.expr_instance)?;
         let instance = match instance {
             ExprInstance::ENotBody(mut op) => {

@@ -541,10 +541,13 @@ fn inspect_authority(
     Ok(())
 }
 
-/// D-O1 (DR-94): the legacy inspection of an owned authority that the site
-/// drops after the comparison. The legacy per-level charge also pays that
-/// release; the block mode would pay only the comparison, so these sites stay
-/// legacy until Stage B (D-E3) decides how releases are prepaid.
+/// D-E3 (DR-110): the inspections of an owned authority that the site drops
+/// after the comparison. A block inspection prepays one traversal, so the
+/// comparison and the release each get one.
+// Was (D-O1, DR-94): the legacy inspection of an owned authority that the site
+// drops after the comparison. The legacy per-level charge also pays that
+// release; the block mode would pay only the comparison, so these sites stay
+// legacy until Stage B (D-E3) decides how releases are prepaid.
 fn inspect_owned_authority(
     authority: &CostAuthority,
     host: Option<&HostWorkBudget>,
@@ -552,8 +555,14 @@ fn inspect_owned_authority(
     if let Some(host) = host {
         let backing =
             |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
-        shared_clone_backing::inspect(authority, &backing)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        // Changed by D-O1 (DR-110): block accounting charges inline bytes once
+        // per enclosing block.
+        // shared_clone_backing::inspect(authority, &backing)
+        //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+        for _ in 0..2 {
+            shared_clone_backing::inspect_blocks(authority, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
     }
     Ok(())
 }
@@ -1071,7 +1080,8 @@ impl RuntimeBudget {
         match authorities.get(&(identity, kind)) {
             Some(existing) => {
                 inspect_authority(existing, host.as_ref())?;
-                // Kept legacy by D-O1 (DR-94): `canonical` is dropped here.
+                // D-O1 (DR-94, DR-110): `canonical` is dropped here. The helper
+                // inspects it for the comparison and for the release.
                 inspect_owned_authority(&canonical, host.as_ref())?;
                 if existing == &canonical {
                     Ok(())
@@ -1780,7 +1790,8 @@ impl RuntimeBudget {
                 return self.record_native_retry(&mut state, prepared.as_ref());
             }
             inspect_authority(&existing.authority, host.as_ref())?;
-            // Kept legacy by D-O1 (DR-94): `canonical_authority` is dropped here.
+            // D-O1 (DR-94, DR-110): `canonical_authority` is dropped here. The
+            // helper inspects it for the comparison and for the release.
             inspect_owned_authority(&canonical_authority, host.as_ref())?;
             if let Some(row) = existing.byte_observation.as_ref() {
                 inspect_observation(row, host.as_ref())?;
@@ -2588,7 +2599,11 @@ impl RuntimeBudget {
         let signature = self.signature.lock().expect("signature lock");
         let backing =
             |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
-        shared_clone_backing::reserve_copy_and_cleanup(&*signature, &backing)
+        // Changed by D-O1 (DR-110): the block copy and cleanup prepays the
+        // returned copy and its release by the caller.
+        // shared_clone_backing::reserve_copy_and_cleanup(&*signature, &backing)
+        //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+        shared_clone_backing::reserve_blocks_copy_and_cleanup(&*signature, &backing)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
         Ok(signature.clone())
     }
@@ -3789,6 +3804,51 @@ mod runtime_budget_tests {
         }
     }
 
+    /// D-E3 (DR-110): the inspection of an owned authority that its site
+    /// drops after the comparison charges exactly two block inspections, the
+    /// comparison and the release. Without a budget it charges nothing.
+    #[test]
+    fn owned_authority_comparison_charges_traversal_and_release() {
+        use models::rhoapi::cost_signature::Value as CostSignatureValue;
+        use models::rhoapi::{CostRegion, CostSignature};
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+        let authority = CostAuthority {
+            regions: vec![CostRegion {
+                instance_id: vec![5; 32],
+                signature: Some(CostSignature {
+                    value: Some(CostSignatureValue::Quote(
+                        models::rust::utils::new_gstring_par("a".repeat(4_096), Vec::new(), false),
+                    )),
+                }),
+            }],
+        };
+        let used = std::cell::Cell::new([0u64; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [o, s, b] = used.get();
+            used.set([
+                o + operations as u64,
+                s + scanned as u64,
+                b + backing as u64,
+            ]);
+            Ok::<(), shared::rust::clone_backing::BackingError>(())
+        };
+        shared_clone_backing::inspect_blocks(&authority, &meter).expect("an unlimited walk");
+        let inspection = used.get();
+        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        inspect_owned_authority(&authority, Some(&host)).expect("an unlimited budget");
+        assert_eq!(
+            [
+                HostWorkDimension::VerificationOperations,
+                HostWorkDimension::VerificationBytes,
+                HostWorkDimension::SearchStateBytes,
+            ]
+            .map(|dimension| host.usage(dimension).get()),
+            inspection.map(|amount| amount * 2)
+        );
+        inspect_owned_authority(&authority, None).expect("no budget");
+    }
+
     #[test]
     fn metered_signature_copy_preserves_value_and_rejects_before_clone() {
         use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
@@ -3814,21 +3874,42 @@ mod runtime_budget_tests {
             Err(InterpreterError::HostWorkRejected)
         ));
         let copied_scans = std::cell::Cell::new(0u64);
-        shared_clone_backing::reserve(&signature, &|_, scanned, _| {
+        // Changed by D-O1 (DR-110): the copy charges a block copy and cleanup.
+        // A limit that pays only the block copy rejects the copy, and so does
+        // a limit one byte short of the cleanup. The whole charge passes.
+        // shared_clone_backing::reserve(&signature, &|_, scanned, _| {
+        shared_clone_backing::reserve_blocks(&signature, &|_, scanned, _| {
             copied_scans.set(copied_scans.get() + scanned as u64);
             Ok(())
         })
-        .unwrap();
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        limits.set(
-            HostWorkDimension::VerificationBytes,
-            HostWorkLimit::new(copied_scans.get()),
-        );
-        let limited = HostWorkBudget::new(limits);
+        .expect("an unlimited meter");
+        let cleanup_scans = std::cell::Cell::new(0u64);
+        shared_clone_backing::inspect_blocks(&signature, &|_, scanned, _| {
+            cleanup_scans.set(cleanup_scans.get() + scanned as u64);
+            Ok(())
+        })
+        .expect("an unlimited meter");
+        assert!(cleanup_scans.get() > 0);
+        let copy_within = |scanned: u64| {
+            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            limits.set(
+                HostWorkDimension::VerificationBytes,
+                HostWorkLimit::new(scanned),
+            );
+            budget.signature_with_host_work(&HostWorkBudget::new(limits))
+        };
         assert!(matches!(
-            budget.signature_with_host_work(&limited),
+            copy_within(copied_scans.get()),
             Err(InterpreterError::HostWorkRejected)
         ));
+        assert!(matches!(
+            copy_within(copied_scans.get() + cleanup_scans.get() - 1),
+            Err(InterpreterError::HostWorkRejected)
+        ));
+        assert_eq!(
+            copy_within(copied_scans.get() + cleanup_scans.get()).expect("the whole charge passes"),
+            signature
+        );
         assert_eq!(budget.signature(), signature);
     }
 

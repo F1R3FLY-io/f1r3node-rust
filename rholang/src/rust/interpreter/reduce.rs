@@ -97,6 +97,44 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
 
+/// D-E3 (DR-110): the charge of a reducer copy of `value` that the reducer
+/// releases later. The block inspection prepays the release of the copy, and
+/// the block copy prepays the clone, with the operations doubled by the owned
+/// meter.
+fn reserve_reducer_copy<T: clone_backing::CloneBacking>(
+    value: &T,
+    backing: &dyn BackingMeter,
+    owned_backing: &dyn BackingMeter,
+) -> Result<(), InterpreterError> {
+    clone_backing::inspect_blocks(value, backing)
+        .map_err(|_| InterpreterError::HostWorkRejected)?;
+    clone_backing::reserve_blocks(value, owned_backing)
+        .map_err(|_| InterpreterError::HostWorkRejected)
+}
+
+/// D-E3 (DR-110): the source of a stack produce. The source hashes the
+/// channel and encodes the datum with bincode, and its writer reserves only
+/// the bytes that it writes, so a block inspection prepays each pass. The
+/// surplus of the per-level copy of the cells paid the datum pass, and the
+/// channel pass had no payment when the funding channel was not sorted.
+fn produce_source_metered(
+    channel: &Par,
+    datum: &ListParWithRandom,
+    backing: &dyn BackingMeter,
+    source_meter: &dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter,
+) -> Result<Produce, InterpreterError> {
+    clone_backing::inspect_blocks(channel, backing)
+        .map_err(|_| InterpreterError::HostWorkRejected)?;
+    clone_backing::inspect_blocks(datum, backing)
+        .map_err(|_| InterpreterError::HostWorkRejected)?;
+    Ok(Produce::create_metered(
+        channel,
+        datum,
+        false,
+        source_meter,
+    )?)
+}
+
 fn reserve_reducer_random_bytes(
     rand: &Blake2b512Random,
     backing: &dyn BackingMeter,
@@ -1778,10 +1816,13 @@ impl ReducerCore {
             other => InterpreterError::ReduceError(other.to_string()),
         };
         if host.is_some() {
-            clone_backing::inspect(&term.signature, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&term.signature, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            // Changed by D-O1 (DR-110): block accounting charges inline bytes
+            // once per enclosing block.
+            // clone_backing::inspect(&term.signature, &backing)
+            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+            // clone_backing::reserve(&term.signature, &owned_backing)
+            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+            reserve_reducer_copy(&term.signature, &backing, &owned_backing)?;
         }
         let signature = unwrap_option_safe(term.signature.clone())?;
         let signature = if host.is_some() {
@@ -1807,10 +1848,13 @@ impl ReducerCore {
             extend_authority(authority, region).map_err(native_error)?
         };
         if host.is_some() {
-            clone_backing::inspect(&term.body, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&term.body, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            // Changed by D-O1 (DR-110): block accounting charges inline bytes
+            // once per enclosing block.
+            // clone_backing::inspect(&term.body, &backing)
+            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+            // clone_backing::reserve(&term.body, &owned_backing)
+            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+            reserve_reducer_copy(&term.body, &backing, &owned_backing)?;
         }
         self.eval_with_authority(unwrap_option_safe(term.body.clone())?, env, rand, authority)
             .await
@@ -1867,10 +1911,13 @@ impl ReducerCore {
             other => InterpreterError::ReduceError(other.to_string()),
         };
         if host.is_some() {
-            clone_backing::inspect(&stack.cells, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&stack.cells, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            // Changed by D-O1 (DR-110): block accounting charges inline bytes
+            // once per enclosing block.
+            // clone_backing::inspect(&stack.cells, &backing)
+            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+            // clone_backing::reserve(&stack.cells, &owned_backing)
+            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+            reserve_reducer_copy(&stack.cells, &backing, &owned_backing)?;
         }
         let stack = CostStack {
             cells: stack
@@ -1935,10 +1982,13 @@ impl ReducerCore {
             }
         } else {
             if host.is_some() {
-                clone_backing::inspect(authority, &backing)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-                clone_backing::reserve(authority, &owned_backing)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
+                // Changed by D-O1 (DR-110): block accounting charges inline bytes
+                // once per enclosing block.
+                // clone_backing::inspect(authority, &backing)
+                //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+                // clone_backing::reserve(authority, &owned_backing)
+                //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+                reserve_reducer_copy(authority, &backing, &owned_backing)?;
             }
             authority.clone()
         };
@@ -1958,14 +2008,20 @@ impl ReducerCore {
         };
         let datum_cells = &datum.cost_stack.as_ref().expect("cost stack").cells;
         if host.is_some() {
-            clone_backing::inspect(datum_cells, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(datum_cells, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            // Changed by D-O1 (DR-110): block accounting charges inline bytes
+            // once per enclosing block.
+            // clone_backing::inspect(datum_cells, &backing)
+            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+            // clone_backing::reserve(datum_cells, &owned_backing)
+            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+            reserve_reducer_copy(datum_cells, &backing, &owned_backing)?;
         }
         let cells = datum_cells.clone();
         let source = if host.is_some() {
-            Produce::create_metered(&channel, &datum, false, &source_meter)?
+            // Changed by D-E3 (DR-110): the source also reserves the traversals
+            // of its two bincode passes.
+            // Produce::create_metered(&channel, &datum, false, &source_meter)?
+            produce_source_metered(&channel, &datum, &backing, &source_meter)?
         } else {
             Produce::create(&channel, &datum, false)
         };

@@ -1062,3 +1062,96 @@ fn default_list_par_with_random_owns_no_allocation() {
     let ((), dropped) = measured(|| drop(value));
     assert_eq!(dropped, 0);
 }
+
+/// D-E3 (DR-110): each block wrapper charges exactly its shared block walk,
+/// with operations as VerificationOperations, scanned bytes as
+/// VerificationBytes and backing as SearchStateBytes. A budget one unit short
+/// in any used dimension rejects the wrapper with the host error.
+#[test]
+fn native_runtime_block_wrappers_charge_the_shared_block_walks() {
+    let text = "w".repeat(4_096);
+    let par = new_gstring_par(text.clone(), Vec::new(), false);
+    let pars = vec![
+        par.clone(),
+        new_gstring_par("v".to_owned(), Vec::new(), false),
+    ];
+    let shared = Arc::new(par.clone());
+    let walker_usage = |host: &HostWorkBudget| {
+        [
+            HostWorkDimension::VerificationOperations,
+            HostWorkDimension::VerificationBytes,
+            HostWorkDimension::SearchStateBytes,
+        ]
+        .map(|dimension| host.usage(dimension).get() as usize)
+    };
+    let limited = |usage: [usize; 3]| {
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+        for (dimension, amount) in [
+            HostWorkDimension::VerificationOperations,
+            HostWorkDimension::VerificationBytes,
+            HostWorkDimension::SearchStateBytes,
+        ]
+        .into_iter()
+        .zip(usage)
+        {
+            limits.set(dimension, HostWorkLimit::new(amount as u64));
+        }
+        HostWorkBudget::new(limits)
+    };
+    type Wrapper<'a> = Box<dyn Fn(&HostWorkBudget) -> Result<(), InterpreterError> + 'a>;
+    type Walk<'a> = Box<dyn Fn(&dyn backing::BackingMeter) -> Result<(), BackingError> + 'a>;
+    let cases: Vec<(&str, Wrapper<'_>, Walk<'_>)> = vec![
+        (
+            "inspect_blocks_slice",
+            Box::new(|host| inspect_blocks_slice(&pars, host)),
+            Box::new(|meter| backing::inspect_blocks_slice(&pars, meter)),
+        ),
+        (
+            "inspect_shared_pointers_blocks",
+            Box::new(|host| inspect_shared_pointers_blocks(&shared, host)),
+            Box::new(|meter| backing::inspect_shared_pointers_blocks(&shared, meter)),
+        ),
+        (
+            "reserve_nested_encode",
+            Box::new(|host| reserve_nested_encode(&par, 17, host)),
+            Box::new(|meter| backing::reserve_nested_encode(&par, 17, meter)),
+        ),
+        (
+            "inspect_blocks",
+            Box::new(|host| inspect_blocks(&par, host)),
+            Box::new(|meter| backing::inspect_blocks(&par, meter)),
+        ),
+        (
+            "reserve_blocks_copy_and_cleanup",
+            Box::new(|host| reserve_blocks_copy_and_cleanup(&par, host)),
+            Box::new(|meter| backing::reserve_blocks_copy_and_cleanup(&par, meter)),
+        ),
+    ];
+    for (name, wrapper, walk) in &cases {
+        let expected = block_usage(|meter| walk(meter));
+        let host = limited([usize::MAX; 3]);
+        wrapper(&host).expect("an unlimited wrapper");
+        assert_eq!(walker_usage(&host), expected, "{name}");
+        let exact = limited(expected);
+        wrapper(&exact).expect("the exact credit");
+        for dimension in 0..3 {
+            if expected[dimension] == 0 {
+                continue;
+            }
+            let mut short = expected;
+            short[dimension] -= 1;
+            let rejected = limited(short);
+            assert!(
+                matches!(wrapper(&rejected), Err(InterpreterError::HostWorkRejected)),
+                "{name} dimension {dimension}"
+            );
+            assert!(rejected.is_rejected(), "{name} dimension {dimension}");
+        }
+    }
+    let payload_only = block_usage(|meter| backing::inspect_blocks(&par, meter));
+    let pointer_only = block_usage(|meter| backing::inspect_shared_pointers_blocks(&shared, meter));
+    assert!(
+        pointer_only[1] < payload_only[1],
+        "the shared cleanup does not walk the payload"
+    );
+}

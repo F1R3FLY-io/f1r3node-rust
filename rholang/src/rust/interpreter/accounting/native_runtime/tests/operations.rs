@@ -380,3 +380,87 @@ proptest! {
         }
     }
 }
+
+/// D-E3 (DR-110): the scheduler footprint inspects each channel once before
+/// its bincode pass, for the operation's channels and for each join channel.
+/// Bincode encodes `locally_free` as empty bytes, so padding it changes only
+/// the walker terms: the footprint charge grows by exactly one block
+/// inspection of the padding for every occurrence of the padded channel.
+#[test]
+fn footprint_charges_one_block_traversal_per_channel_and_join_channel() {
+    use shared::rust::clone_backing as walks;
+
+    let usage = |host: &HostWorkBudget| {
+        [
+            HostWorkDimension::VerificationOperations,
+            HostWorkDimension::VerificationBytes,
+            HostWorkDimension::SearchStateBytes,
+        ]
+        .map(|dimension| host.usage(dimension).get())
+    };
+    let walk = |par: &Par| {
+        let used = std::cell::Cell::new([0u64; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [o, s, b] = used.get();
+            used.set([
+                o + operations as u64,
+                s + scanned as u64,
+                b + backing as u64,
+            ]);
+            Ok::<(), walks::BackingError>(())
+        };
+        walks::inspect_blocks(par, &meter).expect("an unlimited meter");
+        used.get()
+    };
+    let footprint = |channels: &[Par], joins: &[Vec<Par>]| {
+        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let bytes = super::super::operations::locked_footprint(channels, joins, &host)
+            .expect("an unlimited footprint");
+        (bytes, usage(&host))
+    };
+    let plain = channel(7);
+    let padded = Par {
+        locally_free: vec![0xA5; 4_096],
+        ..plain.clone()
+    };
+    let other = channel(8);
+    let growth = {
+        let small = walk(&plain);
+        let large = walk(&padded);
+        [0, 1, 2].map(|index| large[index] - small[index])
+    };
+    assert!(growth[1] >= 4_096);
+    for (occurrences, channels, joins) in [
+        (1, vec![padded.clone()], Vec::new()),
+        (2, vec![padded.clone()], vec![vec![
+            padded.clone(),
+            other.clone(),
+        ]]),
+        (3, vec![padded.clone(), padded.clone()], vec![vec![
+            other.clone(),
+            padded.clone(),
+        ]]),
+    ] {
+        let unpadded = |values: &[Par]| -> Vec<Par> {
+            values
+                .iter()
+                .map(|value| {
+                    if value == &padded {
+                        plain.clone()
+                    } else {
+                        value.clone()
+                    }
+                })
+                .collect()
+        };
+        let plain_channels = unpadded(&channels);
+        let plain_joins: Vec<Vec<Par>> = joins.iter().map(|join| unpadded(join)).collect();
+        let (small_bytes, small) = footprint(&plain_channels, &plain_joins);
+        let (large_bytes, large) = footprint(&channels, &joins);
+        assert_eq!(small_bytes, large_bytes);
+        assert_eq!(
+            [0, 1, 2].map(|index| large[index] - small[index]),
+            growth.map(|amount| amount * occurrences)
+        );
+    }
+}

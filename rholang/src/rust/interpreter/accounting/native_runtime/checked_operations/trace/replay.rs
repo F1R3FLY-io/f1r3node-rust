@@ -567,7 +567,9 @@ impl NativeOperationReplay {
 }
 
 impl NativeReplayReservation {
-    pub fn authenticate_footprint<C: Serialize>(
+    // Changed by D-E3 (DR-110): the footprint inspects each channel.
+    // pub fn authenticate_footprint<C: Serialize>(
+    pub fn authenticate_footprint<C: Serialize + shared::rust::clone_backing::CloneBacking>(
         &mut self,
         channels: &[C],
         joins: &[Vec<C>],

@@ -40,7 +40,19 @@ fn bounded_legacy_events(
         let Some(amount) = row.legacy_amount else {
             continue;
         };
-        clone_backing::reserve_copy_and_cleanup(&row.authority, host)?;
+        // Changed by D-O1 (DR-110): the block copy and cleanup prepays the
+        // clone of the authority into the event and its release with the
+        // result. The surplus of the per-level charge paid the length.
+        // clone_backing::reserve_copy_and_cleanup(&row.authority, host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&row.authority, host)?;
+        // Added by D-E3 (DR-110): the length computation of the key below.
+        // The correction note of DR-93 states that the inspection of an
+        // encode site prepays the site's own length computation.
+        clone_backing::inspect_blocks(&row.authority, host)?;
+        // Added by D-E3 (DR-110): `Message::encode` of the authority into the
+        // key (DR-93). The output bytes are reserved with the key below, so
+        // the charge adds none.
+        clone_backing::reserve_nested_encode(&row.authority, 0, host)?;
         let encoded_len = row.authority.encoded_len();
         let length = encoded_len
             .checked_add(49)
@@ -144,5 +156,70 @@ mod tests {
             let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)));
             prop_assert_eq!(bounded_legacy_events(&observations, &host).unwrap(), observations.legacy_events());
         }
+    }
+
+    /// D-E3 (DR-110): a legacy event copies its authority into the event and
+    /// encodes it into the sort key. With one row, every other term of the
+    /// charge is constant, so the charge grows with the authority by exactly
+    /// the block copy and cleanup, one block inspection for the length of
+    /// the key, the nested encode (DR-93) and the key bytes.
+    #[test]
+    fn legacy_event_keys_charge_copy_and_nested_encode() {
+        use shared::rust::clone_backing as walks;
+
+        let walk =
+            |action: &dyn Fn(&dyn walks::BackingMeter) -> Result<(), walks::BackingError>| {
+                let totals = std::cell::Cell::new([0i64; 3]);
+                let meter = |operations: usize, scanned: usize, backing: usize| {
+                    let [o, s, b] = totals.get();
+                    totals.set([
+                        o + operations as i64,
+                        s + scanned as i64,
+                        b + backing as i64,
+                    ]);
+                    Ok::<(), walks::BackingError>(())
+                };
+                action(&meter).expect("an unlimited walk");
+                totals.get()
+            };
+        let charge = |owners: usize| {
+            let authority =
+                crate::rust::interpreter::accounting::native_runtime::tests::authority(owners);
+            let observations = ByteObservationSnapshot {
+                rows: vec![Arc::new(ByteObservation {
+                    event_id: [1; 32],
+                    kind: AuthorityByteEventKind::Comm,
+                    authority: authority.clone(),
+                    measurement: None,
+                    legacy_amount: Some(5),
+                })],
+                metered_context: true,
+                history_lost: false,
+            };
+            let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+            bounded_legacy_events(&observations, &host).expect("legacy events");
+            let used = [
+                HostWorkDimension::VerificationOperations,
+                HostWorkDimension::VerificationBytes,
+                HostWorkDimension::SearchStateBytes,
+            ]
+            .map(|dimension| host.usage(dimension).get() as i64);
+            let copy = walk(&|meter| walks::reserve_blocks_copy_and_cleanup(&authority, meter));
+            let length = walk(&|meter| walks::inspect_blocks(&authority, meter));
+            let encode = walk(&|meter| walks::reserve_nested_encode(&authority, 0, meter));
+            let key = authority.encoded_len() as i64 + 49;
+            let parts = [
+                copy[0] + length[0] + encode[0],
+                copy[1] + length[1] + encode[1] + key,
+                copy[2] + length[2] + encode[2] + key,
+            ];
+            (used, parts)
+        };
+        let (small, small_parts) = charge(1);
+        let (large, large_parts) = charge(6);
+        let growth = [0, 1, 2].map(|index| large[index] - small[index]);
+        let expected = [0, 1, 2].map(|index| large_parts[index] - small_parts[index]);
+        assert!(expected[1] > 0);
+        assert_eq!(growth, expected);
     }
 }

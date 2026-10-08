@@ -49,23 +49,28 @@ fn inspect_metered(
     result.map_err(|_| RSpaceError::HostWorkRejected)
 }
 
-// Kept legacy by D-O1 (DR-94) for the channel inspections (the produce
-// channel and the consume channels). The RSpace source preparation reads the
-// same channels again for the scheduler footprint and the cold-read keys
-// without reservations of its own, and the legacy per-level charge of these
-// inspections is part of what pays those reads until Stage B (D-E3).
-fn inspect_value<T: CloneBacking>(value: &T, meter: &dyn SourceMeter) -> Result<(), RSpaceError> {
-    inspect_metered(meter, |backing| clone_backing::inspect(value, backing))
-}
-
-fn inspect_slice<T: CloneBacking>(
-    values: &[T],
-    meter: &dyn SourceMeter,
-) -> Result<(), RSpaceError> {
-    inspect_metered(meter, |backing| {
-        clone_backing::inspect_slice(values, backing)
-    })
-}
+// Disabled by D-O1 (DR-110): the channel inspections use the block forms
+// below, and no other caller remains. The scheduler footprint reserves its
+// own channel traversals (`locked_footprint`), the digest-keyed cold reads
+// read no channel (DR-96), and the produce path reserves the traversals of
+// its join keys (`produce_with_authority`).
+// // Kept legacy by D-O1 (DR-94) for the channel inspections (the produce
+// // channel and the consume channels). The RSpace source preparation reads the
+// // same channels again for the scheduler footprint and the cold-read keys
+// // without reservations of its own, and the legacy per-level charge of these
+// // inspections is part of what pays those reads until Stage B (D-E3).
+// fn inspect_value<T: CloneBacking>(value: &T, meter: &dyn SourceMeter) -> Result<(), RSpaceError> {
+//     inspect_metered(meter, |backing| clone_backing::inspect(value, backing))
+// }
+//
+// fn inspect_slice<T: CloneBacking>(
+//     values: &[T],
+//     meter: &dyn SourceMeter,
+// ) -> Result<(), RSpaceError> {
+//     inspect_metered(meter, |backing| {
+//         clone_backing::inspect_slice(values, backing)
+//     })
+// }
 
 // D-O1 (DR-94): the block-mode inspections of the data, the patterns, the
 // continuation and the COMM data. Each caller's inspection prepays exactly
@@ -194,7 +199,11 @@ pub(crate) fn produce_introduction_metered_with_identity<'a>(
     introduction_authority: &'a CostAuthority,
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
-    inspect_value(channel, meter)?;
+    // Changed by D-O1 (DR-110): a block inspection prepays one traversal, the
+    // prost length of the channel. The other channel reads reserve their own
+    // traversals.
+    // inspect_value(channel, meter)?;
+    inspect_value_blocks(channel, meter)?;
     // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
     // inspect_value(data, meter)?;
     inspect_value_blocks(data, meter)?;
@@ -250,7 +259,11 @@ pub(crate) fn consume_introduction_metered_with_identity<'a>(
     introduction_authority: &'a CostAuthority,
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
-    inspect_slice(channels, meter)?;
+    // Changed by D-O1 (DR-110): a block inspection prepays one traversal, the
+    // prost lengths of the channels. The other channel reads reserve their
+    // own traversals.
+    // inspect_slice(channels, meter)?;
+    inspect_slice_blocks(channels, meter)?;
     // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
     // inspect_slice(patterns, meter)?;
     inspect_slice_blocks(patterns, meter)?;

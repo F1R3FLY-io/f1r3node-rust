@@ -59,8 +59,13 @@ where
                     .checked_mul(std::mem::size_of::<i32>())
                     .ok_or(InterpreterError::HostWorkRejected)?;
                 meter.reserve(probes, scanned, 0).map_err(host_rejected)?;
-                if let Some(name) = env.env_map.get(&position) {
-                    meter.inspect(name).map_err(host_rejected)?;
+                // Changed by D-O1 (DR-110): the name is no longer inspected here.
+                // if let Some(name) = env.env_map.get(&position) {
+                if let Some(_name) = env.env_map.get(&position) {
+                    // Disabled by D-O1 (DR-110): redundant. `get_metered` below
+                    // prepays the copy of the name and its release, and the sort
+                    // charges its own reads (the precedent of DR-94, decision 4).
+                    // meter.inspect(name).map_err(host_rejected)?;
                     let name = env
                         .get_metered(&index, meter)
                         .map_err(host_rejected)?
@@ -109,7 +114,10 @@ where
         }
     };
     let value = CostSignature { value: Some(value) };
-    meter.inspect(&value).map_err(host_rejected)?;
+    // Changed by D-O1 (DR-110): the owned `value` is dropped after the sort,
+    // which charges its own reads. A block inspection prepays that release.
+    // meter.inspect(&value).map_err(host_rejected)?;
+    meter.inspect_blocks(&value).map_err(host_rejected)?;
     sort_signature_metered(&value, meter)
         .map(|sorted| sorted.term)
         .map_err(host_rejected)

@@ -156,26 +156,118 @@ fn checkpoint_and_result_reject_before_unpaid_copies_and_preserve_live_state() {
     }
 }
 
+/// D-E3 (DR-110): the operations, scanned bytes and backing bytes that a
+/// budget has charged.
+fn walker_usage(host: &HostWorkBudget) -> [u64; 3] {
+    [
+        HostWorkDimension::VerificationOperations,
+        HostWorkDimension::VerificationBytes,
+        HostWorkDimension::SearchStateBytes,
+    ]
+    .map(|dimension| host.usage(dimension).get())
+}
+
+fn usage_since(host: &HostWorkBudget, before: [u64; 3]) -> [u64; 3] {
+    let after = walker_usage(host);
+    [0, 1, 2].map(|index| after[index] - before[index])
+}
+
 #[test]
 fn authority_checkpoint_prepays_cloned_state_cleanup() {
     let (budget, host) = populated(100_000_000);
-    let before = host.usage(HostWorkDimension::VerificationOperations).get();
+    let before = walker_usage(&host);
     let checkpoint = budget.native_authority_checkpoint().unwrap();
-    let prepaid = host.usage(HostWorkDimension::VerificationOperations).get() - before;
-    let before = host.usage(HostWorkDimension::VerificationOperations).get();
-    let introductions = budget.introduction_authorities.lock().unwrap();
-    let state = budget.authority_state.lock().unwrap();
-    clone_backing::reserve(&state.events, &host).unwrap();
-    clone_backing::reserve_slice(state.byte_observations.rows(), &host).unwrap();
-    clone_backing::reserve(&state.realized, &host).unwrap();
-    clone_backing::reserve(&state.reserved, &host).unwrap();
-    clone_backing::reserve(&state.frontier, &host).unwrap();
-    clone_backing::reserve(&state.stack_births, &host).unwrap();
-    clone_backing::reserve(&*introductions, &host).unwrap();
-    let clone_only = host.usage(HostWorkDimension::VerificationOperations).get() - before;
-    assert!(clone_only > 0);
-    assert!(prepaid >= clone_only * 2);
-    drop((state, introductions, checkpoint));
+    let prepaid = usage_since(&host, before);
+    // Changed by D-O1 (DR-110): the checkpoint charges block walks. An
+    // unlimited budget that runs the same walks states the exact charge in
+    // every dimension: a block copy and a shared-pointer cleanup of the events,
+    // the rows and the generation pointer, and a block copy and cleanup of the
+    // other state.
+    // let before = host.usage(HostWorkDimension::VerificationOperations).get();
+    // let introductions = budget.introduction_authorities.lock().unwrap();
+    // let state = budget.authority_state.lock().unwrap();
+    // clone_backing::reserve(&state.events, &host).unwrap();
+    // clone_backing::reserve_slice(state.byte_observations.rows(), &host).unwrap();
+    // clone_backing::reserve(&state.realized, &host).unwrap();
+    // clone_backing::reserve(&state.reserved, &host).unwrap();
+    // clone_backing::reserve(&state.frontier, &host).unwrap();
+    // clone_backing::reserve(&state.stack_births, &host).unwrap();
+    // clone_backing::reserve(&*introductions, &host).unwrap();
+    // let clone_only = host.usage(HostWorkDimension::VerificationOperations).get() - before;
+    // assert!(clone_only > 0);
+    // assert!(prepaid >= clone_only * 2);
+    // drop((state, introductions, checkpoint));
+    let mirror = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+    {
+        let introductions = budget.introduction_authorities.lock().unwrap();
+        let state = budget.authority_state.lock().unwrap();
+        let generation = &state.native.as_ref().expect("native state").generation;
+        assert!(!state.events.is_empty());
+        clone_backing::reserve_blocks(&state.events, &mirror).unwrap();
+        clone_backing::inspect_shared_pointers_blocks(&state.events, &mirror).unwrap();
+        let rows = state.byte_observations.rows();
+        assert!(!rows.is_empty());
+        clone_backing::reserve_blocks_slice(rows, &mirror).unwrap();
+        clone_backing::inspect_shared_pointer_slice_blocks(rows, &mirror).unwrap();
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.realized, &mirror).unwrap();
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.reserved, &mirror).unwrap();
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.frontier, &mirror).unwrap();
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.stack_births, &mirror).unwrap();
+        clone_backing::reserve_blocks_copy_and_cleanup(&*introductions, &mirror).unwrap();
+        clone_backing::reserve_blocks(generation, &mirror).unwrap();
+        clone_backing::inspect_shared_pointers_blocks(generation, &mirror).unwrap();
+    }
+    assert_eq!(prepaid, walker_usage(&mirror));
+    drop(checkpoint);
+}
+
+/// D-E3 (DR-110): the byte observations were prepaid at birth (the C5 rule,
+/// DR-83), so the cleanup of the copied events visits each shared pointer but
+/// not its payload. The checkpoint charge does not change when the events
+/// point to a larger observation. The per-level cleanup walked the payloads.
+#[test]
+fn authority_checkpoint_charge_is_independent_of_observation_payloads() {
+    let charge = |owners: Option<usize>| {
+        let (budget, host) = populated(100_000_000);
+        if let Some(owners) = owners {
+            let larger = row(0, owners, true, false).observation;
+            let mut state = budget.authority_state.lock().unwrap();
+            let mut replaced = 0;
+            for event in state.events.values_mut() {
+                if event.byte_observation.is_some() {
+                    event.byte_observation = Some(Arc::clone(&larger));
+                    replaced += 1;
+                }
+            }
+            assert!(replaced > 0);
+        }
+        let before = walker_usage(&host);
+        let checkpoint = budget.native_authority_checkpoint().unwrap();
+        let charge = usage_since(&host, before);
+        drop(checkpoint);
+        charge
+    };
+    assert_eq!(charge(None), charge(Some(32)));
+}
+
+/// D-E3 (DR-110): the backing that the checkpoint reserves covers the bytes
+/// that its clones allocate.
+#[test]
+fn authority_checkpoint_backing_covers_allocations() {
+    let (budget, host) = populated(100_000_000);
+    let before = walker_usage(&host);
+    let (checkpoint, allocated) =
+        crate::rust::interpreter::accounting::native_runtime::clone_backing::tests::measured(
+            || budget.native_authority_checkpoint().unwrap(),
+        );
+    let prepaid = usage_since(&host, before);
+    assert!(allocated > 0);
+    assert!(
+        allocated as u64 <= prepaid[2],
+        "allocated {allocated} reserved {}",
+        prepaid[2]
+    );
+    drop(checkpoint);
 }
 
 #[test]

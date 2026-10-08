@@ -151,6 +151,12 @@ fn measured_birth_channel(
     }
     let channel = funding_sig_channel_metered(&signature, &backing)
         .map_err(|error| invalid(&error.to_string()))?;
+    // Added by D-E3 (DR-110): `funding_sig_channel_metered` prepays only the
+    // release of its unsorted channel. The surplus of its per-level inspection
+    // paid the length computation below, so a block inspection prepays it
+    // here.
+    shared::rust::clone_backing::inspect_blocks(&channel, &backing)
+        .map_err(|_| invalid("measured birth channel inspection is rejected"))?;
     let encoded_len = channel.encoded_len();
     reserve(
         budget,
@@ -601,5 +607,60 @@ impl RuntimeManager {
             receipts,
             bucket_limits: limits.bucket,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use models::rhoapi::cost_signature::Value as CostSignatureValue;
+    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+
+    use super::*;
+
+    /// D-E3 (DR-110): the measured birth channel charges the conversion of
+    /// the head, the funding channel, one block inspection of the returned
+    /// channel for its length computation, and the key bytes. A budget that
+    /// runs the same steps charges the same in every dimension.
+    #[test]
+    fn measured_birth_channel_inspects_the_returned_channel_once() {
+        let head = CostSignature {
+            value: Some(CostSignatureValue::Ground(vec![9; 32])),
+        };
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let (key, channel) = measured_birth_channel(&head, &budget).expect("a birth channel");
+        let mirror = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let backing = |operations: usize, scanned: usize, allocation: usize| {
+            reserve(
+                &mirror,
+                HostWorkDimension::VerificationOperations,
+                operations,
+            )
+            .map_err(|_| BackingError::Rejected)?;
+            reserve(&mirror, HostWorkDimension::VerificationBytes, scanned)
+                .map_err(|_| BackingError::Rejected)?;
+            reserve(&mirror, HostWorkDimension::SearchStateBytes, allocation)
+                .map_err(|_| BackingError::Rejected)
+        };
+        let signature = cost_signature_to_sig_metered(&head, &backing).expect("a signature");
+        let expected = funding_sig_channel_metered(&signature, &backing).expect("a channel");
+        shared::rust::clone_backing::inspect_blocks(&expected, &backing).expect("an inspection");
+        let encoded_len = expected.encoded_len();
+        reserve(
+            &mirror,
+            HostWorkDimension::VerificationOperations,
+            encoded_len * 2,
+        )
+        .expect("an unlimited budget");
+        reserve(&mirror, HostWorkDimension::SearchStateBytes, encoded_len)
+            .expect("an unlimited budget");
+        assert_eq!(channel, expected);
+        assert_eq!(key, expected.encode_to_vec());
+        for dimension in HostWorkDimension::ALL {
+            assert_eq!(
+                budget.usage(dimension).get(),
+                mirror.usage(dimension).get(),
+                "{dimension:?}"
+            );
+        }
     }
 }

@@ -30,6 +30,21 @@ fn require(
     }
 }
 
+/// D-E3 (DR-110): the keys of the joins that a produce reads, with one
+/// digest per channel, and the traversals of the join channels that the keys
+/// read. The key writer reserves only the bytes that it writes, and the join
+/// copy prepays only its clone and its release (DR-108). So each join gets
+/// one block inspection before its keys (DR-108, decision 6).
+pub(crate) fn join_keys<C: Serialize + CloneBacking>(
+    joins: &[Vec<C>],
+    reserve: &impl crate::rspace::hashing::native_source::SourceMeter,
+) -> Result<OperationKeys, RSpaceError> {
+    for join in joins {
+        crate::rspace::native_backing::inspect_blocks_slice(join, reserve)?;
+    }
+    OperationKeys::build(joins, reserve)
+}
+
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
 where
     C: Clone
@@ -332,7 +347,10 @@ where
             |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
         // D-C2c (D-S1, DR-96): the keys of the joins, one digest per channel,
         // computed once for the operation.
-        let join_keys = OperationKeys::build(&joins, &reserve)?;
+        // Changed by D-E3 (DR-110): the keys also reserve the traversals of the
+        // join channels that they read.
+        // let join_keys = OperationKeys::build(&joins, &reserve)?;
+        let join_keys = join_keys(&joins, &reserve)?;
         // Changed by C2 (DR-82): the prefetch copies no datum.
         // self.prepare_data(&channel)?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the keys.

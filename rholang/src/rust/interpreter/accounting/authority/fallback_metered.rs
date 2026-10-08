@@ -26,9 +26,16 @@ pub fn sig_to_cost_signature_metered(
         match current {
             Sig::Unit => {}
             Sig::Ground(bytes) | Sig::Quote(bytes) => {
+                // Changed by D-O1 (DR-110): block accounting charges inline bytes
+                // once per enclosing block.
+                // let atom = CostSignature {
+                //     value: Some(CostSignatureValue::Ground(
+                //         meter.clone(bytes).map_err(authority_backing_error)?,
+                //     )),
+                // };
                 let atom = CostSignature {
                     value: Some(CostSignatureValue::Ground(
-                        meter.clone(bytes).map_err(authority_backing_error)?,
+                        meter.clone_blocks(bytes).map_err(authority_backing_error)?,
                     )),
                 };
                 meter

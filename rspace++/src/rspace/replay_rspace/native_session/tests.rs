@@ -1128,3 +1128,57 @@ proptest! {
         prop_assert_eq!(bytes == 0, entries == 0);
     }
 }
+
+/// D-E3 (DR-110): the operations, scanned bytes and backing bytes that
+/// `action` charges.
+fn recorded_by_dimension(
+    action: impl FnOnce(&dyn SourceMeter) -> Result<(), RSpaceError>,
+) -> [usize; 3] {
+    let used = std::cell::Cell::new([0_usize; 3]);
+    let meter = |operations: usize, scanned: usize, backing: usize| {
+        let [o, s, b] = used.get();
+        used.set([o + operations, s + scanned, b + backing]);
+        Ok::<(), RSpaceError>(())
+    };
+    action(&meter).expect("an unlimited meter");
+    used.get()
+}
+
+/// D-E3 (DR-110): the join keys of a produce encode each join channel with
+/// bincode, and the key writer reserves only the bytes that it writes. The
+/// charge is exactly one shared block inspection of each join and the charge
+/// of the key digests, and the keys are the keys of `OperationKeys::build`.
+/// The charge grows by one inspection when a join channel grows.
+#[test]
+fn produce_join_keys_charge_one_traversal_per_join_channel() {
+    let long = format!("b{}", "x".repeat(4_096));
+    for second in ["b".to_owned(), long] {
+        let joins = vec![vec!["a".to_owned(), second.clone()], vec!["c".to_owned()]];
+        let mut keys = None;
+        let actual = recorded_by_dimension(|meter| {
+            keys = Some(super::operations::join_keys(&joins, &|o, s, b| meter.reserve(o, s, b))?);
+            Ok(())
+        });
+        let mut expected = [0_usize; 3];
+        let mut add = |part: [usize; 3]| {
+            for (total, amount) in expected.iter_mut().zip(part) {
+                *total += amount;
+            }
+        };
+        for join in &joins {
+            add(recorded_by_dimension(|meter| {
+                crate::rspace::native_backing::inspect_blocks_slice(join, meter)
+            }));
+        }
+        let mut built = None;
+        add(recorded_by_dimension(|meter| {
+            built = Some(crate::rspace::hashing::native_source::OperationKeys::build(
+                &joins,
+                &|o, s, b| meter.reserve(o, s, b),
+            )?);
+            Ok(())
+        }));
+        assert_eq!(actual, expected, "second channel of {} bytes", second.len());
+        assert_eq!(keys, built);
+    }
+}

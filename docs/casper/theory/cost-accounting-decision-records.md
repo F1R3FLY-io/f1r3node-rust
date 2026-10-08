@@ -5618,6 +5618,11 @@ which is not yet released. It changes no observable value.
 pointers charges each pointer as a field with its strong-count header
 (DR-108).
 
+**Amendment (DR-110).** The checkpoint of the replay authority copies its
+events, its rows and its generation pointer with block copies. Their
+payloads were prepaid at birth, so the block shared-pointer walk cleans up
+the copies (DR-110, decision 9).
+
 **Cross-refs.** DR-81, DR-82. Leaf `ofp-2-cap-conditional-c5-c6-c11`.
 
 ## DR-84 — A split adds one causal-path segment
@@ -6144,6 +6149,12 @@ Tests in `replay_authority/tests/backing.rs`:
 The existing replay-authority tests, including the retry exhaustion and the
 checkpoint and result rejection tests, pass unchanged.
 
+**Amendment (DR-110).** The checkpoint copies of the replay authority now
+follow the row and copy rules of this record (DR-110, decision 9). The owned
+backing that builds the canonical authority doubles only the operations. The
+second inspection in `canonical_cost_signature_metered` prepays the release
+bytes of each canonical signature (DR-110, Rule B).
+
 **Cross-refs.** DR-79 (C14), DR-83 (C5), DR-88. Leaf
 `ofp-2-cap-d-a2-replay-authority-backing`.
 
@@ -6553,6 +6564,14 @@ which stays, prepays the extra length computation, and
 proves the bound for `Message::encode` (its `site_work`), and DR-94
 corrects that file's comment.
 
+**Amendment (DR-110).** `bounded_legacy_events` in
+`replay_authority/result.rs`, which this record listed with a linear charge,
+now reserves the nested encode of each authority. The key reserves the output
+bytes, so the reservation adds none. A block inspection prepays the site's
+length computation, as the correction note above states. The Casper callers
+of the funding channel have a length inspection but no nested encode
+reservation (DR-110, recorded gaps).
+
 **Cross-refs.** DR-92. Leaf `ofp-2-cap-d-b2-nested-encode-charge`.
 
 ## DR-94 — Stage A walker sites in block mode
@@ -6731,6 +6750,23 @@ for this cluster.
 **Amendment (DR-108).** Decision 5: the block-mode cleanup of store-owned
 shared pointers also charges the strong-count header of each pointer
 (DR-108).
+
+**Amendment (DR-110).** Stage B (D-E3) switched the sites that this record
+kept legacy (decisions 2, 3 and 8):
+
+- An owned temporary gets two block inspections, for the comparison and the
+  release.
+- The source preparation pays the source pass and the release of each value
+  with two block inspections.
+- The footprint and the join keys reserve their own channel traversals. So
+  the channel inspections of the observation construction pay one length
+  computation each.
+- The canonical signature prepays its release where it is born (Rule B).
+- The lane channel also pays the release of the shadowed unsorted channel,
+  which the audit above did not count.
+
+The recorded gaps about the footprint, the cold-read keys and the checkpoint
+are resolved (DR-110).
 
 **Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93. Leaf
 `ofp-2-cap-d-b4-walker-stage-a`.
@@ -7368,6 +7404,11 @@ consume.
 output bytes. At the three key reads of the native session, a per-level
 inspection of the channel also paid this read. Under block accounting, a
 second block inspection before the key pays it (DR-108, decision 6).
+
+**Amendment (DR-110).** With the digest-keyed cold reads of this record,
+the source preparation reads no channel for the keys of the operation's own
+channels. The keys of the joins of a produce still encode each join channel.
+DR-110 reserves that pass (decision 5).
 
 **Cross-refs.** DR-77, DR-82, DR-95. Leaves `ofp-2-cap-d-c2a-digest-keys`,
 `ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,
@@ -10182,6 +10223,12 @@ two entry constants (112 bytes) in block mode, and two pushes of three
 reads of its bytes in per-level mode. A remainder variable of the matcher
 is a chain of smaller entries (DR-109).
 
+**Amendment (DR-110).** Decision 6 extends to the keys of the joins of a
+produce, which encode each join channel after the block copy of the joins.
+`join_keys` inspects each join once before the keys (DR-110, decision 5).
+Without that inspection, the block copies of this record left the key pass
+and the footprint pass over the join channels without a payment.
+
 **Cross-refs.** DR-83, DR-92, DR-93, DR-94, DR-96, DR-106, DR-107. Leaf
 `ofp-2-cap-d-e1-rspace-sites`.
 
@@ -10689,5 +10736,415 @@ Suites (part 2):
 runs of part 1 sample no `rho-pure-eval` frame (see the context of part 2),
 so part 2 cannot change the measured usage of the gateway block.
 
+**Amendment (DR-110).** The substitution copies the same chains of small
+entries (`Option<Var>`) in block mode. So its variable copies also charge
+more than the per-level walk did (DR-110, comparison).
+
 **Cross-refs.** DR-88, DR-92, DR-94, DR-103, DR-104, DR-105, DR-108. Leaf
 `ofp-2-cap-d-e2-matcher-sites`.
+
+## DR-110 — The accounting and interpreter walker sites in block mode, with reservations of their own for the RSpace footprint and the join keys
+
+**Status.** Implemented 2026-10-08 for Phase D item D-E3 of epic 8946 (D-O1
+Stage B). A read-only design pass took the inventory of the walker sites in
+the rholang accounting and interpreter code and audited each site against
+DR-94. The implementation first checked the load-bearing claims of the
+design in the code. It corrected two of them (decisions 12 and 10).
+
+**Context.**
+
+- The D-G0 probe attributed each walker sample of the gateway block's
+  validator replay to the walker's caller (three runs, after DR-109 part 1).
+  VerificationBytes were 633 to 642 MiB, of which the walker sampled 408 to
+  428 MiB. The per-level sites of this item were:
+  - The source preparation of the replay session: 128 to 135 MiB. The
+    inspection of the continuation took 104 to 112 MiB of it.
+  - The channel inspections of the observation construction: about 10 MiB.
+  - The canonical signature in `authority.rs`: about 12 MiB, sampled under
+    the frame of the metered sorter.
+  - The other sites: less than 5 MiB together.
+- DR-94 kept three kinds of site per-level, because the block mode would not
+  pay all of their work:
+  - An owned value that a site compares and then drops. The surplus of the
+    per-level charge also paid the release.
+  - The channel inspections of the observation construction. Their surplus
+    paid the scheduler footprint and the cold-read keys of the RSpace source
+    preparation, which have no reservations of their own.
+  - The source preparation itself, and the checkpoint copies.
+- DR-96 replaced the cold-read keys of the operation's own channels with key
+  digests, so those reads no longer exist. The keys of the joins of a
+  produce remain. They encode each join channel with bincode.
+- DR-108 changed the copies of the joins to block copies, which prepay only
+  the clone and the release. Its decision 6 gave second traversals to the
+  three read-only key reads of the session, but not to the join keys of the
+  produce.
+- DR-93, with its correction note, states the rule for a prost encode site:
+  the site's inspection prepays its own length computation, and
+  `reserve_nested_encode` prepays `Message::encode`.
+
+**Decision.**
+
+1. The wrappers. The rholang walker module gets three block wrappers:
+   `inspect_blocks_slice`, `inspect_shared_pointers_blocks` and
+   `reserve_nested_encode`. The per-level `reserve_copy_and_cleanup`,
+   `reserve_slice_copy_and_cleanup` and `inspect` compile only for tests, as
+   reference charges. The per-level `inspect_slice` and the test-only
+   `reserve_slice` have no caller left, so they are commented out.
+2. The source preparation. The replay session charges the source of an
+   operation in `charge_produce_source` and `charge_consume_source`. Each
+   value gets two block inspections. The first prepays the source pass,
+   whose writer reserves only the bytes that it writes. The second prepays
+   the release of the value after the operation.
+3. The observation channels. The produce channel and the consume channels
+   get one block inspection each, for their prost lengths. The per-level
+   helpers `inspect_value` and `inspect_slice` are commented out.
+4. The footprint. `locked_footprint` inspects each channel and each join
+   channel once before its bincode pass. The replay (`authenticate_footprint`)
+   and the producer (`start_operation`) both use it.
+5. The join keys. A produce builds the keys of its joins with `join_keys`,
+   which inspects each join once before the key digests (the form of DR-108,
+   decision 6).
+6. The owned temporaries. An owned value that a site compares and then drops
+   gets two block inspections: the comparison and the release. The rule
+   applies to `inspect_owned_authority` and to the sorted part in the
+   signature validation. A reducer copy gets a block inspection for its
+   release and a block copy with the owned meter (`reserve_reducer_copy`).
+7. Rule B, the canonical signature. `canonical_cost_signature_metered`
+   inspects the canonical signature twice on every path, for the comparison
+   and for its release. Its consumers pay no release for the signature or
+   its parts:
+   - The region map inspects the canonical signature once, for the
+     comparison.
+   - The conversion of a quoted or named atom inspects the part once, for its
+     length computation. The nested encode prepays the encode.
+8. The lane and funding channels. The lane inspects its sorted channel three
+   times: for the length computation, the release of the sorted channel and
+   the release of the shadowed unsorted channel. The third inspection is
+   new. The funding channel inspects its sorted channel once, for the
+   release of the unsorted channel. Each caller pays its own read of the
+   returned channel (decisions 12 and 13).
+9. The checkpoint of the replay authority. Each state value gets a block copy.
+   The events and the rows hold shared observations whose payloads were
+   prepaid at birth. So the cleanup of their copies visits each shared pointer
+   but not its payload (the C5 rule, DR-83). The other values get a block copy
+   and cleanup. The copy of the generation pointer and its release are new
+   charges.
+10. The legacy result events. The authority of each legacy event gets three
+    charges:
+    - A block copy and cleanup, for the clone into the event and its release.
+    - A block inspection, for the length computation of the key.
+    - A nested encode reservation, for `Message::encode` (DR-93).
+
+    The key reserves its own output bytes, so the reservation adds none. The design pass had omitted the
+    inspection. The correction note of DR-93 shows that the site needs it.
+11. The mergeable checkpoint. `copy_mergeable_for_checkpoint` charges a block
+    copy and cleanup of the map and one more block inspection. `evaluate`,
+    the only caller, clears the map after the checkpoint, which releases the
+    original entries.
+12. The Casper callers of the funding channel. `measured_birth_channel`
+    (prepaid receipts) and `born_resource` (direct wallet funding) inspect the
+    returned channel once, for their length computations. The surplus of the
+    per-level inspection in `funding_sig_channel_metered` paid that read
+    before. The design pass had not found these callers.
+13. The stack produce source. `produce_source_metered` inspects the channel
+    and the datum once each, for the two bincode passes of
+    `Produce::create_metered`. The surplus of the per-level copy of the cells
+    paid the datum pass before. The channel pass had no payment when the
+    funding channel was not sorted.
+14. The substitution. `copy_metered` charges a block copy and cleanup. The
+    copy charge of an expression substitution becomes a block copy with the
+    owned meter.
+15. Each replaced line stays in the source, commented out with its reason. One
+    inspection in `native_cost_signature.rs` is commented out as redundant,
+    because `get_metered` prepays the copy of the name and its release (the
+    precedent of DR-94, decision 4).
+
+**Algorithm (literate form).**
+
+```text
+⟨source preparation of a produce (channel c, data d)⟩ ≡     -- replay session
+  inspect_blocks(c); inspect_blocks(d)        -- the source pass: hash c, encode d
+  inspect_blocks(c); inspect_blocks(d)        -- the release of c and d after the operation
+
+⟨source preparation of a consume (channels C, patterns P, continuation k)⟩ ≡
+  inspect_blocks_slice(C); inspect_blocks_slice(P); inspect_blocks(k)   -- the source pass
+  inspect_blocks_slice(C); inspect_blocks_slice(P); inspect_blocks(k)   -- the releases
+
+⟨footprint of channels C and joins J⟩ ≡     -- replay and producer
+  for each channel c of C, then of each join of J:
+    inspect_blocks(c)                         -- the bincode pass reads c
+    channel_bytes(c)                          -- its writer reserves the output
+
+⟨join keys of a produce with joins J⟩ ≡
+  for each join j of J: inspect_blocks_slice(j)   -- the key pass reads j
+  OperationKeys::build(J)                     -- its writer reserves the output
+
+⟨owned temporary v that a site compares and drops⟩ ≡
+  inspect_blocks(v)                           -- the comparison
+  inspect_blocks(v)                           -- the release
+
+⟨canonical signature s of the input t⟩ ≡    -- Rule B
+  s ← sort(t); validate(s)
+  inspect_blocks(s); inspect_blocks(s)        -- the comparison and the release of s
+  inspect_blocks(t)                           -- the comparison
+  if s ≠ t: reject
+  return s                                    -- consumers pay no release for s or its parts
+
+⟨encode site of a value v with an output buffer⟩ ≡     -- DR-93 with its correction
+  inspect_blocks(v)                           -- the site's length computation
+  reserve_nested_encode(v, output bytes)      -- Message::encode
+
+⟨checkpoint copy of the replay authority⟩ ≡
+  reserve_blocks(events); inspect_shared_pointers_blocks(events)
+  reserve_blocks_slice(rows); inspect_shared_pointer_slice_blocks(rows)
+  reserve_blocks_copy_and_cleanup(v) for each other state value v
+  reserve_blocks(generation); inspect_shared_pointers_blocks(generation)
+
+⟨mergeable checkpoint of the map m⟩ ≡
+  reserve_blocks_copy_and_cleanup(m)          -- the copy and its release
+  inspect_blocks(m)                           -- evaluate clears m, which releases its entries
+```
+
+**Soundness.**
+
+- A block inspection prepays one traversal
+  (`WalkerBlockCharge.block_inspection_covers_walk_and_traversal`). A block
+  copy and cleanup prepays one clone and one release
+  (`block_copy_covers_walk_and_clone`, `block_copy_backing_covers_allocation`).
+  A shared-pointer cleanup prepays the release of a copied pointer whose
+  payload was prepaid at birth (`shared_release_charge_covers_work`,
+  `ResultBackingCoverage.shared_row_cleanup_releases_no_payload`). A nested
+  encode reservation prepays `Message::encode`
+  (`NestedEncodeCost.depth_weighted_charge_covers_encode`).
+- A bincode pass (a source pass, the footprint or a key pass) reads each block
+  of a value at most once. Bincode encodes `locally_free` as empty bytes, so
+  the pass reads that block less. The writer reserves the output. So one
+  inspection and the writer's charge cover the pass (the argument of DR-108,
+  decision 6).
+- Each value of an operation is released once. The second inspection of
+  the source preparation pays that release. The releases occur as follows:
+  - The produce channel at the end of the produce.
+  - The consume channels at the end of the consume or in the interpreter.
+  - The data, the patterns and the continuation in the store, in the
+    interpreter or at the return of a denial.
+- Rule B holds because `canonical_cost_signature_metered` creates each
+  canonical signature once, and the signature is released once. Its consumers
+  compare it, move its parts into a conversion or a region map, or drop it.
+  None of them clones it without a copy charge of its own.
+- The charge of every site depends only on the values, so every role charges
+  the same.
+
+**Determinism.** The per-level walker charges the growth of its pending
+vector from the peak height of its stack. For a hash map, that peak depends
+on the iteration order of the entries, and `RandomState` gives a different
+order in each process. Two validators could therefore charge different
+amounts for the mergeable checkpoint or for a copy of the environment map
+(pgmcp bug
+`per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`).
+A block walk charges the same for every order
+(`WalkerBlockCharge.charged_pushes_independent_of_step_order`,
+`worklist_charge_independent_of_traversal_order`). The test
+`mergeable_and_env_copies_are_independent_of_hash_order` confirms both
+facts on 64 hash seeds.
+
+**Recorded gaps.** This item records the following and does not change them:
+
+- The store also prepays the release of a stored datum or a stored
+  continuation. On that path, the second inspection of the source preparation
+  pays the same release again, as the per-level charge did. A charge that
+  depends on the outcome would need the outcome before the source
+  preparation.
+- The Casper callers of the funding channel encode it into a key without a
+  nested encode reservation, as before this item. The flat channel encodes
+  of DR-93 are the same kind of site.
+- The reducer evaluates the guard of a `match` case with the unmetered
+  `rho_pure_eval::eval` (`reduce.rs`, D-E2 finding).
+- The design pass reported two items without a check in the code. In the
+  reducer, `produce_inner` and `consume_inner` make clones and source hashes
+  without host metering. `reserve_authority_tree_insert` charges about 19 MiB
+  of SearchStateBytes in each run.
+
+**Audit.** One row per site. "Copy" means one clone and its release. Paths
+are under `rholang/src/rust/interpreter/` unless a crate name starts them.
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `accounting/native_runtime/checked_operations/trace/replay/session/operations.rs:41`, `:42` (`charge_produce_source`) | channel and data | the source pass | block inspection | every replayed produce |
+| `…/session/operations.rs:44`, `:45` (`charge_produce_source`) | channel and data | the release after the operation (decision 2) | block inspection | every replayed produce |
+| `…/session/operations.rs:65` to `:67` (`charge_consume_source`) | channels, patterns, continuation | the source pass | block inspection (slices for channels and patterns) | every replayed consume |
+| `…/session/operations.rs:69` to `:71` (`charge_consume_source`) | channels, patterns, continuation | the releases after the operation (decision 2) | block inspection (slices for channels and patterns) | every replayed consume |
+| `accounting/observation_construction.rs:206` | produce channel | one length computation | block inspection | every produce introduction |
+| `accounting/observation_construction.rs:266` | consume channels | one length computation each | block slice inspection | every consume introduction |
+| `accounting/native_runtime/operations.rs:210` (`locked_footprint`) | each channel and join channel | the bincode pass of the footprint (decision 4) | block inspection | every operation, replay and producer |
+| `rspace++/src/rspace/replay_rspace/native_session/operations.rs:43` (`join_keys`) | each join | the key pass of its channels (decision 5) | block slice inspection | every replayed produce with joins |
+| `accounting/native_runtime/replay_authority.rs:349`, `:350` | events | the copy, and a cleanup of its pointers only (C5) | block copy, shared cleanup | every native checkpoint |
+| `…/replay_authority.rs:352`, `:353` | rows | the copy, and a cleanup of its pointers only (C5) | block slice copy, shared cleanup | every native checkpoint |
+| `…/replay_authority.rs:354` to `:358` | realized, reserved, frontier, stack births, introductions | copy | block copy | every native checkpoint |
+| `…/replay_authority.rs:361`, `:362` | generation pointer | the copy and the release of the pointer (new) | block copy, shared cleanup | every native checkpoint |
+| `accounting/native_runtime/replay_authority/result.rs:47` (`bounded_legacy_events`) | authority of a legacy row | the clone into the event and its release | block copy | each legacy event |
+| `…/result.rs:51` | authority of a legacy row | the length computation of the key (decision 10) | block inspection | each legacy event |
+| `…/result.rs:55` | authority of a legacy row | `Message::encode` into the key | nested encode reservation | each legacy event |
+| `rho_runtime.rs:1665`, `:1666` (`copy_mergeable_for_checkpoint`) | mergeable map | the copy, and the release of the entries that `evaluate` clears (decision 11) | block copy, block inspection | every replay evaluation |
+| `accounting/mod.rs:562` (`inspect_owned_authority`) | owned canonical authority | the comparison and the release | block inspection, twice | the identity checks (`:1085`, `:1795`) |
+| `accounting/mod.rs:2606` (`signature_with_host_work`) | signature | copy, released by the caller | block copy | stack produces without an authority |
+| `accounting/authority.rs:153` (`canonical_cost_signature_metered`) | owned canonical signature | the comparison and the release (Rule B) | block inspection, twice | every canonical signature |
+| `accounting/authority.rs:204` (signature validation) | owned sorted part | the comparison and the release | block inspection, twice | each quoted or named part |
+| `accounting/authority.rs:334`, `:351` (`cost_atom_to_sig_metered`) | part of a canonical signature | the length computation (release by Rule B) | block inspection | each quoted or named atom |
+| `accounting/authority.rs:503` (region map) | owned canonical signature | the comparison (release by Rule B) | block inspection | a region that repeats an identity |
+| `accounting/authority.rs:709` (`cost_signature_lane_metered`) | owned sorted channel | the length computation, the release of the sorted channel and the release of the unsorted one (decision 8) | block inspection, three times | each lane with unforgeable atoms |
+| `accounting/authority.rs:799` (`funding_sig_channel_metered`) | sorted channel | the release of the unsorted channel | block inspection | each funding channel with two or more keys |
+| `accounting/authority/fallback_metered.rs:38` | ground bytes | copy | block copy | each fallback ground atom |
+| `substitute/native_cost_signature.rs:68` | name in the environment | nothing (redundant) | commented out | a bound level in a signature |
+| `substitute/native_cost_signature.rs:120` | owned substituted signature | its release after the sort | block inspection | each substituted signature |
+| `substitute/native_par.rs:85` (`copy_metered`) | environment map, locally free bits, variables | copy | block copy | the substitution |
+| `substitute/native_expr.rs:141` (`substitute_expr_metered`) | consumed expression | the output construction, with the operations doubled for the input's release | block copy (owned meter) | each substituted expression |
+| `reduce.rs:1825`, `:1857`, `:1920`, `:1991`, `:2017` (`reserve_reducer_copy`) | signature, body, cells, authority, datum cells | copy, with the operations doubled by the owned meter | block inspection and block copy | the signed term and the stack paths |
+| `reduce.rs:2024` (`produce_source_metered`) | channel and datum of the stack produce | the two bincode passes (decision 13) | block inspection, twice | each stack produce |
+| `casper/src/rust/util/rholang/costacc/prepaid_receipts/physical.rs:158` (`measured_birth_channel`) | returned funding channel | the length computation (decision 12) | block inspection | each measured prepaid birth |
+| `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs:315` (`born_resource`) | returned funding channel | the length computation (decision 12) | block inspection | each retained birth cell |
+
+**Comparison with the per-level charge.** Block mode charges more than the
+per-level walk for some small values:
+
+- A copy and cleanup of a 32-byte vector of bytes charges 328
+  VerificationBytes and 160 SearchStateBytes, against 272 and 288. The two
+  roots cost two entry constants. This applies to the fallback ground atoms
+  and to the copies of the locally free bits.
+- The copies of variables in the substitution copy the chains of entries
+  smaller than 19 bytes that DR-109 measured.
+- A sparse B-tree node in a checkpoint copy is read five times, against four
+  (DR-108).
+- These new charges have no per-level counterpart:
+  - The footprint and join-key inspections.
+  - The generation pointer.
+  - The reducer's source passes.
+  - The third lane inspection.
+  - The length inspection of the legacy events.
+  - The inspections of the Casper callers.
+
+Each of these paths contributes less than 0.2 MiB in each probe run.
+
+**Verification.** No new proof is necessary. Each site uses the lemmas of the
+soundness section, applied once for each prepaid traversal. Tests:
+
+- `session/operations/tests.rs`:
+  `source_preparation_charges_two_block_traversals_of_each_value` states the
+  exact charge of both source preparations from the shared block walks, for
+  small and 4 KiB values. It also checks exact credit and rejection one unit
+  short in each dimension.
+- `native_runtime/tests/operations.rs`:
+  `footprint_charges_one_block_traversal_per_channel_and_join_channel` pads
+  the `locally_free` bytes of a channel, which bincode encodes as empty. The
+  footprint charge grows by exactly one block inspection of the padding for
+  each occurrence of the channel, and the footprint bytes do not change.
+- rspace++ `native_session/tests.rs`:
+  `produce_join_keys_charge_one_traversal_per_join_channel` states the exact
+  charge of `join_keys` and checks that its keys are those of
+  `OperationKeys::build`.
+- `native_runtime/tests/observation_construction.rs`:
+  `introduction_channel_inspections_are_single_block_traversals`.
+- `replay_authority/tests/backing.rs`: the restated
+  `authority_checkpoint_prepays_cloned_state_cleanup` states the exact
+  checkpoint charge in every dimension.
+  `authority_checkpoint_charge_is_independent_of_observation_payloads` fails
+  on the per-level cleanup. `authority_checkpoint_backing_covers_allocations`
+  checks the backing against the bytes that the clones allocate.
+- `replay_authority/result.rs`:
+  `legacy_event_keys_charge_copy_and_nested_encode` compares two authorities.
+  The difference of the charges is exactly the difference of the block copy
+  and cleanup, the length inspection, the nested encode and the key bytes.
+- `rho_runtime.rs`: `replay_checkpoint_charges_mergeable_copy_and_clear`, and
+  `mergeable_and_env_copies_are_independent_of_hash_order` (see
+  "Determinism").
+- `native_runtime/clone_backing/tests.rs`:
+  `native_runtime_block_wrappers_charge_the_shared_block_walks`.
+- `accounting/mod.rs`:
+  `owned_authority_comparison_charges_traversal_and_release`, and the restated
+  `metered_signature_copy_preserves_value_and_rejects_before_clone`, which
+  now checks both sides of the boundary.
+- `accounting/authority.rs`: four tests count the runs of block inspections
+  in the reservation log. They pin Rule B (runs 3, and 3, 3, 2 with a
+  repeated region), the validation (3), the quoted atom (an exact total), the
+  lane (3) and the funding channel (1).
+- `substitute/native_par.rs`:
+  `copy_metered_charges_exactly_a_block_copy_and_cleanup`.
+- `reduce_economic_failure_tests.rs`:
+  `reducer_copy_charges_a_block_inspection_and_an_owned_block_copy`,
+  `stack_produce_source_charges_both_bincode_passes`, and
+  `cost_signed_term_and_stack_accept_exact_credit_and_reject_each_shorter_dimension`.
+- Casper: `measured_birth_channel_inspects_the_returned_channel_once` and
+  `born_resource_inspects_the_returned_channel_once` restate each charge
+  from public functions in every dimension.
+
+Twenty-four mutations in a scratch copy fail tests. Each mutation fails at
+least one of the tests above:
+
+- One inspection less in the source preparation (the continuation or the
+  data), or a per-level inspection of the produce values.
+- No footprint inspection, no join-key inspection, or a per-level channel
+  inspection in the observation construction.
+- A checkpoint cleanup of the events that walks the payloads, or a checkpoint
+  value that is inspected instead of copied.
+- Legacy events without the nested encode or without the length inspection.
+- A mergeable checkpoint without the inspection for the cleared entries.
+- One inspection of an owned authority, of the canonical signature or of the
+  sorted part.
+- One more inspection of a quoted atom, a repeated region or the funding
+  channel, or one less of the lane channel.
+- A stack produce source without its two inspections, a reducer copy with a
+  per-level inspection, or a substitution copy that inspects instead of
+  copying.
+- A new wrapper that calls the per-level walk.
+- A Casper caller without its inspection.
+
+**Scope.** Cost-accounting work. Host-work reservations change. No
+encoding, root, event or receipt changes. The Casper edits are in two
+cost-accounting modules, and they only add reservations.
+
+Suites:
+
+- Shared, rspace++, rholang and `rho-pure-eval`: 4,333 of 4,333 tests pass.
+- Casper and models with the original caps: 2,144 of 2,150 tests pass. The
+  6 failures are the same as after DR-109.
+- Casper with the provisional caps: 1,690 of 1,694 tests pass. The 4
+  failures are the same as after DR-109.
+- The doctests pass. DR-110 changes no proof.
+
+**Measurement.** The D-G0 probe ran the gateway test three times with DR-110,
+under the provisional caps. The baseline is the three runs of DR-109 part 1.
+Part 2 of DR-109 changed only `rho-pure-eval`, which the probe never samples.
+Every role charged exactly the same usage in every run. The replay of the
+gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-109 part 1, run 1 | 664,412,416 | 120,349,146 | 57,602,014 |
+| DR-109 part 1, run 2 | 673,223,881 | 120,837,351 | 57,630,978 |
+| DR-109 part 1, run 3 | 668,777,744 | 120,557,226 | 57,632,746 |
+| DR-110, run 1 | 593,625,680 | 121,574,487 | 60,940,425 |
+| DR-110, run 2 | 594,516,051 | 121,697,030 | 60,954,279 |
+| DR-110, run 3 | 594,902,408 | 121,977,191 | 60,984,078 |
+| Change of the means | −74.5 MB (−11.1 %) | +1.17 MB (+1.0 %) | +3.34 M (+5.8 %) |
+
+The largest run of DR-110 is 69.5 MB below the smallest run of DR-109. The
+workload of the gateway test varies a little from run to run: the baseline
+runs made 912 to 916 reduction steps. The third baseline run has the same
+execution counts as the three runs of DR-110, and its VerificationBytes fall
+by 73.9 to 75.2 MB. The design estimated −66 MiB (−55 to −78 MiB) of
+VerificationBytes, +1 MiB of SearchStateBytes and +4 to +6 % of
+VerificationOperations.
+
+The sampled share of the session source preparation in a validator replay
+falls from 128 to 135 MiB to 57 to 67 MiB. The footprint inspections add 2
+to 4 MiB. The producer's execution of the gateway block falls from 159.3 MB
+to 150.3 MB of VerificationBytes (−8.9 MB), and its SearchStateBytes stay at
+about 65.8 MB. In multiples of the original caps, the replay of the gateway
+block is now at 2.21 in VerificationBytes and 0.91 in SearchStateBytes.
+
+The probe does not compare receipts between the two builds, because the
+deploys of the test vary between runs. The suites establish the outcome
+equality.
+
+**Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93, DR-94, DR-96, DR-108,
+DR-109. Leaf `ofp-2-cap-d-e3-accounting-sites`. Bug
+`per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`.
