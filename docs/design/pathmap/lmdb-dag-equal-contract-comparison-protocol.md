@@ -12,6 +12,34 @@ PgMCP experiment 377 locks the primary observational hypothesis before any
 the 51 primary pairs, secondary pairs, raw artifacts and exact witnesses below
 remain mandatory for the campaign verdict.
 
+## Machine-readable control freeze
+
+The [control manifest](lmdb-dag-equal-contract-control-manifest.json) freezes the
+historical evidence role, LMDB owner source pin and settings, treatment entrypoint,
+semantic and durability witnesses, paired decision rule, primary cell, and six
+matrix lanes. It is a preregistration, not a result. Its `run_instance_template`
+contains deliberately unfilled fields; task 7950 must copy and complete those
+fields for a clean immutable checkout before collecting a pair. The historical
+ACT/LMDB component transcript has role `historical_component_context_only` and
+can never fill a paired real-owner control observation.
+
+The standard-library-only [manifest checker](../../../scripts/bench/check-lmdb-dag-control-manifest.py)
+has a static mode and a run-instance preflight. Run `python3
+scripts/bench/check-lmdb-dag-control-manifest.py preregistration` and `python3
+scripts/bench/check-lmdb-dag-control-manifest.py self-test` from the repository
+root to check the frozen artifact hashes, owner pin, exact primary and secondary
+sampling contract, lane coverage and the
+[negative fixtures](lmdb-dag-equal-contract-negative-fixtures.json). These commands
+do not run a benchmark. A run-instance file copied from the template is checked
+with `python3 scripts/bench/check-lmdb-dag-control-manifest.py preflight
+--instance PATH`. Preflight refuses missing owner-adapter and witness receipts,
+any dirty source tree, a source revision that changes the pinned LMDB owner,
+or any historical component data promoted to a real-owner control. A failed
+preflight is an ineligible cell, never a zero-duration observation. The manifest
+hashes this protocol and the retained historical transcript; this document
+does not embed the manifest's hash, so the references are acyclic. A protocol
+edit requires an explicit manifest hash refresh before further sampling.
+
 ## Existing evidence and source freeze
 
 | Evidence | Frozen coordinate | What it does and does not establish |

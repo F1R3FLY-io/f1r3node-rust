@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "manifest_mutations": [
+    {
+      "name": "historical component transcript cannot become control",
+      "pointer": "/historical_evidence/role",
+      "value": "paired_real_owner_control",
+      "expected_code": "historical_promoted_to_control"
+    },
+    {
+      "name": "protocol edit invalidates its frozen digest",
+      "pointer": "/protocol/sha256",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_code": "protocol_stale"
+    },
+    {
+      "name": "primary sample count cannot shrink",
+      "pointer": "/sampling/primary_pairs",
+      "value": 50,
+      "expected_code": "sampling_contract_drift"
+    },
+    {
+      "name": "primary object count cannot change",
+      "pointer": "/primary_cell/objects",
+      "value": 4096,
+      "expected_code": "primary_cell_drift"
+    },
+    {
+      "name": "retention eviction case cannot disappear",
+      "pointer": "/matrix/2/levels/reference_case",
+      "value": ["repeated_update", "full_removal", "same_digest_reuse"],
+      "expected_code": "matrix_levels_drift"
+    },
+    {
+      "name": "pack rotation axis cannot disappear",
+      "pointer": "/matrix/4/levels/pack_rotation",
+      "value": [false],
+      "expected_code": "matrix_levels_drift"
+    },
+    {
+      "name": "WAL rotation axis cannot disappear",
+      "pointer": "/matrix/4/levels/wal_rotation",
+      "value": [false],
+      "expected_code": "matrix_levels_drift"
+    },
+    {
+      "name": "index repair axis cannot disappear",
+      "pointer": "/matrix/4/levels/index_repair",
+      "value": [false],
+      "expected_code": "matrix_levels_drift"
+    },
+    {
+      "name": "pinned owner source scope cannot narrow",
+      "pointer": "/control/source_paths",
+      "value": [],
+      "expected_code": "control_source_scope_drift"
+    },
+    {
+      "name": "semantic witness cannot disappear",
+      "pointer": "/paired_contract/semantic_witnesses",
+      "value": [],
+      "expected_code": "semantic_witness_gap"
+    },
+    {
+      "name": "equal sync boundary cannot disappear",
+      "pointer": "/paired_contract/identical_sync_and_barrier_sequence",
+      "value": false,
+      "expected_code": "paired_contract_drift"
+    },
+    {
+      "name": "whole-tree footprint output cannot disappear",
+      "pointer": "/matrix/4/outputs",
+      "value": ["checkpoint_reopen_recovery_latency", "gc_work", "write_amplification", "retained_and_garbage_bytes", "inode_count"],
+      "expected_code": "matrix_outputs_drift"
+    }
+  ],
+  "staleness_probes": [
+    {
+      "name": "run instance revision must equal checkout HEAD",
+      "inputs": {
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "changed_control": [],
+        "dirty_paths": []
+      },
+      "expected_code": "revision_mismatch"
+    },
+    {
+      "name": "changed control source invalidates run instance",
+      "inputs": {
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "changed_control": ["rspace++/libs/rspace_rhotypes/src/lib.rs"],
+        "dirty_paths": []
+      },
+      "expected_code": "control_source_stale"
+    },
+    {
+      "name": "dirty source tree invalidates run instance",
+      "inputs": {
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "changed_control": [],
+        "dirty_paths": [" M rspace++/libs/rspace_rhotypes/src/lib.rs"]
+      },
+      "expected_code": "dirty_source_tree"
+    }
+  ]
+}

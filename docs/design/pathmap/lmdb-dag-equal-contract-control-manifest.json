@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "task_public_id": "rspace-dag-required-performance-control",
+  "experiment_id": 377,
+  "state": "preregistered_without_samples",
+  "protocol": {
+    "path": "docs/design/pathmap/lmdb-dag-equal-contract-comparison-protocol.md",
+    "sha256": "d2963a6ce6534bcd11c33734eb95cec50b9de86cf81dcc82ad04230303e69bd1"
+  },
+  "historical_evidence": {
+    "path": "docs/design/stack-safety/measurements/rspace-act-lmdb-experiment-327-transcript-2026-09-29.json",
+    "sha256": "555566dc9cfced5b022da475588d970e664449b831406d2163e8478c3531d453",
+    "component_harness": "rspace++/benches/rspace_act_lmdb.rs",
+    "harness_last_edit": "0c1d01cebcab832b1ba01191e27f00aa7f268f48",
+    "role": "historical_component_context_only"
+  },
+  "control": {
+    "source_pin": "5d19c439215ff26bd28c42beac418da56a6b8dd6",
+    "owner_entrypoint": "space_new",
+    "source_paths": [
+      "rspace++/libs/rspace_rhotypes/src/lib.rs",
+      "rspace++/src/rspace/state/rspace_state_authority.rs",
+      "rspace++/src/rspace/shared/env_cache.rs",
+      "rspace++/src/rspace/shared/rspace_store_manager.rs",
+      "shared/src/rust/store/lmdb_key_value_store.rs"
+    ],
+    "map_size_bytes": 1073741824,
+    "max_databases": 20,
+    "max_readers": 2048,
+    "relaxed_sync": false
+  },
+  "treatment": {
+    "owner_entrypoint": "DurableAuthorityViewV1::into_rspace_authority",
+    "ffi_selected_at_preregistration": false,
+    "readiness": "requires_non_default_real_owner_adapter"
+  },
+  "paired_contract": {
+    "acknowledgement": "successful_durable_checkpoint_after_required_sync",
+    "identical_command_trace": true,
+    "identical_canonical_object_stream_and_batch_size": true,
+    "identical_sync_and_barrier_sequence": true,
+    "identical_retention_and_cache_policy": true,
+    "identical_worker_and_reader_pin_policy": true,
+    "durability_kill_reopen_witness_required": true,
+    "semantic_witnesses": [
+      "current_and_known_roots",
+      "data_bag_contents_and_order",
+      "continuation_map_contents_and_order",
+      "join_bag_contents_and_order",
+      "produce_consume_comm_diagnostics",
+      "reset_replay_and_restart_selection",
+      "cold_export_import_and_state_sync_bytes"
+    ]
+  },
+  "sampling": {
+    "primary_metric": "median_within_pair_treatment_control_durable_batch_throughput_ratio",
+    "primary_pairs": 51,
+    "secondary_pairs": 30,
+    "bootstrap_replicates": 100000,
+    "bootstrap_seed": 20261001,
+    "confidence_percent": 99,
+    "primary_improvement_lower_bound_exclusive": 1.05,
+    "critical_throughput_lower_bound_minimum": 0.95,
+    "critical_p99_latency_upper_bound_maximum": 1.05,
+    "critical_physical_footprint_ratio_maximum": 1.05,
+    "critical_peak_rss_ratio_maximum": 1.05,
+    "randomized_balanced_pair_order": true,
+    "one_pair_one_retained_run": true,
+    "timed_runs_unprofiled": true
+  },
+  "primary_cell": {
+    "cell_id": "owner-primary-65536",
+    "lane": "owner_primary_unchanged_state",
+    "scope": "real_owner",
+    "mutations": 4096,
+    "checkpoints": 64,
+    "objects": 65536,
+    "changed_paths_per_checkpoint": 64,
+    "retained_roots": 16,
+    "sharing_percent": 95,
+    "payload_bytes": 128,
+    "workers": 1,
+    "pairs": 51
+  },
+  "matrix": [
+    {
+      "lane": "component_admission_persistence",
+      "scope": "component_only",
+      "levels": {"objects": [4096, 65536], "fresh_or_reused_digest": ["fresh", "reused"]},
+      "outputs": ["admission_copy_commit_latency", "allocated_bytes", "peak_rss", "bytes_read_written", "sync_count", "installed_physical_bytes"]
+    },
+    {
+      "lane": "owner_primary_unchanged_state",
+      "scope": "real_owner",
+      "levels": {"objects": [4096, 65536, 1048576], "changed_paths_per_checkpoint": [64]},
+      "outputs": ["durable_batches_per_second", "operation_p50_p95_p99", "checkpoint_p50_p95_p99", "semantic_witness", "work_per_changed_path"]
+    },
+    {
+      "lane": "delta_sharing_retention",
+      "scope": "real_owner",
+      "levels": {"delta": [1, 64, 4096], "retained_roots": [1, 16, 128], "sharing_percent": [0, 50, 95], "reference_case": ["repeated_update", "full_removal", "same_digest_reuse", "retention_eviction"]},
+      "outputs": ["reference_activations_deactivations", "new_bytes", "old_closure_work", "metadata_work", "dedup", "latency"]
+    },
+    {
+      "lane": "concurrency_pinned_readers",
+      "scope": "real_owner",
+      "levels": {"workers": [1, 8], "long_lived_old_root_pin": [false, true]},
+      "outputs": ["durable_batches_per_second", "p99_latency", "lock_contention", "gc_deferral", "wal_replay_tail", "recovery_point"]
+    },
+    {
+      "lane": "publication_lifecycle",
+      "scope": "real_owner",
+      "levels": {"checkpoint_every_mutations": [1, 64, 1024], "pack_rotation": [false, true], "wal_rotation": [false, true], "restart": ["clean", "torn"], "index_repair": [false, true], "gc_pin": [false, true]},
+      "outputs": ["checkpoint_reopen_recovery_latency", "gc_work", "write_amplification", "retained_and_garbage_bytes", "whole_tree_allocated_bytes", "inode_count"]
+    },
+    {
+      "lane": "transfer_comm",
+      "scope": "real_owner",
+      "levels": {"channel_distribution": ["shared", "random", "adversarial"], "comm_order": ["datum_first", "receive_first"], "transfer": ["cold_export_import", "state_sync"]},
+      "outputs": ["transfer_bytes_latency", "imported_root_witness", "produce_consume_comm_throughput", "p99_latency", "candidate_and_node_visits"]
+    }
+  ],
+  "run_instance_template": {
+    "status": "unfilled",
+    "source_revision": null,
+    "control_binary_sha256": null,
+    "treatment_binary_sha256": null,
+    "host_snapshot_sha256": null,
+    "real_owner_adapter_commit": null,
+    "semantic_witness_sha256": null,
+    "kill_reopen_witness_sha256": null,
+    "pair_plan_sha256": null,
+    "source_tree_clean": null,
+    "same_durability_contract": null,
+    "historical_control_samples": false,
+    "cell_ids": []
+  }
+}
