@@ -464,19 +464,19 @@ The setup workflow performs these actions. Steps marked *stack* apply only to a 
 8. Verify that the version has no active reservation. Skip this step when `publishing` is `false`.
 9. Verify one successful trusted CI run for the current top synthetic merge.
 
-Pull-request CI runs checks for all base branches. Each same-repository pull request into `dev` or `master` must run Heavy Pipeline.
+Pull-request CI runs checks for all base branches. Each same-repository pull request into `dev` or `master` must run Integration Pipeline.
 
 Each pull-request CI run also measures per-crate line coverage with cargo-llvm-cov and cargo-nextest. The `Coverage Summary` job reports the percentages before merge. Coverage is advisory and does not become Deployment Train evidence.
 
 Intermediate stack layers remain lightweight while they target another feature branch. A base change reruns CI before the layer merges into an integration branch.
 
-Deployment Train dispatches one additional Heavy Pipeline from the default branch controls. The dispatch checks out the exact top synthetic merge.
+Deployment Train dispatches one additional Integration Pipeline from the default branch controls. The dispatch checks out the exact top synthetic merge.
 
 The CI artifact records the top pull request, head SHA, logical base SHA, synthetic base SHA, and merge SHA. Setup rejects missing or skipped architecture aggregators.
 
 Setup accepts a run only when its control SHA equals the current default branch tip. A later default branch change requires a new run.
 
-This strict control binding is intentional. It prevents older workflow controls from supplying evidence, but it can repeat Heavy Pipeline.
+This strict control binding is intentional. It prevents older workflow controls from supplying evidence, but it can repeat Integration Pipeline.
 
 Setup checks the complete stack again after CI completes. Setup rejects evidence if a member, base, or synthetic merge changed.
 10. Create the train canary from that CI run.
@@ -496,7 +496,7 @@ A non-publishing train completes at step 9. A publishing train holds at step 9 u
 
 The train pull request must merge before stable publication.
 
-Each stack layer must pass the protected integration-branch Heavy Pipeline before it merges. The top exact-merge run does not replace this gate.
+Each stack layer must pass the protected integration-branch Integration Pipeline before it merges. The top exact-merge run does not replace this gate.
 
 The promotion controller verifies that `head_sha` is reachable from `master`. A normal merge preserves this relationship. Train pull requests must therefore use a true merge commit in practice: a squash or rebase costs a full re-candidacy, including a new 60h stability soak.
 
@@ -568,7 +568,7 @@ Secret-bearing workflows always use trusted workflow files from the default bran
 
 Exact-merge run metadata identifies that default branch and a `workflow_dispatch` event. The `ci-target` artifact identifies the candidate synthetic merge.
 
-The trusted workflow checks out candidate code as test input. The resolver rejects fork heads before Heavy Pipeline receives inherited secrets.
+The trusted workflow checks out candidate code as test input. The resolver rejects fork heads before Integration Pipeline receives inherited secrets.
 
 A pull-request head cannot change release workflow code for its own privileged run.
 
@@ -628,7 +628,7 @@ The summary job requires 80% line coverage for each crate. The summary job also 
 
 A missing or malformed crate report fails the summary job. The workflow retains JSON, LCOV, and summary artifacts for 30 days.
 
-Push and workflow-dispatch runs skip both coverage jobs. On pull requests, the required `Test (casper)` check also requires a successful `Coverage Summary` result.
+Push and workflow-dispatch runs skip both coverage jobs. On pull requests, the `Test Gate (casper)` check (required as `Test (casper)` until the ruleset switch in TASK-023-4) also requires a successful `Coverage Summary` result.
 
 Add `Coverage Summary` directly to `devProtect` and `masterProtect` when the repository token has ruleset write access.
 
@@ -638,7 +638,7 @@ This table defines the target state after the Section 17 workflow changes are co
 
 | Workflow | Trigger | Basis | Typical duration | Role |
 |---|---|---|---|---|
-| `ci.yml` | `push` (dev, master, tags), all `pull_request` bases, `workflow_dispatch` | Event + manual | Release path: 25–65 min *measured*; PR coverage duration is not measured | PR checks, PR-only coverage reports, and protected-base or exact-merge Heavy Pipelines |
+| `ci.yml` | `push` (dev, master, tags), all `pull_request` bases, `workflow_dispatch` | Event + manual | Release path: 25–65 min *measured*; PR coverage duration is not measured | PR checks, PR-only coverage reports, and protected-base or exact-merge Integration Pipelines |
 | `canary-publish.yml` | `workflow_run` (CI completed, master push, success), `workflow_dispatch` (ci_run_id) | Event + manual | 10–20 min *estimated* | Publishes the immutable canary when the source is release-eligible; skips cleanly otherwise |
 | `ci-fork-pr.yml` | `pull_request_target` (dev, master) | Event | Seconds, then the gated pipeline after maintainer approval | Fork lane into the gated pipeline |
 | `_integration-pipeline.yml` | `workflow_call` | Called by ci.yml and ci-fork-pr.yml | 35–50 min *measured* | Heavy pipeline: image build, ephemeral runners, integration matrix, smoke tests |

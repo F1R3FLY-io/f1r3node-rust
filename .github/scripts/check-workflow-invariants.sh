@@ -5,8 +5,9 @@
 # says "SECURITY: do not remove" above the `needs: await_approval` that gates
 # untrusted fork code, but a comment does not stop a delete — this does.
 #
-# Wired into ci.yml's `lint` job rather than `build_base` on purpose: `Lint` is a
-# required status check on both rulesets, so a violation blocks the merge. A job
+# Wired into ci.yml's `static_checks` job rather than `build_base` on purpose:
+# Static Checks is a required status check (through the temporary `Lint` result
+# job until the rulesets name it), so a violation blocks the merge. A job
 # that only fails upstream can surface as `skipped`, which required-check
 # evaluation may treat as satisfied.
 #

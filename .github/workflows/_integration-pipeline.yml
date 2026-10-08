@@ -233,7 +233,7 @@ jobs:
     # Residual risk, accepted: GitHub keeps only ONE pending entry per group, so
     # if three launchers contend within that ~1-minute window, the middle one is
     # cancelled. Recovery is a manual re-run of the affected job — there is no
-    # silent data loss, but the PR shows a cancelled Heavy Pipeline rather than
+    # silent data loss, but the PR shows a cancelled Integration Pipeline rather than
     # a failure, so check for cancelled runs before assuming a pipeline was
     # never triggered.
     concurrency:
