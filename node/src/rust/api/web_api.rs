@@ -303,6 +303,53 @@ impl WebApiImpl {
         }
     }
 
+    async fn get_pos_int_map(
+        &self,
+        method: &str,
+        resolved_hash: &str,
+    ) -> Result<HashMap<String, i64>> {
+        let term = format!(
+            r#"new return, rl(`rho:registry:lookup`), poSCh in {{
+  rl!(`rho:system:pos`, *poSCh) |
+  for(@(_, PoS) <- poSCh) {{
+    @PoS!("{method}", *return)
+  }}
+}}"#
+        );
+
+        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
+            &self.engine_cell,
+            term,
+            Some(resolved_hash.to_string()),
+            false,
+            self.dev_mode,
+            None,
+        )
+        .await?;
+
+        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+        let mut values = HashMap::new();
+
+        if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
+            for (public_key, value) in data {
+                let stake = match value {
+                    RhoExpr::ExprInt { data } => *data,
+                    other => {
+                        return Err(eyre!(
+                            "Unexpected stake type from {} for validator {}: {:?}",
+                            method,
+                            public_key,
+                            other
+                        ))
+                    }
+                };
+                values.insert(public_key.clone(), stake);
+            }
+        }
+
+        Ok(values)
+    }
+
     /// Enrich a BlockInfoSerde with transfer data from the block report.
     ///
     /// A report gives each deploy `Some(transfers)`, where an empty vector means
@@ -884,56 +931,36 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_validators(&self, block_hash: Option<String>) -> Result<ValidatorsResponse> {
-        let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-  rl!(`rho:system:pos`, *poSCh) |
-  for(@(_, PoS) <- poSCh) {
-    @PoS!("getBonds", *return)
-  }
-}"#
-        .to_string();
-
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-            None,
-        )
-        .await?;
-
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+        let self_bonds = self.get_pos_int_map("getBonds", &resolved_hash).await?;
+        let effective_bonds = self
+            .get_pos_int_map("getEffectiveBonds", &resolved_hash)
+            .await?;
 
         let mut validators = Vec::new();
         let mut total_stake: i64 = 0;
+        let mut total_self_stake: i64 = 0;
+        let mut total_delegated_stake: i64 = 0;
 
-        // getBonds returns a Rholang map: {pubkey: stake, ...}
-        // ExprMap keys are already String (extracted by extract_key_from_expr)
-        if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
-            for (public_key, value) in data {
-                let stake = match value {
-                    RhoExpr::ExprInt { data } => *data,
-                    other => {
-                        return Err(eyre!(
-                            "Unexpected stake type for validator {}: {:?}",
-                            public_key,
-                            other
-                        ))
-                    }
-                };
-                total_stake += stake;
-                validators.push(ValidatorInfo {
-                    public_key: public_key.clone(),
-                    stake,
-                });
-            }
+        for (public_key, effective_stake) in effective_bonds {
+            let self_stake = self_bonds.get(&public_key).copied().unwrap_or(0);
+            let delegated_stake = effective_stake - self_stake;
+            total_stake += effective_stake;
+            total_self_stake += self_stake;
+            total_delegated_stake += delegated_stake;
+            validators.push(ValidatorInfo {
+                public_key,
+                stake: effective_stake,
+                self_stake,
+                delegated_stake,
+            });
         }
 
         Ok(ValidatorsResponse {
             validators,
             total_stake,
+            total_self_stake,
+            total_delegated_stake,
             block_number,
             block_hash: resolved_hash,
         })
@@ -1045,42 +1072,24 @@ impl WebApi for WebApiImpl {
     ) -> Result<ValidatorStatusResponse> {
         let _ = validate_and_decode_pubkey(&pubkey)?;
 
-        let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-            rl!(`rho:system:pos`, *poSCh) |
-            for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
-        }"#
-        .to_string();
-
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-            None,
-        )
-        .await?;
-
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
-
-        let mut is_bonded = false;
-        let mut stake = None;
-
-        if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
-            if let Some(value) = data.get(&pubkey) {
-                is_bonded = true;
-                if let RhoExpr::ExprInt { data } = value {
-                    stake = Some(*data);
-                }
-            }
-        }
+        let self_bonds = self.get_pos_int_map("getBonds", &resolved_hash).await?;
+        let effective_bonds = self
+            .get_pos_int_map("getEffectiveBonds", &resolved_hash)
+            .await?;
+        let self_stake = self_bonds.get(&pubkey).copied();
+        let effective_stake = effective_bonds.get(&pubkey).copied();
+        let is_bonded = self_stake.is_some_and(|stake| stake > 0);
+        let delegated_stake = effective_stake
+            .zip(self_stake)
+            .map(|(effective, own)| effective - own);
 
         Ok(ValidatorStatusResponse {
             public_key: pubkey,
             is_bonded,
-            stake,
+            stake: effective_stake,
+            self_stake,
+            delegated_stake,
             block_number,
             block_hash: resolved_hash,
         })
@@ -1543,6 +1552,10 @@ pub struct ValidatorInfo {
     #[serde(rename = "publicKey")]
     pub public_key: String,
     pub stake: i64,
+    #[serde(rename = "selfStake")]
+    pub self_stake: i64,
+    #[serde(rename = "delegatedStake")]
+    pub delegated_stake: i64,
 }
 
 /// Active validator set response
@@ -1551,6 +1564,10 @@ pub struct ValidatorsResponse {
     pub validators: Vec<ValidatorInfo>,
     #[serde(rename = "totalStake")]
     pub total_stake: i64,
+    #[serde(rename = "totalSelfStake")]
+    pub total_self_stake: i64,
+    #[serde(rename = "totalDelegatedStake")]
+    pub total_delegated_stake: i64,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1616,6 +1633,10 @@ pub struct ValidatorStatusResponse {
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
     pub stake: Option<i64>,
+    #[serde(rename = "selfStake")]
+    pub self_stake: Option<i64>,
+    #[serde(rename = "delegatedStake")]
+    pub delegated_stake: Option<i64>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]

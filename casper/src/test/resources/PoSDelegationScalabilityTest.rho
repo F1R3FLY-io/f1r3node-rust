@@ -1,0 +1,162 @@
+new
+  rl(`rho:registry:lookup`),
+  vaultAddressOps(`rho:vault:address`),
+  RhoSpecCh,
+  PoSCh,
+  SystemVaultCh,
+  ListOpsCh,
+  setup,
+  prepareUser,
+  test_delegator_cap_and_index_reuse
+in {
+  rl!(`rho:system:pos`, *PoSCh) |
+  rl!(`rho:vault:system`, *SystemVaultCh) |
+  rl!(`rho:lang:listOps`, *ListOpsCh) |
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh &
+      @(_, PoS) <- PoSCh &
+      @(_, SystemVault) <- SystemVaultCh &
+      @(_, ListOps) <- ListOpsCh) {
+    @RhoSpec!("testSuite", *setup,
+      [
+        ("delegator cap and validator index reuse", *test_delegator_cap_and_index_reuse)
+      ]
+    ) |
+
+    contract setup(_, retCh) = {
+      retCh!({})
+    } |
+
+    contract prepareUser(@pk, retCh) = {
+      new makeDeployerId(`rho:test:deployerId:make`),
+          deployerIdCh,
+          vaultAddrCh,
+          vaultCh
+      in {
+        vaultAddressOps!("fromPublicKey", pk.hexToBytes(), *vaultAddrCh) |
+        makeDeployerId!("deployerId", pk.hexToBytes(), *deployerIdCh) |
+        for (@vaultAddress <- vaultAddrCh &
+             @deployerId <- deployerIdCh) {
+          @SystemVault!("findOrCreate", vaultAddress, *vaultCh) |
+          for (@(true, vault) <- vaultCh) {
+            retCh!(pk.hexToBytes(), vaultAddress, vault, deployerId)
+          }
+        }
+      }
+    } |
+
+    contract test_delegator_cap_and_index_reuse(rhoSpec, _, ackCh) = {
+      new maxCapCh,
+          activeValidatorsCh,
+          delegatedCountCh,
+          existingSetupCh,
+          existingDelegateCh,
+          overflowSetupCh,
+          overflowDelegateCh,
+          firstSetupCh,
+          undelegateCh,
+          retryDelegateCh,
+          validatorDelegatorsCh,
+          delegationsCh,
+          delegateOne,
+          setBlockData(`rho:test:block:data:set`),
+          blockDataCh
+      in {
+        @PoS!("getMaximumDelegatorsPerValidator", *maxCapCh) |
+        @PoS!("getActiveValidators", *activeValidatorsCh) |
+        for (@maxCap <- maxCapCh &
+             @activeValidators <- activeValidatorsCh) {
+          match activeValidators.toList().nth(0) {
+            targetValidator => {
+              match [
+                "1010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010",
+                "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+                "1212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212",
+                "1313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313",
+                "1414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414",
+                "1515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515",
+                "1616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616",
+                "1717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717",
+                "1818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818",
+                "1919191919191919191919191919191919191919191919191919191919191919191919191919191919191919191919191919191919191919191919191919191919",
+                "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+                "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+                "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
+                "1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d",
+                "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
+                "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
+              ] {
+                delegatorKeys => {
+                  contract delegateOne(@pk, @count, resultCh) = {
+                    new setupCh, delegateCh in {
+                      prepareUser!(pk, *setupCh) |
+                      for (_, _, _, @deployerId <- setupCh) {
+                        @PoS!("delegate", deployerId, targetValidator, 2, *delegateCh) |
+                        for (@delegateResult <- delegateCh) {
+                          match delegateResult {
+                            (true, _) => { resultCh!(count + 1) }
+                            _ => { resultCh!(count) }
+                          }
+                        }
+                      }
+                    }
+                  } |
+                  @ListOps!("fold", delegatorKeys, 0, *delegateOne, *delegatedCountCh) |
+                  for (@delegatedCount <- delegatedCountCh) {
+                    prepareUser!(delegatorKeys.nth(0), *existingSetupCh) |
+                    for (@existingPk, _, _, @existingDeployerId <- existingSetupCh) {
+                      @PoS!("delegate", existingDeployerId, targetValidator, 2, *existingDelegateCh) |
+                      for (@(true, _) <- existingDelegateCh) {
+                        prepareUser!("2020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020", *overflowSetupCh) |
+                        for (@overflowPk, _, _, @overflowDeployerId <- overflowSetupCh) {
+                          @PoS!("delegate", overflowDeployerId, targetValidator, 2, *overflowDelegateCh) |
+                          for (@(false, overflowMsg) <- overflowDelegateCh) {
+                            prepareUser!(delegatorKeys.nth(0), *firstSetupCh) |
+                            for (@firstPk, _, _, @firstDeployerId <- firstSetupCh) {
+                              setBlockData!("blockNumber", 10, *blockDataCh) |
+                              for (_ <- blockDataCh) {
+                                @PoS!("undelegate", firstDeployerId, targetValidator, 4, *undelegateCh) |
+                                for (@(true, _) <- undelegateCh) {
+                                  @PoS!("delegate", overflowDeployerId, targetValidator, 2, *retryDelegateCh) |
+                                  for (@(true, _) <- retryDelegateCh) {
+                                    @PoS!("getValidatorDelegators", *validatorDelegatorsCh) |
+                                    @PoS!("getDelegations", *delegationsCh) |
+                                    for (@validatorDelegators <- validatorDelegatorsCh &
+                                         @delegations <- delegationsCh) {
+                                      match validatorDelegators.getOrElse(targetValidator, {}) {
+                                        finalDelegatorMap => {
+                                          rhoSpec!("assertMany",
+                                            [
+                                              ((16, "==", maxCap), "delegator cap derives from active-validator sizing in this test genesis"),
+                                              ((16, "==", delegatedCount), "cap-sized delegator set is admitted"),
+                                              ((existingPk, "==", firstPk), "existing capped delegator can be topped up"),
+                                              (("Validator delegator limit reached.", "==", overflowMsg), "new delegator over cap is rejected"),
+                                              ((16, "==", finalDelegatorMap.size()), "validator delegator index remains bounded after slot reuse"),
+                                              ((false, "==", finalDelegatorMap.contains(firstPk)), "undelegated account leaves validator index"),
+                                              ((true, "==", finalDelegatorMap.contains(overflowPk)), "freed validator index slot can be reused"),
+                                              ((false, "==", delegations.getOrElse(firstPk, {}).contains(targetValidator)), "undelegated account leaves delegation map"),
+                                              ((2, "==", delegations.getOrElse(overflowPk, {}).getOrElse(targetValidator, 0)), "replacement delegator is recorded")
+                                            ],
+                                            *ackCh
+                                          )
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

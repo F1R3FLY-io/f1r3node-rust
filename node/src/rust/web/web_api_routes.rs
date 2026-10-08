@@ -447,7 +447,7 @@ pub async fn registry_handler(
         ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Active validator set with stake weights", body = ValidatorsResponse),
+        (status = 200, description = "Validator set with effective, self-bond, and delegated stake weights", body = ValidatorsResponse),
         (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`)", body = ApiErrorResponse),
@@ -564,7 +564,7 @@ pub async fn epoch_rewards_handler(
         ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Validator bond status and stake at the given block", body = ValidatorStatusResponse),
+        (status = 200, description = "Validator bond status plus effective, self-bond, and delegated stake at the given block", body = ValidatorStatusResponse),
         (status = 400, description = "Invalid public key or block hash, or node is not read-only (`illegal_argument`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`)", body = ApiErrorResponse),
@@ -1215,8 +1215,12 @@ mod router_tests {
                 validators: vec![ValidatorInfo {
                     public_key: "vk".to_string(),
                     stake: 10,
+                    self_stake: 7,
+                    delegated_stake: 3,
                 }],
                 total_stake: 10,
+                total_self_stake: 7,
+                total_delegated_stake: 3,
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1268,6 +1272,8 @@ mod router_tests {
                 public_key: pubkey,
                 is_bonded: true,
                 stake: Some(10),
+                self_stake: Some(7),
+                delegated_stake: Some(3),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })

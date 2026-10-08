@@ -51,9 +51,10 @@ Read methods used by UI:
 - `getPendingWithdrawer`
 - `getMinimumBond`, `getMaximumBond`, `getEpochLength`, `getNumberOfActiveValidators`
 
-Existing REST validator endpoints expose raw self-bonds. Wallets and explorers
-that show consensus stake or delegation positions must read the PoS methods
-above through exploratory deploys until dedicated REST endpoints exist.
+REST validator endpoints expose effective stake plus self-bond and delegated
+components. Wallets and explorers that show delegation ownership, pending
+undelegations, or claimable rewards must still read the PoS methods above
+through exploratory deploys until dedicated REST endpoints exist.
 
 ### Layer 2: Wallet SDK / Integration Layer
 
@@ -239,6 +240,7 @@ Flow expectations:
 2. UI refreshes affected validator/delegator state.
 3. Active and pending exposures tied to slashed validator are removed.
 4. Pending undelegation completion should not be offered if claim was slashed away.
+5. Delegator rewards attributed to the slashed validator are removed; rewards from other validators remain claimable.
 
 Required UX properties:
 
