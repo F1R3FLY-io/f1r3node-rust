@@ -77,6 +77,10 @@ const POS_SPEC_SHARDS: &[PosSpecShard] = &[
             "closeBlock excludes pending undelegations from effective bonds",
         ],
     },
+    PosSpecShard {
+        name: "slash-regressions-c",
+        tests: &["same-epoch slash is not rewarded by closeBlock"],
+    },
 ];
 
 const POS_SPEC_ALL_TESTS: &[&str] = &[
@@ -107,6 +111,7 @@ const POS_SPEC_ALL_TESTS: &[&str] = &[
     "slash removes only target validator delegator rewards",
     "delegate enforces maximum effective bond cap",
     "closeBlock excludes pending undelegations from effective bonds",
+    "same-epoch slash is not rewarded by closeBlock",
 ];
 
 fn assert_pos_spec_shards_cover_all_tests() {
