@@ -310,6 +310,28 @@ pub struct RuntimeManager {
     /// driver reads this cache in its boot enumerator.
     pub snapshot_merkle_roots:
         Arc<tokio::sync::RwLock<std::collections::HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
+    /// Phase 7b-2 shared write-payload store bundle.  Boot pipeline
+    /// populates via `set_payload_store` from a
+    /// `PayloadStoreBundle::from_directory(...)` pointed at
+    /// `<data-dir>/wal_payload_store/`.  The bundle carries both
+    /// trait-object aspects of the same underlying store —
+    /// `PayloadPersistence` (write side, threaded into every
+    /// spawned runtime's handler-table payload store) and
+    /// `PayloadLookup` (read side, threaded into the future
+    /// `WalPayloadContext.payload_lookup`).
+    ///
+    /// `None` when the operator has no consensus-static provisioning
+    /// (observer nodes, dev-mode nodes) OR when the boot pipeline
+    /// hasn't fired yet.  Handlers see `None` and skip the persist
+    /// step; joiners can still fetch from other peers.
+    ///
+    /// Wrapped in `Arc<RwLock<Option<...>>>` for the same reason
+    /// as `fs_snapshot_writer` — a boot-time set on one clone is
+    /// visible to every other clone.  Default on triage:
+    /// `Arc::new(RwLock::new(None))`.
+    pub payload_store: Arc<
+        tokio::sync::RwLock<Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>>,
+    >,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -1540,6 +1562,7 @@ impl RuntimeManager {
             snapshot_merkle_roots: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            payload_store: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
