@@ -186,6 +186,23 @@ The P5 controls (wave W3) revert one rule of the join engine:
                          race on every counter, and the set merges (a
                          retirement as a peek, a set view in list order)
 
+P6 step 2 (Similarity.v) has five controls. Each reverts one rule of the
+exact decisions of the VectorDB family, or claims more than the rule gives:
+  sim-squares-without-signs        cosine compares the squares only:
+                                   cosine_squared_form_iff (S1) breaks
+  sim-order-swapped-norms          the cosine order uses the wrong norms:
+                                   cosine_order_squared_form (S2) breaks
+  sim-radius-unsquared             euclidean compares d2 with r, not r²:
+                                   euclidean_radius_squared_form (S3) breaks
+  sim-total-without-distinct-keys  the selection order claims totality
+                                   without distinct tie keys: precedes_total,
+                                   and so S13, breaks
+  sim-unit-threshold-claimed       the cosine bound claims that no record
+                                   passes the threshold 1: cosine_bounds (S9)
+                                   breaks
+Headline S16 (kappa_dropped_not_unique) is the proved negative result of the
+kappa tie-break: without kappa, two sorted arrangements differ.
+
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
   * A control has one mutation, or a tuple of mutations that the harness
@@ -1621,6 +1638,38 @@ CONTROLS = (
      "settle_at (f + fires (p_ops p))",
      "settle_at 0",
      ("stack_settle_terminates",)),
+    # P6 step 2 (Similarity.v): each control reverts one rule of the exact
+    # decisions of the VectorDB family, or claims more than the rule gives.
+    ("sim-squares-without-signs", "Similarity",
+     "cosine compares the squares only and ignores the signs of q.e and t",
+     "  Definition cosine_within (u t N : R) : Prop :=\n"
+     "    (rzero <= u /\\ t < rzero) \\/\n"
+     "    (rzero <= u /\\ rzero <= t /\\ t * t * N <= u * u) \\/\n"
+     "    (u < rzero /\\ t < rzero /\\ u * u <= t * t * N).",
+     "  Definition cosine_within (u t N : R) : Prop := t * t * N <= u * u.",
+     ("cosine_squared_form_iff",)),
+    ("sim-order-swapped-norms", "Similarity",
+     "the cosine order multiplies each squared dot product by its own norm",
+     "    (rzero <= u1 /\\ rzero <= u2 /\\ u1 * u1 * n2 <= u2 * u2 * n1) \\/",
+     "    (rzero <= u1 /\\ rzero <= u2 /\\ u1 * u1 * n1 <= u2 * u2 * n2) \\/",
+     ("cosine_order_squared_form",)),
+    ("sim-radius-unsquared", "Similarity",
+     "euclidean compares the squared distance with the radius, not with its square",
+     "  Definition euclidean_within (d2 r : R) : Prop := rzero <= r /\\ d2 <= r * r.",
+     "  Definition euclidean_within (d2 r : R) : Prop := rzero <= r /\\ d2 <= r.",
+     ("euclidean_radius_squared_form",)),
+    ("sim-total-without-distinct-keys", "Similarity",
+     "the selection order claims totality without distinct tie keys",
+     "  Lemma precedes_total :\n"
+     "    forall r1 r2, tie_key r1 <> tie_key r2 -> precedes r1 r2 \\/ precedes r2 r1.",
+     "  Lemma precedes_total :\n"
+     "    forall r1 r2, precedes r1 r2 \\/ precedes r2 r1.",
+     ("precedes_total",)),
+    ("sim-unit-threshold-claimed", "Similarity",
+     "the cosine bound claims that no record passes the threshold 1 (parallel vectors do)",
+     "      (forall t, rone < t -> ~ cosine_within (dot q e) t (dot q q * dot e e)).\n  Proof.",
+     "      (forall t, rle rone t -> ~ cosine_within (dot q e) t (dot q q * dot e e)).\n  Proof.",
+     ("cosine_bounds",)),
 )
 
 DECLARATION = re.compile(

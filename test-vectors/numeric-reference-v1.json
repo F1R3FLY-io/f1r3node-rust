@@ -1,0 +1,3127 @@
+{
+ "description": "Reference values of the VectorDB numeric core: RN_53 of exact rationals and of square roots, and the outcome of one query and one record for each metric. Elements are integers, rationals p/q, f64:<bits> or bool:<b>. A delivered value is the hex bits of a binary64 value (+0 for zero), ValueOutOfRange, or null when the score is undefined. within is decided with real algebraic numbers for cosine and euclidean.",
+ "generator": "formal/sage/reified_rspaces/similarity_metrics.sage",
+ "metric_cases": [
+  {
+   "bound": {
+    "threshold": "24/25"
+   },
+   "delivered": "0x3feeb851eb851eb8",
+   "metric": "cosine",
+   "name": "cosine-3-4-exact",
+   "query": [
+    "3",
+    "4"
+   ],
+   "query_refused": false,
+   "record": [
+    "4",
+    "3"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "2401/2500"
+   },
+   "delivered": "0x3feeb851eb851eb8",
+   "metric": "cosine",
+   "name": "cosine-3-4-above",
+   "query": [
+    "3",
+    "4"
+   ],
+   "query_refused": false,
+   "record": [
+    "4",
+    "3"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "0"
+   },
+   "delivered": "0xbfeeb851eb851eb8",
+   "metric": "cosine",
+   "name": "cosine-opposite",
+   "query": [
+    "3",
+    "4"
+   ],
+   "query_refused": false,
+   "record": [
+    "-4",
+    "-3"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "7/10"
+   },
+   "delivered": "0x3fe6a09e667f3bcd",
+   "metric": "cosine",
+   "name": "cosine-diagonal",
+   "query": [
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "cosine",
+   "name": "cosine-parallel-one",
+   "query": [
+    "2",
+    "4"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "2"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1/2"
+   },
+   "delivered": null,
+   "metric": "cosine",
+   "name": "cosine-zero-query",
+   "query": [
+    "0",
+    "0"
+   ],
+   "query_refused": true,
+   "record": [
+    "1",
+    "1"
+   ],
+   "score_defined": false,
+   "within": null
+  },
+  {
+   "bound": {
+    "threshold": "1/2"
+   },
+   "delivered": null,
+   "metric": "cosine",
+   "name": "cosine-zero-record",
+   "query": [
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0"
+   ],
+   "score_defined": false,
+   "within": null
+  },
+  {
+   "bound": {
+    "threshold": "1/10"
+   },
+   "delivered": "0x3fc21a1851ff6309",
+   "metric": "cosine",
+   "name": "cosine-floats",
+   "query": [
+    "f64:3fb999999999999a",
+    "f64:3fc999999999999a"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:3fd3333333333333",
+    "f64:bfb999999999999a"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1/2"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "dot",
+   "name": "dot-cancellation",
+   "query": [
+    "f64:4341c37937e08000",
+    "1",
+    "f64:c341c37937e08000"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "0"
+   },
+   "delivered": "ValueOutOfRange",
+   "metric": "dot",
+   "name": "dot-overflow",
+   "query": [
+    "f64:7fe1ccf385ebc8a0"
+   ],
+   "query_refused": false,
+   "record": [
+    "10"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "2"
+   },
+   "delivered": "0x4000000000000000",
+   "metric": "dot",
+   "name": "dot-rational",
+   "query": [
+    "1/3",
+    "1/7"
+   ],
+   "query_refused": false,
+   "record": [
+    "3",
+    "7"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "141421/100000"
+   },
+   "delivered": "0x3ff6a09e667f3bcd",
+   "metric": "euclidean",
+   "name": "euclidean-root-two",
+   "query": [
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "5"
+   },
+   "delivered": "0x4014000000000000",
+   "metric": "euclidean",
+   "name": "euclidean-five",
+   "query": [
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "3",
+    "4"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "4/11"
+   },
+   "delivered": "0x3fd735c0eef21bc3",
+   "metric": "euclidean",
+   "name": "euclidean-fractions",
+   "query": [
+    "1/3",
+    "1/7"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "-1"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "euclidean",
+   "name": "euclidean-negative-radius",
+   "query": [
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "3/10"
+   },
+   "delivered": "0x3fd3333333333334",
+   "metric": "manhattan",
+   "name": "manhattan-floats",
+   "query": [
+    "f64:3fb999999999999a",
+    "f64:3fc999999999999a"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "7"
+   },
+   "delivered": "0x401c000000000000",
+   "metric": "manhattan",
+   "name": "manhattan-seven",
+   "query": [
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "3",
+    "-4"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "2"
+   },
+   "delivered": "0x4000000000000000",
+   "metric": "hamming",
+   "name": "hamming-two",
+   "query": [
+    "1",
+    "1",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "1",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "1/2"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "hamming-booleans",
+   "query": [
+    "bool:true",
+    "bool:false"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:3ff0000000000000",
+    "f64:3ff0000000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "5"
+   },
+   "delivered": null,
+   "metric": "hamming",
+   "name": "hamming-not-binary",
+   "query": [
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "2",
+    "0"
+   ],
+   "score_defined": false,
+   "within": null
+  },
+  {
+   "bound": {
+    "threshold": "1/3"
+   },
+   "delivered": "0x3fd5555555555555",
+   "metric": "jaccard",
+   "name": "jaccard-third",
+   "query": [
+    "1",
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "0"
+   },
+   "delivered": null,
+   "metric": "jaccard",
+   "name": "jaccard-empty",
+   "query": [
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0"
+   ],
+   "score_defined": false,
+   "within": null
+  },
+  {
+   "bound": {
+    "threshold": "0"
+   },
+   "delivered": null,
+   "metric": "jaccard",
+   "name": "jaccard-not-binary",
+   "query": [
+    "1",
+    "1/2"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0"
+   ],
+   "score_defined": false,
+   "within": null
+  },
+  {
+   "bound": {
+    "threshold": "3/10"
+   },
+   "delivered": "0x3fa94696e1c02f21",
+   "metric": "cosine",
+   "name": "random-000",
+   "query": [
+    "10/3",
+    "f64:4050e00000000000",
+    "4"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:40ce600000000000",
+    "8/7",
+    "15"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "-22"
+   },
+   "delivered": "0x4075b25555555555",
+   "metric": "dot",
+   "name": "random-001",
+   "query": [
+    "-16",
+    "f64:3ff3000000000000",
+    "-17/3"
+   ],
+   "query_refused": false,
+   "record": [
+    "-20",
+    "-1",
+    "-5"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "3/2"
+   },
+   "delivered": "0x40ac8800a181d0ca",
+   "metric": "euclidean",
+   "name": "random-002",
+   "query": [
+    "2",
+    "f64:40ac600000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "-1",
+    "-20"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "5"
+   },
+   "delivered": "0x4070f48ccccccccd",
+   "metric": "manhattan",
+   "name": "random-003",
+   "query": [
+    "-16",
+    "-9/5",
+    "f64:401ef00000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "5",
+    "f64:4050900000000000",
+    "f64:c065d00000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "59/4"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-004",
+   "query": [
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "9/10"
+   },
+   "delivered": null,
+   "metric": "jaccard",
+   "name": "random-005",
+   "query": [
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0"
+   ],
+   "score_defined": false,
+   "within": null
+  },
+  {
+   "bound": {
+    "threshold": "9/20"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "cosine",
+   "name": "random-006",
+   "query": [
+    "f64:bff7600000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "-2/5"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "17/2"
+   },
+   "delivered": "0xc05ed6db6db6db6e",
+   "metric": "dot",
+   "name": "random-007",
+   "query": [
+    "16",
+    "10/3",
+    "-11",
+    "19/7"
+   ],
+   "query_refused": false,
+   "record": [
+    "-9/2",
+    "-15/4",
+    "6",
+    "10"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "3/2"
+   },
+   "delivered": "0x40a35e2fdf934359",
+   "metric": "euclidean",
+   "name": "random-008",
+   "query": [
+    "-1",
+    "-12"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c0a3600000000000",
+    "f64:4023100000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "36"
+   },
+   "delivered": "0x40b694a955555555",
+   "metric": "manhattan",
+   "name": "random-009",
+   "query": [
+    "-7",
+    "f64:c020a80000000000",
+    "-5/3"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "f64:40b6780000000000",
+    "-15"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "3/4"
+   },
+   "delivered": "0x4000000000000000",
+   "metric": "hamming",
+   "name": "random-010",
+   "query": [
+    "1",
+    "0",
+    "0",
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0",
+    "0",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "3/20"
+   },
+   "delivered": "0x3fe0000000000000",
+   "metric": "jaccard",
+   "name": "random-011",
+   "query": [
+    "1",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1/4"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "cosine",
+   "name": "random-012",
+   "query": [
+    "f64:405e800000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "12"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "8/3"
+   },
+   "delivered": "0x4076a5e3c71c71c7",
+   "metric": "dot",
+   "name": "random-013",
+   "query": [
+    "-16",
+    "f64:4075a80000000000",
+    "-11/9",
+    "f64:bfb6000000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "-1",
+    "1",
+    "f64:bfc6300000000000",
+    "4"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "43/3"
+   },
+   "delivered": "0x4021e8d7d203da8e",
+   "metric": "euclidean",
+   "name": "random-014",
+   "query": [
+    "-19",
+    "f64:c041a80000000000",
+    "-1/3"
+   ],
+   "query_refused": false,
+   "record": [
+    "-13",
+    "f64:c044d00000000000",
+    "7/4"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "26"
+   },
+   "delivered": "0x40510e0000000000",
+   "metric": "manhattan",
+   "name": "random-015",
+   "query": [
+    "3",
+    "-18",
+    "8"
+   ],
+   "query_refused": false,
+   "record": [
+    "16",
+    "f64:4031380000000000",
+    "-12"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "9"
+   },
+   "delivered": "0x4010000000000000",
+   "metric": "hamming",
+   "name": "random-016",
+   "query": [
+    "1",
+    "0",
+    "0",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1",
+    "1",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "17/20"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-017",
+   "query": [
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "13/20"
+   },
+   "delivered": "0xbff0000000000000",
+   "metric": "cosine",
+   "name": "random-018",
+   "query": [
+    "-19"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:400d200000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "-27/2"
+   },
+   "delivered": "0xc0415d0000000000",
+   "metric": "dot",
+   "name": "random-019",
+   "query": [
+    "5"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c01bc80000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "49/4"
+   },
+   "delivered": "0x4098525cda84c2c8",
+   "metric": "euclidean",
+   "name": "random-020",
+   "query": [
+    "-2",
+    "-8",
+    "f64:404c200000000000",
+    "-3"
+   ],
+   "query_refused": false,
+   "record": [
+    "18/5",
+    "f64:4098300000000000",
+    "f64:4030300000000000",
+    "f64:c031380000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "1"
+   },
+   "delivered": "0x4023b6db6db6db6e",
+   "metric": "manhattan",
+   "name": "random-021",
+   "query": [
+    "-15/7"
+   ],
+   "query_refused": false,
+   "record": [
+    "-12"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "45/4"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-022",
+   "query": [
+    "0",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "4/5"
+   },
+   "delivered": "0x3fe0000000000000",
+   "metric": "jaccard",
+   "name": "random-023",
+   "query": [
+    "0",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "9/20"
+   },
+   "delivered": "0xbfd55e0646a67f0d",
+   "metric": "cosine",
+   "name": "random-024",
+   "query": [
+    "7",
+    "17",
+    "-7",
+    "7"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c0ab000000000000",
+    "f64:4012580000000000",
+    "-13",
+    "-10"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "29/4"
+   },
+   "delivered": "0xc01c1ae000000000",
+   "metric": "dot",
+   "name": "random-025",
+   "query": [
+    "-7/4",
+    "-5/2"
+   ],
+   "query_refused": false,
+   "record": [
+    "4",
+    "f64:3f85800000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "23"
+   },
+   "delivered": "0x40977f53134d4cb4",
+   "metric": "euclidean",
+   "name": "random-026",
+   "query": [
+    "f64:c014000000000000",
+    "-4",
+    "f64:409a000000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "5",
+    "8",
+    "f64:4064080000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "6"
+   },
+   "delivered": "0x40b8342f00000000",
+   "metric": "manhattan",
+   "name": "random-027",
+   "query": [
+    "-12",
+    "f64:c02bc00000000000",
+    "f64:c091380000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:3fd3c00000000000",
+    "12",
+    "f64:40b3c00000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "50"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-028",
+   "query": [
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "7/10"
+   },
+   "delivered": "0x3fe0000000000000",
+   "metric": "jaccard",
+   "name": "random-029",
+   "query": [
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "2/5"
+   },
+   "delivered": "0xbf6339befbc62b8f",
+   "metric": "cosine",
+   "name": "random-030",
+   "query": [
+    "7",
+    "f64:c07d180000000000",
+    "f64:c004e80000000000",
+    "4"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:4051f80000000000",
+    "4/3",
+    "1",
+    "f64:4024680000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "-40/3"
+   },
+   "delivered": "0xc135662975555555",
+   "metric": "dot",
+   "name": "random-031",
+   "query": [
+    "f64:40abd80000000000",
+    "-20/9",
+    "17/8"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c078980000000000",
+    "-12",
+    "-1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "31/2"
+   },
+   "delivered": "0x4060f20873cc7aac",
+   "metric": "euclidean",
+   "name": "random-032",
+   "query": [
+    "1",
+    "-18/7",
+    "f64:c002b80000000000",
+    "f64:405b980000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:bfe7a00000000000",
+    "7/3",
+    "-5",
+    "f64:c039100000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "21"
+   },
+   "delivered": "0x4036d291c71c71c7",
+   "metric": "manhattan",
+   "name": "random-033",
+   "query": [
+    "-5",
+    "-16/9",
+    "-10"
+   ],
+   "query_refused": false,
+   "record": [
+    "4/3",
+    "5",
+    "f64:bfd2780000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "7/4"
+   },
+   "delivered": "0x4000000000000000",
+   "metric": "hamming",
+   "name": "random-034",
+   "query": [
+    "1",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "11/20"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-035",
+   "query": [
+    "1",
+    "0",
+    "0",
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1",
+    "0",
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "0"
+   },
+   "delivered": "0xbfc4ebb44617693b",
+   "metric": "cosine",
+   "name": "random-036",
+   "query": [
+    "10",
+    "-13/8",
+    "-3",
+    "f64:c098e00000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c05ba00000000000",
+    "-19",
+    "14",
+    "18"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "-5/2"
+   },
+   "delivered": "0x4041aa0000000000",
+   "metric": "dot",
+   "name": "random-037",
+   "query": [
+    "f64:4051000000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:3fe0a00000000000"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "35"
+   },
+   "delivered": "0x40cdb2a249a21777",
+   "metric": "euclidean",
+   "name": "random-038",
+   "query": [
+    "f64:4097100000000000",
+    "f64:40cda00000000000",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:4071600000000000",
+    "10",
+    "-7/4"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "17/2"
+   },
+   "delivered": "0x40cd57aaaaaaaaab",
+   "metric": "manhattan",
+   "name": "random-039",
+   "query": [
+    "f64:40cd580000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "2/3"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "59/4"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-040",
+   "query": [
+    "0",
+    "1",
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1",
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "9/20"
+   },
+   "delivered": "0x3fe8000000000000",
+   "metric": "jaccard",
+   "name": "random-041",
+   "query": [
+    "1",
+    "0",
+    "1",
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "1",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1/20"
+   },
+   "delivered": "0xbfb6b245c67cde91",
+   "metric": "cosine",
+   "name": "random-042",
+   "query": [
+    "f64:c051a00000000000",
+    "-16/9",
+    "-9",
+    "f64:3fd7a80000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "1/2",
+    "14",
+    "17/5",
+    "f64:bfdde00000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "14"
+   },
+   "delivered": "0xc0c64ab000000000",
+   "metric": "dot",
+   "name": "random-043",
+   "query": [
+    "f64:c082d80000000000",
+    "-3/2",
+    "-1/4",
+    "7"
+   ],
+   "query_refused": false,
+   "record": [
+    "18",
+    "f64:4077280000000000",
+    "-3",
+    "-5/8"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "0"
+   },
+   "delivered": "0x4055a5a65ae69972",
+   "metric": "euclidean",
+   "name": "random-044",
+   "query": [
+    "-16",
+    "f64:4050200000000000",
+    "f64:c00e800000000000",
+    "-15"
+   ],
+   "query_refused": false,
+   "record": [
+    "1/3",
+    "-19",
+    "f64:4028480000000000",
+    "-17"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "11"
+   },
+   "delivered": "0x4079e2aaaaaaaaab",
+   "metric": "manhattan",
+   "name": "random-045",
+   "query": [
+    "f64:c079480000000000",
+    "3"
+   ],
+   "query_refused": false,
+   "record": [
+    "2/3",
+    "-6"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "29/2"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-046",
+   "query": [
+    "0",
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "13/20"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-047",
+   "query": [
+    "0",
+    "0",
+    "0",
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0",
+    "0",
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "13/20"
+   },
+   "delivered": "0x3f83a8dd1cfbac08",
+   "metric": "cosine",
+   "name": "random-048",
+   "query": [
+    "f64:c01c600000000000",
+    "f64:406e580000000000",
+    "-19/7",
+    "9/2"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:4070000000000000",
+    "18/7",
+    "f64:c0a8f00000000000",
+    "f64:bff2800000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "-16/3"
+   },
+   "delivered": "0xc0902fe000000000",
+   "metric": "dot",
+   "name": "random-049",
+   "query": [
+    "14",
+    "f64:4054200000000000",
+    "f64:4038000000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "19/7",
+    "f64:c02be00000000000",
+    "2"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "49"
+   },
+   "delivered": "0x40317b0000000000",
+   "metric": "euclidean",
+   "name": "random-050",
+   "query": [
+    "19"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:3ff8500000000000"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "10/3"
+   },
+   "delivered": "0x403f3d5111111111",
+   "metric": "manhattan",
+   "name": "random-051",
+   "query": [
+    "f64:3fdb100000000000",
+    "-4",
+    "9/8",
+    "19/6",
+    "-6"
+   ],
+   "query_refused": false,
+   "record": [
+    "-12",
+    "13/8",
+    "-12/5",
+    "-11/2",
+    "-5"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "35"
+   },
+   "delivered": "0x4000000000000000",
+   "metric": "hamming",
+   "name": "random-052",
+   "query": [
+    "0",
+    "1",
+    "1",
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0",
+    "1",
+    "1",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1"
+   },
+   "delivered": "0x3fe5555555555555",
+   "metric": "jaccard",
+   "name": "random-053",
+   "query": [
+    "1",
+    "1",
+    "0",
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "0",
+    "1",
+    "0"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "9/10"
+   },
+   "delivered": "0xbfe2c2b73ace0c87",
+   "metric": "cosine",
+   "name": "random-054",
+   "query": [
+    "17",
+    "f64:c0bc400000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "11",
+    "8"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "5"
+   },
+   "delivered": "0xc072800000000000",
+   "metric": "dot",
+   "name": "random-055",
+   "query": [
+    "-8",
+    "-10",
+    "9",
+    "7"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:403ce00000000000",
+    "5",
+    "3",
+    "-6"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "47/4"
+   },
+   "delivered": "0x40a15e0000000000",
+   "metric": "euclidean",
+   "name": "random-056",
+   "query": [
+    "-11"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:40a1480000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "14"
+   },
+   "delivered": "0x406dc00000000000",
+   "metric": "manhattan",
+   "name": "random-057",
+   "query": [
+    "-13"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:406c200000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "59"
+   },
+   "delivered": "0x4000000000000000",
+   "metric": "hamming",
+   "name": "random-058",
+   "query": [
+    "0",
+    "0",
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "11/20"
+   },
+   "delivered": "0x3fe0000000000000",
+   "metric": "jaccard",
+   "name": "random-059",
+   "query": [
+    "1",
+    "0",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "19/20"
+   },
+   "delivered": "0xbfecf1276d67144a",
+   "metric": "cosine",
+   "name": "random-060",
+   "query": [
+    "-12",
+    "f64:c069400000000000",
+    "-16"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:3fea500000000000",
+    "3",
+    "-1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "7"
+   },
+   "delivered": "0x4076872b00000000",
+   "metric": "dot",
+   "name": "random-061",
+   "query": [
+    "17",
+    "-15",
+    "-1",
+    "f64:4074580000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "12",
+    "-5",
+    "-5",
+    "f64:3fce100000000000"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "26"
+   },
+   "delivered": "0x40b21de0b17880ae",
+   "metric": "euclidean",
+   "name": "random-062",
+   "query": [
+    "f64:c04af00000000000",
+    "-15/2",
+    "-8/3"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:40b1e80000000000",
+    "-17/6",
+    "f64:bfead80000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "39/2"
+   },
+   "delivered": "0x406362b800000000",
+   "metric": "manhattan",
+   "name": "random-063",
+   "query": [
+    "f64:bfc5200000000000",
+    "f64:4061200000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "-5/4",
+    "-17"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "26/3"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-064",
+   "query": [
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "3/4"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-065",
+   "query": [
+    "0",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "13/20"
+   },
+   "delivered": "0xbfce3318ee1928c4",
+   "metric": "cosine",
+   "name": "random-066",
+   "query": [
+    "12",
+    "-16",
+    "-12",
+    "f64:4007980000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "-10/3",
+    "8/9",
+    "-2",
+    "-10"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "11/2"
+   },
+   "delivered": "0xc0c8120bac000000",
+   "metric": "dot",
+   "name": "random-067",
+   "query": [
+    "f64:3fbf200000000000",
+    "f64:408da00000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "-3/4",
+    "-13"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "55"
+   },
+   "delivered": "0x40c3510e744cec3f",
+   "metric": "euclidean",
+   "name": "random-068",
+   "query": [
+    "-9",
+    "f64:40c3500000000000",
+    "-7",
+    "f64:c059b00000000000",
+    "3/2"
+   ],
+   "query_refused": false,
+   "record": [
+    "5",
+    "-14/9",
+    "f64:c031500000000000",
+    "5/7",
+    "-8/3"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "11/4"
+   },
+   "delivered": "0x4063cda800000000",
+   "metric": "manhattan",
+   "name": "random-069",
+   "query": [
+    "-10",
+    "0",
+    "-12"
+   ],
+   "query_refused": false,
+   "record": [
+    "9",
+    "f64:405fe00000000000",
+    "f64:bfb2c00000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "-1/2"
+   },
+   "delivered": "0x4008000000000000",
+   "metric": "hamming",
+   "name": "random-070",
+   "query": [
+    "1",
+    "0",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0",
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "2/5"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-071",
+   "query": [
+    "0",
+    "0",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1",
+    "0"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "9/10"
+   },
+   "delivered": "0xbfed9c1985abc95f",
+   "metric": "cosine",
+   "name": "random-072",
+   "query": [
+    "6",
+    "2/3"
+   ],
+   "query_refused": false,
+   "record": [
+    "-7",
+    "2"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "-7/2"
+   },
+   "delivered": "0x40c410db9999999a",
+   "metric": "dot",
+   "name": "random-073",
+   "query": [
+    "-19",
+    "f64:c086e00000000000",
+    "f64:bfef800000000000",
+    "-16"
+   ],
+   "query_refused": false,
+   "record": [
+    "-7/4",
+    "-14",
+    "-3/5",
+    "f64:3fe0400000000000"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "17/2"
+   },
+   "delivered": "0x40b1d55dfdcc73e9",
+   "metric": "euclidean",
+   "name": "random-074",
+   "query": [
+    "f64:406cf00000000000",
+    "9",
+    "-11"
+   ],
+   "query_refused": false,
+   "record": [
+    "-9",
+    "f64:40b1d80000000000",
+    "5"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "29/2"
+   },
+   "delivered": "0x4055b00000000000",
+   "metric": "manhattan",
+   "name": "random-075",
+   "query": [
+    "f64:c050b00000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "20"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "21"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-076",
+   "query": [
+    "0",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "11/20"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-077",
+   "query": [
+    "0",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "11/20"
+   },
+   "delivered": "0x3feffec9756579e1",
+   "metric": "cosine",
+   "name": "random-078",
+   "query": [
+    "7/2",
+    "f64:4014680000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:4038600000000000",
+    "f64:4041200000000000"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "-4"
+   },
+   "delivered": "0x4074855555555555",
+   "metric": "dot",
+   "name": "random-079",
+   "query": [
+    "1/3",
+    "-1"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c050400000000000",
+    "f64:c075e00000000000"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "22"
+   },
+   "delivered": "0x40bc723d54676228",
+   "metric": "euclidean",
+   "name": "random-080",
+   "query": [
+    "11/5",
+    "11/5",
+    "16"
+   ],
+   "query_refused": false,
+   "record": [
+    "11/4",
+    "f64:c0bc700000000000",
+    "-8"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "2"
+   },
+   "delivered": "0x4045db6db6db6db7",
+   "metric": "manhattan",
+   "name": "random-081",
+   "query": [
+    "17",
+    "10",
+    "-18"
+   ],
+   "query_refused": false,
+   "record": [
+    "-5",
+    "16/7",
+    "-4"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "43"
+   },
+   "delivered": "0x4000000000000000",
+   "metric": "hamming",
+   "name": "random-082",
+   "query": [
+    "1",
+    "1",
+    "0",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1/10"
+   },
+   "delivered": "0x3fd5555555555555",
+   "metric": "jaccard",
+   "name": "random-083",
+   "query": [
+    "1",
+    "0",
+    "0",
+    "0",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "1",
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "9/20"
+   },
+   "delivered": "0xbfe5584a7939302e",
+   "metric": "cosine",
+   "name": "random-084",
+   "query": [
+    "-19/8",
+    "f64:40b6780000000000",
+    "9/5",
+    "16"
+   ],
+   "query_refused": false,
+   "record": [
+    "-6",
+    "-9",
+    "2/9",
+    "8"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "-20/3"
+   },
+   "delivered": "0xc0cfd73a9c71c71c",
+   "metric": "dot",
+   "name": "random-085",
+   "query": [
+    "5",
+    "f64:c0ac600000000000",
+    "4",
+    "2",
+    "-16"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:4011400000000000",
+    "9/2",
+    "f64:3fd8900000000000",
+    "-5",
+    "-16/9"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "35/4"
+   },
+   "delivered": "0x4083d96445a443a2",
+   "metric": "euclidean",
+   "name": "random-086",
+   "query": [
+    "f64:4083400000000000",
+    "-15"
+   ],
+   "query_refused": false,
+   "record": [
+    "-19",
+    "f64:bfc1500000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "49"
+   },
+   "delivered": "0x40ce1b0000000000",
+   "metric": "manhattan",
+   "name": "random-087",
+   "query": [
+    "f64:c0ce180000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "6"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "50/3"
+   },
+   "delivered": "0x4000000000000000",
+   "metric": "hamming",
+   "name": "random-088",
+   "query": [
+    "1",
+    "0",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "9/10"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-089",
+   "query": [
+    "0",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "1/4"
+   },
+   "delivered": "0xbff0000000000000",
+   "metric": "cosine",
+   "name": "random-090",
+   "query": [
+    "15"
+   ],
+   "query_refused": false,
+   "record": [
+    "-1/4"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "2"
+   },
+   "delivered": "0x408068d955555555",
+   "metric": "dot",
+   "name": "random-091",
+   "query": [
+    "f64:bff0800000000000",
+    "f64:c03d480000000000",
+    "5",
+    "-1",
+    "-20/3"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:3fee000000000000",
+    "-5",
+    "2/3",
+    "f64:c075700000000000",
+    "-5"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "40"
+   },
+   "delivered": "0x40a2e84840000000",
+   "metric": "euclidean",
+   "name": "random-092",
+   "query": [
+    "f64:c0a2e80000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:3fc2100000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "44/3"
+   },
+   "delivered": "0x4021f00000000000",
+   "metric": "manhattan",
+   "name": "random-093",
+   "query": [
+    "f64:c02b900000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c036c00000000000"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "24"
+   },
+   "delivered": "0x4010000000000000",
+   "metric": "hamming",
+   "name": "random-094",
+   "query": [
+    "0",
+    "0",
+    "1",
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "0",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1/4"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-095",
+   "query": [
+    "0",
+    "0",
+    "0",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "0",
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "2/5"
+   },
+   "delivered": "0x3fe6ea601f3a4e2c",
+   "metric": "cosine",
+   "name": "random-096",
+   "query": [
+    "f64:3fb3000000000000",
+    "12",
+    "-8"
+   ],
+   "query_refused": false,
+   "record": [
+    "-10/3",
+    "4",
+    "f64:bfeae00000000000"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "12"
+   },
+   "delivered": "0x40c29d199999999a",
+   "metric": "dot",
+   "name": "random-097",
+   "query": [
+    "-9",
+    "f64:3fda700000000000",
+    "f64:c05b400000000000",
+    "7",
+    "2"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c092780000000000",
+    "0",
+    "10",
+    "-17/5",
+    "3"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "11/3"
+   },
+   "delivered": "0x40303e9c2f64e6d0",
+   "metric": "euclidean",
+   "name": "random-098",
+   "query": [
+    "-13",
+    "13/3"
+   ],
+   "query_refused": false,
+   "record": [
+    "9/7",
+    "-17/5"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "25/3"
+   },
+   "delivered": "0x40c5b5e400000000",
+   "metric": "manhattan",
+   "name": "random-099",
+   "query": [
+    "10",
+    "f64:403af00000000000",
+    "f64:407ad00000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:40c5080000000000",
+    "f64:4020d00000000000",
+    "f64:4056700000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "-1/4"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-100",
+   "query": [
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "1/10"
+   },
+   "delivered": "0x0000000000000000",
+   "metric": "jaccard",
+   "name": "random-101",
+   "query": [
+    "1",
+    "0",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1",
+    "1",
+    "0"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "17/20"
+   },
+   "delivered": "0x3fefffff560e2563",
+   "metric": "cosine",
+   "name": "random-102",
+   "query": [
+    "-14",
+    "f64:40c7d80000000000",
+    "3"
+   ],
+   "query_refused": false,
+   "record": [
+    "-4",
+    "f64:40c4080000000000",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "-31/3"
+   },
+   "delivered": "0x403c800000000000",
+   "metric": "dot",
+   "name": "random-103",
+   "query": [
+    "19/4"
+   ],
+   "query_refused": false,
+   "record": [
+    "6"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "15/2"
+   },
+   "delivered": "0x40231307fd1fea75",
+   "metric": "euclidean",
+   "name": "random-104",
+   "query": [
+    "5",
+    "-4",
+    "9"
+   ],
+   "query_refused": false,
+   "record": [
+    "1/5",
+    "-7",
+    "f64:3ff5300000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "5"
+   },
+   "delivered": "0x4080e34324924925",
+   "metric": "manhattan",
+   "name": "random-105",
+   "query": [
+    "-5/4",
+    "13",
+    "f64:bfc0600000000000",
+    "9/7"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:407fe00000000000",
+    "3",
+    "-17",
+    "-1"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "25"
+   },
+   "delivered": "0x4010000000000000",
+   "metric": "hamming",
+   "name": "random-106",
+   "query": [
+    "1",
+    "0",
+    "1",
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1",
+    "1",
+    "0",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1/10"
+   },
+   "delivered": "0x3fd5555555555555",
+   "metric": "jaccard",
+   "name": "random-107",
+   "query": [
+    "1",
+    "1",
+    "0",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "0",
+    "0",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "0"
+   },
+   "delivered": "0xbfe6c428cc89950f",
+   "metric": "cosine",
+   "name": "random-108",
+   "query": [
+    "19/6",
+    "f64:4045000000000000",
+    "19/2",
+    "f64:c047000000000000",
+    "14"
+   ],
+   "query_refused": false,
+   "record": [
+    "-12",
+    "-1",
+    "f64:402f000000000000",
+    "f64:40ac700000000000",
+    "9/8"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "threshold": "-37/3"
+   },
+   "delivered": "0x3fc5555555555555",
+   "metric": "dot",
+   "name": "random-109",
+   "query": [
+    "1/2"
+   ],
+   "query_refused": false,
+   "record": [
+    "1/3"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "54"
+   },
+   "delivered": "0x40c22b471e8e1072",
+   "metric": "euclidean",
+   "name": "random-110",
+   "query": [
+    "19",
+    "0",
+    "17",
+    "10"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c0c1f80000000000",
+    "f64:c092180000000000",
+    "f64:c079c00000000000",
+    "f64:c061880000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "16"
+   },
+   "delivered": "0x4083a9a249249249",
+   "metric": "manhattan",
+   "name": "random-111",
+   "query": [
+    "f64:3fc3000000000000",
+    "f64:3fe9000000000000",
+    "-4/7"
+   ],
+   "query_refused": false,
+   "record": [
+    "5",
+    "f64:c082f80000000000",
+    "16"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "44/3"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "hamming",
+   "name": "random-112",
+   "query": [
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "1/4"
+   },
+   "delivered": "0x3fe5555555555555",
+   "metric": "jaccard",
+   "name": "random-113",
+   "query": [
+    "0",
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "1",
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "4/5"
+   },
+   "delivered": "0x3ff0000000000000",
+   "metric": "cosine",
+   "name": "random-114",
+   "query": [
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "10"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "-9/4"
+   },
+   "delivered": "0x40e28410c0000000",
+   "metric": "dot",
+   "name": "random-115",
+   "query": [
+    "f64:c054600000000000",
+    "f64:c07b000000000000",
+    "5",
+    "f64:3fbe000000000000"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c032300000000000",
+    "f64:c055180000000000",
+    "-19/8",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "51"
+   },
+   "delivered": "0x4040ec0b11be72a8",
+   "metric": "euclidean",
+   "name": "random-116",
+   "query": [
+    "6",
+    "19/4",
+    "-20"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:bfc2f00000000000",
+    "-20",
+    "9/4"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "radius": "3/2"
+   },
+   "delivered": "0x40476d3cf3cf3cf4",
+   "metric": "manhattan",
+   "name": "random-117",
+   "query": [
+    "5/3",
+    "16/3",
+    "11",
+    "2/3"
+   ],
+   "query_refused": false,
+   "record": [
+    "f64:c01cb00000000000",
+    "5/7",
+    "-3",
+    "f64:4034100000000000"
+   ],
+   "score_defined": true,
+   "within": false
+  },
+  {
+   "bound": {
+    "radius": "36"
+   },
+   "delivered": "0x4008000000000000",
+   "metric": "hamming",
+   "name": "random-118",
+   "query": [
+    "1",
+    "1",
+    "0",
+    "1",
+    "1"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "0",
+    "1",
+    "1",
+    "1"
+   ],
+   "score_defined": true,
+   "within": true
+  },
+  {
+   "bound": {
+    "threshold": "2/5"
+   },
+   "delivered": "0x3fe0000000000000",
+   "metric": "jaccard",
+   "name": "random-119",
+   "query": [
+    "1",
+    "1",
+    "0"
+   ],
+   "query_refused": false,
+   "record": [
+    "0",
+    "1",
+    "0"
+   ],
+   "score_defined": true,
+   "within": true
+  }
+ ],
+ "rounding_cases": [
+  {
+   "rn53": "0x3fd5555555555555",
+   "x": "1/3"
+  },
+  {
+   "rn53": "0x3fe5555555555555",
+   "x": "2/3"
+  },
+  {
+   "rn53": "0xbfe5555555555555",
+   "x": "-2/3"
+  },
+  {
+   "rn53": "0x3fb999999999999a",
+   "x": "1/10"
+  },
+  {
+   "rn53": "0xbfb999999999999a",
+   "x": "-1/10"
+  },
+  {
+   "rn53": "0x3feeb851eb851eb8",
+   "x": "24/25"
+  },
+  {
+   "rn53": "0x3fc2492492492492",
+   "x": "1/7"
+  },
+  {
+   "rn53": "0x4340000000000000",
+   "x": "9007199254740993"
+  },
+  {
+   "rn53": "0x4340000000000002",
+   "x": "9007199254740995"
+  },
+  {
+   "rn53": "0xc340000000000000",
+   "x": "-9007199254740993"
+  },
+  {
+   "rn53": "0x433fffffffffffff",
+   "x": "9007199254740991"
+  },
+  {
+   "rn53": "0x0000000000000000",
+   "x": "1/404804506614621236704990693437834614099113299528284236713802716054860679135990693783920767402874248990374155728633623822779617474771586953734026799881477019843034848553132722728933815484186432682479535356945490137124014966849385397236206711298319112681620113024717539104666829230461005064372655017292012526615415482186989568"
+  },
+  {
+   "rn53": "0x0000000000000002",
+   "x": "3/404804506614621236704990693437834614099113299528284236713802716054860679135990693783920767402874248990374155728633623822779617474771586953734026799881477019843034848553132722728933815484186432682479535356945490137124014966849385397236206711298319112681620113024717539104666829230461005064372655017292012526615415482186989568"
+  },
+  {
+   "rn53": "0x8000000000000002",
+   "x": "-3/404804506614621236704990693437834614099113299528284236713802716054860679135990693783920767402874248990374155728633623822779617474771586953734026799881477019843034848553132722728933815484186432682479535356945490137124014966849385397236206711298319112681620113024717539104666829230461005064372655017292012526615415482186989568"
+  },
+  {
+   "rn53": "0x0000000000000000",
+   "x": "1/809609013229242473409981386875669228198226599056568473427605432109721358271981387567841534805748497980748311457267247645559234949543173907468053599762954039686069697106265445457867630968372865364959070713890980274248029933698770794472413422596638225363240226049435078209333658460922010128745310034584025053230830964373979136"
+  },
+  {
+   "rn53": "0x000fffffffffffff",
+   "x": "4503599627370495/202402253307310618352495346718917307049556649764142118356901358027430339567995346891960383701437124495187077864316811911389808737385793476867013399940738509921517424276566361364466907742093216341239767678472745068562007483424692698618103355649159556340810056512358769552333414615230502532186327508646006263307707741093494784"
+  },
+  {
+   "rn53": "0x0010000000000000",
+   "x": "9007199254740991/404804506614621236704990693437834614099113299528284236713802716054860679135990693783920767402874248990374155728633623822779617474771586953734026799881477019843034848553132722728933815484186432682479535356945490137124014966849385397236206711298319112681620113024717539104666829230461005064372655017292012526615415482186989568"
+  },
+  {
+   "rn53": "0x7fefffffffffffff",
+   "x": "179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368"
+  },
+  {
+   "rn53": "0x7fefffffffffffff",
+   "x": "179769313486231575804128197568503885939002350117941411767545627891801114536396644853619288305177042633935372685103635187590438437370702292699562517687521668833979406288629832876259672468103520237920172119362601898937975098263032931492834697134299320496935997324255116936540444370309403987146642102044149678080"
+  },
+  {
+   "rn53": "ValueOutOfRange",
+   "x": "179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792"
+  },
+  {
+   "rn53": "ValueOutOfRange",
+   "x": "179769313486231590772930519078902473361797697894230657273430081157732675805500963132708477322407536021120113879871393357658789768814416622492847430639474124377767893424865485276302219601246094119453082952085005768838150682342462881473913110540827237163350510684586298239947245938479716304835356329624224137216"
+  },
+  {
+   "rn53": "ValueOutOfRange",
+   "x": "-13582985290493858492773514283592667786034938469317445497485196697278130927542418487205392083207560592298578262953847383475038725543234929971155548342800628721885763499406390331782864144164680730766837160526223176512798435772129956553355286032203080380775759732320198985094884004069116123084147875437183658467465148948790552744165376"
+  },
+  {
+   "rn53": "0x3feaaaaaaaaaaaab",
+   "x": "5/6"
+  },
+  {
+   "rn53": "0x40fe240c9fbe76c9",
+   "x": "123456789/1000"
+  }
+ ],
+ "schema": "reified-rspaces-numeric-reference/1",
+ "seed": 20261008,
+ "sqrt_cases": [
+  {
+   "rn53": "0x3ff6a09e667f3bcd",
+   "x": "2"
+  },
+  {
+   "rn53": "0x3fe6a09e667f3bcd",
+   "x": "1/2"
+  },
+  {
+   "rn53": "0x3ff8000000000000",
+   "x": "9/4"
+  },
+  {
+   "rn53": "0x3feaaaaaaaaaaaab",
+   "x": "25/36"
+  },
+  {
+   "rn53": "0x3fe279a74590331c",
+   "x": "1/3"
+  },
+  {
+   "rn53": "0x40094c583ada5b53",
+   "x": "10"
+  },
+  {
+   "rn53": "0x3fe986f48e4fbfd5",
+   "x": "7/11"
+  },
+  {
+   "rn53": "0x3ffbb67ae8584caa",
+   "x": "3"
+  },
+  {
+   "rn53": "0x7fe0000000000000",
+   "x": "8079251517827751825178719172167487990111025667428871008032586356881163784716972723299300352880728365922179490230474504873529889787622730273772038096612070780157719341825249022937549437597413026699014409596016892069198054660654939040459523584619042617645411463009076260721893972885266452151888099780982596380478583347417085605171243696641142373714044008831580514519451414832756548177115078537564648216044279181485900929615464339399587788075411476100924403308321807806781421177705052431289275431732830867419635645164174483761499317088249659553881291597359333885900533858307401161329619651238037048388963402764899057664"
+  },
+  {
+   "rn53": "ValueOutOfRange",
+   "x": "32317006071311007300714876688669951960444102669715484032130345427524655138867890893197201411522913463688717960921898019494119559150490921095088152386448283120630877367300996091750197750389652106796057638384067568276792218642619756161838094338476170470581645852036305042887575891541065808607552399123930385521914333389668342420684974786564569494856176035326322058077805659331026192708460314150258592864177116725943603718461857357598351152301645904403697613233287231227125684710820209725157101726931323469678542580656697935045997268352998638215525166389437335543602135433229604645318478604952148193555853611059596230656"
+  },
+  {
+   "rn53": "ValueOutOfRange",
+   "x": "32317006071311007300714876688669951960444102669715484032130345427524655138867890893197201411522913463688717960921898019494119559150490921095088152386448283120630877367300996091750197750389652106796057638384067568276792218642619756161838094338476170470581645852036305042887575891541065795024567108630071892748400049797000556385746505469119072009659478757195394515659318453938942985147868015571995639016793641687218060483531886202050008351672924018640198206842955448362981520030089442887996575503754810671242770450700144579759965065272617862455792846190452240659598066317106520497443041421293680728406904820506852065280"
+  },
+  {
+   "rn53": "0x0000000000000001",
+   "x": "1/40966672143876732145176228848043091143928566425868314369800638377010779053124493714260960149070292229477000187962034707314131344279013990700557084216067703100110397626915930050017669416781158249744236172365003101763600273594402063864722325201532144604115521818460662623935143647469165084514879475815880467163982182410113805509643338164835839186040845030529294117697218294439255325218264815180040054295920900280527835303063728875285777248462704511695944824230554347848626506942611938335291999257755662113691788246053880398723321865319809478918081631431889557552749507834196358292243660837246218506196446294893757162080795972525602568587162635206656"
+  },
+  {
+   "rn53": "0x0000000000000000",
+   "x": "1/163866688575506928580704915392172364575714265703473257479202553508043116212497974857043840596281168917908000751848138829256525377116055962802228336864270812400441590507663720200070677667124632998976944689460012407054401094377608255458889300806128578416462087273842650495740574589876660338059517903263521868655928729640455222038573352659343356744163380122117176470788873177757021300873059260720160217183683601122111341212254915501143108993850818046783779296922217391394506027770447753341167997031022648454767152984215521594893287461279237915672326525727558230210998031336785433168974643348984874024785785179575028648323183890102410274348650540826624"
+  },
+  {
+   "rn53": "0x0000000001000000",
+   "x": "1/145542856500486309361890238449330649728809442059217056345945587654749356876225241259209611218744456911185381599558875746375475103914048669297745718921773427823433158419120765536610198213840157598554853892256499754024901966411683189991501042476088459679727981986945418043202748661248211748339825091903351744676279304293991165443043691726770700206972879550908196640425338921571293316568559870845121133328067132170701239967995835212682384168881471395081720829376174989450825971966494657064899340276140769794081777796371143547287807483740385375334659668424882133140661394443058747655483603144141890006567217223554270198636103730385125376"
+  },
+  {
+   "rn53": "0x3fd735c0eef21bc3",
+   "x": "58/441"
+  }
+ ]
+}

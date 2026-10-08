@@ -6978,6 +6978,398 @@
           ]
         }
       ]
+    },
+    "P6": {
+      "title": "P6 step 2: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break).",
+      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.4 and 5. witness_tests lists the deterministic tests, the reference vectors of the Sage leg included.",
+      "test_status": "required",
+      "test_files": [
+        "rholang/src/rust/interpreter/tensor/exact.rs"
+      ],
+      "expected_properties": 16,
+      "formal": {
+        "S1": {
+          "kind": "rocq",
+          "name": "cosine_squared_form_iff",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "In every ordered commutative ring, the real numbers included: for s = |q|·|e| > 0, t·s ≤ q·e (cos ≥ t) holds exactly when cosine_within(q·e, t, s·s), the decision of within, which uses no root.",
+          "tests": [
+            "prop_cosine_threshold_matches_the_squared_form"
+          ]
+        },
+        "S2": {
+          "kind": "rocq",
+          "name": "cosine_order_squared_form",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "With s_i·s_i = |q|²·|e_i|², the real order cos_1 ≤ cos_2 holds exactly when cosine_le, the order of better, which cross-multiplies the squares by the norms of the other record.",
+          "tests": [
+            "prop_cosine_order_matches_the_squared_form"
+          ]
+        },
+        "S3": {
+          "kind": "rocq",
+          "name": "euclidean_radius_squared_form",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "For a distance d ≥ 0, d ≤ r holds exactly when euclidean_within(d², r): r ≥ 0 and d² ≤ r².",
+          "tests": [
+            "prop_euclidean_radius_matches_the_squared_form"
+          ]
+        },
+        "S4": {
+          "kind": "rocq",
+          "name": "threshold_monotone",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "A lower threshold admits every record that a higher threshold admits, under cosine, dot and jaccard.",
+          "tests": [
+            "prop_thresholds_are_monotone"
+          ]
+        },
+        "S5": {
+          "kind": "rocq",
+          "name": "radius_monotone",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "A larger radius admits every record that a smaller radius admits, under euclidean, manhattan and hamming.",
+          "tests": [
+            "prop_radii_are_monotone"
+          ]
+        },
+        "S6": {
+          "kind": "rocq",
+          "name": "dot_laws",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "The dot product is symmetric, and its exact sum does not depend on the order of the coordinates.",
+          "tests": [
+            "prop_exact_kernels_are_permutation_invariant"
+          ]
+        },
+        "S7": {
+          "kind": "rocq",
+          "name": "distance_laws",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "dist2 is non-negative, symmetric and zero exactly on equal vectors; manhattan is non-negative, symmetric and satisfies the triangle inequality.",
+          "tests": [
+            "prop_distance_laws_hold"
+          ]
+        },
+        "S8": {
+          "kind": "rocq",
+          "name": "cauchy_schwarz",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "(a·b)² ≤ |a|²·|b|² for vectors of one length.",
+          "tests": [
+            "prop_cauchy_schwarz_holds"
+          ]
+        },
+        "S9": {
+          "kind": "rocq",
+          "name": "cosine_bounds",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "Every record passes the cosine threshold −1, and no record passes a threshold above 1.",
+          "tests": [
+            "prop_cosine_bounds_hold"
+          ]
+        },
+        "S10": {
+          "kind": "rocq",
+          "name": "score_orders_total",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "The order of each of the six metrics is a total preorder on its scores: cosine over positive record norms, dot and the distances by their values, jaccard over positive unions.",
+          "tests": [
+            "prop_score_orders_are_total_preorders"
+          ]
+        },
+        "S11": {
+          "kind": "rocq",
+          "name": "squared_forms_embed",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "An embedding of ordered rings keeps the decisions of S1 to S3, so the decisions in the rationals are the decisions in the real numbers.",
+          "tests": [
+            "prop_dyadic_and_rational_kernels_agree"
+          ]
+        },
+        "S12": {
+          "kind": "rocq",
+          "name": "binary_laws",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "Hamming is a metric on binary vectors, the jaccard counts satisfy inter ≤ union and are symmetric, and the union is empty only when neither vector sets a position.",
+          "tests": [
+            "prop_binary_metric_laws_hold"
+          ]
+        },
+        "S13": {
+          "kind": "rocq",
+          "name": "selection_total_order",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "The selection order (the better score, then the lower DR-75 rank) is irreflexive, transitive and total on distinct ranks.",
+          "tests": [
+            "prop_selection_order_is_a_strict_total_order"
+          ]
+        },
+        "S14": {
+          "kind": "rocq",
+          "name": "topk_deterministic",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "Two sorted arrangements of one multiset of candidates are equal, so their first k candidates are equal.",
+          "tests": [
+            "prop_topk_is_deterministic"
+          ]
+        },
+        "S15": {
+          "kind": "rocq",
+          "name": "list_selection_deterministic",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "List mode, the first k eligible candidates in the selection order, depends only on the multiset of records, and the insertion sort computes it.",
+          "tests": [
+            "prop_list_selection_is_deterministic"
+          ]
+        },
+        "S16": {
+          "kind": "rocq",
+          "name": "kappa_dropped_not_unique",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "Negative control: by score alone, two equal-score records have two sorted arrangements with different first records.",
+          "tests": [
+            "prop_topk_is_deterministic"
+          ]
+        },
+        "S17": {
+          "kind": "rocq",
+          "name": "Qc_ordered_ring",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "The canonical rationals satisfy every hypothesis of the ordered ring of Part 1.",
+          "tests": [
+            "prop_rationals_form_an_ordered_ring"
+          ]
+        },
+        "S18": {
+          "kind": "rocq",
+          "name": "similarity_headlines_Qc",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "S1, S2, S3, S8 and S9 hold in the canonical rationals.",
+          "tests": [
+            "prop_cosine_threshold_matches_the_squared_form",
+            "prop_cosine_order_matches_the_squared_form",
+            "prop_euclidean_radius_matches_the_squared_form",
+            "prop_cauchy_schwarz_holds",
+            "prop_cosine_bounds_hold"
+          ]
+        },
+        "S19": {
+          "kind": "rocq",
+          "name": "squared_forms_embed_Z_Qc",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "S11 holds for the embedding of the integers into the rationals.",
+          "tests": [
+            "prop_dyadic_and_rational_kernels_agree"
+          ]
+        },
+        "S20": {
+          "kind": "rocq",
+          "name": "selection_Qc",
+          "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+          "statement": "S13 and S14 hold for rational scores.",
+          "tests": [
+            "prop_selection_order_is_a_strict_total_order",
+            "prop_topk_is_deterministic"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "prop_cosine_threshold_matches_the_squared_form",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S1",
+            "S18"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "prop_cosine_order_matches_the_squared_form",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S2",
+            "S18"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "prop_euclidean_radius_matches_the_squared_form",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S3",
+            "S18"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "prop_thresholds_are_monotone",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S4"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "prop_radii_are_monotone",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S5"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "prop_exact_kernels_are_permutation_invariant",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S6"
+          ]
+        },
+        {
+          "number": 7,
+          "test": "prop_distance_laws_hold",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S7"
+          ]
+        },
+        {
+          "number": 8,
+          "test": "prop_cauchy_schwarz_holds",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S8",
+            "S18"
+          ]
+        },
+        {
+          "number": 9,
+          "test": "prop_cosine_bounds_hold",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S9",
+            "S18"
+          ]
+        },
+        {
+          "number": 10,
+          "test": "prop_score_orders_are_total_preorders",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S10"
+          ]
+        },
+        {
+          "number": 11,
+          "test": "prop_dyadic_and_rational_kernels_agree",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S11",
+            "S19"
+          ]
+        },
+        {
+          "number": 12,
+          "test": "prop_binary_metric_laws_hold",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S12"
+          ]
+        },
+        {
+          "number": 13,
+          "test": "prop_selection_order_is_a_strict_total_order",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S13",
+            "S20"
+          ]
+        },
+        {
+          "number": 14,
+          "test": "prop_topk_is_deterministic",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S14",
+            "S20",
+            "S16"
+          ]
+        },
+        {
+          "number": 15,
+          "test": "prop_list_selection_is_deterministic",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S15"
+          ]
+        },
+        {
+          "number": 16,
+          "test": "prop_rationals_form_an_ordered_ring",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "covers": [
+            "S17"
+          ]
+        }
+      ],
+      "witness_tests": [
+        {
+          "test": "tensor_numeric_reference_vectors_agree",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "rule": "N8 (the Sage vectors and the Python receipt)",
+          "covers": [
+            "S1",
+            "S3",
+            "S9",
+            "S12"
+          ]
+        },
+        {
+          "test": "tensor_bounds_are_decided_exactly",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "rule": "design v3 4.1 (the bounds at their boundaries)",
+          "covers": [
+            "S1",
+            "S3",
+            "S4",
+            "S5"
+          ]
+        },
+        {
+          "test": "tensor_exact_dot_differs_from_f64_accumulation",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "rule": "decision 54 (the f64-accumulation mutant)",
+          "covers": [
+            "S6"
+          ]
+        },
+        {
+          "test": "tensor_cosine_order_follows_the_three_case_rule",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "rule": "design v3 4.1 (COSINE-BETTER)",
+          "covers": [
+            "S2",
+            "S10"
+          ]
+        },
+        {
+          "test": "tensor_undefined_scores_make_records_ineligible",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "rule": "decision 66 (binary metrics, zero vectors)",
+          "covers": [
+            "S12"
+          ]
+        },
+        {
+          "test": "tensor_selection_without_ranks_is_not_unique",
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "rule": "decisions 41 and 60 (the kappa control)",
+          "covers": [
+            "S16"
+          ]
+        }
+      ]
     }
   }
 }

@@ -2,7 +2,8 @@
 # wire encoding, P4: the hashmap:queue slice, its metering and its legacy
 # charges, P5 wave W2: the engine, the bag, cell and stack disciplines, the
 # Array and Vector stores, the PathMap paths and the P5 families, P5 wave
-# W3: the joins of one space and the PathMap engine)
+# W3: the joins of one space and the PathMap engine, P6: the exact
+# similarity decisions of the VectorDB family)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -139,6 +140,15 @@
 #                     Rule E (decision 45), and the greedy limit.
 #                     RecordEnvelope.v adds continuation_v2_roundtrip, and
 #                     CounterConflict.v adds join_ops_race_on_every_counter.
+#   Similarity        P6 step 2 (20 headlines): the exact decisions of the
+#                     VectorDB family over an ordered commutative ring (the
+#                     real numbers included): the squared forms of cosine and
+#                     euclidean, the monotone bounds, the kernel laws,
+#                     Cauchy-Schwarz and the bounds of cosine, the total
+#                     score orders, the embedding of the decisions, the
+#                     binary metrics, the selection order with the kappa
+#                     tie-break and its negative control, and the Qc and Z
+#                     instances that discharge the hypotheses.
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -175,3 +185,4 @@ theories/StackDiscipline.v
 theories/SetDiscipline.v
 theories/PriorityQueue.v
 theories/JoinCascade.v
+theories/Similarity.v

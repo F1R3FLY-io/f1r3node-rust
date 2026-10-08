@@ -21,7 +21,8 @@ The [decision register](decision-register.md) is normative, and the [design](des
 11. [Phase P4: the hashmap:queue slice](#11-phase-p4-the-hashmapqueue-slice)
 12. [Phase P5: the other disciplines and outer stores](#12-phase-p5-the-other-disciplines-and-outer-stores)
 13. [Decision 47: spaces in native execution](#13-decision-47-spaces-in-native-execution)
-14. [References](#references)
+14. [Phase P6, step 2: the exact numeric core](#14-phase-p6-step-2-the-exact-numeric-core)
+15. [References](#references)
 
 ## 1. Purpose and scope
 
@@ -3219,6 +3220,164 @@ To run the decision-47 checks, do these steps from the repository root, after th
 5. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-d47.json`.
 6. Run `python3 scripts/verify-reified/check-footprint.py --policy d47` and `check-complete.py --phase d47`.
 7. Run `python3 scripts/verify-reified/check-consensus-checklist.py --milestone d47`.
+
+## 14. Phase P6, step 2: the exact numeric core
+
+[Decision 54](decision-register.md#decision-54) makes every consensus decision of a VectorDB space exact.
+Step 2 of the P6 design adds the exact numeric core, `rholang/src/rust/interpreter/tensor/`, and the VectorDB driver of step 3 uses it.
+This section records the formal model of the core, its cross-witnesses, its reference vectors and its tests.
+
+### 14.1 What step 2 proves
+
+The core decides each bound and each order of the six metrics with exact rationals, and it never takes a root.
+For a query vector $`q`$ and a record vector $`e`$, let $`u = q \cdot e`$ and $`N = \lVert q \rVert^2 \lVert e \rVert^2`$.
+The value $`\mathrm{RN}_{53}(x)`$ is the binary64 value nearest to $`x`$, with ties to even.
+The checks of this section establish six properties:
+
+1. The squared forms of cosine and euclidean decide the real comparisons (S1 to S3).
+2. The bounds are monotone, and the kernels satisfy their metric laws (S4 to S8, S12).
+3. A cosine lies in $`[-1, 1]`$ (S9).
+4. The order of each metric is a total preorder, and the selection order is a strict total order (S10, S13).
+5. Top-k and list mode are deterministic, and they need the tie-break by rank (S14 to S16).
+6. Every delivered value is $`\mathrm{RN}_{53}`$ of the exact value (sections 14.4 and 14.6).
+
+### 14.2 The Rocq model Similarity.v
+
+The cosine of two rational vectors is usually irrational, because $`\lVert q \rVert \, \lVert e \rVert`$ is a square root.
+So `Similarity.v` proves its decisions in every ordered commutative ring with a decidable order, and the real numbers are such a ring.
+With $`s = \lVert q \rVert \, \lVert e \rVert > 0`$, the real comparison and the decision of `within` are:
+
+```math
+\cos(q, e) \ge t \iff t\,s \le u,
+\qquad
+\mathit{cosine\_within}(u, t, N) \iff
+(u \ge 0 \land t < 0) \lor
+(u \ge 0 \land t \ge 0 \land t^2 N \le u^2) \lor
+(u < 0 \land t < 0 \land u^2 \le t^2 N).
+```
+
+Headline S1 states that the two sides agree when $`s^2 = N`$, so the decision needs no root.
+Headline S11 shows that an embedding of ordered rings keeps the decisions, so the rational decision of the Rust code is the real decision.
+Part 5 of the module discharges every hypothesis with the canonical rationals `Qc`, which model `num_rational::BigRational`, and with the embedding of `Z` into `Qc`.
+
+*Table 94. The Rocq headlines of P6 step 2 (formal/rocq/reified_rspaces/theories/Similarity.v).*
+
+| Id | Headline | Statement |
+|---|---|---|
+| S1 | `cosine_squared_form_iff` (`Similarity.v:412`) | For $`s > 0`$, $`t\,s \le u`$ holds exactly when $`\mathit{cosine\_within}(u, t, s^2)`$. |
+| S2 | `cosine_order_squared_form` (`Similarity.v:471`) | With $`s_i^2 = \lVert q \rVert^2 n_i`$, the real order $`u_1 s_2 \le u_2 s_1`$ holds exactly when the order of `better` holds. |
+| S3 | `euclidean_radius_squared_form` (`Similarity.v:545`) | For a distance $`d \ge 0`$, $`d \le r`$ holds exactly when $`r \ge 0`$ and $`d^2 \le r^2`$. |
+| S4 | `threshold_monotone` (`Similarity.v:565`) | A lower threshold admits every record that a higher one admits (cosine, dot, jaccard). |
+| S5 | `radius_monotone` (`Similarity.v:600`) | A larger radius admits every record that a smaller one admits (euclidean, manhattan, hamming). |
+| S6 | `dot_laws` (`Similarity.v:658`) | The dot product is symmetric, and its exact sum does not depend on the order of the coordinates. |
+| S7 | `distance_laws` (`Similarity.v:745`) | The squared euclidean distance is a squared metric, and manhattan is a metric. |
+| S8 | `cauchy_schwarz` (`Similarity.v:812`) | $`(a \cdot b)^2 \le \lVert a \rVert^2 \lVert b \rVert^2`$ for vectors of one length. |
+| S9 | `cosine_bounds` (`Similarity.v:830`) | Every record passes the threshold $`-1`$, and no record passes a threshold above 1. |
+| S10 | `score_orders_total` (`Similarity.v:931`) | The order of each of the six metrics is a total preorder on its defined scores. |
+| S11 | `squared_forms_embed` (`Similarity.v:1000`) | An embedding of ordered rings keeps the decisions of S1 to S3. |
+| S12 | `binary_laws` (`Similarity.v:1042`) | Hamming is a metric, and the jaccard counts satisfy $`\lvert q \land e \rvert \le \lvert q \lor e \rvert`$. |
+| S13 | `selection_total_order` (`Similarity.v:1169`) | The selection order is irreflexive, transitive, and total on distinct tie keys. |
+| S14 | `topk_deterministic` (`Similarity.v:1199`) | Two sorted arrangements of one multiset of candidates are equal. |
+| S15 | `list_selection_deterministic` (`Similarity.v:1278`) | The first k eligible candidates depend only on the multiset of records. |
+| S16 | `kappa_dropped_not_unique` (`Similarity.v:1311`) | Negative result: by score alone, two equal-score records have two sorted arrangements. |
+| S17 | `Qc_ordered_ring` (`Similarity.v:1384`) | `Qc` satisfies every hypothesis of the ordered ring. |
+| S18 | `similarity_headlines_Qc` (`Similarity.v:1399`) | S1, S2, S3, S8 and S9 hold in `Qc`. |
+| S19 | `squared_forms_embed_Z_Qc` (`Similarity.v:1454`) | S11 holds for the embedding of the integers into the rationals. |
+| S20 | `selection_Qc` (`Similarity.v:1480`) | S13 and S14 hold for rational scores. |
+
+The module has 20 closed headlines, and the gate now expects 266 closed headlines in total.
+Rocq has no model of IEEE-754 binary64, so the rounding to $`\mathrm{RN}_{53}`$ is verified by the tests and the legs of sections 14.4 and 14.6.
+
+### 14.3 The Z3 cross-witnesses
+
+Z3 decides nonlinear real arithmetic completely, so its checks hold in the real numbers themselves.
+Each script refutes the negation of each claim, and each negative control must have a counterexample.
+
+*Table 95. The Z3 scripts of P6 step 2 (formal/z3/reified_rspaces).*
+
+| Script | Claims (`unsat`) | Controls (`sat`) | Result |
+|---|---|---|---|
+| `squared_form_cosine.py` | S1, S2, S3, S4 for cosine, S5 for euclidean, Cauchy-Schwarz and the bounds of S9 in three dimensions, and a witness that the threshold 1 admits parallel vectors | squares only, swapped norms, an unsquared radius | 12 of 12 pass in 14 s |
+| `topk_tiebreak_total_order.py` | the selection order is irreflexive, asymmetric, transitive and total on distinct keys, and the cross-multiplied order is transitive, total and equal to the order of the quotients | the order by score alone, and the cross-multiplied order without a positive union | 10 of 10 pass |
+| `metric_algebra.py` | the laws of dot, dist2, manhattan, hamming and jaccard, and the polarization identity $`\lVert a - b \rVert^2 = \lVert a \rVert^2 - 2\,a \cdot b + \lVert b \rVert^2`$ | the triangle inequality of dist2, and the zero law of dot | 17 of 17 pass |
+
+### 14.4 The reference vectors
+
+The Sage leg `formal/sage/reified_rspaces/similarity_metrics.sage` generates `test-vectors/numeric-reference-v1.json` with a fixed seed.
+The file holds 24 rounding cases, 15 square-root cases and 143 metric cases.
+Sage decides each cosine and euclidean bound with real algebraic numbers, so it does not use the squared forms.
+MPFR rounds the normal range, and the subnormal range rounds to multiples of $`2^{-1074}`$.
+The leg also checks the metric laws on 200 random rational cases, and it fails when the regenerated file differs from the committed file.
+
+The receipt `scripts/verify-reified/numeric_reference_receipt.py` recomputes every case with the Python standard library only.
+It rounds with the correctly rounded integer division of CPython, and it takes square roots with 600 decimal digits.
+The Rust test `tensor_numeric_reference_vectors_agree` reads the same file.
+So three implementations agree on all 182 cases: the Rust core, the Sage leg and the receipt.
+
+### 14.5 Negative controls
+
+*Table 96. The negative controls of P6 step 2.*
+
+| Control | Kind | What it changes | Must fail in |
+|---|---|---|---|
+| `sim-squares-without-signs` | Rocq mutant | Cosine compares the squares only. | `cosine_squared_form_iff` |
+| `sim-order-swapped-norms` | Rocq mutant | The cosine order multiplies each square by its own norm. | `cosine_order_squared_form` |
+| `sim-radius-unsquared` | Rocq mutant | Euclidean compares $`d^2`$ with $`r`$. | `euclidean_radius_squared_form` |
+| `sim-total-without-distinct-keys` | Rocq mutant | The selection order claims totality without distinct tie keys. | `precedes_total` |
+| `sim-unit-threshold-claimed` | Rocq mutant | The bound claims that no record passes the threshold 1. | `cosine_bounds` |
+| `cosine-negative-case-reversed` | Rust mutant | `within` reverses the case of a negative cosine and a negative threshold. | 3 tests |
+| `cosine-order-swapped-norms` | Rust mutant | `better` multiplies each square by its own norm. | 2 tests |
+| `ties-round-up` | Rust mutant | The rounding breaks a tie upward. | 2 tests |
+| `dyadic-sum-keeps-unit` | Rust mutant | DYADIC-SUM shifts its sum but keeps its old unit. | 5 tests |
+| `euclidean-radius-unsquared` | Rust mutant | `within` compares $`d^2`$ with $`r`$. | 3 tests |
+
+The five Rocq mutants pass the gate (`rocq-negative-controls.py`), and the Z3 controls are in Table 95.
+The harness `scripts/verify-reified/tensor-mutants.py` applies each Rust mutant in turn, runs the tensor tests, and restores the source files.
+Each mutant fails the tests that the table counts, and the harness confirms that the restored files equal the originals.
+
+### 14.6 Property-based tests
+
+The phase P6 of the [invariant map](glossary.md#invariant-map) maps each headline to its properties, and the model map `formal/reified-rspaces-model-map-p6.json` maps the Rust items to the headlines.
+Each property runs 64 cases with the fixed seed `0x0F6E_5EED_2026_1008` and keeps no failure file.
+
+*Table 97. The properties of P6 step 2 (tensor/exact.rs).*
+
+| Property | Covers | What it checks |
+|---|---|---|
+| `prop_cosine_threshold_matches_the_squared_form` | S1, S18 | `within` decides $`\cos \ge t`$ as the order of the signed squares. |
+| `prop_cosine_order_matches_the_squared_form` | S2, S18 | `better` orders two cosine scores as their exact cosines. |
+| `prop_euclidean_radius_matches_the_squared_form` | S3, S18 | A distance is within a radius exactly when $`d \le r`$. |
+| `prop_thresholds_are_monotone` | S4 | Lower thresholds admit more records under cosine, dot and jaccard. |
+| `prop_radii_are_monotone` | S5 | Larger radii admit more records under euclidean, manhattan and hamming. |
+| `prop_exact_kernels_are_permutation_invariant` | S6 | The exact kernels do not depend on the order of the coordinates. |
+| `prop_distance_laws_hold` | S7 | dist2 and manhattan satisfy their metric laws. |
+| `prop_cauchy_schwarz_holds` | S8, S18 | Cauchy-Schwarz holds exactly. |
+| `prop_cosine_bounds_hold` | S9, S18 | Every cosine passes $`-1`$, none passes a threshold above 1, and a delivered cosine lies in $`[-1, 1]`$. |
+| `prop_score_orders_are_total_preorders` | S10 | `better` is reflexive, antisymmetric in its result and transitive for each metric. |
+| `prop_dyadic_and_rational_kernels_agree` | S11, S19 | The dyadic path and the rational path give equal exact results. |
+| `prop_binary_metric_laws_hold` | S12 | Hamming and the jaccard counts satisfy their laws. |
+| `prop_selection_order_is_a_strict_total_order` | S13, S20 | The selection order is a strict total order on distinct ranks. |
+| `prop_topk_is_deterministic` | S14, S16, S20 | Every input order ranks to one sorted arrangement. |
+| `prop_list_selection_is_deterministic` | S15 | The first k eligible candidates do not depend on the input order. |
+| `prop_rationals_form_an_ordered_ring` | S17 | `BigRational` satisfies the hypotheses that Part 5 discharges for `Qc`. |
+
+The witness tests of the map are the deterministic tests of the module, the reference vectors and the kappa control `tensor_selection_without_ranks_is_not_unique` included.
+Four oracle properties of `tensor/num.rs` check $`\mathrm{RN}_{53}`$ against IEEE operations, which round correctly.
+They check the identity on binary64 values, the quotient of two integers up to $`2^{53}`$, the square root, and the widening of a binary32 value.
+
+### 14.7 Running the step-2 checks
+
+To run the step-2 checks, do these steps from the repository root, after the preparation of section [10.1](#101-preparation):
+
+1. Run `scripts/check-reified-rspaces-proofs.sh`.
+2. Run `cargo test -p rholang --lib -- tensor::`.
+3. Run the three scripts of `formal/z3/reified_rspaces` with `python3`.
+4. Copy `similarity_metrics.sage` to a directory under `target/`, and run it there with `RRS_REPO_ROOT` set to the repository root.
+5. Run `python3 scripts/verify-reified/numeric_reference_receipt.py`.
+6. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P6`.
+7. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json`.
+8. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+9. Run `python3 scripts/verify-reified/tensor-mutants.py`, which must report `FAIL=0`.
 
 ## References
 

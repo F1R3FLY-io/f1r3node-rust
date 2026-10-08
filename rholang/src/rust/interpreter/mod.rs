@@ -35,6 +35,7 @@ pub mod spaces;
 pub mod storage;
 pub mod substitute;
 pub mod system_processes;
+pub mod tensor;
 pub mod test_utils;
 pub mod util;
 

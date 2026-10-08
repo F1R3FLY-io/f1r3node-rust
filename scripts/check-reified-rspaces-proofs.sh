@@ -12,7 +12,7 @@
 # HeadOnlyDisciplines.v (9, 10 of decision 43 and 1 of decision 45),
 # SpaceRefs.v (10, and 1 of decision 46) and SpaceFactory.v (8). Decision 42
 # adds AgentReadCoverage.v (8). Option P of decision 45 adds
-# LegacyCharges.v (2: Q79 and Q80).
+# LegacyCharges.v (2: Q79 and Q80). P6 step 2 adds Similarity.v (20: S1-S20).
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -46,7 +46,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 246: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 266: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -72,8 +72,9 @@
 #                        the two set merges (F24, F25) of CounterConflict.v,
 #                        and 1 for the PathMap source of W3 Phase 2: the
 #                        token race pathmap_token_race of
-#                        CounterConflict.v, and 4 for decision 47: H24 to
-#                        H27 of EventCorrelation.v)
+#                        CounterConflict.v, 4 for decision 47: H24 to
+#                        H27 of EventCorrelation.v, and 20 for P6 step 2:
+#                        S1 to S20 of Similarity.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -92,7 +93,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-246}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-266}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -123,6 +124,7 @@ declare -A EXPECTED_PER_MODULE=(
   [SetDiscipline]=8
   [PriorityQueue]=20
   [JoinCascade]=17
+  [Similarity]=20
 )
 
 PASS=0

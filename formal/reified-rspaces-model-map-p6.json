@@ -1,0 +1,473 @@
+{
+  "schema": "reified-rspaces-model-map/2",
+  "phase": "P6",
+  "title": "P6 step 2: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v.",
+  "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.4 and 5. The headline ids are the ids of the P6 phase of formal/reified-rspaces-invariant-map.json.",
+  "code_base": "The items are in the P6 step 2 commit of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
+  "checker": "scripts/verify-reified/check-model-map.py",
+  "formal_files": {
+    "rocq": [
+      "formal/rocq/reified_rspaces/theories/Similarity.v"
+    ],
+    "tla": []
+  },
+  "headlines": {
+    "S1": {
+      "kind": "rocq",
+      "name": "cosine_squared_form_iff",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "In every ordered commutative ring, the real numbers included: for s = |q|·|e| > 0, t·s ≤ q·e (cos ≥ t) holds exactly when cosine_within(q·e, t, s·s), the decision of within, which uses no root."
+    },
+    "S2": {
+      "kind": "rocq",
+      "name": "cosine_order_squared_form",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "With s_i·s_i = |q|²·|e_i|², the real order cos_1 ≤ cos_2 holds exactly when cosine_le, the order of better, which cross-multiplies the squares by the norms of the other record."
+    },
+    "S3": {
+      "kind": "rocq",
+      "name": "euclidean_radius_squared_form",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "For a distance d ≥ 0, d ≤ r holds exactly when euclidean_within(d², r): r ≥ 0 and d² ≤ r²."
+    },
+    "S4": {
+      "kind": "rocq",
+      "name": "threshold_monotone",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "A lower threshold admits every record that a higher threshold admits, under cosine, dot and jaccard."
+    },
+    "S5": {
+      "kind": "rocq",
+      "name": "radius_monotone",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "A larger radius admits every record that a smaller radius admits, under euclidean, manhattan and hamming."
+    },
+    "S6": {
+      "kind": "rocq",
+      "name": "dot_laws",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "The dot product is symmetric, and its exact sum does not depend on the order of the coordinates."
+    },
+    "S7": {
+      "kind": "rocq",
+      "name": "distance_laws",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "dist2 is non-negative, symmetric and zero exactly on equal vectors; manhattan is non-negative, symmetric and satisfies the triangle inequality."
+    },
+    "S8": {
+      "kind": "rocq",
+      "name": "cauchy_schwarz",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "(a·b)² ≤ |a|²·|b|² for vectors of one length."
+    },
+    "S9": {
+      "kind": "rocq",
+      "name": "cosine_bounds",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "Every record passes the cosine threshold −1, and no record passes a threshold above 1."
+    },
+    "S10": {
+      "kind": "rocq",
+      "name": "score_orders_total",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "The order of each of the six metrics is a total preorder on its scores: cosine over positive record norms, dot and the distances by their values, jaccard over positive unions."
+    },
+    "S11": {
+      "kind": "rocq",
+      "name": "squared_forms_embed",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "An embedding of ordered rings keeps the decisions of S1 to S3, so the decisions in the rationals are the decisions in the real numbers."
+    },
+    "S12": {
+      "kind": "rocq",
+      "name": "binary_laws",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "Hamming is a metric on binary vectors, the jaccard counts satisfy inter ≤ union and are symmetric, and the union is empty only when neither vector sets a position."
+    },
+    "S13": {
+      "kind": "rocq",
+      "name": "selection_total_order",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "The selection order (the better score, then the lower DR-75 rank) is irreflexive, transitive and total on distinct ranks."
+    },
+    "S14": {
+      "kind": "rocq",
+      "name": "topk_deterministic",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "Two sorted arrangements of one multiset of candidates are equal, so their first k candidates are equal."
+    },
+    "S15": {
+      "kind": "rocq",
+      "name": "list_selection_deterministic",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "List mode, the first k eligible candidates in the selection order, depends only on the multiset of records, and the insertion sort computes it."
+    },
+    "S16": {
+      "kind": "rocq",
+      "name": "kappa_dropped_not_unique",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "Negative control: by score alone, two equal-score records have two sorted arrangements with different first records."
+    },
+    "S17": {
+      "kind": "rocq",
+      "name": "Qc_ordered_ring",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "The canonical rationals satisfy every hypothesis of the ordered ring of Part 1."
+    },
+    "S18": {
+      "kind": "rocq",
+      "name": "similarity_headlines_Qc",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "S1, S2, S3, S8 and S9 hold in the canonical rationals."
+    },
+    "S19": {
+      "kind": "rocq",
+      "name": "squared_forms_embed_Z_Qc",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "S11 holds for the embedding of the integers into the rationals."
+    },
+    "S20": {
+      "kind": "rocq",
+      "name": "selection_Qc",
+      "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "statement": "S13 and S14 hold for rational scores."
+    }
+  },
+  "items": [
+    {
+      "item": "Query::new",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "scope": "Query",
+      "kind": "fn",
+      "name": "new",
+      "line": 151,
+      "role": "The query of a receive: ‖q‖² for cosine (a zero query has no direction and is refused), and the bits for hamming and jaccard.",
+      "rocq": [
+        "cosine_within"
+      ],
+      "tla": [],
+      "covers": [
+        "S1",
+        "S9"
+      ]
+    },
+    {
+      "item": "DyadicSum::add",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "scope": "DyadicSum",
+      "kind": "fn",
+      "name": "add",
+      "line": 175,
+      "role": "The exact sum of dyadic terms with the least exponent as its unit: no rounding, so the sum does not depend on the order of the terms.",
+      "rocq": [
+        "dot",
+        "pair_sum"
+      ],
+      "tla": [],
+      "covers": [
+        "S6"
+      ]
+    },
+    {
+      "item": "dot",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "dot",
+      "line": 265,
+      "role": "The exact dot product, by DYADIC-SUM or by reduced rationals.",
+      "rocq": [
+        "dot"
+      ],
+      "tla": [],
+      "covers": [
+        "S6",
+        "S8"
+      ]
+    },
+    {
+      "item": "distance2",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "distance2",
+      "line": 294,
+      "role": "The exact squared euclidean distance.",
+      "rocq": [
+        "dist2"
+      ],
+      "tla": [],
+      "covers": [
+        "S7"
+      ]
+    },
+    {
+      "item": "manhattan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "manhattan",
+      "line": 322,
+      "role": "The exact manhattan distance.",
+      "rocq": [
+        "manhattan",
+        "rabs"
+      ],
+      "tla": [],
+      "covers": [
+        "S7"
+      ]
+    },
+    {
+      "item": "bits",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "bits",
+      "line": 378,
+      "role": "The bits of a binary vector, or None when an element is not 0 or 1 (decision 66).",
+      "rocq": [
+        "hamming",
+        "inter_count",
+        "union_count"
+      ],
+      "tla": [],
+      "covers": [
+        "S12"
+      ]
+    },
+    {
+      "item": "hamming",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "hamming",
+      "line": 402,
+      "role": "The hamming distance of two bit vectors.",
+      "rocq": [
+        "hamming"
+      ],
+      "tla": [],
+      "covers": [
+        "S12"
+      ]
+    },
+    {
+      "item": "jaccard",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "jaccard",
+      "line": 409,
+      "role": "The intersection and the union of two bit vectors, or None for an empty union.",
+      "rocq": [
+        "inter_count",
+        "union_count"
+      ],
+      "tla": [],
+      "covers": [
+        "S12"
+      ]
+    },
+    {
+      "item": "score",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "score",
+      "line": 429,
+      "role": "The exact score of a record for a query, or None when it is undefined.",
+      "rocq": [
+        "cosine_within",
+        "cosine_le"
+      ],
+      "tla": [],
+      "covers": [
+        "S9",
+        "S10",
+        "S12"
+      ]
+    },
+    {
+      "item": "better",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "better",
+      "line": 478,
+      "role": "The exact order of two scores of one query: COSINE-BETTER, the values, and the cross-multiplied jaccard ratios.",
+      "rocq": [
+        "cosine_le",
+        "ratio_le",
+        "ssq"
+      ],
+      "tla": [],
+      "covers": [
+        "S2",
+        "S10",
+        "S18"
+      ]
+    },
+    {
+      "item": "within",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "within",
+      "line": 525,
+      "role": "The exact bound decisions: the squared forms of cosine and euclidean, and the other thresholds and radii.",
+      "rocq": [
+        "cosine_within",
+        "euclidean_within"
+      ],
+      "tla": [],
+      "covers": [
+        "S1",
+        "S3",
+        "S4",
+        "S5",
+        "S9",
+        "S18"
+      ]
+    },
+    {
+      "item": "Candidate",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "struct",
+      "name": "Candidate",
+      "line": 605,
+      "role": "A candidate of a selection: its score and its rank in the canonical order of DR-75.",
+      "rocq": [
+        "candidate"
+      ],
+      "tla": [],
+      "covers": [
+        "S13"
+      ]
+    },
+    {
+      "item": "selection_order",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "selection_order",
+      "line": 616,
+      "role": "The selection order: the better score, then the lower rank (decisions 41 and 60).",
+      "rocq": [
+        "precedes"
+      ],
+      "tla": [],
+      "covers": [
+        "S13",
+        "S16",
+        "S20"
+      ]
+    },
+    {
+      "item": "rank",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "rank",
+      "line": 635,
+      "role": "The metered heap sort of the candidates in the selection order.",
+      "rocq": [
+        "insertion_sort",
+        "precedes"
+      ],
+      "tla": [],
+      "covers": [
+        "S14",
+        "S15",
+        "S20"
+      ]
+    },
+    {
+      "item": "Exact",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/num.rs",
+      "kind": "type",
+      "name": "Exact",
+      "line": 85,
+      "role": "The exact numbers of the core: reduced rationals (num_rational::BigRational), which Qc models; the property test checks the ordered ring laws that Part 5 discharges for Qc.",
+      "rocq": [],
+      "tla": [],
+      "covers": [
+        "S17",
+        "S18"
+      ]
+    },
+    {
+      "item": "number_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/num.rs",
+      "kind": "fn",
+      "name": "number_of",
+      "line": 243,
+      "role": "The exact value of every number kind: a dyadic number or a reduced rational, so every decision is a decision of the rationals.",
+      "rocq": [],
+      "tla": [],
+      "covers": [
+        "S11",
+        "S19"
+      ]
+    },
+    {
+      "item": "vector_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/num.rs",
+      "kind": "fn",
+      "name": "vector_of",
+      "line": 325,
+      "role": "The exact vector of a list of numbers, with its dimension checked.",
+      "rocq": [],
+      "tla": [],
+      "covers": [
+        "S11",
+        "S19"
+      ]
+    },
+    {
+      "item": "delivered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "kind": "fn",
+      "name": "delivered",
+      "line": 578,
+      "role": "The delivered value RN_53 of an exact score.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "Rocq has no IEEE-754 model (plan, formal verification). The Rust oracle tests against IEEE division and square root, the Sage leg (MPFR) and the Python receipt check it against test-vectors/numeric-reference-v1.json."
+    },
+    {
+      "item": "round_to_f64",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/num.rs",
+      "kind": "fn",
+      "name": "round_to_f64",
+      "line": 465,
+      "role": "RN_53 of a rational.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "Rocq has no IEEE-754 model. The IEEE quotient and identity oracles, the Sage leg and the Python receipt check it."
+    },
+    {
+      "item": "sqrt_to_f64",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/num.rs",
+      "kind": "fn",
+      "name": "sqrt_to_f64",
+      "line": 484,
+      "role": "RN_53 of the square root of a rational.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "Rocq has no IEEE-754 model. The IEEE square root oracle, the Sage leg and the Python receipt check it."
+    }
+  ]
+}

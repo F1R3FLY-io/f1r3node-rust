@@ -1423,14 +1423,17 @@
       "property_files": []
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
         "rholang/src/rust/interpreter/spaces/join.rs",
         "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
         "rholang/src/rust/interpreter/spaces/errors.rs",
-        "rholang/src/rust/interpreter/spaces/types/config.rs"
+        "rholang/src/rust/interpreter/spaces/types/config.rs",
+        "rholang/src/rust/interpreter/tensor/num.rs",
+        "rholang/src/rust/interpreter/tensor/exact.rs",
+        "rholang/src/rust/interpreter/tensor/costs.rs"
       ],
       "entry_points": [
         {
@@ -1468,13 +1471,61 @@
         {
           "file": "rholang/src/rust/interpreter/spaces/errors.rs",
           "pattern": "    CapacityExceeded,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/num.rs",
+          "pattern": "pub fn number_of(par: &Par, meter: &ScanMeter) -> Result<Number, NumError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/num.rs",
+          "pattern": "pub fn vector_of("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/num.rs",
+          "pattern": "pub fn round_to_f64(x: &Exact, meter: &ScanMeter) -> Result<f64, NumError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/num.rs",
+          "pattern": "pub fn sqrt_to_f64(x: &Exact, meter: &ScanMeter) -> Result<f64, NumError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "pattern": "pub fn dot(a: &ExactVector, b: &ExactVector, meter: &ScanMeter) -> Result<Exact, NumError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "pattern": "pub fn score("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "pattern": "pub fn better(a: &Score, b: &Score, meter: &ScanMeter) -> Result<Option<Ordering>, NumError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "pattern": "pub fn within("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "pattern": "pub fn delivered(score: &Score, query: &Query, meter: &ScanMeter) -> Result<f64, NumError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "pattern": "pub fn selection_order("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+          "pattern": "pub fn rank("
         }
       ],
       "tests": [
         "rholang/src/rust/interpreter/spaces/record.rs",
-        "rholang/src/rust/interpreter/spaces/generic.rs"
+        "rholang/src/rust/interpreter/spaces/generic.rs",
+        "rholang/src/rust/interpreter/tensor/num.rs",
+        "rholang/src/rust/interpreter/tensor/exact.rs"
       ],
-      "property_files": []
+      "property_files": [
+        "rholang/src/rust/interpreter/tensor/exact.rs"
+      ]
     }
   }
 }
