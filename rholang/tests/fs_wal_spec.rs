@@ -79,13 +79,12 @@ mod tests {
     // All submodule tests run as part of the single `fs_wal_spec`
     // integration binary — no proliferation of test binaries.
     //
-    // **Triage port note (slice 5.92)**: submodules deferred to
-    // follow-up slices (`lifecycle.rs` 190 LOC, `stream.rs` 160 LOC,
-    // `observation.rs` 3448 LOC, `mutation.rs` 4544 LOC).  Only the
-    // 13 tests in this parent file are ported here.
-    //
-    // #[path = "fs_wal/lifecycle.rs"]
-    // mod lifecycle;
+    // **Triage port status (slices 5.92 + 5.94)**: `lifecycle.rs`
+    // ported (slice 5.94); `stream.rs` (160 LOC), `observation.rs`
+    // (3448 LOC), `mutation.rs` (4544 LOC) deferred to follow-up
+    // slices.
+    #[path = "fs_wal/lifecycle.rs"]
+    mod lifecycle;
     // #[path = "fs_wal/mutation.rs"]
     // mod mutation;
     // #[path = "fs_wal/observation.rs"]
