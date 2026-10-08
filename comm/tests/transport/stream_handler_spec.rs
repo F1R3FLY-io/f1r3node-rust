@@ -347,7 +347,7 @@ mod stream_handler_spec {
         };
 
         // Use Chunker to create chunks
-        Chunker::chunk_it(NETWORK_ID, &blob, message_size)
+        Chunker::chunk_it(NETWORK_ID, Bytes::new(), &blob, message_size)
     }
 
     /// Create a stream without header (for testing missing header scenario)
@@ -430,7 +430,7 @@ mod stream_handler_spec {
         };
 
         // Create chunks with wrong network ID
-        let mut chunks = Chunker::chunk_it("wrong_network", &blob, 4096);
+        let mut chunks = Chunker::chunk_it("wrong_network", Bytes::new(), &blob, 4096);
 
         // Replace the network_id in the header chunk to simulate wrong network
         if let Some(first_chunk) = chunks.get_mut(0) {

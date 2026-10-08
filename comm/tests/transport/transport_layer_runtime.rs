@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use comm::rust::errors::CommError;
 use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::rp::protocol_helper;
 use comm::rust::test_instances::create_rp_conf_ask;
 use comm::rust::transport::communication_response::CommunicationResponse;
@@ -21,6 +22,7 @@ use comm::rust::transport::grpc_transport_server::{
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 use models::routing::Protocol;
+use prost::bytes::Bytes;
 use tokio::net::TcpListener;
 use tokio::sync::OnceCell;
 
@@ -91,6 +93,7 @@ impl TransportLayerTestRuntime {
 
         GrpcTransportClient::new(
             self.network_id.clone(),
+            ChainIdCell::unknown(),
             env.cert.clone(),
             env.key.clone(),
             self.max_message_size,
@@ -561,7 +564,7 @@ pub async fn send_heartbeat(
     remote: &PeerNode,
     network_id: &str,
 ) -> Result<(), CommError> {
-    let msg = protocol_helper::heartbeat(local, network_id);
+    let msg = protocol_helper::heartbeat(local, network_id, Bytes::new());
     transport.send(remote, &msg).await
 }
 
@@ -572,7 +575,7 @@ pub async fn broadcast_heartbeat(
     remotes: &[PeerNode],
     network_id: &str,
 ) -> Result<(), CommError> {
-    let msg = protocol_helper::heartbeat(local, network_id);
+    let msg = protocol_helper::heartbeat(local, network_id, Bytes::new());
     transport.broadcast(remotes, &msg).await
 }
 

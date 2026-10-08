@@ -24,13 +24,6 @@ fn peer_chain_id(protocol: &Protocol) -> &[u8] {
         .unwrap_or_default()
 }
 
-fn packet_type_id(protocol: &Protocol) -> Option<&str> {
-    match &protocol.message {
-        Some(models::routing::protocol::Message::Packet(packet)) => Some(&packet.type_id),
-        _ => None,
-    }
-}
-
 fn is_handshake(protocol: &Protocol) -> bool {
     matches!(
         &protocol.message,
@@ -82,27 +75,25 @@ pub async fn handle(
     rp_conf: &RPConf,
 ) -> Result<CommunicationResponse, CommError> {
     let sender = protocol_helper::sender(protocol);
-    let chain_id = peer_chain_id(protocol);
+    let is_packet = matches!(
+        &protocol.message,
+        Some(models::routing::protocol::Message::Packet(_))
+    );
 
-    // A joining node has no genesis of its own yet and learns one here, from
-    // the peer it was configured to trust. The value is verified against this
-    // node's own genesis as soon as that is recorded.
-    rp_conf
-        .chain_id
-        .adopt_from_bootstrap(&sender, rp_conf.bootstrap.as_ref(), chain_id);
-
-    if let Err(error) =
-        rp_conf.check_chain_id(&sender.to_string(), chain_id, packet_type_id(protocol))
-    {
-        return refuse_foreign_chain(
-            &sender,
-            protocol,
-            transport_layer,
-            connections_cell,
-            rp_conf,
-            error,
-        )
-        .await;
+    if !is_packet {
+        if let Err(error) =
+            rp_conf.check_chain_id(&sender.to_string(), peer_chain_id(protocol), None)
+        {
+            return refuse_foreign_chain(
+                &sender,
+                protocol,
+                transport_layer,
+                connections_cell,
+                rp_conf,
+                error,
+            )
+            .await;
+        }
     }
 
     match &protocol.message {

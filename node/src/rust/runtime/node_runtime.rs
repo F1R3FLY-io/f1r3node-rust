@@ -95,6 +95,12 @@ impl NodeRuntime {
         let _metrics = (); // Placeholder
         let _time = (); // Placeholder
 
+        // This shard's chain identity. Empty here: a node restarted on
+        // existing data gets it seeded from storage in `setup`, and a joining
+        // node learns it from its bootstrap peer during the approved-block
+        // exchange. The cell is shared, so every holder sees a late value.
+        let chain_id = comm::rust::rp::chain_id::ChainIdCell::unknown();
+
         // Create transport client
         let transport = {
             use std::collections::HashMap;
@@ -115,6 +121,7 @@ impl NodeRuntime {
 
             GrpcTransportClient::new(
                 self.node_conf.protocol_client.network_id.clone(),
+                chain_id.clone(),
                 cert,
                 key,
                 self.node_conf.protocol_client.grpc_max_recv_message_size as i32,
@@ -147,6 +154,7 @@ impl NodeRuntime {
         let rp_conf = comm::rust::rp::rp_conf::RPConf::new(
             local.clone(),
             self.node_conf.protocol_client.network_id.clone(),
+            chain_id.clone(),
             init_peer.clone(),
             self.node_conf.protocol_client.network_timeout,
             self.node_conf.protocol_client.batch_max_connections as usize,

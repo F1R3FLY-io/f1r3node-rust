@@ -234,6 +234,7 @@ impl InitializingSpec {
                 packet_with_content(
                     &local_for_expected,
                     &fixture.network_id,
+                    Bytes::new(),
                     request.clone().to_proto(),
                 )
             })
@@ -241,11 +242,13 @@ impl InitializingSpec {
         expected_requests.push(packet_with_content(
             &local_for_expected,
             &fixture.network_id,
+            Bytes::new(),
             block_request_message.to_proto(),
         ));
         expected_requests.push(packet_with_content(
             &local_for_expected,
             &fixture.network_id,
+            Bytes::new(),
             models::casper::ForkChoiceTipRequestProto::default(),
         ));
         // After the genesis BlockMessage lands and is saved, the joiner fires
@@ -253,6 +256,7 @@ impl InitializingSpec {
         expected_requests.push(packet_with_content(
             &local_for_expected,
             &fixture.network_id,
+            Bytes::new(),
             models::casper::MergeableEntryRequestProto {
                 block_hash: genesis.block_hash.clone(),
             },

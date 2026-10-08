@@ -236,6 +236,24 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     let block_hash_string =
         PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
 
+    match casper.genesis_block_hash() {
+        Ok(Some(genesis)) => conf.chain_id.set_once(genesis).map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Refusing to run: this node's chain identity is inconsistent. {}",
+                e
+            ))
+        })?,
+        Ok(None) => tracing::warn!(
+            "Transitioning to Running without a known genesis hash; peers of another \
+             chain cannot be told apart until it is learned"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "Could not read the genesis hash; peers of another chain cannot be told \
+             apart until it is learned"
+        ),
+    }
+
     let running = Running::new(
         block_processing_queue_tx,
         blocks_in_processing,

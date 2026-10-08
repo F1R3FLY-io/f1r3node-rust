@@ -38,6 +38,7 @@ fn conf(
     bootstrap: Option<PeerNode>,
 ) -> RPConf {
     RPConf {
+        chain_id: comm::rust::rp::chain_id::ChainIdCell::unknown(),
         local: peer("src"),
         network_id: NETWORK_ID.to_string(),
         bootstrap,

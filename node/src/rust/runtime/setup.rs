@@ -146,6 +146,29 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
+    // This node's chain identity, as far as storage knows it. A node that
+    // restarts on existing data has its genesis already, so the guard against
+    // peers of a previous chain is live from the first message rather than
+    // only once Casper reaches the running state. A fresh node gets nothing
+    // here and learns its identity during bootstrap.
+    {
+        let conf = rp_conf_cell
+            .read()
+            .map_err(|e| CasperError::RuntimeError(format!("Failed to read RPConf: {}", e)))?;
+        match block_dag_storage.genesis_hash()? {
+            Some(genesis) => {
+                conf.chain_id.set_once(genesis.clone()).map_err(|e| {
+                    CasperError::RuntimeError(format!("Failed to publish chain identity: {}", e))
+                })?;
+                info!(
+                    genesis = %models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(&genesis),
+                    "Chain identity seeded from storage"
+                );
+            }
+            None => info!("Chain identity not known yet; it is learned during bootstrap"),
+        }
+    }
+
     // Repeat-deploy carrier-index watermark (same pattern as the LFB
     // migration above): the height since which every insert records carriers,
     // which gates the fast path's absence proofs. An empty database gets none

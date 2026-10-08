@@ -240,6 +240,7 @@ mod tests {
 
     fn create_test_header(network_id: &str, sender_id: Vec<u8>) -> Header {
         Header {
+            chain_id: Bytes::new(),
             sender: Some(Node {
                 id: Bytes::from(sender_id),
                 host: Bytes::from("127.0.0.1"),
@@ -469,6 +470,7 @@ mod tests {
 
         // Test header without sender
         let invalid_header = Header {
+            chain_id: Bytes::new(),
             sender: None,
             network_id: "test".to_string(),
         };

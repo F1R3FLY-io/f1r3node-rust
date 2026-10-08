@@ -161,7 +161,12 @@ impl TransportLayer for TransportLayerTestImpl {
 
     async fn stream_mult(&self, peers: &[PeerNode], blob: &Blob) -> Result<(), CommError> {
         // Convert blob to protocol message using protocol_helper
-        let protocol_msg = protocol_helper::packet(&blob.sender, "test", blob.packet.clone());
+        let protocol_msg = protocol_helper::packet(
+            &blob.sender,
+            "test",
+            prost::bytes::Bytes::new(),
+            blob.packet.clone(),
+        );
 
         // Broadcast the protocol message
         self.broadcast(peers, &protocol_msg).await

@@ -9,6 +9,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, ApprovedBlockRequest, BlockMessage, BlockRequest,
     CasperMessage, NoApprovedBlockAvailable, UnapprovedBlock,
 };
+use prost::bytes::Bytes;
 use serial_test::serial;
 use tokio::time::{sleep, Duration};
 
@@ -93,6 +94,7 @@ impl GenesisValidatorSpec {
             let expected_packet = packet_with_content(
                 &fixture.local,
                 &fixture.network_id,
+                Bytes::new(),
                 block_approval.to_proto(),
             );
 
@@ -431,6 +433,7 @@ impl GenesisValidatorSpec {
             let expected_response = packet_with_content(
                 &fixture.local,
                 &fixture.network_id,
+                Bytes::new(),
                 NoApprovedBlockAvailable {
                     node_identifier: fixture.local.to_string(),
                     identifier: "test".to_string(),

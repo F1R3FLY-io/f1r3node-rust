@@ -146,7 +146,8 @@ mod tests {
 
         // when - simulate the handshake response flow
         // First, create a handshake response message (what we would send back)
-        let handshake_response = protocol_helper::protocol_handshake_response(&src, NETWORK_ID);
+        let handshake_response =
+            protocol_helper::protocol_handshake_response(&src, NETWORK_ID, Bytes::new());
         let result = transport.send(&remote, &handshake_response).await;
 
         // then

@@ -274,7 +274,11 @@ async fn sending_empty_message_should_work() {
         .run_two_nodes_test(
             |transport, local, remote| async move {
                 // Create a protocol message with minimal content
-                let msg = comm::rust::rp::protocol_helper::heartbeat(&local, "empty_msg_test");
+                let msg = comm::rust::rp::protocol_helper::heartbeat(
+                    &local,
+                    "empty_msg_test",
+                    Bytes::new(),
+                );
                 transport.send(&remote, &msg).await
             },
             Some(protocol_dispatcher.clone()),
@@ -393,6 +397,7 @@ async fn concurrent_sends_to_same_peer_should_all_succeed() {
                             let msg = comm::rust::rp::protocol_helper::packet(
                                 local,
                                 "concurrent_test",
+                                Bytes::new(),
                                 packet,
                             );
                             transport
@@ -562,7 +567,11 @@ async fn mixed_sends_and_streams_should_all_work() {
             |transport, local, remote| async move {
                 // Mix of sends and streams executed concurrently
                 let send_future = async {
-                    let msg = comm::rust::rp::protocol_helper::heartbeat(&local, "mixed_test");
+                    let msg = comm::rust::rp::protocol_helper::heartbeat(
+                        &local,
+                        "mixed_test",
+                        Bytes::new(),
+                    );
                     transport
                         .send(&remote, &msg)
                         .await

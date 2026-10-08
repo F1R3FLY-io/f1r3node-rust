@@ -22,11 +22,12 @@ use super::ssl_session_server_interceptor::SslSessionServerInterceptor;
 use super::stream_handler::{Circuit, StreamError, StreamHandler, Streamed};
 use crate::rust::errors::CommError;
 use crate::rust::metrics_constants::{
-    PACKETS_DROPPED_METRIC, PACKETS_ENQUEUED_METRIC, PACKETS_RECEIVED_METRIC,
-    STREAM_CHUNKS_DROPPED_METRIC, STREAM_CHUNKS_ENQUEUED_METRIC, STREAM_CHUNKS_RECEIVED_METRIC,
-    TRANSPORT_METRICS_SOURCE,
+    FOREIGN_CHAIN_REFUSED_METRIC, PACKETS_DROPPED_METRIC, PACKETS_ENQUEUED_METRIC,
+    PACKETS_RECEIVED_METRIC, STREAM_CHUNKS_DROPPED_METRIC, STREAM_CHUNKS_ENQUEUED_METRIC,
+    STREAM_CHUNKS_RECEIVED_METRIC, TRANSPORT_METRICS_SOURCE,
 };
 use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::chain_id::ChainIdCell;
 use crate::rust::rp::protocol_helper;
 use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::limited_buffer::LimitedBuffer;
@@ -41,22 +42,41 @@ fn calculate_hash(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
+struct CircuitParams {
+    network_id: String,
+    chain_id: ChainIdCell,
+    max_size: u64,
+}
+
 // Circuit breaker parameters for thread-local storage
 thread_local! {
-    static CIRCUIT_BREAKER_PARAMS: std::cell::RefCell<Option<(String, u64)>> = const { std::cell::RefCell::new(None) };
+    static CIRCUIT_BREAKER_PARAMS: std::cell::RefCell<Option<CircuitParams>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Circuit breaker function that uses thread-local parameters
 fn circuit_breaker_with_params(streamed: &Streamed) -> Circuit {
     CIRCUIT_BREAKER_PARAMS.with(|params| {
-        if let Some((network_id, max_size)) = params.borrow().as_ref() {
+        if let Some(params) = params.borrow().as_ref() {
             if let Some(header) = &streamed.header {
-                if header.network_id != *network_id {
+                if header.network_id != params.network_id {
                     return Circuit::opened(StreamError::wrong_network_id());
+                }
+
+                if let Err(error) = params.chain_id.check(
+                    &header.sender.to_string(),
+                    &header.chain_id,
+                    Some(&header.type_id),
+                ) {
+                    metrics::counter!(
+                        FOREIGN_CHAIN_REFUSED_METRIC,
+                        "source" => TRANSPORT_METRICS_SOURCE
+                    )
+                    .increment(1);
+                    return Circuit::opened(StreamError::wrong_chain_id(error.to_string()));
                 }
             }
 
-            if streamed.read_so_far > *max_size {
+            if streamed.read_so_far > params.max_size {
                 return Circuit::opened(StreamError::circuit_opened());
             }
         }
@@ -361,7 +381,11 @@ impl TransportLayerService {
         TlResponse {
             payload: Some(models::routing::tl_response::Payload::Ack(
                 models::routing::Ack {
-                    header: Some(protocol_helper::header(src, &self.network_id)),
+                    header: Some(protocol_helper::header(
+                        src,
+                        &self.network_id,
+                        self.rp_config.chain_id.to_wire(),
+                    )),
                 },
             )),
         }
@@ -390,7 +414,11 @@ impl TransportLayerService {
     {
         // Set thread-local parameters for the circuit breaker
         CIRCUIT_BREAKER_PARAMS.with(|params| {
-            *params.borrow_mut() = Some((network_id.to_string(), max_size));
+            *params.borrow_mut() = Some(CircuitParams {
+                network_id: network_id.to_string(),
+                chain_id: self.rp_config.chain_id.clone(),
+                max_size,
+            });
         });
 
         // Use the public StreamHandler API
@@ -436,6 +464,35 @@ impl TransportLayer for TransportLayerService {
 
         metrics::counter!(PACKETS_RECEIVED_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
             .increment(1);
+
+        // Turn away a peer of another chain here, before its message takes a
+        // slot in this peer's inbound buffer.
+        self.rp_config.chain_id.adopt_from_bootstrap(
+            &peer,
+            self.rp_config.bootstrap.as_ref(),
+            &header.chain_id,
+        );
+        let packet_type_id = match &protocol.message {
+            Some(models::routing::protocol::Message::Packet(packet)) => {
+                Some(packet.type_id.as_str())
+            }
+            _ => None,
+        };
+        
+        if packet_type_id.is_some() {
+            if let Err(error) =
+                self.rp_config
+                    .check_chain_id(&peer.to_string(), &header.chain_id, packet_type_id)
+            {
+                metrics::counter!(
+                    FOREIGN_CHAIN_REFUSED_METRIC,
+                    "source" => TRANSPORT_METRICS_SOURCE
+                )
+                .increment(1);
+                tracing::warn!(peer = %peer, error = %error, "Refused a packet from a peer of another chain");
+                return Err(Status::permission_denied(error.to_string()));
+            }
+        }
 
         // Determine if this is a gossip message (not a request/response)
         // Only filter pure gossip announcements: BlockHashMessage and HasBlock
@@ -781,12 +838,17 @@ mod tests {
                 "BlockMessage".to_string(),
                 10,
                 network_id.to_string(),
+                Bytes::new(),
                 false,
             )
         }
 
         CIRCUIT_BREAKER_PARAMS.with(|params| {
-            *params.borrow_mut() = Some(("expected-net".to_string(), 100));
+            *params.borrow_mut() = Some(CircuitParams {
+                network_id: "expected-net".to_string(),
+                chain_id: ChainIdCell::unknown(),
+                max_size: 100,
+            });
         });
 
         let mut streamed = Streamed::new("key".to_string());

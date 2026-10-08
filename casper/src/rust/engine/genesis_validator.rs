@@ -353,6 +353,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValida
         let msg = comm::rust::rp::protocol_helper::packet(
             &self.rp_conf_ask.local,
             &self.rp_conf_ask.network_id,
+            self.rp_conf_ask.chain_id.to_wire(),
             packet,
         );
         if let Err(err) = self.transport_layer.send(&bootstrap, &msg).await {
