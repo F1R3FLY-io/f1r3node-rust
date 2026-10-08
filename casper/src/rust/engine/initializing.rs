@@ -1625,6 +1625,45 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
 
+        // Phase 7b-1: build the snapshot chunk-fetch context if
+        // this node has an `fs_snapshot_writer`.  The joiner-side
+        // path through `Initializing` is where snapshot sync is
+        // actually consequential — this is the engine that
+        // observes a new finalized horizon and needs to fetch
+        // snapshot chunks for state reconstruction.  Returns
+        // `None` on observer / unconfigured deployments.
+        let snapshot_chunk_ctx =
+            crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                &self.runtime_manager,
+            )
+            .await;
+
+        // Phase 7b-2: build the WAL payload-fetch context.  Mirror
+        // of the construction in `casper_launch` (slice 5.124):
+        // fresh retriever + sync driver, payload lookup from the
+        // shared `RuntimeManager.payload_store` slot with a safe
+        // in-memory fallback for test harnesses.  `tick_stop` is
+        // `None` here — tick-loop spawn lands in a follow-up slice
+        // that threads `ConnectionsCell` through this function.
+        let wal_payload_ctx = {
+            use crate::rust::engine::running::WalPayloadContext;
+            use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
+            use crate::rust::engine::wal_payload_server::{InMemoryPayloadStore, PayloadLookup};
+            use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
+            let retriever = Arc::new(WalPayloadRetriever::new());
+            let sync_driver = Arc::new(WalPayloadSyncDriver::new(Arc::clone(&retriever)));
+            let lookup: Arc<dyn PayloadLookup> =
+                match self.runtime_manager.payload_store.read().await.as_ref() {
+                    Some(b) => b.lookup.clone(),
+                    None => Arc::new(InMemoryPayloadStore::new()),
+                };
+            Some(WalPayloadContext {
+                sync_driver,
+                payload_lookup: lookup,
+                tick_stop: None,
+            })
+        };
+
         transition_to_running(
             self.block_processing_queue_tx.clone(),
             self.blocks_in_processing.clone(),
@@ -1635,17 +1674,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
-            // Phase 7b-1: context construction via
-            // `build_snapshot_chunk_context(&runtime_manager)` and
-            // threading `self.runtime_manager` through
-            // `Initializing` are a follow-up slice.  `None`
-            // preserves current behavior.
-            None,
-            // Phase 7b-2: WAL payload context construction (reads
-            // the `RuntimeManager.payload_store` slot via
-            // `get_payload_store` for the lookup trait object)
-            // lands in the same follow-up slice.
-            None,
+            snapshot_chunk_ctx,
+            wal_payload_ctx,
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),
