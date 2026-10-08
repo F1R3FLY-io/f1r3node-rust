@@ -10,7 +10,7 @@ use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
 use super::trace::Log;
-use super::trace::event::Produce;
+use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::checkpoint::SoftCheckpoint;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Hash)]
@@ -33,6 +33,42 @@ pub struct ContResult<C, P, K> {
 
 pub type MaybeProduceCandidate<C, P, A, K> = Option<ProduceCandidate<C, P, A, K>>;
 pub type MaybeConsumeResult<C, P, A, K> = Option<(ContResult<C, P, K>, Vec<RSpaceResult<C, A>>)>;
+/// Observer invoked synchronously on every RSpace mutation.  The
+/// production observer (fileio's `host_work::ReductionCoordinator`)
+/// uses `observe_*` to track per-dimension host-work usage; triage
+/// has no observer wired in yet, so the trait is landed as
+/// scaffolding and the default `set_accounting_observer` is a no-op.
+///
+/// `Send + Sync` because the ISpace is often shared across tokio
+/// tasks and the observer must be callable from any of them.
+pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
+    fn observe_produce(
+        &self,
+        source: &Produce,
+        channel: &C,
+        data: &A,
+        persistent: bool,
+    ) -> Result<(), RSpaceError>;
+
+    fn observe_consume(
+        &self,
+        source: &Consume,
+        channels: &[C],
+        patterns: &[P],
+        continuation: &K,
+        persistent: bool,
+        peeks: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError>;
+
+    fn observe_comm(
+        &self,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        data: &[(&A, bool)],
+    ) -> Result<(), RSpaceError>;
+}
+
 pub type MaybeProduceResult<C, P, A, K> =
     Option<(ContResult<C, P, K>, Vec<RSpaceResult<C, A>>, Produce)>;
 
@@ -55,6 +91,20 @@ pub trait ISpace<
     K: Clone + Send + Sync,
 >: Send + Sync
 {
+    /// Install (or clear) the per-ISpace accounting observer.  Called
+    /// at runtime boot after the ReductionCoordinator mints the
+    /// observer; `None` disables accounting (default, triage-mode).
+    ///
+    /// Default no-op so existing ISpace impls on triage don't
+    /// require changes; the `RSpace` / `ReplayRSpace` /
+    /// `ReportingRspace` impls will override once the production
+    /// consumer lands.
+    fn set_accounting_observer(
+        &self,
+        _observer: Option<std::sync::Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    ) {
+    }
+
     /** Creates a checkpoint.
      *
      * @return A [[Checkpoint]]
