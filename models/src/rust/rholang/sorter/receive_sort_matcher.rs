@@ -19,7 +19,9 @@ impl ReceiveSortMatcher {
     ) -> Result<ScoredTerm<ReceiveBind>, BackingError> {
         let _depth = meter.enter()?;
         let mut patterns = meter.vec(bind.patterns.len())?;
-        let mut pattern_scores = meter.vec(bind.patterns.len())?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut pattern_scores = meter.vec(bind.patterns.len())?;
+        let mut pattern_scores = meter.score_vec(bind.patterns.len())?;
         for pattern in &bind.patterns {
             let scored = ParSortMatcher::sort_match_metered(pattern, meter)?;
             patterns.push(scored.term);
@@ -44,7 +46,9 @@ impl ReceiveSortMatcher {
             .as_ref()
             .map(|value| sort_signature_metered(value, meter))
             .transpose()?;
-        let mut scores = meter.vec(
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut scores = meter.vec(
+        let mut scores = meter.score_vec(
             pattern_scores
                 .len()
                 .checked_add(2)
@@ -133,7 +137,9 @@ impl ReceiveSortMatcher {
     ) -> Result<ScoredTerm<Receive>, BackingError> {
         let _depth = meter.enter()?;
         let mut binds = meter.vec(value.binds.len())?;
-        let mut bind_scores = meter.vec(value.binds.len())?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut bind_scores = meter.vec(value.binds.len())?;
+        let mut bind_scores = meter.score_vec(value.binds.len())?;
         for bind in &value.binds {
             let scored = Self::sort_bind_metered(bind, meter)?;
             binds.push(scored.term);
@@ -151,7 +157,9 @@ impl ReceiveSortMatcher {
             .as_ref()
             .filter(|par| *par != &empty)
             .map(|_| condition.term);
-        let mut scores = meter.vec(
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut scores = meter.vec(
+        let mut scores = meter.score_vec(
             bind_scores
                 .len()
                 .checked_add(6)
@@ -177,7 +185,9 @@ impl ReceiveSortMatcher {
                 persistent: value.persistent,
                 peek: value.peek,
                 bind_count: value.bind_count,
-                locally_free: meter.clone(&value.locally_free)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // locally_free: meter.clone(&value.locally_free)?,
+                locally_free: meter.clone_blocks(&value.locally_free)?,
                 connective_used: value.connective_used,
                 condition: condition_term,
             },

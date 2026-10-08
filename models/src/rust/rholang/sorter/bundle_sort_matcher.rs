@@ -25,7 +25,9 @@ impl BundleSortMatcher {
             bundle.body.as_ref().ok_or(BackingError::Rejected)?,
             meter,
         )?;
-        let mut children = meter.vec(1)?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut children = meter.vec(1)?;
+        let mut children = meter.score_vec(1)?;
         children.push(sorted_body.score);
         Ok(ScoredTerm {
             term: Bundle {

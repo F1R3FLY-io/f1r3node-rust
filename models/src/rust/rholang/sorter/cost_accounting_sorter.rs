@@ -141,7 +141,9 @@ fn scored_node(
     child: Tree<ScoreAtom>,
     meter: &SorterMeter<'_>,
 ) -> Result<Tree<ScoreAtom>, BackingError> {
-    let mut children = meter.vec(1)?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut children = meter.vec(1)?;
+    let mut children = meter.score_vec(1)?;
     children.push(child);
     Tree::<ScoreAtom>::create_node_from_i32_metered(kind, children, meter)
 }
@@ -159,11 +161,15 @@ pub fn sort_signature_metered(
         }),
         Some(Value::Ground(bytes)) => Ok(ScoredTerm {
             term: CostSignature {
-                value: Some(Value::Ground(meter.clone(bytes)?)),
+                // Changed by D-O1 (DR-111): block accounting.
+                // value: Some(Value::Ground(meter.clone(bytes)?)),
+                value: Some(Value::Ground(meter.clone_blocks(bytes)?)),
             },
             score: scored_node(
                 Score::COST_SIG_GROUND,
-                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(bytes)?),
+                // Changed by D-O1 (DR-111): block accounting.
+                // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(bytes)?),
+                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone_blocks(bytes)?),
                 meter,
             )?,
         }),
@@ -229,7 +235,9 @@ pub fn sort_signature_metered(
                 return elements.pop().ok_or(BackingError::Rejected);
             }
             ScoredTerm::sort_vec_metered(&mut elements, meter)?;
-            let mut scores = meter.vec(elements.len())?;
+            // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+            // let mut scores = meter.vec(elements.len())?;
+            let mut scores = meter.score_vec(elements.len())?;
             let mut terms = meter.vec(elements.len())?;
             for element in elements {
                 scores.push(element.score);
@@ -296,7 +304,9 @@ pub fn sort_signed_term_metered(
             Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
         ),
     };
-    let mut scores = meter.vec(2)?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut scores = meter.vec(2)?;
+    let mut scores = meter.score_vec(2)?;
     scores.push(signature_score);
     scores.push(body_score);
     Ok(ScoredTerm {
@@ -322,7 +332,9 @@ pub fn sort_stack_metered(
         cells.push(sort_signature_metered(cell, meter)?);
     }
     let mut terms = meter.vec(cells.len())?;
-    let mut scores = meter.vec(cells.len())?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut scores = meter.vec(cells.len())?;
+    let mut scores = meter.score_vec(cells.len())?;
     for cell in cells {
         terms.push(cell.term);
         scores.push(cell.score);

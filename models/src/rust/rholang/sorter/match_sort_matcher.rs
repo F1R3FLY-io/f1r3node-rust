@@ -22,7 +22,9 @@ impl MatchSortMatcher {
             meter,
         )?;
         let mut cases = meter.vec(value.cases.len())?;
-        let mut scores = meter.vec(
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut scores = meter.vec(
+        let mut scores = meter.score_vec(
             value
                 .cases
                 .len()
@@ -42,7 +44,9 @@ impl MatchSortMatcher {
             term: Match {
                 target: Some(target.term),
                 cases,
-                locally_free: meter.clone(&value.locally_free)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // locally_free: meter.clone(&value.locally_free)?,
+                locally_free: meter.clone_blocks(&value.locally_free)?,
                 connective_used: value.connective_used,
             },
             score: Tree::<ScoreAtom>::create_node_from_i32_metered(Score::MATCH, scores, meter)?,
@@ -70,7 +74,9 @@ impl MatchSortMatcher {
             .as_ref()
             .filter(|par| *par != &empty)
             .map(|_| guard.term);
-        let mut scores = meter.vec(4)?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut scores = meter.vec(4)?;
+        let mut scores = meter.score_vec(4)?;
         scores.push(pattern.score);
         scores.push(body.score);
         scores.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(

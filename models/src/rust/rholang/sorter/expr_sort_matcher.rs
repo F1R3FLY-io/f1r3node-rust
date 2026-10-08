@@ -831,7 +831,9 @@ fn score_children(
     second: Tree<ScoreAtom>,
     meter: &SorterMeter<'_>,
 ) -> Result<Vec<Tree<ScoreAtom>>, BackingError> {
-    let mut scores = meter.vec(2)?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut scores = meter.vec(2)?;
+    let mut scores = meter.score_vec(2)?;
     scores.push(first);
     scores.push(second);
     Ok(scores)
@@ -842,7 +844,9 @@ fn score_node(
     score: Tree<ScoreAtom>,
     meter: &SorterMeter<'_>,
 ) -> Result<Tree<ScoreAtom>, BackingError> {
-    let mut children = meter.vec(1)?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut children = meter.vec(1)?;
+    let mut children = meter.score_vec(1)?;
     children.push(score);
     Tree::<ScoreAtom>::create_node_from_i32_metered(kind, children, meter)
 }
@@ -863,7 +867,9 @@ fn split_pars_metered(
     meter: &SorterMeter<'_>,
 ) -> Result<(Vec<Par>, Vec<Tree<ScoreAtom>>), BackingError> {
     let mut terms = meter.vec(pars.len())?;
-    let mut scores = meter.vec(pars.len())?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut scores = meter.vec(pars.len())?;
+    let mut scores = meter.score_vec(pars.len())?;
     for par in pars {
         terms.push(par.term);
         scores.push(par.score);
@@ -882,7 +888,9 @@ fn collection_score(
         .len()
         .checked_add(3)
         .ok_or(BackingError::Overflow)?;
-    let mut scores = meter.vec(count)?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut scores = meter.vec(count)?;
+    let mut scores = meter.score_vec(count)?;
     scores.push(Tree::<ScoreAtom>::create_leaf_from_i64(kind as i64));
     scores.push(match remainder {
         Some(var) => VarSortMatcher::sort_match_metered(var, meter)?.score,
@@ -1049,9 +1057,13 @@ impl ExprSortMatcher {
                 Ok(construct_metered(
                     ExprInstance::EListBody(EList {
                         ps,
-                        locally_free: meter.clone(&list.locally_free)?,
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // locally_free: meter.clone(&list.locally_free)?,
+                        locally_free: meter.clone_blocks(&list.locally_free)?,
                         connective_used: list.connective_used,
-                        remainder: meter.clone(&list.remainder)?,
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // remainder: meter.clone(&list.remainder)?,
+                        remainder: meter.clone_blocks(&list.remainder)?,
                     }),
                     collection_score(
                         Score::ELIST,
@@ -1068,9 +1080,13 @@ impl ExprSortMatcher {
                 Ok(construct_metered(
                     ExprInstance::EPathmapBody(EPathMap {
                         ps,
-                        locally_free: meter.clone(&pathmap.locally_free)?,
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // locally_free: meter.clone(&pathmap.locally_free)?,
+                        locally_free: meter.clone_blocks(&pathmap.locally_free)?,
                         connective_used: pathmap.connective_used,
-                        remainder: meter.clone(&pathmap.remainder)?,
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // remainder: meter.clone(&pathmap.remainder)?,
+                        remainder: meter.clone_blocks(&pathmap.remainder)?,
                     }),
                     collection_score(
                         Score::EPATHMAP,
@@ -1095,13 +1111,21 @@ impl ExprSortMatcher {
                     ExprInstance::EZipperBody(EZipper {
                         pathmap: Some(EPathMap {
                             ps,
-                            locally_free: meter.clone(&pathmap.locally_free)?,
+                            // Changed by D-O1 (DR-111): block accounting.
+                            // locally_free: meter.clone(&pathmap.locally_free)?,
+                            locally_free: meter.clone_blocks(&pathmap.locally_free)?,
                             connective_used: pathmap.connective_used,
-                            remainder: meter.clone(&pathmap.remainder)?,
+                            // Changed by D-O1 (DR-111): block accounting.
+                            // remainder: meter.clone(&pathmap.remainder)?,
+                            remainder: meter.clone_blocks(&pathmap.remainder)?,
                         }),
-                        current_path: meter.clone(&zipper.current_path)?,
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // current_path: meter.clone(&zipper.current_path)?,
+                        current_path: meter.clone_blocks(&zipper.current_path)?,
                         is_write_zipper: zipper.is_write_zipper,
-                        locally_free: meter.clone(&zipper.locally_free)?,
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // locally_free: meter.clone(&zipper.locally_free)?,
+                        locally_free: meter.clone_blocks(&zipper.locally_free)?,
                         connective_used: zipper.connective_used,
                     }),
                     score,
@@ -1109,7 +1133,9 @@ impl ExprSortMatcher {
             }
             Some(ExprInstance::ETupleBody(tuple)) => {
                 let (ps, scores) = split_pars_metered(sort_pars_metered(&tuple.ps, meter)?, meter)?;
-                let mut sorted_tuple = meter.clone(tuple)?;
+                // Changed by D-O1 (DR-111): block accounting.
+                // let mut sorted_tuple = meter.clone(tuple)?;
+                let mut sorted_tuple = meter.clone_blocks(tuple)?;
                 sorted_tuple.ps = ps;
                 Ok(construct_metered(
                     ExprInstance::ETupleBody(sorted_tuple),
@@ -1124,19 +1150,25 @@ impl ExprSortMatcher {
                     meter,
                 )?;
                 let count = scores.len().checked_add(4).ok_or(BackingError::Overflow)?;
-                let mut score_items = meter.vec(count)?;
+                // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+                // let mut score_items = meter.vec(count)?;
+                let mut score_items = meter.score_vec(count)?;
                 score_items.push(Tree::<ScoreAtom>::create_leaf_from_i64(
                     Score::EMETHOD as i64,
                 ));
                 score_items.push(Tree::<ScoreAtom>::create_leaf_from_string(
-                    meter.clone(&method.method_name)?,
+                    // Changed by D-O1 (DR-111): block accounting.
+                    // meter.clone(&method.method_name)?,
+                    meter.clone_blocks(&method.method_name)?,
                 ));
                 score_items.push(target.score);
                 score_items.extend(scores);
                 score_items.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(
                     method.connective_used,
                 )));
-                let mut sorted_method = meter.clone(method)?;
+                // Changed by D-O1 (DR-111): block accounting.
+                // let mut sorted_method = meter.clone(method)?;
+                let mut sorted_method = meter.clone_blocks(method)?;
                 sorted_method.arguments = arguments;
                 sorted_method.target = Some(target.term);
                 Ok(construct_metered(
@@ -1147,83 +1179,123 @@ impl ExprSortMatcher {
             Some(ExprInstance::ESetBody(set)) => Self::sort_set_metered(set, meter),
             Some(ExprInstance::EMapBody(map)) => Self::sort_map_metered(map, meter),
             Some(ExprInstance::GBool(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[Score::BOOL as i64, i64::from(!*value)],
                     meter,
                 )?,
             }),
             Some(ExprInstance::GInt(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[Score::INT as i64, *value],
                     meter,
                 )?,
             }),
             Some(ExprInstance::GString(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: score_node(
                     Score::STRING,
-                    Tree::<ScoreAtom>::create_leaf_from_string(meter.clone(value)?),
+                    // Changed by D-O1 (DR-111): block accounting.
+                    // Tree::<ScoreAtom>::create_leaf_from_string(meter.clone(value)?),
+                    Tree::<ScoreAtom>::create_leaf_from_string(meter.clone_blocks(value)?),
                     meter,
                 )?,
             }),
             Some(ExprInstance::GUri(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: score_node(
                     Score::URI,
-                    Tree::<ScoreAtom>::create_leaf_from_string(meter.clone(value)?),
+                    // Changed by D-O1 (DR-111): block accounting.
+                    // Tree::<ScoreAtom>::create_leaf_from_string(meter.clone(value)?),
+                    Tree::<ScoreAtom>::create_leaf_from_string(meter.clone_blocks(value)?),
                     meter,
                 )?,
             }),
             Some(ExprInstance::GByteArray(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: score_node(
                     Score::EBYTEARR,
-                    Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(value)?),
+                    // Changed by D-O1 (DR-111): block accounting.
+                    // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(value)?),
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone_blocks(value)?),
                     meter,
                 )?,
             }),
             Some(ExprInstance::GDouble(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[Score::DOUBLE as i64, *value as i64],
                     meter,
                 )?,
             }),
             Some(ExprInstance::GFloat32(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[Score::FLOAT32 as i64, *value as i64],
                     meter,
                 )?,
             }),
             Some(ExprInstance::GBigInt(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: score_node(
                     Score::BIG_INT,
-                    Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(value)?),
+                    // Changed by D-O1 (DR-111): block accounting.
+                    // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(value)?),
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone_blocks(value)?),
                     meter,
                 )?,
             }),
             Some(ExprInstance::GBigRat(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i32_metered(
                     Score::BIG_RAT,
                     score_children(
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.numerator)?),
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.denominator)?),
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.numerator)?),
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(
+                            meter.clone_blocks(&value.numerator)?,
+                        ),
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.denominator)?),
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(
+                            meter.clone_blocks(&value.denominator)?,
+                        ),
                         meter,
                     )?,
                     meter,
                 )?,
             }),
             Some(ExprInstance::GFixedPoint(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i32_metered(
                     Score::FIXED_POINT,
                     score_children(
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.unscaled)?),
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.unscaled)?),
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(
+                            meter.clone_blocks(&value.unscaled)?,
+                        ),
                         Tree::<ScoreAtom>::create_node_from_i64s_metered(
                             &[value.scale as i64],
                             meter,
@@ -1234,45 +1306,59 @@ impl ExprSortMatcher {
                 )?,
             }),
             Some(ExprInstance::GUint64(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: score_node(
                     Score::UINT64,
                     Tree::<ScoreAtom>::create_leaf_from_bytes(
-                        meter.clone_slice(&value.to_be_bytes())?,
+                        // Changed by D-O1 (DR-111): block accounting.
+                        // meter.clone_slice(&value.to_be_bytes())?,
+                        meter.clone_slice_blocks(&value.to_be_bytes())?,
                     ),
                     meter,
                 )?,
             }),
             Some(ExprInstance::GInt32(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[Score::INT32 as i64, i64::from(*value)],
                     meter,
                 )?,
             }),
             Some(ExprInstance::GUint32(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[Score::UINT32 as i64, i64::from(*value)],
                     meter,
                 )?,
             }),
             Some(ExprInstance::GUint16(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[Score::UINT16 as i64, i64::from(*value)],
                     meter,
                 )?,
             }),
             Some(ExprInstance::GUint8(value)) => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[Score::UINT8 as i64, i64::from(*value)],
                     meter,
                 )?,
             }),
             None => Ok(ScoredTerm {
-                term: meter.clone(expr)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // term: meter.clone(expr)?,
+                term: meter.clone_blocks(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i32_metered(
                     Score::ABSENT,
                     Vec::new(),
@@ -1286,7 +1372,9 @@ impl ExprSortMatcher {
         set: &crate::rhoapi::ESet,
         meter: &SorterMeter<'_>,
     ) -> Result<ScoredTerm<Expr>, BackingError> {
-        let par_set = ParSetTypeMapper::eset_to_par_set_metered(meter.clone(set)?, meter)?;
+        // Changed by D-O1 (DR-111): block accounting.
+        // let par_set = ParSetTypeMapper::eset_to_par_set_metered(meter.clone(set)?, meter)?;
+        let par_set = ParSetTypeMapper::eset_to_par_set_metered(meter.clone_blocks(set)?, meter)?;
         let (terms, scores) =
             split_pars_metered(sort_pars_metered(&par_set.ps.sorted_pars, meter)?, meter)?;
         let score = collection_score(
@@ -1312,9 +1400,13 @@ impl ExprSortMatcher {
         map: &crate::rhoapi::EMap,
         meter: &SorterMeter<'_>,
     ) -> Result<ScoredTerm<Expr>, BackingError> {
-        let par_map = ParMapTypeMapper::emap_to_par_map_metered(meter.clone(map)?, meter)?;
+        // Changed by D-O1 (DR-111): block accounting.
+        // let par_map = ParMapTypeMapper::emap_to_par_map_metered(meter.clone(map)?, meter)?;
+        let par_map = ParMapTypeMapper::emap_to_par_map_metered(meter.clone_blocks(map)?, meter)?;
         let mut terms = meter.vec(par_map.ps.sorted_list.len())?;
-        let mut scores = meter.vec(par_map.ps.sorted_list.len())?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut scores = meter.vec(par_map.ps.sorted_list.len())?;
+        let mut scores = meter.score_vec(par_map.ps.sorted_list.len())?;
         for (key, value) in &par_map.ps.sorted_list {
             let key = ParSortMatcher::sort_match_metered(key, meter)?;
             let value = ParSortMatcher::sort_match_metered(value, meter)?;
@@ -1349,7 +1441,9 @@ fn simple_collection_score(
     meter: &SorterMeter<'_>,
 ) -> Result<Tree<ScoreAtom>, BackingError> {
     let count = scores.len().checked_add(2).ok_or(BackingError::Overflow)?;
-    let mut items = meter.vec(count)?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut items = meter.vec(count)?;
+    let mut items = meter.score_vec(count)?;
     items.push(Tree::<ScoreAtom>::create_leaf_from_i64(kind as i64));
     items.extend(scores);
     items.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(

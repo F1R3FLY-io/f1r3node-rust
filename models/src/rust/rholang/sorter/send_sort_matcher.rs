@@ -28,7 +28,9 @@ impl SendSortMatcher {
             .len()
             .checked_add(3)
             .ok_or(BackingError::Overflow)?;
-        let mut scores = meter.vec(score_len)?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut scores = meter.vec(score_len)?;
+        let mut scores = meter.score_vec(score_len)?;
         scores.push(Tree::<ScoreAtom>::create_leaf_from_i64(
             send.persistent as i64,
         ));
@@ -45,7 +47,9 @@ impl SendSortMatcher {
                 chan: Some(channel.term),
                 data,
                 persistent: send.persistent,
-                locally_free: meter.clone(&send.locally_free)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // locally_free: meter.clone(&send.locally_free)?,
+                locally_free: meter.clone_blocks(&send.locally_free)?,
                 connective_used: send.connective_used,
             },
             score: Tree::<ScoreAtom>::create_node_from_i32_metered(Score::SEND, scores, meter)?,

@@ -14,3 +14,6 @@ pub mod send_sort_matcher;
 pub mod sortable;
 pub mod unforgeable_sort_matcher;
 pub mod var_sort_matcher;
+
+#[cfg(test)]
+mod block_tests;

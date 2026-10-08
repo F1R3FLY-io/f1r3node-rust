@@ -34,8 +34,13 @@ impl SortedParMap {
         map.try_reserve(vec.len())
             .map_err(|_| BackingError::Allocation)?;
         for (key, value) in vec {
-            meter.inspect(&key)?;
-            meter.inspect(&value)?;
+            // Changed by D-O1 (DR-111): the insert hashes the key, then
+            // compares it in lockstep or moves it (`hash_insert_blocks`). The
+            // value moves in, or moves out of the table when a key repeats.
+            // meter.inspect(&key)?;
+            // meter.inspect(&value)?;
+            meter.hash_insert_blocks(&key)?;
+            meter.inspect_blocks(&value)?;
             map.insert(key, value);
         }
         let sorted_list = Ordering::sort_map_metered(&map, backing)?;
@@ -47,8 +52,12 @@ impl SortedParMap {
             .try_reserve(sorted_list.len())
             .map_err(|_| BackingError::Allocation)?;
         for (key, value) in &sorted_list {
-            meter.inspect(key)?;
-            sorted_map.insert(meter.clone(key)?, meter.clone(value)?);
+            // Changed by D-O1 (DR-111): the insert hashes the copy of the key,
+            // then compares it in lockstep or moves it (`hash_insert_blocks`).
+            // meter.inspect(key)?;
+            // sorted_map.insert(meter.clone(key)?, meter.clone(value)?);
+            meter.hash_insert_blocks(key)?;
+            sorted_map.insert(meter.clone_blocks(key)?, meter.clone_blocks(value)?);
         }
         Ok(Self {
             ps: map,
@@ -161,4 +170,80 @@ impl IntoIterator for SortedParMap {
 
 impl PartialEq for SortedParMap {
     fn eq(&self, other: &Self) -> bool { self.sorted_list == other.sorted_list }
+}
+
+#[cfg(test)]
+mod block_tests {
+    use std::cell::RefCell;
+
+    use shared::rust::clone_backing::{self, BackingError, BackingMeter};
+    use shared::rust::collection_backing::hash_backing;
+
+    use super::*;
+
+    fn log_of(
+        charge: impl FnOnce(&dyn BackingMeter) -> Result<(), BackingError>,
+    ) -> Vec<[usize; 3]> {
+        let log = RefCell::new(Vec::with_capacity(4_096));
+        let backing = |operations: usize, scanned: usize, bytes: usize| {
+            log.borrow_mut().push([operations, scanned, bytes]);
+            Ok(())
+        };
+        charge(&backing).expect("an unlimited meter");
+        log.into_inner()
+    }
+
+    /// D-E4 (DR-111): a metered map construction reserves its table and
+    /// charges three block inspections for each key insert and one for each
+    /// value, which moves in or moves out when its key repeats. Each copied
+    /// entry gets two block copies. One distinct key given twice makes the
+    /// second insert compare and replace (pgmcp bug 475811 stays open for
+    /// several distinct keys).
+    #[test]
+    fn map_construction_charges_hash_inserts_and_block_copies() {
+        let key = crate::rust::utils::new_gstring_par("k".repeat(4_096), vec![1; 16], false);
+        let first = crate::rust::utils::new_gstring_par("v".repeat(64), Vec::new(), false);
+        let second = crate::rust::utils::new_gstring_par("w".repeat(4_096), Vec::new(), false);
+        let log = log_of(|backing| {
+            SortedParMap::create_from_vec_metered(
+                vec![(key.clone(), first.clone()), (key.clone(), second.clone())],
+                backing,
+            )
+            .map(drop)
+        });
+        let insert = log_of(|meter| {
+            for _ in 0..3 {
+                clone_backing::inspect_blocks(&key, meter)?;
+            }
+            Ok(())
+        });
+        let table = |capacity: usize| {
+            let (operations, bytes) = hash_backing::<Par, Par>(capacity).expect("a small table");
+            vec![[operations, 0, bytes]]
+        };
+        let map = HashMap::from([(key.clone(), second.clone())]);
+        let sort = log_of(|backing| Ordering::sort_map_metered(&map, backing).map(drop));
+        let sorted = Ordering::sort_map_metered(&map, &|_: usize, _: usize, _: usize| Ok(()))
+            .expect("an unlimited sort");
+        let (sorted_key, sorted_value) = &sorted[0];
+        let expected = [
+            table(2),
+            insert.clone(),
+            log_of(|meter| clone_backing::inspect_blocks(&first, meter)),
+            insert.clone(),
+            log_of(|meter| clone_backing::inspect_blocks(&second, meter)),
+            sort,
+            table(1),
+            log_of(|meter| {
+                for _ in 0..3 {
+                    clone_backing::inspect_blocks(sorted_key, meter)?;
+                }
+                Ok(())
+            }),
+            log_of(|meter| clone_backing::reserve_blocks_copy_and_cleanup(sorted_key, meter)),
+            log_of(|meter| clone_backing::reserve_blocks_copy_and_cleanup(sorted_value, meter)),
+        ]
+        .concat();
+        assert_eq!(log, expected);
+    }
 }

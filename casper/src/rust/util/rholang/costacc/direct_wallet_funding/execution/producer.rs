@@ -376,9 +376,15 @@ fn resource_equal_metered(
         reserve(budget, HostWorkDimension::SearchStateBytes, allocation)
             .map_err(|_| BackingError::Rejected)
     };
-    clone_backing::inspect(left.authority, &backing)
+    // Changed by D-O1 (DR-111): the two authorities are the borrowed sides of
+    // the comparison below. A block inspection of each prepays its reads.
+    // clone_backing::inspect(left.authority, &backing)
+    //     .map_err(|_| invalid("native retained resource comparison work rejected"))?;
+    // clone_backing::inspect(right.authority, &backing)
+    //     .map_err(|_| invalid("native retained resource comparison work rejected"))?;
+    clone_backing::inspect_blocks(left.authority, &backing)
         .map_err(|_| invalid("native retained resource comparison work rejected"))?;
-    clone_backing::inspect(right.authority, &backing)
+    clone_backing::inspect_blocks(right.authority, &backing)
         .map_err(|_| invalid("native retained resource comparison work rejected"))?;
     Ok(left == right)
 }
@@ -1503,6 +1509,113 @@ mod tests {
                 mirror.usage(dimension).get(),
                 "{dimension:?}"
             );
+        }
+    }
+
+    /// The meter of `resource_equal_metered`: walker operations count twice.
+    fn doubled_operations(
+        budget: &HostWorkBudget,
+    ) -> impl Fn(usize, usize, usize) -> Result<(), BackingError> + '_ {
+        move |operations, scanned, allocation| {
+            reserve(
+                budget,
+                HostWorkDimension::VerificationOperations,
+                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+            )
+            .map_err(|_| BackingError::Rejected)?;
+            reserve(budget, HostWorkDimension::VerificationBytes, scanned)
+                .map_err(|_| BackingError::Rejected)?;
+            reserve(budget, HostWorkDimension::SearchStateBytes, allocation)
+                .map_err(|_| BackingError::Rejected)
+        }
+    }
+
+    fn usage(budget: &HostWorkBudget) -> [u64; HostWorkDimension::ALL.len()] {
+        HostWorkDimension::ALL.map(|dimension| budget.usage(dimension).get())
+    }
+
+    fn unlimited() -> HostWorkBudget {
+        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
+    }
+
+    /// D-E4 (DR-111): comparing two retained resources reserves the reads of
+    /// both locations and term sets and one block inspection of each borrowed
+    /// authority. A 4 KiB ground authority on one side adds exactly the growth
+    /// of one block inspection. The comparison accepts its exact credit and is
+    /// rejected one unit short in each dimension that it uses.
+    #[test]
+    fn resource_comparison_inspects_each_authority_once() {
+        fn resource<'a>(authority: &'a Sig, location: &'a [u8]) -> PhloResource<'a> {
+            PhloResource {
+                location,
+                class: 0,
+                acquisition_terms: b"selected-schedule",
+                authority,
+            }
+        }
+        let mirror = |left: PhloResource<'_>, right: PhloResource<'_>| {
+            let budget = unlimited();
+            let bytes = left.location.len()
+                + right.location.len()
+                + left.acquisition_terms.len()
+                + right.acquisition_terms.len();
+            reserve(&budget, HostWorkDimension::VerificationOperations, bytes)
+                .expect("an unlimited budget");
+            reserve(&budget, HostWorkDimension::VerificationBytes, bytes)
+                .expect("an unlimited budget");
+            let backing = doubled_operations(&budget);
+            clone_backing::inspect_blocks(left.authority, &backing).expect("an inspection");
+            clone_backing::inspect_blocks(right.authority, &backing).expect("an inspection");
+            usage(&budget)
+        };
+        let inspection = |authority: &Sig| {
+            let budget = unlimited();
+            clone_backing::inspect_blocks(authority, &doubled_operations(&budget))
+                .expect("an inspection");
+            usage(&budget)
+        };
+        let small = Sig::Ground(vec![1; 32]);
+        let large = Sig::Ground(vec![1; 4_096]);
+        let location = b"located-purse".to_vec();
+        let mut usages = Vec::with_capacity(3);
+        for (left, right) in [(&small, &small), (&small, &large), (&large, &small)] {
+            let [left, right] = [resource(left, &location), resource(right, &location)];
+            let budget = unlimited();
+            let equal = resource_equal_metered(left, right, &budget).expect("an unlimited budget");
+            assert_eq!(equal, left == right);
+            assert_eq!(usage(&budget), mirror(left, right));
+            usages.push(usage(&budget));
+        }
+        let [same, grown] = [inspection(&small), inspection(&large)];
+        for side in [1, 2] {
+            for dimension in 0..HostWorkDimension::ALL.len() {
+                assert_eq!(
+                    usages[side][dimension] - usages[0][dimension],
+                    grown[dimension] - same[dimension],
+                    "side {side}, dimension {dimension}"
+                );
+            }
+        }
+
+        let [left, right] = [resource(&large, &location), resource(&small, &location)];
+        let expected = mirror(left, right);
+        let limited = |units: [u64; HostWorkDimension::ALL.len()]| {
+            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(0));
+            for (dimension, limit) in HostWorkDimension::ALL.into_iter().zip(units) {
+                limits.set(dimension, HostWorkLimit::new(limit));
+            }
+            HostWorkBudget::new(limits)
+        };
+        resource_equal_metered(left, right, &limited(expected)).expect("the exact credit");
+        for dimension in 0..expected.len() {
+            if expected[dimension] > 0 {
+                let mut short = expected;
+                short[dimension] -= 1;
+                assert!(
+                    resource_equal_metered(left, right, &limited(short)).is_err(),
+                    "dimension {dimension}"
+                );
+            }
         }
     }
 }

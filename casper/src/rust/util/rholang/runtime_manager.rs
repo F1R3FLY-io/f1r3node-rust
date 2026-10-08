@@ -327,6 +327,39 @@ impl CertifiedOfferedDraft {
     }
 }
 
+/// D-E4 (DR-111): the charge of the copy of the authority presentations into
+/// the candidate of an offered certificate. The copy is released with the
+/// certificate, so a block slice copy and cleanup prepays it. An empty slice
+/// charges nothing.
+fn reserve_presentation_copy(
+    presentations: &[models::rhoapi::CostSignature],
+    budget: &HostWorkBudget,
+) -> Result<(), CasperError> {
+    if presentations.is_empty() {
+        return Ok(());
+    }
+    let meter = |operations: usize, scanned: usize, backing: usize| {
+        for (dimension, amount) in [
+            (HostWorkDimension::VerificationOperations, operations),
+            (HostWorkDimension::VerificationBytes, scanned),
+            (HostWorkDimension::SearchStateBytes, backing),
+        ] {
+            budget
+                .reserve(
+                    dimension,
+                    HostWorkUnits::new(u64::try_from(amount).map_err(|_| BackingError::Overflow)?),
+                )
+                .map_err(|_| BackingError::Rejected)?;
+        }
+        Ok(())
+    };
+    clone_backing::reserve_blocks_slice_copy_and_cleanup(presentations, &meter).map_err(|error| {
+        CasperError::RuntimeError(format!(
+            "offered certificate presentation copy failed: {error:?}"
+        ))
+    })
+}
+
 struct MergeableReadMeter<'a>(&'a HostWorkBudget);
 
 impl NativeReadMeter for MergeableReadMeter<'_> {
@@ -1533,34 +1566,37 @@ impl RuntimeManager {
                 CasperError::RuntimeError("offered certificate event copy overflows".to_string())
             })?;
         let body = signed.data.body();
-        let presentation_meter = |operations: usize, scanned: usize, backing: usize| {
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, backing),
-            ] {
-                budget
-                    .reserve(
-                        dimension,
-                        HostWorkUnits::new(
-                            u64::try_from(amount).map_err(|_| BackingError::Overflow)?,
-                        ),
-                    )
-                    .map_err(|_| BackingError::Rejected)?;
-            }
-            Ok(())
-        };
-        if !body.authority_presentations.is_empty() {
-            clone_backing::reserve_slice_copy_and_cleanup(
-                &body.authority_presentations,
-                &presentation_meter,
-            )
-            .map_err(|error| {
-                CasperError::RuntimeError(format!(
-                    "offered certificate presentation copy failed: {error:?}"
-                ))
-            })?;
-        }
+        // Changed by D-O1 (DR-111): the copy charges a block slice copy and
+        // cleanup in `reserve_presentation_copy`.
+        // let presentation_meter = |operations: usize, scanned: usize, backing: usize| {
+        //     for (dimension, amount) in [
+        //         (HostWorkDimension::VerificationOperations, operations),
+        //         (HostWorkDimension::VerificationBytes, scanned),
+        //         (HostWorkDimension::SearchStateBytes, backing),
+        //     ] {
+        //         budget
+        //             .reserve(
+        //                 dimension,
+        //                 HostWorkUnits::new(
+        //                     u64::try_from(amount).map_err(|_| BackingError::Overflow)?,
+        //                 ),
+        //             )
+        //             .map_err(|_| BackingError::Rejected)?;
+        //     }
+        //     Ok(())
+        // };
+        // if !body.authority_presentations.is_empty() {
+        //     clone_backing::reserve_slice_copy_and_cleanup(
+        //         &body.authority_presentations,
+        //         &presentation_meter,
+        //     )
+        //     .map_err(|error| {
+        //         CasperError::RuntimeError(format!(
+        //             "offered certificate presentation copy failed: {error:?}"
+        //         ))
+        //     })?;
+        // }
+        reserve_presentation_copy(&body.authority_presentations, budget)?;
         let signer_backing = signed.signers().iter().try_fold(0usize, |total, signer| {
             total
                 .checked_add(size_of::<Cosigner>())?
@@ -2760,6 +2796,89 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::{ExploratoryDeployConfig, ReplayLock, RuntimeManager};
+
+    /// D-E4 (DR-111): the copy of the authority presentations reserves one
+    /// block slice copy and the release of the copy, in the walker's
+    /// dimensions. An empty slice reserves nothing. The exact mirror at two
+    /// sizes is the growth check. The copy accepts its exact credit and is
+    /// rejected one unit short in each dimension that it uses.
+    #[test]
+    fn presentation_copy_charges_a_block_slice_copy_and_cleanup() {
+        use std::cell::Cell;
+
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::CostSignature;
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+        use rholang::rust::interpreter::host_work::HostWorkBudget;
+        use shared::rust::clone_backing::{self, BackingError};
+
+        use super::reserve_presentation_copy;
+
+        let walker = [
+            HostWorkDimension::VerificationOperations,
+            HostWorkDimension::VerificationBytes,
+            HostWorkDimension::SearchStateBytes,
+        ];
+        let walk = |presentations: &[CostSignature]| {
+            let used = Cell::new([0u64; 3]);
+            let meter =
+                |operations: usize, scanned: usize, backing: usize| -> Result<(), BackingError> {
+                    let [o, s, b] = used.get();
+                    used.set([
+                        o + operations as u64,
+                        s + scanned as u64,
+                        b + backing as u64,
+                    ]);
+                    Ok(())
+                };
+            clone_backing::reserve_blocks_slice_copy_and_cleanup(presentations, &meter)
+                .expect("an unlimited walk");
+            used.get()
+        };
+        let limited = |units: [u64; 3]| {
+            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(0));
+            for (dimension, limit) in walker.into_iter().zip(units) {
+                limits.set(dimension, HostWorkLimit::new(limit));
+            }
+            HostWorkBudget::new(limits)
+        };
+        let ground = |size: usize| CostSignature {
+            value: Some(Value::Ground(vec![8; size])),
+        };
+
+        let empty = limited([0; 3]);
+        reserve_presentation_copy(&[], &empty).expect("an empty copy reserves nothing");
+        for dimension in HostWorkDimension::ALL {
+            assert_eq!(empty.usage(dimension).get(), 0, "{dimension:?}");
+        }
+
+        for presentations in [vec![ground(32)], vec![ground(32), ground(4_096)]] {
+            let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+            reserve_presentation_copy(&presentations, &budget).expect("an unlimited budget");
+            let expected = walk(&presentations);
+            for dimension in HostWorkDimension::ALL {
+                let units = walker
+                    .iter()
+                    .position(|walked| *walked == dimension)
+                    .map_or(0, |index| expected[index]);
+                assert_eq!(budget.usage(dimension).get(), units, "{dimension:?}");
+            }
+        }
+
+        let presentations = vec![ground(32), ground(4_096)];
+        let expected = walk(&presentations);
+        reserve_presentation_copy(&presentations, &limited(expected)).expect("the exact credit");
+        for dimension in 0..3 {
+            if expected[dimension] > 0 {
+                let mut short = expected;
+                short[dimension] -= 1;
+                assert!(
+                    reserve_presentation_copy(&presentations, &limited(short)).is_err(),
+                    "dimension {dimension}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn exploratory_deploy_config_rejects_non_positive_values() {

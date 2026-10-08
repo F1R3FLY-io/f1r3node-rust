@@ -76,7 +76,9 @@ impl ParSortMatcher {
         .try_fold(1usize, |sum, size| sum.checked_add(size))
         .and_then(|sum| sum.checked_add(1))
         .ok_or(BackingError::Overflow)?;
-        let mut scores = meter.vec(score_count)?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut scores = meter.vec(score_count)?;
+        let mut scores = meter.score_vec(score_count)?;
         scores.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(
             Score::PAR,
         )));
@@ -105,7 +107,9 @@ impl ParSortMatcher {
                 bundles,
                 connectives,
                 conditionals,
-                locally_free: meter.clone(&par.locally_free)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // locally_free: meter.clone(&par.locally_free)?,
+                locally_free: meter.clone_blocks(&par.locally_free)?,
                 connective_used: par.connective_used,
                 cost_signed_terms,
                 cost_stacks,
@@ -129,7 +133,9 @@ where
     }
     ScoredTerm::sort_vec_metered(&mut scored, meter)?;
     let mut terms = meter.vec(scored.len())?;
-    let mut scores = meter.vec(scored.len())?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut scores = meter.vec(scored.len())?;
+    let mut scores = meter.score_vec(scored.len())?;
     for item in scored {
         terms.push(item.term);
         scores.push(item.score);

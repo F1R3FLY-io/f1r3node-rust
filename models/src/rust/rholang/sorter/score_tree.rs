@@ -108,7 +108,9 @@ impl<T> Tree<T> {
         children: &[i64],
         meter: &SorterMeter<'_>,
     ) -> Result<Tree<ScoreAtom>, BackingError> {
-        let mut result = meter.vec(children.len())?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut result = meter.vec(children.len())?;
+        let mut result = meter.score_vec(children.len())?;
         for value in children {
             result.push(Tree::<ScoreAtom>::create_leaf_from_i64(*value));
         }
@@ -120,7 +122,10 @@ impl<T> Tree<T> {
         right: Vec<Tree<ScoreAtom>>,
         meter: &SorterMeter<'_>,
     ) -> Result<Tree<ScoreAtom>, BackingError> {
-        let mut result = meter.vec(right.len().checked_add(1).ok_or(BackingError::Overflow)?)?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut result = meter.vec(right.len().checked_add(1).ok_or(BackingError::Overflow)?)?;
+        let mut result =
+            meter.score_vec(right.len().checked_add(1).ok_or(BackingError::Overflow)?)?;
         result.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(left)));
         result.extend(right);
         Ok(Tree::Node(result))

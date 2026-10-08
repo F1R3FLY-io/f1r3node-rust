@@ -24,32 +24,46 @@ impl UnforgeableSortMatcher {
             Some(UnfInstance::GPrincipalIdBody(_)) => (Score::PRINCIPAL_ID, 2),
             None => (Score::ABSENT, 0),
         };
-        let mut children = meter.vec(count)?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut children = meter.vec(count)?;
+        let mut children = meter.score_vec(count)?;
         match &unf.unf_instance {
             Some(UnfInstance::GPrivateBody(value)) => children.push(
-                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.id)?),
+                // Changed by D-O1 (DR-111): block accounting.
+                // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.id)?),
+                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone_blocks(&value.id)?),
             ),
             Some(UnfInstance::GDeployerIdBody(value)) => children.push(
-                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.public_key)?),
+                // Changed by D-O1 (DR-111): block accounting.
+                // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.public_key)?),
+                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone_blocks(&value.public_key)?),
             ),
             Some(UnfInstance::GDeployIdBody(value)) => children.push(
-                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.sig)?),
+                // Changed by D-O1 (DR-111): block accounting.
+                // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.sig)?),
+                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone_blocks(&value.sig)?),
             ),
             Some(UnfInstance::GAuthorityIdBody(value)) => children.push(
-                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.id)?),
+                // Changed by D-O1 (DR-111): block accounting.
+                // Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone(&value.id)?),
+                Tree::<ScoreAtom>::create_leaf_from_bytes(meter.clone_blocks(&value.id)?),
             ),
             Some(UnfInstance::GPrincipalIdBody(value)) => {
                 children.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(
                     value.key_family,
                 )));
                 children.push(Tree::<ScoreAtom>::create_leaf_from_bytes(
-                    meter.clone(&value.public_key)?,
+                    // Changed by D-O1 (DR-111): block accounting.
+                    // meter.clone(&value.public_key)?,
+                    meter.clone_blocks(&value.public_key)?,
                 ));
             }
             Some(UnfInstance::GSysAuthTokenBody(_)) | None => {}
         }
         Ok(ScoredTerm {
-            term: meter.clone(unf)?,
+            // Changed by D-O1 (DR-111): block accounting.
+            // term: meter.clone(unf)?,
+            term: meter.clone_blocks(unf)?,
             score: Tree::<ScoreAtom>::create_node_from_i32_metered(tag, children, meter)?,
         })
     }

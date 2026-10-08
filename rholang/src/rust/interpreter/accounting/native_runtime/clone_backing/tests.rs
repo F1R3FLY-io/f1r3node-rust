@@ -1155,3 +1155,108 @@ fn native_runtime_block_wrappers_charge_the_shared_block_walks() {
         "the shared cleanup does not walk the payload"
     );
 }
+
+/// D-E4 (DR-111): the backing that a metered sort reserves covers every byte
+/// the sort allocates. Each case copies a large payload: a 4 KiB ground
+/// signature, a string and a byte-array expression, unforgeable ids, a tuple,
+/// a set and a map of 4 KiB strings.
+#[test]
+fn sorter_copies_fit_reserved_backing() {
+    use models::rhoapi::cost_signature::Value;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature_metered;
+    use models::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
+    use models::rust::rholang::sorter::metered::SorterMeter;
+    use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+    use shared::rust::clone_backing::BackingError;
+
+    fn fits(name: &str, sort: &dyn Fn(&SorterMeter<'_>) -> Result<(), BackingError>) {
+        let reserved = Cell::new(0usize);
+        let meter = |_: usize, _: usize, backing: usize| {
+            reserved.set(reserved.get() + backing);
+            Ok(())
+        };
+        let (result, allocated) = measured(|| sort(&SorterMeter::new(&meter)));
+        result.expect("an unlimited sort");
+        assert!(
+            allocated <= reserved.get(),
+            "{name}: the sort allocated {allocated} bytes, the reservation was {}",
+            reserved.get()
+        );
+    }
+    let expr = |instance: ExprInstance| Expr {
+        expr_instance: Some(instance),
+    };
+    let unforgeable = |instance: UnfInstance| GUnforgeable {
+        unf_instance: Some(instance),
+    };
+    let signature = CostSignature {
+        value: Some(Value::Ground(vec![9; 4_096])),
+    };
+    let text = expr(ExprInstance::GString("s".repeat(4_096)));
+    let bytes = expr(ExprInstance::GByteArray(vec![1; 4_096]));
+    let ids = Par {
+        unforgeables: vec![
+            unforgeable(UnfInstance::GPrivateBody(GPrivate { id: vec![3; 4_096] })),
+            unforgeable(UnfInstance::GDeployIdBody(GDeployId {
+                sig: vec![4; 4_096],
+            })),
+            unforgeable(UnfInstance::GDeployerIdBody(GDeployerId {
+                public_key: vec![5; 4_096],
+            })),
+        ],
+        ..Default::default()
+    };
+    let strings = |letters: std::ops::RangeInclusive<u8>| {
+        letters
+            .map(|letter| {
+                new_gstring_par(
+                    char::from(letter).to_string().repeat(4_096),
+                    Vec::new(),
+                    false,
+                )
+            })
+            .collect::<Vec<Par>>()
+    };
+    let tuple = expr(ExprInstance::ETupleBody(ETuple {
+        ps: strings(b'a'..=b'c'),
+        ..Default::default()
+    }));
+    let set = expr(ExprInstance::ESetBody(ESet {
+        ps: strings(b'a'..=b'c'),
+        ..Default::default()
+    }));
+    let map = expr(ExprInstance::EMapBody(EMap {
+        kvs: strings(b'a'..=b'c')
+            .into_iter()
+            .zip(strings(b'x'..=b'z'))
+            .map(|(key, value)| KeyValuePair {
+                key: Some(key),
+                value: Some(value),
+            })
+            .collect(),
+        ..Default::default()
+    }));
+    fits("ground signature", &|meter| {
+        sort_signature_metered(&signature, meter).map(drop)
+    });
+    fits("string expression", &|meter| {
+        ExprSortMatcher::sort_match_metered(&text, meter).map(drop)
+    });
+    fits("byte expression", &|meter| {
+        ExprSortMatcher::sort_match_metered(&bytes, meter).map(drop)
+    });
+    fits("unforgeable ids", &|meter| {
+        ParSortMatcher::sort_match_metered(&ids, meter).map(drop)
+    });
+    fits("tuple of strings", &|meter| {
+        ExprSortMatcher::sort_match_metered(&tuple, meter).map(drop)
+    });
+    fits("set of strings", &|meter| {
+        ExprSortMatcher::sort_match_metered(&set, meter).map(drop)
+    });
+    fits("map of strings", &|meter| {
+        ExprSortMatcher::sort_match_metered(&map, meter).map(drop)
+    });
+}

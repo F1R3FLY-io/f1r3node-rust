@@ -3,6 +3,8 @@ use std::mem::size_of;
 
 use shared::rust::clone_backing::{self, BackingError, BackingMeter, CloneBacking};
 
+use super::score_tree::{ScoreAtom, Tree};
+
 pub struct SorterMeter<'a> {
     backing: &'a dyn BackingMeter,
 }
@@ -52,11 +54,17 @@ impl<'a> SorterMeter<'a> {
         self.backing.reserve(operations, scanned, backing)
     }
 
+    // Test-only by D-O1 (DR-111): every production copy uses `clone_blocks`.
+    // The tests keep it as a reference charge.
+    #[cfg(test)]
     pub fn clone<T: Clone + CloneBacking>(&self, value: &T) -> Result<T, BackingError> {
         clone_backing::reserve_copy_and_cleanup(value, self.backing)?;
         Ok(value.clone())
     }
 
+    // Test-only by D-O1 (DR-111): every production inspection uses
+    // `inspect_blocks`. The tests keep it as a reference charge.
+    #[cfg(test)]
     pub fn inspect<T: CloneBacking>(&self, value: &T) -> Result<(), BackingError> {
         clone_backing::inspect(value, self.backing)
     }
@@ -82,12 +90,49 @@ impl<'a> SorterMeter<'a> {
         clone_backing::reserve_nested_encode(value, encoded_len, self.backing)
     }
 
+    // Test-only by D-O1 (DR-111): every production slice copy uses
+    // `clone_slice_blocks`. The tests keep it as a reference charge.
+    #[cfg(test)]
     pub fn clone_slice<T: Clone + CloneBacking>(
         &self,
         values: &[T],
     ) -> Result<Vec<T>, BackingError> {
         clone_backing::reserve_slice_copy_and_cleanup(values, self.backing)?;
         Ok(values.to_vec())
+    }
+
+    /// D-E4 (DR-111): `clone_slice` with the walker's block accounting. It
+    /// prepays the copy of the slice and the release of the copy.
+    pub fn clone_slice_blocks<T: Clone + CloneBacking>(
+        &self,
+        values: &[T],
+    ) -> Result<Vec<T>, BackingError> {
+        clone_backing::reserve_blocks_slice_copy_and_cleanup(values, self.backing)?;
+        Ok(values.to_vec())
+    }
+
+    /// D-E4 (DR-111): the reads of an insert of an owned value into a hash
+    /// table whose capacity is reserved. The insert hashes the value once.
+    /// Then it compares the value with an equal element in lockstep (at most
+    /// two traversals), or it moves the value into the table (one traversal).
+    /// Three block inspections prepay the larger case.
+    pub fn hash_insert_blocks<T: CloneBacking>(&self, value: &T) -> Result<(), BackingError> {
+        for _ in 0..3 {
+            clone_backing::inspect_blocks(value, self.backing)?;
+        }
+        Ok(())
+    }
+
+    /// D-E4 (DR-111), Rule S: a vector of score trees. Each slot is read once
+    /// after its birth, when its tree moves out or when the vector is
+    /// released. So the vector prepays one read of each slot, besides the
+    /// charge of `vec`.
+    pub fn score_vec(&self, capacity: usize) -> Result<Vec<Tree<ScoreAtom>>, BackingError> {
+        let slots = capacity
+            .checked_mul(size_of::<Tree<ScoreAtom>>())
+            .ok_or(BackingError::Overflow)?;
+        self.backing.reserve(0, slots, 0)?;
+        self.vec(capacity)
     }
 
     pub fn vec<T>(&self, capacity: usize) -> Result<Vec<T>, BackingError> {
@@ -166,6 +211,67 @@ mod tests {
         assert_eq!(
             SorterMeter::new(&reserve).clone_slice(&source),
             Err(BackingError::Rejected)
+        );
+    }
+
+    /// Runs `action` under a meter that admits at most `limit` scanned bytes.
+    fn within_scanned<R>(
+        limit: usize,
+        action: impl FnOnce(&SorterMeter<'_>) -> Result<R, BackingError>,
+    ) -> Result<R, BackingError> {
+        let used = Cell::new(0usize);
+        let reserve = |_: usize, scanned: usize, _: usize| {
+            let next = used.get() + scanned;
+            if next > limit {
+                Err(BackingError::Rejected)
+            } else {
+                used.set(next);
+                Ok(())
+            }
+        };
+        action(&SorterMeter::new(&reserve))
+    }
+
+    /// D-E4 (DR-111): the block restatement of
+    /// `clones_reject_when_nested_cleanup_is_unfunded`. A block clone prepays
+    /// the release of its copy, so a credit that covers only the copy, or the
+    /// whole charge less one byte, is rejected, and the exact credit is
+    /// accepted.
+    #[test]
+    fn block_clones_reject_when_nested_cleanup_is_unfunded() {
+        let source = vec![Arc::<str>::from("payload".repeat(1024))];
+        let copy = charged(|meter| clone_backing::reserve_blocks(&source, meter));
+        let full = charged(|meter| clone_backing::reserve_blocks_copy_and_cleanup(&source, meter));
+        assert!(copy[1] < full[1], "the release of the copy is charged");
+        for limit in [copy[1], full[1] - 1] {
+            assert_eq!(
+                within_scanned(limit, |meter| meter.clone_blocks(&source)),
+                Err(BackingError::Rejected),
+                "{limit} scanned bytes"
+            );
+        }
+        assert_eq!(
+            within_scanned(full[1], |meter| meter.clone_blocks(&source)),
+            Ok(source.clone())
+        );
+
+        let copy = charged(|meter| clone_backing::reserve_blocks_slice(&source, meter));
+        let full =
+            charged(|meter| clone_backing::reserve_blocks_slice_copy_and_cleanup(&source, meter));
+        assert!(
+            copy[1] < full[1],
+            "the release of the slice copy is charged"
+        );
+        for limit in [copy[1], full[1] - 1] {
+            assert_eq!(
+                within_scanned(limit, |meter| meter.clone_slice_blocks(&source)),
+                Err(BackingError::Rejected),
+                "{limit} scanned bytes"
+            );
+        }
+        assert_eq!(
+            within_scanned(full[1], |meter| meter.clone_slice_blocks(&source)),
+            Ok(source.clone())
         );
     }
 

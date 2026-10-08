@@ -5623,6 +5623,11 @@ events, its rows and its generation pointer with block copies. Their
 payloads were prepaid at birth, so the block shared-pointer walk cleans up
 the copies (DR-110, decision 9).
 
+**Amendment (DR-111).** Score vectors now also prepay the VerificationBytes
+of their release. `SorterMeter::score_vec` reserves one read of each slot at
+the birth of the vector (Rule S, DR-111, decision 4). The other owned
+vectors are unchanged.
+
 **Cross-refs.** DR-81, DR-82. Leaf `ofp-2-cap-conditional-c5-c6-c11`.
 
 ## DR-84 — A split adds one causal-path segment
@@ -6155,6 +6160,11 @@ backing that builds the canonical authority doubles only the operations. The
 second inspection in `canonical_cost_signature_metered` prepays the release
 bytes of each canonical signature (DR-110, Rule B).
 
+**Amendment (DR-111).** The owned-backing convention of this record prepays
+releases in operations only. Rule S of DR-111 adds the release reads of the
+score vectors of the metered sorter in VerificationBytes, one read of each
+slot at birth.
+
 **Cross-refs.** DR-79 (C14), DR-83 (C5), DR-88. Leaf
 `ofp-2-cap-d-a2-replay-authority-backing`.
 
@@ -6433,6 +6443,12 @@ decisions 5 and 6.
 **Amendment (DR-108).** Decision 3: the first entry that a popped entry's
 children push reuses the popped slot, so only the root and the further
 entries reserve `BLOCK_ENTRY_BACKING` (DR-108).
+
+**Amendment (DR-111).** Decision 4 is complete. `SorterMeter` has the block
+wrappers `clone_blocks`, `inspect_blocks`, `clone_slice_blocks`,
+`hash_insert_blocks` and `score_vec`. The per-level `clone`, `inspect` and
+`clone_slice` compile only for tests, as reference charges (DR-111,
+decision 1).
 
 **Cross-refs.** DR-81, DR-82 and DR-83 (shared pointers and prepaid
 releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
@@ -6767,6 +6783,10 @@ kept legacy (decisions 2, 3 and 8):
 
 The recorded gaps about the footprint, the cold-read keys and the checkpoint
 are resolved (DR-110).
+
+**Amendment (DR-111).** The first recorded gap of this record is resolved.
+The score vectors of the metered sorter prepay one read of each slot at
+birth (Rule S, DR-111, decision 4).
 
 **Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93. Leaf
 `ofp-2-cap-d-b4-walker-stage-a`.
@@ -10740,6 +10760,10 @@ so part 2 cannot change the measured usage of the gateway block.
 entries (`Option<Var>`) in block mode. So its variable copies also charge
 more than the per-level walk did (DR-110, comparison).
 
+**Amendment (DR-111).** D-E4 switched the set and map conversions to block
+mode (DR-111, decision 5). The construction keeps its iteration order, so
+bug 475811 stays open.
+
 **Cross-refs.** DR-88, DR-92, DR-94, DR-103, DR-104, DR-105, DR-108. Leaf
 `ofp-2-cap-d-e2-matcher-sites`.
 
@@ -11145,6 +11169,355 @@ The probe does not compare receipts between the two builds, because the
 deploys of the test vary between runs. The suites establish the outcome
 equality.
 
+**Amendment (DR-111).** The Casper sites `resource_equal_metered`
+(`producer.rs`) and `reserve_presentation_copy` (`runtime_manager.rs`) are
+now in block mode (DR-111, decisions 6 and 7). The samples that the probe
+attribution labelled "level" at `authority.rs:719` and
+`fallback_metered.rs:94` were nested encode reservations, not per-level
+walks. The attribution script did not count `reserve_nested_encode` as a
+block entry point.
+
 **Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93, DR-94, DR-96, DR-108,
 DR-109. Leaf `ofp-2-cap-d-e3-accounting-sites`. Bug
 `per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`.
+
+## DR-111 — The sorter, set and map construction and Casper walker sites in block mode, with the score-tree release prepaid at birth
+
+**Status.** Implemented 2026-10-08 for Phase D item D-E4 of epic 8946 (D-O1
+Stage B). A read-only design pass took the inventory of the remaining
+per-level walker calls and audited each site against DR-94. The
+implementation checked the load-bearing claims of the design in the code and
+in the probe source. It corrected one claim of the D-E3 attribution (see
+"Context"). Rule S is part of this item by user decision ("Include in
+D-E4").
+
+**Context.**
+
+- After DR-110, the production per-level walker calls are in two places:
+  - The models crate: 67 calls of the `SorterMeter` methods `clone`,
+    `inspect` and `clone_slice`, on 66 lines. They are in the metered sorter
+    and in the set and map construction.
+  - Casper: two inspections in `resource_equal_metered` (`producer.rs`) and
+    one slice copy of the authority presentations (`runtime_manager.rs`).
+- The rholang crate reaches the models walks only through the metered sorter
+  and through the set and map conversions. Its own per-level wrappers already
+  compile only for tests (DR-110, decision 1).
+- The attribution of the D-E3 probe labelled samples at `authority.rs:719`
+  (5 to 11 MiB) and at `fallback_metered.rs:94` (3 to 6 MiB) as per-level
+  walks. In the probe source, both lines are `meter.nested_encode(..)`. The
+  attribution script did not count `reserve_nested_encode` as a block entry
+  point. So this item lowers VerificationBytes very little. Its value is
+  different:
+  - It removes the last production per-level callers, which D-E5 requires.
+  - It lowers SearchStateBytes.
+  - It closes the score-tree gap of DR-94.
+- DR-94 recorded that the score trees of the metered sorter are released
+  without a VerificationBytes charge. The owned-backing convention of DR-83
+  and DR-89 prepays releases in operations only.
+- DR-109 recorded that D-E4 switches the set and map conversions. The charges
+  of the set and map construction depend on the iteration order of a
+  `HashSet` or `HashMap`, which varies between processes (pgmcp bug
+  `metered-set-and-map-construction-charges-depend-on-hashset-hashmap-iteration-order-nondeterministic-host-work-475811`). By user decision, that bug is filed and not fixed here.
+
+**Decision.**
+
+1. The wrappers. `SorterMeter` gets three block wrappers:
+   - `clone_slice_blocks`, a block slice copy and cleanup.
+   - `hash_insert_blocks`, three block inspections of an owned value that an
+     insert moves into a hash table.
+   - `score_vec(c)`, a vector of `c` score trees whose release is prepaid
+     (Rule S, decision 4).
+
+   The per-level `clone`, `inspect` and `clone_slice` compile only for tests,
+   as reference charges.
+2. The sorter copies. The 58 copies of the metered sorter become block copies
+   (`clone_blocks`). They are the copies of these values:
+   - The terms and the payloads of score leaves.
+   - The `locally_free` bytes, the remainders and the paths.
+   - The containers whose fields the sorter replaces.
+   - The owned values that the set and map conversions consume.
+
+   The eight big-endian bytes of a `u64` become a block slice copy
+   (`clone_slice_blocks`).
+3. The injection scan of a `new`. The copy of the injections is a block copy.
+   One block inspection of the copy prepays the loop over it. Each sorted
+   injection term is dropped after its score, so one block inspection
+   prepays its release.
+4. Rule S. Every vector of score trees prepays one read of each slot.
+   `score_vec(c)` reserves `c · T` VerificationBytes, with
+   `T = size_of::<Tree<ScoreAtom>>()`, and then charges `vec(c)`. The rule
+   applies at the 31 births of score vectors. Each slot is read once after
+   its birth, when its tree moves out or when the vector is released.
+5. The set and map construction.
+   - An insert of an owned value into a hash table with reserved capacity
+     gets three block inspections. The insert hashes the value once. Then it
+     compares the value with an equal element in lockstep (at most two
+     traversals), or it moves the value into the table (one traversal).
+   - A map value that an insert moves gets one block inspection.
+   - The copies are block copies.
+   - The iteration order is unchanged, so bug 475811 stays open.
+6. The Casper comparison. `resource_equal_metered` inspects each borrowed
+   authority once with a block inspection, for the reads of `==`.
+7. The presentation copy. `reserve_presentation_copy` charges a block slice
+   copy and cleanup of the authority presentations. An empty slice charges
+   nothing, as before.
+8. Each replaced line stays in the source, commented out with its reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨sorter copy of a part x⟩         ≡ clone_blocks(x)               -- one clone and its release
+⟨score vector of capacity c⟩      ≡ reserve(0, c·T, 0); vec(c)    -- each slot is read once: a move out or the release
+⟨injection scan of a new⟩         ≡ l ← clone_blocks(injections); inspect_blocks(l)
+                                     for (k, p) in l:
+                                       s ← sort(p); inspect_blocks(s.term)   -- the release of the sorted term
+                                       clone_blocks(k)
+⟨insert of an owned v into a hash table⟩ ≡ inspect_blocks(v) ×3   -- the hash, then a lockstep comparison or the move
+⟨insert of a map value w⟩         ≡ inspect_blocks(w)             -- the move in, or the move out of a replaced value
+⟨borrowed comparison a = b⟩       ≡ inspect_blocks(a); inspect_blocks(b)
+⟨presentation copy p⟩             ≡ reserve_blocks_slice_copy_and_cleanup(p)
+```
+
+**Soundness.** No new theorem is necessary.
+
+- A block inspection prepays one traversal
+  (`WalkerBlockCharge.block_inspection_covers_walk_and_traversal`). The sites
+  apply it once for each hash pass, move, loop or release.
+- A block copy and cleanup prepays one clone and one release
+  (`block_copy_covers_walk_and_clone`,
+  `block_copy_backing_covers_allocation`).
+- One comparison reads at most two traversals of the probe
+  (`MatcherReadsByReference.two_pattern_inspections_cover_lockstep_reads`).
+  A borrowed side of a comparison takes one traversal (the DR-94
+  precondition).
+- The sums over elements do not depend on their order
+  (`block_charge_independent_of_sibling_order`,
+  `charged_pushes_independent_of_step_order`).
+- Rule S counts slots. Each slot is read once, either by a move out or by
+  the release. That is the shape of the owned-backing coverage of DR-89.
+- `NestedEncodeCost` is unchanged, because this item adds no encode site.
+
+**Determinism.** This item removes no walk of a `RandomState` map. None of
+the walked types holds a hash map:
+
+- The prost terms, in which `ESet` and `EMap` are vectors.
+- The `BTreeMap` of the injections.
+- `Sig`, and the vector of `CostSignature` presentations.
+
+The set and map construction keeps its order, so it keeps the variation of
+bug 475811. That bug stays open by user decision. This item adds no
+dependence on order.
+
+**Recorded gaps.** This item records the following and does not change them:
+
+- Bug 475811: the charges of the set and map construction depend on the
+  iteration order of a hash table.
+- The extra comparisons of hash-tag collisions and the control-byte scans of
+  the hash tables are not metered.
+- The sorted temporaries that the `ESet` and `EMap` arms of the sorter drop
+  release sorter vectors without a VerificationBytes charge. They are
+  `par_set.ps.sorted_pars`, the `ps` of the second conversion, and their map
+  counterparts.
+- The sorter charges the roots of `Expr` and `CostSignature` with the header
+  reservations. It does not charge the roots of `Par`, `Send`, `Receive`,
+  `New`, `Match`, `If`, `Bundle`, `Connective`, `GUnforgeable` or `Var`.
+- Rule B and the release inspections of the lane pay again for parts that
+  the block copies of the sorter already prepay. The design estimates −2 to
+  −5 MB of VerificationBytes for their removal (follow-up).
+- The Casper key encodes of DR-110 still have no nested encode reservation.
+- The nested encodes of the lane and region charge 8 to 17 MiB in each
+  replay, by entry depth. A charge by message depth is a follow-up.
+
+**Audit.** One row per site or group of sites. "Copy" means one clone and its
+release. Paths are under `models/src/rust/rholang/sorter/` unless a crate
+name starts them.
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `cost_accounting_sorter.rs:166`, `:172` | ground bytes: the term and the score leaf | copy | block copy | every ground signature |
+| `unforgeable_sort_matcher.rs:34`, `:39`, `:44`, `:49`, `:58` | the id, key or signature of an unforgeable name, for its score leaf | copy | block copy | every unforgeable name |
+| `unforgeable_sort_matcher.rs:66` | the unforgeable term | copy | block copy | every unforgeable name |
+| `expr_sort_matcher.rs:1184`, `:1193`, `:1202`, `:1214`, `:1226`, `:1238`, `:1247`, `:1256`, `:1268`, `:1290`, `:1311`, `:1325`, `:1334`, `:1343`, `:1352`, `:1361` | the term of a ground expression (15 kinds and an absent instance) | copy | block copy | every ground expression |
+| `expr_sort_matcher.rs:1207`, `:1219`, `:1231`, `:1261`, `:1274`, `:1279`, `:1296` | the payload of a string, URI, byte array or big integer, the two parts of a rational, and the unscaled bytes of a fixed point, for their score leaves | copy | block copy | those ground kinds |
+| `expr_sort_matcher.rs:1317` | the eight big-endian bytes of a `u64`, for its score leaf | copy | block slice copy | every `u64` |
+| `expr_sort_matcher.rs:1062`, `:1066`, `:1085`, `:1089`, `:1116`, `:1120`, `:1124`, `:1128` | `locally_free`, the remainders and the zipper path of lists, path maps and zippers | copy | block copy | every list, path map and zipper |
+| `expr_sort_matcher.rs:1138`, `:1171` | the tuple and the method, whose fields the sorter replaces after the copy | copy | block copy | every tuple and method |
+| `expr_sort_matcher.rs:1162` | the method name, for its score leaf | copy | block copy | every method |
+| `expr_sort_matcher.rs:1377`, `:1405` | the set and the map that the conversions consume | copy | block copy | every set and map |
+| `par_sort_matcher.rs:112`, `send_sort_matcher.rs:52`, `receive_sort_matcher.rs:190`, `match_sort_matcher.rs:49`, `if_sort_matcher.rs:45`, `new_sort_matcher.rs:107` | `locally_free` | copy | block copy | every container of these kinds |
+| `new_sort_matcher.rs:29`, `:32` | a URI of a `new`: the term and the score leaf | copy | block copy | each URI |
+| `new_sort_matcher.rs:52`, `:55` | the injections | copy, and one traversal for the loop (decision 3) | block copy, block inspection | every `new` |
+| `new_sort_matcher.rs:63` | a sorted injection term | its release (decision 3) | block inspection | each injection |
+| `new_sort_matcher.rs:70` | an injection key, for its score leaf | copy | block copy | each injection |
+| `new_sort_matcher.rs:104` | the injections of the output term | copy | block copy | every `new` |
+| `connective_sort_matcher.rs:61` | a variable reference | copy | block copy | each variable-reference connective |
+| `var_sort_matcher.rs:35` | a variable | copy | block copy | every variable |
+| `cost_accounting_sorter.rs:146`, `:240`, `:309`, `:337`, `unforgeable_sort_matcher.rs:29`, `expr_sort_matcher.rs:836`, `:849`, `:872`, `:893`, `:1155`, `:1409`, `:1446`, `par_sort_matcher.rs:81`, `:138`, `send_sort_matcher.rs:33`, `receive_sort_matcher.rs:24`, `:51`, `:142`, `:162`, `match_sort_matcher.rs:27`, `:79`, `if_sort_matcher.rs:31`, `new_sort_matcher.rs:39`, `:58`, `:66`, `:87`, `bundle_sort_matcher.rs:30`, `connective_sort_matcher.rs:47`, `:124`, `score_tree.rs:113`, `:127` | the slots of a score vector (31 births) | one read of each slot (Rule S, decision 4) | `score_vec` | every score tree |
+| `models/src/rust/sorted_par_hash_set.rs:40` | an owned element of the input | the hash, and a lockstep comparison or the move | block inspection, three times | every set construction |
+| `models/src/rust/sorted_par_hash_set.rs:47` | an element of the sort input | copy | block copy | every set construction |
+| `models/src/rust/sorted_par_hash_set.rs:63`, `:64` | a sorted element | the hash and the comparison or move, and the copy into the table | block inspection three times, block copy | every set construction |
+| `models/src/rust/sorted_par_map.rs:42`, `:43` | an owned key and its value | the hash and the comparison or move of the key, and the move of the value | block inspection three times, block inspection | every map construction |
+| `models/src/rust/sorted_par_map.rs:59`, `:60` | a sorted key and its value | the hash and the comparison or move, and the copies into the table | block inspection three times, two block copies | every map construction |
+| `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs:385`, `:387` (`resource_equal_metered`) | the two borrowed authorities | the reads of `==` (decision 6) | block inspection | each retained-resource comparison |
+| `casper/src/rust/util/rholang/runtime_manager.rs:356` (`reserve_presentation_copy`) | the authority presentations | copy (decision 7) | block slice copy | each offered certificate with presentations |
+
+**Comparison with the per-level charge.** The comparison of DR-110 applies
+to the copies of the sorter. A copy and cleanup of a 32-byte vector charges 328 VerificationBytes and 160
+SearchStateBytes in block mode, against 272 and 288 per level. So the small
+copies charge more VerificationBytes and fewer SearchStateBytes, and the large
+copies charge less of both. These charges are new and have no per-level
+counterpart:
+
+- Rule S: `c · T` VerificationBytes for each score vector of capacity `c`.
+- The second and third inspections of a hash insert. The per-level code made
+  one inspection.
+- The inspection of the injection copy and the release of each sorted
+  injection term.
+
+The measurement below gives the total effect.
+
+**Verification.** No new proof is necessary. Each site uses the lemmas of the
+soundness section, applied once for each prepaid traversal. Tests:
+
+- `models/src/rust/rholang/sorter/block_tests.rs` (new):
+  - `sorter_block_wrappers_charge_the_shared_block_walks`: each wrapper
+    makes exactly the reservations of its shared walk. A hash insert makes
+    three block inspections. `score_vec` reserves the slot reads before the
+    charge of `vec`. Each wrapper accepts its exact credit and is rejected one
+    unit short in each dimension.
+  - `sorter_block_wrappers_stop_at_every_cut`: the wrappers and two sorts
+    stop at their first rejected reservation, for every position of the
+    rejection.
+  - `ground_signature_sort_charges_two_block_copies_and_score_vectors`: the
+    exact reservation log of a ground signature, for 32 bytes and 4 KiB.
+  - `ground_expression_sorts_charge_block_copies`: the exact reservation logs
+    of the 15 ground kinds and of an absent instance. Each metered result
+    equals the unmetered sort.
+  - `private_unforgeable_sort_charges_a_leaf_copy_and_a_term_copy`: the exact
+    reservation log of a private name, for 32 bytes and 4 KiB.
+  - `score_vectors_prepay_one_read_per_slot`: a ground atom reads 3 slots. A
+    compound of `m` ground atoms reads `5m + 1` slots. A channel with two
+    private names reads 12 slots.
+  - `locally_free_copies_are_single_block_copies`: a 4 KiB pad of
+    `locally_free` grows the charge by exactly one block copy. The test covers
+    a par, send, receive, match, if, new, list, path map, zipper (both fields),
+    tuple and method. A longer method name grows the charge by exactly two
+    block copies.
+  - `new_injection_scan_charges_copy_iteration_and_release`: the copy of the
+    injections is followed by one inspection of the copy, and each sorted
+    injection term gets one inspection.
+  - `sorts_accept_exact_credit_and_reject_each_shorter_dimension`: a ground
+    and a compound signature, a channel and a string expression.
+- `models/src/rust/rholang/sorter/metered.rs`:
+  `block_clones_reject_when_nested_cleanup_is_unfunded`, the block
+  restatement of `clones_reject_when_nested_cleanup_is_unfunded`. A credit for
+  the copy alone, or the whole charge less one byte, is rejected, and the
+  exact credit is accepted, for `clone_blocks` and `clone_slice_blocks`. The
+  per-level test stays as the reference.
+- `models/src/rust/sorted_par_hash_set.rs` and `sorted_par_map.rs`:
+  `set_construction_charges_hash_inserts_and_block_copies` and
+  `map_construction_charges_hash_inserts_and_block_copies` state the exact
+  logs. The input gives one distinct element twice. So the comparison path
+  runs, and the result does not depend on the order (bug 475811).
+- `rholang/src/rust/interpreter/accounting/native_runtime/clone_backing/tests.rs`:
+  `sorter_copies_fit_reserved_backing` measures, with the counting allocator
+  of the test binary, that the backing a sort reserves covers every byte the
+  sort allocates. The cases are a 4 KiB ground signature, a string and a
+  byte-array expression, and unforgeable ids. They also include a tuple, a
+  set and a map of 4 KiB strings.
+- Casper: `resource_comparison_inspects_each_authority_once` states the exact
+  charge of the comparison. A 4 KiB authority on either side grows it by one
+  block inspection. The test also checks exact credit and rejection one unit
+  short.
+  `presentation_copy_charges_a_block_slice_copy_and_cleanup` states the exact
+  charge at two sizes, no charge for an empty slice, and exact credit with
+  rejection one unit short.
+- The outcome tests of the sorter, the set and map type mappers and the
+  matcher pass unchanged.
+
+Twenty-six mutations in a scratch copy, built with `-D warnings`, fail
+tests. Each mutation fails at least one of the tests above, and none fails
+to compile:
+
+- A ground signature whose term copy is per-level, or whose score-leaf copy
+  is inspected instead of copied. The allocation test fails on the second.
+- A private name whose term copy is per-level, or whose score-leaf copy is
+  not charged.
+- A string term copy, a `u64` slice copy, or a `locally_free` copy of a par,
+  a receive or a zipper that is per-level.
+- A tuple copy, a set input copy or a map value copy that is inspected
+  instead of copied. The allocation test fails on each of them.
+- An injection scan without the inspection of the copy, or without the
+  release of the sorted term.
+- `score_vec` without the slot reads, or a `score_vec` that ignores a
+  rejection.
+- A hash insert with two inspections, or a map value without its inspection.
+- A slice wrapper that calls the per-level walk, or a `clone_blocks` that does
+  not prepay the release of its copy.
+- A rational denominator or a method name copied without a charge.
+- A Casper comparison without the inspection of one side, or with a
+  per-level inspection of the other.
+- A presentation copy that is per-level, or that is inspected instead of
+  copied.
+
+**Scope.** Cost-accounting work. Host-work reservations change. No
+encoding, root, event or receipt changes. The Casper edits are in two
+cost-accounting sites, and they only change reservations.
+
+Suites:
+
+- Shared, rspace++, rholang and `rho-pure-eval`: 4,334 of 4,334 tests pass.
+- Casper and models with the original caps: 2,158 of 2,164 tests pass. The
+  6 failures are the same as after DR-110.
+- Casper with the provisional caps: 1,692 of 1,696 tests pass. The 4
+  failures are the same as after DR-110.
+- The doctests pass. Clippy passes with the CI flags (`-D warnings`).
+  DR-111 changes no proof.
+
+**Measurement.** The D-G0 probe ran the gateway test three times with
+DR-111, under the provisional caps. The baseline is the three runs of DR-110. Every role
+charged exactly the same usage in every run. The replay of the gateway
+funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-110, run 1 | 593,625,680 | 121,574,487 | 60,940,425 |
+| DR-110, run 2 | 594,516,051 | 121,697,030 | 60,954,279 |
+| DR-110, run 3 | 594,902,408 | 121,977,191 | 60,984,078 |
+| DR-111, run 1 | 594,837,063 | 120,102,695 | 60,941,263 |
+| DR-111, run 2 | 591,249,098 | 120,104,728 | 60,908,889 |
+| DR-111, run 3 | 595,126,036 | 120,170,784 | 60,939,460 |
+| Change of the means | −0.61 MB (−0.1 %) | −1.62 MB (−1.3 %) | −30 K (0.0 %) |
+
+The workload of the gateway test varies a little from run to run. Run 3 of
+DR-111 has the same execution counts as the three runs of DR-110. They are
+914 reduction steps, 2,140 primitive calls, 8,110 substitution bindings and
+71,200 search candidates. Run 2 made 916 reduction steps and 2,113 primitive
+calls. Against the runs with the same counts, run 3 charges 0.22 to 1.50 MB
+more VerificationBytes and 1.40 to 1.81 MB fewer SearchStateBytes. The design
+estimated +1.4 MB of VerificationBytes (Rule S), −1.8 MB of SearchStateBytes
+and about −26 K VerificationOperations.
+
+The producer's execution of the gateway block charges 151.0 to 151.3 MB of
+VerificationBytes and 64.0 to 64.3 MB of SearchStateBytes. For DR-110, it
+charged 150.3 to 150.4 MB and 65.8 MB. In multiples of the original caps, the
+replay of the gateway block is at 2.21 in VerificationBytes and 0.89 in
+SearchStateBytes.
+
+The attribution now counts `reserve_nested_encode` as a block entry point.
+It assigns the VerificationBytes samples of a validator replay to their
+callers. In run 3 of DR-110, it finds 6 MiB of per-level walker samples.
+They are at
+`cost_accounting_sorter.rs:162` (3 MiB), `:166` (2 MiB) and
+`unforgeable_sort_matcher.rs:52` (1 MiB) of that source, the sites of this
+item. Run 3 of DR-111 has no per-level walker sample. The samples at
+`authority.rs:719` and `fallback_metered.rs:94` are block samples of nested
+encodes.
+
+The probe does not compare receipts between the two builds, because the
+deploys of the test vary between runs. The suites establish the outcome
+equality.
+
+**Cross-refs.** DR-83, DR-89, DR-92, DR-93, DR-94, DR-109, DR-110. Leaf
+`ofp-2-cap-d-e4-models-shared-casper-sites`. Bug
+`metered-set-and-map-construction-charges-depend-on-hashset-hashmap-iteration-order-nondeterministic-host-work-475811`.

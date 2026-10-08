@@ -42,7 +42,9 @@ impl ConnectiveSortMatcher {
             }
             Some(ConnectiveInstance::ConnNotBody(par)) => {
                 let scored = ParSortMatcher::sort_match_metered(par, meter)?;
-                let mut scores = meter.vec(1)?;
+                // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+                // let mut scores = meter.vec(1)?;
+                let mut scores = meter.score_vec(1)?;
                 scores.push(scored.score);
                 (
                     ConnectiveInstance::ConnNotBody(scored.term),
@@ -54,7 +56,9 @@ impl ConnectiveSortMatcher {
                 )
             }
             Some(ConnectiveInstance::VarRefBody(var_ref)) => (
-                ConnectiveInstance::VarRefBody(meter.clone(var_ref)?),
+                // Changed by D-O1 (DR-111): block accounting.
+                // ConnectiveInstance::VarRefBody(meter.clone(var_ref)?),
+                ConnectiveInstance::VarRefBody(meter.clone_blocks(var_ref)?),
                 Tree::<ScoreAtom>::create_node_from_i64s_metered(
                     &[
                         i64::from(Score::CONNECTIVE_VARREF),
@@ -115,7 +119,9 @@ fn sort_body_metered(
     meter: &SorterMeter<'_>,
 ) -> Result<(Vec<Par>, Vec<Tree<ScoreAtom>>), BackingError> {
     let mut pars = meter.vec(values.len())?;
-    let mut scores = meter.vec(values.len())?;
+    // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+    // let mut scores = meter.vec(values.len())?;
+    let mut scores = meter.score_vec(values.len())?;
     for value in values {
         let scored = ParSortMatcher::sort_match_metered(value, meter)?;
         pars.push(scored.term);

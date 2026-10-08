@@ -26,7 +26,9 @@ impl IfSortMatcher {
             value.if_false.as_ref().ok_or(BackingError::Rejected)?,
             meter,
         )?;
-        let mut scores = meter.vec(4)?;
+        // Changed by D-E4 (DR-111): Rule S, one read of each slot.
+        // let mut scores = meter.vec(4)?;
+        let mut scores = meter.score_vec(4)?;
         scores.push(condition.score);
         scores.push(if_true.score);
         scores.push(if_false.score);
@@ -38,7 +40,9 @@ impl IfSortMatcher {
                 condition: Some(condition.term),
                 if_true: Some(if_true.term),
                 if_false: Some(if_false.term),
-                locally_free: meter.clone(&value.locally_free)?,
+                // Changed by D-O1 (DR-111): block accounting.
+                // locally_free: meter.clone(&value.locally_free)?,
+                locally_free: meter.clone_blocks(&value.locally_free)?,
                 connective_used: value.connective_used,
             },
             score: Tree::<ScoreAtom>::create_node_from_i32_metered(Score::IF, scores, meter)?,

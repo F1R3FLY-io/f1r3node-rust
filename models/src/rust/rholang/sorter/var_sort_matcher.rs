@@ -30,7 +30,9 @@ impl VarSortMatcher {
             None => Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
         };
         let term = if v.var_instance.is_some() {
-            meter.clone(v)?
+            // Changed by D-O1 (DR-111): block accounting.
+            // meter.clone(v)?
+            meter.clone_blocks(v)?
         } else {
             Var::default()
         };
