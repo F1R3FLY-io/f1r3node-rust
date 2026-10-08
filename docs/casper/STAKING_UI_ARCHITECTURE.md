@@ -51,6 +51,10 @@ Read methods used by UI:
 - `getPendingWithdrawer`
 - `getMinimumBond`, `getMaximumBond`, `getEpochLength`, `getNumberOfActiveValidators`
 
+Existing REST validator endpoints expose raw self-bonds. Wallets and explorers
+that show consensus stake or delegation positions must read the PoS methods
+above through exploratory deploys until dedicated REST endpoints exist.
+
 ### Layer 2: Wallet SDK / Integration Layer
 
 The wallet integration layer should provide:
@@ -123,6 +127,7 @@ Implication for UI:
 
 - unlocking does not mean risk-free
 - display explicit warning: "Unlocking until block X, still slashable"
+- if slash evidence is pending for the validator, `completeUndelegate` refuses even after the unlock block
 
 ### 4) Validator withdrawal with delegated stake
 
@@ -133,6 +138,7 @@ Implication for UI:
 - do not block validator exit only because delegated total is positive
 - show affected delegators that their active delegation moved to pending undelegation
 - display the pending undelegation unlock block and slashability warning
+- if an existing pending undelegation is merged, show the later unlock block; an already-unlocked but unclaimed position can be extended by validator withdrawal and remains slashable through that extra window
 
 ### 5) Active-set semantics
 
@@ -201,6 +207,7 @@ Required UX properties:
 - show countdown/progress to unlock block
 - keep slash-risk badge visible during cooldown
 - block duplicate undelegation requests for same delegator-validator pair while one is pending
+- keep completion disabled or surface the refusal when slash evidence is pending for the validator
 
 ### D) Claim Delegator Rewards
 
@@ -303,12 +310,14 @@ Use stable message mapping for:
 - `Validator is not bonded.`
 - `Validator has no active bond.`
 - `Validator is pending withdrawal.`
+- `Delegated total mismatch.`
 - `Delegation would exceed validator maximum effective bond.`
 - `Undelegation amount must be positive.`
 - `Undelegation amount exceeds delegated stake.`
 - `Pending undelegation already exists for validator.`
 - `Undelegation cooldown not finished.`
 - `No pending undelegation for validator.`
+- `Validator has pending slash evidence.`
 - `No delegator rewards available.`
 
 ## Design Checklist

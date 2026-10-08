@@ -729,6 +729,8 @@ in {
                        @blockNumber, _, _ <- blockDataCh) {
                     if (amount <= 0) {
                       resultCh!(state, (false, "Undelegation amount must be positive."))
+                    } else if (state.get("pendingWithdrawers").contains(validatorPk)) {
+                      resultCh!(state, (false, "Validator is pending withdrawal."))
                     } else if (state.get("pendingUndelegations").getOrElse(delegatorPk, {}).contains(validatorPk)) {
                       resultCh!(state, (false, "Pending undelegation already exists for validator."))
                     } else {
@@ -785,15 +787,17 @@ in {
               } |
               // Public method allowing delegators to complete undelegation and transfer cooled principal back.
               contract PoS(@"completeUndelegate", @deployerId, @validatorPk, returnCh) = {
-                new userCh, processCh, blockDataCh, vaultAddressCh, transferCh,
-                    getBlockData(`rho:block:data`)
+                new userCh, processCh, blockDataCh, vaultAddressCh, transferCh, invalidBlocksCh,
+                    getBlockData(`rho:block:data`), getInvalidBlocks(`rho:casper:invalidBlocks`)
                 in {
                   runMVar!(*stateCh, *processCh, *returnCh) |
                   getUser!(deployerId, *userCh) |
                   getBlockData!(*blockDataCh) |
+                  getInvalidBlocks!(*invalidBlocksCh) |
                   for (@state, resultCh <- processCh &
                        @delegatorPk      <- userCh &
-                       @blockNumber, _, _ <- blockDataCh) {
+                       @blockNumber, _, _ <- blockDataCh &
+                       @invalidBlocks     <- invalidBlocksCh) {
                     match state.get("pendingUndelegations").getOrElse(delegatorPk, {}).getOrElse(validatorPk, Nil) {
                       Nil => {
                         resultCh!(state, (false, "No pending undelegation for validator."))
@@ -802,24 +806,47 @@ in {
                         if (blockNumber < unlockBlock) {
                           resultCh!(state, (false, "Undelegation cooldown not finished."))
                         } else {
-                          vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
-                          for (@toVaultAddress <- vaultAddressCh) {
-                            @posVault!("transfer", toVaultAddress, pendingAmount, posAuthKey, *transferCh) |
-                            for (@transferResult <- transferCh) {
-                              match transferResult {
-                                (true, _) => {
-                                  match state.get("pendingUndelegations").getOrElse(delegatorPk, {}).delete(validatorPk) {
-                                    updatedDelegatorPending => {
-                                      if (updatedDelegatorPending.size() == 0) {
-                                        resultCh!(state.set("pendingUndelegations", state.get("pendingUndelegations").delete(delegatorPk)), (true, Nil))
-                                      } else {
-                                        resultCh!(state.set("pendingUndelegations", state.get("pendingUndelegations").set(delegatorPk, updatedDelegatorPending)), (true, Nil))
+                          new hasSlashEvidenceCh, containsSlashEvidence in {
+                            contract containsSlashEvidence(@(_, offenderPk), @found, resultCh) = {
+                              if (found) {
+                                resultCh!(true)
+                              } else {
+                                resultCh!(offenderPk == validatorPk)
+                              }
+                            } |
+                            match invalidBlocks {
+                              Nil => {
+                                hasSlashEvidenceCh!(false)
+                              }
+                              _ => {
+                                @ListOps!("fold", invalidBlocks.toList(), false, *containsSlashEvidence, *hasSlashEvidenceCh)
+                              }
+                            } |
+                            for (@hasSlashEvidence <- hasSlashEvidenceCh) {
+                              if (hasSlashEvidence) {
+                                resultCh!(state, (false, "Validator has pending slash evidence."))
+                              } else {
+                                vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
+                                for (@toVaultAddress <- vaultAddressCh) {
+                                  @posVault!("transfer", toVaultAddress, pendingAmount, posAuthKey, *transferCh) |
+                                  for (@transferResult <- transferCh) {
+                                    match transferResult {
+                                      (true, _) => {
+                                        match state.get("pendingUndelegations").getOrElse(delegatorPk, {}).delete(validatorPk) {
+                                          updatedDelegatorPending => {
+                                            if (updatedDelegatorPending.size() == 0) {
+                                              resultCh!(state.set("pendingUndelegations", state.get("pendingUndelegations").delete(delegatorPk)), (true, Nil))
+                                            } else {
+                                              resultCh!(state.set("pendingUndelegations", state.get("pendingUndelegations").set(delegatorPk, updatedDelegatorPending)), (true, Nil))
+                                            }
+                                          }
+                                        }
+                                      }
+                                      (false, errorMsg) => {
+                                        resultCh!(state, (false, "Undelegation transfer failed: " ++ errorMsg))
                                       }
                                     }
                                   }
-                                }
-                                (false, errorMsg) => {
-                                  resultCh!(state, (false, "Undelegation transfer failed: " ++ errorMsg))
                                 }
                               }
                             }
@@ -877,18 +904,22 @@ in {
                     if (state.get("allBonds").contains(userPk)) {
                       new movedDelegationsCh in {
                         moveDelegationsToPendingUndelegations!(state, userPk, blockNumber + $$epochLength$$, *movedDelegationsCh) |
-                        for (@(updatedDelegations, updatedPendingUndelegations, _) <- movedDelegationsCh) {
-                          // The withdrawal goes into effect at the start of the next epoch.
-                          resultCh!(
-                            state
-                              .set("delegations", updatedDelegations)
-                              .set("delegatedTotals", state.get("delegatedTotals").delete(userPk))
-                              .set("pendingUndelegations", updatedPendingUndelegations)
-                              .set("pendingWithdrawers",
-                                    state.get("pendingWithdrawers")
-                                         .set(userPk,
-                                           $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$))),
-                            (true, Nil))
+                        for (@(updatedDelegations, updatedPendingUndelegations, movedAmount) <- movedDelegationsCh) {
+                          if (movedAmount != state.get("delegatedTotals").getOrElse(userPk, 0)) {
+                            resultCh!(state, (false, "Delegated total mismatch."))
+                          } else {
+                            // The withdrawal goes into effect at the start of the next epoch.
+                            resultCh!(
+                              state
+                                .set("delegations", updatedDelegations)
+                                .set("delegatedTotals", state.get("delegatedTotals").delete(userPk))
+                                .set("pendingUndelegations", updatedPendingUndelegations)
+                                .set("pendingWithdrawers",
+                                      state.get("pendingWithdrawers")
+                                           .set(userPk,
+                                             $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$))),
+                              (true, Nil))
+                          }
                         }
                       }
                     } else {

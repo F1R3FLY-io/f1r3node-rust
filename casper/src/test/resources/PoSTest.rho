@@ -1159,7 +1159,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 hashCh, invalidBlocksSetCh, blockDataCh,
                 validatorSetupCh, delegatorSetupCh, slasherSetupCh,
                 bondCh, delegateCh, undelegateCh, slashCh, completeCh,
-                pendingBeforeCh, pendingAfterCh,
+                preSlashCompleteCh, pendingBeforeCh, pendingDuringEvidenceCh, pendingAfterCh,
                 epochCh, preSlashPosBalanceCh, postSlashPosBalanceCh,
                 preSlashCoopBalanceCh, postSlashCoopBalanceCh
             in {
@@ -1191,28 +1191,38 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                    @hash <- hashCh) {
                                 setInvalidBlocks!({hash : validatorPubKey}, *invalidBlocksSetCh) |
                                 for (_ <- invalidBlocksSetCh) {
-                                  @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
-                                  for (@(true, _) <- slashCh) {
-                                    getPosBalance!(*postSlashPosBalanceCh) |
-                                    getCoopBalance!(*postSlashCoopBalanceCh) |
-                                    @PoS!("getPendingUndelegations", *pendingAfterCh) |
-                                    setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
-                                    for (@postSlashPosBalance <- postSlashPosBalanceCh &
-                                         @postSlashCoopBalance <- postSlashCoopBalanceCh &
-                                         @pendingAfter <- pendingAfterCh &
-                                         _ <- blockDataCh) {
-                                      @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *completeCh) |
-                                      for (@(false, completeMsg) <- completeCh) {
-                                        rhoSpec!("assertMany",
-                                          [
-                                            (((delegationAmt, requestBlock + epochLength), "==", pendingBefore.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "undelegation request is pending before slash"),
-                                            ((false, "==", pendingAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation is removed by slash"),
-                                            ((validatorBond + delegationAmt, "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates self-bond plus pending undelegation"),
-                                            ((validatorBond + delegationAmt, "==", postSlashCoopBalance - preSlashCoopBalance), "slash transfers confiscated pending stake to Coop vault"),
-                                            (("No pending undelegation for validator.", "==", completeMsg), "completeUndelegate cannot claim slashed pending stake")
-                                          ],
-                                          *ackCh
-                                        )
+                                  setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                  for (_ <- blockDataCh) {
+                                    @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *preSlashCompleteCh) |
+                                    @PoS!("getPendingUndelegations", *pendingDuringEvidenceCh) |
+                                    for (@(false, preSlashCompleteMsg) <- preSlashCompleteCh &
+                                         @pendingDuringEvidence <- pendingDuringEvidenceCh) {
+                                      @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
+                                      for (@(true, _) <- slashCh) {
+                                        getPosBalance!(*postSlashPosBalanceCh) |
+                                        getCoopBalance!(*postSlashCoopBalanceCh) |
+                                        @PoS!("getPendingUndelegations", *pendingAfterCh) |
+                                        setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                        for (@postSlashPosBalance <- postSlashPosBalanceCh &
+                                             @postSlashCoopBalance <- postSlashCoopBalanceCh &
+                                             @pendingAfter <- pendingAfterCh &
+                                             _ <- blockDataCh) {
+                                          @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *completeCh) |
+                                          for (@(false, completeMsg) <- completeCh) {
+                                            rhoSpec!("assertMany",
+                                              [
+                                                (((delegationAmt, requestBlock + epochLength), "==", pendingBefore.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "undelegation request is pending before slash"),
+                                                (("Validator has pending slash evidence.", "==", preSlashCompleteMsg), "completeUndelegate cannot escape known slash evidence"),
+                                                (((delegationAmt, requestBlock + epochLength), "==", pendingDuringEvidence.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "pending undelegation remains escrowed when slash evidence is pending"),
+                                                ((false, "==", pendingAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation is removed by slash"),
+                                                ((validatorBond + delegationAmt, "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates self-bond plus pending undelegation"),
+                                                ((validatorBond + delegationAmt, "==", postSlashCoopBalance - preSlashCoopBalance), "slash transfers confiscated pending stake to Coop vault"),
+                                                (("No pending undelegation for validator.", "==", completeMsg), "completeUndelegate cannot claim slashed pending stake")
+                                              ],
+                                              *ackCh
+                                            )
+                                          }
+                                        }
                                       }
                                     }
                                   }

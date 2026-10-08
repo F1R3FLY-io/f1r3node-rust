@@ -77,6 +77,7 @@ Effective stake is computed as:
     - `amount > 0`
     - delegator has at least `amount` delegated to `validatorPk`
     - no active pending undelegation for `(delegatorPk, validatorPk)`
+    - validator is not pending withdrawal
   - Effects:
     - removes `amount` from active delegation immediately
     - decrements `delegations[delegatorPk][validatorPk]`
@@ -88,6 +89,7 @@ Effective stake is computed as:
   - Preconditions:
     - pending undelegation exists for `(delegatorPk, validatorPk)`
     - `currentBlock >= unlockBlock`
+    - no pending slash evidence targets `validatorPk`
   - Effects:
     - transfers cooled undelegation principal from PoS vault to delegator vault
     - removes pending undelegation entry
@@ -105,8 +107,11 @@ Effective stake is computed as:
   - Effects:
     - converts every active delegation to this validator into pending undelegation with unlock block `blockNumber + epochLength`
     - merges with an existing pending undelegation for the same `(delegator, validator)` by adding the amount and keeping the later unlock block
+    - refuses with `Delegated total mismatch.` if the moved active delegation sum does not match `delegatedTotals[validatorPk]`
     - clears `delegatedTotals[validatorPk]`
     - records the validator in `pendingWithdrawers`
+  - Consequence:
+    - if a delegator already has an unlocked but unclaimed pending undelegation for this validator, validator withdrawal can extend the merged claim by up to `epochLength`, and the merged amount remains slashable until completion
 
 ## Wallet SDK Integration (Reference)
 
@@ -265,11 +270,13 @@ Map these contract errors to stable SDK/user-facing codes:
 - `Validator is not bonded.`
 - `Validator has no active bond.`
 - `Validator is pending withdrawal.`
+- `Delegated total mismatch.`
 - `Undelegation amount must be positive.`
 - `Undelegation amount exceeds delegated stake.`
 - `Pending undelegation already exists for validator.`
 - `No pending undelegation for validator.`
 - `Undelegation cooldown not finished.`
+- `Validator has pending slash evidence.`
 - `No delegator rewards available.`
 - `Delegation would exceed validator maximum effective bond.`
 
@@ -299,6 +306,7 @@ Rust runtime on-chain bond queries now call `getEffectiveBonds`, so consensus st
 - request step: removes active delegation stake and creates pending undelegation with unlock block
 - pending step: principal is unlocking, excluded from future effective stake, and still slashable escrow
 - completion step: `PoS("completeUndelegate", ...)` transfers principal only after cooldown
+- completion refuses while slash evidence for the validator is pending, so a cooled pending undelegation cannot escape a known slash before the slash deploy runs
 
 ### Withdraw
 
@@ -339,10 +347,12 @@ Expected invariants for valid state transitions:
 2. Only one pending undelegation per `(delegator, validator)` pair is allowed at a time.
 3. Delegator rewards are tracked per delegator total (not bucketed per validator).
 4. `maximumBond` is enforced as an effective stake cap (`self + active delegated`), not just self-bond.
-5. Delegation and undelegation change effective stake immediately. TestNet v1 should either accept this immediate-activation economic model explicitly or gate delegation rollout on an epoch-snapshot design.
+5. Delegation, undelegation, and validator withdrawal change effective stake immediately. TestNet v1 should either accept this immediate-activation economic model explicitly or gate delegation rollout on an epoch-snapshot design.
 6. Epoch reward distribution still scans the delegation maps. TestNet v1 should define a measured maximum `(delegator, validator)` pair count for this implementation or gate delegation rollout on reward-per-share or equivalent lazy accounting.
 7. Pending undelegation slashability is explicit current behavior. Operators and wallets must show that unlocking stake is still slashable until completion.
 8. Concurrent delegation deploys contend on the single PoS state cell. Merge-rejected delegation deploys are expected to recover through canonical deploy recovery and finalize without double application, but a deploy that loses the merge can see additional inclusion latency.
+9. Existing REST validator endpoints still expose raw validator self-bonds. Wallets that need effective stake, delegation ownership, or pending undelegation state must use the PoS query methods through exploratory deploys until dedicated REST endpoints are added.
+10. Slashing confiscates delegated principal and pending undelegation principal tied to the validator. Already credited `delegatorRewards` are not keyed by validator and are not removed by slash in this version.
 
 ## Minimal Usage Example (Rholang)
 
