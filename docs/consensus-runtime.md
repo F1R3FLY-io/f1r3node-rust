@@ -42,6 +42,23 @@ Casper records the manifest before it reports readiness.
 The Casper adapter also owns the optional soak observer. The observer binds during preparation and stops before store shutdown.
 Dropping a prepared adapter releases its observer socket. The host does not receive the native observer controller.
 
+## Command deadlines
+
+Each `Submit`, `Propose`, and `Finalized` command carries a monotonic deadline from `tokio::time::Instant`.
+The runtime sets this deadline before queue admission and uses the same deadline to wait for the reply.
+Time in the command queue and time waiting for an adapter task both count toward the request timeout.
+
+Every adapter must call `ConsensusCommand::try_start()` immediately before command processing, after any scheduling or concurrency wait.
+The check rejects an expired command with `DeadlineExceeded`, even if the caller has not yet observed its timeout.
+It also skips commands whose callers have dropped their reply receivers. Rejection affects only that request and does not stop the adapter.
+Casper performs this check inside its command task, before dispatch to the native operation.
+
+The check defines the execution start boundary. After that boundary, the operation can finish after the deadline, including after waits inside native processing.
+A caller timeout does not cancel or roll back an operation that has started.
+For `Submit` and `Propose`, `DeadlineExceeded` therefore means **outcome unknown**, not proof that no state changed.
+Check the operation result before retrying a write. The shared interface does not provide request deduplication or guarantee safe write retries.
+`Finalized` is a read and can be retried, but a later response can report newer finality.
+
 ## Build selection
 
 The node enables the `cbc-casper` Cargo feature by default. The configuration selector remains `consensus.protocol = "cbc-casper"`.

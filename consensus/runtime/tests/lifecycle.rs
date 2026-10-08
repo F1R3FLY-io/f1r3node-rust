@@ -35,10 +35,11 @@ impl ConsensusAdapter for Echo {
         loop {
             tokio::select! {
                 _ = context.control.cancelled() => return Ok(()),
-                Some(command) = context.commands.recv() => match command {
-                    ConsensusCommand::Submit { payload, reply } => { let _ = reply.send(Ok(String::from_utf8(payload).unwrap())); }
-                    ConsensusCommand::Propose { reply, .. } => { let _ = reply.send(Ok("proposal".into())); }
-                    ConsensusCommand::Finalized { reply } => { let _ = reply.send(Ok(consensus_api::ObjectId(vec![1]))); }
+                Some(command) = context.commands.recv() => match command.try_start() {
+                    Some(ConsensusCommand::Submit { payload, reply, .. }) => { let _ = reply.send(Ok(String::from_utf8(payload).unwrap())); }
+                    Some(ConsensusCommand::Propose { reply, .. }) => { let _ = reply.send(Ok("proposal".into())); }
+                    Some(ConsensusCommand::Finalized { reply, .. }) => { let _ = reply.send(Ok(consensus_api::ObjectId(vec![1]))); }
+                    None => {}
                 },
                 Some(request) = context.packets.recv() => { let _ = request.reply.send(Ok(())); }
             }
@@ -48,7 +49,11 @@ impl ConsensusAdapter for Echo {
 
 #[tokio::test]
 async fn requests_cross_the_adapter_and_shutdown_closes_admission() {
-    let builder = builder(Capabilities::SUBMIT.union(Capabilities::PROPOSE));
+    let builder = builder(
+        Capabilities::SUBMIT
+            .union(Capabilities::PROPOSE)
+            .union(Capabilities::FINALIZED_PROGRESS),
+    );
     let handle = builder.handle();
     assert_eq!(handle.status().phase, Phase::Prepared);
     assert_eq!(handle.propose(false).await, Err(ConsensusError::NotReady));
@@ -56,6 +61,10 @@ async fn requests_cross_the_adapter_and_shutdown_closes_admission() {
     handle.wait_ready().await.unwrap();
     assert_eq!(handle.submit(b"deploy".to_vec()).await.unwrap(), "deploy");
     assert_eq!(handle.propose(false).await.unwrap(), "proposal");
+    assert_eq!(
+        handle.finalized().await.unwrap(),
+        consensus_api::ObjectId(vec![1])
+    );
     runtime.shutdown().await.unwrap();
     assert_eq!(handle.status().phase, Phase::Stopped);
     assert_eq!(handle.submit(vec![]).await, Err(ConsensusError::Stopped));

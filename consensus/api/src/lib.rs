@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectId(pub Vec<u8>);
@@ -103,15 +104,48 @@ pub enum AdmissionOutcome {
 pub enum ConsensusCommand {
     Submit {
         payload: Vec<u8>,
+        deadline: Instant,
         reply: oneshot::Sender<Result<String, ConsensusError>>,
     },
     Propose {
         is_async: bool,
+        deadline: Instant,
         reply: oneshot::Sender<Result<String, ConsensusError>>,
     },
     Finalized {
+        deadline: Instant,
         reply: oneshot::Sender<Result<ObjectId, ConsensusError>>,
     },
+}
+
+impl ConsensusCommand {
+    #[must_use]
+    pub fn try_start(self) -> Option<Self> {
+        let (deadline, closed) = match &self {
+            Self::Submit {
+                deadline, reply, ..
+            }
+            | Self::Propose {
+                deadline, reply, ..
+            } => (*deadline, reply.is_closed()),
+            Self::Finalized { deadline, reply } => (*deadline, reply.is_closed()),
+        };
+        if closed {
+            return None;
+        }
+        if Instant::now() >= deadline {
+            match self {
+                Self::Submit { reply, .. } | Self::Propose { reply, .. } => {
+                    let _ = reply.send(Err(ConsensusError::DeadlineExceeded));
+                }
+                Self::Finalized { reply, .. } => {
+                    let _ = reply.send(Err(ConsensusError::DeadlineExceeded));
+                }
+            }
+            return None;
+        }
+        Some(self)
+    }
 }
 
 pub struct PacketRequest {

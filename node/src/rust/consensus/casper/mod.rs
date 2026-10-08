@@ -301,9 +301,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                     let task_spawner = task_spawner.clone();
                     command_requests.spawn("command", async move {
                         use casper::rust::api::block_api::BlockAPI;
+                        let Some(command) = command.try_start() else { return Ok(()); };
                         match command {
-                            ConsensusCommand::Submit { payload, reply } => {
-                                if reply.is_closed() { return Ok(()); }
+                            ConsensusCommand::Submit { payload, reply, .. } => {
                                 let result = match models::casper::DeployDataProto::decode(payload.as_slice()) {
                                     Ok(proto) => match DeployData::from_proto(proto) {
                                         Ok(deploy) => BlockAPI::deploy_supervised(&engine, deploy, &if autopropose { propose.clone() } else { None }, propose.is_none(), &shard, &Some(task_spawner)).await.map_err(api_compat::command_error),
@@ -313,16 +313,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                                 };
                                 let _ = reply.send(result);
                             }
-                            ConsensusCommand::Propose { is_async, reply } => {
-                                if reply.is_closed() { return Ok(()); }
+                            ConsensusCommand::Propose { is_async, reply, .. } => {
                                 let result = match propose {
                                     Some(propose) => BlockAPI::create_block(&engine, &propose, is_async).await.map_err(api_compat::command_error),
                                     None => Err(ConsensusError::UnsupportedCapability("propose")),
                                 };
                                 let _ = reply.send(result);
                             }
-                            ConsensusCommand::Finalized { reply } => {
-                                if reply.is_closed() { return Ok(()); }
+                            ConsensusCommand::Finalized { reply, .. } => {
                                 let result = match engine.get().await.with_casper() {
                                     Some(casper) => casper.last_finalized_block().await.map(|block| ObjectId(block.block_hash.to_vec())).map_err(native_error),
                                     None => Err(ConsensusError::NotReady),

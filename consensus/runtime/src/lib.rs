@@ -10,6 +10,7 @@ use consensus_api::{
 use futures::FutureExt;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::Instant;
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
@@ -83,9 +84,10 @@ impl ConsensusHandle {
 
     async fn response<T>(
         &self,
+        deadline: Instant,
         rx: oneshot::Receiver<Result<T, ConsensusError>>,
     ) -> Result<T, ConsensusError> {
-        tokio::time::timeout(self.config.request_timeout, rx)
+        tokio::time::timeout_at(deadline, rx)
             .await
             .map_err(|_| ConsensusError::DeadlineExceeded)?
             .map_err(|_| ConsensusError::Stopped)?
@@ -94,20 +96,30 @@ impl ConsensusHandle {
     pub async fn submit(&self, payload: Vec<u8>) -> Result<String, ConsensusError> {
         self.check(Some((Capabilities::SUBMIT, "submit")))?;
         self.check_payload(&payload)?;
+        let deadline = Instant::now() + self.config.request_timeout;
         let (reply, rx) = oneshot::channel();
         self.commands
-            .try_send(ConsensusCommand::Submit { payload, reply })
+            .try_send(ConsensusCommand::Submit {
+                payload,
+                deadline,
+                reply,
+            })
             .map_err(queue_error)?;
-        self.response(rx).await
+        self.response(deadline, rx).await
     }
 
     pub async fn propose(&self, is_async: bool) -> Result<String, ConsensusError> {
         self.check(Some((Capabilities::PROPOSE, "propose")))?;
+        let deadline = Instant::now() + self.config.request_timeout;
         let (reply, rx) = oneshot::channel();
         self.commands
-            .try_send(ConsensusCommand::Propose { is_async, reply })
+            .try_send(ConsensusCommand::Propose {
+                is_async,
+                deadline,
+                reply,
+            })
             .map_err(queue_error)?;
-        self.response(rx).await
+        self.response(deadline, rx).await
     }
 
     pub async fn finalized(&self) -> Result<ObjectId, ConsensusError> {
@@ -115,11 +127,12 @@ impl ConsensusHandle {
             Capabilities::FINALIZED_PROGRESS,
             "finalized progress",
         )))?;
+        let deadline = Instant::now() + self.config.request_timeout;
         let (reply, rx) = oneshot::channel();
         self.commands
-            .try_send(ConsensusCommand::Finalized { reply })
+            .try_send(ConsensusCommand::Finalized { deadline, reply })
             .map_err(queue_error)?;
-        self.response(rx).await
+        self.response(deadline, rx).await
     }
 
     pub async fn handle_packet(&self, packet: NetworkPacket) -> Result<(), ConsensusError> {
@@ -134,7 +147,8 @@ impl ConsensusHandle {
         self.packets
             .try_send(PacketRequest { packet, reply })
             .map_err(queue_error)?;
-        self.response(rx).await
+        self.response(Instant::now() + self.config.request_timeout, rx)
+            .await
     }
 
     pub async fn wait_ready(&self) -> Result<(), ConsensusError> {
