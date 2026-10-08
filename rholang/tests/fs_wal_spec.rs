@@ -26,10 +26,7 @@
 mod tests {
     use std::sync::Arc;
 
-    // Note: fileio uses `Blake2b256` directly in the (deferred) sub-
-    // modules; the parent file does not reference it after the triage
-    // port's trimming.
-    // use crypto::rust::hash::blake2b256::Blake2b256;
+    use crypto::rust::hash::blake2b256::Blake2b256;
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use fileio_test_fixtures::{apply_wal_translated, assert_dir_trees_byte_identical};
     use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
@@ -87,10 +84,10 @@ mod tests {
     mod lifecycle;
     #[path = "fs_wal/stream.rs"]
     mod stream;
+    #[path = "fs_wal/observation.rs"]
+    mod observation;
     // #[path = "fs_wal/mutation.rs"]
     // mod mutation;
-    // #[path = "fs_wal/observation.rs"]
-    // mod observation;
 
     // ------------------------------------------------------------------
     // Redesign regression pins
