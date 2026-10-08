@@ -46,8 +46,11 @@
 //!   * fileio's `root_registry.set_test_permissive(true)` dropped
 //!     — triage has no M-04 gating today, so no bypass is needed.
 //!   * `oracular_recursive_remove_dir_replays_without_journaling`
-//!     has an additional reason to be ignored: triage ships only
-//!     the slice-5.44 FSERR_UNSUPPORTED stub for `removeDir`.
+//!     once had an additional reason to be ignored (the slice-5.44
+//!     FSERR_UNSUPPORTED stub for `removeDir`).  That cause was
+//!     cleared by slices 5.141-5.143; the remaining ignore is the
+//!     replay-harness UnusedCommEvent gap, same as the other three
+//!     ignored tests in this file.
 
 #[cfg(test)]
 mod tests {

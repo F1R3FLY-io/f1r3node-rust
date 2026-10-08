@@ -18,11 +18,13 @@
 // bumps [`EXPECTED_MIGRATED_HANDLER_COUNT`](super::handler_trait::fs_handlers::EXPECTED_MIGRATED_HANDLER_COUNT)
 // by one.
 //
-// # Status (Wave 4 complete)
+// # Status (Wave 4 complete; removedir trait-exempt wired in Wave 5)
 //
 // All 27 trait-registered handlers landed; the trait-exempt
-// fs_remove_dir has a stub handler (slice 5.44) with the real
-// DD-RemoveDirReplyShape impl deferred to a future Wave 4 slice.
+// fs_remove_dir has the real DD-RemoveDirReplyShape handler ported
+// in slices 5.136-5.141 (decomposed removedir submodule under
+// `handlers/removedir/`), URN registration swapped from the slice-
+// 5.44 stub in slice 5.142, and the stub deleted in slice 5.143.
 //
 //   - `lifecycle` (3): fs_quarantine (4.12), fs_close (4.13),
 //     fs_open (4.32).
