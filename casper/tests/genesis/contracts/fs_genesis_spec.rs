@@ -156,4 +156,56 @@ fn fs_native_filter_guard_discipline_pinned_across_crates() {
          accidental, re-add the guard before merging.",
         guard_count, EXPECTED_GUARD_COUNT,
     );
+
+    // Rholang-side filter-toggle call sites (slice 5.74).  The
+    // casper-side guard above wraps whole play/replay/report deploy
+    // loops; these rholang-side helpers let direct tests toggle the
+    // filter without going through casper (e.g., `fileio_bounds_spec`
+    // constructs its own runtime via `create_rho_runtime`).  Each
+    // call site is either:
+    //   (a) inside the rho_runtime.rs definition / internal helper
+    //       (fn declaration + the `exempt_` wrapper's one-liner), OR
+    //   (b) a test harness that constructs its own runtime and
+    //       narrows the exemption to the test scope.
+    //
+    // Pin keeps a floor on "where this toggle fires in rholang/".
+    // A stray un-paired `disable_fs_native_urn_filter(…)` outside a
+    // tightly-scoped test (e.g., accidentally added to a production
+    // handler) would bump the count and surface here before a review
+    // round-trip.
+    //
+    // Current (slice 5.74):
+    //   * rho_runtime.rs: 2 occurrences — one `pub fn disable_fs_
+    //     native_urn_filter`, one call inside
+    //     `exempt_fs_native_urn_filter` to delegate the Release-store.
+    //   * rholang/tests/fileio_bounds_spec.rs: 1 occurrence — the
+    //     test-harness setup.
+    const EXPECTED_RHOLANG_DISABLE_COUNT: usize = 3;
+    const RHOLANG_DISABLE_NEEDLE: &str = "disable_fs_native_urn_filter(";
+    let rholang_disable_scan_files: &[&str] = &[
+        "/../rholang/src/rust/interpreter/rho_runtime.rs",
+        "/../rholang/tests/fileio_bounds_spec.rs",
+    ];
+    let mut rholang_disable_count = 0usize;
+    for rel in rholang_disable_scan_files {
+        let path = format!("{}{}", env!("CARGO_MANIFEST_DIR"), rel);
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        rholang_disable_count += src.matches(RHOLANG_DISABLE_NEEDLE).count();
+    }
+    assert_eq!(
+        rholang_disable_count, EXPECTED_RHOLANG_DISABLE_COUNT,
+        "Rholang-side `disable_fs_native_urn_filter(` call count \
+         drift: found {} occurrences across the enumerated rholang \
+         sources but expected {}.  Policy: this call is a footgun \
+         (bare, non-RAII filter-off switch); every new call site \
+         must be in a tightly-scoped test fixture that re-enables \
+         the filter before deploy-execution shape resumes, OR \
+         replaced with `exempt_fs_native_urn_filter()`'s RAII \
+         guard.  If a new test-harness call site landed intentionally, \
+         (a) add it to `rholang_disable_scan_files` above AND (b) \
+         bump EXPECTED_RHOLANG_DISABLE_COUNT.  If the delta is \
+         accidental, remove the stray call or swap it for the RAII \
+         variant.",
+        rholang_disable_count, EXPECTED_RHOLANG_DISABLE_COUNT,
+    );
 }

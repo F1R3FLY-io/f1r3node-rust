@@ -212,7 +212,6 @@ in {{
 /// off-by-one (`k <= 0` vs. `k < 0`, or `spawner!(k)` vs.
 /// `spawner!(k - 1)`) where workers=8 would still pass but workers=1
 /// would deadlock or miscount.
-#[ignore = "triage posture: Rholang List.concatBytes method not yet ported to triage reduce.rs; un-ignore when the method lands."]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn foldconcurrent_workers_one_matches_sequential() {
     let content: Vec<u8> = (1u8..=10).collect();
@@ -269,7 +268,6 @@ in {{
 
 /// mapReduce with workers=1 must produce the same total as the
 /// multi-worker version.  Same rationale as
-#[ignore = "triage posture: Rholang List.concatBytes method not yet ported to triage reduce.rs; un-ignore when the method lands."]
 /// foldconcurrent_workers_one_matches_sequential.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mapreduce_workers_one_matches_sequential() {
@@ -335,7 +333,6 @@ in {{
 /// all workers see EOS immediately, publish `("ok", Nil)` to doneCh,
 /// and the collector peeks accP (still holding init) for the final
 /// value.  Guards against a regression where empty-stream handling
-#[ignore = "triage posture: Rholang List.concatBytes method not yet ported to triage reduce.rs; un-ignore when the method lands."]
 /// deadlocks (worker never publishes) or returns a wrong-shaped
 /// reply (e.g., init not preserved).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -392,7 +389,6 @@ in {{
 
 /// mapReduce over an empty stream must return `[true, init]` —
 /// all workers see EOS immediately, publish `("ok", [])` (empty
-#[ignore = "triage posture: Rholang List.concatBytes method not yet ported to triage reduce.rs; un-ignore when the method lands."]
 /// partial); foldPartials over N `[]` partials returns
 /// `[true, init]` without invoking reduceFn.  Guards against a
 /// regression in foldPartials' empty-partial handling.
@@ -464,7 +460,6 @@ in {{
 ///   chunk(65536) → [true, container]     — boundary at cap (allowed)
 ///   chunk(65537) → [false, FSERR_QUOTA_EXCEEDED, "chunk n exceeds MAX_CHUNK_ITEMS=65536"]
 ///   chunk(1_000_000) → [false, FSERR_QUOTA_EXCEEDED, ...]  — well above cap
-#[ignore = "triage posture: Rholang List.concatBytes method not yet ported to triage reduce.rs; un-ignore when the method lands."]
 ///
 /// A regression that flips the comparison direction (`i < 65536`
 /// instead of `i > 65536`), shifts the boundary (`i >= 65536`), or

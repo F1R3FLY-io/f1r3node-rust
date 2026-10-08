@@ -260,6 +260,32 @@ pub struct RhoRuntimeImpl {
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
     pub(crate) merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    /// Per-runtime FS handle table — fds allocated by `fs_open` live
+    /// here, visible to downstream `fs_read` / `fs_close` / etc.
+    /// Shared with every FS native handler's `FsProcesses` dispatch
+    /// surface via `Arc` under the hood, so a single Arc-bump at
+    /// construction time threads the same table through every
+    /// handler.  Public so test harnesses + the soft-checkpoint
+    /// fd-snapshot wiring can inspect and manipulate the table
+    /// directly.
+    pub fs_handles: super::io::handle_table::FileHandleTable,
+    /// Stack of file-fd counter snapshots captured at soft-checkpoint
+    /// time.  On revert we pop the innermost snapshot and truncate
+    /// the fd table to it, freeing every fd allocated after the
+    /// checkpoint (spec §Fd-table lifecycle).  Stack (not single
+    /// slot) so nested `create_soft_checkpoint` calls preserve the
+    /// outer marks — H4/M1 review fix (slice 29 round 2).  Pre-fix
+    /// design was `Option<u64>` which silently dropped the outer
+    /// mark on the inner `create`.
+    fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
+    /// Stack of dir-stream fd-counter snapshots captured at soft-
+    /// checkpoint time.  Companion to `fs_snapshot_stack` — same
+    /// push-on-create / pop-on-revert / clear-on-reset semantics,
+    /// applied to `fs_handles.dir_handles`.  Kept as its own stack
+    /// (rather than a tuple in `fs_snapshot_stack`) so a revert that
+    /// touches only one table doesn't accidentally pop the other's
+    /// mark.  Streaming-backing slice Step 4 (2026-08-25).
+    dir_fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -270,6 +296,7 @@ impl RhoRuntimeImpl {
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
         merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+        fs_handles: super::io::handle_table::FileHandleTable,
     ) -> RhoRuntimeImpl {
         RhoRuntimeImpl {
             reducer,
@@ -278,12 +305,60 @@ impl RhoRuntimeImpl {
             invalid_blocks_param,
             deploy_data_ref,
             merge_chs,
+            fs_handles,
+            fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            dir_fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
 
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
+
+    /// Enable the rho:io:fs:native:* URN filter.  Every subsequent
+    /// `new x(`rho:io:fs:native:...`)` inside a deploy returns
+    /// `ReduceError` from `eval_new`.  This is the default state.
+    /// Idempotent.
+    pub fn enable_fs_native_urn_filter(&self) {
+        self.reducer
+            .filter_fs_native_urns
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Disable the rho:io:fs:native:* URN filter for the duration
+    /// of a genesis-composition run (or a test harness).  MUST be
+    /// re-enabled via `enable_fs_native_urn_filter` after the
+    /// scope exits — leaving it disabled would expose raw fs
+    /// syscalls to every subsequent user deploy on this runtime.
+    /// Prefer [`exempt_fs_native_urn_filter`] when a lexical scope
+    /// bounds the exemption; it uses RAII to re-enable on Drop.
+    pub fn disable_fs_native_urn_filter(&self) {
+        self.reducer
+            .filter_fs_native_urns
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// RAII exemption guard for the `rho:io:fs:native:*` URN
+    /// filter.  Disables the filter on construction and re-enables
+    /// on Drop — including panics and tokio-task cancellation.
+    /// Caller holds the returned guard for the lifetime of the
+    /// exemption scope; dropping it immediately after construction
+    /// re-enables the filter before any enclosed code sees it off.
+    pub fn exempt_fs_native_urn_filter(&self) -> FsNativeUrnFilterExemption {
+        self.disable_fs_native_urn_filter();
+        FsNativeUrnFilterExemption {
+            flag: self.reducer.filter_fs_native_urns.clone(),
+        }
+    }
+
+    /// Introspection helper for tests and diagnostics.  Returns
+    /// `true` iff `rho:io:fs:native:*` URN resolution is blocked
+    /// in `eval_new`.
+    pub fn fs_native_urn_filter_enabled(&self) -> bool {
+        self.reducer
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
 
     pub async fn set_report_phase(
         &self,
@@ -327,6 +402,26 @@ impl RhoRuntime for RhoRuntimeImpl {
     ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
         let start = Instant::now();
         let checkpoint = self.reducer.space.create_soft_checkpoint().await;
+        // Snapshot the fd counter so an evaluation error can roll back
+        // any opens issued during the deploy — spec §Phase 1 fd-table
+        // lifecycle.  Monotonic counter guarantees no fd aliasing across
+        // rollback boundaries.
+        // H4/M1 review fix (round 2): PUSH onto a stack rather than
+        // overwriting a single slot, so nested soft-checkpoints
+        // preserve outer marks.  Revert POPs the innermost.
+        {
+            let mut stack = self.fs_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.snapshot_next_fd());
+        }
+        // Streaming-backing slice Step 4: mirror the file-fd stack for
+        // dir-stream fds so a reverted deploy sweeps stream fds it
+        // opened between checkpoint and revert.  Same nested-stack
+        // semantics as fs_snapshot_stack — the inner create pushes on
+        // top of the outer mark; each revert pops one.
+        {
+            let mut stack = self.dir_fs_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.dir_handles.snapshot_next_fd());
+        }
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_SOFT_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -363,6 +458,26 @@ impl RhoRuntime for RhoRuntimeImpl {
             "source" => RUNTIME_METRICS_SOURCE
         )
         .increment(1);
+        // Roll back the fd table to the snapshot captured at
+        // create_soft_checkpoint time.  Any fds opened during the failed
+        // eval are closed and removed; the monotonic counter is not
+        // rewound so stale fds observed by any caller reliably see
+        // FSERR_CLOSED rather than aliasing a later open.
+        // H4/M1 round-2 fix: POP the innermost snapshot from the stack
+        // so nested checkpoints unwind correctly.  A revert without a
+        // matching create is a no-op (defensive against unbalanced calls).
+        let snap = { self.fs_snapshot_stack.lock().unwrap().pop() };
+        if let Some(s) = snap {
+            self.fs_handles.truncate_to(s).await;
+        }
+        // Streaming-backing slice Step 4: symmetric pop + truncate for
+        // the dir-stream fd table.  Unbalanced revert (no matching
+        // create) is a no-op, same defensive posture as the file-fd
+        // stack.
+        let dir_snap = { self.dir_fs_snapshot_stack.lock().unwrap().pop() };
+        if let Some(s) = dir_snap {
+            self.fs_handles.dir_handles.truncate_to(s).await;
+        }
         self.reducer
             .space
             .revert_to_soft_checkpoint(soft_checkpoint)
@@ -382,6 +497,43 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
         self.reducer.space.reset(root).await?;
+        // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
+        // state root.  Every block boundary triggers a reset via this
+        // path (see `casper::rholang::runtime::play_deploys_for_state`,
+        // `play_deploys_for_genesis`, `play_system_deploy`), and every
+        // validator resetting to the same root computes the same
+        // watermark — so fd values captured by the leader are
+        // reproducibly replayable by followers.
+        //
+        // **Consensus commitment**: fd values are consensus-observable
+        // via Rholang tuplespace state (`fdP` cells inside File
+        // agents).  This seed derivation is therefore an implicit
+        // consensus commitment — any future change to
+        // `seed_next_fd_from_state_hash`'s derivation constants or
+        // hash algorithm is a hard fork.
+        //
+        // **Aliasing prevention**: a fresh runtime spawned per block
+        // (via `RuntimeManager::spawn_runtime`) starts fd allocation
+        // from the state-hash-derived watermark, NOT from `next_fd =
+        // 1`.  Two independent runtimes at the same state hash
+        // allocate identical fd sequences (leader/follower replay).
+        self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
+        // Streaming-backing slice (2026-08-25): seed the dir-stream
+        // fd counter from the same state hash.  Same PB-M-13 aliasing
+        // threat as file fds — dir-stream fd values flow through the
+        // tuplespace as GInt, so a joining validator (or restart) that
+        // allocated fresh dir-stream fds starting from 1 could alias a
+        // stream fd a prior lifetime stashed in tuplespace state.
+        self.fs_handles
+            .dir_handles
+            .seed_next_fd_from_state_hash(&root.bytes());
+        // M6 round-2 fix: also clear stashed checkpoint marks so a
+        // subsequent revert doesn't pop a stale mark (which would
+        // truncate the fd table to a pre-reset watermark).  A reset
+        // semantically means "start fresh at this state root"; leaving
+        // a mark stashed is inconsistent with that.
+        self.fs_snapshot_stack.lock().unwrap().clear();
+        self.dir_fs_snapshot_stack.lock().unwrap().clear();
         Ok(())
     }
 
@@ -461,6 +613,23 @@ impl RhoRuntime for RhoRuntimeImpl {
 
 impl HasCost for RhoRuntimeImpl {
     fn cost(&self) -> &_cost { &self.cost }
+}
+
+/// RAII guard returned by
+/// [`RhoRuntimeImpl::exempt_fs_native_urn_filter`].  Owns an Arc
+/// clone of the filter flag (not a borrow of the runtime) so the
+/// caller can still exercise `&mut self` on the runtime during the
+/// exemption.  The filter re-enables on Drop — including panics
+/// and tokio-task cancellation.
+#[must_use = "the exemption ends when the guard is dropped; letting it drop \
+              immediately after construction re-enables the filter and \
+              the enclosed code sees the filter ON"]
+pub struct FsNativeUrnFilterExemption {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for FsNativeUrnFilterExemption {
+    fn drop(&mut self) { self.flag.store(true, std::sync::atomic::Ordering::Release); }
 }
 
 pub type RhoTuplespace =
@@ -1040,14 +1209,16 @@ fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 /// (slice 5.32): user deploys get a `ReduceError`; genesis gets
 /// unfiltered access via the toggle in `play_deploys_for_genesis`
 /// (slice 5.33).
-fn fs_handlers_to_definitions(dispatcher: RhoDispatch, space: RhoISpace) -> Vec<Definition> {
+fn fs_handlers_to_definitions(
+    dispatcher: RhoDispatch,
+    space: RhoISpace,
+    fs_handles: super::io::handle_table::FileHandleTable,
+) -> Vec<Definition> {
     use super::accounting::noop::{Metering, NoopMetering};
-    use super::io::handle_table::FileHandleTable;
     use super::io::handler_trait::fs_processes::FsProcesses;
     use super::io::handler_trait::FS_HANDLERS;
     use super::io::{ConsensusMode, FS_NATIVE_URN_PREFIX_VERSIONED as FS_NATIVE_URN_PREFIX};
 
-    let fs_handles = FileHandleTable::new();
     let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
     let fs_processes = FsProcesses::new(
         dispatcher,
@@ -1089,6 +1260,7 @@ fn dispatch_table_creator(
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1117,6 +1289,7 @@ fn dispatch_table_creator(
     all_processes.extend(fs_handlers_to_definitions(
         dispatcher.clone(),
         space.clone(),
+        fs_handles,
     ));
 
     // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
@@ -1238,6 +1411,7 @@ async fn setup_reducer(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     cost: _cost,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> Arc<DebruijnInterpreter> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
@@ -1264,6 +1438,7 @@ async fn setup_reducer(
         ollama_service,
         grpc_client_service,
         chromadb_service,
+        fs_handles,
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1404,6 +1579,7 @@ pub async fn create_rho_env<T>(
     extra_system_processes: &mut Vec<Definition>,
     cost: _cost,
     external_services: ExternalServices,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> Result<
     (
         Arc<DebruijnInterpreter>,
@@ -1469,6 +1645,7 @@ where
         grpc_client_service,
         chromadb_service,
         cost,
+        fs_handles,
     )
     .await;
 
@@ -1508,6 +1685,13 @@ where
 {
     let cost = CostAccounting::empty_cost();
     let merge_chs = Arc::new(tokio::sync::RwLock::new(HashMap::<Par, MergeType>::new()));
+    // One FS handle table per runtime, shared by the dispatch-table-
+    // side `FsProcesses` (via a clone) and exposed as a public field
+    // on `RhoRuntimeImpl` for test harnesses + the (yet-to-land)
+    // soft-checkpoint fd-snapshot wiring.  FileHandleTable is
+    // Arc-backed internally so clones are cheap and point at the
+    // same underlying state.
+    let fs_handles = super::io::handle_table::FileHandleTable::new();
 
     let rho_env = create_rho_env(
         rspace,
@@ -1516,6 +1700,7 @@ where
         extra_system_processes,
         cost.clone(),
         external_services,
+        fs_handles.clone(),
     )
     .await?;
 
@@ -1527,6 +1712,7 @@ where
         invalid_blocks,
         deploy_ref,
         merge_chs,
+        fs_handles,
     );
 
     if init_registry {
@@ -1736,7 +1922,11 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_count_matches_registry() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let defs = fs_handlers_to_definitions(
+            dispatcher,
+            space,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
         assert_eq!(
             defs.len(),
             EXPECTED_MIGRATED_HANDLER_COUNT,
@@ -1756,7 +1946,11 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_unique() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let defs = fs_handlers_to_definitions(
+            dispatcher,
+            space,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
         let mut seen = std::collections::HashSet::new();
         for def in &defs {
             assert!(
@@ -1782,7 +1976,11 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let defs = fs_handlers_to_definitions(
+            dispatcher,
+            space,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
         for def in &defs {
             assert!(
                 def.urn.starts_with(FS_NATIVE_URN_FILTER_PREFIX),
@@ -1805,7 +2003,11 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_covers_every_registry_entry() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let defs = fs_handlers_to_definitions(
+            dispatcher,
+            space,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
         let def_urns: std::collections::HashSet<&str> =
             defs.iter().map(|d| d.urn.as_str()).collect();
         for entry in FS_HANDLERS.iter() {

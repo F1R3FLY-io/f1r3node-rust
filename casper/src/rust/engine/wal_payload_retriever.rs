@@ -534,9 +534,8 @@ mod tests {
         }
         #[cfg(not(debug_assertions))]
         {
-            assert_eq!(
-                result.expect("release build must not panic"),
-                false,
+            assert!(
+                !result.expect("release build must not panic"),
                 "release build must return false on hash/bytes mismatch"
             );
         }
