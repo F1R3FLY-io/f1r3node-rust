@@ -371,10 +371,39 @@ pub(super) fn walk_dirfd_recursive(
 /// `fs_remove_dir` (Consensus recursive goes through
 /// `collect_recursive_manifest` + per-entry journaled unlink
 /// instead).
+///
+/// `depth` tracks the recursion level (0 at the top-level entry
+/// from the handler).  Enforced against [`MAX_RECURSION_DEPTH`]
+/// to defend Oracular callers against pathological deeply-nested
+/// trees that could exhaust the OS stack (SEC-Mi-03).  This is
+/// the surface the cap primarily defends — the Consensus branch
+/// goes through `walk_dirfd_recursive` which carries its own
+/// cap, and the Consensus threat model additionally rules out
+/// adversarial writers.
+///
+/// External callers (the handler-side `fs_remove_dir`) pass
+/// `depth = 0`.  A convenience wrapper for the external entry
+/// point lives below; this signature is also what the recursive
+/// self-call uses internally.
 pub(super) fn remove_dir_recursive(
     parent_fd: libc::c_int,
     leaf: *const libc::c_char,
+    depth: usize,
 ) -> Result<u64, (u64, std::io::Error)> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err((
+            0,
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "SEC-Mi-03: directory nesting exceeds \
+                     MAX_RECURSION_DEPTH = {MAX_RECURSION_DEPTH} \
+                     (safety cap against stack exhaustion under \
+                     adversarial Oracular-mode nesting)."
+                ),
+            ),
+        ));
+    }
     let mut n_deleted: u64 = 0;
     // SAFETY: `parent_fd` is a caller-owned open dirfd; `leaf` is
     // a NUL-terminated CString ptr owned by the caller and
@@ -438,7 +467,7 @@ pub(super) fn remove_dir_recursive(
             }
             let mode_kind = stat.st_mode & libc::S_IFMT;
             if mode_kind == libc::S_IFDIR {
-                match remove_dir_recursive(dir_fd, (*ent).d_name.as_ptr()) {
+                match remove_dir_recursive(dir_fd, (*ent).d_name.as_ptr(), depth + 1) {
                     Ok(n) => n_deleted = n_deleted.saturating_add(n),
                     Err((n, e)) => {
                         n_deleted = n_deleted.saturating_add(n);
@@ -586,7 +615,7 @@ mod tests {
         std::fs::write(target.join("sub/leaf.bin"), b"b").unwrap();
         let parent_fd = open_tempdir_fd(tmp.path());
         let leaf = CString::new(b"target".as_slice()).unwrap();
-        let n = remove_dir_recursive(parent_fd, leaf.as_ptr()).unwrap();
+        let n = remove_dir_recursive(parent_fd, leaf.as_ptr(), 0).unwrap();
         close_tempdir_fd(parent_fd);
         // 2 files + 1 subdir + 1 target dir = 4 entries deleted.
         assert_eq!(n, 4);
@@ -600,11 +629,60 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         let parent_fd = open_tempdir_fd(tmp.path());
         let leaf = CString::new(b"empty".as_slice()).unwrap();
-        let n = remove_dir_recursive(parent_fd, leaf.as_ptr()).unwrap();
+        let n = remove_dir_recursive(parent_fd, leaf.as_ptr(), 0).unwrap();
         close_tempdir_fd(parent_fd);
         // Just the target dir itself.
         assert_eq!(n, 1);
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn remove_dir_recursive_rejects_depth_above_cap() {
+        // LOAD-BEARING SEC-Mi-03: the Oracular walker's descent
+        // cap is the primary defense against pathological
+        // deeply-nested trees exhausting the OS stack.  A
+        // top-level call with depth > MAX_RECURSION_DEPTH must
+        // immediately return `Unsupported` without opening any
+        // fds (counted deleted = 0 in the error payload).
+        //
+        // We test the predicate by invoking directly with a
+        // depth value past the cap — much simpler than materializing
+        // a 1026-deep directory tree, and verifies the exact
+        // branch under review.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("deep");
+        std::fs::create_dir(&target).unwrap();
+        let parent_fd = open_tempdir_fd(tmp.path());
+        let leaf = CString::new(b"deep".as_slice()).unwrap();
+        let err = remove_dir_recursive(parent_fd, leaf.as_ptr(), MAX_RECURSION_DEPTH + 1)
+            .expect_err("depth above cap must fail");
+        close_tempdir_fd(parent_fd);
+        assert_eq!(err.0, 0, "no deletions before cap-reject");
+        assert_eq!(err.1.kind(), std::io::ErrorKind::Unsupported);
+        // Target still exists — the cap-reject happens before any
+        // syscall touches disk.
+        assert!(target.exists());
+    }
+
+    #[test]
+    fn walk_dirfd_recursive_rejects_depth_above_cap() {
+        // Mirror of the above for the Consensus-branch walker.
+        // Invokes directly with a depth value past the cap on a
+        // real open dirfd (not a sentinel) so the cap-reject
+        // path is exercised with a live descriptor.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir_fd = open_tempdir_fd(tmp.path());
+        let mut out = Vec::new();
+        let err = walk_dirfd_recursive(
+            dir_fd,
+            std::path::Path::new(""),
+            &mut out,
+            MAX_RECURSION_DEPTH + 1,
+        )
+        .expect_err("depth above cap must fail");
+        close_tempdir_fd(dir_fd);
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert!(out.is_empty(), "no entries emitted before cap-reject");
     }
 
     #[test]
