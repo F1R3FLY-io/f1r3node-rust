@@ -104,11 +104,11 @@ evidence:
 tasks:
   - id: TASK-023-1
     title: "Remove the wait that keeps log-probe-vanished near its driver timeout"
-    status: blocked
+    status: review
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T17:00:00Z
-    blocked_by: [TASK-023-8]
+    blocked_by: []
     progress: "B3 and B4 are done (abffaba3b, 8fa26ea27): log-probe-vanished needs 11 to 12 s instead of 27 s. The saturated-CPU criterion waits for the stall fix in TASK-023-8."
     acceptance:
       - "The analysis names the wait in the log-probe-vanished path (fixture or driver) that takes most of its 28 s, with the evidence."
@@ -162,9 +162,10 @@ tasks:
       - "docs/ci.md maps each old name to its new name, so that old PR checks and run links stay readable."
   - id: TASK-023-7
     title: "Name the command that stalls the soak driver after the first iteration"
-    status: pending
+    status: complete
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    finding: "2026-10-08: a process snapshot 3 s before the driver timeout, in 7 hung runs, showed the driver in anon_pipe_read on a command substitution. Its subshell waited in do_wait on the session_bounded watchdog (sleep 60), and the bounded command had already exited. Cause: session_bounded runs kill -KILL -- -$watchdog before the watchdog process calls setsid, so the group kill fails silently and wait blocks for the full watchdog budget. CPU saturation makes the bounded command win that race. The stall is in run-merge-recovery-soak.sh, not in a fixture command. The watchdog ran in a scratch copy of the fixture; the repository fixture has no permanent watchdog."
     blocked_by: []
     acceptance:
       - "A fixture watchdog writes the process tree of the scenario container shortly before the driver timeout. The watchdog changes no scenario verdict."
@@ -172,9 +173,11 @@ tasks:
       - "The analysis states whether the stall is in run-merge-recovery-soak.sh or in a fixture command, with the evidence."
   - id: TASK-023-8
     title: "Update CLAIM-SOAK-001 and fix the driver stall"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T19:00:00Z
+    progress: "Claim updated first (bounded-command liveness statement, session_bounded surface, timing test, check row). Fix: kill the watchdog by PID when its process group does not exist yet. Late-watchdog check: 9.5 s RED, 1 ms GREEN. SOAK_DISK_TEST_STRESS_ROUNDS=10: 60 of 60 pass in 160 s (was 25 failures in 505 s). Disk suite: 54 of 54. test-run-merge-recovery-soak.sh cannot run faithfully on this workstation: macOS has no setsid, and the Docker VM disk is inside the admission band, where the HEAD and fixed drivers fail at the same band step. Remaining: CI Lint run, and the CbC evidence record for the driver at the fix commit."
     blocked_by: [TASK-023-7]
     cbc_policy: "scripts/run-merge-recovery-soak.sh is cbc=mandatory. The claim update comes before any driver change."
     acceptance:
@@ -195,7 +198,7 @@ tasks:
 ---
 ```
 
-**Current state:** TASK-023-2 behaviors are done (2da04d374, 0791e99a6). TASK-023-1 B3 and B4 are done. The stress stage (8fa26ea27) shows a driver stall, so TASK-023-7 (diagnosis) and TASK-023-8 (CLAIM-SOAK-001 update and fix) are next. TASK-023-4 and TASK-023-6 share their own branch.
+**Current state:** TASK-023-7 found the stall: a setsid race in session_bounded. TASK-023-8 has the claim update and the driver fix, green locally (60 of 60 saturated runs). Remaining: CI confirmation, the CbC evidence record, and TASK-023-5 after merge. TASK-023-4 and TASK-023-6 share their own branch.
 
 ---
 

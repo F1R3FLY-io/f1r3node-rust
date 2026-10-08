@@ -121,8 +121,38 @@ test_full_iteration_scenarios_survive_cpu_saturation() {
     printf 'PASS: %s rounds of the %s full-iteration scenarios passed under CPU saturation.\n' "$rounds" "${#scenarios[@]}"
 }
 
+test_bounded_command_returns_when_its_watchdog_starts_late() {
+    local image body elapsed
+    run_forced_timeout
+    image="$(<"$FORCED/evidence/image-id.txt")"
+    body="$(awk '/^session_bounded\(\) \{$/,/^}$/' "$ROOT/scripts/run-merge-recovery-soak.sh")"
+    [[ -n "$body" ]] || fail "session_bounded is missing from the soak driver."
+    elapsed="$({
+        printf '%s\n' "$body"
+        cat <<'EOF'
+mkdir -p /tmp/late-setsid
+cat >/tmp/late-setsid/setsid <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" != bash ]] || sleep 0.5
+exec /usr/bin/setsid "$@"
+SH
+chmod +x /tmp/late-setsid/setsid
+PATH="/tmp/late-setsid:$PATH"
+start="$(date +%s%N)"
+session_bounded 8 true
+printf '%s\n' "$((($(date +%s%N) - start) / 1000000))"
+EOF
+    } | docker run --rm -i --network none --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 \
+        --entrypoint bash "$image" -s)"
+    [[ "$elapsed" =~ ^[0-9]+$ ]] || fail "The late-watchdog check printed no elapsed time."
+    ((elapsed < 3000)) ||
+        fail "session_bounded waited ${elapsed} ms for a command that had ended, because its watchdog started late."
+    printf 'PASS: session_bounded returned in %s ms after the command ended, with a late watchdog.\n' "$elapsed"
+}
+
 test_fixture_failure_reports_the_driver_state
 test_fixture_failure_report_shows_no_host_path_or_key_value
+test_bounded_command_returns_when_its_watchdog_starts_late
 test_log_probe_vanished_reaches_its_verdict_within_a_third_of_its_timeout
 test_log_within_budget_and_sudo_fallback_finish_within_a_third_of_their_timeout
 test_full_iteration_scenarios_survive_cpu_saturation
