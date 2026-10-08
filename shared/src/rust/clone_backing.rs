@@ -192,7 +192,11 @@ impl<T> ChunkedWorklist<T> {
 }
 
 pub struct Walker<'a> {
+    // Changed by D-E5 (DR-112): the worklist of the per-level walk exists only
+    // in the test oracle.
+    #[cfg(any(test, feature = "level-walker-oracle"))]
     pending: Vec<&'a dyn CloneBacking>,
+    #[cfg(any(test, feature = "level-walker-oracle"))]
     capacity: usize,
     meter: &'a dyn BackingMeter,
     copy_payload: bool,
@@ -218,9 +222,22 @@ pub struct Walker<'a> {
 
 impl<'a> Walker<'a> {
     pub fn push<T: CloneBacking>(&mut self, value: &'a T) -> Result<(), BackingError> {
-        if self.blocks {
-            return self.push_block_entry(value);
+        // Changed by D-E5 (DR-112): the per-level push term compiles only for
+        // the test oracle. Inline bytes lie in the enclosing block; per-level
+        // charging counted them once per nesting level.
+        // if self.blocks {
+        //     return self.push_block_entry(value);
+        // }
+        #[cfg(any(test, feature = "level-walker-oracle"))]
+        if !self.blocks {
+            return self.push_level_entry(value);
         }
+        self.push_block_entry(value)
+    }
+
+    /// D-E5 (DR-112): the legacy per-level push, kept only as a test oracle.
+    #[cfg(any(test, feature = "level-walker-oracle"))]
+    fn push_level_entry<T: CloneBacking>(&mut self, value: &'a T) -> Result<(), BackingError> {
         self.meter.reserve(
             3,
             size_of::<T>()
@@ -269,24 +286,42 @@ impl<'a> Walker<'a> {
     }
 
     pub fn allocation(&self, bytes: usize) -> Result<(), BackingError> {
-        if self.blocks {
-            return self.block(bytes, true, true);
+        // Changed by D-E5 (DR-112): the per-level allocation term compiles only
+        // for the test oracle.
+        // if self.blocks {
+        //     return self.block(bytes, true, true);
+        // }
+        // self.meter.reserve(
+        //     0,
+        //     bytes.checked_mul(2).ok_or(BackingError::Overflow)?,
+        //     if self.copy_payload { bytes } else { 0 },
+        // )
+        #[cfg(any(test, feature = "level-walker-oracle"))]
+        if !self.blocks {
+            return self.meter.reserve(
+                0,
+                bytes.checked_mul(2).ok_or(BackingError::Overflow)?,
+                if self.copy_payload { bytes } else { 0 },
+            );
         }
-        self.meter.reserve(
-            0,
-            bytes.checked_mul(2).ok_or(BackingError::Overflow)?,
-            if self.copy_payload { bytes } else { 0 },
-        )
+        self.block(bytes, true, true)
     }
 
     /// D-O1 (DR-92): an allocation whose elements the walk does not visit
     /// (string bytes, slices of inline scalars). The legacy charge is the
     /// same as `allocation`.
     pub fn opaque_allocation(&self, bytes: usize) -> Result<(), BackingError> {
-        if self.blocks {
-            return self.block(bytes, false, true);
+        // Changed by D-E5 (DR-112): the per-level charge compiles only for the
+        // test oracle.
+        // if self.blocks {
+        //     return self.block(bytes, false, true);
+        // }
+        // self.allocation(bytes)
+        #[cfg(any(test, feature = "level-walker-oracle"))]
+        if !self.blocks {
+            return self.allocation(bytes);
         }
-        self.allocation(bytes)
+        self.block(bytes, false, true)
     }
 
     /// D-O1 (DR-92): one memory block of `bytes`. An inspection reads it once
@@ -434,27 +469,45 @@ impl<'a> Walker<'a> {
             }
             return Ok(());
         }
-        if self.blocks {
-            while let Some(value) = self.chunked.pop() {
-                self.slot_free = true;
+        // Changed by D-E5 (DR-112): the per-level drain compiles only for the
+        // test oracle.
+        // if self.blocks {
+        //     while let Some(value) = self.chunked.pop() {
+        //         self.slot_free = true;
+        //         value.children(self)?;
+        //     }
+        //     return Ok(());
+        // }
+        // while let Some(value) = self.pending.pop() {
+        //     value.children(self)?;
+        // }
+        // Ok(())
+        #[cfg(any(test, feature = "level-walker-oracle"))]
+        if !self.blocks {
+            while let Some(value) = self.pending.pop() {
                 value.children(self)?;
             }
             return Ok(());
         }
-        while let Some(value) = self.pending.pop() {
+        while let Some(value) = self.chunked.pop() {
+            self.slot_free = true;
             value.children(self)?;
         }
         Ok(())
     }
 }
 
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 fn walk<T: CloneBacking>(
     value: &T,
     meter: &dyn BackingMeter,
     copy_payload: bool,
 ) -> Result<(), BackingError> {
     let mut walker = Walker {
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         pending: Vec::new(),
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         capacity: 0,
         meter,
         copy_payload,
@@ -471,13 +524,17 @@ fn walk<T: CloneBacking>(
     walker.drain()
 }
 
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 fn walk_slice<T: CloneBacking>(
     values: &[T],
     meter: &dyn BackingMeter,
     copy_payload: bool,
 ) -> Result<(), BackingError> {
     let mut walker = Walker {
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         pending: Vec::new(),
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         capacity: 0,
         meter,
         copy_payload,
@@ -504,7 +561,9 @@ fn walk_blocks<T: CloneBacking>(
     shared_pointers: bool,
 ) -> Result<(), BackingError> {
     let mut walker = Walker {
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         pending: Vec::new(),
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         capacity: 0,
         meter,
         copy_payload,
@@ -529,7 +588,9 @@ fn walk_slice_blocks<T: CloneBacking>(
     shared_pointers: bool,
 ) -> Result<(), BackingError> {
     let mut walker = Walker {
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         pending: Vec::new(),
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         capacity: 0,
         meter,
         copy_payload,
@@ -630,7 +691,9 @@ pub fn inspect_blocks_depth<T: CloneBacking>(
         meter.reserve(operations, bytes, backing)
     };
     let mut walker = Walker {
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         pending: Vec::new(),
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         capacity: 0,
         meter: &counting,
         copy_payload: false,
@@ -674,9 +737,13 @@ pub fn reserve_nested_encode<T: CloneBacking>(
     meter.reserve(0, traversals, 0)
 }
 
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 pub fn reserve<T: CloneBacking>(value: &T, meter: &dyn BackingMeter) -> Result<(), BackingError> {
     walk(value, meter, true)
 }
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 pub fn reserve_copy_and_cleanup<T: CloneBacking>(
     value: &T,
     meter: &dyn BackingMeter,
@@ -684,12 +751,16 @@ pub fn reserve_copy_and_cleanup<T: CloneBacking>(
     reserve(value, meter)?;
     inspect(value, meter)
 }
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 pub fn reserve_slice<T: CloneBacking>(
     values: &[T],
     meter: &dyn BackingMeter,
 ) -> Result<(), BackingError> {
     walk_slice(values, meter, true)
 }
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 pub fn reserve_slice_copy_and_cleanup<T: CloneBacking>(
     values: &[T],
     meter: &dyn BackingMeter,
@@ -697,6 +768,8 @@ pub fn reserve_slice_copy_and_cleanup<T: CloneBacking>(
     reserve_slice(values, meter)?;
     inspect_slice(values, meter)
 }
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 pub fn inspect<T: CloneBacking>(value: &T, meter: &dyn BackingMeter) -> Result<(), BackingError> {
     walk(value, meter, false)
 }
@@ -704,12 +777,16 @@ pub fn inspect<T: CloneBacking>(value: &T, meter: &dyn BackingMeter) -> Result<(
 /// store-owned and whose payload releases were prepaid when the payloads
 /// entered the cache. The walk visits each pointer and skips its payload,
 /// so pointers nested inside a payload are never reached.
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 pub fn inspect_shared_pointers<T: CloneBacking>(
     value: &T,
     meter: &dyn BackingMeter,
 ) -> Result<(), BackingError> {
     let mut walker = Walker {
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         pending: Vec::new(),
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         capacity: 0,
         meter,
         copy_payload: false,
@@ -729,12 +806,16 @@ pub fn inspect_shared_pointers<T: CloneBacking>(
 /// copied slice of shared pointers whose payload releases were prepaid when
 /// the payloads were born. It charges the slice allocation and each pointer,
 /// and skips every payload.
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 pub fn inspect_shared_pointer_slice<T: CloneBacking>(
     values: &[T],
     meter: &dyn BackingMeter,
 ) -> Result<(), BackingError> {
     let mut walker = Walker {
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         pending: Vec::new(),
+        #[cfg(any(test, feature = "level-walker-oracle"))]
         capacity: 0,
         meter,
         copy_payload: false,
@@ -750,6 +831,8 @@ pub fn inspect_shared_pointer_slice<T: CloneBacking>(
     walker.slice(values)?;
     walker.drain()
 }
+// D-E5 (DR-112): the legacy per-level walk, a test oracle only.
+#[cfg(any(test, feature = "level-walker-oracle"))]
 pub fn inspect_slice<T: CloneBacking>(
     values: &[T],
     meter: &dyn BackingMeter,

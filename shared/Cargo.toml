@@ -34,6 +34,13 @@ thiserror = { workspace = true }
 indexmap = { workspace = true }
 metrics = { workspace = true }
 
+[features]
+# D-E5 (DR-112): the legacy per-level walker of clone_backing.rs, kept only
+# as a test oracle. Production builds do not enable it, so they cannot call
+# the per-level walk. The dev-dependencies of models, rholang and rspace++
+# enable it for their tests.
+level-walker-oracle = []
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 

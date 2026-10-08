@@ -60,6 +60,8 @@ features = [
 ]
 
 [dev-dependencies]
+# D-E5 (DR-112): the legacy per-level walker of shared, a test oracle only.
+shared = { path = "../shared", features = ["level-walker-oracle"] }
 loom = "=0.7.2"
 tempfile = { workspace = true }
 test-env-helpers = "0.2.2"

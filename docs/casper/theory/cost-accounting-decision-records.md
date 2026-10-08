@@ -6450,6 +6450,11 @@ wrappers `clone_blocks`, `inspect_blocks`, `clone_slice_blocks`,
 `clone_slice` compile only for tests, as reference charges (DR-111,
 decision 1).
 
+**Amendment (DR-112).** The legacy per-level mode of decision 4 is now a
+test oracle. It compiles only for tests and under the shared feature
+`level-walker-oracle`, which the dev-dependencies of models, rholang and
+rspace++ enable. A production build contains only the block mode.
+
 **Cross-refs.** DR-81, DR-82 and DR-83 (shared pointers and prepaid
 releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
 `ofp-2-cap-d-b3-worklist-charge`.
@@ -11521,3 +11526,152 @@ equality.
 **Cross-refs.** DR-83, DR-89, DR-92, DR-93, DR-94, DR-109, DR-110. Leaf
 `ofp-2-cap-d-e4-models-shared-casper-sites`. Bug
 `metered-set-and-map-construction-charges-depend-on-hashset-hashmap-iteration-order-nondeterministic-host-work-475811`.
+
+## DR-112 — The per-level walker becomes a test oracle (the global switch)
+
+**Status.** Implemented 2026-10-08 for Phase D item D-E5 of epic 8946, the
+last item of D-O1 Stage B. By user decision, the oracle stays reachable
+through a cargo feature that only test builds enable ("Feature for test
+builds").
+
+**Context.**
+
+- DR-92 added the block mode next to the legacy per-level mode. Its decision
+  4 kept every production call site on the per-level mode until the site
+  switched.
+- DR-94 and DR-108 to DR-111 switched every production site to block mode:
+  - Stage A (DR-94).
+  - D-E1, the RSpace sites (DR-108).
+  - D-E2, the matcher, the candidate selection and `rho-pure-eval` (DR-109).
+  - D-E3, the accounting and interpreter sites (DR-110).
+  - D-E4, the sorter, the set and map construction and two Casper sites
+    (DR-111).
+- A census after DR-111 found 32 calls of the per-level entry points in 10
+  files. Every one of them is test code: a test file, a `#[cfg(test)]`
+  function or a test module. Shared itself calls them only from the
+  per-level entry points.
+- The probe of DR-111 found no per-level walker sample in a validator replay.
+- The per-level walk charges the inline bytes of a value once per nesting
+  level. The negative control of DR-92,
+  `legacy_level_charge_grew_with_inline_nesting_depth`, shows it. Its
+  pending-vector growth also depends on the traversal order (bug
+  `per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`).
+- The tests of models, rholang and rspace++ use the per-level walk as a
+  reference charge. A `#[cfg(test)]` item of shared is not visible to the
+  tests of another crate.
+
+**Decision.**
+
+1. Shared gets the cargo feature `level-walker-oracle`. The per-level code
+   compiles only under `#[cfg(any(test, feature = "level-walker-oracle"))]`:
+   - The per-level push term, now `push_level_entry`.
+   - The per-level allocation term, the per-level fallback of
+     `opaque_allocation` and the per-level drain.
+   - The per-level worklist fields `pending` and `capacity`.
+   - The private walks `walk` and `walk_slice`.
+   - The public per-level entry points `reserve`,
+     `reserve_copy_and_cleanup`, `reserve_slice`,
+     `reserve_slice_copy_and_cleanup`, `inspect`, `inspect_slice`,
+     `inspect_shared_pointers` and `inspect_shared_pointer_slice`.
+2. The `[dev-dependencies]` of models, rholang and rspace++ enable the
+   feature. The workspace uses resolver 2, so a dev-dependency feature
+   applies only to builds that include test targets. A production build,
+   for example `cargo build -p node`, contains no per-level code. A new
+   production call of the per-level walk therefore fails to compile.
+3. Every production walk is a block walk. The block entry points do not
+   change.
+4. Each replaced line stays in the source as a comment. The comment gives
+   the reason: "inline bytes lie in the enclosing block; per-level charging
+   counted them once per nesting level".
+
+**Algorithm (literate form).**
+
+```text
+⟨push of a value v⟩ ≡
+  [oracle builds only] if the walk is per-level: push_level_entry(v), return
+  push_block_entry(v)
+⟨allocation of b bytes⟩ ≡
+  [oracle builds only] if the walk is per-level: the legacy charge, return
+  block(b, visited, allocated)
+⟨drain⟩ ≡
+  the depth worklist of a depth walk, else
+  [oracle builds only] the per-level stack of a per-level walk, else
+  the chunked worklist
+```
+
+**Soundness.** No charge changes. After DR-111, every production site calls
+a block entry point, and the census confirms it. The gated code is not part
+of a production build. The proofs of the block mode (DR-92) do not change.
+
+**Determinism.** The per-level walk was the only walker path whose charge
+could depend on the iteration order of a hash map (bug a8bd6b). A production
+build no longer contains it.
+
+**Audit.** The walker entry points after this item:
+
+| Entry points | Mode | Production builds | Test builds |
+| --- | --- | --- | --- |
+| `inspect_blocks`, `reserve_blocks`, `reserve_blocks_copy_and_cleanup`, `inspect_blocks_slice`, `reserve_blocks_slice`, `reserve_blocks_slice_copy_and_cleanup`, `inspect_shared_pointers_blocks`, `inspect_shared_pointer_slice_blocks`, `inspect_blocks_depth`, `reserve_nested_encode` | block | yes | yes |
+| `reserve`, `reserve_copy_and_cleanup`, `reserve_slice`, `reserve_slice_copy_and_cleanup`, `inspect`, `inspect_slice`, `inspect_shared_pointers`, `inspect_shared_pointer_slice` | per-level | no | yes, with `level-walker-oracle` |
+
+The audit tables of the switched sites, one row per site or group of sites:
+
+| Record | Item | Audit rows |
+| --- | --- | ---: |
+| DR-94 | Stage A | 28 |
+| DR-108 | D-E1, the RSpace sites (part 2) | 89 |
+| DR-109 | D-E2, the matcher, the candidate selection and `rho-pure-eval` | 70 |
+| DR-110 | D-E3, the accounting and interpreter sites | 33 |
+| DR-111 | D-E4, the sorter, the set and map construction and the Casper sites | 26 |
+
+**Verification.** No new proof is necessary.
+
+- A compile-time negative control. In a scratch copy, a production function
+  of the models library that calls `shared::rust::clone_backing::inspect`
+  fails to compile without the feature (`E0425`). The copy then restored the
+  file.
+- `cargo check -p node` passes without the feature.
+- `legacy_level_charge_grew_with_inline_nesting_depth` passes against the
+  oracle, with the other 18 walker tests of shared.
+- The tests of models, rholang and rspace++ that use per-level reference
+  charges pass unchanged, through the dev-dependency feature.
+
+**Scope.** Cost-accounting work. No charge, encoding, root, event or receipt
+changes. The cargo features change in four manifests. `Cargo.lock` does not
+change.
+
+Suites:
+
+- Shared, rspace++, rholang and `rho-pure-eval`: 4,334 of 4,334 tests pass.
+- Casper and models with the original caps: 2,158 of 2,164 tests pass. The
+  6 failures are the same as after DR-111.
+- Casper with the provisional caps: 1,692 of 1,696 tests pass. The 4
+  failures are the same as after DR-111.
+- The doctests pass. Clippy passes with the CI flags (`-D warnings`).
+  DR-112 changes no proof.
+
+**Measurement.** The D-G0 probe ran the gateway test three times with DR-112, under the
+provisional caps. Every role charged exactly the same usage in every run.
+The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-111, run 1 | 594,837,063 | 120,102,695 | 60,941,263 |
+| DR-111, run 2 | 591,249,098 | 120,104,728 | 60,908,889 |
+| DR-111, run 3 | 595,126,036 | 120,170,784 | 60,939,460 |
+| DR-112, run 1 | 595,123,769 | 120,207,561 | 60,939,337 |
+| DR-112, run 2 | 592,169,252 | 120,120,524 | 60,928,030 |
+| DR-112, run 3 | 595,157,089 | 120,239,688 | 60,950,905 |
+
+Runs 1 and 3 of DR-112 have the same execution counts as run 3 of DR-111.
+They differ from it by at most 31 KB of VerificationBytes, 69 KB of
+SearchStateBytes and 11 K VerificationOperations. Run 2 of each build made
+916 reduction steps. These differences lie within the run-to-run variation
+of one build. For example, the three runs of DR-110 with equal counts spread
+over 1.28 MB of VerificationBytes. Bug 475811 is one known source of that
+variation. So the probe shows no change in the charges, as the design
+predicts.
+
+**Cross-refs.** DR-92, DR-94, DR-108, DR-109, DR-110, DR-111. Leaf
+`ofp-2-cap-d-e5-global-switch`. Bug
+`per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`.

@@ -34,6 +34,8 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# D-E5 (DR-112): the legacy per-level walker of shared, a test oracle only.
+shared = { path = "../shared", features = ["level-walker-oracle"] }
 bincode = { workspace = true }
 
 [[test]]
