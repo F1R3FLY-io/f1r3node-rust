@@ -786,10 +786,36 @@ impl DurableDirectoryV1 {
     pub(crate) fn open(path: impl Into<PathBuf>) -> Result<Self, DurableIoError> {
         let path = absolute_diagnostic_path(path.into())?;
         let directory = open_directory_handle(&path)?;
+        #[cfg(unix)]
+        let generation_leases = {
+            use std::os::unix::fs::MetadataExt;
+
+            let metadata = directory.metadata().map_err(|source| DurableIoError::Io {
+                operation: DurableIoOperation::Metadata,
+                path: path.clone(),
+                source,
+            })?;
+            let guard = directory.try_clone().map_err(|source| DurableIoError::Io {
+                operation: DurableIoOperation::OpenDirectory,
+                path: path.clone(),
+                source,
+            })?;
+            GenerationLeaseRegistryV1::for_directory_identity(
+                (metadata.dev(), metadata.ino()),
+                guard,
+            )
+            .map_err(|error| DurableIoError::Io {
+                operation: DurableIoOperation::Metadata,
+                path: path.clone(),
+                source: io::Error::other(error),
+            })?
+        };
+        #[cfg(not(unix))]
+        let generation_leases = GenerationLeaseRegistryV1::default();
         Ok(Self {
             path,
             directory,
-            generation_leases: GenerationLeaseRegistryV1::default(),
+            generation_leases,
         })
     }
 
@@ -1157,9 +1183,12 @@ impl DurableWriterLeaseV1 {
                 path: self.directory.path.clone(),
             });
         }
-        if self
+        // This check and the exclusion of future old-generation leases must
+        // linearize as one registry operation. A separate has_active check
+        // permits acquisition between the check and the first unlink.
+        if !self
             .generation_leases()
-            .has_active(candidate.old())
+            .retire_pack_range_if_unleased(candidate.old())
             .map_err(|error| DurableIoError::Io {
                 operation: DurableIoOperation::Metadata,
                 path: self.directory.path.clone(),

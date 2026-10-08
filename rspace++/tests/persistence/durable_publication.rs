@@ -1691,6 +1691,15 @@ fn checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease()
         .path()
         .join(index_file_name(IndexGenerationV1::FIRST));
     let writer = admit(scratch.path());
+    let old_generation =
+        crate::rspace::persistence::GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    let registry = writer.generation_leases();
+    #[cfg(unix)]
+    let independently_opened_registry = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .generation_leases();
+    #[cfg(unix)]
+    assert!(registry.shares_registry(&independently_opened_registry));
     let initial_contention = DurableDirectoryV1::open(scratch.path())
         .unwrap()
         .recover_and_admit_v1::<TestSemanticProfile>(
@@ -1735,6 +1744,24 @@ fn checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease()
     assert!(!old_pack_path.exists());
     assert!(!old_index_path.exists());
     assert!(!scratch.path().join("reclaim.v1").exists());
+    assert!(matches!(
+        registry.acquire(old_generation),
+        Err(crate::rspace::persistence::GenerationLeaseError::Retired(key))
+            if key == old_generation
+    ));
+    #[cfg(unix)]
+    assert!(matches!(
+        independently_opened_registry.acquire(old_generation),
+        Err(crate::rspace::persistence::GenerationLeaseError::Retired(key))
+            if key == old_generation
+    ));
+    assert!(
+        registry
+            .acquire(crate::rspace::persistence::GenerationLeaseKeyV1::from_catalog(
+                published.catalog()
+            ))
+            .is_ok()
+    );
 
     let contention = DurableDirectoryV1::open(scratch.path())
         .unwrap()
@@ -1764,6 +1791,99 @@ fn checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease()
     assert_eq!(reopened.authority(), &new_authority);
     assert_eq!(reopened.verified_state().version(), old_state);
     assert_eq!(reopened.retention_manifest_bytes(), old_retention);
+}
+
+#[cfg(unix)]
+#[test]
+fn checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open() {
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let scratch = test_scratch::acquire("rspace-gc-pack-lease-checkpoint-");
+    install_checkpoint_store(scratch.path());
+    let writer = admit(scratch.path());
+    let old = writer.catalog();
+    let old_key = GenerationLeaseKeyV1::from_catalog(old);
+    let old_pack_path = scratch.path().join(pack_file_name(PackId::GENESIS));
+    let old_index_path = scratch
+        .path()
+        .join(index_file_name(IndexGenerationV1::FIRST));
+    let registry = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .generation_leases();
+    assert!(registry.shares_registry(&writer.generation_leases()));
+    let older_key = GenerationLeaseKeyV1::new(
+        old.epoch().saturating_sub(1),
+        old_key.first_live_pack(),
+        old_key.active_pack(),
+        old_key.index_generation(),
+    );
+    assert_ne!(older_key, old_key);
+    let pin = registry.acquire(older_key).unwrap();
+
+    let published = publish(writer).unwrap();
+    let successor = published.catalog();
+    assert!(old_pack_path.exists());
+    assert!(old_index_path.exists());
+    assert!(scratch.path().join("reclaim.v1").exists());
+    drop(published);
+
+    let reopened = admit(scratch.path());
+    assert_eq!(reopened.catalog(), successor);
+    assert!(old_pack_path.exists());
+    assert!(scratch.path().join("reclaim.v1").exists());
+    let (mut lease, _) = reopened.into_parts();
+    let candidate = lease.read_reclamation_candidate().unwrap().unwrap();
+    assert_eq!(candidate.old(), old_key);
+    assert_eq!(candidate.successor(), GenerationLeaseKeyV1::from_catalog(successor));
+    assert!(
+        lease
+            .reclaim_reclamation_candidate(candidate, successor)
+            .unwrap()
+            .deferred_for_reader
+    );
+    drop(pin);
+    let outcome = lease
+        .reclaim_reclamation_candidate(candidate, successor)
+        .unwrap();
+    assert_eq!(outcome.deleted_packs, 1);
+    assert!(outcome.deleted_index);
+    assert!(!outcome.deferred_for_reader);
+    assert!(!old_pack_path.exists());
+    assert!(!old_index_path.exists());
+    assert!(!scratch.path().join("reclaim.v1").exists());
+    assert!(matches!(
+        registry.acquire(older_key),
+        Err(crate::rspace::persistence::GenerationLeaseError::Retired(key)) if key == older_key
+    ));
+    assert!(
+        registry
+            .acquire(GenerationLeaseKeyV1::from_catalog(successor))
+            .is_ok()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn retired_pack_frontier_survives_all_handle_drop_until_process_exit() {
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let scratch = test_scratch::acquire("rspace-gc-pack-lease-reopen-");
+    install_checkpoint_store(scratch.path());
+    let (old_key, successor_key) = {
+        let writer = admit(scratch.path());
+        let old_key = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+        let published = publish(writer).unwrap();
+        let successor_key = GenerationLeaseKeyV1::from_catalog(published.catalog());
+        (old_key, successor_key)
+    };
+    let reopened_registry = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .generation_leases();
+    assert!(matches!(
+        reopened_registry.acquire(old_key),
+        Err(crate::rspace::persistence::GenerationLeaseError::Retired(key)) if key == old_key
+    ));
+    assert!(reopened_registry.acquire(successor_key).is_ok());
 }
 
 #[test]

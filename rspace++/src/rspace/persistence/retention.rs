@@ -5,8 +5,12 @@
 //! without changing logical state identities. Decoding is borrowed and
 //! streaming; no root projection is required.
 
+#[cfg(unix)]
+use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::sync::{OnceLock, Weak};
 
 use super::canonical::{
     CanonicalEncode, CanonicalFormatError, CanonicalSink, OBJECT_DOMAIN_LEN,
@@ -457,9 +461,8 @@ impl Drop for RootLeaseV1 {
 /// Immutable identity of the physical generation observed by a reader.
 ///
 /// The key intentionally excludes filesystem paths: a path can be replaced
-/// while an already-open reader remains valid.  Compaction uses this identity
-/// to defer reclamation until every reader of the old generation has released
-/// its lease.
+/// while an already-open reader remains valid. Catalog epochs can share pack
+/// ranges, so reclamation checks physical overlap across keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GenerationLeaseKeyV1 {
     epoch: u64,
@@ -503,6 +506,7 @@ impl GenerationLeaseKeyV1 {
 pub enum GenerationLeaseError {
     Poisoned,
     CounterOverflow,
+    Retired(GenerationLeaseKeyV1),
     UnknownLease(u64),
 }
 
@@ -511,6 +515,7 @@ impl Display for GenerationLeaseError {
         match self {
             Self::Poisoned => f.write_str("generation lease registry lock is poisoned"),
             Self::CounterOverflow => f.write_str("generation lease counter overflow"),
+            Self::Retired(key) => write!(f, "physical generation {key:?} is being reclaimed"),
             Self::UnknownLease(id) => write!(f, "unknown generation lease {id}"),
         }
     }
@@ -522,6 +527,23 @@ impl std::error::Error for GenerationLeaseError {}
 struct GenerationLeaseState {
     next_lease_id: u64,
     leases: std::collections::BTreeMap<u64, GenerationLeaseKeyV1>,
+    retired_pack_through: u64,
+    #[cfg(unix)]
+    directory_identity: Option<(u64, u64)>,
+    _directory_guard: Option<std::fs::File>,
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct DirectoryLeaseRegistries {
+    live: BTreeMap<(u64, u64), Weak<Mutex<GenerationLeaseState>>>,
+    retired: BTreeMap<(u64, u64), Arc<Mutex<GenerationLeaseState>>>,
+}
+
+#[cfg(unix)]
+fn directory_lease_registries() -> &'static Mutex<DirectoryLeaseRegistries> {
+    static REGISTRIES: OnceLock<Mutex<DirectoryLeaseRegistries>> = OnceLock::new();
+    REGISTRIES.get_or_init(Mutex::default)
 }
 
 /// Process-local generation lease authority.  The registry is deliberately
@@ -533,6 +555,32 @@ pub struct GenerationLeaseRegistryV1 {
 }
 
 impl GenerationLeaseRegistryV1 {
+    #[cfg(unix)]
+    pub(crate) fn for_directory_identity(
+        identity: (u64, u64),
+        directory_guard: std::fs::File,
+    ) -> Result<Self, GenerationLeaseError> {
+        let mut registries = directory_lease_registries()
+            .lock()
+            .map_err(|_| GenerationLeaseError::Poisoned)?;
+        if let Some(state) = registries.retired.get(&identity) {
+            return Ok(Self {
+                state: Arc::clone(state),
+            });
+        }
+        if let Some(state) = registries.live.get(&identity).and_then(Weak::upgrade) {
+            return Ok(Self { state });
+        }
+        registries.live.retain(|_, state| state.strong_count() > 0);
+        let state = Arc::new(Mutex::new(GenerationLeaseState {
+            directory_identity: Some(identity),
+            _directory_guard: Some(directory_guard),
+            ..GenerationLeaseState::default()
+        }));
+        registries.live.insert(identity, Arc::downgrade(&state));
+        Ok(Self { state })
+    }
+
     #[cfg(test)]
     pub(crate) fn replace_lease_counter_for_test(&self, counter: u64) -> u64 {
         std::mem::replace(&mut self.state.lock().unwrap().next_lease_id, counter)
@@ -550,6 +598,9 @@ impl GenerationLeaseRegistryV1 {
             .state
             .lock()
             .map_err(|_| GenerationLeaseError::Poisoned)?;
+        if key.first_live_pack <= state.retired_pack_through {
+            return Err(GenerationLeaseError::Retired(key));
+        }
         let lease_id = state
             .next_lease_id
             .checked_add(1)
@@ -564,12 +615,52 @@ impl GenerationLeaseRegistryV1 {
         })
     }
 
+    /// Test exact catalog-key activity. Reclamation must use
+    /// `retire_pack_range_if_unleased` to account for overlapping epochs.
     pub fn has_active(&self, key: GenerationLeaseKeyV1) -> Result<bool, GenerationLeaseError> {
         let state = self
             .state
             .lock()
             .map_err(|_| GenerationLeaseError::Poisoned)?;
         Ok(state.leases.values().any(|candidate| *candidate == key))
+    }
+
+    /// Atomically exclude new leases for every pack that reclamation will
+    /// remove. Incremental catalog epochs share a physical pack range, so an
+    /// exact catalog-key check cannot establish that no reader needs it.
+    /// The monotonic pack frontier remains excluded after partial deletion;
+    /// it does not accumulate one tombstone per catalog epoch.
+    pub(crate) fn retire_pack_range_if_unleased(
+        &self,
+        key: GenerationLeaseKeyV1,
+    ) -> Result<bool, GenerationLeaseError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| GenerationLeaseError::Poisoned)?;
+        if state.leases.values().any(|candidate| {
+            candidate.first_live_pack <= key.active_pack &&
+                key.first_live_pack <= candidate.active_pack
+        }) {
+            return Ok(false);
+        }
+        state.retired_pack_through = state.retired_pack_through.max(key.active_pack);
+        #[cfg(unix)]
+        if let Some(identity) = state.directory_identity {
+            let mut registries = directory_lease_registries()
+                .lock()
+                .map_err(|_| GenerationLeaseError::Poisoned)?;
+            match registries.retired.get(&identity) {
+                Some(existing) if !Arc::ptr_eq(existing, &self.state) => {
+                    return Err(GenerationLeaseError::Poisoned);
+                }
+                Some(_) => {}
+                None => {
+                    registries.retired.insert(identity, Arc::clone(&self.state));
+                }
+            }
+        }
+        Ok(true)
     }
 
     pub fn release(&self, lease: &mut GenerationLeaseV1) -> Result<(), GenerationLeaseError> {
@@ -743,5 +834,96 @@ mod registry_tests {
         assert!(registry.has_active(key).unwrap());
         drop(second);
         assert!(!registry.has_active(key).unwrap());
+        assert!(registry.retire_pack_range_if_unleased(key).unwrap());
+        assert!(matches!(
+            registry.acquire(key),
+            Err(GenerationLeaseError::Retired(retired)) if retired == key
+        ));
+        assert!(registry.retire_pack_range_if_unleased(key).unwrap());
+        let successor = GenerationLeaseKeyV1::new(8, 6, 7, 10);
+        let successor_reader = registry.acquire(successor).unwrap();
+        assert!(!registry.retire_pack_range_if_unleased(successor).unwrap());
+        drop(successor_reader);
+        assert!(registry.retire_pack_range_if_unleased(successor).unwrap());
+        assert!(matches!(
+            registry.acquire(successor),
+            Err(GenerationLeaseError::Retired(retired)) if retired == successor
+        ));
+        assert!(
+            registry
+                .acquire(GenerationLeaseKeyV1::new(9, 8, 9, 11))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn reclamation_waits_for_overlapping_physical_packs_across_catalog_epochs() {
+        let registry = GenerationLeaseRegistryV1::default();
+        let old = GenerationLeaseKeyV1::new(7, 3, 5, 9);
+        let same_packs_older_epoch = GenerationLeaseKeyV1::new(6, 3, 5, 9);
+        let overlapping_packs = GenerationLeaseKeyV1::new(8, 5, 7, 10);
+        let disjoint_packs = GenerationLeaseKeyV1::new(9, 6, 7, 11);
+
+        let older_reader = registry.acquire(same_packs_older_epoch).unwrap();
+        let overlapping_reader = registry.acquire(overlapping_packs).unwrap();
+        let successor_reader = registry.acquire(disjoint_packs).unwrap();
+        assert!(!registry.retire_pack_range_if_unleased(old).unwrap());
+        drop(older_reader);
+        assert!(!registry.retire_pack_range_if_unleased(old).unwrap());
+        drop(overlapping_reader);
+        assert!(registry.retire_pack_range_if_unleased(old).unwrap());
+        assert!(matches!(
+            registry.acquire(same_packs_older_epoch),
+            Err(GenerationLeaseError::Retired(key)) if key == same_packs_older_epoch
+        ));
+        assert!(matches!(
+            registry.acquire(overlapping_packs),
+            Err(GenerationLeaseError::Retired(key)) if key == overlapping_packs
+        ));
+        assert_eq!(successor_reader.key(), disjoint_packs);
+        assert!(registry.acquire(disjoint_packs).is_ok());
+    }
+
+    #[test]
+    fn generation_lease_acquisition_and_retirement_have_one_winner() {
+        use std::sync::{Arc, Barrier};
+
+        for epoch in 1..=16 {
+            let registry = GenerationLeaseRegistryV1::default();
+            let key = GenerationLeaseKeyV1::new(epoch, 3, 5, 9);
+            let start = Arc::new(Barrier::new(3));
+            let acquire_registry = registry.clone();
+            let acquire_start = Arc::clone(&start);
+            let acquire = std::thread::spawn(move || {
+                acquire_start.wait();
+                acquire_registry.acquire(key)
+            });
+            let retire_registry = registry.clone();
+            let retire_start = Arc::clone(&start);
+            let retire = std::thread::spawn(move || {
+                retire_start.wait();
+                retire_registry.retire_pack_range_if_unleased(key)
+            });
+            start.wait();
+            let acquired = acquire.join().unwrap();
+            let retired = retire.join().unwrap().unwrap();
+            match acquired {
+                Ok(lease) => {
+                    assert!(!retired);
+                    assert_eq!(lease.key(), key);
+                    drop(lease);
+                    assert!(registry.retire_pack_range_if_unleased(key).unwrap());
+                }
+                Err(GenerationLeaseError::Retired(retired_key)) => {
+                    assert!(retired);
+                    assert_eq!(retired_key, key);
+                }
+                Err(error) => panic!("unexpected lease acquisition error: {error}"),
+            }
+            assert!(matches!(
+                registry.acquire(key),
+                Err(GenerationLeaseError::Retired(retired_key)) if retired_key == key
+            ));
+        }
     }
 }
