@@ -41,6 +41,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_slash_removes_only_target_validator_delegator_rewards,
       test_delegate_rejects_when_effective_bond_would_exceed_maximum,
       test_close_block_excludes_pending_undelegations_from_effective_bonds,
+      test_same_epoch_slash_is_not_rewarded_by_close_block,
       getPosBalance, getCoopBalance,
       closeBlock
     in {
@@ -88,7 +89,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("slash one validator preserves delegation to another", *test_slash_one_validator_preserves_other_validator_delegation),
               ("slash removes only target validator delegator rewards", *test_slash_removes_only_target_validator_delegator_rewards),
               ("delegate enforces maximum effective bond cap", *test_delegate_rejects_when_effective_bond_would_exceed_maximum),
-              ("closeBlock excludes pending undelegations from effective bonds", *test_close_block_excludes_pending_undelegations_from_effective_bonds)
+              ("closeBlock excludes pending undelegations from effective bonds", *test_close_block_excludes_pending_undelegations_from_effective_bonds),
+              ("same-epoch slash is not rewarded by closeBlock", *test_same_epoch_slash_is_not_rewarded_by_close_block)
             ]
           ) |
 
@@ -1649,6 +1651,63 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                   ],
                                   *ackCh
                                 )
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          contract test_same_epoch_slash_is_not_rewarded_by_close_block(rhoSpec, _, ackCh) = {
+            new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+                setBlockData(`rho:test:block:data:set`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                slasherSetupCh, activeValidatorsCh, epochCh, chargeCh, refundCh,
+                hashCh, invalidBlocksSetCh, slashCh, blockDataCh, closeBlockCh,
+                rewardsCh, bondsCh, effectiveBondsCh
+            in {
+              prepareUser!("d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", *slasherSetupCh) |
+              for (_, _, _, @slasherDeployerId <- slasherSetupCh) {
+                @PoS!("getActiveValidators", *activeValidatorsCh) |
+                @PoS!("getEpochLength", *epochCh) |
+                for (@activeValidators <- activeValidatorsCh &
+                     @epochLength <- epochCh) {
+                  match activeValidators.toList().nth(0) {
+                    targetValidator => {
+                      @PoS!("chargeDeploy", slasherDeployerId, 1000, sysAuthToken, *chargeCh) |
+                      @PoS!("refundDeploy", 0, sysAuthToken, *refundCh) |
+                      for (@(true, _) <- chargeCh &
+                           @(true, _) <- refundCh) {
+                        computeHash!(targetValidator, *hashCh) |
+                        for (@hash <- hashCh) {
+                          setInvalidBlocks!({hash : targetValidator}, *invalidBlocksSetCh) |
+                          for (_ <- invalidBlocksSetCh) {
+                            @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
+                            for (@(true, _) <- slashCh) {
+                              setBlockData!("blockNumber", epochLength, *blockDataCh) |
+                              for (_ <- blockDataCh) {
+                                closeBlock!(*closeBlockCh) |
+                                for (@(true, _) <- closeBlockCh) {
+                                  @PoS!("getRewards", *rewardsCh) |
+                                  @PoS!("getBonds", *bondsCh) |
+                                  @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                                  for (@rewards <- rewardsCh &
+                                       @bonds <- bondsCh &
+                                       @effectiveBonds <- effectiveBondsCh) {
+                                    rhoSpec!("assertMany",
+                                      [
+                                        ((false, "==", bonds.contains(targetValidator)), "slashed validator remains absent from bonds after epoch close"),
+                                        ((false, "==", effectiveBonds.contains(targetValidator)), "slashed validator remains absent from effective bonds after epoch close"),
+                                        ((0, "==", rewards.getOrElse(targetValidator, 0)), "same-epoch closeBlock does not recreate slashed validator rewards")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
+                                }
                               }
                             }
                           }

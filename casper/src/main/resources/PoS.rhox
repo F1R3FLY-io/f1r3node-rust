@@ -172,8 +172,9 @@ in {
           pickActiveValidators!($$initialBonds$$.toList(), *initialActiveCh) |
           for (@initialActive     <- initialActiveCh;
                @(true, _) <- moveInitialBondCh) {
-            new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
-                accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState, computeEffectiveBonds,
+            new stateCh, pendingRewardsInitializedCh, rewardsInfo, rewardsInfoForState,
+                computeCurrentEpochRewards, calTotalActiveBonds, calTotalBonds,
+                accumulateSndNum, accumulateFstOfSndArg, computeEffectiveBonds,
                 removeDelegationsForValidator, updateDelegationEntry, updateDelegatedTotalEntry,
                 sumPendingUndelegations, stripPendingUndelegationsForValidator,
                 moveDelegationsToPendingUndelegations, computeDelegatorRewardDeltas,
@@ -211,46 +212,49 @@ in {
                 returnCh!($$numberOfActiveValidators$$ * 16)
               } |
               contract rewardsInfo(retCh) = {
+                for (@state <<- stateCh) {
+                  rewardsInfoForState!(state, *retCh)
+                }
+              } |
+              contract rewardsInfoForState(@state, retCh) = {
                 new posBalanceCh, totalActiveBondCh, totalBondCh, totalWithdrawCh, committedRewardsCh,
                     effectiveBondsCh, delegatorRewardsCh, pendingUndelegationsCh in {
                   @posVault!("balance", *posBalanceCh) |
-                  for (@state <<- stateCh) {
-                    computeEffectiveBonds!(state, *effectiveBondsCh) |
-                    new sumOneDelegatorReward, sumOneValidatorReward in {
-                      @ListOps!("fold", state.get("delegatorRewards").toList(), 0, *sumOneDelegatorReward, *delegatorRewardsCh) |
-                      contract sumOneDelegatorReward(@(_, validatorRewards), @acc, resultCh) = {
-                        new delegatorRewardTotalCh in {
-                          @ListOps!("fold", validatorRewards.toList(), 0, *sumOneValidatorReward, *delegatorRewardTotalCh) |
-                          contract sumOneValidatorReward(@(_, rewardAmount), @innerAcc, innerResultCh) = {
-                            innerResultCh!(innerAcc + rewardAmount)
-                          } |
-                          for (@delegatorRewardTotal <- delegatorRewardTotalCh) {
-                            resultCh!(acc + delegatorRewardTotal)
-                          }
+                  computeEffectiveBonds!(state, *effectiveBondsCh) |
+                  new sumOneDelegatorReward, sumOneValidatorReward in {
+                    @ListOps!("fold", state.get("delegatorRewards").toList(), 0, *sumOneDelegatorReward, *delegatorRewardsCh) |
+                    contract sumOneDelegatorReward(@(_, validatorRewards), @acc, resultCh) = {
+                      new delegatorRewardTotalCh in {
+                        @ListOps!("fold", validatorRewards.toList(), 0, *sumOneValidatorReward, *delegatorRewardTotalCh) |
+                        contract sumOneValidatorReward(@(_, rewardAmount), @innerAcc, innerResultCh) = {
+                          innerResultCh!(innerAcc + rewardAmount)
+                        } |
+                        for (@delegatorRewardTotal <- delegatorRewardTotalCh) {
+                          resultCh!(acc + delegatorRewardTotal)
                         }
                       }
-                    } |
-                    for (@effectiveBonds <- effectiveBondsCh) {
-                      @ListOps!("fold", effectiveBonds.toList(), 0, *accumulateSndNum, *totalBondCh) |
-                      calTotalActiveBonds!(state, effectiveBonds, *totalActiveBondCh) |
-                      accumulateItemInState!(*totalWithdrawCh, "withdrawers", *accumulateFstOfSndArg) |
-                      accumulateItemInState!(*committedRewardsCh, "committedRewards", *accumulateSndNum) |
-                      sumPendingUndelegations!(state, *pendingUndelegationsCh) |
-                      for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
-                           @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh;
-                           @totalDelegatorRewards <- delegatorRewardsCh; @totalPendingUndelegations <- pendingUndelegationsCh){
-                        retCh!((
-                          posBalance,
-                          totalBond,
-                          activeBonds,
-                          totalWithdraw,
-                          totalCommittedRewards,
-                          totalDelegatorRewards,
-                          totalPendingUndelegations,
-                          effectiveBonds,
-                          state.get("activeValidators")
-                        ))
-                      }
+                    }
+                  } |
+                  for (@effectiveBonds <- effectiveBondsCh) {
+                    @ListOps!("fold", effectiveBonds.toList(), 0, *accumulateSndNum, *totalBondCh) |
+                    calTotalActiveBonds!(state, effectiveBonds, *totalActiveBondCh) |
+                    @ListOps!("fold", state.get("withdrawers").toList(), 0, *accumulateFstOfSndArg, *totalWithdrawCh) |
+                    @ListOps!("fold", state.get("committedRewards").toList(), 0, *accumulateSndNum, *committedRewardsCh) |
+                    sumPendingUndelegations!(state, *pendingUndelegationsCh) |
+                    for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
+                         @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh;
+                         @totalDelegatorRewards <- delegatorRewardsCh; @totalPendingUndelegations <- pendingUndelegationsCh){
+                      retCh!((
+                        posBalance,
+                        totalBond,
+                        activeBonds,
+                        totalWithdraw,
+                        totalCommittedRewards,
+                        totalDelegatorRewards,
+                        totalPendingUndelegations,
+                        effectiveBonds,
+                        state.get("activeValidators")
+                      ))
                     }
                   }
                 }
@@ -273,11 +277,6 @@ in {
               contract accumulateFstOfSndArg(@(_, (amount, _)), @acc, resultCh) = {
                 resultCh!(acc + amount)
               } |
-              contract accumulateItemInState(returnCh, @stateKey, accumulateAlgo) = {
-                for (@state <<- stateCh){
-                  @ListOps!("fold", state.get(stateKey).toList(), 0, *accumulateAlgo, *returnCh)
-                }
-              }|
               contract computeEffectiveBonds(@state, returnCh) = {
                 new includePositiveBond, mergeDelegatedTotals, positiveBondsCh in {
                   @ListOps!("fold", state.get("allBonds").toList(), {}, *includePositiveBond, *positiveBondsCh) |
@@ -536,15 +535,23 @@ in {
                   }
                 }
               }|
-              contract PoS(@"getCurrentEpochRewards", returnCh) = {
+              contract computeCurrentEpochRewards(@state, returnCh) = {
                 new rewardCh, computeReward in {
-                  rewardsInfo!(*rewardCh)|
+                  rewardsInfoForState!(state, *rewardCh)|
                   for (@(posBalance, totalBond, activeBonds, totalWithdraw, totalCommittedRewards, totalDelegatorRewards, totalPendingUndelegations, bondsMap, activeValidatorsSet) <- rewardCh){
                     @ListOps!("fold", bondsMap.toList(), {}, *computeReward, *returnCh) |
                     contract computeReward(@(pk, bonds), @acc,  outCh) = {
                       //  someAmount / minimumBond to reduce the possibility on overflow long
                       if (activeValidatorsSet.contains(pk)){
-                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards - totalDelegatorRewards - totalPendingUndelegations) * (bonds / $$minimumBond$$) / (activeBonds / $$minimumBond$$)))
+                        match activeBonds / $$minimumBond$$ {
+                          activeBondUnits => {
+                            if (activeBondUnits > 0) {
+                              outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards - totalDelegatorRewards - totalPendingUndelegations) * (bonds / $$minimumBond$$) / activeBondUnits))
+                            } else {
+                              outCh!(acc.set(pk, 0))
+                            }
+                          }
+                        }
                       } else {
                         outCh!(acc.set(pk, 0))
                       }
@@ -552,10 +559,15 @@ in {
                   }
                 }
               } |
+              contract PoS(@"getCurrentEpochRewards", returnCh) = {
+                for (@state <<- stateCh) {
+                  computeCurrentEpochRewards!(state, *returnCh)
+                }
+              } |
               contract PoS(@"getRewards", returnCh) = {
                 new currentEpochRewardCh, accumulateReward in {
                   for (@state <<- stateCh) {
-                    PoS!("getCurrentEpochRewards", *currentEpochRewardCh)|
+                    computeCurrentEpochRewards!(state, *currentEpochRewardCh)|
                     for (@currentEpochReward <- currentEpochRewardCh) {
                       @ListOps!("fold", currentEpochReward.toList(), state.get("committedRewards"), *accumulateReward, *returnCh) |
                       contract accumulateReward(@(pk, reward), @acc, outCh) = {
@@ -1257,10 +1269,10 @@ in {
                                   newValidatorsCh, removeQuarantinedCh, currentEpochRewardCh, effectiveBondsCh,
                                   commitCurrentEpochRewards, updatedRewardsCh, movePendingWithdrawCh, movePendingWithdrawer
                               in {
-                                PoS!("getCurrentEpochRewards", * currentEpochRewardCh) |
-                                for (@currentRewards <- currentEpochRewardCh) {
-                                  runMVar!(*stateCh, *stateProcessCh, *ackCh) |
-                                  for (@state, stateUpdateCh <- stateProcessCh) {
+                                runMVar!(*stateCh, *stateProcessCh, *ackCh) |
+                                for (@state, stateUpdateCh <- stateProcessCh) {
+                                  computeCurrentEpochRewards!(state, *currentEpochRewardCh) |
+                                  for (@currentRewards <- currentEpochRewardCh) {
                                     // 1. Calculate all the validator current epoch rewards based on active validator bonding proportion
                                     // 2. Accumulate `committedRewards` with the result of step 1
                                     commitCurrentEpochRewards!(state, currentRewards, *updatedRewardsCh) |
