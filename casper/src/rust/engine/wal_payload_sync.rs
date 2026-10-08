@@ -16,7 +16,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use comm::rust::peer_node::PeerNode;
+use models::rust::casper::protocol::casper_message::HasWalPayload;
 use tokio::sync::RwLock;
+use tracing::{debug, warn};
 
 use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
 
@@ -148,6 +150,62 @@ impl WalPayloadSyncDriver {
         self.retriever.get_bytes(payload_hash).await
     }
 
+    /// Called when a `HasWalPayload` reply arrives.  Records the
+    /// sender as a source for `announcement.payload_hash`, subject
+    /// to:
+    ///
+    ///   * `payload_hash` must be exactly 32 bytes — a wrong-length
+    ///     field is treated as a byzantine send and blacklists the
+    ///     sender immediately.
+    ///   * active-blacklist senders are silently ignored (expired
+    ///     TTL entries are treated as unblacklisted; the next tick
+    ///     evicts them).
+    ///   * announcements for payloads we did not enqueue are
+    ///     logged at debug + dropped (the sender may be out of
+    ///     sync with our view of what we need).
+    ///   * duplicate inserts are skipped (`sources.iter().any(...)`
+    ///     dedup).
+    ///   * `MAX_SOURCES` cap defends against identity-rotation
+    ///     memory exhaustion — past the cap, further senders are
+    ///     silently dropped.
+    pub async fn on_has_wal_payload(&self, sender: PeerNode, announcement: &HasWalPayload) {
+        let hash = match slice_to_hash(announcement.payload_hash.as_ref()) {
+            Some(h) => h,
+            None => {
+                warn!(
+                    target: "f1r3fly.casper.wal_payload_sync",
+                    len = announcement.payload_hash.len(),
+                    "HasWalPayload payload_hash has wrong length; blacklisting sender"
+                );
+                let mut b = self.blacklisted.write().await;
+                add_blacklist_capped(&mut b, sender, now_ms());
+                return;
+            }
+        };
+        {
+            let b = self.blacklisted.read().await;
+            if let Some(ts) = b.get(&sender) {
+                if now_ms().saturating_sub(*ts) < BLACKLIST_TTL_MS {
+                    return;
+                }
+            }
+        }
+        let mut g = self.per_hash_sources.write().await;
+        let sources = match g.get_mut(&hash) {
+            Some(s) => s,
+            None => {
+                debug!(
+                    target: "f1r3fly.casper.wal_payload_sync",
+                    "HasWalPayload for un-enqueued payload; ignoring"
+                );
+                return;
+            }
+        };
+        if !sources.sources.iter().any(|p| p == &sender) && sources.sources.len() < MAX_SOURCES {
+            sources.sources.push_back(sender);
+        }
+    }
+
     /// Pick the next non-blacklisted source for a payload hash,
     /// rotating the FIFO one position (pop_front + push_back on
     /// every candidate).  Returns `None` if no eligible source is
@@ -186,6 +244,21 @@ impl WalPayloadSyncDriver {
         b.retain(|_, ts| now.saturating_sub(*ts) < BLACKLIST_TTL_MS);
         before - b.len()
     }
+}
+
+/// Narrow a byte slice to a 32-byte payload hash, or `None` if
+/// the slice is any other length.  Mirrors the private helper of
+/// the same name in `wal_payload_retriever` / `wal_payload_server`
+/// / `snapshot_chunk_retriever`; each module keeps its own copy to
+/// avoid a cross-module public surface for what is really a 1-line
+/// hash-length guard.
+fn slice_to_hash(slice: &[u8]) -> Option<[u8; 32]> {
+    if slice.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(slice);
+    Some(out)
 }
 
 /// Milliseconds since Unix epoch.  Private helper used by the
@@ -523,6 +596,158 @@ mod tests {
         let driver_b = driver.clone();
         driver.enqueue_payload([0xBB; 32]).await;
         assert_eq!(driver_b.pending_count().await, 1);
+    }
+
+    fn mk_announcement(hash: &[u8]) -> HasWalPayload {
+        use prost::bytes::Bytes;
+        HasWalPayload {
+            payload_hash: Bytes::copy_from_slice(hash),
+            payload_size: 42,
+        }
+    }
+
+    #[tokio::test]
+    async fn on_has_wal_payload_records_sender_for_enqueued_hash() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xE1; 32];
+        driver.enqueue_payload(h).await;
+        driver
+            .on_has_wal_payload(mk_peer("alice"), &mk_announcement(&h))
+            .await;
+        let g = driver.per_hash_sources.read().await;
+        let sources = g.get(&h).expect("entry exists");
+        assert_eq!(sources.sources.len(), 1);
+        assert_eq!(sources.sources[0], mk_peer("alice"));
+    }
+
+    #[tokio::test]
+    async fn on_has_wal_payload_dedupes_the_same_sender() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xE2; 32];
+        driver.enqueue_payload(h).await;
+        driver
+            .on_has_wal_payload(mk_peer("alice"), &mk_announcement(&h))
+            .await;
+        driver
+            .on_has_wal_payload(mk_peer("alice"), &mk_announcement(&h))
+            .await;
+        let g = driver.per_hash_sources.read().await;
+        assert_eq!(
+            g.get(&h).unwrap().sources.len(),
+            1,
+            "second announcement from same peer must dedup"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_has_wal_payload_ignores_un_enqueued_hash() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xE3; 32];
+        driver
+            .on_has_wal_payload(mk_peer("alice"), &mk_announcement(&h))
+            .await;
+        let g = driver.per_hash_sources.read().await;
+        assert!(g.get(&h).is_none(), "no source entry created");
+    }
+
+    #[tokio::test]
+    async fn on_has_wal_payload_wrong_length_blacklists_sender() {
+        // LOAD-BEARING: wrong-length payload_hash is byzantine; the
+        // sender gets blacklisted immediately (no benefit of the
+        // doubt — a well-behaved peer would never emit this).
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let short = [0xE4; 16];
+        driver
+            .on_has_wal_payload(mk_peer("mallory"), &mk_announcement(&short))
+            .await;
+        let b = driver.blacklisted.read().await;
+        assert!(
+            b.contains_key(&mk_peer("mallory")),
+            "wrong-length announcement must blacklist sender"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_has_wal_payload_skips_actively_blacklisted_sender() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xE5; 32];
+        driver.enqueue_payload(h).await;
+        {
+            let mut b = driver.blacklisted.write().await;
+            b.insert(mk_peer("mallory"), now_ms());
+        }
+        driver
+            .on_has_wal_payload(mk_peer("mallory"), &mk_announcement(&h))
+            .await;
+        let g = driver.per_hash_sources.read().await;
+        assert_eq!(
+            g.get(&h).unwrap().sources.len(),
+            0,
+            "actively blacklisted sender's announcement must be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_has_wal_payload_accepts_sender_with_expired_blacklist() {
+        // LOAD-BEARING TTL semantic: a blacklist entry older than
+        // BLACKLIST_TTL_MS is treated as unblacklisted BEFORE the
+        // next evict pass runs.
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xE6; 32];
+        driver.enqueue_payload(h).await;
+        {
+            let mut b = driver.blacklisted.write().await;
+            b.insert(
+                mk_peer("formerly-blacklisted"),
+                now_ms().saturating_sub(BLACKLIST_TTL_MS + 1),
+            );
+        }
+        driver
+            .on_has_wal_payload(mk_peer("formerly-blacklisted"), &mk_announcement(&h))
+            .await;
+        let g = driver.per_hash_sources.read().await;
+        assert_eq!(
+            g.get(&h).unwrap().sources.len(),
+            1,
+            "expired blacklist must not block fresh announcement"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_has_wal_payload_cap_stops_source_growth() {
+        // LOAD-BEARING: MAX_SOURCES cap defends against byzantine
+        // identity rotation.  Pre-fill to the cap, then verify
+        // the next sender is silently dropped.
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xE7; 32];
+        driver.enqueue_payload(h).await;
+        {
+            let mut g = driver.per_hash_sources.write().await;
+            let entry = g.entry(h).or_default();
+            for i in 0..MAX_SOURCES {
+                entry.sources.push_back(mk_peer(&format!("filler-{i}")));
+            }
+            assert_eq!(entry.sources.len(), MAX_SOURCES);
+        }
+        driver
+            .on_has_wal_payload(mk_peer("overflow"), &mk_announcement(&h))
+            .await;
+        let g = driver.per_hash_sources.read().await;
+        let sources = g.get(&h).unwrap();
+        assert_eq!(sources.sources.len(), MAX_SOURCES, "cap must hold");
+        assert!(
+            !sources.sources.iter().any(|p| p == &mk_peer("overflow")),
+            "overflow sender must not be inserted"
+        );
+    }
+
+    #[test]
+    fn slice_to_hash_narrows_32_byte_input() {
+        let input = [0xA5u8; 32];
+        assert_eq!(slice_to_hash(&input), Some(input));
+        assert_eq!(slice_to_hash(&[0u8; 31]), None);
+        assert_eq!(slice_to_hash(&[0u8; 33]), None);
+        assert_eq!(slice_to_hash(&[]), None);
     }
 
     #[tokio::test]
