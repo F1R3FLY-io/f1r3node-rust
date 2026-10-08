@@ -3178,14 +3178,14 @@ It then runs the journal check, the trace binding, the native replay environment
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_native_replay_equal_{hashmap,pathmap,array,vector}` | `reified_native_spaces.rs:272-281` | Each of the 24 families plays natively without error and delivers its results. Native replay reproduces the errors, a complete journal, the usage, the evidence and the root. |
-| `space_native_journal_rows_per_operation` | `reified_native_spaces.rs:392` | One row for each produce and consume of the log, one COMM record for each COMM, and sub-order paths numbered from 0 in each transaction. |
-| `space_native_handle_calls_after_factory` | `reified_native_spaces.rs:401` | The factory parks the handle first, and each handle call follows the previous operation on the handle. |
-| `space_native_persistent_retry_rows` | `reified_native_spaces.rs:470` | A persistent element offered again in flight is a retry of a space row, and native replay consumes the retry. |
-| `space_native_denial_replay` | `reified_native_spaces.rs:541` | Out of phlo at each charged attempt of the largest space transaction, found by bisection on the limit, play and native replay agree. |
-| `space_native_scope_reset_after_restore` | `reified_native_spaces.rs:624` | A second evaluation after a restore reproduces play. |
-| `space_native_forged_predecessor_fails_closed` | `reified_native_spaces.rs:667` | The journal check rejects a forged predecessor, and a matching forged footprint fails closed at the footprint check. |
-| `space_native_forged_footprints_never_hang` | `reified_native_spaces.rs:763` | Every forgery of a space row on a later host row ends within 60 s and is rejected. |
+| `space_native_replay_equal_{hashmap,pathmap,array,vector}` | `reified_native_spaces.rs:280-289` | Each of the 24 families plays natively without error and delivers its results. Native replay reproduces the errors, a complete journal, the usage, the evidence and the root. |
+| `space_native_journal_rows_per_operation` | `reified_native_spaces.rs:400` | One row for each produce and consume of the log, one COMM record for each COMM, and sub-order paths numbered from 0 in each transaction. |
+| `space_native_handle_calls_after_factory` | `reified_native_spaces.rs:409` | The factory parks the handle first, and each handle call follows the previous operation on the handle. |
+| `space_native_persistent_retry_rows` | `reified_native_spaces.rs:478` | A persistent element offered again in flight is a retry of a space row, and native replay consumes the retry. |
+| `space_native_denial_replay` | `reified_native_spaces.rs:550-622` | Out of phlo at each charged attempt of the largest space transaction, found by bisection on the limit, play and native replay agree. |
+| `space_native_scope_reset_after_restore` | `reified_native_spaces.rs:637` | A second evaluation after a restore reproduces play. |
+| `space_native_forged_predecessor_fails_closed` | `reified_native_spaces.rs:680` | The journal check rejects a forged predecessor, and a matching forged footprint fails closed at the footprint check. |
+| `space_native_forged_footprints_never_hang` | `reified_native_spaces.rs:776` | Every forgery of a space row on a later host row ends within 60 s and is rejected. |
 
 The unit tests of the backend add `native_space_replay_view_charges_equal_play` (`native_session/space.rs:1750`) and `native_space_replay_rejects_another_valid_candidate` (`native_session/space.rs:1793`).
 The scheduler adds `space_native_single_conflict_group` (`reified/schedule.rs:724`) and `space_native_space_key_groups` (`reified/schedule.rs:743`).
@@ -3511,6 +3511,97 @@ To run the checks of steps 3 and 4, do these steps from the repository root:
 2. Run `cargo test -p rholang --lib -- spaces:: reified::`.
 3. Run `python3 scripts/verify-reified/vectordb-mutants.py`, which must report `FAIL=0`.
 4. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+
+## 16. Phase P6, step 5: native certification of the VectorDB shapes
+
+Step 5 of the P6 design certifies the VectorDB shapes in native execution, as proposer self-certification and validator replay do ([decision 47](decision-register.md#decision-47)).
+The tests extend the native certification suite of section [13.6](#136-the-native-certification-suite) and use its harness at the v6 limits of the offered funded protocol.
+Each VectorDB plan stages only through `Cx` and reserves each step on the meter of its job.
+So native play and native replay make the same reservations and the same rows.
+This section records the tests, the host work that they measured, and what the measurements mean for the family.
+
+### 16.1 Tests
+
+*Table 101. The native certification tests of P6 step 5 (`rholang/tests/reified_native_spaces.rs`).*
+
+| Test | What it checks |
+|---|---|
+| `space_native_vectordb_replay_equal` | Both VectorDB families play three programs natively at the v6 limits, and native replay reproduces each play. The programs cover single mode, a peek, a threshold, a radius, the list modes, a join with queries, a persistent receive and the two paths of LM-b. |
+| `space_native_vectordb_cascade_carries_at_the_cap` | At the v6 limits, play rejects the round-cap program for host work and records no evidence. With 32 times the v6 limits, the receive stops at the round cap, its settle job carries the other fires, and native replay reproduces the play. |
+| `space_native_vectordb_errors_reproduce` | `CapacityExceeded` and `DimensionMismatch` abort the deploy in native play, and native replay reproduces the failure. |
+| `space_native_vectordb_denial_replay` | Out of phlo at each charged budget attempt of the largest transaction of LM-b, play and native replay agree. |
+
+A source program reaches a shape only within the syntax contract.
+Only a linear bind takes a query (`syntax-contract.md`), so a peek and a persistent receive read the canonical order of their collection.
+The list receive of two runs after the sends of its collection, so it fires in one COMM over `[D; 2]`.
+The two lists of LM-b fire through an offer, so no COMM of that program consumes one channel twice.
+The harness gains `native_play_with` and `certify_with`, which take the host-work budget of play and of replay.
+
+### 16.2 Host work of the VectorDB shapes
+
+The first run of the round-cap program failed: native play rejected it with `HostWorkRejected`.
+A probe then played the program at several sizes with a host-work budget that has no limit, and it read the usage of each dimension.
+The probe programs draw only the name `a` from the space.
+`VerificationBytes` dominates. `SearchStateBytes` reaches 0.49 of its limit at 32 waiters and 1.85 at 70, and every other dimension stays below 0.10.
+
+*Table 102. The `VerificationBytes` of native play of the round-cap program by its size, against the v6 limit of 268,435,456 bytes.*
+
+| List waiters and documents | `VerificationBytes` | Fraction of the v6 limit |
+|---|---|---|
+| 4 | 67,613,061 | 0.25 |
+| 8 | 144,768,768 | 0.54 |
+| 16 | 370,762,628 | 1.38 |
+| 32 | 1,111,771,123 | 4.14 |
+| 64 | 3,757,681,570 | 14.00 |
+| 70 | 4,431,927,764 | 16.51 |
+
+The growth is quadratic in the size of the collection.
+Each operation loads all records or all waiters of its collection, and the number of operations grows with the collection.
+
+A second probe sampled the stack of every 16th reservation of `VerificationBytes` for 16 parked list waiters over 17 records (Table 103).
+
+*Table 103. The sources of the `VerificationBytes` that the space meter reserves for 16 parked list waiters over 17 records.*
+
+| Source | Share |
+|---|---|
+| The decode of the space config in `begin_collection`, once for each operation | 26.2% |
+| The load of the records of the collection in `eligible` and in the offer of a send | 30.4% |
+| The load of the waiters of the collection when a receive parks | 20.1% |
+| The decode of the vector of each record in `eligible` | 7.7% |
+| The other reservations | 15.6% |
+
+Each reservation follows the walk model of `shared/src/rust/clone_backing.rs`, which the campaign adopts from the cost-accounting branch ([decision 40](decision-register.md#decision-40)).
+A walk charges every node of a value and every entry of its work list, so it charges much more than the encoded bytes.
+One walk of the config map charges 175,565 bytes, and the bincode of the map has 2,003 bytes.
+The decode of the config makes five walks, because `SpaceConfig::from_par` reads the map, copies its fields, encodes the config again and compares the two maps.
+So one decode charges 1,228,955 bytes, once for each operation of a collection.
+
+*Table 104. Native play and native replay of the step-5 programs, as fractions of the v6 limit of `VerificationBytes`.*
+
+| Program | Budget attempts | Play | Replay |
+|---|---|---|---|
+| The `hashmap:queue` program of section 13.6 | 121 | 0.30 | 0.68 |
+| All VectorDB shapes in one deploy | 110 | 0.44 | 1.07 |
+| The two paths of LM-b | 74 | 0.27 | 0.68 |
+| The round-cap program of the probe | 655 | 16.51 | 18.66 |
+
+Native replay charges more than native play: 2.2 to 2.6 times for the three small programs, and 1.13 times for the round-cap program.
+The replay environment reserves about 36 MB before its evaluation and about 1.2 MB for each budget attempt ([M-47-1](findings/native-execution-cost-accounting.md#7-m-47-1-verification-bytes-of-native-replay)).
+So the suite runs the VectorDB shapes as two deploys, and each one fits the v6 limits in play and in replay.
+
+### 16.3 Consequences
+
+- At the v6 limits, a natively certified deploy holds only a small VectorDB collection. In play, 8 records and 8 list waiters use 0.54 of the limit, and 16 of each exceed it.
+- The round-cap shape needs about 19 times the v6 limit of `VerificationBytes` in replay. The suite certifies its carry with 32 times the v6 limits, and it certifies the rejection at the v6 limits.
+- A host-work rejection is a platform failure. Native play records no evidence, so the proposer refuses the offer and no block includes it.
+- The walk model and the v6 limits belong to the owner of cost accounting, and this campaign changes neither (M-3). The tracker adds these measurements to M-47-1 for that owner.
+
+### 16.4 Running the step-5 checks
+
+To run the checks of step 5, do these steps from the repository root:
+
+1. Run `cargo test -p rholang --test reified_native_spaces`.
+2. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
 
 ## References
 

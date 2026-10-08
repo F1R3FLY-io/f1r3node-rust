@@ -14,6 +14,10 @@
 //! | `space_native_scope_reset_after_restore` | After a restore, a second evaluation of the native replay environment reproduces play: the bound space store resets its scope (W2). |
 //! | `space_native_forged_predecessor_fails_closed` | The journal check rejects a forged predecessor. A forged predecessor with a matching forged footprint passes the check, and the space row fails closed when it authenticates its footprint, with no hang. |
 //! | `space_native_forged_footprints_never_hang` | Every forgery that makes a later host row wait for a staged space row ends: the space row fails closed and closes the epoch, so the waiting host operation wakes and fails, and the certification rejects the journal. Without the closure, 64 of 109 such forgeries hung (the probe of step 4). |
+//! | `space_native_vectordb_replay_equal` | P6 step 5: every query shape of `hashmap:vectordb` and `vector:vectordb` that a source program can write plays natively at the v6 limits, and native replay reproduces the play. A list receive fires in one COMM over `[D; m]`, and the lists of LM-b (CE-1, CE-2) fire through an offer. |
+//! | `space_native_vectordb_cascade_carries_at_the_cap` | P6 step 5: at the v6 limits the round-cap program of LIST-CASCADE is rejected for host work and records no evidence. With 32 times the v6 limits, its receive stops at the round cap, its settle job carries the other fires, and native replay reproduces the play. |
+//! | `space_native_vectordb_errors_reproduce` | P6 step 5: `CapacityExceeded` and `DimensionMismatch` abort the deploy in native play, and native replay reproduces the failure. |
+//! | `space_native_vectordb_denial_replay` | P6 step 5: out of phlo at each charged budget attempt of the largest VectorDB transaction (LM-b), play and native replay agree. |
 //!
 //! The unit tests of the native backend (`native_session/space.rs`) and of the scheduler
 //! (`reified/schedule.rs`) cover the other rows of section 6.
@@ -32,6 +36,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use models::rhoapi::Par;
+use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
+use models::rust::host_work::{HostWorkDimension, HostWorkLimit};
 use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use rholang::rust::interpreter::accounting::byte_receipts::ByteObservation;
 use rholang::rust::interpreter::accounting::{
@@ -39,12 +45,14 @@ use rholang::rust::interpreter::accounting::{
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::host_work::HostWorkBudget;
+use rholang::rust::interpreter::reified::costs::FIRE_ROUND_CAP;
 use rholang::rust::interpreter::spaces::namespace::{self, ReifiedId};
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use support::native::{
-    assert_reproduces, certify, committed_evidence, finish, footprint_channels, host_work,
-    is_space_channel, is_space_row, native_play, random, rejected, replay_environment,
-    replay_environment_with, row_attempts, Played, AMPLE_LIMIT, OUT, WEIGHTS,
+    assert_reproduces, certify, certify_with, committed_evidence, finish, footprint_channels,
+    host_work, is_space_channel, is_space_row, native_play, native_play_with, random, rejected,
+    replay_environment, replay_environment_with, row_attempts, Played, AMPLE_LIMIT, OUT, WEIGHTS,
 };
 
 // ─── Programs ──────────────────────────────────────────────────────────────────────────────────
@@ -537,10 +545,10 @@ async fn play_at(term: &str, limit: u64) -> (usize, Played) {
     (denied, played)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_native_denial_replay() {
-    let term = program(Outer::HashMap, Inner::Queue);
-    let full = native_play(&term, AMPLE_LIMIT).await;
+/// Out of phlo at each charged budget attempt of the largest space transaction of `term`, native
+/// play and native replay agree.
+async fn check_denials(term: &str) {
+    let full = native_play(term, AMPLE_LIMIT).await;
     assert!(full.result.errors.is_empty(), "{:?}", full.result.errors);
     let (recording, journal) = journal_of(&full);
 
@@ -584,7 +592,7 @@ async fn space_native_denial_replay() {
         let (limit, played) = loop {
             assert!(low <= high, "some limit denies attempt {target} first");
             let middle = low + (high - low) / 2;
-            let (denied, played) = play_at(&term, middle).await;
+            let (denied, played) = play_at(term, middle).await;
             match denied.cmp(&target) {
                 std::cmp::Ordering::Equal => break (middle, played),
                 std::cmp::Ordering::Less => low = middle + 1,
@@ -605,9 +613,14 @@ async fn space_native_denial_replay() {
             "{label}: play runs out of phlo: {:?}",
             played.result.errors
         );
-        let certification = certify(&played, &term, limit).await;
+        let certification = certify(&played, term, limit).await;
         assert_reproduces(&label, &played, &certification);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_native_denial_replay() {
+    check_denials(&program(Outer::HashMap, Inner::Queue)).await
 }
 
 // ─── Restore ───────────────────────────────────────────────────────────────────────────────────
@@ -813,4 +826,272 @@ async fn space_native_forged_footprints_never_hang() {
         forgeries >= 20,
         "the sweep covers the forgeries of the program ({forgeries})"
     );
+}
+
+// ─── VectorDB (P6, step 5) ─────────────────────────────────────────────────────────────────────
+
+/// The VectorDB families (P6).
+const VECTORDB_FAMILIES: [&str; 2] = ["rho:space:hashmap:vectordb", "rho:space:vector:vectordb"];
+
+/// The constructor of a VectorDB space of two dimensions with the default metric `cosine`.
+const VECTORDB_CTOR: &str = r#""default"; capacity=16, dimensions=2"#;
+
+/// The single-collection query shapes of a VectorDB space that a source program can write
+/// (design v3 4.4 and 4.5): single mode, a peek, a threshold, a radius over a persistent record,
+/// and a list of all records with scores. Only a linear bind takes a query
+/// (`syntax-contract.md`), so the peek reads the canonical order. The payload is the vector by
+/// default, and `embedding` gives the vector of the document.
+const VECTORDB_SINGLE: &str = r#"a!([1.0, 0.0]) | a!([0.6, 0.8]) | a!("doc"; embedding=[0.0, 1.0]) | b!!([1.0, 1.0]) |
+for (@x <- a ~ ([1.0, 0.0])) { out!(["take", x]) } |
+for (@y <<- a) { out!(["peek", y]) } |
+for (@z <- a ~ ([1.0, 0.0]; threshold=0.5)) { out!(["near", z]) } |
+for (@w <- b ~ ([1.0, 1.0]; metric="euclidean", radius=0.5)) { out!(["persistent", w]) } |
+for (@all <- b ~ ([1.0, 1.0]; results="all", scores=true)) { out!(["all", all]) }"#;
+
+/// The labels that [`VECTORDB_SINGLE`] delivers.
+const VECTORDB_SINGLE_LABELS: [&str; 5] = ["take", "peek", "near", "persistent", "all"];
+
+/// The grouped query shapes: a join whose binds have queries of their own, a persistent receive,
+/// and a list of two. The list runs after the sends of its collection, so it fires in one COMM
+/// over `[D; 2]`. The shapes of [`VECTORDB_SINGLE`] and these shapes are two deploys: one deploy
+/// with all of them exceeds the v6 host-work limit of `VerificationBytes` in native replay (1.07
+/// times the limit, the measurement of P6 step 5).
+const VECTORDB_GROUPS: &str = r#"for (@p <- c ~ ([1.0, 0.0]) & @q <- d ~ ([0.0, 1.0])) { out!(["join", p, q]) } |
+c!([1.0, 0.0]) | d!([0.0, 1.0]) |
+e!([1.0, 0.0]) | e!([0.8, 0.6]) | e!([0.0, 1.0]) |
+for (f <- space!?("gensym")) { for (@v <= f) { out!(["each", v]) } | f!([1.0, 0.0]) | f!([0.0, 1.0]) } |
+new go in { go!(Nil) | for (_ <- go) {
+  for (@list <- e ~ ([1.0, 0.0]; k=2, scores=true)) { out!(["list", list]) }
+} }"#;
+
+/// The labels that [`VECTORDB_GROUPS`] delivers.
+const VECTORDB_GROUP_LABELS: [&str; 3] = ["join", "each", "list"];
+
+/// The paths of LM-b (decision 66) as one program. CE-1: a list waiter refuses the list `[x1]`
+/// and parks, and a later send `x2` fires it with the incoming datum, and `x1` leaves through
+/// `K_retire`. CE-2: a list waiter refuses `[img, doc]` and parks, and a later receive removes
+/// `img`, so LIST-CASCADE fires the waiter with `[doc, doc]`.
+const VECTORDB_LIST_PATHS: &str = r#"a!([1.0, 0.0]) |
+for (@[p, q] <- a ~ ([1.0, 0.0]; k=2)) { out!(["pair", p, q]) } |
+b!("img"; embedding=[10.0, 1.0]) | b!("doc"; embedding=[10.0, 2.0]) | b!("doc"; embedding=[10.0, 3.0]) |
+for (@["doc", "doc"] <- b ~ ([1.0, 0.0]; k=2)) { out!(["docs", 2]) } |
+new go in { go!(Nil) | for (_ <- go) {
+  a!([1.0, 0.5]) |
+  for (@"img" <- b ~ ([1.0, 0.0])) { out!(["img", 1]) }
+} }"#;
+
+/// The labels that [`VECTORDB_LIST_PATHS`] delivers.
+const VECTORDB_LIST_LABELS: [&str; 3] = ["pair", "docs", "img"];
+
+/// The number of list waiters of [`vectordb_cap_program`]: more cascade fires than one
+/// transaction holds.
+const CAP_WAITERS: usize = FIRE_ROUND_CAP + 6;
+
+/// The cascade at the round cap (decision 49) as one program: `img`, [`CAP_WAITERS`] documents,
+/// and as many list waiters for `[doc]`, which refuse `[img]` and park. A later receive removes
+/// `img`, and LIST-CASCADE fires one waiter for each document. The fires exceed the round cap,
+/// so the transaction re-issues a settle job, which cascades on.
+fn vectordb_cap_program() -> String {
+    let mut body = String::with_capacity(CAP_WAITERS * 160);
+    body.push_str(r#"a!("img"; embedding=[10.0, 0.0])"#);
+    for index in 1..=CAP_WAITERS {
+        body.push_str(&format!(r#" | a!("doc"; embedding=[10.0, {index}.0])"#));
+    }
+    for index in 0..CAP_WAITERS {
+        body.push_str(&format!(
+            "\n| for (@[\"doc\"] <- a ~ ([1.0, 0.0]; k=1)) {{ out!([\"cascade\", {index}]) }}"
+        ));
+    }
+    body.push_str(
+        r#"
+| new go in { go!(Nil) | for (_ <- go) { for (@"img" <- a ~ ([1.0, 0.0])) { out!(["img", 0]) } } }"#,
+    );
+    space_program(
+        "rho:space:hashmap:vectordb",
+        r#""default"; capacity=200, dimensions=2"#,
+        &body,
+    )
+}
+
+/// True when some COMM of `log` consumes from one channel two times or more: the list fire over
+/// `[D; m]` of a receive (design v3 4.4).
+fn has_list_comm(log: &[Event]) -> bool {
+    log.iter().any(|event| match event {
+        Event::Comm(comm) => {
+            let hashes = &comm.consume.channel_hashes;
+            hashes.len() >= 2 && hashes.iter().all(|hash| *hash == hashes[0])
+        }
+        Event::IoEvent(_) => false,
+    })
+}
+
+/// Plays `term` natively, checks that it delivers each label of `labels`, and certifies it.
+async fn check_vectordb(label: &str, term: &str, labels: &[&str]) -> Played {
+    let played = native_play(term, AMPLE_LIMIT).await;
+    assert!(
+        played.result.errors.is_empty(),
+        "{label}: native play fails: {:?}",
+        played.result.errors
+    );
+    for wanted in labels {
+        assert!(
+            delivers(&played, wanted),
+            "{label}: the program delivers {wanted}: {:?}",
+            played.outputs
+        );
+    }
+    let certification = certify(&played, term, AMPLE_LIMIT).await;
+    assert_reproduces(label, &played, &certification);
+    played
+}
+
+/// Every query shape of both VectorDB families plays natively at the v6 limits, and native
+/// replay reproduces the play. A list receive fires in one COMM over `[D; m]`. The two lists of
+/// LM-b fire through an offer instead: CE-1 through the send of `x2`, and CE-2 through
+/// LIST-CASCADE. The journal of LM-b holds one row for each operation of its log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_native_vectordb_replay_equal() {
+    for urn in VECTORDB_FAMILIES {
+        let single = space_program(urn, VECTORDB_CTOR, VECTORDB_SINGLE);
+        check_vectordb(&format!("{urn} single"), &single, &VECTORDB_SINGLE_LABELS).await;
+        let groups = space_program(urn, VECTORDB_CTOR, VECTORDB_GROUPS);
+        let played =
+            check_vectordb(&format!("{urn} groups"), &groups, &VECTORDB_GROUP_LABELS).await;
+        assert!(
+            has_list_comm(&played.log),
+            "{urn}: a list receive fires in one COMM over [D; m]"
+        );
+        let paths = space_program(urn, VECTORDB_CTOR, VECTORDB_LIST_PATHS);
+        let played = check_vectordb(&format!("{urn} LM-b"), &paths, &VECTORDB_LIST_LABELS).await;
+        assert!(
+            !has_list_comm(&played.log),
+            "{urn}: each list of LM-b fires through an offer"
+        );
+        check_rows(urn, &paths).await;
+    }
+}
+
+/// The factor of the host-work budget of the carry check. The cap program reserves about 16.5
+/// times (play) and 18.7 times (replay) the v6 limit of `VerificationBytes`, and 1.9 and 2.4
+/// times the v6 limit of `SearchStateBytes` (the measurement of P6 step 5). So 32 times the v6
+/// limits run it to its end in play and in replay.
+const CAP_BUDGET_FACTOR: u64 = 32;
+
+/// The v6 host-work limits of the offered funded protocol, each multiplied by `factor`.
+fn scaled_host_work(factor: u64) -> HostWorkBudget {
+    let v6 = offered_funded_v6_host_work_limits();
+    let mut limits = offered_funded_v6_host_work_limits();
+    for dimension in HostWorkDimension::ALL {
+        let scaled = v6
+            .get(dimension)
+            .get()
+            .checked_mul(factor)
+            .expect("the scaled limit fits in u64");
+        limits.set(dimension, HostWorkLimit::new(scaled));
+    }
+    HostWorkBudget::new(limits)
+}
+
+/// LIST-CASCADE past the round cap (decision 49) in native execution. At the v6 limits the
+/// program exceeds the host-work budget: play rejects it with `HostWorkRejected` and records no
+/// evidence, so the offer is refused and no block includes it. With 32 times the v6 limits,
+/// play runs it to its end: the receive that removes `img` stops at the round cap, and its
+/// settle job fires the other waiters in a later transaction. Native replay with the same
+/// budget reproduces the play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_native_vectordb_cascade_carries_at_the_cap() {
+    let term = vectordb_cap_program();
+    let rejected = native_play(&term, AMPLE_LIMIT).await;
+    assert_eq!(
+        rejected.result.errors,
+        vec![InterpreterError::HostWorkRejected],
+        "at the v6 limits the cap program exceeds the host-work budget"
+    );
+    assert!(
+        rejected.result.native_budget_recording.is_none()
+            && rejected.result.native_operation_recording.is_none(),
+        "a host-work rejection records no evidence"
+    );
+
+    let played = native_play_with(&term, AMPLE_LIMIT, scaled_host_work(CAP_BUDGET_FACTOR)).await;
+    assert!(
+        played.result.errors.is_empty(),
+        "the scaled budget runs the cap program: {:?}",
+        played.result.errors
+    );
+    // The sends and the parks make no COMM, so only the receive of `img` and its settle job
+    // stage COMM rows. The receive makes FIRE_ROUND_CAP fire rounds: its own fire, then one
+    // cascade fire after each lift. The settle job lifts and fires the other waiters.
+    let (recording, journal) = journal_of(&played);
+    let mut comms: Vec<(_, usize)> = Vec::new();
+    for row in journal {
+        if !is_space_row(recording, row) || row.comm.is_none() {
+            continue;
+        }
+        let parent = recording.paths.parent(row.occurrence.path);
+        match comms.iter_mut().find(|(known, _)| *known == parent) {
+            Some((_, count)) => *count += 1,
+            None => comms.push((parent, 1)),
+        }
+    }
+    let carried = CAP_WAITERS - (FIRE_ROUND_CAP - 1);
+    assert_eq!(
+        comms.iter().map(|(_, count)| *count).collect::<Vec<_>>(),
+        vec![2 * FIRE_ROUND_CAP - 1, 2 * carried],
+        "the receive stops at the round cap, and its settle job carries {carried} fires"
+    );
+    assert_eq!(
+        played.outputs.len(),
+        CAP_WAITERS + 1,
+        "one output for each document and one for img: {:?}",
+        played.outputs
+    );
+    let certification = certify_with(
+        &played,
+        &term,
+        AMPLE_LIMIT,
+        scaled_host_work(CAP_BUDGET_FACTOR),
+    )
+    .await;
+    assert_reproduces("the carry at the cap", &played, &certification);
+}
+
+/// A semantic failure of a VectorDB operation aborts the deploy with its code in native play,
+/// and native replay reproduces the failure: a send to a full collection (`CapacityExceeded`)
+/// and a vector of the wrong length (`DimensionMismatch`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_native_vectordb_errors_reproduce() {
+    for (label, ctor, body, code) in [
+        (
+            "capacity",
+            r#""default"; capacity=2, dimensions=2"#,
+            "a!([1.0, 0.0]) | a!([0.0, 1.0]) | a!([1.0, 1.0])",
+            "CapacityExceeded",
+        ),
+        (
+            "dimensions",
+            VECTORDB_CTOR,
+            "a!([1.0, 2.0, 3.0])",
+            "DimensionMismatch",
+        ),
+    ] {
+        let term = space_program("rho:space:hashmap:vectordb", ctor, body);
+        let played = native_play(&term, AMPLE_LIMIT).await;
+        let errors = format!("{:?}", played.result.errors);
+        assert!(errors.contains(code), "{label}: {errors}");
+        let certification = certify(&played, &term, AMPLE_LIMIT).await;
+        assert_reproduces(label, &played, &certification);
+    }
+}
+
+/// Out of phlo at each charged budget attempt of the largest VectorDB transaction of LM-b,
+/// native play and native replay agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_native_vectordb_denial_replay() {
+    check_denials(&space_program(
+        "rho:space:hashmap:vectordb",
+        VECTORDB_CTOR,
+        VECTORDB_LIST_PATHS,
+    ))
+    .await
 }

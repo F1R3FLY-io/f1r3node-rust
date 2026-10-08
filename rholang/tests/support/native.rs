@@ -251,16 +251,16 @@ pub struct Played {
 
 /// Plays `term` as a native deploy whose phlo limit is `limit`, on a fresh runtime.
 pub async fn native_play(term: &str, limit: u64) -> Played {
+    native_play_with(term, limit, host_work()).await
+}
+
+/// Plays `term` as a native deploy whose phlo limit is `limit` and whose host-work budget is
+/// `host`, on a fresh runtime.
+pub async fn native_play_with(term: &str, limit: u64, host: HostWorkBudget) -> Played {
     let (mut runtime, history) = fresh_runtime().await;
     runtime.cost.set_deploy_signature_funded(DEPLOY, funding());
     let result = runtime
-        .evaluate_with_native_phlo(
-            term,
-            HashMap::new(),
-            random(),
-            None,
-            config(limit, host_work()),
-        )
+        .evaluate_with_native_phlo(term, HashMap::new(), random(), None, config(limit, host))
         .await
         .expect("native play evaluates");
     let log = runtime
@@ -410,8 +410,18 @@ pub async fn finish(mut environment: NativeReplayEnvironment, term: &str) -> Cer
 
 /// Certifies `played` through its committed evidence, as validator replay does.
 pub async fn certify(played: &Played, term: &str, limit: u64) -> Certification {
+    certify_with(played, term, limit, host_work()).await
+}
+
+/// Certifies `played` through its committed evidence with the host-work budget `host`.
+pub async fn certify_with(
+    played: &Played,
+    term: &str,
+    limit: u64,
+    host: HostWorkBudget,
+) -> Certification {
     let (recording, journal) = committed_evidence(played);
-    let environment = replay_environment(played, limit, &recording, journal)
+    let environment = replay_environment_with(played, limit, &recording, journal, host)
         .await
         .expect("the committed evidence checks");
     finish(environment, term).await
