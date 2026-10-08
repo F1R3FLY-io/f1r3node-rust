@@ -281,14 +281,20 @@ env:
   # 2026-09-15: 7018213 -> b3d14b2 (system-integration MAIN — the #142 merge
   #   commit; the branch pin's content, now immutable on main). Verified:
   #   descends from 7018213 (merge-base --is-ancestor).
-  # 2026-10-08: e3c4e14 -> d27cacf (system-integration MAIN — the #149 dev->main
+  # 2026-10-08: e3c4e14 -> f106a34 (system-integration MAIN — the #148 merge
+  #   commit): raises OBSERVER_MEMORY_CEILING_MB 1500 -> 1800 to accommodate
+  #   the FsGenesis blessed-term addition (f1r3node-rust slice 5.36, PR #660)
+  #   that bumped observer steady-state RSS during exploratory-overload
+  #   bursts. Backed by 12 failing CI-run samples: min 1508 / max 1646 /
+  #   mean 1576 / stdev 46 MB; new ceiling sits 3.3σ above observed max.
+  #   Verified: descends from e3c4e14 (merge-base --is-ancestor).
+  # 2026-10-08: f106a34 -> d27cacf (system-integration MAIN — the #149 dev->main
   #   promotion, carrying SI #147: pyf1r3fly bumped to 34ff0419 so the client
   #   decodes g_big_int, test_balance_endpoint accepting an int or a decimal
-  #   string, and the BigInt-safe bridge-v2.rho the bridge test needs. Also
-  #   carries #148, OBSERVER_MEMORY_CEILING_MB raised to 1800). #147 itself
-  #   merged to dev, and its merge commit 5ce0bc3 does NOT descend from
-  #   e3c4e14, so the promotion is the pinnable ref. Verified: d27cacf descends
-  #   from e3c4e14 and contains 5ce0bc3 (merge-base --is-ancestor, both).
+  #   string, and the BigInt-safe bridge-v2.rho the bridge test needs. #147
+  #   merged to SI dev, and its merge commit 5ce0bc3 is not an ancestor of
+  #   f106a34, so the promotion is the pinnable ref. Verified: d27cacf descends
+  #   from f106a34 and contains 5ce0bc3 (merge-base --is-ancestor, both).
   SYSTEM_INTEGRATION_REF: d27cacffebd6b40f51ce214f753e42168f8bd160
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.

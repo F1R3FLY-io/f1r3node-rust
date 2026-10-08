@@ -1,19 +1,20 @@
 // Distributed-slice registry of migrated fs_* handlers.  Populated
 // at link time by `#[distributed_slice(FS_HANDLERS)] static X_ENTRY`
-// declarations in the per-family handler modules (yet to land —
-// slices 4.12+).  Consumed by `rho_runtime.rs` wiring at the
-// yet-to-land handler-registration slice to replace the pre-trait
-// 28-way `fs_native_def(...)` block with a `FS_HANDLERS.iter()`
-// loop.
+// declarations in the per-family handler modules under
+// `handlers/{mutation,observation,stream,lock,lifecycle}/*.rs`.
+// Consumed by `rho_runtime::fs_handlers_to_definitions` (slice 5.31)
+// which walks `FS_HANDLERS.iter()` to replace the pre-trait 28-way
+// `fs_native_def(...)` block.
 //
 // # Status
 //
-// Zero migrated handlers at Wave 4 slice 4.10.  The slice is
-// declared empty; `EXPECTED_MIGRATED_HANDLER_COUNT = 0`.  Each
-// per-family handler slice (4.12+) adds its handlers' entries and
-// bumps the count by the family size.  At migration-complete,
-// count reaches 27 (fs_remove_dir trait-exempt — see
-// `handler_trait::fs_handler` module docstring).
+// Migration complete: 27 trait-registered handlers + 1 trait-exempt
+// (`fs_remove_dir`, dispatched via its own stub in slice 5.44).
+// See [`EXPECTED_MIGRATED_HANDLER_COUNT`] for the authoritative
+// count; [`EXPECTED_PER_FAMILY_HANDLER_COUNTS`] for the per-family
+// breakdown; [`EXPECTED_VERIFYING_HANDLER_COUNT`] +
+// [`EXPECTED_PER_FAMILY_VERIFYING_COUNTS`] for the Consensus-cmode
+// verify matrix.
 //
 // # linkme truncation guard
 //
@@ -31,11 +32,13 @@
 // # Wave 6 (cost-accounted-rho) coupling
 //
 // `FsHandlerEntry.verifying` carries each handler's `VERIFYING`
-// const (from the `FsHandler` trait, slice 4.6).  Under Wave 6
-// the per-family count pin + the `fs_handlers_family_counts_
-// match_pinned` runtime pin (yet to land) catches a drop in
-// `const VERIFYING` — the hazard class flagged in
-// `FsHandler::VERIFYING`'s docstring.
+// const (from the `FsHandler` trait, slice 4.6).  Under Wave 6,
+// the per-family verifying count pin
+// (`fs_handlers_per_family_verifying_counts_match_pinned`, slice
+// 5.53) + the whole-slice verifying count pin
+// (`fs_handlers_verifying_count_matches_pinned`, slice 5.50)
+// together catch a silent drop in `const VERIFYING` — the hazard
+// class flagged in `FsHandler::VERIFYING`'s docstring.
 //
 // # Entry fn-pointer shape
 //
@@ -43,8 +46,8 @@
 // `async fn` — Rust fn pointers can't carry async directly).
 // Each handler's registration site coerces a non-capturing
 // `|fs, args| Box::pin(...)` closure into this pointer type.  The
-// closure calls `dispatch_via_trait_owned::<H>(fs, args)` (yet to
-// land, slice 4.11) which internally awaits the handler's async
+// closure calls `dispatch_via_trait_owned::<H>(fs, args)`
+// (slice 4.11) which internally awaits the handler's async
 // `dispatch` method and returns the resulting
 // `Result<Vec<Par>, InterpreterError>`.
 
@@ -72,18 +75,20 @@ pub struct FsHandlerEntry {
     pub name: &'static str,
 
     /// Total arity including the trailing ack channel — same as
-    /// `<H as FsHandler>::ARITY`.  Used by the yet-to-land
-    /// handler-registration site to construct the
-    /// `fs_native_def(..., arity, ...)` call from the slice entry.
+    /// `<H as FsHandler>::ARITY`.  Used by
+    /// `rho_runtime::fs_handlers_to_definitions` (slice 5.31) to
+    /// construct the `Definition` row's `arity` field from the
+    /// slice entry.
     pub arity: usize,
 
     /// Verifying flag — same as `<H as FsHandler>::VERIFYING`.
     /// `true` = re-execute + verify reply hash on Consensus-cmode
-    /// replay.  Used by the yet-to-land per-family verifying-count
-    /// pin to guard the 15/27 verify-matrix invariant (14 verifying
-    /// in the trait-registered slice + 1 verifying in the trait-
-    /// exempt fs_remove_dir = 15 total; see fileio's
-    /// `handler_trait::fs_handler` docstring).
+    /// replay.  Pinned by
+    /// [`EXPECTED_VERIFYING_HANDLER_COUNT`] + the per-family
+    /// [`EXPECTED_PER_FAMILY_VERIFYING_COUNTS`] (14 verifying in
+    /// the trait-registered slice + 1 verifying in the trait-
+    /// exempt `fs_remove_dir` = 15 total verifying in the full
+    /// verify matrix; see `handler_trait::fs_handler` docstring).
     pub verifying: bool,
 
     /// The type-erased dispatch fn.  Each per-handler registration
@@ -91,7 +96,7 @@ pub struct FsHandlerEntry {
     /// closure into this fn-pointer type.  The closure body is
     /// one line:
     /// `dispatch_via_trait_owned::<H>(fs, args)` — the generic
-    /// framework loop (yet to land, slice 4.11).
+    /// framework loop (slice 4.11).
     ///
     /// The tuple parameter is `(args, is_replay, previous)` —
     /// matches [`ContractCall::unapply`](crate::rust::interpreter::contract_call::ContractCall::unapply)
@@ -113,33 +118,40 @@ pub struct FsHandlerEntry {
     )
         -> Pin<Box<dyn Future<Output = Result<Vec<Par>, InterpreterError>> + Send>>,
 
-    /// URN suffix appended to `"rho:io:fs:native:1.0.0/"` when
-    /// registering the handler at genesis.  E.g., `"open"`,
-    /// `"readAt"`, `"removeFile"`.  camelCase per the pre-trait
-    /// `fs_native_def` call sites in `rho_runtime.rs`; the
-    /// composed source at `fs_genesis.rs` (yet to land, Wave 5)
+    /// URN suffix appended to
+    /// [`FS_NATIVE_URN_PREFIX_VERSIONED`](super::super::FS_NATIVE_URN_PREFIX_VERSIONED)
+    /// (`"rho:io:fs:native:1.0.0/"`) when registering the handler
+    /// at genesis.  E.g., `"open"`, `"readAt"`, `"removeFile"`.
+    /// camelCase per the pre-trait `fs_native_def` call sites in
+    /// `rho_runtime.rs`; the composed FsGenesis source at
+    /// `casper::genesis::contracts::fs_genesis` (slice 5.15)
     /// expects the exact same string.
     ///
-    /// A regression that drifted this field from the pre-trait
-    /// hard-coded string in `rho_runtime.rs` would silently rename
-    /// the URN, breaking URN-map lookups from `Fs.rho`.  Will be
-    /// guarded by the handler-registration slice's URN-suffix pin.
+    /// Pinned uniqueness: slice 5.48
+    /// (`fs_handlers_urn_suffixes_are_unique`) + slice 5.39's
+    /// output-side `fs_handlers_to_definitions_urns_unique`.
     pub urn_suffix: &'static str,
 
     /// Fixed-channel constructor: `FixedChannels::fs_x` fn pointer.
-    /// The yet-to-land handler-registration loop calls
+    /// `rho_runtime::fs_handlers_to_definitions` (slice 5.31) +
+    /// `rho_runtime::setup_maps_and_refs` (slice 5.43) call
     /// `(entry.fixed_channel)()` to obtain the `Par` byte-name
-    /// used as the rendezvous channel.
+    /// used as the rendezvous channel in the `urn_map` Bundle and
+    /// in `introduce_system_process`'s per-channel reader.
     pub fixed_channel: fn() -> Name,
 
     /// `BodyRefs::FS_X` constant.  Rholang's built-in dispatch
     /// table keys handler resolution on this `i64`.
     pub body_ref: BodyRef,
 
-    /// Handler family.  Groups handlers by effect shape; used by
-    /// the yet-to-land per-family count pin + by the per-family
-    /// handler file split.  See
-    /// [`HandlerFamily`](super::family::HandlerFamily) for the
+    /// Handler family.  Groups handlers by effect shape.  Pinned
+    /// by the per-family count pin
+    /// (`fs_handlers_per_family_counts_match_pinned`, slice 5.51)
+    /// + the per-family verifying count pin
+    /// (`fs_handlers_per_family_verifying_counts_match_pinned`,
+    /// slice 5.53).  Also drives the per-family file split
+    /// (`handlers/mutation/`, `handlers/observation/`, etc.).
+    /// See [`HandlerFamily`](super::family::HandlerFamily) for the
     /// taxonomy.
     pub family: HandlerFamily,
 }
@@ -147,23 +159,20 @@ pub struct FsHandlerEntry {
 /// Distributed slice of every migrated handler's
 /// [`FsHandlerEntry`].  Populated at link time by
 /// `#[distributed_slice(FS_HANDLERS)] static ...` declarations
-/// in per-family handler modules (yet to land, slices 4.12+).
+/// in per-family handler modules under
+/// `handlers/{mutation,observation,stream,lock,lifecycle}/*.rs`.
 #[distributed_slice]
 pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 
-/// Expected count of migrated handlers in [`FS_HANDLERS`].  Bumped
-/// at every per-family handler slice as handlers get registered;
-/// the pin `fs_handlers_count_matches_migrated_pinned` fires on
-/// drift.
+/// Expected count of migrated handlers in [`FS_HANDLERS`].  The
+/// pin `fs_handlers_count_matches_migrated_pinned` fires on drift.
 ///
 /// # Wave 4 progression (reference)
 ///
-/// Each per-family handler slice adds its handlers' entries and
-/// bumps this count.  At migration-complete (handlers slices
-/// finished), count reaches 27 — fs_remove_dir trait-exempt
-/// (see `handler_trait::fs_handler` module docstring).
-///
-/// Current: 18 handlers migrated.
+/// Migration is COMPLETE: 27 trait-registered + 1 trait-exempt
+/// (`fs_remove_dir`) = 28 fs_* natives.  See
+/// `handler_trait::fs_handler` module docstring for the trait-
+/// exempt handler's rationale.
 ///
 /// Wave 4 slice progression:
 ///   - 4.10: 0 (empty registry infrastructure).
@@ -195,6 +204,102 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.38: +1 (`fs_write`, FIRST LENGTH-PARAMETERIZED MUTATION).  Count = 26.
 ///   - 4.39: +1 (`fs_write_at`, MUTATION 8/8 — MIGRATION COMPLETE).  Count = 27.
 pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
+
+/// Expected count of trait-registered handlers whose
+/// `<H as FsHandler>::VERIFYING == true`.  Verifying handlers
+/// re-execute + verify reply hash on Consensus-cmode replay (see
+/// [`FsHandler::VERIFYING`](super::fs_handler::FsHandler::VERIFYING)
+/// docstring).  The 14/27 trait-registered split + 1 trait-exempt
+/// (`fs_remove_dir`) = 15 total verifying in the full verify
+/// matrix is called out in the module docstring and in
+/// `FsHandlerEntry::verifying`'s field doc.
+///
+/// Pinning the count catches a regression where someone adds a new
+/// trait-registered handler without explicitly setting
+/// `const VERIFYING: bool = true;` (so it falls to the trait
+/// default of `false` and the framework silently stops re-executing
+/// it on Consensus replay — a hazard class flagged in
+/// `FsHandler::VERIFYING`'s docstring).
+///
+/// # Trait-registered verifying handlers (14)
+///
+/// Observation (7): `fs_read`, `fs_read_at`, `fs_seek`, `fs_size`,
+/// `fs_stat`, `fs_exists`, `fs_entries`.
+///
+/// Mutation (7): `fs_truncate`, `fs_chmod`, `fs_rename`,
+/// `fs_remove_file`, `fs_copy_file`, `fs_write`, `fs_write_at`.
+///
+/// Trait-exempt verifying handler (NOT in FS_HANDLERS): `fs_remove_dir`
+/// (see `handler_trait::fs_handler` module docstring).
+pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 14;
+
+/// Expected count of trait-registered handlers per
+/// [`HandlerFamily`](super::family::HandlerFamily).  Variant order
+/// matches `HandlerFamily`'s declaration order (pinned by
+/// `family::tests::variants_match_declaration_order`) so the array
+/// doubles as a documentation surface.
+///
+/// Current (slice 5.44, migration-complete):
+///   - Mutation = 8 (fs_truncate, fs_chmod, fs_rename, fs_remove_file,
+///     fs_chown, fs_write, fs_write_at, fs_copy_file; plus the
+///     trait-exempt fs_remove_dir, NOT in FS_HANDLERS).
+///   - Observation = 9 (fs_read, fs_read_at, fs_stat, fs_entries,
+///     fs_size, fs_seek, fs_exists, fs_flush, fs_tell).
+///   - Stream = 3 (fs_entries_stream_open / _next / _close).
+///   - Lock = 4 (fs_lock_range, fs_lock_sequential, fs_release_lock,
+///     fs_release_all_for_holder).
+///   - Lifecycle = 3 (fs_open, fs_close, fs_quarantine).
+///
+/// Sum = 27 = [`EXPECTED_MIGRATED_HANDLER_COUNT`].
+///
+/// Pin addresses the hazard flagged in `handler_trait::family`'s
+/// own module-doc: "A regression that mis-labeled a handler would
+/// re-order journaling vs. side-effect timing on replay — consensus
+/// observable."  Catches a copy-paste miscategorization where a
+/// handler's `family: HandlerFamily::...` field was set wrong at
+/// registration time.
+pub const EXPECTED_PER_FAMILY_HANDLER_COUNTS: [(super::family::HandlerFamily, usize); 5] = [
+    (super::family::HandlerFamily::Mutation, 8),
+    (super::family::HandlerFamily::Observation, 9),
+    (super::family::HandlerFamily::Stream, 3),
+    (super::family::HandlerFamily::Lock, 4),
+    (super::family::HandlerFamily::Lifecycle, 3),
+];
+
+/// Expected count of VERIFYING trait-registered handlers per
+/// family.  Verifying handlers re-execute + verify reply hash on
+/// Consensus-cmode replay (see `FsHandler::VERIFYING` docstring).
+///
+///   - Mutation = 7 verifying out of 8 (fs_chown is non-verifying
+///     — host-fallible, authority-opaque).
+///   - Observation = 7 verifying out of 9 (fs_flush and fs_tell
+///     are shape-only).
+///   - Stream = 0 verifying out of 3 (every streaming handler on
+///     this tree declares `const VERIFYING = false`, matching the
+///     per-stream-step host-fd dependency).
+///   - Lock = 0 verifying out of 4 (lock registry is host-local).
+///   - Lifecycle = 0 verifying out of 3 (fs_open installs a
+///     shadow fd via on_replay_side_effect, not reply verify).
+///
+/// Sum = 7 + 7 + 0 + 0 + 0 = 14 =
+/// [`EXPECTED_VERIFYING_HANDLER_COUNT`].  (The 15th verifying
+/// handler called out in the family docstring is the trait-exempt
+/// `fs_remove_dir`, NOT in FS_HANDLERS.)
+///
+/// Pin addresses the gap between whole-slice counts (slice 5.50)
+/// and the per-family split: a drift where someone flips one
+/// family's verifying handler off and another's on preserves the
+/// total but changes which families are consensus-sensitive.
+/// Mutation vs. Lifecycle, for example, interact with WAL
+/// journaling differently; a mis-labeled flip changes the
+/// replay-side effect ordering.
+pub const EXPECTED_PER_FAMILY_VERIFYING_COUNTS: [(super::family::HandlerFamily, usize); 5] = [
+    (super::family::HandlerFamily::Mutation, 7),
+    (super::family::HandlerFamily::Observation, 7),
+    (super::family::HandlerFamily::Stream, 0),
+    (super::family::HandlerFamily::Lock, 0),
+    (super::family::HandlerFamily::Lifecycle, 0),
+];
 
 #[cfg(test)]
 mod tests {
@@ -308,5 +413,401 @@ mod tests {
     fn fs_handler_entry_is_static_send_sync() {
         fn require_static_send_sync<T: Send + Sync + 'static>() {}
         require_static_send_sync::<FsHandlerEntry>();
+    }
+
+    /// Every entry's `name` must be unique across FS_HANDLERS.
+    /// `migrated_handlers_match_registration_set` above checks
+    /// presence (every expected name appears) but not absence of
+    /// duplicates — two entries sharing a `name` would both pass the
+    /// presence check while silently masking that one of them has a
+    /// bug (wrong `urn_suffix` / `body_ref` / `dispatch` pointing at
+    /// the wrong handler).
+    #[test]
+    fn fs_handlers_names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                seen.insert(entry.name),
+                "duplicate FS_HANDLERS entry name `{}` — two \
+                 `#[distributed_slice(FS_HANDLERS)] static X_ENTRY: \
+                 FsHandlerEntry = FsHandlerEntry {{ name: \"{}\", \
+                 ... }}` declarations share the same canonical name. \
+                 Rename one or remove the duplicate.",
+                entry.name,
+                entry.name,
+            );
+        }
+    }
+
+    /// Every entry's `urn_suffix` must be unique across FS_HANDLERS.
+    /// Two entries sharing a `urn_suffix` would both produce the same
+    /// URN in `fs_handlers_to_definitions`, clobbering one entry's
+    /// Definition at `RhoDispatchMap` registration — a silent
+    /// dispatch regression.  (Slice 5.39's
+    /// `fs_handlers_to_definitions_urns_unique` catches this on the
+    /// Vec<Definition> output; pinning it on the FS_HANDLERS input
+    /// catches it one layer earlier with a clearer error message.)
+    #[test]
+    fn fs_handlers_urn_suffixes_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                seen.insert(entry.urn_suffix),
+                "duplicate FS_HANDLERS urn_suffix `{}` (entry name \
+                 `{}`).  Two handlers would register the same URN at \
+                 the dispatch_table; the second overwrites the first \
+                 silently.",
+                entry.urn_suffix,
+                entry.name,
+            );
+        }
+    }
+
+    /// Each FS_HANDLERS entry's `(fixed_channel)()` byte_name Par
+    /// must agree with `body_ref` cast to u8.  Convention observed
+    /// throughout `FixedChannels::fs_*` and `BodyRefs::FS_*` in
+    /// `system_processes.rs`: the two use identical byte values
+    /// (e.g., `BodyRefs::FS_CLOSE = 39` ↔ `FixedChannels::fs_close()
+    /// = byte_name(39)`).  The convention isn't strictly required by
+    /// the dispatcher (body_ref keys the handler HashMap and
+    /// fixed_channel keys the urn_map / rendezvous channel —
+    /// independently), but keeping them in lock-step makes
+    /// system_processes.rs auditable at a glance and prevents a
+    /// class of hard-to-diagnose mismatches where a handler is
+    /// registered on one channel but dispatched via a different
+    /// body_ref.
+    ///
+    /// A regression that drifted the convention (e.g.,
+    /// `FixedChannels::fs_new_handler() = byte_name(42)` paired with
+    /// `BodyRefs::FS_NEW_HANDLER = 99`) would surface here before
+    /// the FS_HANDLERS entry's downstream registration layered-in a
+    /// confusing runtime behavior.
+    #[test]
+    fn fs_handlers_body_ref_matches_fixed_channel_byte() {
+        use crate::rust::interpreter::system_processes::byte_name;
+        for entry in FS_HANDLERS.iter() {
+            // Guard the `as u8` cast: `byte_name` takes `Byte = u8`
+            // and the convention assumes `body_ref ∈ [0, 255]`.
+            // A future BodyRefs::FS_* constant with a value outside
+            // that range would silently truncate here and the pin
+            // would produce a misleading equality result.  The
+            // explicit u8::try_from check catches that drift with
+            // a clear error.
+            let body_ref_u8: u8 = u8::try_from(entry.body_ref).unwrap_or_else(|_| {
+                panic!(
+                    "FS_HANDLERS entry `{}` (urn_suffix `{}`): \
+                     body_ref = {} is outside [0, 255].  The \
+                     body_ref ↔ fixed_channel convention assumes \
+                     a u8 — if a BodyRefs::FS_* constant now exceeds \
+                     this range, the `byte_name` convention needs to \
+                     be revisited and this test updated.",
+                    entry.name, entry.urn_suffix, entry.body_ref,
+                );
+            });
+            let actual = (entry.fixed_channel)();
+            let expected = byte_name(body_ref_u8);
+            assert_eq!(
+                actual, expected,
+                "FS_HANDLERS entry `{}` (urn_suffix `{}`): \
+                 (fixed_channel)() = {:?}, but byte_name(body_ref = \
+                 {}) = {:?}.  The convention is \
+                 `FixedChannels::fs_<name>() = byte_name(N)` ↔ \
+                 `BodyRefs::FS_<NAME> = N`.  Either the \
+                 FixedChannels fn's byte literal drifted from the \
+                 BodyRefs const, or the FS_HANDLERS entry pairs the \
+                 wrong fixed_channel with its body_ref.  Audit \
+                 `system_processes.rs::FixedChannels` and \
+                 `system_processes.rs::BodyRefs` for mismatched \
+                 byte literals.",
+                entry.name, entry.urn_suffix, actual, entry.body_ref, expected,
+            );
+        }
+    }
+
+    /// Every entry's `fixed_channel` fn-pointer must produce a
+    /// unique `Par` across FS_HANDLERS.  Two entries pointing at
+    /// the same `FixedChannels::fs_x` fn (a copy-paste bug in
+    /// registration) would produce identical byte-names, colliding
+    /// at both `urn_map` (the versioned-URN → Bundle(fixed_channel)
+    /// insert overwrites) AND `proc_defs` (two
+    /// `introduce_system_process` entries with the same channel —
+    /// second clobbers the first).  Complementary to
+    /// `fs_handlers_body_refs_are_unique`: the body_ref keys the
+    /// dispatch HashMap; the fixed_channel keys the URN map AND
+    /// the rendezvous channel registration.
+    #[test]
+    fn fs_handlers_fixed_channels_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            let ch = (entry.fixed_channel)();
+            assert!(
+                seen.insert(ch.clone()),
+                "duplicate FS_HANDLERS fixed_channel Par (entry \
+                 name `{}` / urn_suffix `{}` / body_ref {}).  Two \
+                 entries point at the same `FixedChannels::fs_x` \
+                 fn — their `(fixed_channel)()` returns the same \
+                 byte-name.  Both urn_map and proc_defs would \
+                 register at the same channel; the second \
+                 overwrites the first silently.  Pick an unused \
+                 FixedChannels slot (see the gaps between \
+                 `fs_quarantine` byte 61, `fs_lock_range` byte 62, \
+                 etc. in `system_processes.rs`).",
+                entry.name,
+                entry.urn_suffix,
+                entry.body_ref,
+            );
+        }
+    }
+
+    /// Every entry's `body_ref` must be unique across FS_HANDLERS.
+    /// Two entries sharing a `body_ref` would collide in the
+    /// dispatcher's `HashMap<body_ref, handler>`, silently clobbering
+    /// one handler with the other depending on insertion order.
+    /// Analogous to the `fs_remove_dir_stays_trait_exempt` check in
+    /// `rho_runtime::tests` (which guards the stub's reserved
+    /// body_ref 58), but applied internally to FS_HANDLERS so a
+    /// typo in two handler entries' body_refs trips at test time
+    /// rather than at a hard-to-diagnose runtime dispatch mismatch.
+    #[test]
+    fn fs_handlers_body_refs_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                seen.insert(entry.body_ref),
+                "duplicate FS_HANDLERS body_ref {} — two entries \
+                 (one is `{}` / urn_suffix `{}`) share the same \
+                 body_ref value.  The dispatcher's `HashMap<i64, \
+                 handler>` would silently clobber one with the \
+                 other.  Pick an unused slot from the gaps in \
+                 `BodyRefs::FS_*` constants (see \
+                 `system_processes.rs`).",
+                entry.body_ref,
+                entry.name,
+                entry.urn_suffix,
+            );
+        }
+    }
+
+    /// Count pin for the verifying/non-verifying split across
+    /// FS_HANDLERS.  Addresses the hazard class flagged in
+    /// `FsHandler::VERIFYING`'s docstring: if a new trait-registered
+    /// handler is added without explicitly setting
+    /// `const VERIFYING: bool = true;`, the field falls to the trait
+    /// default of `false` and the framework silently stops
+    /// re-executing it on Consensus-cmode replay — a reply-hash
+    /// mismatch class that would surface at consensus time, not
+    /// test time.
+    ///
+    /// Current split (slice 5.44): 14 verifying + 13 non-verifying =
+    /// 27 trait-registered.  Plus the trait-exempt fs_remove_dir (1
+    /// verifying, not in FS_HANDLERS) = 15 total verifying in the
+    /// full verify matrix.  See `EXPECTED_VERIFYING_HANDLER_COUNT`.
+    #[test]
+    fn fs_handlers_verifying_count_matches_pinned() {
+        let verifying = FS_HANDLERS.iter().filter(|e| e.verifying).count();
+        assert_eq!(
+            verifying, EXPECTED_VERIFYING_HANDLER_COUNT,
+            "FS_HANDLERS has {} entries with `verifying = true` but \
+             EXPECTED_VERIFYING_HANDLER_COUNT is {}.  Either (a) a \
+             new trait-registered handler forgot to set \
+             `const VERIFYING: bool = true;` (fell to the trait \
+             default of false — Consensus replay silently stops \
+             re-executing it, a reply-hash mismatch hazard), or (b) \
+             an existing handler's VERIFYING constant was flipped \
+             without bumping EXPECTED_VERIFYING_HANDLER_COUNT.  \
+             Audit the per-handler `impl FsHandler for Fs*Handler {{ \
+             const VERIFYING: bool = true; ... }}` declarations and \
+             reconcile.",
+            verifying, EXPECTED_VERIFYING_HANDLER_COUNT,
+        );
+    }
+
+    /// Name-level pin for the 14 trait-registered verifying handlers.
+    /// Complementary to the count pin above: a count match + a name
+    /// mismatch means SOMEONE flipped one handler's VERIFYING while
+    /// flipping another's in the opposite direction (count stays
+    /// 14, but the set drifted).  The hardcoded list is the source
+    /// of truth; a slice that intentionally changes the verifying
+    /// set must update both the handler's `const VERIFYING` AND the
+    /// list below AND `EXPECTED_VERIFYING_HANDLER_COUNT` if the size
+    /// changed.
+    #[test]
+    fn fs_handlers_verifying_set_matches_pinned_names() {
+        const EXPECTED_VERIFYING_NAMES: &[&str] = &[
+            // Observation family (7).
+            "fs_seek",
+            "fs_size",
+            "fs_exists",
+            "fs_stat",
+            "fs_read",
+            "fs_read_at",
+            "fs_entries",
+            // Mutation family (7).
+            "fs_truncate",
+            "fs_chmod",
+            "fs_rename",
+            "fs_remove_file",
+            "fs_write",
+            "fs_write_at",
+            "fs_copy_file",
+        ];
+        assert_eq!(
+            EXPECTED_VERIFYING_NAMES.len(),
+            EXPECTED_VERIFYING_HANDLER_COUNT,
+            "EXPECTED_VERIFYING_NAMES.len() = {} but \
+             EXPECTED_VERIFYING_HANDLER_COUNT = {}.  Pin size and \
+             name list must agree; update both together.",
+            EXPECTED_VERIFYING_NAMES.len(),
+            EXPECTED_VERIFYING_HANDLER_COUNT,
+        );
+
+        let actual_verifying: std::collections::HashSet<&str> = FS_HANDLERS
+            .iter()
+            .filter(|e| e.verifying)
+            .map(|e| e.name)
+            .collect();
+        let expected_verifying: std::collections::HashSet<&str> =
+            EXPECTED_VERIFYING_NAMES.iter().copied().collect();
+
+        let unexpected: Vec<&&str> = actual_verifying.difference(&expected_verifying).collect();
+        assert!(
+            unexpected.is_empty(),
+            "FS_HANDLERS entries unexpectedly flagged verifying=true: \
+             {unexpected:?}.  Either flip the handler's \
+             `const VERIFYING` back to the default or add the name \
+             to EXPECTED_VERIFYING_NAMES."
+        );
+        let missing: Vec<&&str> = expected_verifying.difference(&actual_verifying).collect();
+        assert!(
+            missing.is_empty(),
+            "FS_HANDLERS entries expected to be verifying=true but \
+             aren't: {missing:?}.  Either add `const VERIFYING: \
+             bool = true;` to the handler's `impl FsHandler` block, \
+             or remove the name from EXPECTED_VERIFYING_NAMES."
+        );
+    }
+
+    /// Per-family count pin.  Walks FS_HANDLERS, buckets by
+    /// `entry.family`, asserts each family's size matches
+    /// `EXPECTED_PER_FAMILY_HANDLER_COUNTS` AND that the sum
+    /// matches `EXPECTED_MIGRATED_HANDLER_COUNT`.
+    ///
+    /// Catches two hazard classes:
+    ///   1. A new handler registered without setting `family:
+    ///      HandlerFamily::...` to the correct variant (copy-paste
+    ///      miscategorization).  The family docstring warns that
+    ///      this re-orders journaling vs. side-effect timing on
+    ///      replay — consensus-observable.
+    ///   2. A per-family file split (handlers/mutation/*,
+    ///      handlers/observation/*, …) drifts: a mutation handler
+    ///      moved to the observation/ directory with its `family`
+    ///      field also flipped.  The pin surfaces at test time.
+    #[test]
+    fn fs_handlers_per_family_counts_match_pinned() {
+        use std::collections::HashMap;
+
+        let mut actual: HashMap<super::super::family::HandlerFamily, usize> = HashMap::new();
+        for entry in FS_HANDLERS.iter() {
+            *actual.entry(entry.family).or_insert(0) += 1;
+        }
+
+        let mut expected_total = 0usize;
+        for (family, expected_n) in EXPECTED_PER_FAMILY_HANDLER_COUNTS.iter() {
+            let actual_n = actual.remove(family).unwrap_or(0);
+            assert_eq!(
+                actual_n, *expected_n,
+                "FS_HANDLERS has {actual_n} entries with family = \
+                 {family:?} but expected {expected_n}.  Either (a) \
+                 a new handler was added without updating \
+                 EXPECTED_PER_FAMILY_HANDLER_COUNTS, (b) an \
+                 existing handler's `family:` field was flipped to \
+                 the wrong variant (a copy-paste miscategorization \
+                 — the handler_trait::family docstring warns this \
+                 re-orders journaling vs. side-effect timing on \
+                 replay, consensus-observable), or (c) a per-\
+                 family file split drifted (e.g., a mutation handler \
+                 moved to `handlers/observation/` with its field \
+                 flipped).  Audit the per-handler `family:` \
+                 declarations under `rholang/src/rust/interpreter/io/\
+                 handlers/<family>/*.rs` and reconcile."
+            );
+            expected_total += *expected_n;
+        }
+
+        assert!(
+            actual.is_empty(),
+            "FS_HANDLERS contains entries with family variants not \
+             present in EXPECTED_PER_FAMILY_HANDLER_COUNTS: {:?}.  A \
+             new HandlerFamily variant was added without updating \
+             the pin.",
+            actual
+        );
+
+        assert_eq!(
+            expected_total, EXPECTED_MIGRATED_HANDLER_COUNT,
+            "EXPECTED_PER_FAMILY_HANDLER_COUNTS sums to {expected_total} \
+             but EXPECTED_MIGRATED_HANDLER_COUNT is \
+             {EXPECTED_MIGRATED_HANDLER_COUNT}.  The two must agree: \
+             bump both when a new handler lands."
+        );
+    }
+
+    /// Per-family verifying count pin.  Complements the whole-slice
+    /// verifying count (slice 5.50) by catching cross-family drift:
+    /// a change where one family's verifying handler is flipped off
+    /// AND another family's is flipped on preserves the whole-slice
+    /// count 14 but changes which families are consensus-sensitive.
+    ///
+    /// The hazard class: Mutation vs. Lifecycle interact with WAL
+    /// journaling differently.  Flipping a Lifecycle handler to
+    /// verifying would add a Consensus-cmode replay-verify where
+    /// none existed; flipping a Mutation handler off would skip a
+    /// previously-verified reply — both consensus-observable in
+    /// different ways.
+    #[test]
+    fn fs_handlers_per_family_verifying_counts_match_pinned() {
+        use std::collections::HashMap;
+
+        let mut actual: HashMap<super::super::family::HandlerFamily, usize> = HashMap::new();
+        for entry in FS_HANDLERS.iter().filter(|e| e.verifying) {
+            *actual.entry(entry.family).or_insert(0) += 1;
+        }
+
+        let mut expected_total = 0usize;
+        for (family, expected_n) in EXPECTED_PER_FAMILY_VERIFYING_COUNTS.iter() {
+            let actual_n = actual.remove(family).unwrap_or(0);
+            assert_eq!(
+                actual_n, *expected_n,
+                "FS_HANDLERS has {actual_n} verifying entries with \
+                 family = {family:?} but expected {expected_n}.  A \
+                 handler's `const VERIFYING: bool` was flipped \
+                 without updating EXPECTED_PER_FAMILY_VERIFYING_\
+                 COUNTS, or a handler was moved to a different \
+                 family.  The hazard class is cross-family drift: \
+                 Mutation vs. Lifecycle interact with WAL \
+                 journaling differently; a mis-labeled flip changes \
+                 Consensus-cmode replay-verify shape and is \
+                 consensus-observable.  Audit the per-handler \
+                 `impl FsHandler for Fs*Handler {{ const VERIFYING: \
+                 bool = ...; }}` + `family:` fields and reconcile."
+            );
+            expected_total += *expected_n;
+        }
+
+        assert!(
+            actual.is_empty(),
+            "FS_HANDLERS contains verifying entries with family \
+             variants not present in \
+             EXPECTED_PER_FAMILY_VERIFYING_COUNTS: {:?}.",
+            actual
+        );
+
+        assert_eq!(
+            expected_total, EXPECTED_VERIFYING_HANDLER_COUNT,
+            "EXPECTED_PER_FAMILY_VERIFYING_COUNTS sums to \
+             {expected_total} but EXPECTED_VERIFYING_HANDLER_COUNT \
+             is {EXPECTED_VERIFYING_HANDLER_COUNT}.  The two \
+             constants must agree."
+        );
     }
 }
