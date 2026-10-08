@@ -254,6 +254,7 @@ impl InterpreterImpl {
                 }
             }
         };
+        reducer.reified.settle_mirror_journal(&evaluation_result);
         evaluation_result
     }
 }

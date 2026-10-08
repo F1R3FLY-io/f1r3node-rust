@@ -39,6 +39,7 @@ use rholang::rust::interpreter::accounting::{
     NativeRuntimeConfig, RuntimeBudget, Sig,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
@@ -284,6 +285,21 @@ pub async fn native_play_with(term: &str, limit: u64, host: HostWorkBudget) -> P
     play_on(&mut runtime, history, term, limit, host, random()).await
 }
 
+/// Plays `term` like [`native_play_with`], and returns the result of the evaluation, an error
+/// included. A deploy that the host-work check rejects after its last operation evaluates to
+/// `Err(HostWorkRejected)`, so [`native_play_with`] cannot play it.
+pub async fn native_play_result(
+    term: &str,
+    limit: u64,
+    host: HostWorkBudget,
+) -> Result<EvaluateResult, InterpreterError> {
+    let (mut runtime, _) = fresh_runtime().await;
+    runtime.cost.set_deploy_signature_funded(DEPLOY, funding());
+    runtime
+        .evaluate_with_native_phlo(term, HashMap::new(), random(), None, config(limit, host))
+        .await
+}
+
 /// Plays `term` as a native deploy with the random state `random` on `runtime`, from its current
 /// root, and checkpoints the post-state into `history`.
 async fn play_on(
@@ -364,6 +380,13 @@ impl NativeChain {
         channel: &Par,
     ) -> Vec<rspace_plus_plus::rspace::internal::Datum<ListParWithRandom>> {
         self.runtime.get_data(channel).await
+    }
+
+    /// Injects `term` into the runtime of the chain through `RhoRuntime::inj`, as the
+    /// exploratory deploys of Casper do: an evaluation without a deploy result.
+    pub async fn explore(&self, term: &str) -> Result<(), InterpreterError> {
+        let parsed = Compiler::source_to_adt(term).expect("the program parses");
+        self.runtime.inj(parsed, Env::new(), random()).await
     }
 }
 

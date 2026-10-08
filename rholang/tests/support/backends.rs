@@ -14,16 +14,21 @@
 //!
 //! [`MockEmbedder`] gives each text a vector of exact `f32` values, and [`FakeMirror`] answers
 //! fixed neighbours. Both count their calls, so a test can check that replay never asks a
-//! service.
+//! service. The fake mirror also applies the writes of the mirror writer (P6 step 7b): it keeps
+//! the records of each collection and a log of the write calls. A stalled fake mirror holds its
+//! writes until the test releases them, and a down fake mirror refuses them.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rholang::rust::interpreter::reified::vectordb_services::{
-    self, EmbedFailure, Embedder, MirrorBackend, MirrorFailure, Neighbour, VectorDbServices,
+    self, EmbedFailure, Embedder, MirrorBackend, MirrorFailure, MirrorWriter, Neighbour,
+    VectorDbServices,
 };
-use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
+use rholang::rust::interpreter::spaces::mirror::{MirrorMetric, MirrorRecord};
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard, Semaphore};
 
 /// The lock of the services of the process.
 static SERVICES: AsyncMutex<()> = AsyncMutex::const_new(());
@@ -59,12 +64,36 @@ pub async fn without_services() -> ServicesLock {
     ServicesLock { _guard: guard }
 }
 
-/// The services of `embedder` and `mirror`.
+/// The services of `embedder` and `mirror`, with a writer to `mirror`. The writer spawns its
+/// task, so the call needs a Tokio runtime.
 pub fn services(embedder: &Arc<MockEmbedder>, mirror: &Arc<FakeMirror>) -> VectorDbServices {
+    VectorDbServices::with_writer(
+        Arc::clone(embedder) as Arc<dyn Embedder>,
+        Arc::clone(mirror) as Arc<dyn MirrorBackend>,
+    )
+}
+
+/// The services of `embedder` and `mirror`, with a writer to `mirror` whose queue holds
+/// `capacity` batches.
+pub fn services_with_queue(
+    embedder: &Arc<MockEmbedder>,
+    mirror: &Arc<FakeMirror>,
+    capacity: usize,
+) -> VectorDbServices {
+    let backend = Arc::clone(mirror) as Arc<dyn MirrorBackend>;
     VectorDbServices {
         embedder: Arc::clone(embedder) as Arc<dyn Embedder>,
-        mirror: Arc::clone(mirror) as Arc<dyn MirrorBackend>,
+        mirror: Arc::clone(&backend),
+        writer: Some(MirrorWriter::spawn_with(backend, capacity)),
     }
+}
+
+/// The writer of the services of the process.
+pub fn writer() -> Arc<MirrorWriter> {
+    vectordb_services::current()
+        .writer
+        .clone()
+        .expect("the services of the test have a mirror writer")
 }
 
 /// The answers of a [`MockEmbedder`].
@@ -144,34 +173,86 @@ pub struct MirrorQuery {
     pub k: usize,
 }
 
+/// One write call that a [`FakeMirror`] applied or refused, in call order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MirrorCall {
+    Ensure {
+        collection: String,
+        metric: MirrorMetric,
+    },
+    Upsert {
+        collection: String,
+        records: Vec<MirrorRecord>,
+    },
+    Delete {
+        collection: String,
+        ids: Vec<[u8; 32]>,
+    },
+}
+
+/// The writes of a [`FakeMirror`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteMode {
+    /// The mirror applies each write.
+    Apply,
+    /// The mirror holds each write until [`FakeMirror::release`], and then applies it.
+    Stall,
+    /// The mirror refuses each write.
+    Refuse,
+}
+
+/// One collection of a [`FakeMirror`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct FakeCollection {
+    pub metric: MirrorMetric,
+    pub records: BTreeMap<[u8; 32], MirrorRecord>,
+}
+
 /// A mirror that answers fixed neighbours, nearest first, and a fixed watermark.
 pub struct FakeMirror {
     neighbours: Vec<Neighbour>,
     watermark: u64,
     available: bool,
     queries: Mutex<Vec<MirrorQuery>>,
+    writes: WriteMode,
+    gate: Semaphore,
+    calls: Mutex<Vec<MirrorCall>>,
+    collections: Mutex<BTreeMap<String, FakeCollection>>,
 }
 
 impl FakeMirror {
-    /// A mirror that answers the first `k` of `neighbours` and the watermark `watermark`.
-    pub fn new(neighbours: Vec<Neighbour>, watermark: u64) -> Arc<Self> {
+    fn with(
+        neighbours: Vec<Neighbour>,
+        watermark: u64,
+        available: bool,
+        writes: WriteMode,
+    ) -> Arc<Self> {
         Arc::new(Self {
             neighbours,
             watermark,
-            available: true,
+            available,
             queries: Mutex::new(Vec::new()),
+            writes,
+            gate: Semaphore::new(0),
+            calls: Mutex::new(Vec::new()),
+            collections: Mutex::new(BTreeMap::new()),
         })
     }
 
-    /// A mirror that does not answer.
-    pub fn down() -> Arc<Self> {
-        Arc::new(Self {
-            neighbours: Vec::new(),
-            watermark: 0,
-            available: false,
-            queries: Mutex::new(Vec::new()),
-        })
+    /// A mirror that answers the first `k` of `neighbours` and the watermark `watermark`, and
+    /// applies each write.
+    pub fn new(neighbours: Vec<Neighbour>, watermark: u64) -> Arc<Self> {
+        Self::with(neighbours, watermark, true, WriteMode::Apply)
     }
+
+    /// A mirror that does not answer and refuses each write.
+    pub fn down() -> Arc<Self> { Self::with(Vec::new(), 0, false, WriteMode::Refuse) }
+
+    /// A mirror that holds each write until [`FakeMirror::release`].
+    pub fn stalled() -> Arc<Self> { Self::with(Vec::new(), 0, true, WriteMode::Stall) }
+
+    /// Lets the held writes of a stalled mirror, and all later writes, proceed.
+    pub fn release(&self) { self.gate.add_permits(Semaphore::MAX_PERMITS / 2); }
 
     /// The queries that the mirror answered or refused, in call order.
     pub fn queries(&self) -> Vec<MirrorQuery> {
@@ -179,6 +260,41 @@ impl FakeMirror {
             .lock()
             .expect("the query log of the fake mirror")
             .clone()
+    }
+
+    /// The write calls that the mirror applied or refused, in call order.
+    pub fn calls(&self) -> Vec<MirrorCall> {
+        self.calls
+            .lock()
+            .expect("the write log of the fake mirror")
+            .clone()
+    }
+
+    /// The collection `name`, or `None` when the mirror does not hold it.
+    pub fn collection(&self, name: &str) -> Option<FakeCollection> {
+        self.collections
+            .lock()
+            .expect("the collections of the fake mirror")
+            .get(name)
+            .cloned()
+    }
+
+    /// Logs the write call `call`, and then holds it, refuses it or lets it proceed.
+    async fn admit(&self, call: MirrorCall) -> Result<(), MirrorFailure> {
+        self.calls
+            .lock()
+            .expect("the write log of the fake mirror")
+            .push(call);
+        match self.writes {
+            WriteMode::Apply => Ok(()),
+            WriteMode::Stall => self
+                .gate
+                .acquire()
+                .await
+                .map(drop)
+                .map_err(|_| MirrorFailure::Unavailable),
+            WriteMode::Refuse => Err(MirrorFailure::Unavailable),
+        }
     }
 }
 
@@ -211,5 +327,68 @@ impl MirrorBackend for FakeMirror {
             true => Ok(self.watermark),
             false => Err(MirrorFailure::Unavailable),
         }
+    }
+
+    async fn ensure_collection(
+        &self,
+        collection: &str,
+        metric: MirrorMetric,
+    ) -> Result<(), MirrorFailure> {
+        self.admit(MirrorCall::Ensure {
+            collection: collection.to_string(),
+            metric,
+        })
+        .await?;
+        self.collections
+            .lock()
+            .expect("the collections of the fake mirror")
+            .entry(collection.to_string())
+            .or_insert_with(|| FakeCollection {
+                metric,
+                records: BTreeMap::new(),
+            });
+        Ok(())
+    }
+
+    async fn upsert(
+        &self,
+        collection: &str,
+        records: &[MirrorRecord],
+    ) -> Result<(), MirrorFailure> {
+        self.admit(MirrorCall::Upsert {
+            collection: collection.to_string(),
+            records: records.to_vec(),
+        })
+        .await?;
+        let mut collections = self
+            .collections
+            .lock()
+            .expect("the collections of the fake mirror");
+        let held = collections
+            .get_mut(collection)
+            .ok_or(MirrorFailure::Unavailable)?;
+        for record in records {
+            held.records.insert(record.id, record.clone());
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, collection: &str, ids: &[[u8; 32]]) -> Result<(), MirrorFailure> {
+        self.admit(MirrorCall::Delete {
+            collection: collection.to_string(),
+            ids: ids.to_vec(),
+        })
+        .await?;
+        if let Some(held) = self
+            .collections
+            .lock()
+            .expect("the collections of the fake mirror")
+            .get_mut(collection)
+        {
+            for id in ids {
+                held.records.remove(id);
+            }
+        }
+        Ok(())
     }
 }

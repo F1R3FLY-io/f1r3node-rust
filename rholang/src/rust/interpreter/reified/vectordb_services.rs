@@ -27,13 +27,21 @@
 //! * the channel digest of a collection key is the lowercase hex of `Blake2b256` of its canonical
 //!   inner channel bytes ([`channel_digest`]), the bytes that name the data channel `D(sid, key)`.
 
-use std::sync::{Arc, RwLock};
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Par};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::mpsc::{self};
+use tokio::sync::Notify;
 
+use crate::rust::interpreter::spaces::disciplines::vectordb::ID_LEN;
+use crate::rust::interpreter::spaces::mirror::{MirrorBatch, MirrorMetric, MirrorRecord};
 use crate::rust::interpreter::spaces::namespace::{CollectionKey, SID_LEN};
 use crate::rust::interpreter::spaces::record::expr_par;
 
@@ -212,6 +220,23 @@ pub trait MirrorBackend: Send + Sync {
     /// The watermark of the collection `collection`: the last finalized block that the
     /// reconciler has applied, or 0.
     async fn watermark(&self, collection: &str) -> Result<u64, MirrorFailure>;
+
+    /// Creates the collection `collection` with the distance `metric` when the mirror does not
+    /// hold it.
+    async fn ensure_collection(
+        &self,
+        collection: &str,
+        metric: MirrorMetric,
+    ) -> Result<(), MirrorFailure>;
+
+    /// Writes `records` to the collection `collection`. A record replaces the record with its
+    /// id.
+    async fn upsert(&self, collection: &str, records: &[MirrorRecord])
+        -> Result<(), MirrorFailure>;
+
+    /// Removes the records `ids` from the collection `collection`. An id that the collection
+    /// does not hold is no error.
+    async fn delete(&self, collection: &str, ids: &[[u8; ID_LEN]]) -> Result<(), MirrorFailure>;
 }
 
 /// The embedder of a node without a model.
@@ -244,6 +269,166 @@ impl MirrorBackend for UnavailableMirror {
     async fn watermark(&self, _collection: &str) -> Result<u64, MirrorFailure> {
         Err(MirrorFailure::Unavailable)
     }
+
+    async fn ensure_collection(
+        &self,
+        _collection: &str,
+        _metric: MirrorMetric,
+    ) -> Result<(), MirrorFailure> {
+        Err(MirrorFailure::Unavailable)
+    }
+
+    async fn upsert(
+        &self,
+        _collection: &str,
+        _records: &[MirrorRecord],
+    ) -> Result<(), MirrorFailure> {
+        Err(MirrorFailure::Unavailable)
+    }
+
+    async fn delete(&self, _collection: &str, _ids: &[[u8; ID_LEN]]) -> Result<(), MirrorFailure> {
+        Err(MirrorFailure::Unavailable)
+    }
+}
+
+/// The writes of one published batch, applied in this order: the collection, the upserts, the
+/// deletes.
+async fn apply(mirror: &dyn MirrorBackend, batch: &MirrorBatch) -> Result<(), MirrorFailure> {
+    mirror
+        .ensure_collection(&batch.collection, batch.metric)
+        .await?;
+    if !batch.upserts.is_empty() {
+        mirror.upsert(&batch.collection, &batch.upserts).await?;
+    }
+    if !batch.deletes.is_empty() {
+        mirror.delete(&batch.collection, &batch.deletes).await?;
+    }
+    Ok(())
+}
+
+/// The progress of a mirror writer: the batches that its queue took, the batches that its task
+/// finished, and the collections whose mirror misses writes.
+#[derive(Default)]
+struct WriterProgress {
+    sent: AtomicU64,
+    finished: AtomicU64,
+    changed: Notify,
+    dirty: Mutex<BTreeSet<String>>,
+}
+
+impl WriterProgress {
+    fn mark_dirty(&self, collection: String) {
+        self.dirty
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(collection);
+    }
+}
+
+/// The mirror writer of a node (P6 step 7b, decision 58). One task applies the published batches
+/// to the mirror in publication order, and it retries a failed batch a bounded number of times.
+/// Publication never waits: when the bounded queue is full, or when a batch still fails after
+/// its retries, the writer marks the collection dirty, and the reconciler of the node repairs it.
+pub struct MirrorWriter {
+    queue: mpsc::Sender<MirrorBatch>,
+    progress: Arc<WriterProgress>,
+}
+
+impl MirrorWriter {
+    /// The batches that the queue of a node holds.
+    pub const QUEUE: usize = 1024;
+
+    /// The attempts of a batch before the writer marks its collection dirty.
+    pub const ATTEMPTS: u32 = 3;
+
+    /// The pause before the second attempt of a batch. The next pause doubles.
+    pub const RETRY_PAUSE: Duration = Duration::from_millis(100);
+
+    /// A writer to `mirror` with a queue of [`MirrorWriter::QUEUE`] batches. It spawns its task,
+    /// so it needs a Tokio runtime.
+    pub fn spawn(mirror: Arc<dyn MirrorBackend>) -> Arc<Self> {
+        Self::spawn_with(mirror, Self::QUEUE)
+    }
+
+    /// A writer to `mirror` with a queue of `capacity` batches.
+    pub fn spawn_with(mirror: Arc<dyn MirrorBackend>, capacity: usize) -> Arc<Self> {
+        let (queue, mut batches) = mpsc::channel::<MirrorBatch>(capacity.max(1));
+        let progress = Arc::new(WriterProgress::default());
+        let task_progress = Arc::clone(&progress);
+        tokio::spawn(async move {
+            while let Some(batch) = batches.recv().await {
+                let mut pause = Self::RETRY_PAUSE;
+                let mut applied = false;
+                for attempt in 1..=Self::ATTEMPTS {
+                    if apply(mirror.as_ref(), &batch).await.is_ok() {
+                        applied = true;
+                        break;
+                    }
+                    if attempt < Self::ATTEMPTS {
+                        tokio::time::sleep(pause).await;
+                        pause *= 2;
+                    }
+                }
+                if !applied {
+                    task_progress.mark_dirty(batch.collection);
+                }
+                task_progress.finished.fetch_add(1, Ordering::SeqCst);
+                task_progress.changed.notify_waiters();
+            }
+        });
+        Arc::new(Self { queue, progress })
+    }
+
+    /// Hands `batches` to the queue and never waits. A batch that the queue does not take marks
+    /// its collection dirty.
+    pub fn publish(&self, batches: Vec<MirrorBatch>) {
+        for batch in batches {
+            self.progress.sent.fetch_add(1, Ordering::SeqCst);
+            match self.queue.try_send(batch) {
+                Ok(()) => {}
+                Err(TrySendError::Full(batch) | TrySendError::Closed(batch)) => {
+                    self.progress.sent.fetch_sub(1, Ordering::SeqCst);
+                    self.progress.mark_dirty(batch.collection);
+                    self.progress.changed.notify_waiters();
+                }
+            }
+        }
+    }
+
+    /// Waits until the task has finished every batch that the queue took.
+    pub async fn flush(&self) {
+        loop {
+            let changed = self.progress.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.progress.finished.load(Ordering::SeqCst)
+                >= self.progress.sent.load(Ordering::SeqCst)
+            {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    /// The collections whose mirror misses writes, without removing them.
+    pub fn dirty(&self) -> BTreeSet<String> {
+        self.progress
+            .dirty
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Removes and returns the collections whose mirror misses writes.
+    pub fn take_dirty(&self) -> BTreeSet<String> {
+        std::mem::take(
+            &mut *self
+                .progress
+                .dirty
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
 }
 
 /// The services of a node.
@@ -251,6 +436,9 @@ impl MirrorBackend for UnavailableMirror {
 pub struct VectorDbServices {
     pub embedder: Arc<dyn Embedder>,
     pub mirror: Arc<dyn MirrorBackend>,
+    /// The writer of the mirror, or `None` for a node without a mirror: its publication drops
+    /// the journal.
+    pub writer: Option<Arc<MirrorWriter>>,
 }
 
 impl VectorDbServices {
@@ -259,6 +447,25 @@ impl VectorDbServices {
         Self {
             embedder: Arc::new(UnavailableEmbedder),
             mirror: Arc::new(UnavailableMirror),
+            writer: None,
+        }
+    }
+
+    /// The services of `embedder` and `mirror`, with a writer to `mirror`. It spawns the task of
+    /// the writer, so it needs a Tokio runtime.
+    pub fn with_writer(embedder: Arc<dyn Embedder>, mirror: Arc<dyn MirrorBackend>) -> Self {
+        let writer = MirrorWriter::spawn(Arc::clone(&mirror));
+        Self {
+            embedder,
+            mirror,
+            writer: Some(writer),
+        }
+    }
+
+    /// Publishes `batches` to the writer of the mirror, and drops them without one.
+    pub fn publish(&self, batches: Vec<MirrorBatch>) {
+        if let Some(writer) = &self.writer {
+            writer.publish(batches);
         }
     }
 }
@@ -313,19 +520,26 @@ pub const CHANNEL_METADATA: &str = "channel";
 /// The key of the metadata of a mirror collection that holds its watermark.
 pub const WATERMARK_METADATA: &str = "watermark";
 
+/// The metadata key of a mirror record that holds its persistence.
+pub const PERSISTENT_METADATA: &str = "persistent";
+
+/// The metadata key of a mirror collection that holds its distance (ChromaDB `hnsw:space`).
+pub const SPACE_METADATA: &str = "hnsw:space";
+
 /// The services of a node. With the `chromadb` feature, they are the SBERT embedder and the
 /// ChromaDB mirror of the environment of the node (`CHROMA_ENDPOINT`, `CHROMA_TENANT` and
 /// `CHROMA_DATABASE`, one database for each node), or the unavailable mirror when the
 /// environment names no valid endpoint. Without the feature, they are the unavailable services.
 #[cfg(feature = "chromadb")]
 pub fn node_services() -> VectorDbServices {
-    let mirror: Arc<dyn MirrorBackend> = match chroma_backend::ChromaMirror::from_env() {
-        Some(mirror) => Arc::new(mirror),
-        None => Arc::new(UnavailableMirror),
-    };
-    VectorDbServices {
-        embedder: Arc::new(chroma_backend::SbertEmbedder::new()),
-        mirror,
+    let embedder: Arc<dyn Embedder> = Arc::new(chroma_backend::SbertEmbedder::new());
+    match chroma_backend::ChromaMirror::from_env() {
+        Some(mirror) => VectorDbServices::with_writer(embedder, Arc::new(mirror)),
+        None => VectorDbServices {
+            embedder,
+            mirror: Arc::new(UnavailableMirror),
+            writer: None,
+        },
     }
 }
 
@@ -347,14 +561,15 @@ mod chroma_backend {
     use chroma::client::ChromaHttpClientError;
     use chroma::embed::EmbeddingFunction;
     use chroma::types::{
-        Include, IncludeList, MetadataComparison, MetadataExpression, MetadataValue,
-        PrimitiveOperator, Where,
+        Include, IncludeList, Metadata, MetadataComparison, MetadataExpression, MetadataValue,
+        PrimitiveOperator, UpdateMetadata, UpdateMetadataValue, Where,
     };
     use chroma::{ChromaCollection, ChromaHttpClient};
     use tokio::sync::OnceCell;
 
     use super::{
-        EmbedFailure, Embedder, MirrorBackend, MirrorFailure, Neighbour, CHANNEL_METADATA, MODEL,
+        EmbedFailure, Embedder, MirrorBackend, MirrorFailure, MirrorMetric, MirrorRecord,
+        Neighbour, CHANNEL_METADATA, ID_LEN, MODEL, PERSISTENT_METADATA, SPACE_METADATA,
         WATERMARK_METADATA,
     };
     use crate::rust::interpreter::util::sbert_embeddings::SBERTEmbeddings;
@@ -509,6 +724,78 @@ mod chroma_backend {
                 Some(_) => Err(MirrorFailure::Unavailable),
             }
         }
+
+        async fn ensure_collection(
+            &self,
+            collection: &str,
+            metric: MirrorMetric,
+        ) -> Result<(), MirrorFailure> {
+            // An existing collection keeps its metadata, the watermark of the reconciler included.
+            if self.collection(collection).await?.is_some() {
+                return Ok(());
+            }
+            let metadata = Metadata::from([(
+                SPACE_METADATA.to_string(),
+                MetadataValue::Str(metric.space().to_string()),
+            )]);
+            self.client
+                .get_or_create_collection(collection, None, Some(metadata))
+                .await
+                .map(drop)
+                .map_err(|_| MirrorFailure::Unavailable)
+        }
+
+        async fn upsert(
+            &self,
+            collection: &str,
+            records: &[MirrorRecord],
+        ) -> Result<(), MirrorFailure> {
+            let collection = self
+                .collection(collection)
+                .await?
+                .ok_or(MirrorFailure::Unavailable)?;
+            let mut ids = Vec::with_capacity(records.len());
+            let mut embeddings = Vec::with_capacity(records.len());
+            let mut documents = Vec::with_capacity(records.len());
+            let mut metadatas = Vec::with_capacity(records.len());
+            for record in records {
+                ids.push(hex::encode(record.id));
+                embeddings.push(record.embedding.clone());
+                documents.push(record.document.clone());
+                metadatas.push(Some(UpdateMetadata::from([
+                    (
+                        CHANNEL_METADATA.to_string(),
+                        UpdateMetadataValue::Str(record.channel.clone()),
+                    ),
+                    (
+                        PERSISTENT_METADATA.to_string(),
+                        UpdateMetadataValue::Bool(record.persistent),
+                    ),
+                ])));
+            }
+            collection
+                .upsert(ids, embeddings, Some(documents), None, Some(metadatas))
+                .await
+                .map(drop)
+                .map_err(|_| MirrorFailure::Unavailable)
+        }
+
+        async fn delete(
+            &self,
+            collection: &str,
+            ids: &[[u8; ID_LEN]],
+        ) -> Result<(), MirrorFailure> {
+            // A collection that the server does not hold holds none of the records.
+            let Some(collection) = self.collection(collection).await? else {
+                return Ok(());
+            };
+            let ids = ids.iter().map(hex::encode).collect();
+            collection
+                .delete(Some(ids), None)
+                .await
+                .map(drop)
+                .map_err(|_| MirrorFailure::Unavailable)
+        }
     }
 }
 
@@ -554,5 +841,235 @@ mod tests {
             services.mirror.watermark("rrs-00").await,
             Err(MirrorFailure::Unavailable)
         );
+        assert_eq!(
+            services
+                .mirror
+                .ensure_collection("rrs-00", MirrorMetric::Cosine)
+                .await,
+            Err(MirrorFailure::Unavailable)
+        );
+        assert_eq!(
+            services.mirror.upsert("rrs-00", &[]).await,
+            Err(MirrorFailure::Unavailable)
+        );
+        assert_eq!(
+            services.mirror.delete("rrs-00", &[]).await,
+            Err(MirrorFailure::Unavailable)
+        );
+        assert!(
+            services.writer.is_none(),
+            "the publication of a node without a mirror drops the journal"
+        );
+        services.publish(vec![batch("rrs-00", 1)]);
+    }
+
+    /// A mirror that logs each write call. It refuses the first `refusals` calls, and it holds
+    /// each call until its gate opens when it is gated.
+    struct ScriptedMirror {
+        calls: Mutex<Vec<String>>,
+        refusals: AtomicU64,
+        gate: Option<tokio::sync::Semaphore>,
+    }
+
+    impl ScriptedMirror {
+        fn new(refusals: u64, gated: bool) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                refusals: AtomicU64::new(refusals),
+                gate: gated.then(|| tokio::sync::Semaphore::new(0)),
+            })
+        }
+
+        fn open(&self) {
+            if let Some(gate) = &self.gate {
+                gate.add_permits(tokio::sync::Semaphore::MAX_PERMITS / 2);
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls
+                .lock()
+                .expect("the call log of the scripted mirror")
+                .clone()
+        }
+
+        async fn call(&self, call: String) -> Result<(), MirrorFailure> {
+            self.calls
+                .lock()
+                .expect("the call log of the scripted mirror")
+                .push(call);
+            if let Some(gate) = &self.gate {
+                gate.acquire()
+                    .await
+                    .map(drop)
+                    .map_err(|_| MirrorFailure::Unavailable)?;
+            }
+            let refused = self
+                .refusals
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok();
+            match refused {
+                true => Err(MirrorFailure::Unavailable),
+                false => Ok(()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MirrorBackend for ScriptedMirror {
+        async fn query(
+            &self,
+            _collection: &str,
+            _channel: &str,
+            _vector: &[f32],
+            _k: usize,
+        ) -> Result<Vec<Neighbour>, MirrorFailure> {
+            Ok(Vec::new())
+        }
+
+        async fn watermark(&self, _collection: &str) -> Result<u64, MirrorFailure> { Ok(0) }
+
+        async fn ensure_collection(
+            &self,
+            collection: &str,
+            metric: MirrorMetric,
+        ) -> Result<(), MirrorFailure> {
+            self.call(format!("ensure {collection} {}", metric.space()))
+                .await
+        }
+
+        async fn upsert(
+            &self,
+            collection: &str,
+            records: &[MirrorRecord],
+        ) -> Result<(), MirrorFailure> {
+            let ids: Vec<u8> = records.iter().map(|record| record.id[0]).collect();
+            self.call(format!("upsert {collection} {ids:?}")).await
+        }
+
+        async fn delete(
+            &self,
+            collection: &str,
+            ids: &[[u8; ID_LEN]],
+        ) -> Result<(), MirrorFailure> {
+            let ids: Vec<u8> = ids.iter().map(|id| id[0]).collect();
+            self.call(format!("delete {collection} {ids:?}")).await
+        }
+    }
+
+    /// A batch of `collection` that upserts the record `byte` and deletes the record `byte + 1`.
+    fn batch(collection: &str, byte: u8) -> MirrorBatch {
+        MirrorBatch {
+            collection: collection.to_string(),
+            metric: MirrorMetric::Cosine,
+            upserts: vec![MirrorRecord {
+                id: [byte; ID_LEN],
+                embedding: vec![1.0, 0.0],
+                channel: "c".to_string(),
+                persistent: false,
+                document: None,
+            }],
+            deletes: vec![[byte + 1; ID_LEN]],
+        }
+    }
+
+    /// The task applies the batches in publication order: the collection, the upserts, the
+    /// deletes. A batch without upserts or deletes makes no such call.
+    #[tokio::test]
+    async fn mirror_writer_applies_batches_in_publication_order() {
+        let mirror = ScriptedMirror::new(0, false);
+        let writer = MirrorWriter::spawn(Arc::clone(&mirror) as Arc<dyn MirrorBackend>);
+        let mut only_deletes = batch("rrs-c", 5);
+        only_deletes.upserts.clear();
+        writer.publish(vec![batch("rrs-b", 1), batch("rrs-a", 3)]);
+        writer.publish(vec![only_deletes]);
+        writer.flush().await;
+        assert_eq!(mirror.calls(), vec![
+            "ensure rrs-b cosine",
+            "upsert rrs-b [1]",
+            "delete rrs-b [2]",
+            "ensure rrs-a cosine",
+            "upsert rrs-a [3]",
+            "delete rrs-a [4]",
+            "ensure rrs-c cosine",
+            "delete rrs-c [6]",
+        ]);
+        assert!(writer.dirty().is_empty());
+    }
+
+    /// The attempts of a batch, as the design fixes them. The tests count with this literal, not
+    /// with [`MirrorWriter::ATTEMPTS`], so a change of the constant fails them.
+    const DESIGNED_ATTEMPTS: u64 = 3;
+
+    #[test]
+    fn mirror_writer_makes_the_designed_attempts() {
+        assert_eq!(u64::from(MirrorWriter::ATTEMPTS), DESIGNED_ATTEMPTS);
+    }
+
+    /// A batch that fails is applied again from its start, and a batch that succeeds at its last
+    /// attempt leaves its collection clean.
+    #[tokio::test]
+    async fn mirror_writer_retries_a_failed_batch() {
+        let refusals = DESIGNED_ATTEMPTS - 1;
+        let mirror = ScriptedMirror::new(refusals, false);
+        let writer = MirrorWriter::spawn(Arc::clone(&mirror) as Arc<dyn MirrorBackend>);
+        writer.publish(vec![batch("rrs-a", 1)]);
+        writer.flush().await;
+        let mut expected = vec!["ensure rrs-a cosine"; usize::try_from(refusals).expect("a count")];
+        expected.extend([
+            "ensure rrs-a cosine",
+            "upsert rrs-a [1]",
+            "delete rrs-a [2]",
+        ]);
+        assert_eq!(mirror.calls(), expected);
+        assert!(writer.dirty().is_empty());
+    }
+
+    /// A batch that still fails at its last attempt marks its collection dirty, and the next
+    /// batch is applied.
+    #[tokio::test]
+    async fn mirror_writer_marks_a_failed_batch_dirty() {
+        let mirror = ScriptedMirror::new(DESIGNED_ATTEMPTS, false);
+        let writer = MirrorWriter::spawn(Arc::clone(&mirror) as Arc<dyn MirrorBackend>);
+        writer.publish(vec![batch("rrs-a", 1), batch("rrs-b", 3)]);
+        writer.flush().await;
+        let mut expected =
+            vec!["ensure rrs-a cosine"; usize::try_from(DESIGNED_ATTEMPTS).expect("a count")];
+        expected.extend([
+            "ensure rrs-b cosine",
+            "upsert rrs-b [3]",
+            "delete rrs-b [4]",
+        ]);
+        assert_eq!(mirror.calls(), expected);
+        assert_eq!(writer.dirty(), BTreeSet::from(["rrs-a".to_string()]));
+        assert_eq!(writer.take_dirty(), BTreeSet::from(["rrs-a".to_string()]));
+        assert!(
+            writer.dirty().is_empty(),
+            "take_dirty removes the collections"
+        );
+    }
+
+    /// Publication never waits: with a stalled mirror, a batch that finds the queue full marks
+    /// its collection dirty at once. The task runs only when the test awaits, so the first batch
+    /// fills the queue of one batch.
+    #[tokio::test]
+    async fn mirror_writer_marks_a_full_queue_dirty() {
+        let mirror = ScriptedMirror::new(0, true);
+        let writer = MirrorWriter::spawn_with(Arc::clone(&mirror) as Arc<dyn MirrorBackend>, 1);
+        writer.publish(vec![batch("rrs-a", 1), batch("rrs-b", 3)]);
+        writer.publish(vec![batch("rrs-c", 5)]);
+        assert_eq!(
+            writer.dirty(),
+            BTreeSet::from(["rrs-b".to_string(), "rrs-c".to_string()])
+        );
+        mirror.open();
+        writer.flush().await;
+        assert_eq!(mirror.calls(), vec![
+            "ensure rrs-a cosine",
+            "upsert rrs-a [1]",
+            "delete rrs-a [2]",
+        ]);
     }
 }

@@ -4530,7 +4530,10 @@ async fn seams_text(program: &Program) -> String {
                 .ok()
                 .and_then(|outcome| outcome.reissue.as_ref())
                 .map(|reissue| reissue.op.clone());
-            text.push_str(&format!("step {index} job {jobs}: {result:?}\n"));
+            text.push_str(&format!(
+                "step {index} job {jobs}: {}\n",
+                seams_result_text(&result)
+            ));
             text.push_str(&format!(
                 "  legacy {:?} phlo {}\n",
                 legacy.get_log(),
@@ -4559,6 +4562,26 @@ async fn seams_text(program: &Program) -> String {
     }
     text.push_str(&format!("root {:?}\n", rig.root().await));
     text
+}
+
+/// The text of the result of one job, as the golden holds it: the fires and the re-issue of an
+/// outcome, or the error. The golden predates the mirror writes of an outcome (P6 step 7b), and
+/// no space of the corpus has a mirror, so the text leaves them out and the run checks that they
+/// are absent.
+fn seams_result_text(result: &Result<SpaceOutcome, SpaceError>) -> String {
+    match result {
+        Ok(outcome) => {
+            assert!(
+                outcome.mirror.is_none(),
+                "no space of the seams corpus has a mirror"
+            );
+            format!(
+                "Ok(SpaceOutcome {{ fires: {:?}, reissue: {:?} }})",
+                outcome.fires, outcome.reissue
+            )
+        }
+        Err(error) => format!("Err({error:?})"),
+    }
 }
 
 /// The root of the workspace.

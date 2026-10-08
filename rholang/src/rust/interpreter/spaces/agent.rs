@@ -53,6 +53,7 @@ use rspace_plus_plus::rspace::space_store_handle::{
 };
 
 use super::errors::SpaceError;
+use super::mirror::MirrorWrites;
 use super::namespace::{CollectionKey, NativeSpace};
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::reified::costs::{ReissueCause, ScanMeter};
@@ -357,6 +358,14 @@ pub struct SpaceReissue {
 pub struct SpaceOutcome {
     pub fires: Vec<SpaceFire>,
     pub reissue: Option<SpaceReissue>,
+    /// The net writes of the transaction to the mirror of a VectorDB space with a mirror (P6
+    /// step 7b). The runtime appends them to the mirror journal of the evaluation.
+    pub mirror: Option<MirrorWrites>,
+}
+
+impl SpaceOutcome {
+    /// The outcome with the mirror writes `mirror`.
+    pub fn with_mirror(self, mirror: Option<MirrorWrites>) -> Self { Self { mirror, ..self } }
 }
 
 /// The records of a new space (P4 design C.7, steps 5 to 7). The factory makes this value and

@@ -9,6 +9,13 @@
 //! store of its native replay session (decision 47). The runtime holds no cache, so nothing in
 //! it survives a reset.
 //!
+//! The runtime also holds the mirror journal of the evaluation (P6 step 7b): the net writes of
+//! the transactions of VectorDB spaces with a mirror. [`ReifiedRuntime::run_op`] appends them
+//! inside the space job, so the scheduler orders the appends of one space as it orders its jobs.
+//! [`ReifiedRuntime::settle_mirror_journal`] publishes the journal when the final result of the
+//! deploy has no errors and drops it otherwise (M1, decision 66), and
+//! [`ReifiedRuntime::begin_evaluation_scope`] drops a journal that no result settled.
+//!
 //! Each space operation runs as an `Intent::Space` job (readiness review S9) with one
 //! transaction and at most one commit (S3). The job gets the host-work budget that the
 //! scheduler captured before it submitted the job (S5).
@@ -19,17 +26,20 @@ use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedC
 use rspace_plus_plus::rspace::space_store_handle::{SpaceStoreHandle, SpaceTxnHost};
 
 use super::costs::ScanMeter;
+use super::vectordb_services;
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
     submit_space, SpaceRequest,
 };
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::host_work::HostWorkBudget;
+use crate::rust::interpreter::interpreter::EvaluateResult;
 use crate::rust::interpreter::spaces::agent::{
     self, AllocOp, Allocation, ParSpaceStore, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
     SpaceOutcome,
 };
 use crate::rust::interpreter::spaces::errors::SpaceError;
+use crate::rust::interpreter::spaces::mirror::MirrorJournal;
 use crate::rust::interpreter::spaces::namespace::{self, NativeSpace};
 
 /// The mode of a [`ReifiedRuntime`].
@@ -62,6 +72,8 @@ enum RuntimeState {
 /// The Reified RSpaces runtime of a reducer. The reducer holds it in `ReducerCore::reified`.
 pub struct ReifiedRuntime {
     state: RuntimeState,
+    /// The mirror journal of the evaluation (P6 step 7b).
+    journal: Arc<MirrorJournal>,
 }
 
 impl ReifiedRuntime {
@@ -81,6 +93,9 @@ impl ReifiedRuntime {
     /// tracker here too (decision 47, W2). The call only resets an in-memory tracker. It makes
     /// no event, no charge and no random draw. The other modes do nothing.
     pub fn begin_evaluation_scope(&self) {
+        // A journal that no final result settled belongs to an evaluation that ended without
+        // one (P6 step 7b), so it is dropped.
+        self.journal.clear();
         match &self.state {
             RuntimeState::Host { store, .. } => store.begin_evaluation_scope(),
             RuntimeState::NativeReplay { bound } => {
@@ -161,6 +176,7 @@ impl ReifiedRuntime {
         let (store, budget) = self.host()?;
         let sid = op.space().sid;
         let authority = op.footprint_authority();
+        let journal = Arc::clone(&self.journal);
         submit_space(SpaceRequest {
             sid,
             authority,
@@ -172,12 +188,29 @@ impl ReifiedRuntime {
                         budget,
                         meter: ScanMeter::new(host_work),
                     };
-                    Ok(agent::run_op(agent.as_ref(), &env, op).await?)
+                    let mut outcome = agent::run_op(agent.as_ref(), &env, op).await?;
+                    if let Some(writes) = outcome.mirror.take() {
+                        journal.record(writes);
+                    }
+                    Ok(outcome)
                 })
             }),
         })
         .await
     }
+
+    /// Settles the mirror journal of the evaluation with its final result (M1, decision 66): a
+    /// result with no errors publishes the journal to the mirror writer of the node, and any
+    /// other result drops it. Publication never waits.
+    pub fn settle_mirror_journal(&self, result: &Result<EvaluateResult, InterpreterError>) {
+        let batches = self.journal.take();
+        if matches!(result, Ok(evaluation) if evaluation.errors.is_empty()) && !batches.is_empty() {
+            vectordb_services::current().publish(batches);
+        }
+    }
+
+    /// True when the mirror journal of the evaluation holds no write.
+    pub fn mirror_journal_is_empty(&self) -> bool { self.journal.is_empty() }
 
     /// Creates a space with `agent` as an `Intent::Space` job (P4 design C.7, steps 4 to 7).
     /// The footprint also holds `H(sid)`, and its authority is the caller authority.
@@ -287,6 +320,7 @@ where T: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> +
             store: SpaceStoreHandle::new(host),
             budget,
         },
+        journal: Arc::new(MirrorJournal::new()),
     })
 }
 
@@ -294,6 +328,7 @@ where T: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> +
 pub fn unavailable() -> Arc<ReifiedRuntime> {
     Arc::new(ReifiedRuntime {
         state: RuntimeState::Detached,
+        journal: Arc::new(MirrorJournal::new()),
     })
 }
 
@@ -304,6 +339,7 @@ pub fn native_replay() -> Arc<ReifiedRuntime> {
         state: RuntimeState::NativeReplay {
             bound: OnceLock::new(),
         },
+        journal: Arc::new(MirrorJournal::new()),
     })
 }
 

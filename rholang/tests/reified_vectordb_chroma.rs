@@ -1,6 +1,6 @@
-//! The suite of the recorded VectorDB processes `rho:vectordb:embed` and `rho:vectordb:ann`, and
-//! of the `config` reply of a mirrored VectorDB space (P6 step 7a, design v3 4.9; plan decisions
-//! 57, 58 and 66 to 69).
+//! The suite of the recorded VectorDB processes `rho:vectordb:embed` and `rho:vectordb:ann`, of
+//! the `config` reply of a mirrored VectorDB space (P6 step 7a), and of the mirror journal and
+//! its publication (P6 step 7b). Design v3 4.9, plan decisions 57, 58 and 66 to 69.
 //!
 //! `embed` and `ann` ask node-local services: an embedder and the ChromaDB mirror of a space. The
 //! dispatcher records the whole reply of a call on its produce event, and replay produces the
@@ -22,6 +22,16 @@
 //! | `vectordb_ann_ids_feed_the_exact_query` | Across two deploys, the advisory ids, with a stale id among them, restrict an exact query, and the exact order decides. |
 //! | `vectordb_embed_and_ann_reject_params_and_persistent_sends` | A call with params aborts with `ParamsUnsupported`, and a persistent call with `PersistentOpCall`, before any service call. |
 //! | `vectordb_config_reports_the_mirror` | The `config` reply of a mirrored space names its backend and its collection, and an unmirrored space has no such entry. |
+//! | `mirror_publishes_a_successful_deploy` | A successful deploy publishes one upsert for each record with a vector, with its id, embedding, channel digest, persistence and document. A record without a vector and an unmirrored space are not mirrored. |
+//! | `mirror_journal_drops_failed_deploy` | A space error, an out-of-phlo deploy and a host-work rejection publish nothing, also after a transaction of the space has committed. |
+//! | `mirror_rule_e_coalesces` | A peek writes nothing (Rule E), a consume of a non-persistent record deletes it, and a persistent record stays. |
+//! | `mirror_temp_never_mirrored` | The factory refuses `mirror` with `temp` and `seq` (with `QualifierUnavailable` until P7), so nothing reaches the mirror. |
+//! | `mirror_never_blocks_deploy` | With a stalled mirror and a full queue, or a mirror that refuses every write, deploys succeed at once and the collection is dirty. |
+//! | `mirror_journal_keeps_the_last_write_of_a_deploy` | A record that one transaction stores and a later transaction of the same deploy consumes leaves no record in the mirror. |
+//! | `mirror_fired_send_is_never_mirrored` | A send that fires a parked waiter never enters the collection, so nothing reaches the mirror. |
+//! | `mirror_collection_distance_follows_the_metric` | The collections of spaces with the metrics `cosine`, `dot` and `euclidean` have the distances `cosine`, `ip` and `l2`. |
+//! | `mirror_exploratory_evaluation_publishes_nothing` | An evaluation without a deploy result (`RhoRuntime::inj`) publishes nothing, and its journal does not reach the next deploy. |
+//! | `mirror_replay_publishes_its_own_journal` | Native replay certification publishes the journal of each replayed deploy to the mirror of the replaying node. |
 //!
 //! Plan decision 67 needs no test of its own here: the config read of an `ann` call is a
 //! journaled native operation, so native replay that skips it fails the completeness check
@@ -30,23 +40,28 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par};
+use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
+use models::rust::host_work::{HostWorkDimension, HostWorkLimit};
 use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reified::handle::MIRROR_ENTRY;
 use rholang::rust::interpreter::reified::vectordb_services::{
     channel_digest, collection_name, Neighbour, ServiceReplyCode, MAX_TEXTS, MAX_TEXT_BYTES,
 };
+use rholang::rust::interpreter::spaces::mirror::{MirrorMetric, MirrorRecord};
 use rholang::rust::interpreter::spaces::namespace::NativeSpace;
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
-use support::backends::{self, services, EmbedMode, FakeMirror, MockEmbedder};
+use support::backends::{self, services, EmbedMode, FakeMirror, MirrorCall, MockEmbedder};
 use support::native::{
-    assert_reproduces, certify, native_play, Certification, NativeChain, Played, AMPLE_LIMIT, OUT,
+    assert_reproduces, certify, host_work, native_play, native_play_result, native_play_with,
+    Certification, NativeChain, Played, AMPLE_LIMIT, OUT,
 };
 use support::session::{config_channel, data_channel, error_codes, key, native};
 
@@ -918,4 +933,658 @@ fn map_entries(par: &Par) -> BTreeMap<String, Par> {
             (key, pair.value.expect("a value"))
         })
         .collect()
+}
+
+// ─── mirror (step 7b) ────────────────────────────────────────────────────────────────────────
+
+/// The constructor of a mirrored VectorDB space whose collection holds two records.
+const MIRRORED_TWO: &str = r#""default"; capacity=2, dimensions=2, mirror="chroma""#;
+
+/// The expected mirror record of a stored record: its embedding, its document and its
+/// persistence, by the Debug form of its payload.
+type Expected = BTreeMap<String, (Vec<f32>, Option<String>, bool)>;
+
+/// The mirror records that the data of the collection `name` of `space` give with `expected`,
+/// by record id. A stored record whose payload is not in `expected` has no embedding.
+async fn mirror_records(
+    chain: &NativeChain,
+    space: NativeSpace,
+    name: &Par,
+    expected: &Expected,
+) -> BTreeMap<[u8; 32], MirrorRecord> {
+    let channel = channel_digest(&key(name));
+    let mut records = BTreeMap::new();
+    for datum in chain.data(&data_channel(space, name)).await {
+        let decoded = record::unwrap_vdb_datum(&datum.a).expect("a VectorDB record");
+        let Some((embedding, document, persistent)) =
+            expected.get(&format!("{:?}", decoded.datum.pars))
+        else {
+            assert_eq!(
+                decoded.embedding, None,
+                "a record outside `expected` has no vector"
+            );
+            continue;
+        };
+        let id: [u8; 32] = datum
+            .source
+            .hash
+            .bytes()
+            .try_into()
+            .expect("a 32-byte record id");
+        assert_eq!(datum.persist, *persistent, "the persistence of the record");
+        records.insert(id, MirrorRecord {
+            id,
+            embedding: embedding.clone(),
+            channel: channel.clone(),
+            persistent: *persistent,
+            document: document.clone(),
+        });
+    }
+    records
+}
+
+/// The handles and the names that a setup deploy sends on `channel`.
+async fn handles(chain: &NativeChain, channel: &str) -> Vec<Par> {
+    let mut values = chain.values(channel).await;
+    assert_eq!(values.len(), 1, "one datum on {channel}");
+    values.remove(0)
+}
+
+/// A successful deploy publishes the net writes of its mirrored space: one upsert for each
+/// record with a vector, with its id, embedding, channel digest, persistence and document. A
+/// record without a vector and the records of an unmirrored space are not mirrored. Native
+/// replay certifies the play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_publishes_a_successful_deploy() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let term = format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED})) {{ for (u <- vdb!?({UNMIRRORED})) {{
+    for (mn <- m!?("gensym")) {{ for (un <- u!?("gensym")) {{
+      @"rrs-mirror-handles"!(*m, *u, *mn, *un) |
+      mn!([1.0, 0.0]) | mn!("doc"; embedding=[0.6, 0.8]) | mn!!([0.0, 1.0]) | mn!("plain") |
+      un!([1.0, 0.0])
+    }} }}
+  }} }}
+}}"#
+    );
+    let played = chain.play(&term, "rrs-mirror-publish", AMPLE_LIMIT).await;
+    assert_played("mirror publish", &played);
+    backends::writer().flush().await;
+    let [m, u, mn, un] = <[Par; 4]>::try_from(handles(&chain, "rrs-mirror-handles").await)
+        .expect("two handles and two names");
+    let (mirrored, unmirrored) = (native(&m), native(&u));
+    let expected: Expected = [
+        (vec![vector64(&[1.0, 0.0])], (vec![1.0, 0.0], None, false)),
+        (
+            vec![string("doc")],
+            (
+                vec![0.6f64 as f32, 0.8f64 as f32],
+                Some("doc".to_string()),
+                false,
+            ),
+        ),
+        (vec![vector64(&[0.0, 1.0])], (vec![0.0, 1.0], None, true)),
+    ]
+    .into_iter()
+    .map(|(pars, record)| (format!("{pars:?}"), record))
+    .collect();
+    let records = mirror_records(&chain, mirrored, &mn, &expected).await;
+    assert_eq!(records.len(), 3, "three records have a vector");
+    let collection = collection_name(&mirrored.sid);
+    assert_eq!(mirror.calls(), vec![
+        MirrorCall::Ensure {
+            collection: collection.clone(),
+            metric: MirrorMetric::Cosine,
+        },
+        MirrorCall::Upsert {
+            collection: collection.clone(),
+            records: records.values().cloned().collect(),
+        },
+    ]);
+    let held = mirror
+        .collection(&collection)
+        .expect("the mirror collection");
+    assert_eq!(held.metric, MirrorMetric::Cosine);
+    assert_eq!(held.records, records);
+    assert_eq!(
+        mirror.collection(&collection_name(&unmirrored.sid)),
+        None,
+        "an unmirrored space has no collection"
+    );
+    assert_eq!(
+        chain.data(&data_channel(unmirrored, &un)).await.len(),
+        1,
+        "the unmirrored space stores its record"
+    );
+    assert_certifies("mirror publish", &played, &term, AMPLE_LIMIT).await;
+}
+
+/// A program that sends its mirrored space on [`OUT`] under the label `m`, stores a record,
+/// and then runs `tail` in the body of a peek of the record. The peek fires only after the store
+/// commits, so the journal holds the upsert of the record when `tail` runs.
+fn store_then(tail: &str) -> String {
+    format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED})) {{ for (mn <- m!?("gensym")) {{
+    @"{OUT}"!(["m", *m]) | mn!([1.0, 0.0]) |
+    for (@x <<- mn) {{ {tail} }}
+  }} }}
+}}"#
+    )
+}
+
+/// The tail of [`store_then`] that sends the peeked record on [`OUT`] under the label `x`.
+fn send_peeked() -> String { format!(r#"@"{OUT}"!(["x", x])"#) }
+
+/// The mirror collection of the space of a [`store_then`] play.
+fn store_then_collection(played: &Played) -> String {
+    collection_name(&native(replies(played).get("m").expect("the space")).sid)
+}
+
+/// A deploy that fails drops its journal, also after a transaction of a mirrored space has
+/// committed: a space error, an out-of-phlo deploy and a host-work rejection publish nothing.
+/// The same program with an ample budget publishes its upsert. Each budget is one unit below
+/// the usage of the control, so each failure comes after the store has committed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_journal_drops_failed_deploy() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let control_mirror = FakeMirror::new(Vec::new(), 0);
+    let lock = backends::install(services(&embedder, &control_mirror)).await;
+    let term = store_then(&send_peeked());
+    let host = host_work();
+    let control = native_play_with(&term, AMPLE_LIMIT, host.clone()).await;
+    assert_played("mirror control", &control);
+    backends::writer().flush().await;
+    let collection = store_then_collection(&control);
+    assert!(
+        matches!(
+            control_mirror.calls().as_slice(),
+            [MirrorCall::Ensure { .. }, MirrorCall::Upsert { collection: upserted, records }]
+                if *upserted == collection && records.len() == 1
+        ),
+        "the control publishes its upsert: {:?}",
+        control_mirror.calls()
+    );
+    let used = control
+        .result
+        .native_budget_recording
+        .as_ref()
+        .expect("native play records its budget")
+        .used;
+    let verification = host.usage(HostWorkDimension::VerificationBytes).get();
+
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    lock.replace(services(&embedder, &mirror));
+    let error = native_play(&store_then("mn!([1.0, 2.0, 3.0])"), AMPLE_LIMIT).await;
+    assert_eq!(error_codes(&error.result.errors), vec![
+        "DimensionMismatch".to_string()
+    ]);
+    let out_of_phlo = native_play(&term, used - 1).await;
+    assert!(
+        out_of_phlo
+            .result
+            .errors
+            .iter()
+            .any(|error| matches!(error, InterpreterError::OutOfPhlogistonsError)),
+        "out of phlo: {:?}",
+        out_of_phlo.result.errors
+    );
+    let mut limits = offered_funded_v6_host_work_limits();
+    limits.set(
+        HostWorkDimension::VerificationBytes,
+        HostWorkLimit::new(verification - 1),
+    );
+    // The last reservation of `VerificationBytes` comes after the last operation, so every
+    // transaction has committed and the journal is complete when the check rejects the deploy.
+    let rejected = native_play_result(&term, AMPLE_LIMIT, HostWorkBudget::new(limits)).await;
+    assert!(
+        matches!(rejected, Err(InterpreterError::HostWorkRejected)),
+        "the host-work check rejects the deploy: {rejected:?}"
+    );
+    backends::writer().flush().await;
+    assert_eq!(
+        mirror.calls(),
+        Vec::new(),
+        "a failed deploy publishes nothing"
+    );
+}
+
+/// Rule E coalesces in the journal: a peek removes its record and stores it again, so it
+/// writes nothing. A consume of a non-persistent record deletes it, and a persistent record
+/// that a receive matches stays. Native replay certifies both deploys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_rule_e_coalesces() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let setup = format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED})) {{
+    for (n1 <- m!?("gensym")) {{ for (n2 <- m!?("gensym")) {{ for (n3 <- m!?("gensym")) {{
+      @"rrs-rule-e-names"!(*m, *n1, *n2, *n3) |
+      n1!([1.0, 0.0]) | n2!([0.0, 1.0]) | n3!!([0.6, 0.8])
+    }} }} }}
+  }}
+}}"#
+    );
+    let first = chain.play(&setup, "rrs-rule-e-setup", AMPLE_LIMIT).await;
+    assert_played("rule E setup", &first);
+    backends::writer().flush().await;
+    let [m, n1, n2, n3] = <[Par; 4]>::try_from(handles(&chain, "rrs-rule-e-names").await)
+        .expect("a handle and three names");
+    let space = native(&m);
+    let collection = collection_name(&space.sid);
+    let setup_calls = mirror.calls();
+    let before = mirror
+        .collection(&collection)
+        .expect("the mirror collection");
+    assert_eq!(before.records.len(), 3, "the setup mirrors three records");
+    let removed = mirror_records(
+        &chain,
+        space,
+        &n2,
+        &[(
+            format!("{:?}", vec![vector64(&[0.0, 1.0])]),
+            (vec![0.0, 1.0], None, false),
+        )]
+        .into_iter()
+        .collect(),
+    )
+    .await;
+    let [removed] = <[[u8; 32]; 1]>::try_from(removed.into_keys().collect::<Vec<_>>())
+        .expect("one record of n2");
+    let reads = format!(
+        r#"for (_, n1, n2, n3 <<- @"rrs-rule-e-names") {{
+  for (@y <<- n1) {{ @"{OUT}"!(["peek", y]) }} |
+  for (@x <- n2 ~ ([0.0, 1.0])) {{ @"{OUT}"!(["take", x]) }} |
+  for (@z <- n3 ~ ([0.6, 0.8])) {{ @"{OUT}"!(["persistent", z]) }}
+}}"#
+    );
+    let second = chain.play(&reads, "rrs-rule-e-reads", AMPLE_LIMIT).await;
+    assert_played("rule E reads", &second);
+    backends::writer().flush().await;
+    assert_eq!(replies(&second).len(), 3, "the three receives fire");
+    let mut expected_calls = setup_calls;
+    expected_calls.extend([
+        MirrorCall::Ensure {
+            collection: collection.clone(),
+            metric: MirrorMetric::Cosine,
+        },
+        MirrorCall::Delete {
+            collection: collection.clone(),
+            ids: vec![removed],
+        },
+    ]);
+    assert_eq!(mirror.calls(), expected_calls, "only the consume writes");
+    let mut after = before.records.clone();
+    after.remove(&removed);
+    assert_eq!(
+        mirror
+            .collection(&collection)
+            .expect("the mirror collection")
+            .records,
+        after
+    );
+    assert_eq!(
+        chain.data(&data_channel(space, &n1)).await.len(),
+        1,
+        "the peek keeps n1"
+    );
+    assert_eq!(
+        chain.data(&data_channel(space, &n3)).await.len(),
+        1,
+        "n3 is persistent"
+    );
+    assert_certifies("rule E setup", &first, &setup, AMPLE_LIMIT).await;
+    assert_certifies("rule E reads", &second, &reads, AMPLE_LIMIT).await;
+}
+
+/// The factory refuses `mirror` with the qualifiers `temp` and `seq`, so no ephemeral space has a
+/// mirror. Until P7 enables these qualifiers, gate 3 refuses them first with
+/// `QualifierUnavailable`. Gate 9 refuses the pairs with `InvalidParam` after P7, and the unit
+/// test `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` checks it.
+/// A refused call creates no space, so nothing reaches the mirror.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_temp_never_mirrored() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    for qualifier in ["temp", "seq"] {
+        let term = format!(
+            r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?("{qualifier}"; capacity=4, dimensions=2, mirror="chroma")) {{
+    for (mn <- m!?("gensym")) {{ mn!([1.0, 0.0]) }}
+  }}
+}}"#
+        );
+        let played = native_play(&term, AMPLE_LIMIT).await;
+        assert_eq!(
+            error_codes(&played.result.errors),
+            vec!["QualifierUnavailable".to_string()],
+            "{qualifier}"
+        );
+    }
+    backends::writer().flush().await;
+    assert_eq!(
+        mirror.calls(),
+        Vec::new(),
+        "no ephemeral space writes to the mirror"
+    );
+}
+
+/// Publication never waits. With a stalled mirror and a queue of one batch, three deploys
+/// succeed at once, and a batch that finds the queue full marks the collection dirty. With a
+/// mirror that refuses every write, the batch fails after its retries, and the collection is
+/// dirty too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_never_blocks_deploy() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let stalled = FakeMirror::stalled();
+    let lock = backends::install(backends::services_with_queue(&embedder, &stalled, 1)).await;
+    let writer = backends::writer();
+    let mut chain = NativeChain::new().await;
+    let setup = format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED})) {{ for (mn <- m!?("gensym")) {{
+    @"rrs-stall-names"!(*m, *mn) | mn!([1.0, 0.0])
+  }} }}
+}}"#
+    );
+    let send = |vector: &str| format!(r#"for (_, mn <<- @"rrs-stall-names") {{ mn!({vector}) }}"#);
+    let deploys = [
+        (setup, "rrs-stall-1"),
+        (send("[0.0, 1.0]"), "rrs-stall-2"),
+        (send("[0.6, 0.8]"), "rrs-stall-3"),
+    ];
+    for (term, label) in &deploys {
+        let played = tokio::time::timeout(CERTIFY_TIMEOUT, chain.play(term, label, AMPLE_LIMIT))
+            .await
+            .unwrap_or_else(|_| panic!("{label}: the deploy waits for the mirror"));
+        assert_played(label, &played);
+    }
+    let [m, _] = <[Par; 2]>::try_from(handles(&chain, "rrs-stall-names").await)
+        .expect("a handle and a name");
+    let collection = collection_name(&native(&m).sid);
+    assert_eq!(
+        writer.dirty(),
+        BTreeSet::from([collection.clone()]),
+        "a batch found the queue full"
+    );
+    stalled.release();
+    writer.flush().await;
+    assert!(!stalled
+        .collection(&collection)
+        .expect("the first batch reaches the mirror")
+        .records
+        .is_empty());
+    assert_eq!(writer.take_dirty(), BTreeSet::from([collection]));
+
+    let down = FakeMirror::down();
+    lock.replace(services(&embedder, &down));
+    let writer = backends::writer();
+    let played = native_play(&store_then(&send_peeked()), AMPLE_LIMIT).await;
+    assert_played("mirror down", &played);
+    writer.flush().await;
+    let collection = store_then_collection(&played);
+    assert_eq!(
+        down.calls(),
+        vec![
+            MirrorCall::Ensure {
+                collection: collection.clone(),
+                metric: MirrorMetric::Cosine,
+            };
+            3
+        ],
+        "each of the 3 attempts fails at its first call"
+    );
+    assert_eq!(writer.dirty(), BTreeSet::from([collection]));
+}
+
+/// An evaluation without a deploy result publishes nothing, and its journal does not reach the
+/// next deploy: Casper's exploratory deploys inject a term through `RhoRuntime::inj`, and the
+/// next root evaluation drops the journal that no result settled (FR-5').
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_exploratory_evaluation_publishes_nothing() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let setup = format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED})) {{ for (mn <- m!?("gensym")) {{
+    @"rrs-explore-names"!(*m, *mn)
+  }} }}
+}}"#
+    );
+    let played = chain.play(&setup, "rrs-explore-setup", AMPLE_LIMIT).await;
+    assert_played("explore setup", &played);
+    let [m, mn] = <[Par; 2]>::try_from(handles(&chain, "rrs-explore-names").await)
+        .expect("a handle and a name");
+    let space = native(&m);
+    chain
+        .explore(r#"for (_, mn <<- @"rrs-explore-names") { mn!([1.0, 0.0]) }"#)
+        .await
+        .expect("the exploratory evaluation runs");
+    assert_eq!(
+        chain.data(&data_channel(space, &mn)).await.len(),
+        1,
+        "the exploratory evaluation stores its record"
+    );
+    backends::writer().flush().await;
+    assert_eq!(
+        mirror.calls(),
+        Vec::new(),
+        "an exploratory evaluation publishes nothing"
+    );
+    let send = r#"for (_, mn <<- @"rrs-explore-names") { mn!([0.0, 1.0]) }"#;
+    let played = chain.play(send, "rrs-explore-send", AMPLE_LIMIT).await;
+    assert_played("explore send", &played);
+    backends::writer().flush().await;
+    let expected: Expected = [
+        (vec![vector64(&[1.0, 0.0])], (vec![1.0, 0.0], None, false)),
+        (vec![vector64(&[0.0, 1.0])], (vec![0.0, 1.0], None, false)),
+    ]
+    .into_iter()
+    .map(|(pars, record)| (format!("{pars:?}"), record))
+    .collect();
+    let mut records = mirror_records(&chain, space, &mn, &expected).await;
+    assert_eq!(records.len(), 2, "both records are stored");
+    records.retain(|_, record| record.embedding == vec![0.0, 1.0]);
+    let collection = collection_name(&space.sid);
+    assert_eq!(
+        mirror.calls(),
+        vec![
+            MirrorCall::Ensure {
+                collection: collection.clone(),
+                metric: MirrorMetric::Cosine,
+            },
+            MirrorCall::Upsert {
+                collection,
+                records: records.into_values().collect(),
+            },
+        ],
+        "the next deploy publishes only its own record"
+    );
+}
+
+/// The journal of a deploy keeps the last write of each record: a record that one transaction
+/// stores and a later transaction of the same deploy consumes leaves no record in the mirror. The
+/// peek fires only after the store commits, and the consume only after the peek, so the three
+/// transactions run in this order. Native replay certifies the deploy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_journal_keeps_the_last_write_of_a_deploy() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let term = store_then(&format!(
+        r#"for (@y <- mn ~ ([1.0, 0.0])) {{ @"{OUT}"!(["x", y]) }}"#
+    ));
+    let played = native_play(&term, AMPLE_LIMIT).await;
+    assert_played("mirror last write", &played);
+    assert_eq!(
+        replies(&played).get("x"),
+        Some(&vector64(&[1.0, 0.0])),
+        "the consume takes the stored record"
+    );
+    backends::writer().flush().await;
+    let collection = store_then_collection(&played);
+    let calls = mirror.calls();
+    assert!(
+        matches!(
+            calls.as_slice(),
+            [MirrorCall::Ensure { .. }, MirrorCall::Delete { ids, .. }] if ids.len() == 1
+        ),
+        "the last write of the record is its delete: {calls:?}"
+    );
+    assert_eq!(
+        mirror
+            .collection(&collection)
+            .expect("the mirror collection")
+            .records,
+        BTreeMap::new(),
+        "the consumed record is not in the mirror"
+    );
+    assert_certifies("mirror last write", &played, &term, AMPLE_LIMIT).await;
+}
+
+/// A send that fires a parked waiter never enters the collection, so it never reaches the
+/// mirror: the first deploy parks a receive, and the send of the second deploy fires it with the
+/// incoming datum. Native replay certifies both deploys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_fired_send_is_never_mirrored() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let park = format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED})) {{ for (mn <- m!?("gensym")) {{
+    @"rrs-fired-names"!(*m, *mn) |
+    for (@x <- mn ~ ([1.0, 0.0])) {{ @"{OUT}"!(x) }}
+  }} }}
+}}"#
+    );
+    let first = chain.play(&park, "rrs-fired-park", AMPLE_LIMIT).await;
+    assert_played("fired park", &first);
+    let send = r#"for (_, mn <<- @"rrs-fired-names") { mn!([1.0, 0.0]) }"#;
+    let second = chain.play(send, "rrs-fired-send", AMPLE_LIMIT).await;
+    assert_played("fired send", &second);
+    assert_eq!(
+        second.out,
+        vec![vec![vector64(&[1.0, 0.0])]],
+        "the send fires the waiter"
+    );
+    let [m, mn] = <[Par; 2]>::try_from(handles(&chain, "rrs-fired-names").await)
+        .expect("a handle and a name");
+    assert!(
+        chain.data(&data_channel(native(&m), &mn)).await.is_empty(),
+        "the incoming datum is never stored"
+    );
+    backends::writer().flush().await;
+    assert_eq!(mirror.calls(), Vec::new(), "nothing reaches the mirror");
+    assert_certifies("fired park", &first, &park, AMPLE_LIMIT).await;
+    assert_certifies("fired send", &second, send, AMPLE_LIMIT).await;
+}
+
+/// The distance of a mirror collection follows the metric of its space: `cosine` (the default),
+/// `dot` and `euclidean` give `cosine`, `ip` and `l2`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_collection_distance_follows_the_metric() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let term = format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (c <- vdb!?({MIRRORED})) {{
+    for (d <- vdb!?("default"; capacity=4, dimensions=2, metric="dot", mirror="chroma")) {{
+      for (e <- vdb!?("default"; capacity=4, dimensions=2, metric="euclidean", mirror="chroma")) {{
+        @"rrs-metric-handles"!(*c, *d, *e) |
+        for (cn <- c!?("gensym")) {{ cn!([1.0, 0.0]) }} |
+        for (dn <- d!?("gensym")) {{ dn!([1.0, 0.0]) }} |
+        for (en <- e!?("gensym")) {{ en!([1.0, 0.0]) }}
+      }}
+    }}
+  }}
+}}"#
+    );
+    let played = chain.play(&term, "rrs-metric", AMPLE_LIMIT).await;
+    assert_played("mirror metric", &played);
+    backends::writer().flush().await;
+    let handles = handles(&chain, "rrs-metric-handles").await;
+    let calls = mirror.calls();
+    for (handle, metric) in handles.iter().zip([
+        MirrorMetric::Cosine,
+        MirrorMetric::InnerProduct,
+        MirrorMetric::L2,
+    ]) {
+        let collection = collection_name(&native(handle).sid);
+        assert!(
+            calls.contains(&MirrorCall::Ensure {
+                collection: collection.clone(),
+                metric,
+            }),
+            "{metric:?}: the collection is made with its distance: {calls:?}"
+        );
+        let held = mirror
+            .collection(&collection)
+            .expect("the mirror collection");
+        assert_eq!(held.metric, metric);
+        assert_eq!(held.records.len(), 1, "{metric:?}: one record");
+    }
+    assert_certifies("mirror metric", &played, &term, AMPLE_LIMIT).await;
+}
+
+/// Native replay certification publishes the journal of the replayed deploy to the mirror of
+/// the replaying node: certifying two deploys in order gives that mirror the calls and the
+/// records of the mirror of play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_replay_publishes_its_own_journal() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let played_with = FakeMirror::new(Vec::new(), 0);
+    let lock = backends::install(services(&embedder, &played_with)).await;
+    let mut chain = NativeChain::new().await;
+    let setup = format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED_TWO})) {{ for (mn <- m!?("gensym")) {{
+    @"rrs-replay-names"!(*m, *mn) | mn!([1.0, 0.0]) | mn!("doc"; embedding=[0.0, 1.0])
+  }} }}
+}}"#
+    );
+    let first = chain.play(&setup, "rrs-replay-setup", AMPLE_LIMIT).await;
+    assert_played("replay setup", &first);
+    let change = format!(
+        r#"for (_, mn <<- @"rrs-replay-names") {{
+  for (@x <- mn ~ ([1.0, 0.0])) {{ @"{OUT}"!(x) | mn!([0.6, 0.8]) }}
+}}"#
+    );
+    let second = chain.play(&change, "rrs-replay-change", AMPLE_LIMIT).await;
+    assert_played("replay change", &second);
+    assert_eq!(second.out, vec![vec![vector64(&[1.0, 0.0])]]);
+    backends::writer().flush().await;
+    let [m, _] = <[Par; 2]>::try_from(handles(&chain, "rrs-replay-names").await)
+        .expect("a handle and a name");
+    let collection = collection_name(&native(&m).sid);
+    let played_calls = played_with.calls();
+    assert!(
+        played_calls
+            .iter()
+            .any(|call| matches!(call, MirrorCall::Delete { .. })),
+        "the second deploy deletes the consumed record: {played_calls:?}"
+    );
+    let replayed_with = FakeMirror::new(Vec::new(), 0);
+    lock.replace(services(&embedder, &replayed_with));
+    assert_certifies("replay setup", &first, &setup, AMPLE_LIMIT).await;
+    assert_certifies("replay change", &second, &change, AMPLE_LIMIT).await;
+    backends::writer().flush().await;
+    assert_eq!(replayed_with.calls(), played_calls);
+    assert_eq!(
+        replayed_with.collection(&collection),
+        played_with.collection(&collection)
+    );
 }

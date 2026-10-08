@@ -625,4 +625,52 @@ mod tests {
             );
         }
     }
+
+    /// Gate 9: a `mirror` needs the `default` qualifier and a metric that ChromaDB indexes. Gate
+    /// 3 refuses `temp` and `seq` until P7, so this unit test is the only test of the pairs of
+    /// `mirror` with these qualifiers before P7.
+    #[test]
+    fn reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric() {
+        let refused = Err(SpaceError::InvalidParam {
+            key: MIRROR_PARAM.to_string(),
+        });
+        let metrics = [
+            None,
+            Some("cosine"),
+            Some("dot"),
+            Some("euclidean"),
+            Some("manhattan"),
+            Some("hamming"),
+            Some("jaccard"),
+        ];
+        for qualifier in [
+            SpaceQualifier::Default,
+            SpaceQualifier::Temp,
+            SpaceQualifier::Seq,
+        ] {
+            for metric in metrics {
+                let mut params = BTreeMap::new();
+                if let Some(metric) = metric {
+                    params.insert(METRIC_PARAM.to_string(), string(metric));
+                }
+                assert_eq!(
+                    check_mirror(qualifier, &params),
+                    Ok(()),
+                    "{qualifier:?} {metric:?} without a mirror"
+                );
+                params.insert(MIRROR_PARAM.to_string(), string("chroma"));
+                let expected = match (qualifier, metric) {
+                    (SpaceQualifier::Default, None | Some("cosine" | "dot" | "euclidean")) => {
+                        Ok(())
+                    }
+                    _ => refused.clone(),
+                };
+                assert_eq!(
+                    check_mirror(qualifier, &params),
+                    expected,
+                    "{qualifier:?} {metric:?} with a mirror"
+                );
+            }
+        }
+    }
 }

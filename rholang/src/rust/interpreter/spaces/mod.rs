@@ -15,6 +15,7 @@ pub mod families;
 pub mod generic;
 pub mod join;
 pub mod matching;
+pub mod mirror;
 pub mod namespace;
 pub mod outer;
 pub mod pathmap;

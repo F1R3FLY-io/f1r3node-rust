@@ -143,7 +143,7 @@
    pending_work, resume_of,   spaces/join.rs:4620-4682 (commit: the own
    owes, commit               entries of the work, owed, the seeds),
                               3411-3440 (settle_fields), 3445-3499 (resume)
-                              and spaces/agent.rs:218-261 (PendingProduce,
+                              and spaces/agent.rs:219-262 (PendingProduce,
                               CascadeState, SettleOp)
    phase_count, plan_at_cap   the one count of Cx::rounds for the
                               transaction, and spaces/join.rs:2654 (the

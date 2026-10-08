@@ -71,7 +71,7 @@
    ─────────────────────────────────────────────────────────────────────────
    cell_capacity            spaces/disciplines/cell.rs:57
                             (CellDiscipline::CAPACITY = Some(1))
-   has_room                 spaces/generic.rs:936-958 (Cx::check_capacity:
+   has_room                 spaces/generic.rs:941-963 (Cx::check_capacity:
                             no bound does no work, and a side that holds
                             capacity entries fails with CellOccupied)
    cell_reaches_head        spaces/disciplines/cell.rs:72-74
@@ -87,39 +87,39 @@
                             reified/costs.rs:44, 315-333 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
    store_checked, park_checked
-                            spaces/generic.rs:1526-1529, 1535-1538,
-                            1545-1548 and 1609-1612, 1617-1620, 1623-1626
+                            spaces/generic.rs:1535-1538, 1544-1547,
+                            1554-1557 and 1618-1621, 1626-1629, 1632-1635
                             (check_capacity, then store or park)
-   offer, offer_loop        spaces/generic.rs:1515-1582 (offer_head, the
+   offer, offer_loop        spaces/generic.rs:1524-1591 (offer_head, the
                             default Discipline::offer)
-   receive, receive_loop    spaces/generic.rs:1591-1675 (receive_head, the
+   receive, receive_loop    spaces/generic.rs:1600-1684 (receive_head, the
                             default Discipline::receive)
    fire_view, restores, receive_ops, receive_fired
-                            spaces/generic.rs:1666-1671, 1644-1673 and
-                            1677-1687 (the copy of a peeked non-persistent
+                            spaces/generic.rs:1675-1680, 1653-1682 and
+                            1686-1696 (the copy of a peeked non-persistent
                             record, the fire, and restore_peeked), the
                             default Discipline::restore at
-                            spaces/generic.rs:412-425 and Cx::restore at
+                            spaces/generic.rs:413-426 and Cx::restore at
                             869-880 (a plain store_on with no capacity
                             check). The substrate removes a peeked
                             non-persistent record (decision 45).
    bump_ord, bumped, produce, consume
-                            spaces/generic.rs:2272-2405 (run_with: bump
+                            spaces/generic.rs:2288-2424 (run_with: bump
                             the counter, then the plan with the ord of the
                             bump) and spaces/counter.rs (the ord is the
                             value of the counter, and the first operation
                             takes 0)
-   operation_ord            spaces/generic.rs:1700-1734 (a re-issued ord
+   operation_ord            spaces/generic.rs:1709-1743 (a re-issued ord
                             lies below the value of the counter, else
                             Inconsistent)
    reentry_at_head, record_head_ord, waiter_head_ord
-                            spaces/generic.rs:907-934 and 874-896
+                            spaces/generic.rs:912-939 and 879-901
                             (Cx::at_head and Cx::head_ord: an empty side,
                             or the rule precedes, and Inconsistent on an
                             equal ord)
    reenter_offer, reenter_receive, reenter_produce, reenter_consume
-                            spaces/generic.rs:1515-1582, 1591-1675 and
-                            2272-2405 (the plans with a reissued_ord)
+                            spaces/generic.rs:1524-1591, 1600-1684 and
+                            2288-2424 (the plans with a reissued_ord)
    step_view, replay_view   the substrate applies each staged operation to
                             the staged view: a store and a re-store put a
                             record at the front of its list, a park puts a

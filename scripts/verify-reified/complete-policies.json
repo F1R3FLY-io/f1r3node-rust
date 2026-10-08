@@ -1423,7 +1423,7 @@
       "property_files": []
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin. Step 6 adds rho:lang:vector: add, scale, dot, norm and distance, exact in the widest kind of the inputs, the replies [true, value] and [false, code, detail], the packing of a call into [ret, [op, x…]] and the metering of the process. Step 7a adds the recorded processes rho:vectordb:embed and rho:vectordb:ann with their replies [true, ...] and [false, code, detail], the node-local services with the unavailable defaults and the feature-gated SBERT and ChromaDB backends, the checks of an ann call in play and in replay, and the mirror entry of the config reply.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin. Step 6 adds rho:lang:vector: add, scale, dot, norm and distance, exact in the widest kind of the inputs, the replies [true, value] and [false, code, detail], the packing of a call into [ret, [op, x…]] and the metering of the process. Step 7a adds the recorded processes rho:vectordb:embed and rho:vectordb:ann with their replies [true, ...] and [false, code, detail], the node-local services with the unavailable defaults and the feature-gated SBERT and ChromaDB backends, the checks of an ann call in play and in replay, and the mirror entry of the config reply. Step 7b adds the mirror journal: the capture of the net writes of a transaction of a mirrored space, the journal of an evaluation, the publication of the journal with a final result without errors (M1), and the mirror writer with its bounded queue, its bounded retry and its dirty collections.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1448,7 +1448,10 @@
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
         "rholang/src/rust/interpreter/reified/vectordb_services.rs",
         "rholang/src/rust/interpreter/reified/handle.rs",
-        "rholang/src/rust/interpreter/spaces/namespace.rs"
+        "rholang/src/rust/interpreter/spaces/namespace.rs",
+        "rholang/src/rust/interpreter/spaces/mirror.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/src/rust/interpreter/spaces/agent.rs"
       ],
       "entry_points": [
         {
@@ -1726,6 +1729,62 @@
         {
           "file": "rholang/src/rust/interpreter/reified/handle.rs",
           "pattern": "pub const MIRROR_ENTRY: &str = \"mirror\";"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+          "pattern": "pub enum MirrorMetric {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+          "pattern": "pub struct MirrorRecord {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+          "pattern": "pub struct MirrorCapture {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+          "pattern": "    pub fn writes(&self, receipt: &ParSpaceReceipt) -> Option<MirrorWrites> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+          "pattern": "pub struct MirrorJournal {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+          "pattern": "    pub fn take(&self) -> Vec<MirrorBatch> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub struct MirrorWriter {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "    pub fn spawn_with(mirror: Arc<dyn MirrorBackend>, capacity: usize) -> Arc<Self> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "    pub async fn flush(&self) {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "    pub fn take_dirty(&self) -> BTreeSet<String> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "    pub fn with_writer(embedder: Arc<dyn Embedder>, mirror: Arc<dyn MirrorBackend>) -> Self {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "pattern": "    pub fn settle_mirror_journal(&self, result: &Result<EvaluateResult, InterpreterError>) {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "    mirror: MirrorCapture,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+          "pattern": "    pub mirror: Option<MirrorWrites>,"
         }
       ],
       "tests": [
@@ -1740,7 +1799,10 @@
         "rholang/src/rust/interpreter/reified/vectordb_services.rs",
         "rholang/src/rust/interpreter/reified/handle.rs",
         "rholang/tests/reified_vectordb_chroma.rs",
-        "rholang/tests/support/backends.rs"
+        "rholang/tests/support/backends.rs",
+        "rholang/src/rust/interpreter/spaces/mirror.rs",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+        "rholang/tests/support/native.rs"
       ],
       "property_files": [
         "rholang/src/rust/interpreter/tensor/exact.rs",

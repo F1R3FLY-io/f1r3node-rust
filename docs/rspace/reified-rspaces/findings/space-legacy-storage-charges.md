@@ -32,9 +32,9 @@ Each staged space operation now pays the [legacy charges](../glossary.md#legacy-
 
 ## 3. Mechanism and measurement
 
-The runtime wraps the host RSpace twice: in `DeterministicRSpace`, and then in `ChargingRSpace` (`rholang/src/rust/interpreter/rho_runtime.rs:2009-2012`).
+The runtime wraps the host RSpace twice: in `DeterministicRSpace`, and then in `ChargingRSpace` (`rholang/src/rust/interpreter/rho_runtime.rs:2010-2013`).
 The reducer calls the outer wrapper, so every host operation pays its legacy charges.
-The space runtime takes the concrete RSpace before these wrappers (`rholang/src/rust/interpreter/rho_runtime.rs:1990`), as decision 19 requires.
+The space runtime takes the concrete RSpace before these wrappers (`rholang/src/rust/interpreter/rho_runtime.rs:1991`), as decision 19 requires.
 So the commit of a space transaction reaches the host store directly, and no legacy charge runs.
 
 The test `space_queue_legacy_replay_equal` measures the gap on the deploy `a!(1) | a!(2) | b!(3)`, which sends to two queue names.

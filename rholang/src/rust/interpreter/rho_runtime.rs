@@ -1805,6 +1805,7 @@ impl NativeReplayEnvironment {
                 return interpreter.host_rejected_result(failures);
             }
         }
+        self.reducer.reified.settle_mirror_journal(&result);
         self.unavailable = false;
         result
     }

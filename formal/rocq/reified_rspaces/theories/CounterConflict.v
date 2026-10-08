@@ -111,7 +111,7 @@
                             165-245, 251-309 (bump, and take: the COMM has
                             no peeks)
    exec (the plan)          rholang/src/rust/interpreter/spaces/generic.rs:
-                            2272-2405 (run_with: bump, then plan)
+                            2288-2424 (run_with: bump, then plan)
    list_diff                rspace++/src/rspace/merger/channel_change.rs:
                             74-82 (vec_diff), rspace++/src/rspace/merger/
                             state_change.rs:318-357 (multiset_diff gives
@@ -144,7 +144,7 @@
                             (the block index skips a failed user deploy,
                             so a CellOccupied abort never reaches check #1)
    the cell abort (P5)      rholang/src/rust/interpreter/spaces/generic.rs:
-                            941-958 (Cx::check_capacity: CellOccupied
+                            946-963 (Cx::check_capacity: CellOccupied
                             before any staging), rholang/src/rust/
                             interpreter/spaces/disciplines/cell.rs:57
                             (CAPACITY = Some 1)

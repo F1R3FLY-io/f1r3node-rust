@@ -26,7 +26,8 @@ The [decision register](decision-register.md) is normative, and the [design](des
 16. [Phase P6, step 5: native certification of the VectorDB shapes](#16-phase-p6-step-5-native-certification-of-the-vectordb-shapes)
 17. [Phase P6, step 6: `rho:lang:vector`](#17-phase-p6-step-6-rholangvector)
 18. [Phase P6, step 7a: the recorded processes `embed` and `ann`](#18-phase-p6-step-7a-the-recorded-processes-embed-and-ann)
-19. [References](#references)
+19. [Phase P6, step 7b: the mirror journal and its publication](#19-phase-p6-step-7b-the-mirror-journal-and-its-publication)
+20. [References](#references)
 
 ## 1. Purpose and scope
 
@@ -1733,9 +1734,9 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1959` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1724` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1774` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1961` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1726` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1776` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:193` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:667` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
@@ -1748,8 +1749,8 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 | `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:461` | Q59 |
 | `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:249` | Q59 |
 | `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:743` | Q61 |
-| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:3393` | Q78 |
-| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3466` | Q78 |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:3412` | Q78 |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3485` | Q78 |
 | `legacy_charges_of_a_store_and_a_park` | `reified/legacy_charges.rs:416` | Q79 |
 | `legacy_charges_of_a_produce_fire_follow_handle_result` | `reified/legacy_charges.rs:442` | Q79 |
 | `legacy_charges_of_a_consume_fire_refund_the_consume` | `reified/legacy_charges.rs:504` | Q79 |
@@ -1933,9 +1934,9 @@ The mutant of decision 46, `sr-native-play-runs-spaces`, is retired with its hea
 | `reified_native_play_runs_a_space_deploy` | `reified_native_fail_closed.rs:338` | A native play of a factory call runs without an error and stores the records of the config and of the space counter (Q67). |
 | `reified_native_replay_reproduces_a_space_deploy` | `reified_native_fail_closed.rs:384` | The native replay environment replays the play journal: no error, a complete journal, the phlo usage of play, equal authority events and byte observations, and the post-state root of play (Q67). |
 | `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:412` | A program without spaces plays and replays natively without an error, with a complete journal, equal usage and the post-state root of play (Q67). |
-| `native_replay_runtime_fails_closed` | `reified/runtime.rs:554` | A native replay runtime that is not bound yet fails every space entry with `RuntimeUnavailable`. |
-| `native_replay_runtime_binds_once_and_resets_its_scope` | `reified/runtime.rs:572` | The environment binds a native replay runtime once, and its evaluation scope resets the committed parents of its store. |
-| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:611` | A host runtime runs space jobs when its budget runs no native deploy. |
+| `native_replay_runtime_fails_closed` | `reified/runtime.rs:590` | A native replay runtime that is not bound yet fails every space entry with `RuntimeUnavailable`. |
+| `native_replay_runtime_binds_once_and_resets_its_scope` | `reified/runtime.rs:608` | The environment binds a native replay runtime once, and its evaluation scope resets the committed parents of its store. |
+| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:647` | A host runtime runs space jobs when its budget runs no native deploy. |
 
 **The hazard of decision 46.** A run of the suite with the guard of `ReifiedRuntime::host` removed and without a native backend (`target/verification/reified-rspaces/d46/mutant-no-native-guard.log`) shows why decision 46 failed closed.
 Native play then ran the space operation without an error, and native replay failed with `native replay has incomplete operations`.
@@ -1947,8 +1948,8 @@ Decision 47 removes the guard and adds the native backend in one change, so nati
 The element re-enters at its place.
 It is at the head of its side when that side is empty or its order precedes the head.
 Otherwise it rests behind the head and fires nothing.
-`operation_ord` (`spaces/generic.rs:1706-1734`) checks the kept order against the counter.
-`Cx::at_head` (`spaces/generic.rs:913-934`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:65-74`) compares two orders.
+`operation_ord` (`spaces/generic.rs:1715-1743`) checks the kept order against the counter.
+`Cx::at_head` (`spaces/generic.rs:918-939`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:65-74`) compares two orders.
 
 `HeadOnlyDisciplines.v` adds the 10 headlines of Table 49, with no axiom.
 The module defines the elements in flight $`F`$ and the re-entry plans.
@@ -2015,16 +2016,16 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:3552` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
-| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:3609` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
-| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:3724` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
-| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:3765` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
-| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:3796` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
-| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:3836` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
-| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:3881` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
-| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:3911` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
-| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:3945` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
-| `space_queue_replay_reproduces_the_reentries` | `spaces/generic.rs:4034` | Replay stages the transactions of a divergent pair and of a capped re-entry, pairs the three equal COMMs of the pair, and reaches the root of play. |
+| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:3571` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
+| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:3628` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
+| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:3743` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:3784` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
+| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:3815` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
+| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:3855` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
+| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:3900` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
+| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:3930` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
+| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:3964` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
+| `space_queue_replay_reproduces_the_reentries` | `spaces/generic.rs:4053` | Replay stages the transactions of a divergent pair and of a capped re-entry, pairs the three equal COMMs of the pair, and reaches the root of play. |
 | `space_queue_reissue_persistent_send` | `reified_queue.rs:1043` | In a deploy, a capped persistent send rests at its first order, and its produce events on the data channel are equal. |
 | `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1114` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
 | `space_queue_reissue_keeps_one_produce_identity` | `reified_queue.rs:1163` | A capped persistent send has one introduction row for its one identity, and every observed event has its row. |
@@ -2068,8 +2069,8 @@ The substrate keeps no record for a peek, also not the stored candidates of a pr
 The play and replay backends always call `remove_matched_datum_and_join` or `store_persistent_data`.
 
 The agent then makes a [re-store](glossary.md#re-store).
-`receive_head` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:1633-1638`).
-Right after the fire, `Discipline::restore` and its default `Cx::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:418-425`, `1057-1072`) stage a produce of the same record bytes with the outcome Store and `persist = false`.
+`receive_head` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:1642-1647`).
+Right after the fire, `Discipline::restore` and its default `Cx::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:419-426`, `1066-1081`) stage a produce of the same record bytes with the outcome Store and `persist = false`.
 `Introduction::for_record` (`rholang/src/rust/interpreter/spaces/record.rs:2145-2158`) gives the re-store the cost authority of the record, as `produce_peeks` does.
 The re-store bumps no counter, and the record keeps its envelope, its order, and its place at the head.
 
@@ -2117,9 +2118,9 @@ The three mutants of decision 45 in `EventCorrelation.v` are in Table 12: `ec-pe
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | Control: Rule E leaves one copy, a re-store without the removal leaves two, and a removal without the re-store leaves none. |
 | `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2455` | Generated peek runs with re-offers and re-stores equal the HEAD peek path exactly, and they replay and report (H5, H11, H12). |
 | `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4435` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
-| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:3393` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
-| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:3426` | The re-store registers the authority of the record, and the peek registers its own. |
-| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3466` | A peek of a persistent record removes nothing and stores nothing again. |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:3412` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
+| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:3445` | The re-store registers the authority of the record, and the peek registers its own. |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3485` | A peek of a persistent record removes nothing and stores nothing again. |
 | `space_queue_observer_parity` | `reified_queue.rs:1336` | In deploys, the space events of each queue step equal the host events of the same program, the re-store after a peek included. |
 | `prop_queue_restore_realizes_plan` | `reified_p4_props.rs:4716` | Over runs that peek often, a peek keeps the records, its receipt keeps the persist flag, and the re-store follows the COMM with the identity of the record (Q78). |
 
@@ -2359,9 +2360,9 @@ S1 makes these changes:
 
 - `FamilyAgent` (`spaces/families.rs:447-538`) reads the config once and runs the agent of the family that the config names. The runtime installs it.
 - `Discipline` holds the plans of the operations. The default plans are the head driver `offer_head` and `receive_head`, the P4 plans as free functions over the discipline.
-- `Cx` (`spaces/generic.rs:712-715`) is the only path from a plan to the transaction. It adds group fires over `[D; n]`, retirements and lifts.
+- `Cx` (`spaces/generic.rs:717-720`) is the only path from a plan to the transaction. It adds group fires over `[D; n]`, retirements and lifts.
   `Cx` and `AllocCx` expose no raw transaction, and the legacy chain of a plan is private to `generic.rs`. So the types keep the design rule that only `generic.rs` and `counter.rs` stage operations.
-- `run_with` (`spaces/generic.rs:2272-2405`) checks the key, the params and the query before the bump, and bumps the counter only for a discipline that uses one.
+- `run_with` (`spaces/generic.rs:2288-2424`) checks the key, the params and the query before the bump, and bumps the counter only for a discipline that uses one.
 - The outer-store hooks check a routed key, stage the records of a creation, and allocate index names. A store without an allocator answers with `Baseline` and no work.
 - The substrate gives the canonical order of DR-75 over borrowed views (`space_store_handle.rs:342-350`, `382-394`).
 
@@ -2374,19 +2375,19 @@ So the golden pins the one comparison of the family check.
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_engine_staged_kinds_stay_one_byte` | `generic.rs:5021` | A staged kind is one byte, so the reserved staged list of a head-only plan keeps its size. |
-| `space_engine_checks_params_and_queries_before_the_bump` | `generic.rs:5028` | An unknown key, a query that the discipline does not take, and a rejected value fail before the bump. The counter and the log stay unchanged. |
-| `space_engine_plans_see_the_round_counter_and_the_operation` | `generic.rs:5114` | A plan sees the counter value of its round (`Cx::bumped`), and each settle hook sees its operation (`OpView`). |
-| `space_engine_capacity_abort_stages_nothing` | `generic.rs:5164` | A store or a park on a full side fails with `CellOccupied`, and the transaction applies nothing. |
-| `space_engine_group_fire_lines_up_and_dispatches_its_prefix` | `generic.rs:5199` | A fire over `[D; 3]` that binds one result removes three records and dispatches one result. A group that does not line up stages nothing. |
-| `space_engine_retire_and_lift_fire_without_dispatch` | `generic.rs:5263` | A retirement and a lift remove their records and dispatch nothing. |
-| `space_engine_outcome_dispatches_the_prefix_of_a_group_fire` | `generic.rs:5315` | The outcome keeps the prefix of a prefix fire and rejects a missing or extra count. |
-| `space_engine_staged_list_growth_is_reserved_before_it_grows` | `generic.rs:5784` | A list at its capacity reserves the doubled buffer before it grows. A budget that is one operation short rejects the growth and leaves the list unchanged. |
-| `space_engine_operation_ord_without_a_counter_is_zero` | `generic.rs:5832` | Without a counter every order is 0, and a re-issued order other than 0 is `Inconsistent`. |
-| `space_engine_allocation_without_an_allocator_is_baseline` | `generic.rs:5853` | An allocation in a HashMap space is `Baseline` and logs nothing, and a missing config is `DanglingHandle`. |
-| `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:5879` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
-| `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:5923` | The family agent gives the fires, events, records, waiters and host work of the queue agent. |
-| `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:5975` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
+| `space_engine_staged_kinds_stay_one_byte` | `generic.rs:5042` | A staged kind is one byte, so the reserved staged list of a head-only plan keeps its size. |
+| `space_engine_checks_params_and_queries_before_the_bump` | `generic.rs:5049` | An unknown key, a query that the discipline does not take, and a rejected value fail before the bump. The counter and the log stay unchanged. |
+| `space_engine_plans_see_the_round_counter_and_the_operation` | `generic.rs:5135` | A plan sees the counter value of its round (`Cx::bumped`), and each settle hook sees its operation (`OpView`). |
+| `space_engine_capacity_abort_stages_nothing` | `generic.rs:5185` | A store or a park on a full side fails with `CellOccupied`, and the transaction applies nothing. |
+| `space_engine_group_fire_lines_up_and_dispatches_its_prefix` | `generic.rs:5220` | A fire over `[D; 3]` that binds one result removes three records and dispatches one result. A group that does not line up stages nothing. |
+| `space_engine_retire_and_lift_fire_without_dispatch` | `generic.rs:5284` | A retirement and a lift remove their records and dispatch nothing. |
+| `space_engine_outcome_dispatches_the_prefix_of_a_group_fire` | `generic.rs:5336` | The outcome keeps the prefix of a prefix fire and rejects a missing or extra count. |
+| `space_engine_staged_list_growth_is_reserved_before_it_grows` | `generic.rs:5806` | A list at its capacity reserves the doubled buffer before it grows. A budget that is one operation short rejects the growth and leaves the list unchanged. |
+| `space_engine_operation_ord_without_a_counter_is_zero` | `generic.rs:5854` | Without a counter every order is 0, and a re-issued order other than 0 is `Inconsistent`. |
+| `space_engine_allocation_without_an_allocator_is_baseline` | `generic.rs:5875` | An allocation in a HashMap space is `Baseline` and logs nothing, and a missing config is `DanglingHandle`. |
+| `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:5901` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
+| `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:5945` | The family agent gives the fires, events, records, waiters and host work of the queue agent. |
+| `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:5997` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
 | `space_families_wire_exactly_the_listed_families` | `families.rs:593` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
 | `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:748` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
 | `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3910` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
@@ -2701,7 +2702,7 @@ One probe script gives the same results, events, legacy charges and root in the 
 Each test also runs one Rholang program in two fresh runtimes and compares the root, the event log and the cost (`rholang/tests/reified_determinism.rs:1053-1067`).
 
 **Host work and the list order.**
-A head scan of a queue, a stack or a cell does the same work in every list order (`rholang/src/rust/interpreter/spaces/generic.rs:824-840`).
+A head scan of a queue, a stack or a cell does the same work in every list order (`rholang/src/rust/interpreter/spaces/generic.rs:829-845`).
 So the host work of these disciplines does not depend on the list order.
 
 The DR-75 order of a bag charges each comparison of its heapsort (`rspace++/src/rspace/space_store_handle.rs:432-460`, `shared/src/rust/fallible_sort.rs:3-33`).
@@ -2953,7 +2954,7 @@ Each property runs 64 cases with the fixed P5 seed.
 **The store seams.**
 The record methods of `JoinSource` ([design N12.11](design.md#n1211-the-seam-of-a-store)) must leave the keyed engine unchanged, and two tests check this.
 `space_join_engine_reserved_types_keep_their_sizes` pins the sizes of the ten types that the engine reserves by size (`rholang/src/rust/interpreter/spaces/join.rs:5607-5629`).
-`join_seams_keyed_differential` runs 80 programs with the fixed P5 seed over a metered recording host (`rholang/tests/reified_join_props.rs:4589-4661`).
+`join_seams_keyed_differential` runs 80 programs with the fixed P5 seed over a metered recording host (`rholang/tests/reified_join_props.rs:4622-4687`).
 For each program, it hashes the results, the legacy charges, the phlo, the events, the lock keys, the staged operations and the root.
 It also hashes the host-work usage at every begin, staged operation and commit.
 
@@ -3928,6 +3929,192 @@ To run the checks of step 7a, do these steps from the repository root:
 2. Run `python3 scripts/verify-reified/vectordb-services-mutants.py`, which must report `FAIL=0`.
 3. Run `scripts/check-reified-rspaces-proofs.sh`, which must report `FAIL=0`.
 4. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+
+## 19. Phase P6, step 7b: the mirror journal and its publication
+
+Step 7b makes each node keep a ChromaDB mirror of each VectorDB space that has the factory param `mirror` (design v3 4.9, [decision 58](decision-register.md#decision-58)).
+The mirror is a hint index for `ann`: it never decides a COMM, and nothing in consensus reads it.
+A deploy publishes its writes to the mirror only when its final result has no errors (M1, plan decision 66).
+Every test of this step runs native play and native replay certification (plan decision 69).
+
+### 19.1 The net writes of a transaction
+
+Each plan of a mirrored space captures the stores that it stages on a data channel of the space (`MirrorCapture` in `spaces/mirror.rs`).
+After the commit, the capture reads the receipt of the transaction in staging order.
+A `Stored` receipt at a captured index stores its record under the id of its produce.
+A `Fired` receipt removes each non-persistent produce of its COMM on a data channel of the space.
+The incoming produce of a produce-triggered fire is never stored, so it removes nothing.
+
+The first and the last event of a record id in one transaction decide its net write.
+
+*Table 114. The net write of a record id in one transaction.*
+
+| First event | Last event | Meaning | Write |
+|---|---|---|---|
+| remove | store | Rule E: a peek removes the record, and the transaction stores it again. | none |
+| store | store | A new record. | upsert |
+| remove | remove | A record leaves the collection. | delete |
+| store | remove | A new record leaves in the same transaction. | none |
+
+An upsert holds the record id, the embedding, the channel digest, the persistence and the document.
+The record id is the 32-byte hash of the storage produce, the value that `ids=` takes.
+Each element of the embedding is the exact value, rounded to `f64` and then to `f32`.
+The document is the first element of the payload when that element is a string.
+A record without an embedding is never eligible for a similarity query, so it is not mirrored.
+A record with an element that is not finite as an `f32` value is also not mirrored.
+
+The capture has no meter, no error path and no await.
+So it never changes the outcome, the events or the charges of a transaction.
+
+### 19.2 The journal and its publication
+
+The Reified runtime of a reducer holds the mirror journal of the current evaluation (`reified/runtime.rs`).
+The space job of each operation appends the net writes of its transaction to the journal.
+So the scheduler orders the appends of one space as it orders the jobs of that space.
+The journal keeps the last write of each record id of each collection.
+
+Two lines in hot files settle the journal with the final result of a deploy.
+A result `Ok` without errors publishes the journal as one batch for each collection, and every other result drops the journal.
+
+*Table 115. The settle lines (approved by design v3 4.9 and plan decision 66).*
+
+| File | Line | Paths that pass it |
+|---|---|---|
+| `rholang/src/rust/interpreter/interpreter.rs` | `reducer.reified.settle_mirror_journal(&evaluation_result);` at the end of `inj_attempt_inner` | native play, and the legacy play and replay paths until the legacy model leaves the tree |
+| `rholang/src/rust/interpreter/rho_runtime.rs` | `self.reducer.reified.settle_mirror_journal(&result);` before `NativeReplayEnvironment::evaluate` returns its result | native replay certification |
+
+Every root evaluation drops a journal that no result settled (`begin_evaluation_scope`, FR-5').
+So an evaluation without a deploy result never publishes, and its writes never reach the next deploy.
+Casper makes such evaluations for its exploratory deploys, through `RhoRuntime::inj`.
+A native replay that the host-work check rejects returns before its settle line, so its journal is never published either.
+
+Native replay publishes its own journal to the mirror of the node that replays.
+So a validator keeps its mirror current from the blocks that it certifies.
+A node that plays a deploy and then certifies the same deploy publishes its batch twice.
+The writes are idempotent, so the mirror ends in the same state.
+When other batches come between the two publications, the mirror can hold a removed record for a short time.
+The ids of `ann` are only hints, and `ids=` selects no record that consensus state does not hold (Section 18.1).
+
+### 19.3 The mirror writer
+
+`MirrorWriter` in `reified/vectordb_services.rs` applies the batches of a node to its mirror.
+A bounded queue of 1,024 batches feeds one task, and the task applies the batches in publication order.
+For each batch, the task makes the collection if it does not exist, upserts the records and then deletes the ids.
+A batch that fails is applied again from its start, with at most 3 attempts and pauses of 100 ms and 200 ms.
+
+Publication never waits: it hands each batch to the queue with `try_send`.
+A batch that finds the queue full, or that still fails after its attempts, marks its collection dirty.
+The reconciler of step 7c repairs the dirty collections.
+`flush` waits until the task has finished each batch that the queue took, for tests and for shutdown.
+The unavailable services of a node have no writer, so their publication drops the batches.
+
+The ChromaDB backend makes a collection only when the server does not hold it.
+So an existing collection keeps its metadata, the watermark of the reconciler included.
+A record carries the metadata keys `channel` and `persistent`.
+A delete in a collection that the server does not hold succeeds, because that collection holds no record.
+The sandbox compiles these calls with `cargo check -p rholang --features chromadb`, and the live leg of step 7c runs them against a ChromaDB server.
+
+*Table 116. The distance of a mirror collection (`MirrorMetric`, the `hnsw:space` of ChromaDB).*
+
+| Metric of the space | Distance of the collection |
+|---|---|
+| `cosine` (the default) | `cosine` |
+| `dot` | `ip` |
+| `euclidean` | `l2` |
+| `manhattan`, `hamming`, `jaccard` | none: gate 9 of the factory refuses `mirror` |
+
+Gate 9 also refuses `mirror` with the qualifiers `temp` and `seq`, so an ephemeral space never has a mirror.
+Until P7 enables these qualifiers, gate 3 refuses them first with `QualifierUnavailable`.
+
+### 19.4 Tests
+
+*Table 117. The tests of step 7b.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `mirror_capture_is_active_only_for_a_mirrored_vectordb_space` | `spaces/mirror.rs` | A space without `mirror`, a queue space and a metric that the mirror does not index capture nothing. |
+| `mirror_capture_net_writes_follow_the_first_and_the_last_event` | the same | Each row of Table 114, a persistent record that a COMM matches, the incoming produce of a produce-triggered fire, a record without a vector, and a counter channel. |
+| `mirror_capture_skips_a_non_data_channel_and_another_space` | the same | A public channel and a data channel of another space are not mirrored. |
+| `mirror_record_rounds_its_embedding_and_keeps_a_string_document` | the same | The `f32` rounding of each element, a record whose element exceeds the `f32` range, the persistence, a list payload without a document, and the distance `l2`. |
+| `mirror_metric_maps_the_metrics_that_chroma_indexes` | the same | Each row of Table 116. |
+| `mirror_journal_keeps_the_last_write_of_each_record` | the same | The last write of a record id wins, each collection gives one batch in record-id order, and `take` and `clear` empty the journal. |
+| `mirror_writer_applies_batches_in_publication_order` | `reified/vectordb_services.rs` | The order of the batches and of the calls of a batch, and a batch with deletes only. |
+| `mirror_writer_makes_the_designed_attempts` | the same | The writer makes 3 attempts, the value of the design. The writer tests count with this literal, so a change of the constant fails them. |
+| `mirror_writer_retries_a_failed_batch` | the same | A batch that succeeds at its last attempt leaves its collection clean. |
+| `mirror_writer_marks_a_failed_batch_dirty` | the same | A batch that fails each attempt marks its collection dirty, the next batch is applied, and `take_dirty` empties the set. |
+| `mirror_writer_marks_a_full_queue_dirty` | the same | With a stalled mirror and a queue of one batch, the batches that find the queue full mark their collections dirty at once. |
+| `vectordb_services_default_to_unavailable` | the same | The unavailable mirror refuses each write, and the unavailable services have no writer. |
+| `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` | `spaces/factory/constructor.rs` | Gate 9 for each qualifier and each metric, with and without `mirror`. |
+| `mirror_publishes_a_successful_deploy` | `rholang/tests/reified_vectordb_chroma.rs` | A deploy publishes one upsert for each record with a vector, with its id, embedding, channel digest, persistence and document. A record without a vector and an unmirrored space are not mirrored. |
+| `mirror_journal_drops_failed_deploy` | the same | A space error, an out-of-phlo deploy and a host-work rejection publish nothing, each one unit below the usage of a control deploy that publishes its upsert. |
+| `mirror_rule_e_coalesces` | the same | A peek writes nothing, a consume of a non-persistent record deletes it, and a persistent record stays. |
+| `mirror_temp_never_mirrored` | the same | The factory refuses `mirror` with `temp` and `seq`, and nothing reaches the mirror. |
+| `mirror_never_blocks_deploy` | the same | With a stalled mirror and a full queue, three deploys succeed at once and the collection is dirty. With a mirror that refuses each write, the collection is dirty after 3 attempts. |
+| `mirror_journal_keeps_the_last_write_of_a_deploy` | the same | A record that one transaction stores and a later transaction of the same deploy consumes leaves no record in the mirror. |
+| `mirror_fired_send_is_never_mirrored` | the same | A send that fires a parked waiter never enters the collection, so nothing reaches the mirror. |
+| `mirror_collection_distance_follows_the_metric` | the same | The collections of spaces with the metrics `cosine`, `dot` and `euclidean` have the distances `cosine`, `ip` and `l2`. |
+| `mirror_exploratory_evaluation_publishes_nothing` | the same | An evaluation through `RhoRuntime::inj` publishes nothing, and the next deploy publishes only its own record. |
+| `mirror_replay_publishes_its_own_journal` | the same | Native replay certification of two deploys gives the mirror of the replaying node the calls and the records of the mirror of play. |
+
+In `mirror_journal_drops_failed_deploy`, each failing deploy stores a record and then peeks it.
+The peek fires only after the store has committed, so the journal holds the upsert when the deploy fails.
+At one unit of `VerificationBytes` below the usage of the control, the host-work check rejects the deploy after its last operation.
+The evaluation then returns `Err(HostWorkRejected)`, and the test support plays it with `native_play_result`.
+
+The fake mirror of the tests (`rholang/tests/support/backends.rs`) keeps the records of each collection and a log of the write calls.
+A stalled fake mirror holds its writes until the test releases them, and a down fake mirror refuses them.
+
+### 19.5 Negative controls
+
+The harness `scripts/verify-reified/mirror-mutants.py` applies each mutant and restores the source files after it.
+It runs the unit tests of the capture, of the journal, of the writer and of gate 9, and the native suite.
+A systemd time limit bounds each run, and a run that reaches it counts as a hang.
+
+*Table 118. The mutation controls of step 7b.*
+
+| Mutant | What it changes | Tests that fail |
+|---|---|---|
+| `publish-with-errors` | A result with errors publishes its journal. | `mirror_journal_drops_failed_deploy` |
+| `publish-on-err` | An evaluation that ends with an error publishes its journal. | `mirror_journal_drops_failed_deploy` |
+| `no-play-settle` | The settle line of `interpreter.rs` is gone. | 8 |
+| `no-replay-settle` | The settle line of `rho_runtime.rs` is gone. | `mirror_replay_publishes_its_own_journal` |
+| `begin-scope-keeps-journal` | A root evaluation keeps a journal that no result settled. | `mirror_exploratory_evaluation_publishes_nothing` |
+| `journal-not-appended` | The space job drops the writes of its transaction. | 8 |
+| `rule-e-upserts` | A Rule E pair upserts its record. | `mirror_capture_net_writes_follow_the_first_and_the_last_event`, `mirror_rule_e_coalesces` |
+| `new-then-removed-deletes` | A record that is new and leaves in the same transaction is deleted. | `mirror_capture_net_writes_follow_the_first_and_the_last_event` |
+| `persistent-removed` | A COMM that matches a persistent record deletes it. | `mirror_capture_net_writes_follow_the_first_and_the_last_event`, `mirror_rule_e_coalesces` |
+| `incoming-removed` | The incoming datum of a produce-triggered fire counts as a removal. | `mirror_capture_net_writes_follow_the_first_and_the_last_event`, `mirror_fired_send_is_never_mirrored` |
+| `foreign-channel-removed` | A COMM on a channel that is not a data channel of the space removes a record. | `mirror_capture_skips_a_non_data_channel_and_another_space` |
+| `non-finite-mirrored` | An embedding that is not finite as `f32` values is mirrored. | `mirror_record_rounds_its_embedding_and_keeps_a_string_document` |
+| `document-dropped` | A mirror record never carries its document. | `mirror_capture_net_writes_follow_the_first_and_the_last_event`, `mirror_publishes_a_successful_deploy` |
+| `persistence-dropped` | A mirror record never carries its persistence. | `mirror_record_rounds_its_embedding_and_keeps_a_string_document`, `mirror_publishes_a_successful_deploy` |
+| `capture-without-mirror-param` | A VectorDB space without `mirror` is captured. | `mirror_capture_is_active_only_for_a_mirrored_vectordb_space`, `mirror_publishes_a_successful_deploy` |
+| `journal-first-write-wins` | The journal keeps the first write of a record id. | `mirror_journal_keeps_the_last_write_of_each_record`, `mirror_journal_keeps_the_last_write_of_a_deploy` |
+| `dot-as-cosine` | The metric `dot` gets the distance `cosine`. | `mirror_metric_maps_the_metrics_that_chroma_indexes`, `mirror_collection_distance_follows_the_metric` |
+| `capture-index-shifted` | The captured stores shift by one staged index. | 6 |
+| `writer-no-retry` | The writer makes one attempt only. | 4 |
+| `failed-batch-not-dirty` | A batch that fails after its attempts leaves its collection clean. | `mirror_writer_marks_a_failed_batch_dirty`, `mirror_never_blocks_deploy` |
+| `full-queue-not-dirty` | A batch that finds the queue full leaves its collection clean. | `mirror_writer_marks_a_full_queue_dirty`, `mirror_never_blocks_deploy` |
+| `collection-not-ensured` | A batch writes to a collection that it never makes. | 12 |
+| `deletes-skipped` | A batch never deletes. | 7 |
+
+All 23 mutants fail tests, and the harness restores the files.
+3 mutants fail only unit tests, because no program of the native suite reaches their case:
+
+- `foreign-channel-removed`: a plan of a VectorDB space stages only on the data channels of its space.
+  The family has no counter, and the allocator of index names runs outside the plans.
+- `new-then-removed-deletes`: no transaction of the native suite stores a new record and removes it again.
+- `non-finite-mirrored`: no record of the native suite has an element outside the `f32` range.
+
+### 19.6 Running the step-7b checks
+
+To run the checks of step 7b, do these steps from the repository root:
+
+1. Run `cargo test -p rholang --lib --test reified_vectordb_chroma -- mirror_ vectordb_services gate_9`.
+2. Run `python3 scripts/verify-reified/mirror-mutants.py`, which must report `FAIL=0`.
+3. Run `cargo check -p rholang --features chromadb`.
+4. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+
 
 ## References
 

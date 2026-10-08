@@ -3749,7 +3749,7 @@
       ]
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). It extends campaign and restates the edits and the new files of d47, as d47 restates p5. Step 1 (the generic prerequisites) edits only campaign files. Step 2 (the exact numeric core) adds the module line pub mod tensor; to interpreter/mod.rs and the new files of the numeric core and of its formal legs. Step 3 (design steps 3 and 4) adds the new files of the VectorDB driver, of its suite and of its mutation harness. Step 6 adds the new files of the operations of rho:lang:vector, of their suite and of their mutation harness. Step 7a adds the approved edit of interpreter/system_processes.rs (the body refs of rho:vectordb:embed and rho:vectordb:ann join non_deterministic_ops()) and the new files of the services, of their suite, of its test backends and of its mutation harness.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). It extends campaign and restates the edits and the new files of d47, as d47 restates p5. Step 1 (the generic prerequisites) edits only campaign files. Step 2 (the exact numeric core) adds the module line pub mod tensor; to interpreter/mod.rs and the new files of the numeric core and of its formal legs. Step 3 (design steps 3 and 4) adds the new files of the VectorDB driver, of its suite and of its mutation harness. Step 6 adds the new files of the operations of rho:lang:vector, of their suite and of their mutation harness. Step 7a adds the approved edit of interpreter/system_processes.rs (the body refs of rho:vectordb:embed and rho:vectordb:ann join non_deterministic_ops()) and the new files of the services, of their suite, of its test backends and of its mutation harness. Step 7b adds the approved settle lines of interpreter.rs and rho_runtime.rs (M1 publication, decision 66) and the new files of the mirror journal and of its mutation harness.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -3940,7 +3940,8 @@
             "    let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());",
             "    reified::system_processes::register(extra_system_processes, &space_runtime);",
             "        space_runtime,",
-            "    native_space_runtime.bind_native_replay(session.space_store(cost.clone())?, cost.clone())?;"
+            "    native_space_runtime.bind_native_replay(session.space_store(cost.clone())?, cost.clone())?;",
+            "        self.reducer.reified.settle_mirror_journal(&result);"
           ],
           "added_line_counts": [
             [
@@ -4505,6 +4506,12 @@
             "        crate::rust::interpreter::reified::system_channels::EMBED_BODY_REF,",
             "        crate::rust::interpreter::reified::system_channels::ANN_BODY_REF,"
           ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/interpreter.rs",
+          "added_lines": [
+            "        reducer.reified.settle_mirror_journal(&evaluation_result);"
+          ]
         }
       ],
       "allowed_new_files": [
@@ -4773,6 +4780,7 @@
         "rholang/src/rust/interpreter/spaces/generic.rs",
         "rholang/src/rust/interpreter/spaces/join.rs",
         "rholang/src/rust/interpreter/spaces/matching.rs",
+        "rholang/src/rust/interpreter/spaces/mirror.rs",
         "rholang/src/rust/interpreter/spaces/mod.rs",
         "rholang/src/rust/interpreter/spaces/namespace.rs",
         "rholang/src/rust/interpreter/spaces/outer/array.rs",
@@ -4871,6 +4879,7 @@
         "scripts/verify-reified/footprint-policies.json",
         "scripts/verify-reified/merge-ordinary-capture.py",
         "scripts/verify-reified/merge-queue-parity-capture.py",
+        "scripts/verify-reified/mirror-mutants.py",
         "scripts/verify-reified/numeric_reference_receipt.py",
         "scripts/verify-reified/rocq-negative-controls.py",
         "scripts/verify-reified/run-checker-tests.py",

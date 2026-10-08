@@ -669,7 +669,9 @@ impl ReducerCore {
         then: Option<DispatchFuture<'static>>,
     ) -> DispatchFuture<'a> {
         Box::pin(async move {
-            let SpaceOutcome { fires, reissue } = outcome;
+            // The runtime has appended the mirror writes to the journal of the evaluation
+            // (P6 step 7b), so a dispatch reads only the fires and the re-issue.
+            let SpaceOutcome { fires, reissue, .. } = outcome;
             if fires.is_empty() && reissue.is_none() {
                 return match then {
                     Some(then) => then.await,
@@ -3852,6 +3854,7 @@ mod tests {
                 SpaceOutcome {
                     fires: vec![fire_to(&out, 1), fire_to(&out, 2)],
                     reissue: None,
+                    mirror: None,
                 },
                 None,
             )
@@ -3867,6 +3870,7 @@ mod tests {
                     SpaceOutcome {
                         fires: failing_fires(),
                         reissue: None,
+                        mirror: None,
                     },
                     None,
                 )
@@ -3879,6 +3883,7 @@ mod tests {
                 SpaceOutcome {
                     fires: vec![fire_to(&single, 3)],
                     reissue: None,
+                    mirror: None,
                 },
                 None,
             )
@@ -3900,6 +3905,7 @@ mod tests {
                 SpaceOutcome {
                     fires: vec![fire_to(&after, 10), fire_to(&after, 11)],
                     reissue: None,
+                    mirror: None,
                 },
                 Some(observing_then(&fixture.host, &after, &seen)),
             )
@@ -3933,6 +3939,7 @@ mod tests {
                     SpaceOutcome {
                         fires: vec![fire_to(&out, 4), fire_to(&out, 5)],
                         reissue: None,
+                        mirror: None,
                     },
                     None,
                 )
@@ -3952,6 +3959,7 @@ mod tests {
                 SpaceOutcome {
                     fires: failing_fires(),
                     reissue: None,
+                    mirror: None,
                 },
                 None,
             ),
@@ -3986,6 +3994,7 @@ mod tests {
                     SpaceOutcome {
                         fires,
                         reissue: None,
+                        mirror: None,
                     },
                     Some(sending_then(&core, &out, 15 + count as i64)),
                 ),
@@ -4047,6 +4056,7 @@ mod tests {
                             SpaceOutcome {
                                 fires,
                                 reissue: Some(reissue.clone()),
+                                mirror: None,
                             },
                             None,
                         )

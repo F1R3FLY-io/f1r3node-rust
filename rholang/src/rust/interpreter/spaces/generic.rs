@@ -111,6 +111,7 @@ use super::errors::SpaceError;
 use super::factory::defaults::suggestion;
 use super::join::{self, JoinRoute, JoinScope};
 use super::matching::SpaceMatcher;
+use super::mirror::MirrorCapture;
 use super::namespace::{self, CollectionKey, NativeSpace, RandomPurpose, ReifiedId};
 use super::record::{self, Introduction, OperationAuthority};
 use super::settle::reissued_operation;
@@ -682,6 +683,10 @@ struct Plan<'a> {
     /// The fires of this transaction, its settles included (I-21). Every fire loop of the
     /// transaction counts on it, so one transaction makes at most `FIRE_ROUND_CAP` fires.
     rounds: FireRounds,
+    /// The mirror capture of the transaction (P6 step 7b): active for a VectorDB space with a
+    /// mirror. It records the staged stores, and after the commit it gives the net writes of
+    /// the transaction, with no meter and no error path.
+    mirror: MirrorCapture,
 }
 
 /// A produce-side fire: the head waiter that the datum fires, and the values that it binds.
@@ -998,6 +1003,10 @@ impl<'p> Cx<'_, 'p> {
         introduction: &Arc<Introduction>,
     ) -> Result<(), SpaceError> {
         let meter = self.meter();
+        if self.plan.mirror.is_active() {
+            let index = self.plan.staged.len();
+            self.plan.mirror.store(index, channel, &record, persist);
+        }
         let op = SpaceProduce {
             channel: meter.copy(channel)?,
             data: record,
@@ -1859,7 +1868,11 @@ fn outcome(
         }
     }
     match prefixes.next() {
-        None => Ok(SpaceOutcome { fires, reissue }),
+        None => Ok(SpaceOutcome {
+            fires,
+            reissue,
+            mirror: None,
+        }),
         Some(_) => Err(SpaceError::Inconsistent(
             "a dispatched count has no prefix fire",
         )),
@@ -1982,6 +1995,7 @@ pub(crate) fn run_plan(
         bumped: None,
         legacy: LegacyChain::new(&env.budget),
         rounds: FireRounds::new(),
+        mirror: MirrorCapture::of(config),
     };
     let reissue = stage(&mut Cx {
         txn: &mut txn,
@@ -1991,12 +2005,14 @@ pub(crate) fn run_plan(
         staged,
         prefixes,
         legacy,
+        mirror,
         ..
     } = plan;
     prepay_outcome(&staged, meter)?;
     Ok(Prepared::new(txn, move |receipt| {
         legacy.finish()?;
-        outcome(receipt, staged, prefixes, reissue)
+        let writes = mirror.writes(&receipt);
+        outcome(receipt, staged, prefixes, reissue).map(|outcome| outcome.with_mirror(writes))
     }))
 }
 
@@ -2326,6 +2342,7 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             bumped: None,
             legacy: LegacyChain::new(&env.budget),
             rounds: FireRounds::new(),
+            mirror: MirrorCapture::of(&config),
         };
         let reissue = match op {
             SpaceOp::Produce(op) => {
@@ -2385,12 +2402,14 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             staged,
             prefixes,
             legacy,
+            mirror,
             ..
         } = plan;
         prepay_outcome(&staged, meter)?;
         Ok(Prepared::new(txn, move |receipt| {
             legacy.finish()?;
-            outcome(receipt, staged, prefixes, reissue)
+            let writes = mirror.writes(&receipt);
+            outcome(receipt, staged, prefixes, reissue).map(|outcome| outcome.with_mirror(writes))
         }))
     }
 
@@ -4652,6 +4671,7 @@ mod tests {
                     results: Vec::new(),
                 }],
                 reissue: None,
+                mirror: None,
             })
         );
         let differs = Err(SpaceError::Inconsistent(
@@ -4968,6 +4988,7 @@ mod tests {
             bumped: None,
             legacy: LegacyChain::new(&env.budget),
             rounds: FireRounds::new(),
+            mirror: MirrorCapture::inactive(),
         };
         stage(&mut Cx {
             txn: &mut txn,
@@ -5539,6 +5560,7 @@ mod tests {
             bumped: None,
             legacy: LegacyChain::new(&env.budget),
             rounds: FireRounds::new(),
+            mirror: MirrorCapture::inactive(),
         };
         stage(&mut Cx {
             txn: &mut txn,
