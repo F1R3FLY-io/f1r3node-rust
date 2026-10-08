@@ -1635,6 +1635,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            // Phase 7b-1: context construction via
+            // `build_snapshot_chunk_context(&runtime_manager)` and
+            // threading `self.runtime_manager` through
+            // `Initializing` are a follow-up slice.  `None`
+            // preserves current behavior.
+            None,
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),

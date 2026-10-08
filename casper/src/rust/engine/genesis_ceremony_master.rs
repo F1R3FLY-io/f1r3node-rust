@@ -162,6 +162,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     transport_layer.clone(),
                     rp_conf_ask.clone(),
                     block_retriever.clone(),
+                    // Phase 7b-1: ceremony-master path is genesis-rooted.
+                    // Snapshot chunk fetch has nothing to anchor against
+                    // (no prior snapshot exists), so passing `None` is
+                    // correct here regardless of boot pipeline state.
+                    None,
                     &engine_cell,
                     event_publisher,
                     // The ceremony master transitions genesis-rooted: its
