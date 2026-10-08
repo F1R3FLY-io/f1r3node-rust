@@ -1684,6 +1684,40 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Some(ctx)
         };
 
+        // Phase 7b-2 boot wire-in: install a completion sink on
+        // the snapshot chunk driver + spawn the subscriber that
+        // decodes each completed snapshot and drives the WAL
+        // payload fetch + applier (slice 5.130).  Mirror of the
+        // wire-in at `casper_launch`.  Joiner-side significance:
+        // `Initializing` is where snapshot sync is actually
+        // consequential (new finalized horizon → fetch chunks),
+        // so this is the engine the apply subscriber matters
+        // most on.
+        if let (Some(snap_ctx), Some(wal_ctx)) =
+            (snapshot_chunk_ctx.as_ref(), wal_payload_ctx.as_ref())
+        {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
+            >();
+            snap_ctx.sync_driver.install_completion_sink(tx);
+            // Empty-stub RootIdentityRegistry + empty allowed_roots
+            // pending node::setup wiring that populates both from
+            // the operator's fs bundle.
+            let registry =
+                rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new();
+            let _subscriber_handle =
+                crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
+                    rx,
+                    Arc::clone(&wal_ctx.sync_driver),
+                    snap_ctx.snapshot_dir.clone(),
+                    registry,
+                    Vec::new(),
+                    Some(Arc::clone(&wal_ctx.payload_lookup)),
+                );
+            // JoinHandle intentionally dropped — subscriber exits
+            // naturally when the completion-sink sender is dropped.
+        }
+
         transition_to_running(
             self.block_processing_queue_tx.clone(),
             self.blocks_in_processing.clone(),

@@ -487,6 +487,52 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             Some(ctx)
         };
 
+        // Phase 7b-2 boot wire-in: install a completion sink on
+        // the snapshot chunk driver + spawn the subscriber that
+        // decodes each completed snapshot and drives the WAL
+        // payload fetch + applier (slice 5.130).  Only wired when
+        // BOTH contexts are Some — otherwise there's no fetch
+        // driver or snapshot dir to drive against.
+        //
+        // `allowed_roots` is empty for now (follow-up slice will
+        // thread the operator's consensus-static roots via
+        // `RuntimeManager::consensus_static_roots` when that API
+        // lands).  Empty vector skips the applier's `allowed_roots`
+        // validation — same behavior as pre-Shape-A applies.
+        //
+        // `payload_lookup` is cloned from the WAL payload context's
+        // own lookup — Tier 1 reducer uses the local
+        // `DirectoryPayloadStore` (or `InMemoryPayloadStore`
+        // fallback) to short-circuit peer fetches for hashes the
+        // joiner already has.
+        if let (Some(snap_ctx), Some(wal_ctx)) =
+            (snapshot_chunk_ctx.as_ref(), wal_payload_ctx.as_ref())
+        {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
+            >();
+            snap_ctx.sync_driver.install_completion_sink(tx);
+            // RootIdentityRegistry construction here is a Default
+            // (empty) stub pending node::setup wiring that
+            // populates it from the operator's fs bundle.  An
+            // empty registry falls through to pre-Shape-A behavior
+            // (every entry.path is treated as absolute on-disk).
+            let registry =
+                rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new();
+            let _subscriber_handle =
+                crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
+                    rx,
+                    std::sync::Arc::clone(&wal_ctx.sync_driver),
+                    snap_ctx.snapshot_dir.clone(),
+                    registry,
+                    Vec::new(),
+                    Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
+                );
+            // JoinHandle intentionally dropped — the subscriber
+            // exits naturally when the completion-sink sender is
+            // dropped (snapshot driver teardown at process shutdown).
+        }
+
         // Scala equivalent: Engine.transitionToRunning[F](...)
         transition_to_running(
             self.block_processing_queue_tx.clone(),
