@@ -327,6 +327,21 @@ pub async fn get_results(
             .expect("phase label mutex is never poisoned") = name;
     };
 
+    // Clone the Consensus Dir fs_bundle entries BEFORE `genesis_parameters`
+    // moves into `build_genesis_with_parameters`.  They're needed later to
+    // register the on-disk roots in the runtime's RootIdentityRegistry.
+    let consensus_dir_entries: Vec<(String, std::path::PathBuf)> = genesis_parameters
+        .2
+        .fs_bundle
+        .iter()
+        .filter(|e| {
+            e.consensus_mode
+                == casper::rust::genesis::contracts::fs_genesis::BundleConsensusMode::Consensus
+                && e.kind == casper::rust::genesis::contracts::fs_genesis::BundleEntryKind::Dir
+        })
+        .map(|e| (e.logical_name.clone(), e.canon_path.clone()))
+        .collect();
+
     let body =
         async {
             let mut genesis_builder = GenesisBuilder::new();
@@ -370,6 +385,42 @@ pub async fn get_results(
             )
             .await
             .unwrap();
+
+            // Register Consensus-mode fs_bundle entries into the runtime's
+            // RootIdentityRegistry so Consensus-cap tests resolve the
+            // `/@bundle/<logical>` path emitted by `format_bundle_for_rholang`
+            // back to the operator-supplied on-disk root.  Production boot
+            // does this via `node::setup::create_casper_infrastructure`'s
+            // `register_consensus_bundle_roots`; the test harness has no
+            // equivalent, so Consensus-cap specs would otherwise fail with
+            // `safe_descend` not finding `/@bundle/<logical>` on disk.
+            //
+            // Scope note (triage): only Dir entries are registered.  File
+            // entries use (BUNDLE_ROOT_PREFIX_or_parent, logical_file_name)
+            // where the logical file name is the Rholang-visible bundle key,
+            // NOT necessarily the on-disk file name — fileio's
+            // `project_bundle` stages the file into a per-validator subdir
+            // under that name.  A Rust-side equivalent is deferred;
+            // Consensus File-cap tests remain `#[ignore]`-gated with that
+            // reason inlined per-test.
+            {
+                use casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX;
+                use rholang::rust::interpreter::io::path::identity::Root;
+                for (logical_name, canon_path) in &consensus_dir_entries {
+                    let logical =
+                        std::path::PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{logical_name}"));
+                    let captured = match Root::capture(canon_path) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return Err(InterpreterError::BugFoundError(format!(
+                                "Failed to capture Consensus Dir bundle root {:?}: {:?}",
+                                canon_path, e
+                            )));
+                        }
+                    };
+                    runtime.fs_handles.root_registry.register(logical, captured);
+                }
+            }
 
             // Position the runtime at the genesis post-state so the standard library / registry
             // (rho:lang:listOps, rho:system:pos, rho:vault:*, …) resolve for the test suite.
