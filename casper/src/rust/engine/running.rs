@@ -377,6 +377,11 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     /// state requester. `None` on a node that cannot need one (genesis
     /// ceremony); without it those messages are dropped, as they always were.
     state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
+    /// Phase 7b-1 (2026-08-27): snapshot chunk-fetch context, installed
+    /// AFTER construction via [`install_snapshot_chunk_context`].  Uses
+    /// `OnceLock` so the read-side lookup is lock-free (acquire-load).
+    /// Unset on nodes without a snapshot writer (observers, test harnesses).
+    snapshot_chunk_ctx: std::sync::OnceLock<SnapshotChunkContext>,
 }
 
 use crate::rust::blocks::block_processor::{
@@ -481,8 +486,24 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             conf,
             block_retriever,
             state_items_tx,
+            snapshot_chunk_ctx: std::sync::OnceLock::new(),
         }
     }
+
+    /// Phase 7b-1 boot hook: attach the snapshot chunk-fetch context
+    /// AFTER construction (same lifetime boundary as the state-items
+    /// channel but installed by a different boot subsystem).  Uses
+    /// `OnceLock::set` so installing twice is a quiet no-op (the first
+    /// install wins; subsequent calls return `Err`, which we discard).
+    /// If a future test path needs mock-swap semantics, we'll revisit.
+    pub fn install_snapshot_chunk_context(&self, ctx: SnapshotChunkContext) {
+        let _ = self.snapshot_chunk_ctx.set(ctx);
+    }
+
+    /// Lock-free read of the snapshot chunk-fetch context.  Single
+    /// acquire-load of the `OnceLock`; no mutex, no clone.
+    #[allow(dead_code)]
+    fn snapshot_chunk_ctx(&self) -> Option<&SnapshotChunkContext> { self.snapshot_chunk_ctx.get() }
 
     fn ignore_casper_message(&self, hash: BlockHash) -> Result<bool, CasperError> {
         let blocks_in_processing = self.blocks_in_processing.contains(&hash);
