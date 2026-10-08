@@ -99,15 +99,17 @@ evidence:
   signature: "Each failure is a different scenario with the same result: The fixture did not complete the required driver path (exit 2), so the scenario gave no behavioral verdict. The six scenarios are cleanup-sufficient, log-within-budget, log-sudo-fallback, log-budget-disabled, log-probe-vanished, and benchmark-disabled. Each one runs a full iteration. No refusal scenario failed."
   reproduction: "Local runs on 2026-10-08 (12 CPUs): all 48 runs of the six scenarios passed without load. With all host CPUs saturated, log-probe-vanished failed once in 4 runs with driver exit 124: the 50 s driver timeout killed it at 52 s. It needs about 28 s without load, which leaves less than 2x margin. The other five scenarios need 3 to 4 s against a 20 s driver cap, even under the local load."
   failing_log: "The killed driver log ends at The boundary workload fixture completed., so the scenario waits and does not compute."
+  stress_finding: "2026-10-08: with 10 of 12 CPUs saturated and six scenarios in parallel, 25 of 60 runs gave no pass. The runs are bimodal: a pass needs 3 to 4 s, and a failure hangs until the driver timeout (exit 124, Summary: missing). In each hung run the driver log ends at The boundary workload fixture completed. and output/signal is not consumed, so the driver stalls before its signal check (run-merge-recovery-soak.sh line 1917). The CI flake is most likely this stall, not a tight timeout."
   lint_scope: "The Lint job of ci.yml has 32 steps. Only cargo fmt, clippy, the workflow invariants, and the supply-chain controls are static checks. The other steps run behavioral tests of the CI and soak scripts. The disk admission step builds an image and the soak harness and runs the real soak driver in about 60 containers under wall-clock timeouts. PR #668 adds five more script tests to this job."
 tasks:
   - id: TASK-023-1
     title: "Remove the wait that keeps log-probe-vanished near its driver timeout"
-    status: in_progress
+    status: blocked
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T17:00:00Z
-    blocked_by: []
+    blocked_by: [TASK-023-8]
+    progress: "B3 and B4 are done (abffaba3b, 8fa26ea27): log-probe-vanished needs 11 to 12 s instead of 27 s. The saturated-CPU criterion waits for the stall fix in TASK-023-8."
     acceptance:
       - "The analysis names the wait in the log-probe-vanished path (fixture or driver) that takes most of its 28 s, with the evidence."
       - "After the fix, the scenario takes less than one third of its driver timeout without load. Decision 2026-10-08: the guardian samples every 5 s (cbc=mandatory driver), so 12 s is the floor without a driver change. The timing test is not a hard CI gate."
@@ -158,18 +160,42 @@ tasks:
       - "Each name tells a reader which category failed when it is red: static check, unit test, script test, soak harness test, build, or integration test."
       - "The required-check names in the rulesets, the aggregator jobs that match job names (for example the per-arch integration aggregators), and docs/ci.md use the new names."
       - "docs/ci.md maps each old name to its new name, so that old PR checks and run links stay readable."
+  - id: TASK-023-7
+    title: "Name the command that stalls the soak driver after the first iteration"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A fixture watchdog writes the process tree of the scenario container shortly before the driver timeout. The watchdog changes no scenario verdict."
+      - "The SOAK_DISK_TEST_STRESS_ROUNDS stage keeps the evidence of each hung run, and at least three hung runs name the blocked command with its parent chain."
+      - "The analysis states whether the stall is in run-merge-recovery-soak.sh or in a fixture command, with the evidence."
+  - id: TASK-023-8
+    title: "Update CLAIM-SOAK-001 and fix the driver stall"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: [TASK-023-7]
+    cbc_policy: "scripts/run-merge-recovery-soak.sh is cbc=mandatory. The claim update comes before any driver change."
+    acceptance:
+      - "If the stall is in the driver, docs/claims/soak-disk-protection.md (CLAIM-SOAK-001) states the liveness property that the fix restores: after an iteration completes, the driver reaches its signal check and its admission checks within a bounded time, also under CPU saturation."
+      - "The claim lists scripts/bench/test-soak-disk-admission-timing.sh in its tests."
+      - "The driver fix keeps every verdict of the 54 disk admission scenarios."
+      - "SOAK_DISK_TEST_STRESS_ROUNDS=10 gives 0 runs without a pass."
+      - "The CbC evidence record for scripts/run-merge-recovery-soak.sh is updated for the new commit, or a maintainer waiver records why not."
+      - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
     priority: p0
     claimed_by: null
-    blocked_by: [TASK-023-1]
+    blocked_by: [TASK-023-1, TASK-023-8]
     acceptance:
       - "Over at least 100 CI runs after the merge, the disk admission step has 0 fixture failures, or each failure has a diagnosed cause."
 ---
 ```
 
-**Current state:** Created on 2026-10-08 on fix/lint-flake-resolution. TASK-023-1 and TASK-023-2 are next on this branch. TASK-023-4 and TASK-023-6 share their own branch.
+**Current state:** TASK-023-2 behaviors are done (2da04d374, 0791e99a6). TASK-023-1 B3 and B4 are done. The stress stage (8fa26ea27) shows a driver stall, so TASK-023-7 (diagnosis) and TASK-023-8 (CLAIM-SOAK-001 update and fix) are next. TASK-023-4 and TASK-023-6 share their own branch.
 
 ---
 
