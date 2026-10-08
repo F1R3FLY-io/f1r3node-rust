@@ -16,11 +16,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use comm::rust::peer_node::PeerNode;
-use models::rust::casper::protocol::casper_message::HasWalPayload;
+use models::rust::casper::protocol::casper_message::{HasWalPayload, WalPayloadResponse};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
+use crate::rust::engine::wal_payload_retriever::{AdmitOutcome, WalPayloadRetriever};
 
 /// Security cap on the per-payload source set — number of distinct
 /// peers that can advertise they can serve a single payload hash.
@@ -203,6 +203,45 @@ impl WalPayloadSyncDriver {
         };
         if !sources.sources.iter().any(|p| p == &sender) && sources.sources.len() < MAX_SOURCES {
             sources.sources.push_back(sender);
+        }
+    }
+
+    /// Dispatch an incoming [`WalPayloadResponse`] to the
+    /// retriever.  Returns `true` iff the retriever accepted the
+    /// response (payload bytes verified and stored).
+    ///
+    /// Byzantine outcomes (hash-mismatch, oversized, malformed
+    /// payload hash) blacklist the sender via
+    /// [`add_blacklist_capped`].  `UnknownRequest` (unsolicited
+    /// response) is logged at debug + dropped — benign; a peer may
+    /// have raced an eviction on our side.
+    pub async fn on_payload_response(
+        &self,
+        sender: PeerNode,
+        response: &WalPayloadResponse,
+    ) -> bool {
+        let outcome = self.retriever.admit_response(response).await;
+        match outcome {
+            AdmitOutcome::PayloadAccepted => true,
+            AdmitOutcome::UnknownRequest => {
+                debug!(
+                    target: "f1r3fly.casper.wal_payload_sync",
+                    "unsolicited WalPayloadResponse; dropping"
+                );
+                false
+            }
+            AdmitOutcome::PayloadHashMismatch
+            | AdmitOutcome::PayloadOversized
+            | AdmitOutcome::MalformedPayloadHash => {
+                warn!(
+                    target: "f1r3fly.casper.wal_payload_sync",
+                    outcome = ?outcome,
+                    "byzantine response; blacklisting sender"
+                );
+                let mut b = self.blacklisted.write().await;
+                add_blacklist_capped(&mut b, sender, now_ms());
+                false
+            }
         }
     }
 
@@ -604,6 +643,107 @@ mod tests {
             payload_hash: Bytes::copy_from_slice(hash),
             payload_size: 42,
         }
+    }
+
+    fn blake2b256(bytes: &[u8]) -> [u8; 32] {
+        use crypto::rust::hash::blake2b256::Blake2b256;
+        let h = Blake2b256::hash(bytes.to_vec());
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&h);
+        out
+    }
+
+    fn mk_response(hash: &[u8], bytes: Vec<u8>) -> WalPayloadResponse {
+        use prost::bytes::Bytes;
+        WalPayloadResponse {
+            payload_hash: Bytes::copy_from_slice(hash),
+            payload_bytes: Bytes::from(bytes),
+        }
+    }
+
+    #[tokio::test]
+    async fn on_payload_response_accepts_valid_bytes() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let bytes = b"valid payload".to_vec();
+        let h = blake2b256(&bytes);
+        driver.enqueue_payload(h).await;
+        let accepted = driver
+            .on_payload_response(mk_peer("alice"), &mk_response(&h, bytes.clone()))
+            .await;
+        assert!(accepted);
+        // Sender NOT blacklisted on happy path.
+        let b = driver.blacklisted.read().await;
+        assert!(!b.contains_key(&mk_peer("alice")));
+    }
+
+    #[tokio::test]
+    async fn on_payload_response_byzantine_blacklists_sender() {
+        // LOAD-BEARING: a hash-mismatch response is byzantine; the
+        // sender must land in the blacklist on the same call.
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let expected = blake2b256(b"expected");
+        driver.enqueue_payload(expected).await;
+        // Send wrong bytes under the expected hash.
+        let response = mk_response(&expected, b"WRONG BYTES".to_vec());
+        let accepted = driver
+            .on_payload_response(mk_peer("mallory"), &response)
+            .await;
+        assert!(!accepted);
+        let b = driver.blacklisted.read().await;
+        assert!(
+            b.contains_key(&mk_peer("mallory")),
+            "hash-mismatch must blacklist sender"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_payload_response_oversized_blacklists_sender() {
+        use crate::rust::engine::wal_payload_retriever::MAX_PAYLOAD_BYTES;
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let bytes = vec![0u8; MAX_PAYLOAD_BYTES + 1];
+        let h = blake2b256(&bytes);
+        driver.enqueue_payload(h).await;
+        let accepted = driver
+            .on_payload_response(mk_peer("mallory"), &mk_response(&h, bytes))
+            .await;
+        assert!(!accepted);
+        let b = driver.blacklisted.read().await;
+        assert!(b.contains_key(&mk_peer("mallory")));
+    }
+
+    #[tokio::test]
+    async fn on_payload_response_malformed_hash_blacklists_sender() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        // Response hash is only 16 bytes — malformed.
+        let bytes = b"payload".to_vec();
+        let bad_hash = &[0u8; 16][..];
+        let response = mk_response(bad_hash, bytes);
+        let accepted = driver
+            .on_payload_response(mk_peer("mallory"), &response)
+            .await;
+        assert!(!accepted);
+        let b = driver.blacklisted.read().await;
+        assert!(b.contains_key(&mk_peer("mallory")));
+    }
+
+    #[tokio::test]
+    async fn on_payload_response_unknown_request_does_not_blacklist() {
+        // Unsolicited response — benign (peer may have raced an
+        // eviction); must NOT blacklist.
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let bytes = b"unsolicited".to_vec();
+        let h = blake2b256(&bytes);
+        // NOTE: no enqueue — the request is "unknown" to the
+        // retriever.
+        let accepted = driver
+            .on_payload_response(mk_peer("alice"), &mk_response(&h, bytes))
+            .await;
+        assert!(!accepted);
+        let b = driver.blacklisted.read().await;
+        assert!(
+            !b.contains_key(&mk_peer("alice")),
+            "unsolicited response must NOT blacklist"
+        );
     }
 
     #[tokio::test]
