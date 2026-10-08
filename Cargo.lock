@@ -5021,6 +5021,7 @@ dependencies = [
  "console",
  "crypto",
  "dotenv",
+ "fileio-test-fixtures",
  "futures",
  "hex",
  "indexmap 2.14.0",
