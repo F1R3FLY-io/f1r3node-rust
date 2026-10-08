@@ -114,9 +114,10 @@ tasks:
       - "No scenario changes its behavioral verdict, and the driver timeouts stay unchanged unless a measurement justifies a change."
   - id: TASK-023-2
     title: "Make a disk admission fixture failure diagnosable from the CI log"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T15:10:00Z
     blocked_by: []
     acceptance:
       - "When a scenario exits 2, the CI log shows the driver exit code, the summary.json degraded field or its absence, and the last lines of the driver log."

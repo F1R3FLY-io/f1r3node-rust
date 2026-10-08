@@ -537,6 +537,7 @@ SH
         esac
     fi
     printf 'container=%s\nnode=%s\nevery=%s\n' "$container_budget" "$node_budget" "$log_every" >evidence/log-settings.txt
+    [[ ! "${SOAK_DISK_TEST_DRIVER_TIMEOUT:-}" =~ ^[1-9][0-9]*$ ]] || driver_timeout="$SOAK_DISK_TEST_DRIVER_TIMEOUT"
     run_benchmarks=false
     if [[ "$SCENARIO" == restart-benchmark || "$SCENARIO" == benchmark-* ]]; then
         duration=700
@@ -1415,6 +1416,21 @@ docker image inspect "$IMAGE" >"$OUTPUT/image-inspect.json"
 jq -e '.[0].Config.Volumes == null or (.[0].Config.Volumes | length) == 0' \
     "$OUTPUT/image-inspect.json" >/dev/null
 
+report_fixture_failure() {
+    local scenario="$1" evidence="$2" summary=missing
+    if [[ -s "$evidence/output/summary.json" ]]; then
+        summary="$(jq -r 'if has("degraded") then "degraded: \(.degraded)" else "complete" end' \
+            "$evidence/output/summary.json" 2>/dev/null || printf unreadable)"
+    fi
+    {
+        printf 'Fixture failure: %s\n' "$scenario"
+        printf 'Driver exit: %s\n' "$(cat "$evidence/driver-exit.txt" 2>/dev/null || printf none)"
+        printf 'Summary: %s\n' "$summary"
+        printf 'Driver log (last 20 lines):\n'
+        tail -n 20 "$evidence/driver.log" 2>/dev/null || printf '(no driver log)\n'
+    } >&2
+}
+
 # Runs one scenario in a fresh container; evidence lands in $2. Returns the
 # container's verdict: 0 pass, 1 behavioral failure, 2 fixture error.
 run_scenario() {
@@ -1425,6 +1441,7 @@ run_scenario() {
         --user 65534:65534 --workdir /case \
         --env "SOAK_DISK_TEST_SOURCE_SHA=${SOAK_DISK_TEST_SOURCE_SHA:-unknown}" \
         --env "SOAK_DISK_TEST_SCENARIO=$scenario" \
+        --env "SOAK_DISK_TEST_DRIVER_TIMEOUT=${SOAK_DISK_TEST_DRIVER_TIMEOUT:-}" \
         --env SOAK_HARNESS_BIN=/case/casper-soak \
         --entrypoint bash "$IMAGE" /case/test.sh --inside)"
     [[ "$CONTAINER" =~ ^[0-9a-f]{64}$ ]] || return 2
@@ -1458,6 +1475,7 @@ run_scenario() {
     CONTAINER=""
     printf '%s\n' "$status" >"$out/test-exit.txt"
     cat "$out/result.txt"
+    [[ "$status" != 2 ]] || report_fixture_failure "$scenario" "$out/evidence"
     return "$status"
 }
 
