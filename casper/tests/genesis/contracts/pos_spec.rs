@@ -72,6 +72,7 @@ const POS_SPEC_SHARDS: &[PosSpecShard] = &[
         tests: &[
             "slash only affects target validator across multiple delegators",
             "slash one validator preserves delegation to another",
+            "slash removes only target validator delegator rewards",
             "delegate enforces maximum effective bond cap",
             "closeBlock excludes pending undelegations from effective bonds",
         ],
@@ -103,6 +104,7 @@ const POS_SPEC_ALL_TESTS: &[&str] = &[
     "slash handles active and pending delegated exposure",
     "slash only affects target validator across multiple delegators",
     "slash one validator preserves delegation to another",
+    "slash removes only target validator delegator rewards",
     "delegate enforces maximum effective bond cap",
     "closeBlock excludes pending undelegations from effective bonds",
 ];
