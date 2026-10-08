@@ -22,15 +22,13 @@
 //! openDirImpl → Dir constructor → cmodeP cell → Dir.stat →
 //! fs_stat native → stat_record with Consensus arm) end-to-end.
 //!
-//! **Triage port status (slice 5.87)**: 1 of 2 running.  The
-//! Oracular companion test passes; the Consensus test is
-//! `#[ignore]`-gated because the Consensus `openDir`+`stat` flow
-//! does not reach the expected `[true, rec]` reply on triage.
-//! The Oracular+Consensus pair is designed to force attention here
-//! if one direction regresses — on triage, only the Oracular arm
-//! has shipped working end-to-end; the Consensus side has a known
-//! gap (same symptom cluster as the Consensus-cap tests in
-//! `fileio_examples_spec`).
+//! **Triage port status (slices 5.87 + 5.90)**: both tests running.
+//! Slice 5.87 landed the Oracular arm; slice 5.90 un-blocked the
+//! Consensus arm by wiring the RhoSpec harness to register Consensus
+//! Dir bundle entries into the runtime's `RootIdentityRegistry` —
+//! `/@bundle/<logical_name>` now resolves to the operator-supplied
+//! on-disk root (same shape production boot wires via
+//! `node::setup::register_consensus_bundle_roots`).
 
 use std::collections::HashMap;
 
@@ -79,21 +77,10 @@ fn bundle_dir_with_child(
 /// atime, ctime, owner, group).  Consensus record must be stable
 /// under host state (leader/follower produce byte-identical replies).
 ///
-/// **Triage status**: `#[ignore]` — this test does not reach its
-/// assertion on triage (`has_finished=false`).  The Oracular
-/// companion test in this file passes, so the mode routing branches
-/// at least at the Rholang level — but the Consensus arm of
-/// `Fs.openDir` + `Dir.stat` does not return the expected
-/// `[true, rec]` shape.  Matches the same symptom cluster as
-/// `fileio_examples_spec::fileio_chown_on_consensus_cap` and
-/// `fileio_examples_spec::fileio_cross_fs_membrane_invisible_to_bob`
-/// — likely a shared Consensus-mode gap in `openDirImpl` or the
-/// native `fs_stat` Consensus branch.
-// TODO(fileio-triage): diagnose Consensus-mode openDir+stat flow;
-// un-ignore when the Consensus arm produces [true, rec].  The
-// Oracular companion test confirms the Rholang-side mode routing
-// branches correctly.
-#[ignore = "triage: Consensus openDir+stat path does not reach [true, rec] (has_finished=false); same symptom cluster as fileio_examples_spec Consensus-cap tests"]
+/// **Triage status**: un-ignored by slice 5.90, which wired the
+/// RhoSpec harness to register Consensus Dir bundle entries into
+/// the runtime's `RootIdentityRegistry` so `/@bundle/<logical_name>`
+/// resolves to the operator-supplied on-disk root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stat_omits_host_transient_fields_under_consensus() {
     let (_dir, params, fs_uri) = bundle_dir_with_child(BundleConsensusMode::Consensus);
