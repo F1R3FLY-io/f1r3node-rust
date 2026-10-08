@@ -3,8 +3,9 @@
 ' Source of Figure S5.2 in ../design.md (section S5.2). The figure restates
 ' HostTxn::commit, commit_staged and commit_operation in
 ' rspace++/src/rspace/space_store_handle.rs, and the apply_op of
-' PlayBackend (rspace/space_play.rs) and of ReplayBackend
-' (replay_rspace/space_replay.rs). It adds no new fact.
+' PlayBackend (rspace/space_play.rs), of ReplayBackend
+' (replay_rspace/space_replay.rs), and of the native backend NativeBackend
+' (replay_rspace/native_session/space.rs, decision 47). It adds no new fact.
 '
 ' Reading order:
 '   1. The commit refuses a closed transaction, takes what begin holds, and
@@ -18,6 +19,10 @@
 '   4. Every error after the take step releases the locks and then the
 '      registration. An error of operation i leaves operations 0 to i - 1
 '      applied (prefix atomicity).
+'   5. In native replay (decision 47), operation i takes the ticket of its
+'      journal row instead of the observer start. A row that is not ready, a
+'      forged footprint, an outcome that does not fit, and another candidate
+'      fail closed and close the epoch, so no operation waits for the row.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 06-space-txn-commit.puml   Check: ./render.sh --check
@@ -80,7 +85,19 @@ while (next staged operation i, in staging order?) is (yes)
     else (no)
     endif
     :before_observe(source): the authority registration of the reducer; <<$rrs_agent>>
-    :start_accounting_operation(source, channels, joins); <<$rrs_host>>
+    if (native replay (decision 47)?) then (yes)
+      :begin_row: the authority and the ticket
+      of the journal row of operation i; <<$rrs_host>>
+      if (the row is ready, its footprint is the locked footprint,
+      and its outcome fits the staged kind?) then (yes)
+      else (no)
+        :fail closed with a mismatch and **close the epoch**
+        no effect, operations 0 to i - 1 stay applied; <<$rrs_reject>>
+        stop
+      endif
+    else (no: play, replay, reporting)
+      :start_accounting_operation(source, channels, joins); <<$rrs_host>>
+    endif
     if (replay or reporting, and the observer returns a directive?) then (yes)
       :fail with **NativeReplayDirectiveUnsupported**
       observer finish: Rejected, operations 0 to i - 1 stay applied; <<$rrs_reject>>
@@ -100,6 +117,12 @@ while (next staged operation i, in staging order?) is (yes)
       :log_consume, then store_waiting_continuation:
       put_continuation, then put_join for each channel; <<$rrs_storage>>
     case (Fire)
+      if (native replay, and the staged COMM is not the recorded candidate?) then (yes)
+        :fail closed with a mismatch and **close the epoch**
+        no COMM observation, no effect; <<$rrs_reject>>
+        stop
+      else (no)
+      endif
       :observe_comm with the staged COMM; <<$rrs_host>>
       if (replay or reporting, and the fire is unpaired (recorded = none)?) then (yes)
         :fail with **ReplayDivergence** (decision 36)
@@ -145,6 +168,10 @@ An unpaired replay fire makes the calls of play, so
 a rejected call gives the error and the cost of play.
 After every error, the commit releases the locks
 and then the registration.
+In native replay, a recorded denial publishes its
+row and fails with OutOfPhlogistons, as play fails,
+and keeps the epoch open. Every other failure closes
+the epoch, so every waiting operation fails (Closed).
 end note
 
 legend bottom

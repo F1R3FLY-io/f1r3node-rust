@@ -46,7 +46,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 242: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 246: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -72,7 +72,8 @@
 #                        the two set merges (F24, F25) of CounterConflict.v,
 #                        and 1 for the PathMap source of W3 Phase 2: the
 #                        token race pathmap_token_race of
-#                        CounterConflict.v)
+#                        CounterConflict.v, and 4 for decision 47: H24 to
+#                        H27 of EventCorrelation.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -91,14 +92,14 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-242}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-246}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
 # The headline count of each module. A module in _CoqProject without an
 # entry here fails the gate.
 declare -A EXPECTED_PER_MODULE=(
-  [EventCorrelation]=17
+  [EventCorrelation]=21
   [VolatileSweep]=6
   [Encoding]=15
   [Namespace]=11

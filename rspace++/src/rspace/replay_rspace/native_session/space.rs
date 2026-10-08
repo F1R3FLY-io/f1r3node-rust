@@ -804,6 +804,9 @@ mod tests {
         introduction: NativeReplayDecision,
         comm: NativeReplayDecision,
         candidate: Option<COMM>,
+        // False for a row whose predecessors are not complete: begin_operation
+        // consumes it and returns no ticket.
+        ready: bool,
     }
 
     impl Row {
@@ -813,6 +816,14 @@ mod tests {
                 introduction: NativeReplayDecision::Granted,
                 comm: NativeReplayDecision::Granted,
                 candidate: None,
+                ready: true,
+            }
+        }
+
+        fn not_ready() -> Self {
+            Self {
+                ready: false,
+                ..Self::stored()
             }
         }
 
@@ -1094,6 +1105,9 @@ mod tests {
                 .expect("rows lock")
                 .pop_front()
                 .ok_or_else(|| RSpaceError::BugFoundError("no recorded row".to_owned()))?;
+            if !row.ready {
+                return Ok(None);
+            }
             Ok(Some(Ticket {
                 identity: Identity(row.candidate.clone()),
                 row,
@@ -1835,5 +1849,418 @@ mod tests {
         assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
         let state = session.space.get_store().snapshot();
         assert_eq!(state.data_flat().get(&s("a")).map(Vec::len), Some(2));
+    }
+
+    // ─── Properties of decision 47 (H24-H27, T8, NoDeadlock)
+    // ──────────────────────
+    //
+    // A plan is a list of transactions of one to three steps. A step is a send of
+    // a value or a receive on a channel, and the agent's rule decides its staged
+    // operation: a send fires the first waiter of its channel or stores, and a
+    // receive takes the first record of its channel or parks. Play runs the plan on
+    // a play space with metered reads, and native replay runs it on a scripted
+    // epoch that records the row of each operation as play staged it. Runs are
+    // deterministic (a fixed seed) and keep no failure file.
+
+    const PROP_SEED: u64 = 0x0D47_5EED_2026_1007;
+
+    fn property_config() -> proptest::test_runner::Config {
+        proptest::test_runner::Config {
+            cases: 64,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(PROP_SEED),
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        }
+    }
+
+    fn property_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a test runtime")
+    }
+
+    const PROP_CHANNELS: [&str; 3] = ["a", "b", "c"];
+    const PROP_VALUES: [&str; 3] = ["x", "y", "z"];
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Send(usize, usize),
+        Receive(usize),
+    }
+
+    // The change that native replay meets at one operation: a recorded denial of
+    // the introduction or of the COMM, an outcome that does not fit the staged
+    // kind, another candidate, or a row that is not ready.
+    #[derive(Clone, Copy, Debug)]
+    enum Edit {
+        Deny { comm: bool },
+        Misfit,
+        OtherCandidate,
+        NotReady,
+    }
+
+    fn plan_strategy() -> impl proptest::strategy::Strategy<Value = Vec<Vec<Step>>> {
+        use proptest::prelude::*;
+        let step = prop_oneof![
+            (0..3usize, 0..3usize).prop_map(|(channel, value)| Step::Send(channel, value)),
+            (0..3usize).prop_map(Step::Receive),
+        ];
+        proptest::collection::vec(proptest::collection::vec(step, 1..=3), 1..=4)
+    }
+
+    // Stages `step` and returns the row that native play records for it. `kont`
+    // names the continuation of a park, unique in the plan.
+    fn stage_step(
+        txn: &mut BoxedSpaceTxn<String, String, String, String>,
+        step: Step,
+        kont: &str,
+    ) -> Row {
+        match step {
+            Step::Send(channel, value) => {
+                let channel = PROP_CHANNELS[channel];
+                let waiting = txn
+                    .continuations(&[s(channel)])
+                    .expect("read the waiters")
+                    .first()
+                    .cloned();
+                match waiting {
+                    Some(waiting) => {
+                        let staged = txn
+                            .produce(fire_op(channel, PROP_VALUES[value], &waiting))
+                            .expect("stage a fire");
+                        Row::matched(staged.comm.clone())
+                    }
+                    None => {
+                        txn.produce(store_op(channel, PROP_VALUES[value]))
+                            .expect("stage a store");
+                        Row::stored()
+                    }
+                }
+            }
+            Step::Receive(channel) => {
+                let channel = PROP_CHANNELS[channel];
+                let stored = txn
+                    .data(&s(channel))
+                    .expect("read the data")
+                    .first()
+                    .cloned();
+                match stored {
+                    Some(datum) => {
+                        let staged = txn
+                            .consume(take_op(channel, &datum, 0))
+                            .expect("stage a take");
+                        Row::matched(staged.comm.clone())
+                    }
+                    None => {
+                        txn.consume(park_op(channel, kont)).expect("stage a park");
+                        Row::stored()
+                    }
+                }
+            }
+        }
+    }
+
+    // The row that native replay meets instead of `row`.
+    fn edited(row: &Row, edit: Edit) -> Row {
+        match (edit, &row.candidate) {
+            (Edit::Deny { comm: true }, Some(candidate)) => Row::denied_comm(candidate.clone()),
+            (Edit::Deny { .. }, _) => Row::denied_introduction(),
+            (Edit::OtherCandidate, Some(candidate)) => {
+                let mut other = candidate.clone();
+                other
+                    .times_repeated
+                    .insert(Produce::create(&s("q"), &s("q"), false), 7);
+                Row::matched(Some(other))
+            }
+            (Edit::Misfit | Edit::OtherCandidate, _) => match row.outcome {
+                NativeReplayOutcome::Stored => Row::matched(None),
+                _ => Row::stored(),
+            },
+            (Edit::NotReady, _) => Row::not_ready(),
+        }
+    }
+
+    type PlanResults = Vec<Result<SpaceTxnReceipt<String, String, String, String>, SpaceTxnError>>;
+
+    // Runs `plan` on `handle` and stops at the first failed commit. With a script
+    // (native replay), each transaction records the rows of its operations before
+    // it commits, and `edit` changes the row of one operation.
+    async fn run_prop_plan(
+        handle: &Handle,
+        script: Option<&Script>,
+        plan: &[Vec<Step>],
+        edit: Option<(usize, usize, Edit)>,
+        reads: impl Fn() -> SharedReads<String, String, String, String>,
+    ) -> PlanResults {
+        let keys: Vec<String> = PROP_CHANNELS.iter().map(|channel| s(channel)).collect();
+        let mut results = Vec::with_capacity(plan.len());
+        for (index, steps) in plan.iter().enumerate() {
+            let mut txn = handle.begin_metered(&keys, reads()).await.expect("begin");
+            let mut rows = Vec::with_capacity(steps.len());
+            for (position, step) in steps.iter().enumerate() {
+                rows.push(stage_step(&mut txn, *step, &format!("k{index}.{position}")));
+            }
+            if let Some(script) = script {
+                for (position, row) in rows.iter().enumerate() {
+                    match edit {
+                        Some((at, op, change)) if at == index && op == position => {
+                            script.push(edited(row, change))
+                        }
+                        _ => script.push(row.clone()),
+                    }
+                }
+            }
+            let result = txn.commit().await;
+            let failed = result.is_err();
+            results.push(result);
+            if failed {
+                break;
+            }
+        }
+        results
+    }
+
+    // The plan up to operation `op` of transaction `at`, without that operation.
+    fn prefix_plan(plan: &[Vec<Step>], at: usize, op: usize) -> Vec<Vec<Step>> {
+        let mut prefix: Vec<Vec<Step>> = plan[..at].to_vec();
+        if op > 0 {
+            prefix.push(plan[at][..op].to_vec());
+        }
+        prefix
+    }
+
+    // The transaction and the operation of the flat operation index `pick`.
+    fn locate(plan: &[Vec<Step>], pick: usize) -> (usize, usize) {
+        let mut rest = pick % plan.iter().map(Vec::len).sum::<usize>();
+        for (index, steps) in plan.iter().enumerate() {
+            if rest < steps.len() {
+                return (index, rest);
+            }
+            rest -= steps.len();
+        }
+        unreachable!("the pick is within the plan")
+    }
+
+    async fn play_space() -> RSpace<String, String, String, String> {
+        let mut stores = InMemoryStoreManager::new();
+        RSpace::<String, String, String, String>::create(
+            stores.r_space_stores().await.expect("in-memory stores"),
+            Arc::new(Box::new(AnyMatch)),
+        )
+        .expect("the play space")
+    }
+
+    // The produce counters of every send of the plan's values.
+    async fn plan_counters(handle: &Handle) -> std::collections::BTreeMap<Produce, i32> {
+        let mut produces = Vec::with_capacity(PROP_CHANNELS.len() * PROP_VALUES.len());
+        for channel in PROP_CHANNELS {
+            for value in PROP_VALUES {
+                produces.push(Produce::create(&s(channel), &s(value), false));
+            }
+        }
+        let keys: Vec<String> = PROP_CHANNELS.iter().map(|channel| s(channel)).collect();
+        let mut txn = handle.begin_metered(&keys, reads()).await.expect("begin");
+        txn.produce_counters(&produces)
+            .expect("read the counters")
+            .into_iter()
+            .collect()
+    }
+
+    // The store state without empty entries. A metered view load caches the empty
+    // history value of a channel that it reads, so a run that loaded a view of an
+    // empty channel holds an empty entry where a run that did not load it holds
+    // none. An empty entry stores nothing and reaches no checkpoint.
+    fn nonempty(state: Outcome0) -> Outcome0 {
+        let (mut data, mut conts, mut joins) = state;
+        data.retain(|_, records| !records.is_empty());
+        conts.retain(|_, waiters| !waiters.is_empty());
+        joins.retain(|_, groups| !groups.is_empty());
+        (data, conts, joins)
+    }
+
+    type Outcome0 = (
+        std::collections::HashMap<String, Vec<Datum<String>>>,
+        std::collections::HashMap<Vec<String>, Vec<WaitingContinuation<String, String>>>,
+        std::collections::HashMap<String, Vec<Vec<String>>>,
+    );
+
+    proptest::proptest! {
+        #![proptest_config(property_config())]
+
+        // H24 and T8: native replay over the rows of play commits the receipts, the
+        // store and the produce counters of play, consumes one row for each
+        // operation, and keeps the epoch open.
+        #[test]
+        fn prop_native_space_replay_reproduces_play(plan in plan_strategy()) {
+            property_runtime().block_on(async {
+                let play = play_space().await;
+                let play_handle = SpaceStoreHandle::new(play.clone());
+                let played = run_prop_plan(&play_handle, None, &plan, None, reads).await;
+                proptest::prop_assert!(played.iter().all(Result::is_ok), "{:?}", played);
+
+                let script = Script::default();
+                let session = session(&script, Vec::new()).await;
+                let native_handle = handle(&session);
+                let replayed =
+                    run_prop_plan(&native_handle, Some(&script), &plan, None, reads).await;
+                proptest::prop_assert_eq!(&replayed, &played);
+                proptest::prop_assert_eq!(state(session.space.get_store()), state(play.get_store()));
+                proptest::prop_assert_eq!(
+                    plan_counters(&native_handle).await,
+                    plan_counters(&play_handle).await
+                );
+                proptest::prop_assert!(script.rows.lock().expect("rows lock").is_empty());
+                proptest::prop_assert!(!script.log().contains(&"invalidate".to_owned()));
+                Ok::<(), proptest::test_runner::TestCaseError>(())
+            })?;
+        }
+
+        // H25 and NoDeadlock: a recorded denial at one operation fails the commit
+        // with OutOfPhlogistons, keeps the operations before it applied (D6), as
+        // play of the prefix applies them, and keeps the epoch open.
+        #[test]
+        fn prop_native_space_replay_denial_keeps_prefix(
+            plan in plan_strategy(),
+            pick in 0usize..64,
+            comm in proptest::bool::ANY,
+        ) {
+            property_runtime().block_on(async {
+                let (at, op) = locate(&plan, pick);
+                let prefix = play_space().await;
+                run_prop_plan(
+                    &SpaceStoreHandle::new(prefix.clone()),
+                    None,
+                    &prefix_plan(&plan, at, op),
+                    None,
+                    reads,
+                )
+                .await;
+
+                let script = Script::default();
+                let session = session(&script, Vec::new()).await;
+                let replayed = run_prop_plan(
+                    &handle(&session),
+                    Some(&script),
+                    &plan,
+                    Some((at, op, Edit::Deny { comm })),
+                    reads,
+                )
+                .await;
+                proptest::prop_assert_eq!(replayed.len(), at + 1);
+                proptest::prop_assert!(replayed[..at].iter().all(Result::is_ok));
+                proptest::prop_assert_eq!(
+                    replayed[at].as_ref().err(),
+                    Some(&SpaceTxnError::Host(RSpaceError::OutOfPhlogistons))
+                );
+                proptest::prop_assert_eq!(
+                    nonempty(state(session.space.get_store())),
+                    nonempty(state(prefix.get_store()))
+                );
+                proptest::prop_assert!(!script.log().contains(&"invalidate".to_owned()));
+                Ok::<(), proptest::test_runner::TestCaseError>(())
+            })?;
+        }
+
+        // H26, T8 and NoDeadlock: an outcome that does not fit, another candidate,
+        // and a row that is not ready fail the commit closed. The operations before
+        // it stay applied, the failed operation has no effect, and the failure
+        // closes the epoch, so no operation waits for its row.
+        #[test]
+        fn prop_native_space_replay_fails_closed(
+            plan in plan_strategy(),
+            pick in 0usize..64,
+            kind in 0usize..3,
+        ) {
+            property_runtime().block_on(async {
+                let (at, op) = locate(&plan, pick);
+                let edit = [Edit::Misfit, Edit::OtherCandidate, Edit::NotReady][kind];
+                let prefix = play_space().await;
+                run_prop_plan(
+                    &SpaceStoreHandle::new(prefix.clone()),
+                    None,
+                    &prefix_plan(&plan, at, op),
+                    None,
+                    reads,
+                )
+                .await;
+
+                let script = Script::default();
+                let session = session(&script, Vec::new()).await;
+                let replayed =
+                    run_prop_plan(&handle(&session), Some(&script), &plan, Some((at, op, edit)), reads)
+                        .await;
+                proptest::prop_assert_eq!(replayed.len(), at + 1);
+                proptest::prop_assert!(replayed[..at].iter().all(Result::is_ok));
+                match &replayed[at] {
+                    Err(SpaceTxnError::Host(RSpaceError::InterpreterError(message))) => {
+                        proptest::prop_assert!(message.starts_with("native space replay: "), "{}", message)
+                    }
+                    other => proptest::prop_assert!(false, "a mismatch, not {:?}", other),
+                }
+                proptest::prop_assert_eq!(
+                    nonempty(state(session.space.get_store())),
+                    nonempty(state(prefix.get_store()))
+                );
+                proptest::prop_assert!(script.log().contains(&"invalidate".to_owned()));
+                Ok::<(), proptest::test_runner::TestCaseError>(())
+            })?;
+        }
+
+        // H27 (P5): play reads a view cold from the history, native replay reads it
+        // cold through its session, and a second play reads it warm from its hot
+        // store. The three runs reserve the same view charges in the same order.
+        #[test]
+        fn prop_view_charge_cache_independent(plan in plan_strategy()) {
+            property_runtime().block_on(async {
+                let steps: Vec<Vec<Step>> = vec![plan.concat()];
+                let read_all = |txn: &mut BoxedSpaceTxn<String, String, String, String>| {
+                    for channel in PROP_CHANNELS {
+                        txn.data(&s(channel)).expect("read the data");
+                        txn.continuations(&[s(channel)]).expect("read the waiters");
+                    }
+                };
+                let keys: Vec<String> = PROP_CHANNELS.iter().map(|channel| s(channel)).collect();
+
+                let cold = play_space().await;
+                let cold_handle = SpaceStoreHandle::new(cold.clone());
+                run_prop_plan(&cold_handle, None, &steps, None, reads).await;
+                cold.create_checkpoint().await.expect("the checkpoint");
+                let history = cold.get_history_repository();
+                let cold_charges = ChargeLog::default();
+                let mut txn = cold_handle
+                    .begin_metered(&keys, cold_charges.reads())
+                    .await
+                    .expect("begin");
+                read_all(&mut txn);
+                drop(txn);
+
+                let script = Script::default();
+                let session = session_on(&script, history);
+                let native_charges = ChargeLog::default();
+                let mut txn = handle(&session)
+                    .begin_metered(&keys, native_charges.reads())
+                    .await
+                    .expect("begin");
+                read_all(&mut txn);
+                drop(txn);
+
+                let warm = play_space().await;
+                let warm_handle = SpaceStoreHandle::new(warm);
+                run_prop_plan(&warm_handle, None, &steps, None, reads).await;
+                let warm_charges = ChargeLog::default();
+                let mut txn = warm_handle
+                    .begin_metered(&keys, warm_charges.reads())
+                    .await
+                    .expect("begin");
+                read_all(&mut txn);
+                drop(txn);
+
+                proptest::prop_assert!(!cold_charges.entries().is_empty());
+                proptest::prop_assert_eq!(native_charges.entries(), cold_charges.entries());
+                proptest::prop_assert_eq!(warm_charges.entries(), cold_charges.entries());
+                Ok::<(), proptest::test_runner::TestCaseError>(())
+            })?;
+        }
     }
 }

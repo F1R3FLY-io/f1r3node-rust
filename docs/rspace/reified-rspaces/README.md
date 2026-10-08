@@ -52,6 +52,7 @@ A document that a later phase writes shows the phase as "planned in Pn" and name
 | `f1r3lang-integration.md` | The F1r3lang merge: conflict resolutions, guard composition, and the Rholang 1.4 productions. | Planned in P10 (`rrs-doc-theory-seam`). P12 extends it after the readiness signal. |
 | [findings/space-replay-out-of-phlo.md](findings/space-replay-out-of-phlo.md) | A finding of P4: a deploy that ran out of phlo inside a space transaction replayed to a different error and cost. It holds the reproduction, the mechanism, the fix as built, and two related observations about the host code. | Written. Fixed by [decision 36](decision-register.md#decision-36) on 2026-10-05. Two questions stay open for their owners. |
 | [findings/space-legacy-storage-charges.md](findings/space-legacy-storage-charges.md) | A finding of decision 45: in a legacy deploy, a space operation paid no storage charge, while its equivalent host program paid them. It holds the mechanism, a measurement, the reach in block processing, and the fix. | Written. Fixed by Option P of [decision 45](decision-register.md#decision-45) on 2026-10-06. |
+| [findings/native-execution-cost-accounting.md](findings/native-execution-cost-accounting.md) | Five items of decision 47 for the cost-accounting owner: an untyped class of space errors, a session charge that depends on the thread count, two readers for host continuations, a lost wake-up of the host path under a forged journal, and the verification bytes of native replay. | Written. The space instance of the lost wake-up is fixed by commit `c6cb371ba`. The other items stay open for their owner. |
 | [design-record/](design-record/README.md) | The design ledger of 2026-08-15 with its provenance record. It is history and is exempt from the documentation lint. | Written |
 | `../../rholang/21-reified-spaces.md` | The language chapter on Reified spaces, with the section "Writing your own space". | Planned in P10 (`rrs-doc-language-chapter`). |
 
@@ -74,7 +75,7 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 03 | [Native handle lifecycle](diagrams/03-native-handle-lifecycle.svg) (sequence) | Drawn in P4 |
 | 04 | User-agent translation (sequence) | Planned in P10 (`rrs-doc-diagrams`) |
 | 05 | [Head-only queue](diagrams/05-head-only-queue.svg) (state) | Drawn in P4 for the queue. P5 wave W3 adds the note on joins. P10 extends it to the other ordered disciplines (`rrs-doc-diagrams`). |
-| 06 | [Commit of a space transaction](diagrams/06-space-txn-commit.svg) (activity) | Drawn in P1 |
+| 06 | [Commit of a space transaction](diagrams/06-space-txn-commit.svg) (activity) | Drawn in P1. Decision 47 adds the branch of native replay. |
 | 06a | [Lifecycle of a space transaction](diagrams/06a-space-txn-lifecycle.svg) (state), a sub-figure of figure 06 | Drawn in P1 |
 | 07 | [Checkpoint, replay, and sweep](diagrams/07-checkpoint-replay-sweep.svg) (sequence) | Drawn in P1. The restart suite adds the restart part (`rrs-tests-verification-restart-rehydrate`). |
 | 08 | [Merge flow of the counter conflict](diagrams/08-counter-conflict-merge.svg) (activity) | Drawn in P4 |

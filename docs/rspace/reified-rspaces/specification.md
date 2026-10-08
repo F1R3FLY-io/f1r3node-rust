@@ -20,6 +20,7 @@ Where this specification and the register differ, the register applies.
 - [5. Theories](#5-theories)
 - [6. Constructs that fail closed](#6-constructs-that-fail-closed)
 - [7. Conformance](#7-conformance)
+- [8. Native execution](#8-native-execution)
 - [References](#references)
 
 ## Scope of this version
@@ -295,7 +296,7 @@ The reducer then draws the names as it does for every `new`.
 **Rule AL-7: metering and native execution.** An allocation reserves each read and copy before it makes it ([decision 42](decision-register.md#decision-42)).
 This covers the names of its lock keys, the config and the shape of an Array space.
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
-An allocation job fails closed in native play and native replay ([decision 46](decision-register.md#decision-46)).
+In native execution, an allocation job runs as every space job does ([section 8](#8-native-execution), [decision 47](decision-register.md#decision-47)).
 
 **Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:601-628`).
 That process evaluates the `new`, or it calls the handle method `gensym`.
@@ -1071,10 +1072,45 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | JN-13 | `join_txn_fires_bounded` (`JoinCascade.v:4642`), the TLA+ invariant `TxnFiresBounded` (V31) | `prop_join_txn_fires_bounded_at_the_cap`, `space_joins_txn_fires_bounded_at_the_cap`, `space_joins_cascade_round_cap_reissues_settle`, `space_joins_cap_carries_pending_second_sends`, `space_joins_settle_before_cap_resumes_the_operation` |
 | JN-14 | `cascade_restores_inv` (`JoinCascade.v:7230`), the TLA+ invariant `QuiescentNoPendingMatch` (V26) | `prop_cascade_restores_inv_any_schedule`, `prop_quiescent_no_pending_match_any_schedule`, `prop_join_engine_agrees_with_drivers_without_joins` |
 | JN-15 | `join_ops_race_on_every_counter` (`CounterConflict.v:1935`) | `prop_join_ops_race_on_every_counter`, `space_collection_conflicts_join_ops_race_all_counters`, `space_collection_conflicts_unrelated_collections_merge`, `space_collection_conflicts_bag_join_potential_comm`, `space_joins_persisted_waiter_check3_conflict`, `reified_p5c_only_user_joins_persist` |
+| NE-1, NE-3 | `native_replay_reproduces_play` (`EventCorrelation.v:8617`), `native_replay_denial_keeps_prefix` (`EventCorrelation.v:8663`), the TLA+ invariant `NativeReplayOutcomeEqual` (N5) | `prop_native_space_replay_reproduces_play`, `prop_native_space_replay_denial_keeps_prefix`, `space_native_replay_equal_hashmap`, `space_native_denial_replay` |
+| NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play` |
+| NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
+| NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
 
 No model states the rules OC-4, QD-8, AL-6, AL-8, PP-3, PP-4 and JN-1, because they are checks of limits, of input or of fail-closed rules.
 Their tests show each abort.
 Rule JN-4 holds by construction, because a normalized receive carries one `persistent` flag and one `peek` flag for all its binds.
+
+## 8. Native execution
+
+Protocol version 6 runs user deploys in native execution ([decision 47](decision-register.md#decision-47)).
+[Native play](glossary.md#native-play) runs a deploy with the native phlo budget and records a [journal row](glossary.md#journal-row) for each operation.
+[Native replay](glossary.md#native-replay) runs the deploy again against the journal, as proposer self-certification and validator replay do.
+The rules of this section apply to every space operation in both modes.
+
+**Rule NE-1: native play.** A space transaction of native play stages and commits its operations as in legacy play.
+It reads its view through [metered view reads](glossary.md#metered-view-read), and native play records one journal row for each staged operation.
+A space error is a deterministic `ReduceError`, as in legacy play.
+
+**Rule NE-2: view charges.** A metered view load charges its key and the value that it loads.
+The charge is the same on a cache hit and on a miss, so it never depends on cache state ([I-12](decision-register.md#i-12)).
+
+**Rule NE-3: native replay reproduces native play.** Native replay stages the same operations, and the [native backend](glossary.md#native-backend) replays each one against its row.
+It makes the observer calls of play in the order of play, applies the effects of play, and ends with the status of play.
+A recorded denial ends the transaction with OutOfPhlogistons, and the operations before it stay applied.
+
+**Rule NE-4: fail closed.** The native backend never waits for a row.
+These four cases each fail the operation closed:
+
+- a row that is not ready
+- a footprint that differs from the footprint of the row
+- an outcome that does not fit the staged kind
+- a candidate that is not the staged COMM
+
+The failed operation has no effect, and the failure closes the epoch of the session, so no operation waits for its row ([epoch closure](glossary.md#epoch-closure)).
+
+**Rule NE-5: scheduling.** The transactions of one space run in one conflict group, in operation order, by the per-space key of [I-11](decision-register.md#i-11).
+So every predecessor of a space row is complete when the row begins.
 
 ## References
 

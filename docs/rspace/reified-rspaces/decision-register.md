@@ -92,8 +92,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 43](#decision-43) | A re-issued persistent operation keeps its first-round identity | 2026-10-05 | In force. Implemented |
 | [Decision 44](#decision-44) | Merge of feature/cost-accounted-rho at 4d67b5ccc | 2026-10-05 | In force |
 | [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Rule E and Option P implemented |
-| [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | In force. Implemented |
-| [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Planned after P5 (decision 48) |
+| [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | Superseded by decision 47 on 2026-10-07 |
+| [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Implemented on 2026-10-07 |
 | [Decision 48](#decision-48) | The work order after decision 43 | 2026-10-06 | In force |
 | [Decision 49](#decision-49) | One fire count for each space transaction | 2026-10-06 | In force. Implemented in P5 wave W2 |
 | [Decision 50](#decision-50) | Joined set collections cascade | 2026-10-07 | In force. Implemented in P5 wave W3 |
@@ -123,9 +123,9 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [I-8](#i-8) | Params only on factories and handles | 2026-10-04 | In force |
 | [I-9](#i-9) | Sequential kernels without ndarray | 2026-10-04 | In force |
 | [I-10](#i-10) | Optional priority bound | 2026-10-04 | In force |
-| [I-11](#i-11) | Per-space scheduler footprint | 2026-10-04 | In force |
-| [I-12](#i-12) | Charging rules | 2026-10-04 | In force, revised 2026-10-04 |
-| [I-13](#i-13) | Native replay fails closed for spaces | 2026-10-04 | In force, amended 2026-10-06 by decision 46 |
+| [I-11](#i-11) | Per-space scheduler footprint | 2026-10-04 | In force. Basis of decision 47 |
+| [I-12](#i-12) | Charging rules | 2026-10-04 | In force, revised 2026-10-04, noted 2026-10-07 by decision 47 |
+| [I-13](#i-13) | Native replay fails closed for spaces | 2026-10-04 | Superseded by decision 47 on 2026-10-07 |
 | [I-14](#i-14) | Unchanged empty-state hash | 2026-10-04 | In force, revised 2026-10-04 |
 | [I-15](#i-15) | Self-describing matchers | 2026-10-04 | In force |
 | [I-16](#i-16) | No multi-channel join in synthesized machinery | 2026-10-04 | In force |
@@ -1313,7 +1313,7 @@ The agent stores each removed non-persistent record of a peek again, in the same
 | Field | Value |
 |---|---|
 | Date | 2026-10-06 |
-| Status | In force |
+| Status | Superseded by [decision 47](#decision-47) on 2026-10-07 |
 | Amends | [I-13](#i-13), and the code names of item A19 of [decision 34](#decision-34) |
 | Related | [Decision 44](#decision-44), [decision 47](#decision-47) |
 
@@ -1333,9 +1333,9 @@ One rule for play and replay makes the deploy fail in play, and native replay re
 | Field | Value |
 |---|---|
 | Date | 2026-10-06 |
-| Status | In force. [Decision 48](#decision-48) moves the phase after P5. |
-| Amends | [M-3](#m-3), for one accessor |
-| Related | [Decision 46](#decision-46), [decision 48](#decision-48) |
+| Status | In force. Implemented on 2026-10-07. [Decision 48](#decision-48) moved the phase after P5. |
+| Amends | [M-3](#m-3), for one accessor. It supersedes [decision 46](#decision-46) and [I-13](#i-13). |
+| Related | [Decision 46](#decision-46), [decision 48](#decision-48), [I-11](#i-11), [I-12](#i-12) |
 
 **Statement.** Spaces get full support on the native path in their own phase, after [decision 43](#decision-43).
 The phase starts with a design pass, and then it delivers code, formal models, and tests.
@@ -1346,6 +1346,26 @@ That accessor is the only exception to [M-3](#m-3).
 
 **Reason.** The native path is the default of protocol version 6.
 A space backend over the tickets of the native replay session needs the space store of the session, and the session keeps its store private.
+
+**Process.** The user chose "Me + review agent (Recommended)" on 2026-10-07.
+The main session refreshed the design, one read-only agent arbitrated it, and the main session checked the findings in code.
+The user then approved design v2 ("Approve v2 (Recommended)").
+
+**Implementation (2026-10-07).** Six steps implement design v2:
+
+1. The substrate meters the space view in native execution (commit `9ddcaa127`).
+2. The native replay backend of spaces replays each staged operation against its journal row (commit `9d9f31b7d`).
+3. The accessor `space_store`, the bound state of the runtime and the bind call run spaces in native execution (commit `9390408c4`).
+4. The integration suite certifies space deploys at the v6 limits (commit `bbe6d03d2`).
+5. The formal models add H24 to H27 to `EventCorrelation.v` and the new module `NativeReplay.tla`.
+6. The documents record the design, the specification, the verification, and the findings for the cost-accounting owner.
+
+**TLA+ placement.** The user chose "New NativeReplay.tla (Recommended)" on 2026-10-07.
+The models of design v2 section 5 are in a new module, so `CheckpointReplay.tla` and its 20 configurations stay unchanged.
+
+**Epoch closure.** A probe of step 4 showed that a forged journal could hang native replay of a space deploy: 64 of 109 forgeries hung.
+Commit `c6cb371ba` closes the epoch when a native space operation fails, except after a published denial.
+The [findings](findings/native-execution-cost-accounting.md) record the same lost wake-up in the host path as F-47-4, with F-47-1 to F-47-3 and the measurement M-47-1.
 
 ### <a id="decision-48"></a>Decision 48: The work order after decision 43
 
@@ -2000,6 +2020,11 @@ The column "Amends" of the plan names the contract text that each decision chang
 
 **Reason.** A per-space key is safe with joins and prefixes. A later benchmark decides any refinement.
 
+**Note of decision 47 (2026-10-07).** The no-deadlock argument of native replay rests on this key (design v2, section 4.5).
+The key keeps the transactions of one space in one conflict group, in operation order.
+So every predecessor of a space row is complete when the row begins.
+`NativeReplay.tla` checks `NoBlockedReadiness` with this key alone, without the native key [2, 0].
+
 ### <a id="i-12"></a>I-12: Charging rules
 
 | Field | Value |
@@ -2021,12 +2046,17 @@ The column "Amends" of the plan names the contract text that each decision chang
 
 **Reason.** The rule needs no edit of the cost-accounting module. `reserve_primitive` is diagnostic only at the baseline, so it is not a charging path.
 
+**Note of decision 47 (2026-10-07).** In native execution, a space transaction reads its view through [metered view reads](glossary.md#metered-view-read).
+Each first view load charges its key and its value only (P5 of design v2, headline H27).
+The charge is the same on a cache hit and on a miss.
+A cold load reads the history through the native reader with a meter that accepts every reservation, so the reader adds no charge.
+
 ### <a id="i-13"></a>I-13: Native replay fails closed for spaces
 
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force, amended 2026-10-06 by [decision 46](#decision-46) |
+| Status | Superseded by [decision 47](#decision-47) on 2026-10-07. It was amended on 2026-10-06 by [decision 46](#decision-46). |
 | Amends | None |
 | Related | [Decision 19](#decision-19), [decision 47](#decision-47) |
 

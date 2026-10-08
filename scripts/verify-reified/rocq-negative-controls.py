@@ -72,6 +72,20 @@ The P4 controls (batch 4E-F) revert one rule of the hashmap:queue slice:
   Encoding (I-20)     the refresh, the derived tuple flag, the strict flag
                       check
 
+Decision 47 (EventCorrelation.v, H24 to H27) has four controls. Each reverts
+one rule of the native replay backend of spaces or of its view charges:
+  ec-native-searches-again     the backend fires against any recorded
+                               candidate, as a backend that searches the
+                               candidates again (the DR-75 search) would:
+                               native_replay_fails_closed (H26) breaks
+  ec-native-ignores-denial     the backend applies an operation whose row
+                               records a denial: H24 breaks
+  ec-native-effect-before-prepare  the backend changes the store before it
+                               checks the candidate: H26 breaks
+  ec-view-charges-on-miss-only a view load charges its value on a miss
+                               only: view_charge_cache_independent (H27)
+                               breaks
+
 Decision 47 (SpaceRefs.v) has two controls: a host runtime that rejects space
 jobs in native play, as decision 46 did, and a native replay runtime that runs
 space jobs before its environment binds it. The control of decision 46 is
@@ -475,6 +489,27 @@ CONTROLS = (
      "| sp_split : forall p s i, sched_part p -> sched_part (p ++ [(s, Datatypes.S i)]).",
      "| sp_split : forall p s i, sched_part p -> sched_part (p ++ [(s, i)]).",
      ("sched_part_nonzero",)),
+    # ── Decision 47: the native replay backend of spaces (H24-H27) ────────
+    ("ec-native-searches-again", "EventCorrelation",
+     "the native backend fires against any recorded candidate (a search of the candidates again)",
+     "if comm_eq_dec c rc then\n                          if grant",
+     "if true then\n                          if grant",
+     ("native_replay_fails_closed",)),
+    ("ec-native-ignores-denial", "EventCorrelation",
+     "the native backend applies an operation whose row records a denial of its introduction",
+     "| NDeniedIntro =>\n                  (h ++ [NIntro o], s, if grant h (NIntro o) then NMismatch else NOutOfPhlo)",
+     "| NDeniedIntro => native_replay (h ++ [NIntro o]) (apply s o) rest rows'",
+     ("native_replay_reproduces_play", "native_replay_denial_keeps_prefix")),
+    ("ec-native-effect-before-prepare", "EventCorrelation",
+     "the native backend changes the store before it checks the candidate of a fire",
+     "else (h ++ [NIntro o], s, NMismatch)\n                    | Some c, NDeniedComm rc =>",
+     "else (h ++ [NIntro o], apply s o, NMismatch)\n                    | Some c, NDeniedComm rc =>",
+     ("native_replay_fails_closed",)),
+    ("ec-view-charges-on-miss-only", "EventCorrelation",
+     "a view load charges its value on a miss only, so a warm load charges less than a cold load",
+     "  | Some v => (v, key_charge k + value_charge v)",
+     "  | Some v => (v, key_charge k)",
+     ("view_charge_cache_independent",)),
     # ── P4: Namespace.v ──────────────────────────────────────────────────
     ("ns-ephemeral-bit-dropped", "Namespace",
      "an ephemeral id has the durable KIND byte (no bit 0x20)",

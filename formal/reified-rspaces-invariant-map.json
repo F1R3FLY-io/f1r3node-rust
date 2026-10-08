@@ -11,7 +11,9 @@
     "HeadIndInv": "The inductive strengthening of U1-U3 and U9-U12 (HeadOnlyDiscipline) for the Apalache BASE and STEP checks: the ords and the carried ords are below the counter and unique, the carried ords differ from the stored ords, the elements in flight have their shapes, and the history flags hold. TLC checks it on every reachable state of MC_HeadOnlyDiscipline and MC_HeadOnlyDiscipline_Reissue.",
     "HandleIndInv": "The inductive strengthening of U5-U8 (NativeHandles) for the Apalache BASE and STEP checks: live spaces are durable, only live spaces have collection counters, and no counter or log grows faster than the steps. TLC checks it on every reachable state of MC_NativeHandles.",
     "SharedQueueRaces": "CounterConflict: two branches that use one queue race in check #1. It restates the Rocq headlines Q21, Q22 and Q24, which their own property tests cover. TLC checks it in MC_CounterConflict. With stacks, MC_CounterConflict_Stacks checks it too, and it restates the P5 headline shared_collection_race (R63).",
-    "FirstOpsRace": "CounterConflict: two branches that open queues of one space race on S(sid). It restates the Rocq headline Q23, which its own property test covers. TLC checks it in MC_CounterConflict. With stacks, MC_CounterConflict_Stacks checks it too, and it restates the P5 headline shared_collection_race (R63)."
+    "FirstOpsRace": "CounterConflict: two branches that open queues of one space race on S(sid). It restates the Rocq headline Q23, which its own property test covers. TLC checks it in MC_CounterConflict. With stacks, MC_CounterConflict_Stacks checks it too, and it restates the P5 headline shared_collection_race (R63).",
+    "OutcomeTypeOK": "The type invariant of OutcomeSpec of NativeReplay.tla. TLC checks it in its configurations. It is not a property of the backend.",
+    "ScheduleTypeOK": "The type invariant of ScheduleSpec of NativeReplay.tla. TLC checks it in its configurations. It is not a property of the backend."
   },
   "phases": {
     "P1": {
@@ -6704,6 +6706,275 @@
           "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
             "R107"
+          ]
+        }
+      ]
+    },
+    "D47": {
+      "title": "Decision 47: spaces in native execution: the native replay backend (EventCorrelation.v H24-H26, NativeReplay.tla T8), the view charges (EventCorrelation.v H27, P5 of design v2) and the scheduling of space intents (NativeReplay.tla NoBlockedReadiness and NoDeadlock).",
+      "design": "Decision 47 design v2, section 5, and the epoch closure of commit c6cb371ba. witness_tests lists the deterministic tests of section 6.",
+      "test_status": "required",
+      "test_files": [
+        "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+        "rholang/src/rust/interpreter/reified/schedule.rs"
+      ],
+      "expected_properties": 5,
+      "formal": {
+        "N1": {
+          "kind": "rocq",
+          "name": "native_replay_reproduces_play",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "Native replay over the journal rows of native play makes the observer calls of play in the order of play, applies the effects of play and ends with the status of play. Play records at most one row for each operation, and one row for each operation when it completes (H24).",
+          "tests": [
+            "prop_native_space_replay_reproduces_play"
+          ]
+        },
+        "N2": {
+          "kind": "rocq",
+          "name": "native_replay_denial_keeps_prefix",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "When play runs out of phlo at operation k, play keeps the effects of the operations before k and records k + 1 rows, and native replay over those rows ends with the same calls, the same store and OutOfPhlogistons (H25).",
+          "tests": [
+            "prop_native_space_replay_denial_keeps_prefix"
+          ]
+        },
+        "N3": {
+          "kind": "rocq",
+          "name": "native_replay_fails_closed",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "Native replay fails closed before any effect: no ready row ends NotReady with no call, a forged footprint and an outcome that does not fit the staged kind end Mismatch before any call, and a fire whose recorded candidate is another COMM ends Mismatch after its introduction only, with no COMM observation and no effect (H26).",
+          "tests": [
+            "prop_native_space_replay_fails_closed"
+          ]
+        },
+        "N4": {
+          "kind": "rocq",
+          "name": "view_charge_cache_independent",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "A view load charges its key and its value only: a hit and a miss load the same value and charge the same amount, so a warm load and a cold load reserve the same work (H27, P5 of design v2).",
+          "tests": [
+            "prop_view_charge_cache_independent"
+          ]
+        },
+        "N5": {
+          "kind": "tla",
+          "name": "NativeReplayOutcomeEqual",
+          "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
+          "statement": "T8: native replay accepts the journal of play, and only it, and then it has the observer calls, the spending, the effects and the status of play, for every transaction of up to three stores and fires, every phlo limit up to 6 and every journal with one tampered well-formed row.",
+          "tests": [
+            "prop_native_space_replay_reproduces_play",
+            "prop_native_space_replay_fails_closed"
+          ]
+        },
+        "N6": {
+          "kind": "tla",
+          "name": "NoBlockedReadiness",
+          "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
+          "statement": "With an honest journal, no space row finds a predecessor that is not complete: the key [2]||sid (I-11) keeps the transactions of one space in one conflict group in operation order, also without the native key [2, 0].",
+          "tests": [
+            "prop_space_key_keeps_one_space_in_one_group"
+          ]
+        },
+        "N7": {
+          "kind": "tla",
+          "name": "NoDeadlock",
+          "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
+          "statement": "Until every intent ends, some intent can step: a space transaction never waits under its stripes (P1), a host operation waits before it takes its stripes (F4), and a failed space row closes the epoch, so no operation waits forever for it, also with a footprint-consistent forged journal.",
+          "tests": [
+            "prop_native_space_replay_denial_keeps_prefix",
+            "prop_native_space_replay_fails_closed"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "prop_native_space_replay_reproduces_play",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "covers": [
+            "N1",
+            "N5"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "prop_native_space_replay_denial_keeps_prefix",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "covers": [
+            "N2",
+            "N7"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "prop_native_space_replay_fails_closed",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "covers": [
+            "N3",
+            "N5",
+            "N7"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "prop_view_charge_cache_independent",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "covers": [
+            "N4"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "prop_space_key_keeps_one_space_in_one_group",
+          "file": "rholang/src/rust/interpreter/reified/schedule.rs",
+          "covers": [
+            "N6"
+          ]
+        }
+      ],
+      "witness_tests": [
+        {
+          "test": "native_space_replay_effects_equal_play",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "rule": "decision 47 (S2)",
+          "covers": [
+            "N1"
+          ]
+        },
+        {
+          "test": "native_space_replay_publishes_a_recorded_denial",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "rule": "decision 47 (R5)",
+          "covers": [
+            "N2"
+          ]
+        },
+        {
+          "test": "native_space_replay_publishes_a_recorded_comm_denial",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "rule": "decision 47 (R5)",
+          "covers": [
+            "N2"
+          ]
+        },
+        {
+          "test": "native_space_replay_rejects_a_tampered_candidate",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "rule": "decision 47 (R4 step 9)",
+          "covers": [
+            "N3",
+            "N7"
+          ]
+        },
+        {
+          "test": "native_space_replay_rejects_another_valid_candidate",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "rule": "decision 47 (the forced DR-75 search)",
+          "covers": [
+            "N3",
+            "N5"
+          ]
+        },
+        {
+          "test": "native_space_replay_rejects_an_outcome_that_does_not_fit",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "rule": "decision 47 (R4 step 7)",
+          "covers": [
+            "N3"
+          ]
+        },
+        {
+          "test": "native_space_replay_fails_closed_on_a_row_that_is_not_ready",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "rule": "decision 47 (P1)",
+          "covers": [
+            "N3",
+            "N7"
+          ]
+        },
+        {
+          "test": "native_space_replay_view_charges_equal_play",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "rule": "decision 47 (P5)",
+          "covers": [
+            "N4"
+          ]
+        },
+        {
+          "test": "space_native_single_conflict_group",
+          "file": "rholang/src/rust/interpreter/reified/schedule.rs",
+          "rule": "decision 47 (DR-78, DR-79)",
+          "covers": [
+            "N6"
+          ]
+        },
+        {
+          "test": "space_native_space_key_groups",
+          "file": "rholang/src/rust/interpreter/reified/schedule.rs",
+          "rule": "decision 47 (I-11)",
+          "covers": [
+            "N6"
+          ]
+        },
+        {
+          "test": "space_native_replay_equal_hashmap",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "rule": "decision 47 (section 6)",
+          "covers": [
+            "N1",
+            "N5"
+          ]
+        },
+        {
+          "test": "space_native_replay_equal_pathmap",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "rule": "decision 47 (section 6)",
+          "covers": [
+            "N1",
+            "N5"
+          ]
+        },
+        {
+          "test": "space_native_replay_equal_array",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "rule": "decision 47 (section 6)",
+          "covers": [
+            "N1",
+            "N5"
+          ]
+        },
+        {
+          "test": "space_native_replay_equal_vector",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "rule": "decision 47 (section 6)",
+          "covers": [
+            "N1",
+            "N5"
+          ]
+        },
+        {
+          "test": "space_native_denial_replay",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "rule": "decision 47 (section 6)",
+          "covers": [
+            "N2"
+          ]
+        },
+        {
+          "test": "space_native_forged_predecessor_fails_closed",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "rule": "decision 47 (section 6)",
+          "covers": [
+            "N3",
+            "N7"
+          ]
+        },
+        {
+          "test": "space_native_forged_footprints_never_hang",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "rule": "decision 47 (the epoch closure of c6cb371ba)",
+          "covers": [
+            "N7"
           ]
         }
       ]

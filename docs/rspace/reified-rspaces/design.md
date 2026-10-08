@@ -224,7 +224,7 @@ Table S3.3 gives the reporting steps.
 
 **Differences by decision.** The substrate differs from the host in four places, and a decision covers each one.
 
-1. Directives. A native replay directive fails the operation closed ([I-13](decision-register.md#i-13), decision 19 D4).
+1. Directives. In replay and reporting, a native replay directive of the observer fails the operation closed ([decision 19](decision-register.md#decision-19), D4). Native replay itself runs a space operation through the native backend ([N14](#n14-decision-47-spaces-in-native-execution)), which [I-13](decision-register.md#i-13) excluded until decision 47.
 2. Divergence. Replay pairs each fire at staging, and it resolves an [unpaired fire](glossary.md#unpaired-fire) at commit ([decision 36](decision-register.md#decision-36)). The commit makes the calls of play first, so a rejected call gives the error and the cost of play. Otherwise the fire fails with the typed error `ReplayDivergence`, not with a panic, and it stores and parks nothing.
 3. Candidate choice. The agent chooses the continuation and the candidates, and the substrate validates any choice. The host takes the first match of its deterministic shuffle.
 4. Consume-side pairing. A consume-side fire pairs only under its trigger key, which is stricter than host replay ([S10](#s10-limits)).
@@ -629,7 +629,7 @@ The cost is $`O(e \cdot v)`$ for $`e`$ staged effects and $`v`$ events of one op
 
 Figure S5.2 shows the commit as an activity diagram, with the steps of the backends and the place of each error.
 
-![Commit of a space transaction as an activity. The commit refuses a finished transaction with Finished, takes the locks and the registration, and clears the paired COMM events and the counter delta. It refuses a swapped hot store with StoreSwapped and a reused parent order with ParentOrderReused, both with no effect. Then a loop runs each staged operation i in staging order under sub_order(parent, i): the read-only checks (joins unchanged, counter room, live COMM equal to the staged COMM, removed entries at their staged positions), the before_observe callback, the observer start, in replay the directive check, the observe call, in replay the counter step, and then the outcome: Store, Park, or Fire. A fire makes the observe_comm call. In replay, an unpaired fire then fails with ReplayDivergence, after the observer calls of play and with no event, no store change, and no binding change (decision 36). Any other fire logs the produce or consume event and the COMM event, removes the continuation and the bound non-persistent records, also for a peek fire (decision 45), and in replay removes the bindings. The observer finish follows, and then the event correlation. An error in operation i leaves the operations before it applied. At the end the commit releases the locks and then the registration and returns the receipts.](diagrams/06-space-txn-commit.svg)
+![Commit of a space transaction as an activity. The commit refuses a finished transaction with Finished, takes the locks and the registration, and clears the paired COMM events and the counter delta. It refuses a swapped hot store with StoreSwapped and a reused parent order with ParentOrderReused, both with no effect. Then a loop runs each staged operation i in staging order under sub_order(parent, i): the read-only checks (joins unchanged, counter room, live COMM equal to the staged COMM, removed entries at their staged positions), the before_observe callback, the observer start, in replay the directive check, the observe call, in replay the counter step, and then the outcome: Store, Park, or Fire. A fire makes the observe_comm call. In replay, an unpaired fire then fails with ReplayDivergence, after the observer calls of play and with no event, no store change, and no binding change (decision 36). Any other fire logs the produce or consume event and the COMM event, removes the continuation and the bound non-persistent records, also for a peek fire (decision 45), and in replay removes the bindings. The observer finish follows, and then the event correlation. In native replay (decision 47), the observer start is replaced: operation i takes the ticket of its journal row with begin_row, and a row that is not ready, a footprint that differs from the locked footprint, an outcome that does not fit the staged kind, or a staged COMM that is not the recorded candidate fails closed with a mismatch and closes the epoch, so no operation waits for the row. A recorded denial publishes its row, fails with OutOfPhlogistons as play fails, and keeps the epoch open. An error in operation i leaves the operations before it applied. At the end the commit releases the locks and then the registration and returns the receipts.](diagrams/06-space-txn-commit.svg)
 
 *Figure S5.2. Source: [diagrams/06-space-txn-commit.puml](diagrams/06-space-txn-commit.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -721,7 +721,7 @@ The staging core applies the rule as follows:
 
 The literal rule of the design pass compared $`b`$ with the paired copies, without the division.
 For a COMM that lists one produce twice, that rule pairs one recorded occurrence two times.
-The Rocq lemma `design_verify_overpairs` (`EventCorrelation.v:5135`) proves this over-pairing, and the test `space_store_handle_replay_cross_channel_comm_pairs_once` pins the corrected rule.
+The Rocq lemma `design_verify_overpairs` (`EventCorrelation.v:5164`) proves this over-pairing, and the test `space_store_handle_replay_cross_channel_comm_pairs_once` pins the corrected rule.
 
 The commit removes all bindings of a paired COMM with `remove_bindings_for` (Table S3.2, step 11).
 A binding that no operation pairs fails the deploy at `check_replay_data` with `UnusedCommEvent`, as in host replay (`replay_rspace.rs:542-558`).
@@ -867,7 +867,7 @@ pub(crate) fn require_canonical(keys: &[Blake2b256Hash]) -> Result<(), SpaceTxnE
 
 The comparison of byte strings is a total order, and it is antisymmetric.
 So each multiset of keys has exactly one non-decreasing arrangement: its sorted list.
-The Rocq lemma `sorted_unique_canonical` (`EventCorrelation.v:7044`) proves this, also when the list repeats a key.
+The Rocq lemma `sorted_unique_canonical` (`EventCorrelation.v:7073`) proves this, also when the list repeats a key.
 Headline H22 uses it to show that canonical cache keys have distinct history keys.
 
 The check runs before the hot-store access of its group.
@@ -1065,8 +1065,8 @@ Without $`W_2`$, operation 1 has the outcome Store, and the space holds one copy
 
 Under the P1 rule before decision 30, operation 0 stored $`d`$, and $`W_2`$ then matched the stored $`d`$.
 That pending match breaks the no-pending-match invariant of the queue.
-The lemma `offer_p1_breaks_no_pending_match` (`EventCorrelation.v:4014`) shows the break.
-The lemma `offer_keeps_no_pending_match` (`EventCorrelation.v:3976`) shows that the plan with the re-offer keeps the invariant.
+The lemma `offer_p1_breaks_no_pending_match` (`EventCorrelation.v:4043`) shows the break.
+The lemma `offer_keeps_no_pending_match` (`EventCorrelation.v:4005`) shows that the plan with the re-offer keeps the invariant.
 
 The re-offer registers its introduction authority under the identity of the peek fire.
 The registry accepts an equal authority for an identity that it holds (`rholang/src/rust/interpreter/accounting/mod.rs:1041-1046`).
@@ -1269,35 +1269,35 @@ Each one closes under the global context, with no axiom, no parameter, and no ad
 
 | Id | Headline | Citation | Statement | Property tests |
 |---|---|---|---|---|
-| H1 | `commit_trace_eq_host` | `EventCorrelation.v:5472` | A commit makes the observer calls, events, and status of the host run of the same operations. | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H2 | `commit_state_eq_host` | `EventCorrelation.v:5530` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H3 | `counter_timing_play_replay` | `EventCorrelation.v:6171` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
-| H4 | `verify_sound_complete` | `EventCorrelation.v:6261` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, and an unpaired fire never commits: it emits no event or effect, and it keeps the bindings and the store (decision 36). | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
-| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:6465` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_restore` |
-| H6 | `view_commit_coherent` | `EventCorrelation.v:5557` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
-| H7 | `joins_lockstep_preserved` | `EventCorrelation.v:5580` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
-| H8 | `sub_order_between` | `EventCorrelation.v:8029` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
-| H9 | `abort_inert` | `EventCorrelation.v:7130` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H10 | `coverage_total` | `EventCorrelation.v:6053` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
-| H11 | `peek_reproduces_trace_eq_host` | `EventCorrelation.v:5807` | With the re-offer and the re-stores as the next operations, a commit makes the calls, events, status, and bindings of the host run, whose reducer sends the peeked data again. The stores are equal ([decision 45](decision-register.md#decision-45)). | `prop_space_txn_peek_restore` |
-| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:7215` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_restore` |
+| H1 | `commit_trace_eq_host` | `EventCorrelation.v:5501` | A commit makes the observer calls, events, and status of the host run of the same operations. | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H2 | `commit_state_eq_host` | `EventCorrelation.v:5559` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H3 | `counter_timing_play_replay` | `EventCorrelation.v:6200` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
+| H4 | `verify_sound_complete` | `EventCorrelation.v:6290` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, and an unpaired fire never commits: it emits no event or effect, and it keeps the bindings and the store (decision 36). | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
+| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:6494` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_restore` |
+| H6 | `view_commit_coherent` | `EventCorrelation.v:5586` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
+| H7 | `joins_lockstep_preserved` | `EventCorrelation.v:5609` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
+| H8 | `sub_order_between` | `EventCorrelation.v:8058` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
+| H9 | `abort_inert` | `EventCorrelation.v:7159` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
+| H10 | `coverage_total` | `EventCorrelation.v:6082` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
+| H11 | `peek_reproduces_trace_eq_host` | `EventCorrelation.v:5836` | With the re-offer and the re-stores as the next operations, a commit makes the calls, events, status, and bindings of the host run, whose reducer sends the peeked data again. The stores are equal ([decision 45](decision-register.md#decision-45)). | `prop_space_txn_peek_restore` |
+| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:7244` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_restore` |
 | H13 | `sweep_exact` | `VolatileSweep.v:879` | The sweep removes exactly the volatile data, continuations, and joins. Through the handle, a sweep in a task with an open transaction fails closed. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H14 | `delete_absent_identity` | `VolatileSweep.v:956` | A history delete of an absent key changes nothing. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H15 | `sweep_root_neutral` | `VolatileSweep.v:1251` | The checkpoint after a sweep gives the trie of the durable changes alone. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H16 | `leaf_count_is_length` | `VolatileSweep.v:1314` | The root leaf record count is the length of the data list. | `prop_root_leaf_record_count_matches_history` |
-| H17 | `non_canonical_fails_closed` | `EventCorrelation.v:7072` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H17 | `non_canonical_fails_closed` | `EventCorrelation.v:7101` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
 | H18 | `canonical_reads_root_neutral` | `VolatileSweep.v:1429` | Reads of canonical keys leave the checkpoint root unchanged. | `prop_space_txn_reads_root_neutral` |
-| H19 | `directive_fails_closed` | `EventCorrelation.v:7255` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
-| H20 | `parent_order_single_txn` | `EventCorrelation.v:8302` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
-| H21 | `view_identity_is_store_identity` | `EventCorrelation.v:8423` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
+| H19 | `directive_fails_closed` | `EventCorrelation.v:7284` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
+| H20 | `parent_order_single_txn` | `EventCorrelation.v:8331` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
+| H21 | `view_identity_is_store_identity` | `EventCorrelation.v:8452` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
 | H22 | `checkpoint_rejects_duplicate_key_actions` | `VolatileSweep.v:1613` | The checkpoint refuses two actions on one history key, and canonical cache keys have distinct history keys. | `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H23 | `replay_reproduces_play_run` | `EventCorrelation.v:7805` | With the commit log of play, replay stages the operations of play, and its commit makes the observer calls, events, status, and store of play. So an operation that play rejects fails replay at the same call, after the same prefix (decision 36). | `prop_space_txn_replay_reproduces_play_rejection` |
+| H23 | `replay_reproduces_play_run` | `EventCorrelation.v:7834` | With the commit log of play, replay stages the operations of play, and its commit makes the observer calls, events, status, and store of play. So an operation that play rejects fails replay at the same call, after the same prefix (decision 36). | `prop_space_txn_replay_reproduces_play_rejection` |
 
 The models are [EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v), with H1 to H12, H17, H19 to H21, and H23, and [VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v), with H13 to H16, H18, and H22.
 Since [decision 36](decision-register.md#decision-36), H1, H2, and H11 assume in replay that every staged fire paired, which a successful staging implied before.
 H4 and H23 cover the unpaired fire.
 H23 assumes that the observer ignores the stateless directive queries and gives no directive.
-The lemma `replay_premises_satisfiable` (`EventCorrelation.v:8500`) shows that the observer of a phlo limit meets both premises.
+The lemma `replay_premises_satisfiable` (`EventCorrelation.v:8836`) shows that the observer of a phlo limit meets both premises.
 
 **TLA+ invariants.** Table S9.2 lists the invariants of the two TLA+ modules [[Lam94](#ref-lam94)].
 TLC explores the complete state space of each safe configuration.
@@ -1428,7 +1428,7 @@ So the events, the charges, the replay, and the merge of a space operation are t
 
 The [specification](specification.md) states the required behavior of the queue, of the HashMap outer store, and of the default qualifier.
 The [agent API](agent-api.md) states the calls, the replies, and the errors that a program sees.
-This section explains how the code meets them, in thirteen parts that follow the life of one space operation:
+This section explains how the code meets them, in fourteen parts that follow the life of one space operation:
 
 1. [N1](#n1-module-map-and-hook-lines): the new modules and the hook lines in the three hot files of the reducer.
 2. [N2](#n2-namespace-and-records): the ids under the namespace tag, and the envelopes of the records ([decision M-2](decision-register.md#m-2)).
@@ -1443,6 +1443,7 @@ This section explains how the code meets them, in thirteen parts that follow the
 11. [N11](#n11-wave-w2-of-p5-the-drivers-the-stores-and-the-hooks): the drivers, the stores and the hooks of P5 wave W2.
 12. [N12](#n12-wave-w3-of-p5-joins-of-one-space): the join engine of P5 wave W3 ([decision 29](decision-register.md#decision-29)).
 13. [N13](#n13-wave-w3-of-p5-the-pathmap-engine): the PathMap engine of P5 wave W3 ([decision 51](decision-register.md#decision-51)).
+14. [N14](#n14-decision-47-spaces-in-native-execution): spaces in native play and native replay ([decision 47](decision-register.md#decision-47)).
 
 The pseudocode of this section uses the notation of [Table S5.0](#s5-algorithms), in the literate form of Knuth [[Knu84](#ref-knu84)].
 
@@ -2810,7 +2811,7 @@ ALLOCATE-IN-SPACES(agent, new, env, rand, spaces, α):    ▷ reducer_hooks.rs, 
     env′ ← allocate_new_bindings(new, env, rand)          ▷ HEAD's draws
     one group per distinct space of the plain binders, in the order of the first binder
     each group: ReifiedRuntime::allocate(AllocOp(s, |group|, rand.to_bytes(), α))
-        ▷ DanglingHandle, and in native execution SpacesUnsupportedInNativeExecution
+        ▷ DanglingHandle, and RuntimeUnavailable in a detached or unbound runtime (N14)
     Baseline → GPrivate(0xE0‖N‖sid‖r_i)    Indices(v) → GPrivate(0xE0‖N‖sid‖u64_be(v_j))
 ```
 
@@ -3293,6 +3294,207 @@ Phase 2 took three more design choices within the recorded decisions:
 The choice D-7 keeps the marker invariant at every commit.
 The other reading of O-2, a settle job that restores the marker, would leave the invariant broken between two commits.
 Each other job of the deploy could then read a datum without one of its markers.
+
+### N14. Decision 47: spaces in native execution
+
+Protocol version 6 of `feature/cost-accounted-rho` runs user deploys in native execution ([specification, section 8](specification.md#8-native-execution)).
+[Native play](glossary.md#native-play) records a [journal row](glossary.md#journal-row) for each RSpace operation, and [native replay](glossary.md#native-replay) checks each operation against its row.
+[Decision 46](decision-register.md#decision-46) made a space deploy fail in both modes, and [decision 47](decision-register.md#decision-47) runs spaces in both modes.
+This section describes the metered view, the [native backend](glossary.md#native-backend), the wiring, and the argument that native replay always ends.
+The [dossier](verification.md#13-decision-47-spaces-in-native-execution) gives the proofs, the models, the tests and the measurements.
+
+The change edits one file of the accounting module: the accessor `space_store`, which decision 47 approves as the only exception to [M-3](decision-register.md#m-3).
+Everything else is in the campaign files, the one-line `mod space;` of `native_session.rs`, and the bind call of `rho_runtime.rs`.
+
+#### N14.1 The metered view
+
+Native play and native replay must charge the same host work for each space operation.
+A legacy transaction loads its [staged view](glossary.md#staged-view) through the plain reads of the hot store, which charge nothing.
+The physical read of a key does different work on a cache hit and on a cache miss.
+So a charge for the physical read would depend on the cache, and the host-work rule forbids that ([I-12](decision-register.md#i-12)).
+
+A native transaction therefore reads through [metered view reads](glossary.md#metered-view-read).
+Each first load of a key into the view makes three steps:
+
+1. Reserve the key: inspect the channel, and then hash its bincode bytes with the metered writer. A group of channels charges the hash of its sorted channel keys, as the native replay of a host consume does.
+2. Read the value through the native history reader, with a meter that accepts every reservation.
+3. Reserve the copy of the value, and then copy the value into the view.
+
+The charge of a load is then a function of the channel and of the loaded value only:
+
+```math
+\mathrm{charge}(c, v) = \mathrm{inspect}(c) + \mathrm{hash}(c) + \mathrm{copy}(v)
+```
+
+Here $`c`$ is the channel or the channel group of the load.
+The value $`v`$ is the list of records, continuations or join groups that the load copies.
+The commit checks of [S5.2](#s52-commit) read through the same three steps.
+The Rocq theorem `view_charge_cache_independent` (`EventCorrelation.v:8773`) proves that a coherent cache does not change the charge of a load.
+
+No deploy pays for the physical read of step 2. Three bounds limit that read instead:
+
+- The native reader has structural limits on depth, allocation and overflow, and these limits act in both modes.
+- The first read of a key leaves the key in the cache.
+- Step 3 charges every byte that enters the view.
+
+*Table N14.1. The metered view in the substrate.*
+
+| Part | Code | Rule |
+|---|---|---|
+| The mode `NativeReplay` | `SpaceMode`, `space_store_handle.rs:86` | Staging treats the mode as play: it pairs no fire and admits every candidate. |
+| `begin_metered` | `space_store_handle.rs:793-805` | The registration of the transaction carries the metered reads. `begin` and `SpaceTxnHost::begin` keep their signatures. |
+| `NativeViewReads` | `space_store_handle.rs:966-1050` | The three steps of a load, for data, for continuations and for joins. |
+| `history_records` | `space_store_handle.rs:1087-1117` | A cold load decodes its leaf with the native history reader in every mode. So the decode limit of depth 128 acts alike in play and in replay. |
+| The effect helpers | `space_store_handle.rs:3218-3325` | `store_data`, `remove_matched_datum_and_join`, `store_waiting_continuation` and `store_persistent_data` moved here from `space_play.rs`. Play and the native backend call the same functions. |
+| `SpaceEnv::begin` | `spaces/agent.rs:87-95` | A space job opens a metered transaction when its budget is native, and a plain transaction otherwise. |
+
+Legacy execution does not change.
+A transaction of `begin` carries no metered reads, so each of its loads reads as before.
+The legacy goldens and the suites of P4 and P5 pass unchanged.
+
+#### N14.2 The native backend
+
+`NativeSpaceHost` (`replay_rspace/native_session/space.rs:76-176`) implements `SpaceTxnHost` over a native replay session.
+Its module is a child of `native_session.rs`, so it sees the private items of the session, as `space_replay.rs` sees those of `ReplayRSpace` ([M-4](decision-register.md#m-4)).
+The host holds four parts: the owner of the session, a projection to the session, the authority resolver of the accessor, and the installed channels.
+It reads the installed channels once, at creation, so the guard of installed channels holds in native replay as in play.
+
+`begin` (`native_session/space.rs:234-274`) requires metered reads, and it takes the stripes with no charge, as play takes them.
+It then opens a `HostTxn` in the mode `NativeReplay`, so staging is the staging of play.
+The difference is at commit: each staged operation meets its journal row through the [ticket](glossary.md#ticket) protocol of the session (`apply_op`, `native_session/space.rs:398-432`).
+
+```text
+NATIVE-APPLY-OP(store, op, observe, reads, events):  ▷ native_session/space.rs, apply_op
+    require the session is open, and take its gate for reading   ▷ at a boundary: mismatch
+    result ← NATIVE-OPERATION(op)
+    if result is an error and the operation published no denial:
+        close the epoch                      ▷ every waiting operation fails with Closed
+    return result
+
+NATIVE-OPERATION(op):                        ▷ apply_produce and apply_consume
+    op ← the commit checks of play on op, with the metered reads   ▷ S5.2
+    observe.before_observe(source)           ▷ registers the authority of the operation
+    α ← the authority of source, from the resolver of the accessor
+    ticket ← epoch.begin_operation(source)   ▷ a row that is not ready: mismatch
+    ticket.authenticate_footprint(channels, joins)   ▷ a consume passes no joins
+    o ← ticket.outcome()
+    require o fits the staged kind           ▷ store or park: Stored or DeniedIntroduction
+                                             ▷ fire: Matched, DeniedIntroduction or DeniedComm
+    d ← the observe_produce or observe_consume call of play, with α
+    if o = DeniedIntroduction: require d = Denied, and return PUBLISH-DENIAL(ticket, o)
+    require d = Granted
+    if op fires:
+        require the staged COMM is the recorded candidate     ▷ metered_matches_comm
+        d ← ticket.observe_comm(comm, continuation, candidates)
+        if o = DeniedComm: require d = Denied, and return PUBLISH-DENIAL(ticket, o)
+        require d = Granted
+    if op is a produce: prepare its produce counter
+    completion ← ticket.prepare(Stored or Matched)
+    under one publication guard:
+        apply the effects of play            ▷ the helpers of Table N14.1
+        publish the counter of a produce, then publish the completion
+    append the IO event and, for a fire, the COMM to events, in the order of play
+    return the receipt of play
+
+PUBLISH-DENIAL(ticket, o):                   ▷ publish_denial
+    publish ticket.prepare(o) under a publication guard
+    denied ← true                            ▷ NATIVE-APPLY-OP keeps the epoch open
+    fail with OutOfPhlogistons               ▷ operations 0 to i - 1 stay applied (decision 19, D6)
+```
+
+Each `require` fails with a mismatch in the class of the mismatch of the session: `SpaceTxnError::Host` with an `InterpreterError`.
+So a failed space operation fails the certification as a failed host operation does, and decision 47 adds no error variant.
+The session logs no event, as for host operations, and the backend gives the events of play only to the event correlation of the commit.
+Native play charges no host work for the source, the locks and the produce counter of a space operation, so the backend charges none either.
+The ticket protocol charges its own verification.
+
+`sweep_volatile` (`native_session/space.rs:286-318`) and `root_leaf_record_count` (`native_session/space.rs:277-283`) make the steps of the replay backend over the session store and the session history.
+Phase P7 enables the temp and seq qualifiers, so P7 runs the sweep of native replay for the first time.
+
+#### N14.3 The wiring
+
+*Table N14.2. The wiring of decision 47.*
+
+| Step | Code | Rule |
+|---|---|---|
+| W1, the accessor | `accounting/native_runtime/checked_operations/trace/replay/session/execution.rs:39-66` | `Session::space_store` returns a `ParSpaceStore` over `NativeSpaceHost`. Its resolver asks the budget for the introduction authority, as `NativeExecution` does for a host operation. |
+| W2, the bound state | `reified/runtime.rs:53-58`, `reified/runtime.rs:124-141` | The mode `NativeReplay` holds a slot that the environment binds once, with the store and the budget. An unbound slot fails with `RuntimeUnavailable`. |
+| W3, the bind call | `rho_runtime.rs:1917-1933` | `create_native_replay_env` binds the runtime right after it builds the session. |
+| N1, native play | `reified/runtime.rs:97-114` | `ReifiedRuntime::host` no longer fails for a native budget. The guard of decision 46 stays in a comment that gives the reason. |
+
+[Table N6.1](#n6-scheduling) gives the three modes of the runtime.
+`NativeReplayEnvironment::restore` keeps the same store across evaluations, so `begin_evaluation_scope` forwards to the bound store (FR-5').
+The test `space_native_scope_reset_after_restore` checks the reset.
+The observer path of a replay directive does not change ([decision 19](decision-register.md#decision-19), D4).
+No production observer overrides `replay_operation_directive` (`rspace_interface.rs:74`), so legacy replay keeps the fail-closed rule of [S3](#s3-host-equivalence).
+
+#### N14.4 Why native replay ends
+
+Two facts make every native replay of a space deploy end: the order of the space transactions, and the [epoch closure](glossary.md#epoch-closure).
+
+**An honest journal.** Assume that the journal is the journal of native play.
+
+1. The per-space key $`[2] \mathbin{\Vert} \mathit{sid}`$ of [I-11](decision-register.md#i-11) puts every transaction of one space into one conflict group ([N6](#n6-scheduling)). The group runs its transactions one after another, in operation order, in play and in replay.
+2. Each predecessor of a space row is one of three rows:
+   - an earlier operation of the same transaction, which `apply_op` published before the next operation began
+   - a row of an earlier transaction of the same space, which ran earlier in the same group
+   - the first-round row of a retry link ([decision 43](decision-register.md#decision-43)), which also belongs to an earlier transaction of that space
+3. So every predecessor is complete when a space row begins, and `begin_operation` returns a ticket.
+4. A host operation waits for the readiness of its row before it takes stripes. A space transaction never waits, because a row that is not ready fails closed.
+
+No operation therefore holds a stripe while it waits, so no cycle of waits can form [[CES71](#ref-ces71)].
+The native key $`[2, 0]`$ of native execution (DR-78, DR-79) puts each frontier into one conflict group.
+It is a second guarantee, and the argument does not use it.
+
+**A forged journal.** A forged journal can add a channel to the footprint of a space row.
+The journal check derives the predecessors of each row from the footprints, so it accepts the forgery when the forger derives the predecessors again.
+A later host row that touches the added channel then waits for the space row.
+The space row fails closed at its footprint check (rule [NE-4](specification.md#8-native-execution)).
+A failed operation that only drops its ticket returns the row to the available state, and the host row then waits forever.
+
+The epoch closure removes this case.
+When a space operation fails, `apply_op` closes the epoch of the session.
+Every waiting operation then wakes and fails with `Closed`, and the certification fails closed.
+A recorded denial is the one exception: it publishes its row, and play continues after it, so the epoch stays open.
+Before the closure, the forged-journal probe found 64 hangs among 109 forgeries of a space row ([dossier 13.7](verification.md#137-the-forged-journal-probe-and-the-epoch-closure)).
+The host path of native replay has the same lost wake-up, and [finding F-47-4](findings/native-execution-cost-accounting.md#6-f-47-4-a-failed-host-operation-leaves-its-waiters-waiting) records it for its owner.
+
+`NativeReplay.tla` checks the invariants `NoBlockedReadiness` and `NoDeadlock` over every interleaving of the groups.
+It checks them with the honest journal and with every footprint-consistent forgery of a space row.
+The controls `NoSpaceKeyUnsafe`, `WaitUnderLocksUnsafe` and `NoInvalidateUnsafe` each refute exactly one of the two invariants ([dossier 13.3](verification.md#133-tla-model-nativereplaytla)).
+
+#### N14.5 Shapes
+
+Every shape of a space operation is a sequence of staged produces and consumes, so each staged operation has one ticket.
+Table N14.3 gives the tickets of each shape.
+
+*Table N14.3. The tickets of each shape.*
+
+| Shape | Staged operations | Tickets |
+|---|---|---|
+| Store (bag, set, cell, queue, stack, PQ, Array, Vector) | a produce on D | one `Stored` |
+| Park | a consume on the group | one `Stored` |
+| Fire, produce side | a produce with a fire | one `Matched` |
+| Fire, consume side (one bind or a join) | a consume with a fire | one `Matched` |
+| Counter bump ([M-1](decision-register.md#m-1), decisions 31 and 49) | the consume of the counter, the produce of the new value | `Matched`, `Stored` |
+| Rule E store again ([decision 45](decision-register.md#decision-45)) | a produce with the identity of the record | one `Stored`, or `Matched` if it fires |
+| Set class retirement, `K_retire`, `K_lift` | a consume with a fire | one `Matched` |
+| `K_retire` over `[D; n]` ([decision 28](decision-register.md#decision-28)) | one consume over a repeated group | one `Matched`, with a deduplicated footprint |
+| PathMap delivery | a produce of the vehicle on I(q) with a fire | one `Matched` |
+| PathMap store | a produce on D(p), then one produce for each marker | one `Stored` each |
+| PathMap token bump ([decision 51](decision-register.md#decision-51)) | a counter bump on S(sid) | `Matched`, `Stored` |
+| Factory | the config on C(sid) (persistent), S(sid) = 0, the handle park on H(sid) (persistent) | three `Stored` |
+| `read_config` | none: the job drops its transaction | none |
+| Array or Vector allocation | the take of A(sid) as a fire, the put of A(sid) as a store | `Matched`, `Stored` |
+| First operation on a collection | the take and put of S(sid), then the put of S(sid, k) | `Matched`, `Stored`, `Stored` |
+| Persistent element offered again in flight ([decision 30](decision-register.md#decision-30), DV-3) | a produce with the same identity | one ticket with a retry link |
+| Handle call | a host produce on H(sid) | a host row whose predecessor is the park of the factory |
+| Settle job, or a re-issue at the cap (decisions 43 and 49) | a new intent with its own order | its own tickets |
+| PathMap escalation | the first transaction stages nothing | none |
+
+The suite `rholang/tests/reified_native_spaces.rs` runs these shapes through the full certification pipeline at the v6 limits ([dossier 13.6](verification.md#136-the-native-certification-suite)).
+Each budget attempt of native replay reserves about 1.2 MB of `VerificationBytes`, so the v6 limit bounds a certified deploy near 190 attempts.
+The [measurement M-47-1](findings/native-execution-cost-accounting.md#7-m-47-1-verification-bytes-of-native-replay) records this bound for the owner of cost accounting.
 
 ## References
 

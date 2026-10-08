@@ -2533,7 +2533,7 @@
       ]
     },
     "d47": {
-      "description": "Decision 47 (native execution of spaces, design v2). It extends campaign and restates the edits and the new files of p5, as p5 restates p4. Step 2 adds the native replay backend: one module line in native_session.rs and the new file native_session/space.rs. Step 3 adds the accessor space_store of the accounting session (the approved M-3 exception of decision 47) and the bind line of create_native_replay_env, which joins the cumulative edit of rho_runtime.rs. Step 4 adds the native certification suite of design v2, section 6, and its harness at the v6 limits.",
+      "description": "Decision 47 (native execution of spaces, design v2). It extends campaign and restates the edits and the new files of p5, as p5 restates p4. Step 2 adds the native replay backend: one module line in native_session.rs and the new file native_session/space.rs. Step 3 adds the accessor space_store of the accounting session (the approved M-3 exception of decision 47) and the bind line of create_native_replay_env, which joins the cumulative edit of rho_runtime.rs. Step 4 adds the native certification suite of design v2, section 6, and its harness at the v6 limits. Step 5 adds the TLA+ module NativeReplay.tla with its configurations and the model map of decision 47. Step 6 adds the findings document of decision 47 for the cost-accounting owner.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -3735,7 +3735,17 @@
         "test-vectors/reified-syntax-corpus-v1.json",
         "rspace++/src/rspace/replay_rspace/native_session/space.rs",
         "rholang/tests/reified_native_spaces.rs",
-        "rholang/tests/support/native.rs"
+        "rholang/tests/support/native.rs",
+        "formal/tlaplus/reified_rspaces/NativeReplay.tla",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Outcome.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Schedule.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Schedule_NativeKey.cfg",
+        "formal/tlaplus/reified_rspaces/TamperedOutcomeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NoSpaceKeyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/WaitUnderLocksUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NoInvalidateUnsafe.cfg",
+        "formal/reified-rspaces-model-map-d47.json",
+        "docs/rspace/reified-rspaces/findings/native-execution-cost-accounting.md"
       ]
     }
   }

@@ -37,6 +37,17 @@
    play (H23), also for a deploy that runs out of phlo inside a transaction
    (docs/rspace/reified-rspaces/findings/space-replay-out-of-phlo.md).
 
+   Decision 47 runs spaces in native execution. Native play records one
+   journal row for each staged operation: its locked footprint and its
+   outcome. The native replay backend of spaces (NativeBackend::apply_op in
+   replay_rspace/native_session/space.rs) replays each staged operation
+   against its row. It begins the row, authenticates the footprint, checks
+   that the outcome fits the staged kind, and observes the introduction. A
+   fire then checks its candidate and observes its COMM. Last, the backend
+   applies the effects of play. H24 to H26 model this protocol over
+   abstract operations, and H27 models the charge of a view load (P5 of
+   design v2).
+
    Code base: the campaign tree after the merge of feature/cost-accounted-rho
    at 4d67b5ccc. Every host file that this header cites with a line range
    equals that file at 4d67b5ccc, except the Reified hooks that footprint
@@ -484,6 +495,21 @@
                                        play and its commit makes the calls
                                        (directive queries erased), events,
                                        status and store of play
+   H24 native_replay_reproduces_play   decision 47: over the rows of native
+                                       play, native replay makes the
+                                       observer calls, the effects and the
+                                       status of play, with one row for
+                                       each operation
+   H25 native_replay_denial_keeps_prefix
+                                       a recorded denial at operation k
+                                       gives the failure of play, with the
+                                       operations before k applied
+   H26 native_replay_fails_closed      no ready row, a forged footprint, an
+                                       outcome that does not fit and another
+                                       candidate fail before any effect
+   H27 view_charge_cache_independent   P5: a view load charges its key and
+                                       its value only, so a hit and a miss
+                                       charge the same
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables become universally quantified parameters of the closed
@@ -518,6 +544,9 @@
      consume fire (tested). The control ec-peek-retains also makes the view
      retain, and it fails in the H11 lemma fire_view_removes, which comes
      before the commit lemmas.
+   - Decision 47: in H24, `rewrite Sc` replaces every occurrence of
+     `staged_comm o` at once, so a second `rewrite Sc` for the second match
+     fails ("Found no subterm matching"). Rewrite once, then `simpl`.
    - Decision 45: a leaf tactic of fire_stores_no_datum that names the loop
      of each commit fails under the control ec-peek-retains, although the
      statement stays true there (tested). The same tactic proves the
@@ -8447,6 +8476,313 @@ Qed.
 
 End StoreIdentity.
 
+(* ══════════ Native replay of space operations (H24-H26, decision 47) ══════════ *)
+
+(* Design v2 of decision 47, section 4.3. Native play stages the operations
+   of a space transaction as legacy play does (S2), and the native budget
+   records one journal row for each operation. Native replay stages the
+   same operations, because the agent runs the same plan over the same view.
+   NativeBackend::apply_op (rspace++/src/rspace/replay_rspace/native_session/
+   space.rs) then replays each operation against its row:
+     1. begin_row: a ticket for the next row, or NotReady with no wait (P1);
+     2. authenticate_footprint: the locked footprint equals the row's;
+     3. the recorded outcome fits the staged kind;
+     4. observe_produce or observe_consume: the introduction, where a
+        recorded denial must be a denial (publish_denial);
+     5. a fire: check_candidate compares the staged COMM with the recorded
+        candidate, then observe_comm observes the COMM;
+     6. prepare, publish, and the effects of play (the shared store helpers).
+   Native replay runs the contract of play, so one decision function of the
+   call history gives the budget decisions of play and replay. *)
+
+Section NativeReplay.
+
+(* The staged operations of the agent, the store, the COMM of a fire and the
+   locked footprint of an operation. *)
+Variables Op Store Comm Foot : Type.
+Variable comm_eq_dec : forall x y : Comm, {x = y} + {x <> y}.
+Variable foot_eq_dec : forall x y : Foot, {x = y} + {x <> y}.
+
+(* The COMM of a staged fire, and none for a store or a park. *)
+Variable staged_comm : Op -> option Comm.
+
+(* The footprint that the operation locks (authenticate_footprint). *)
+Variable foot : Op -> Foot.
+
+(* The effects of an operation on the store: the shared helpers store_data,
+   remove_matched_datum_and_join, store_waiting_continuation and
+   store_persistent_data, which play and native replay both call. *)
+Variable apply : Store -> Op -> Store.
+
+(* An observer call: the introduction of an operation, or the COMM of a
+   fire. *)
+Inductive NCall := NIntro (o : Op) | NComm (c : Comm).
+
+(* The budget decision of a call after the calls before it. Native replay
+   runs the contract of play (check_operation_journal binds the recording),
+   so play and replay share this function. *)
+Variable grant : list NCall -> NCall -> bool.
+
+(* The outcome that a journal row records, and the row. *)
+Inductive NOutcome :=
+  | NStored
+  | NMatched (c : Comm)
+  | NDeniedIntro
+  | NDeniedComm (c : Comm).
+
+Record NRow := mkNRow { nr_out : NOutcome; nr_foot : Foot }.
+
+Inductive NStatus := NOk | NOutOfPhlo | NMismatch | NNotReady.
+
+(* Native play of the staged operations of a transaction. Each operation
+   observes its introduction, and a fire then observes its COMM. A denial
+   publishes its row and fails the transaction with OutOfPhlogistons. The
+   operations before it stay applied (D6). Otherwise the effects apply and
+   the row records the outcome. *)
+Fixpoint native_play (h : list NCall) (s : Store) (ops : list Op)
+    : list NCall * Store * list NRow * NStatus :=
+  match ops with
+  | [] => (h, s, [], NOk)
+  | o :: rest =>
+      if grant h (NIntro o) then
+        match staged_comm o with
+        | None =>
+            match native_play (h ++ [NIntro o]) (apply s o) rest with
+            | (h', s', rows, st) => (h', s', mkNRow NStored (foot o) :: rows, st)
+            end
+        | Some c =>
+            if grant (h ++ [NIntro o]) (NComm c) then
+              match native_play ((h ++ [NIntro o]) ++ [NComm c]) (apply s o) rest with
+              | (h', s', rows, st) => (h', s', mkNRow (NMatched c) (foot o) :: rows, st)
+              end
+            else ((h ++ [NIntro o]) ++ [NComm c], s, [mkNRow (NDeniedComm c) (foot o)], NOutOfPhlo)
+        end
+      else (h ++ [NIntro o], s, [mkNRow NDeniedIntro (foot o)], NOutOfPhlo)
+  end.
+
+(* The recorded outcome fits the staged kind (R4 step 7). *)
+Definition fits (o : Op) (out : NOutcome) : bool :=
+  match staged_comm o, out with
+  | None, NStored => true
+  | None, NDeniedIntro => true
+  | Some _, NMatched _ => true
+  | Some _, NDeniedIntro => true
+  | Some _, NDeniedComm _ => true
+  | _, _ => false
+  end.
+
+(* Native replay of the same operations against the journal rows
+   (NativeBackend::apply_op). *)
+Fixpoint native_replay (h : list NCall) (s : Store) (ops : list Op) (rows : list NRow)
+    : list NCall * Store * NStatus :=
+  match ops with
+  | [] => (h, s, NOk)
+  | o :: rest =>
+      match rows with
+      | [] => (h, s, NNotReady)
+      | r :: rows' =>
+          if foot_eq_dec (foot o) (nr_foot r) then
+            if fits o (nr_out r) then
+              match nr_out r with
+              | NDeniedIntro =>
+                  (h ++ [NIntro o], s, if grant h (NIntro o) then NMismatch else NOutOfPhlo)
+              | out =>
+                  if grant h (NIntro o) then
+                    match staged_comm o, out with
+                    | None, NStored => native_replay (h ++ [NIntro o]) (apply s o) rest rows'
+                    | Some c, NMatched rc =>
+                        if comm_eq_dec c rc then
+                          if grant (h ++ [NIntro o]) (NComm c) then
+                            native_replay ((h ++ [NIntro o]) ++ [NComm c]) (apply s o) rest rows'
+                          else ((h ++ [NIntro o]) ++ [NComm c], s, NMismatch)
+                        else (h ++ [NIntro o], s, NMismatch)
+                    | Some c, NDeniedComm rc =>
+                        if comm_eq_dec c rc then
+                          ((h ++ [NIntro o]) ++ [NComm c], s,
+                           if grant (h ++ [NIntro o]) (NComm c) then NMismatch else NOutOfPhlo)
+                        else (h ++ [NIntro o], s, NMismatch)
+                    | _, _ => (h ++ [NIntro o], s, NMismatch)
+                    end
+                  else (h ++ [NIntro o], s, NMismatch)
+              end
+            else (h, s, NMismatch)
+          else (h, s, NMismatch)
+      end
+  end.
+
+(* H24: native replay over the rows of native play makes the observer calls
+   of play in the order of play, applies the effects of play and ends with
+   the status of play. Play records at most one row per operation, and one
+   row per operation when it completes. *)
+Theorem native_replay_reproduces_play :
+  forall ops h s,
+    match native_play h s ops with
+    | (h', s', rows, st) =>
+        native_replay h s ops rows = (h', s', st) /\
+        length rows <= length ops /\
+        (st = NOk -> length rows = length ops)
+    end.
+Proof.
+  induction ops as [| o rest IH]; intros h s; cbn [native_play].
+  - cbn. split; [reflexivity |]. split; [lia | reflexivity].
+  - destruct (grant h (NIntro o)) eqn:Gi.
+    + destruct (staged_comm o) as [c |] eqn:Sc.
+      * destruct (grant (h ++ [NIntro o]) (NComm c)) eqn:Gc.
+        -- specialize (IH ((h ++ [NIntro o]) ++ [NComm c]) (apply s o)).
+           destruct (native_play ((h ++ [NIntro o]) ++ [NComm c]) (apply s o) rest)
+             as [[[h' s'] rows] st].
+           destruct IH as [IHr [IHl IHc]].
+           split; [| split; [cbn; lia | intros E; cbn; rewrite (IHc E); reflexivity]].
+           cbn [native_replay nr_out nr_foot].
+           destruct (foot_eq_dec (foot o) (foot o)) as [_ | NE]; [| contradiction NE; reflexivity].
+           unfold fits. rewrite Sc, Gi. simpl.
+           destruct (comm_eq_dec c c) as [_ | NE]; [| contradiction NE; reflexivity].
+           rewrite Gc. exact IHr.
+        -- cbn [native_replay nr_out nr_foot].
+           split; [| split; [cbn; lia | discriminate]].
+           destruct (foot_eq_dec (foot o) (foot o)) as [_ | NE]; [| contradiction NE; reflexivity].
+           unfold fits. rewrite Sc, Gi. simpl.
+           destruct (comm_eq_dec c c) as [_ | NE]; [| contradiction NE; reflexivity].
+           rewrite Gc. reflexivity.
+      * specialize (IH (h ++ [NIntro o]) (apply s o)).
+        destruct (native_play (h ++ [NIntro o]) (apply s o) rest) as [[[h' s'] rows] st].
+        destruct IH as [IHr [IHl IHc]].
+        split; [| split; [cbn; lia | intros E; cbn; rewrite (IHc E); reflexivity]].
+        cbn [native_replay nr_out nr_foot].
+        destruct (foot_eq_dec (foot o) (foot o)) as [_ | NE]; [| contradiction NE; reflexivity].
+        unfold fits. rewrite Sc, Gi. simpl. exact IHr.
+    + cbn [native_replay nr_out nr_foot].
+      split; [| split; [cbn; lia | discriminate]].
+      destruct (foot_eq_dec (foot o) (foot o)) as [_ | NE]; [| contradiction NE; reflexivity].
+      unfold fits. destruct (staged_comm o); rewrite Gi; reflexivity.
+Qed.
+
+(* H25: when play runs out of phlo at operation k, play keeps the effects of
+   the operations before k and records k + 1 rows, and native replay over
+   those rows ends with the same calls, the same store and OutOfPhlogistons. *)
+Theorem native_replay_denial_keeps_prefix :
+  forall ops h s,
+    match native_play h s ops with
+    | (h', s', rows, st) =>
+        st = NOutOfPhlo ->
+        exists k,
+          k < length ops /\ length rows = S k /\
+          s' = fold_left apply (firstn k ops) s /\
+          native_replay h s ops rows = (h', s', NOutOfPhlo)
+    end.
+Proof.
+  induction ops as [| o rest IH]; intros h s.
+  - cbn. discriminate.
+  - pose proof (native_replay_reproduces_play (o :: rest) h s) as Hrep.
+    cbn [native_play] in Hrep |- *.
+    destruct (grant h (NIntro o)) eqn:Gi.
+    + destruct (staged_comm o) as [c |] eqn:Sc.
+      * destruct (grant (h ++ [NIntro o]) (NComm c)) eqn:Gc.
+        -- specialize (IH ((h ++ [NIntro o]) ++ [NComm c]) (apply s o)).
+           destruct (native_play ((h ++ [NIntro o]) ++ [NComm c]) (apply s o) rest)
+             as [[[h' s'] rows] st].
+           intros E. destruct (IH E) as [k [Hk [Hl [Hs _]]]].
+           destruct Hrep as [Hr _]. rewrite E in Hr.
+           exists (S k). split; [cbn; lia |]. split; [cbn; lia |].
+           split; [exact Hs | exact Hr].
+        -- intros _. destruct Hrep as [Hr _].
+           exists 0. split; [cbn; lia |]. split; [reflexivity |].
+           split; [reflexivity | exact Hr].
+      * specialize (IH (h ++ [NIntro o]) (apply s o)).
+        destruct (native_play (h ++ [NIntro o]) (apply s o) rest) as [[[h' s'] rows] st].
+        intros E. destruct (IH E) as [k [Hk [Hl [Hs _]]]].
+        destruct Hrep as [Hr _]. rewrite E in Hr.
+        exists (S k). split; [cbn; lia |]. split; [cbn; lia |].
+        split; [exact Hs | exact Hr].
+    + intros _. destruct Hrep as [Hr _].
+      exists 0. split; [cbn; lia |]. split; [reflexivity |].
+      split; [reflexivity | exact Hr].
+Qed.
+
+(* H26: native replay fails closed before any effect. With no ready row, an
+   operation ends NotReady with no call (P1: a space transaction never
+   waits). A forged footprint and an outcome that does not fit the staged
+   kind end Mismatch before any call. A fire whose recorded candidate is
+   another COMM ends Mismatch after its introduction only: the COMM is
+   not observed, and the store keeps no effect of the operation. *)
+Theorem native_replay_fails_closed :
+  forall h s o rest r rows,
+    native_replay h s (o :: rest) [] = (h, s, NNotReady) /\
+    (foot o <> nr_foot r ->
+     native_replay h s (o :: rest) (r :: rows) = (h, s, NMismatch)) /\
+    (foot o = nr_foot r -> fits o (nr_out r) = false ->
+     native_replay h s (o :: rest) (r :: rows) = (h, s, NMismatch)) /\
+    (forall c rc,
+       foot o = nr_foot r -> staged_comm o = Some c -> nr_out r = NMatched rc -> c <> rc ->
+       grant h (NIntro o) = true ->
+       native_replay h s (o :: rest) (r :: rows) = (h ++ [NIntro o], s, NMismatch)).
+Proof.
+  intros h s o rest r rows.
+  split; [reflexivity |].
+  split.
+  { intros NE. cbn [native_replay].
+    destruct (foot_eq_dec (foot o) (nr_foot r)) as [E | _]; [contradiction | reflexivity]. }
+  split.
+  { intros E F. cbn [native_replay].
+    destruct (foot_eq_dec (foot o) (nr_foot r)) as [_ | NE]; [| contradiction].
+    rewrite F. reflexivity. }
+  intros c rc E Sc Out NE Gi. cbn [native_replay].
+  destruct (foot_eq_dec (foot o) (nr_foot r)) as [_ | NE']; [| contradiction].
+  rewrite Out. unfold fits. rewrite Sc, Gi. simpl.
+  destruct (comm_eq_dec c rc) as [Ec | _]; [contradiction | reflexivity].
+Qed.
+
+End NativeReplay.
+
+(* ═════════ The charge of a view load (P5 of decision 47, I-12) ═════════ *)
+
+Section ViewCharges.
+
+(* The keys of view loads (a channel, a channel group, or the joins of a
+   channel) and their values (the loaded records). *)
+Variables Key Val : Type.
+
+(* NativeViewReads::key: native_backing::inspect and native_source::hash. *)
+Variable key_charge : Key -> nat.
+
+(* NativeViewReads::data, continuations and joins: the copy reservation of
+   the loaded records (reserve_slice_copy_and_cleanup). *)
+Variable value_charge : Val -> nat.
+
+(* The meter of the native history reader of a cold load: accept_all. *)
+Definition accept_all (_ : Key) : nat := 0.
+
+(* A view load: the hot store serves a cached value. On a miss, the native
+   history reader reads the value at the root of the transaction through
+   accept_all, and the hot store caches it. The load charges its key and
+   its value. *)
+Definition view_load (cache : Key -> option Val) (history : Key -> Val) (k : Key) : Val * nat :=
+  match cache k with
+  | Some v => (v, key_charge k + value_charge v)
+  | None => (history k, key_charge k + accept_all k + value_charge (history k))
+  end.
+
+(* A coherent cache holds the value of the history at the root of the
+   transaction, or nothing. *)
+Definition coherent (cache : Key -> option Val) (history : Key -> Val) : Prop :=
+  forall k v, cache k = Some v -> v = history k.
+
+(* P5: the charge of a view load is a function of its key and its value
+   only: a hit and a miss load the same value and charge the same amount,
+   so a warm load and a cold load reserve the same work. *)
+Theorem view_charge_cache_independent :
+  forall cache history k,
+    coherent cache history ->
+    view_load cache history k = (history k, key_charge k + value_charge (history k)).
+Proof.
+  intros cache history k Hc. unfold view_load.
+  destruct (cache k) as [v |] eqn:Hk.
+  - rewrite (Hc k v Hk). reflexivity.
+  - unfold accept_all. rewrite Nat.add_0_r. reflexivity.
+Qed.
+
+End ViewCharges.
+
 (* ═══════════ The premises of H9 are satisfiable ══════════════════════════════ *)
 
 (* History keys that are the cache keys themselves satisfy key_injective for
@@ -8509,6 +8845,16 @@ Proof.
   - intros h s. reflexivity.
 Qed.
 
+(* The premise of H25 is satisfiable: a budget that denies every call makes
+   play run out of phlo at its first operation. *)
+Lemma native_denial_premise_satisfiable :
+  forall (Op Store Comm Foot : Type) (staged_comm : Op -> option Comm) (foot : Op -> Foot)
+    (apply : Store -> Op -> Store) (o : Op) (s : Store),
+    match native_play Op Store Comm Foot staged_comm foot apply (fun _ _ => false) [] s [o] with
+    | (_, _, _, st) => st = NOutOfPhlo
+    end.
+Proof. intros. reflexivity. Qed.
+
 (* ═══════════ Headline trust base: every headline is axiom-free ═══════════ *)
 
 Print Assumptions commit_trace_eq_host.
@@ -8531,3 +8877,7 @@ Print Assumptions directive_fails_closed.
 Print Assumptions parent_order_single_txn.
 Print Assumptions view_identity_is_store_identity.
 Print Assumptions replay_reproduces_play_run.
+Print Assumptions native_replay_reproduces_play.
+Print Assumptions native_replay_denial_keeps_prefix.
+Print Assumptions native_replay_fails_closed.
+Print Assumptions view_charge_cache_independent.

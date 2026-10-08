@@ -15,90 +15,94 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Namespace tag](#namespace-tag) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Native space](#native-space) | 2 |
-| [Admission verdict](#admission-verdict) | 2 | [Negative control](#negative-control) | 2 |
-| [Agent](#agent) | 1 | [Op channel](#op-channel) | 2 |
-| [Allocation job](#allocation-job) | 2 | [Operation order](#operation-order) | 2 |
-| [Allocator](#allocator) | 2 | [Outcome](#outcome) | 2 |
-| [Binding](#binding) | 2 | [Outer store](#outer-store) | 2 |
-| [Block](#block) | 1 | [Pairing](#pairing) | 2 |
-| [Body channel](#body-channel) | 2 | [Par](#par) | 1 |
-| [Bundle](#bundle) | 1 | [Param rule](#param-rule) | 2 |
-| [Canonical form](#canonical-form) | 2 | [Path](#path) | 2 |
-| [Canonical group](#canonical-group) | 2 | [Path marker](#path-marker) | 2 |
-| [Canonical order](#canonical-order) | 2 | [Pattern](#pattern) | 1 |
-| [Capacity](#capacity) | 2 | [Peek](#peek) | 1 |
-| [Cascade](#cascade) | 2 | [Persistent](#persistent) | 1 |
-| [Cell](#cell) | 2 | [pgmcp](#pgmcp) | 1 |
-| [Channel](#channel) | 1 | [Phlo](#phlo) | 1 |
-| [Checkpoint](#checkpoint) | 1 | [Play](#play) | 1 |
-| [Class fire](#class-fire) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Class key](#class-key) | 2 | [Prefix source](#prefix-source) | 2 |
-| [Collection](#collection) | 2 | [Process](#process) | 1 |
-| [Collection counter](#collection-counter) | 2 | [Produce counter](#produce-counter) | 2 |
-| [Collection key](#collection-key) | 2 | [Property-based test](#property-based-test) | 1 |
-| [COMM event](#comm-event) | 1 | [Qualifier](#qualifier) | 2 |
-| [Config record](#config-record) | 2 | [Random state](#random-state) | 1 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-issue](#re-issue) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Re-offer](#re-offer) | 2 |
-| [Constructor schema](#constructor-schema) | 2 | [Re-rooting](#re-rooting) | 2 |
-| [Continuation](#continuation) | 1 | [Re-store](#re-store) | 2 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Receive](#receive) | 1 |
-| [Crossed stacks](#crossed-stacks) | 2 | [Recognized position](#recognized-position) | 2 |
-| [Datum](#datum) | 1 | [Record envelope](#record-envelope) | 2 |
-| [Deploy](#deploy) | 1 | [Reduction participant](#reduction-participant) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Registered family](#registered-family) | 2 |
-| [Event log](#event-log) | 1 | [Regression corpus](#regression-corpus) | 2 |
-| [Exact cut](#exact-cut) | 2 | [Reified RSpace](#reified-rspace) | 2 |
-| [F1r3lang](#f1r3lang) | 1 | [Replay](#replay) | 1 |
-| [Factory](#factory) | 2 | [Reporting](#reporting) | 1 |
-| [Factory capability](#factory-capability) | 2 | [Representative](#representative) | 2 |
-| [Factory row](#factory-row) | 2 | [Retention](#retention) | 2 |
-| [FIPS](#fips) | 1 | [Rholang](#rholang) | 1 |
-| [Fire count](#fire-count) | 2 | [Rocq](#rocq) | 1 |
-| [Fire round](#fire-round) | 2 | [Routing class](#routing-class) | 2 |
-| [First admitting waiter](#first-admitting-waiter) | 2 | [RSpace](#rspace) | 1 |
-| [Footprint policy](#footprint-policy) | 2 | [Scan discipline](#scan-discipline) | 2 |
-| [Frontend](#frontend) | 1 | [Scan driver](#scan-driver) | 2 |
-| [Gate](#gate) | 2 | [Second send](#second-send) | 2 |
-| [getSpaceAgent](#getspaceagent) | 2 | [Send](#send) | 1 |
-| [Handle](#handle) | 2 | [Settle](#settle) | 2 |
-| [Handle capability](#handle-capability) | 2 | [Space](#space) | 2 |
-| [Head record](#head-record) | 2 | [Space agent](#space-agent) | 2 |
-| [Head waiter](#head-waiter) | 2 | [Space counter](#space-counter) | 2 |
-| [Head-only matching](#head-only-matching) | 2 | [Space family](#space-family) | 2 |
-| [Headline](#headline) | 2 | [Space id](#space-id) | 2 |
-| [History trie](#history-trie) | 1 | [Space intent](#space-intent) | 2 |
-| [Host operation](#host-operation) | 2 | [Space name](#space-name) | 2 |
-| [Host work](#host-work) | 1 | [Space reference](#space-reference) | 2 |
-| [Hot store](#hot-store) | 1 | [Space transaction](#space-transaction) | 2 |
-| [Index channel](#index-channel) | 2 | [Staged view](#staged-view) | 2 |
-| [Index name](#index-name) | 2 | [Storage channel](#storage-channel) | 2 |
-| [Inductive invariant](#inductive-invariant) | 1 | [Store identity](#store-identity) | 2 |
-| [Inert](#inert) | 2 | [Sub-order](#sub-order) | 2 |
-| [Inner collection](#inner-collection) | 2 | [Sweep](#sweep) | 2 |
-| [Internal operation](#internal-operation) | 2 | [System process](#system-process) | 1 |
-| [Invariant map](#invariant-map) | 2 | [Tested prefix](#tested-prefix) | 2 |
-| [Join](#join) | 1 | [Theory](#theory) | 2 |
-| [Join engine](#join-engine) | 2 | [Theory identity](#theory-identity) | 2 |
-| [Join scope](#join-scope) | 2 | [Times-repeated](#times-repeated) | 2 |
-| [Join slot](#join-slot) | 2 | [TLA+](#tla) | 1 |
-| [KIND](#kind) | 2 | [Token](#token) | 2 |
-| [Lane](#lane) | 2 | [Trigger event](#trigger-event) | 2 |
-| [Legacy charge](#legacy-charge) | 2 | [Tuple space](#tuple-space) | 1 |
-| [Level](#level) | 2 | [Typed reply](#typed-reply) | 2 |
-| [LFS](#lfs) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
-| [Lift](#lift) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
-| [List order](#list-order) | 2 | [URN](#urn) | 1 |
-| [Lock coverage](#lock-coverage) | 2 | [Use context](#use-context) | 2 |
-| [Lock stripe](#lock-stripe) | 1 | [User agent-backed space](#user-agent-backed-space) | 2 |
-| [Marker](#marker) | 2 | [Vehicle](#vehicle) | 2 |
-| [Marker tuple](#marker-tuple) | 2 | [Verification recipe](#verification-recipe) | 2 |
-| [Matcher](#matcher) | 2 | [Volatile channel](#volatile-channel) | 2 |
-| [Merge](#merge) | 1 | [Waiter](#waiter) | 2 |
+| [Acceptance category](#acceptance-category) | 2 | [Native backend](#native-backend) | 2 |
+| [Accounting observer](#accounting-observer) | 1 | [Native play](#native-play) | 2 |
+| [Admission verdict](#admission-verdict) | 2 | [Native replay](#native-replay) | 2 |
+| [Agent](#agent) | 1 | [Native space](#native-space) | 2 |
+| [Allocation job](#allocation-job) | 2 | [Negative control](#negative-control) | 2 |
+| [Allocator](#allocator) | 2 | [Op channel](#op-channel) | 2 |
+| [Binding](#binding) | 2 | [Operation order](#operation-order) | 2 |
+| [Block](#block) | 1 | [Outcome](#outcome) | 2 |
+| [Body channel](#body-channel) | 2 | [Outer store](#outer-store) | 2 |
+| [Bundle](#bundle) | 1 | [Pairing](#pairing) | 2 |
+| [Canonical form](#canonical-form) | 2 | [Par](#par) | 1 |
+| [Canonical group](#canonical-group) | 2 | [Param rule](#param-rule) | 2 |
+| [Canonical order](#canonical-order) | 2 | [Path](#path) | 2 |
+| [Capacity](#capacity) | 2 | [Path marker](#path-marker) | 2 |
+| [Cascade](#cascade) | 2 | [Pattern](#pattern) | 1 |
+| [Cell](#cell) | 2 | [Peek](#peek) | 1 |
+| [Channel](#channel) | 1 | [Persistent](#persistent) | 1 |
+| [Checkpoint](#checkpoint) | 1 | [pgmcp](#pgmcp) | 1 |
+| [Class fire](#class-fire) | 2 | [Phlo](#phlo) | 1 |
+| [Class key](#class-key) | 2 | [Play](#play) | 1 |
+| [Collection](#collection) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [Collection counter](#collection-counter) | 2 | [Prefix source](#prefix-source) | 2 |
+| [Collection key](#collection-key) | 2 | [Process](#process) | 1 |
+| [COMM event](#comm-event) | 1 | [Produce counter](#produce-counter) | 2 |
+| [Config record](#config-record) | 2 | [Property-based test](#property-based-test) | 1 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Qualifier](#qualifier) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Random state](#random-state) | 1 |
+| [Constructor schema](#constructor-schema) | 2 | [Re-issue](#re-issue) | 2 |
+| [Continuation](#continuation) | 1 | [Re-offer](#re-offer) | 2 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Re-rooting](#re-rooting) | 2 |
+| [Crossed stacks](#crossed-stacks) | 2 | [Re-store](#re-store) | 2 |
+| [Datum](#datum) | 1 | [Receive](#receive) | 1 |
+| [Deploy](#deploy) | 1 | [Recognized position](#recognized-position) | 2 |
+| [Epoch closure](#epoch-closure) | 2 | [Record envelope](#record-envelope) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Reduction participant](#reduction-participant) | 2 |
+| [Event log](#event-log) | 1 | [Registered family](#registered-family) | 2 |
+| [Exact cut](#exact-cut) | 2 | [Regression corpus](#regression-corpus) | 2 |
+| [F1r3lang](#f1r3lang) | 1 | [Reified RSpace](#reified-rspace) | 2 |
+| [Factory](#factory) | 2 | [Replay](#replay) | 1 |
+| [Factory capability](#factory-capability) | 2 | [Reporting](#reporting) | 1 |
+| [Factory row](#factory-row) | 2 | [Representative](#representative) | 2 |
+| [FIPS](#fips) | 1 | [Retention](#retention) | 2 |
+| [Fire count](#fire-count) | 2 | [Rholang](#rholang) | 1 |
+| [Fire round](#fire-round) | 2 | [Rocq](#rocq) | 1 |
+| [First admitting waiter](#first-admitting-waiter) | 2 | [Routing class](#routing-class) | 2 |
+| [Footprint policy](#footprint-policy) | 2 | [RSpace](#rspace) | 1 |
+| [Frontend](#frontend) | 1 | [Scan discipline](#scan-discipline) | 2 |
+| [Gate](#gate) | 2 | [Scan driver](#scan-driver) | 2 |
+| [getSpaceAgent](#getspaceagent) | 2 | [Second send](#second-send) | 2 |
+| [Handle](#handle) | 2 | [Send](#send) | 1 |
+| [Handle capability](#handle-capability) | 2 | [Settle](#settle) | 2 |
+| [Head record](#head-record) | 2 | [Space](#space) | 2 |
+| [Head waiter](#head-waiter) | 2 | [Space agent](#space-agent) | 2 |
+| [Head-only matching](#head-only-matching) | 2 | [Space counter](#space-counter) | 2 |
+| [Headline](#headline) | 2 | [Space family](#space-family) | 2 |
+| [History trie](#history-trie) | 1 | [Space id](#space-id) | 2 |
+| [Host operation](#host-operation) | 2 | [Space intent](#space-intent) | 2 |
+| [Host work](#host-work) | 1 | [Space name](#space-name) | 2 |
+| [Hot store](#hot-store) | 1 | [Space reference](#space-reference) | 2 |
+| [Index channel](#index-channel) | 2 | [Space transaction](#space-transaction) | 2 |
+| [Index name](#index-name) | 2 | [Staged view](#staged-view) | 2 |
+| [Inductive invariant](#inductive-invariant) | 1 | [Storage channel](#storage-channel) | 2 |
+| [Inert](#inert) | 2 | [Store identity](#store-identity) | 2 |
+| [Inner collection](#inner-collection) | 2 | [Sub-order](#sub-order) | 2 |
+| [Internal operation](#internal-operation) | 2 | [Sweep](#sweep) | 2 |
+| [Invariant map](#invariant-map) | 2 | [System process](#system-process) | 1 |
+| [Join](#join) | 1 | [Tested prefix](#tested-prefix) | 2 |
+| [Join engine](#join-engine) | 2 | [Theory](#theory) | 2 |
+| [Join scope](#join-scope) | 2 | [Theory identity](#theory-identity) | 2 |
+| [Join slot](#join-slot) | 2 | [Ticket](#ticket) | 2 |
+| [Journal row](#journal-row) | 2 | [Times-repeated](#times-repeated) | 2 |
+| [KIND](#kind) | 2 | [TLA+](#tla) | 1 |
+| [Lane](#lane) | 2 | [Token](#token) | 2 |
+| [Legacy charge](#legacy-charge) | 2 | [Trigger event](#trigger-event) | 2 |
+| [Level](#level) | 2 | [Tuple space](#tuple-space) | 1 |
+| [LFS](#lfs) | 2 | [Typed reply](#typed-reply) | 2 |
+| [Lift](#lift) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [List order](#list-order) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
+| [Lock coverage](#lock-coverage) | 2 | [URN](#urn) | 1 |
+| [Lock stripe](#lock-stripe) | 1 | [Use context](#use-context) | 2 |
+| [Marker](#marker) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Marker tuple](#marker-tuple) | 2 | [Vehicle](#vehicle) | 2 |
+| [Matcher](#matcher) | 2 | [Verification recipe](#verification-recipe) | 2 |
+| [Merge](#merge) | 1 | [Volatile channel](#volatile-channel) | 2 |
+| [Metered view read](#metered-view-read) | 2 | [Waiter](#waiter) | 2 |
 | [Model map](#model-map) | 2 | [Witness test](#witness-test) | 2 |
 | [Name](#name) | 1 | [Write skew](#write-skew) | 2 |
+| [Namespace tag](#namespace-tag) | 2 |  |  |
 
 ## Part 1: background terms
 
@@ -1352,6 +1356,48 @@ A cascade fires each waiter that a fire exposes in a [join scope](#join-scope), 
 It takes the first non-persistent record of the waiter out of its collection with a [lift](#lift), and it offers that record to the waiter again.
 The head-only disciplines and the set cascade ([decision 50](decision-register.md#decision-50)), and a bag needs no cascade.
 At the fire cap, the transaction re-issues a settle job that carries the rest of the cascade.
+
+### Metered view read
+
+A metered view read loads a part of the [staged view](#staged-view) of a [space transaction](#space-transaction), and it reserves the [host work](#host-work) of the load first.
+It charges the key of the load and the loaded value, the same on a cache hit and on a cache miss ([decision 47](decision-register.md#decision-47)).
+So a warm load and a cold load reserve the same work.
+
+### Journal row
+
+A journal row records one operation of a native deploy: its source, the footprint that it locks, its predecessors and its outcome.
+The outcome is Stored, Matched with the COMM of its candidate, or a denial of its introduction or of its COMM.
+The predecessors of a row are the last earlier rows that touch the channels of its footprint.
+
+### Native play
+
+Native play runs a [deploy](#deploy) with the native phlo budget of protocol version 6.
+It records one [journal row](#journal-row) for each operation, for host operations and space operations alike.
+A space transaction of native play reads through [metered view reads](#metered-view-read) ([decision 47](decision-register.md#decision-47)).
+
+### Ticket
+
+A ticket is the reservation of one [journal row](#journal-row) while its operation runs again.
+An operation gets the ticket of its row only when the predecessors of the row are complete.
+Publishing the ticket completes the row, and dropping it returns the row to the available state.
+
+### Native replay
+
+Native replay runs a native deploy again against the journal of [native play](#native-play), as proposer self-certification and validator replay do.
+Each operation takes the [ticket](#ticket) of its row and checks its footprint and its outcome against the row.
+It then makes the observer calls of play.
+
+### Native backend
+
+The native backend replays the staged operations of a [space transaction](#space-transaction) in [native replay](#native-replay) (`NativeSpaceHost`, `rspace++/src/rspace/replay_rspace/native_session/space.rs`).
+It never waits for a row: a row that is not ready fails the operation closed.
+It fires a staged COMM only against the candidate that its row records ([decision 47](decision-register.md#decision-47)).
+
+### Epoch closure
+
+The epoch closure marks a native replay session as failed, so every operation that waits for a row wakes and fails.
+The [native backend](#native-backend) closes the epoch when a staged operation fails, except after a published denial.
+Without the closure, an operation could wait forever for the row of a failed operation ([verification §13.7](verification.md#137-the-forged-journal-probe-and-the-epoch-closure)).
 
 ## References
 

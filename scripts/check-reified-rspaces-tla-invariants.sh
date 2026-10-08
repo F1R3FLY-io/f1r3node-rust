@@ -34,6 +34,10 @@
 # end, the heads of a join, distinct records, the incoming datum bound once,
 # the cascade measure, one fire count, no lost record, the re-issued orders
 # and the touched counters, on the queue, the stack, the bag and the set).
+# Decision 47: NativeReplay.tla (T8 NativeReplayOutcomeEqual: native replay
+# accepts the journal of play, and only it, with the outcome of play; and
+# the scheduling of space intents: NoBlockedReadiness with the key
+# [2]||sid, and NoDeadlock with a failed space row that closes the epoch).
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -118,6 +122,9 @@ SAFE_CONFIGS=(
   "JoinCascade MC_JoinCascade_Stack.cfg"
   "JoinCascade MC_JoinCascade_Bag.cfg"
   "JoinCascade MC_JoinCascade_Set.cfg"
+  "NativeReplay MC_NativeReplay_Outcome.cfg"
+  "NativeReplay MC_NativeReplay_Schedule.cfg"
+  "NativeReplay MC_NativeReplay_Schedule_NativeKey.cfg"
 )
 # <module> <config> <the one invariant that it must refute>
 UNSAFE_CONFIGS=(
@@ -172,6 +179,10 @@ UNSAFE_CONFIGS=(
   "JoinCascade JoinReissueFreshOrdsUnsafe.cfg ReissueKeepsBindOrds"
   "JoinCascade LazyTouchUnsafe.cfg TouchedCountersBumped"
   "JoinCascade PeekPersistUnsafe.cfg CascadeMeasureDecreases"
+  "NativeReplay TamperedOutcomeUnsafe.cfg NativeReplayOutcomeEqual"
+  "NativeReplay NoSpaceKeyUnsafe.cfg NoBlockedReadiness"
+  "NativeReplay WaitUnderLocksUnsafe.cfg NoDeadlock"
+  "NativeReplay NoInvalidateUnsafe.cfg NoDeadlock"
 )
 # <name>|<module>|<config>|<length>|<expected outcome>|<marker in the violated formula>
 APALACHE_CHECKS=(

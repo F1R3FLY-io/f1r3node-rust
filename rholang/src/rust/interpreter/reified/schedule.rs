@@ -768,4 +768,73 @@ mod tests {
         ]);
         assert_eq!(component_orders(&components), vec![vec![0, 2], vec![1, 3]]);
     }
+
+    /// The sid of a prepared space intent.
+    fn sid_of(intent: &PreparedIntent) -> SpaceId {
+        match &intent.intent {
+            Intent::Space(space) => space.sid,
+            _ => panic!("a prepared space intent"),
+        }
+    }
+
+    fn property_config() -> proptest::test_runner::Config {
+        proptest::test_runner::Config {
+            cases: 64,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x0D47_5EED_2026_1007),
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(property_config())]
+
+        /// NoBlockedReadiness of NativeReplay.tla (decision 47, I-11): for any frontier of
+        /// space intents, the key [2]||sid puts all intents of one space in one conflict
+        /// group, in operation order, and the intents of other spaces in other groups. The
+        /// key [2, 0] of native execution puts the whole frontier in one group.
+        #[test]
+        fn prop_space_key_keeps_one_space_in_one_group(
+            seeds in proptest::collection::vec(1u8..5, 1..9)
+        ) {
+            let legacy = budget("space key property");
+            let components = conflict_components(
+                seeds
+                    .iter()
+                    .enumerate()
+                    .map(|(order, seed)| prepared_space(order as u64, *seed, &legacy))
+                    .collect(),
+            );
+            let spaces: BTreeSet<u8> = seeds.iter().copied().collect();
+            proptest::prop_assert_eq!(components.len(), spaces.len());
+            for component in &components {
+                let sids: BTreeSet<SpaceId> = component.iter().map(sid_of).collect();
+                proptest::prop_assert_eq!(sids.len(), 1);
+                let orders: Vec<u64> = component
+                    .iter()
+                    .map(|intent| intent.order.path.to_vec()[0].0)
+                    .collect();
+                let mut sorted = orders.clone();
+                sorted.sort_unstable();
+                proptest::prop_assert_eq!(&orders, &sorted);
+                let expected: Vec<u64> = seeds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, seed)| sid(**seed) == sid_of(&component[0]))
+                    .map(|(order, _)| order as u64)
+                    .collect();
+                proptest::prop_assert_eq!(orders, expected);
+            }
+
+            let native = native_budget();
+            let components = conflict_components(
+                seeds
+                    .iter()
+                    .enumerate()
+                    .map(|(order, seed)| prepared_space(order as u64, *seed, &native))
+                    .collect(),
+            );
+            proptest::prop_assert_eq!(components.len(), 1);
+        }
+    }
 }
