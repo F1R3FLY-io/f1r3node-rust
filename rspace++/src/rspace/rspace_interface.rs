@@ -117,6 +117,48 @@ pub trait ISpace<
 
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>>;
 
+    /// Remove every datum stored on `channel`.  Default: returns
+    /// `BugFoundError` — triage hasn't ported the removal path yet.
+    /// Needed by `deterministic_reduction`'s hot-store compaction;
+    /// implementors (RSpace / ReplayRSpace / ReportingRspace) will
+    /// override once that slice lands.
+    async fn remove_all_data(&self, _channel: &C) -> Result<(), RSpaceError> {
+        Err(RSpaceError::BugFoundError(
+            "ISpace::remove_all_data not yet ported to triage".to_string(),
+        ))
+    }
+
+    /// Remove the datum at `index` on `channel`.  Default: see
+    /// `remove_all_data`.
+    async fn remove_data_at(&self, _channel: &C, _index: i32) -> Result<(), RSpaceError> {
+        Err(RSpaceError::BugFoundError(
+            "ISpace::remove_data_at not yet ported to triage".to_string(),
+        ))
+    }
+
+    /// Record-oriented variant: remove the datum at `index` and
+    /// log an operation with `operation_id`.  Default: see
+    /// `remove_all_data`.
+    async fn remove_data_at_recorded(
+        &self,
+        _channel: &C,
+        _index: i32,
+        _operation_id: &[u8],
+    ) -> Result<(), RSpaceError> {
+        Err(RSpaceError::BugFoundError(
+            "ISpace::remove_data_at_recorded not yet ported to triage".to_string(),
+        ))
+    }
+
+    /// Remove every continuation registered on `channels`.
+    /// Default: see `remove_all_data`.
+    async fn remove_all_continuations(&self, _channels: Vec<C>) -> Result<(), RSpaceError>
+    where C: 'async_trait {
+        Err(RSpaceError::BugFoundError(
+            "ISpace::remove_all_continuations not yet ported to triage".to_string(),
+        ))
+    }
+
     /** Clears the store.  Does not affect the history trie.
      */
     async fn clear(&self) -> Result<(), RSpaceError>;
