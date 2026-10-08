@@ -543,6 +543,207 @@ where
     stats
 }
 
+/// Boot-time compose: enumerate the WAL slice's payload hashes,
+/// wait for the fetch driver to resolve every one, build a
+/// hash → bytes sidecar, and apply the WAL to the target tree via
+/// the fresh-tree applier.
+///
+/// # Reducer tiers
+///
+/// Before enumeration, pre-populates a `reducer_cache` from the
+/// local `PayloadLookup` (Tier 1 / DD-7b-2 (a) Option 1): when
+/// `payload_lookup` is `Some`, each unique payload hash is first
+/// queried against the local store.  A `get` error (lock poison,
+/// disk read failure) is logged at warn and treated as a miss —
+/// fail-open discipline so a broken local store doesn't kill
+/// joiner boot.  Hashes still absent from the cache fall through
+/// to peer fetch.
+///
+/// Tier 2 (DD-7b-2 (a) Option 2, block-storage-backed replay)
+/// is deferred to a follow-up slice (needs
+/// `Option2ReducerContext` + `try_reproduce_via_block_storage_replay`
+/// + the `BlockDagKeyValueStorage::record_payload_source` index
+/// — none of which are in triage yet).
+///
+/// # Flow
+///
+/// 1. Pre-populate `reducer_cache` from `payload_lookup` (if Some).
+/// 2. Enumerate via [`enumerate_and_enqueue_payloads`] with a
+///    sync closure that reads from `reducer_cache`.
+/// 3. Poll `driver.is_complete()` under a `timeout` ceiling; on
+///    expiry return [`BootApplyError::PayloadFetchTimeout`] with
+///    the pending-count.
+/// 4. Build the sidecar `HashMap<[u8;32], Vec<u8>>` from
+///    `driver.take_bytes` across unique non-observation payload
+///    hashes; a missing hash surfaces as
+///    [`BootApplyError::MissingResolvedHash`].
+/// 5. Hand off to
+///    [`rholang::rust::interpreter::io::wal_applier::apply_wal_to_fresh_tree`]
+///    via `tokio::task::spawn_blocking` (the applier is sync +
+///    blocking).  A `JoinError` on panic surfaces as
+///    [`BootApplyError::ApplierPanic`] so a future refactor
+///    reintroducing a panic path doesn't kill the subscriber.
+///
+/// # Shape A path resolution
+///
+/// The applier's `path_map` closure is built from `registry`:
+/// each `entry.path` (bundle-relative for Consensus, absolute
+/// for Oracular) is routed through
+/// [`RootIdentityRegistry::resolve_wal_entry_root_rel`] to the
+/// `(on_disk_root, rel_from_root, expected_root_id)` triple the
+/// TOCTOU-safe applier hands to `safe_descend_verified` + `*at`
+/// syscalls.
+///
+/// `allowed_roots` bounds where applier writes may land.  Empty
+/// vector skips validation (matches pre-Shape-A behavior).
+pub async fn apply_wal_slice_after_fetch(
+    driver: Arc<WalPayloadSyncDriver>,
+    wal: Vec<rholang::rust::interpreter::io::wal::WalEntry>,
+    registry: rholang::rust::interpreter::io::path::identity::RootIdentityRegistry,
+    allowed_roots: Vec<std::path::PathBuf>,
+    timeout: std::time::Duration,
+    poll_interval: std::time::Duration,
+    payload_lookup: Option<Arc<dyn crate::rust::engine::wal_payload_server::PayloadLookup>>,
+) -> Result<BootApplyReport, BootApplyError> {
+    use rholang::rust::interpreter::io::wal::PayloadRef;
+
+    // Pre-populate the reducer cache.  Enumerate unique
+    // non-observation payload hashes once so the Tier 1 lookup
+    // + enumerator + sidecar builder all iterate the same set.
+    let mut reducer_cache: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+    let mut unique_hashes: Vec<[u8; 32]> = Vec::new();
+    {
+        let mut seen: HashSet<[u8; 32]> = HashSet::new();
+        for entry in &wal {
+            if entry.op.is_observation_only() {
+                continue;
+            }
+            if let Some(PayloadRef::Hash(h)) = entry.payload_ref {
+                if seen.insert(h) {
+                    unique_hashes.push(h);
+                }
+            }
+        }
+    }
+
+    // Tier 1: local PayloadLookup.  Fail-open on Err — log at
+    // warn (operator-visible), fall through to peer fetch.
+    if let Some(lookup) = payload_lookup.as_ref() {
+        for h in &unique_hashes {
+            match lookup.get(h) {
+                Ok(Some(bytes)) => {
+                    reducer_cache.insert(*h, bytes);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(
+                        target: "f1r3fly.casper.wal_payload_sync",
+                        hash = hex::encode(h),
+                        error = %e,
+                        "PayloadLookup returned Err on boot enumerator lookup; \
+                         falling back to peer fetch (fail-open).  A recurring \
+                         stream of these indicates a broken local payload store \
+                         — investigate the backing directory / permissions."
+                    );
+                }
+            }
+        }
+    }
+
+    // Step 1 — enumerate with the cache-backed reducer.
+    let enumerated = enumerate_and_enqueue_payloads(&driver, &wal, |entry| {
+        let PayloadRef::Hash(h) = entry.payload_ref.as_ref()? else {
+            return None;
+        };
+        reducer_cache.get(h).cloned()
+    })
+    .await;
+
+    // Step 2 — poll for completion under a timeout ceiling.
+    let deadline = std::time::Instant::now() + timeout;
+    while !driver.is_complete().await {
+        if std::time::Instant::now() >= deadline {
+            return Err(BootApplyError::PayloadFetchTimeout {
+                pending_count: driver.pending_count().await,
+            });
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    // Step 3 — build sidecar from unique payload hashes.
+    let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    for entry in &wal {
+        if entry.op.is_observation_only() {
+            continue;
+        }
+        let Some(PayloadRef::Hash(h)) = entry.payload_ref else {
+            continue;
+        };
+        if !seen.insert(h) {
+            continue;
+        }
+        match driver.take_bytes(&h).await {
+            Some(bytes) => {
+                sidecar.insert(h, bytes);
+            }
+            None => {
+                return Err(BootApplyError::MissingResolvedHash {
+                    hash_hex: hex::encode(h),
+                });
+            }
+        }
+    }
+    let sidecar_populated = sidecar.len();
+    let wal_entries = wal.len();
+
+    // Step 4 — apply via spawn_blocking (applier is sync + blocking).
+    let path_map = move |p: &std::path::Path| {
+        let (root, rel, expected_root_id) = registry.resolve_wal_entry_root_rel(p);
+        rholang::rust::interpreter::io::wal_applier::ResolvedWalPath {
+            root,
+            rel,
+            expected_root_id,
+        }
+    };
+    let join_result = tokio::task::spawn_blocking(move || {
+        rholang::rust::interpreter::io::wal_applier::apply_wal_to_fresh_tree(
+            &wal,
+            &sidecar,
+            path_map,
+            &allowed_roots,
+        )
+    })
+    .await;
+    match join_result {
+        Ok(Ok(())) => {}
+        Ok(Err(applier_err)) => {
+            return Err(BootApplyError::ApplierFailed {
+                message: applier_err.to_string(),
+            });
+        }
+        Err(join_err) => {
+            return Err(BootApplyError::ApplierPanic {
+                message: format!("{join_err}"),
+            });
+        }
+    }
+
+    info!(
+        target: "f1r3fly.casper.wal_payload_sync",
+        wal_entries,
+        sidecar_populated,
+        resolved_locally = enumerated.resolved_locally,
+        enqueued_for_fetch = enumerated.enqueued_for_fetch,
+        "boot apply-to-follower flow complete"
+    );
+    Ok(BootApplyReport {
+        enumerated,
+        sidecar_populated,
+        wal_entries,
+    })
+}
+
 /// Graceful-stop handle for the (future) periodic tick task.  Held
 /// by the block-processing catch-up path on the joiner; `.stop()`
 /// raises a `tokio::sync::Notify` that the tick loop selects on,
