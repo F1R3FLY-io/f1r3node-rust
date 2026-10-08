@@ -15,6 +15,7 @@ mod deploy_data_spec;
 mod external_services;
 mod fs_native_urn_filter_spec;
 mod fs_next_fd_seed_spec;
+mod fs_wal_spec;
 mod getsubtrie_spec;
 mod interpreter_spec;
 mod matcher;
