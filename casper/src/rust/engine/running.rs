@@ -55,6 +55,32 @@ pub struct SnapshotChunkContext {
         Arc<tokio::sync::RwLock<std::collections::HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
 }
 
+/// Phase 7b-2 WAL payload-fetch context installed on the running
+/// engine.  Mirror of [`SnapshotChunkContext`] for the between-
+/// snapshot payload-fetch flow.
+///
+/// Fields:
+/// * `sync_driver` — the joiner-side driver that owns the retriever
+///   + per-hash source map + global blacklist.  Receives incoming
+///   `WalPayloadResponse` / `HasWalPayload` replies via its
+///   `on_payload_response` / `on_has_wal_payload` hooks.
+/// * `payload_lookup` — the backing store used to serve outbound
+///   `GetWalPayloadRequest` / `HasWalPayloadRequest` responses.
+///   Trait-object so operators can plug in an in-memory,
+///   directory-backed, or hybrid impl without touching the dispatch
+///   path.
+/// * `tick_stop` — optional handle raised by the block-processing
+///   catch-up path when the joiner has consumed the head block;
+///   causes the `spawn_periodic_tick` task to exit cleanly at its
+///   next select boundary.  `None` on nodes that never installed
+///   a tick loop (observer nodes, tests that skip recovery_context).
+#[derive(Clone)]
+pub struct WalPayloadContext {
+    pub sync_driver: Arc<crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver>,
+    pub payload_lookup: Arc<dyn crate::rust::engine::wal_payload_server::PayloadLookup>,
+    pub tick_stop: Option<crate::rust::engine::wal_payload_sync::WalPayloadTickStop>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasperMessageStatus {
     BlockIsInDag,
@@ -382,6 +408,12 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     /// `OnceLock` so the read-side lookup is lock-free (acquire-load).
     /// Unset on nodes without a snapshot writer (observers, test harnesses).
     snapshot_chunk_ctx: std::sync::OnceLock<SnapshotChunkContext>,
+    /// Phase 7b-2: WAL payload-fetch context, installed AFTER
+    /// construction via [`install_wal_payload_context`].  Mirror of
+    /// `snapshot_chunk_ctx`'s shape.  Unset on nodes without a
+    /// configured payload store (observers, test harnesses that
+    /// skip the boot pipeline).
+    wal_payload_ctx: std::sync::OnceLock<WalPayloadContext>,
 }
 
 use crate::rust::blocks::block_processor::{
@@ -487,6 +519,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             block_retriever,
             state_items_tx,
             snapshot_chunk_ctx: std::sync::OnceLock::new(),
+            wal_payload_ctx: std::sync::OnceLock::new(),
         }
     }
 
@@ -504,6 +537,22 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     /// acquire-load of the `OnceLock`; no mutex, no clone.
     #[allow(dead_code)]
     fn snapshot_chunk_ctx(&self) -> Option<&SnapshotChunkContext> { self.snapshot_chunk_ctx.get() }
+
+    /// Phase 7b-2 boot hook: attach the WAL payload-fetch context
+    /// AFTER construction.  Same OnceLock install-once semantics
+    /// as [`install_snapshot_chunk_context`] — a second call is a
+    /// quiet no-op (the first install wins).
+    pub fn install_wal_payload_context(&self, ctx: WalPayloadContext) {
+        let _ = self.wal_payload_ctx.set(ctx);
+    }
+
+    /// Lock-free read of the WAL payload-fetch context.  Single
+    /// acquire-load of the `OnceLock`; no mutex, no clone.  Marked
+    /// `#[allow(dead_code)]` because the actual consumer (payload-
+    /// packet dispatch) lands in a follow-up slice; the hook stays
+    /// available for integration.
+    #[allow(dead_code)]
+    fn wal_payload_ctx(&self) -> Option<&WalPayloadContext> { self.wal_payload_ctx.get() }
 
     fn ignore_casper_message(&self, hash: BlockHash) -> Result<bool, CasperError> {
         let blocks_in_processing = self.blocks_in_processing.contains(&hash);
