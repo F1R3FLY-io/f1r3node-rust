@@ -234,6 +234,7 @@ mod tests {
     use models::rust::host_work::{
         HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUnits, HostWorkUsage,
     };
+    use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
     use models::rust::utils::new_gint_par;
     use prost::Message;
     use rspace_plus_plus::rspace::r#match::Match;
@@ -252,6 +253,14 @@ mod tests {
     };
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
+    use crate::rust::interpreter::accounting::native_phlo_rules::{
+        native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
+        NativePhloExecutionContract, NativePhloRegionLimits,
+    };
+    use crate::rust::interpreter::accounting::phlo_controls::{
+        check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
+    };
+    use crate::rust::interpreter::accounting::NativeRuntimeConfig;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::rho_runtime::RhoISpace;
     use crate::rust::interpreter::spaces::namespace::{self, Durability, NativeSpace};
@@ -616,5 +625,147 @@ mod tests {
             .collect();
         orders.sort();
         assert_eq!(orders, vec![vec![0, 2], vec![1]]);
+    }
+
+    /// A runtime budget in native execution (DR-78), as the native budget of the scheduler tests
+    /// in `deterministic_reduction.rs` builds it.
+    fn native_budget() -> RuntimeBudget {
+        let descriptor = PhloScheduleV1 {
+            protocol_version: 6,
+            network: b"native-test",
+            shard: b"root",
+            settlement_asset: b"REV",
+            settlement_unit: b"atomic-REV",
+            decimal_scale: 8,
+            classes: NativePhloDimension::ALL
+                .into_iter()
+                .zip([0, 0, 1, 0])
+                .zip([b"c".as_slice(), b"i", b"t", b"r"])
+                .map(|((dimension, weight), name)| dimension.resource_class(name, weight))
+                .collect(),
+            actual_price: 0,
+            compatibility_rule: native_resource_compatibility_rule(),
+        };
+        let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS)
+            .expect("the test schedule binds");
+        let selected = binding.schedule();
+        let permitted = [selected];
+        let owners = [0];
+        let controls = check_phlo_controls(
+            selected.environment,
+            0,
+            u64::MAX,
+            SignedPhloControls {
+                limit: 1,
+                price_ceiling: 0,
+                required_owner_ceilings: &owners,
+                permitted_schedules: &permitted,
+            },
+            selected,
+            1,
+        )
+        .expect("the test controls check");
+        let contract =
+            NativePhloExecutionContract::new(controls, &binding).expect("the test contract builds");
+        let config = NativeRuntimeConfig::new(
+            contract,
+            NativeBudgetTraceLimits {
+                attempts: 4,
+                path_segments: 4,
+                regions: NativePhloRegionLimits {
+                    regions: 4,
+                    encoded_authority_bytes: 4096,
+                },
+            },
+            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000))),
+        );
+        let budget = RuntimeBudget::new(Cost::create(1, "native space schedule"));
+        budget
+            .reset_for_native_execution(config)
+            .expect("the budget enters native execution");
+        budget
+    }
+
+    /// The space intent of `seed` with the order `order` of one frontier, with the footprint
+    /// that `budget` gives it.
+    fn prepared_space(order: u64, seed: u8, budget: &RuntimeBudget) -> PreparedIntent {
+        let intent = intent(seed, None, Vec::new());
+        let mut footprint = BTreeSet::new();
+        intent.extend_footprint(&mut footprint, budget);
+        PreparedIntent {
+            order: OperationOrder {
+                session: [7; 32],
+                path: vec![(order, 0)].into(),
+            },
+            footprint,
+            intent: Intent::Space(intent),
+        }
+    }
+
+    /// The orders of the intents of each conflict group, sorted.
+    fn component_orders(components: &[Vec<PreparedIntent>]) -> Vec<Vec<u64>> {
+        let mut orders: Vec<Vec<u64>> = components
+            .iter()
+            .map(|component| {
+                component
+                    .iter()
+                    .map(|intent| intent.order.path.to_vec()[0].0)
+                    .collect()
+            })
+            .collect();
+        orders.sort();
+        orders
+    }
+
+    /// Decision 47 (design v2, section 4.5): native execution puts the key `[2, 0]` in every
+    /// footprint (DR-78, DR-79), so the space intents of one frontier form one conflict group,
+    /// whatever their spaces.
+    #[test]
+    fn space_native_single_conflict_group() {
+        let native = native_budget();
+        assert!(native.native_execution_active());
+        let intents = vec![
+            prepared_space(0, 1, &native),
+            prepared_space(1, 2, &native),
+            prepared_space(2, 3, &native),
+        ];
+        assert!(intents
+            .iter()
+            .all(|intent| intent.footprint.contains(&vec![2, 0])));
+        let components = conflict_components(intents);
+        assert_eq!(component_orders(&components), vec![vec![0, 1, 2]]);
+    }
+
+    /// Decision 47 (design v2, section 4.5, I-11): the key `[2]‖sid` alone keeps the intents of
+    /// one space in one conflict group. Without `[2, 0]`, the native footprints group by space,
+    /// as the legacy footprints do. So the no-deadlock argument does not rest on `[2, 0]`.
+    #[test]
+    fn space_native_space_key_groups() {
+        let native = native_budget();
+        let without_native_key = |order: u64, seed: u8| {
+            let mut intent = prepared_space(order, seed, &native);
+            assert!(
+                intent.footprint.remove(&vec![2, 0]),
+                "native execution adds [2, 0]"
+            );
+            intent
+        };
+        let components = conflict_components(vec![
+            without_native_key(0, 1),
+            without_native_key(1, 2),
+            without_native_key(2, 1),
+            without_native_key(3, 2),
+        ]);
+        assert_eq!(component_orders(&components), vec![vec![0, 2], vec![1, 3]]);
+
+        let legacy = budget("space key groups");
+        assert!(!legacy.native_execution_active());
+        let components = conflict_components(vec![
+            prepared_space(0, 1, &legacy),
+            prepared_space(1, 2, &legacy),
+            prepared_space(2, 1, &legacy),
+            prepared_space(3, 2, &legacy),
+        ]);
+        assert_eq!(component_orders(&components), vec![vec![0, 2], vec![1, 3]]);
     }
 }

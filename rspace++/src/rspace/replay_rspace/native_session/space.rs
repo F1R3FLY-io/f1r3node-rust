@@ -772,6 +772,7 @@ mod tests {
         NativeCandidateIdentity, NativeReplayBoundary, NativeReplayEpoch, NativeReplayRestore,
     };
     use crate::rspace::rspace::RSpace;
+    use crate::rspace::rspace_interface::ISpace;
     use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
     use crate::rspace::space_store_handle::{
@@ -1553,18 +1554,42 @@ mod tests {
         handle: &Handle,
         script: Option<&Script>,
     ) -> Vec<SpaceTxnReceipt<String, String, String, String>> {
-        let keys = [s("a"), s("b")];
+        let first = run_first(handle, script, reads()).await;
+        let second = run_second(handle, script, reads()).await;
+        vec![first, second]
+    }
+
+    // The first transaction of the plan, through `reads`: store x and y on a and
+    // park k on b.
+    async fn run_first(
+        handle: &Handle,
+        script: Option<&Script>,
+        reads: SharedReads<String, String, String, String>,
+    ) -> SpaceTxnReceipt<String, String, String, String> {
         if let Some(script) = script {
             for _ in 0..3 {
                 script.push(Row::stored());
             }
         }
-        let mut txn = handle.begin_metered(&keys, reads()).await.expect("begin");
+        let mut txn = handle
+            .begin_metered(&[s("a"), s("b")], reads)
+            .await
+            .expect("begin");
         txn.produce(store_op("a", "x")).expect("stage x");
         txn.produce(store_op("a", "y")).expect("stage y");
         txn.consume(park_op("b", "k")).expect("stage the park");
-        let first = txn.commit().await.expect("commit the stores and the park");
-        let mut txn = handle.begin_metered(&keys, reads()).await.expect("begin");
+        txn.commit().await.expect("commit the stores and the park")
+    }
+
+    // The second transaction of the plan, through `reads`: take x from a and fire k
+    // with z.
+    async fn run_second(
+        handle: &Handle,
+        script: Option<&Script>,
+        reads: SharedReads<String, String, String, String>,
+    ) -> SpaceTxnReceipt<String, String, String, String> {
+        let keys = [s("a"), s("b")];
+        let mut txn = handle.begin_metered(&keys, reads).await.expect("begin");
         let (index, stored) = txn
             .data(&s("a"))
             .expect("read a")
@@ -1584,8 +1609,7 @@ mod tests {
             script.push(Row::matched(take.comm.clone()));
             script.push(Row::matched(fire.comm.clone()));
         }
-        let second = txn.commit().await.expect("commit the take and the fire");
-        vec![first, second]
+        txn.commit().await.expect("commit the take and the fire")
     }
 
     fn state(
@@ -1637,5 +1661,154 @@ mod tests {
         assert_eq!(counters[0], counters[1]);
         assert_eq!(counters[1].values().copied().collect::<Vec<_>>(), vec![1, 1, 1]);
         assert!(!script.log().contains(&"wait_ready".to_owned()));
+    }
+
+    // The view reservations of metered reads, in order: (operations, scanned,
+    // backing).
+    #[derive(Clone, Default)]
+    struct ChargeLog(Arc<Mutex<Vec<(usize, usize, usize)>>>);
+
+    impl ChargeLog {
+        fn reads(&self) -> SharedReads<String, String, String, String> {
+            let log = self.clone();
+            Arc::new(NativeViewReads::new(
+                move |operations: usize, scanned: usize, backing: usize| {
+                    log.0
+                        .lock()
+                        .expect("the charge log")
+                        .push((operations, scanned, backing));
+                    Ok::<(), RSpaceError>(())
+                },
+            ))
+        }
+
+        fn entries(&self) -> Vec<(usize, usize, usize)> {
+            self.0.lock().expect("the charge log").clone()
+        }
+    }
+
+    // The native replay session of `script` over `history`, at its current root.
+    fn session_on(
+        script: &Script,
+        history: SharedHistory<String, String, String, String>,
+    ) -> Arc<Session> {
+        Arc::new(
+            Session::new_with_installs(
+                history,
+                Arc::new(Box::new(AnyMatch)),
+                script.clone(),
+                Vec::new(),
+            )
+            .expect("a native replay session"),
+        )
+    }
+
+    // P5 (decision 47, I-12): the metered reads of native replay reserve the view
+    // loads of play, in the order of play, and a warm load reserves what a cold
+    // load reserves. Play and native replay read the records of the first
+    // transaction cold from the history. A second play reads them warm from its
+    // hot store.
+    #[tokio::test]
+    async fn native_space_replay_view_charges_equal_play() {
+        let mut stores = InMemoryStoreManager::new();
+        let cold = RSpace::<String, String, String, String>::create(
+            stores.r_space_stores().await.expect("in-memory stores"),
+            Arc::new(Box::new(AnyMatch)),
+        )
+        .expect("the cold play space");
+        let cold_handle = SpaceStoreHandle::new(cold.clone());
+        run_first(&cold_handle, None, reads()).await;
+        cold.create_checkpoint().await.expect("the checkpoint");
+        let history = cold.get_history_repository();
+        let cold_charges = ChargeLog::default();
+        let cold_receipt = run_second(&cold_handle, None, cold_charges.reads()).await;
+
+        let script = Script::default();
+        let session = session_on(&script, history);
+        let native_handle = handle(&session);
+        let native_charges = ChargeLog::default();
+        let native_receipt =
+            run_second(&native_handle, Some(&script), native_charges.reads()).await;
+
+        let mut stores = InMemoryStoreManager::new();
+        let warm = RSpace::<String, String, String, String>::create(
+            stores.r_space_stores().await.expect("in-memory stores"),
+            Arc::new(Box::new(AnyMatch)),
+        )
+        .expect("the warm play space");
+        let warm_handle = SpaceStoreHandle::new(warm);
+        run_first(&warm_handle, None, reads()).await;
+        let warm_charges = ChargeLog::default();
+        run_second(&warm_handle, None, warm_charges.reads()).await;
+
+        assert!(!cold_charges.entries().is_empty(), "the metered reads reserve the view loads");
+        assert_eq!(native_charges.entries(), cold_charges.entries());
+        assert_eq!(warm_charges.entries(), cold_charges.entries());
+        assert_eq!(native_receipt, cold_receipt);
+    }
+
+    // Negative control for a backend that searches the candidates again (design
+    // v2, section 6, the forced DR-75 search): x and y both fit the take, and the
+    // recorded row names the COMM of the take of y. The staged take of x fails
+    // closed, although a search would accept either candidate.
+    #[tokio::test]
+    async fn native_space_replay_rejects_another_valid_candidate() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        for _ in 0..2 {
+            script.push(Row::stored());
+        }
+        let mut txn = handle
+            .begin_metered(&[s("a")], reads())
+            .await
+            .expect("begin");
+        txn.produce(store_op("a", "x")).expect("stage x");
+        txn.produce(store_op("a", "y")).expect("stage y");
+        txn.commit().await.expect("commit the stores");
+        script.clear();
+
+        // The COMM of the take of y, from a transaction that never commits.
+        let other = {
+            let mut txn = handle
+                .begin_metered(&[s("a")], reads())
+                .await
+                .expect("begin");
+            let (index, stored) = txn
+                .data(&s("a"))
+                .expect("read a")
+                .iter()
+                .cloned()
+                .enumerate()
+                .find(|(_, datum)| datum.a == "y")
+                .expect("y is stored");
+            let take = take_op("a", &stored, i32::try_from(index).expect("a small index"));
+            txn.consume(take)
+                .expect("stage the take of y")
+                .comm
+                .expect("a take has a COMM")
+        };
+        let mut txn = handle
+            .begin_metered(&[s("a")], reads())
+            .await
+            .expect("begin");
+        let (index, stored) = txn
+            .data(&s("a"))
+            .expect("read a")
+            .iter()
+            .cloned()
+            .enumerate()
+            .find(|(_, datum)| datum.a == "x")
+            .expect("x is stored");
+        let take = take_op("a", &stored, i32::try_from(index).expect("a small index"));
+        let staged = txn.consume(take).expect("stage the take of x");
+        assert_ne!(staged.comm.as_ref(), Some(&other), "the takes have two COMMs");
+        script.push(Row::matched(Some(other)));
+        let error = txn.commit().await.expect_err("another candidate fails");
+        assert_eq!(error, mismatch("the staged COMM differs from the recorded candidate"));
+        assert!(!script.log().contains(&"observe_comm".to_owned()));
+        assert!(!script.log().contains(&"publish".to_owned()));
+        let state = session.space.get_store().snapshot();
+        assert_eq!(state.data_flat().get(&s("a")).map(Vec::len), Some(2));
     }
 }

@@ -1338,7 +1338,7 @@
       ]
     },
     "d47": {
-      "description": "Decision 47, spaces in native execution (design v2). Step 1 adds the metered reads of the substrate (S1 to S5) and SpaceEnv::begin (N2). Step 2 adds the native replay backend over the native replay session (R1 to R7), with its unit tests over a scripted epoch. Step 3 binds the native replay runtime to the session (the accessor space_store, the bound state and the bind call), and native play runs spaces.",
+      "description": "Decision 47, spaces in native execution (design v2). Step 1 adds the metered reads of the substrate (S1 to S5) and SpaceEnv::begin (N2). Step 2 adds the native replay backend over the native replay session (R1 to R7), with its unit tests over a scripted epoch. Step 3 binds the native replay runtime to the session (the accessor space_store, the bound state and the bind call), and native play runs spaces. Step 4 adds the native certification suite at the v6 limits (design v2, section 6) and the conflict-group tests of the scheduler.",
       "sources": [
         "rspace++/src/rspace/space_store_handle.rs",
         "rspace++/src/rspace/rspace/space_play.rs",
@@ -1415,7 +1415,10 @@
       ],
       "tests": [
         "rspace++/src/rspace/replay_rspace/native_session/space.rs",
-        "rholang/tests/reified_native_fail_closed.rs"
+        "rholang/tests/reified_native_fail_closed.rs",
+        "rholang/tests/reified_native_spaces.rs",
+        "rholang/tests/support/native.rs",
+        "rholang/src/rust/interpreter/reified/schedule.rs"
       ],
       "property_files": []
     }

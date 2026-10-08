@@ -2533,7 +2533,7 @@
       ]
     },
     "d47": {
-      "description": "Decision 47 (native execution of spaces, design v2). It extends campaign and restates the edits and the new files of p5, as p5 restates p4. Step 2 adds the native replay backend: one module line in native_session.rs and the new file native_session/space.rs. Step 3 adds the accessor space_store of the accounting session (the approved M-3 exception of decision 47) and the bind line of create_native_replay_env, which joins the cumulative edit of rho_runtime.rs.",
+      "description": "Decision 47 (native execution of spaces, design v2). It extends campaign and restates the edits and the new files of p5, as p5 restates p4. Step 2 adds the native replay backend: one module line in native_session.rs and the new file native_session/space.rs. Step 3 adds the accessor space_store of the accounting session (the approved M-3 exception of decision 47) and the bind line of create_native_replay_env, which joins the cumulative edit of rho_runtime.rs. Step 4 adds the native certification suite of design v2, section 6, and its harness at the v6 limits.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -3733,7 +3733,9 @@
         "test-vectors/reified-join-seams-v1.json",
         "test-vectors/reified-queue-parity-v1.json",
         "test-vectors/reified-syntax-corpus-v1.json",
-        "rspace++/src/rspace/replay_rspace/native_session/space.rs"
+        "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+        "rholang/tests/reified_native_spaces.rs",
+        "rholang/tests/support/native.rs"
       ]
     }
   }
