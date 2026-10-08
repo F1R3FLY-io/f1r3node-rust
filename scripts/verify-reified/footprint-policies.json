@@ -3749,7 +3749,7 @@
       ]
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). It extends campaign and restates the edits and the new files of d47, as d47 restates p5. Step 1 (the generic prerequisites) edits only campaign files. Step 2 (the exact numeric core) adds the module line pub mod tensor; to interpreter/mod.rs and the new files of the numeric core and of its formal legs. Step 3 (design steps 3 and 4) adds the new files of the VectorDB driver, of its suite and of its mutation harness. Step 6 adds the new files of the operations of rho:lang:vector, of their suite and of their mutation harness. Step 7a adds the approved edit of interpreter/system_processes.rs (the body refs of rho:vectordb:embed and rho:vectordb:ann join non_deterministic_ops()) and the new files of the services, of their suite, of its test backends and of its mutation harness. Step 7b adds the approved settle lines of interpreter.rs and rho_runtime.rs (M1 publication, decision 66) and the new files of the mirror journal and of its mutation harness.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). It extends campaign and restates the edits and the new files of d47, as d47 restates p5. Step 1 (the generic prerequisites) edits only campaign files. Step 2 (the exact numeric core) adds the module line pub mod tensor; to interpreter/mod.rs and the new files of the numeric core and of its formal legs. Step 3 (design steps 3 and 4) adds the new files of the VectorDB driver, of its suite and of its mutation harness. Step 6 adds the new files of the operations of rho:lang:vector, of their suite and of their mutation harness. Step 7a adds the approved edit of interpreter/system_processes.rs (the body refs of rho:vectordb:embed and rho:vectordb:ann join non_deterministic_ops()) and the new files of the services, of their suite, of its test backends and of its mutation harness. Step 7b adds the approved settle lines of interpreter.rs and rho_runtime.rs (M1 publication, decision 66) and the new files of the mirror journal and of its mutation harness. Step 7c adds the approved edits of decision 61 (one reconciler spawn call in node/src/rust/runtime/setup.rs, the ChromaDB image pin and the node environment in docker/shard.yml) and the new files of the reconciler, of the live suite and of its runner.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -4508,6 +4508,195 @@
           ]
         },
         {
+          "path": "node/src/rust/runtime/setup.rs",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value"
+              ],
+              [
+                "",
+                "    // The mirror reconciler of the Reified VectorDB spaces (P6 step 7c, decision 61). It reads the",
+                "    // finalized state through read-only calls and writes only the ChromaDB mirror of the node.",
+                "    {",
+                "        use rholang::rust::interpreter::reified::mirror_reconciler::{spawn, ClosureState};",
+                "        use rholang::rust::interpreter::rho_runtime::RhoRuntime;",
+                "        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;",
+                "",
+                "        let blocks = block_store.clone();",
+                "        let runtimes = runtime_manager.clone();",
+                "        spawn(",
+                "            &event_publisher,",
+                "            Arc::new(ClosureState::new(",
+                "                move |hash: Vec<u8>| {",
+                "                    let block = blocks.get(&BlockHash::from(hash));",
+                "                    async move {",
+                "                        block.map_err(|error| error.to_string()).map(|block| {",
+                "                            block.map(|block| {",
+                "                                Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash)",
+                "                            })",
+                "                        })",
+                "                    }",
+                "                },",
+                "                move |root: Blake2b256Hash| {",
+                "                    let runtimes = runtimes.clone();",
+                "                    async move {",
+                "                        let mut runtime = runtimes",
+                "                            .spawn_runtime()",
+                "                            .await",
+                "                            .map_err(|error| error.to_string())?;",
+                "                        runtime",
+                "                            .reset(&root)",
+                "                            .await",
+                "                            .map_err(|error| error.to_string())?;",
+                "                        Ok(runtime)",
+                "                    }",
+                "                },",
+                "            )),",
+                "        );",
+                "    }",
+                "",
+                "    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docker/shard.yml",
+          "replaced_blocks": [
+            [
+              [
+                "    - f1r3fly",
+                "  environment:",
+                "    - OPENAI_ENABLED=${OPENAI_ENABLED:-false}",
+                "    # Limit glibc arena proliferation and return freed heap pages faster."
+              ],
+              [
+                "    - f1r3fly",
+                "  # A map, so each node merges it with its own CHROMA_DATABASE.",
+                "  environment: &rnode-environment",
+                "    OPENAI_ENABLED: ${OPENAI_ENABLED:-false}",
+                "    # Limit glibc arena proliferation and return freed heap pages faster."
+              ]
+            ],
+            [
+              [
+                "    # Limit glibc arena proliferation and return freed heap pages faster.",
+                "    - MALLOC_ARENA_MAX=2",
+                "    - MALLOC_TRIM_THRESHOLD_=131072",
+                "    - MALLOC_MMAP_THRESHOLD_=131072",
+                "    # Passed only when set, so logging.filter in the node config applies by default."
+              ],
+              [
+                "    # Limit glibc arena proliferation and return freed heap pages faster.",
+                "    MALLOC_ARENA_MAX: \"2\"",
+                "    MALLOC_TRIM_THRESHOLD_: \"131072\"",
+                "    MALLOC_MMAP_THRESHOLD_: \"131072\"",
+                "    # Passed only when set, so logging.filter in the node config applies by default."
+              ]
+            ],
+            [
+              [
+                "    # Passed only when set, so logging.filter in the node config applies by default.",
+                "    - RUST_LOG",
+                "  logging:"
+              ],
+              [
+                "    # Passed only when set, so logging.filter in the node config applies by default.",
+                "    RUST_LOG:",
+                "    # The ChromaDB server of the mirror of the Reified VectorDB spaces (profile chromadb).",
+                "    # A node built without the chromadb feature ignores it.",
+                "    CHROMA_ENDPOINT: ${CHROMA_ENDPOINT:-http://chroma-db:8000}",
+                "  logging:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-bootstrap",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    profiles: [\"chromadb\"]",
+                "    image: chromadb/chroma",
+                "    networks: [f1r3fly]"
+              ],
+              [
+                "    profiles: [\"chromadb\"]",
+                "    # Pinned by digest (server 1.0.0), so the mirror and its live tests run one server version.",
+                "    image: chromadb/chroma@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6",
+                "    networks: [f1r3fly]"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR1_HOST:-rnode.validator1}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR1_HOST:-rnode.validator1}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator1",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR2_HOST:-rnode.validator2}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR2_HOST:-rnode.validator2}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator2",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR3_HOST:-rnode.validator3}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR3_HOST:-rnode.validator3}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator3",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${READONLY_HOST:-rnode.readonly}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${READONLY_HOST:-rnode.readonly}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-readonly",
+                "    command:"
+              ]
+            ]
+          ]
+        },
+        {
           "path": "rholang/src/rust/interpreter/interpreter.rs",
           "added_lines": [
             "        reducer.reified.settle_mirror_journal(&evaluation_result);"
@@ -4750,6 +4939,7 @@
         "rholang/src/rust/interpreter/reified/factory.rs",
         "rholang/src/rust/interpreter/reified/handle.rs",
         "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+        "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
         "rholang/src/rust/interpreter/reified/mod.rs",
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
         "rholang/src/rust/interpreter/reified/route.rs",
@@ -4847,6 +5037,7 @@
         "rholang/tests/reified_vector_ops.rs",
         "rholang/tests/reified_vectordb.rs",
         "rholang/tests/reified_vectordb_chroma.rs",
+        "rholang/tests/reified_vectordb_chroma_live.rs",
         "rholang/tests/support/agent.rs",
         "rholang/tests/support/backends.rs",
         "rholang/tests/support/legacy.rs",
@@ -4872,6 +5063,7 @@
         "scripts/verify-reified/check-footprint.py",
         "scripts/verify-reified/check-invariant-map.py",
         "scripts/verify-reified/check-model-map.py",
+        "scripts/verify-reified/chroma-live.sh",
         "scripts/verify-reified/closure-policies.json",
         "scripts/verify-reified/complete-policies.json",
         "scripts/verify-reified/consensus-checklist.json",

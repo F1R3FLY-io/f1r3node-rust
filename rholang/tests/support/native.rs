@@ -12,9 +12,10 @@
 //! `casper/src/rust/util/rholang/costacc/production_limits.rs`, because a rholang test cannot
 //! depend on casper.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::cost_protocol_limits::{
@@ -46,6 +47,7 @@ use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
+use rholang::rust::interpreter::reified::mirror_reconciler::FinalizedState;
 use rholang::rust::interpreter::rho_runtime::{
     create_native_replay_env, create_rho_runtime, NativeReplayEnvironment, RhoHistoryRepository,
     RhoRuntime, RhoRuntimeImpl,
@@ -382,11 +384,67 @@ impl NativeChain {
         self.runtime.get_data(channel).await
     }
 
+    /// The finalized state of the chain, as the mirror reconciler reads it (P6 step 7c). It
+    /// shares the history of the chain, so it reads every root that the chain checkpointed.
+    pub fn finalized_state(&self) -> Arc<ChainState> {
+        Arc::new(ChainState {
+            space: self.space.clone(),
+            roots: Mutex::new(BTreeMap::new()),
+        })
+    }
+
     /// Injects `term` into the runtime of the chain through `RhoRuntime::inj`, as the
     /// exploratory deploys of Casper do: an evaluation without a deploy result.
     pub async fn explore(&self, term: &str) -> Result<(), InterpreterError> {
         let parsed = Compiler::source_to_adt(term).expect("the program parses");
         self.runtime.inj(parsed, Env::new(), random()).await
+    }
+}
+
+/// The finalized state of a [`NativeChain`]: a runtime at any root of the chain, as the runtime
+/// manager of a node spawns it, and the post-state root of each block that a test finalizes.
+pub struct ChainState {
+    space: PlaySpace,
+    roots: Mutex<BTreeMap<Vec<u8>, Blake2b256Hash>>,
+}
+
+impl ChainState {
+    /// Records the block `block_hash` with the post-state root `root`.
+    pub fn finalize(&self, block_hash: &[u8], root: &Blake2b256Hash) {
+        self.roots
+            .lock()
+            .expect("the roots of the chain state")
+            .insert(block_hash.to_vec(), root.clone());
+    }
+}
+
+#[async_trait]
+impl FinalizedState for ChainState {
+    async fn post_state(&self, block_hash: &[u8]) -> Result<Option<Blake2b256Hash>, String> {
+        Ok(self
+            .roots
+            .lock()
+            .expect("the roots of the chain state")
+            .get(block_hash)
+            .cloned())
+    }
+
+    async fn runtime_at(&self, root: &Blake2b256Hash) -> Result<RhoRuntimeImpl, String> {
+        let space = self.space.spawn().map_err(|error| error.to_string())?;
+        let mut runtime = create_rho_runtime(
+            space,
+            Arc::new(default_mergeable_tags()),
+            false,
+            &mut Vec::new(),
+            ExternalServices::noop(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        runtime
+            .reset(root)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(runtime)
     }
 }
 

@@ -27,7 +27,7 @@
 //! * the channel digest of a collection key is the lowercase hex of `Blake2b256` of its canonical
 //!   inner channel bytes ([`channel_digest`]), the bytes that name the data channel `D(sid, key)`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -42,7 +42,7 @@ use tokio::sync::Notify;
 
 use crate::rust::interpreter::spaces::disciplines::vectordb::ID_LEN;
 use crate::rust::interpreter::spaces::mirror::{MirrorBatch, MirrorMetric, MirrorRecord};
-use crate::rust::interpreter::spaces::namespace::{CollectionKey, SID_LEN};
+use crate::rust::interpreter::spaces::namespace::{CollectionKey, SpaceId, SID_LEN};
 use crate::rust::interpreter::spaces::record::expr_par;
 
 /// The name of the embedding model that the replies of `embed` name.
@@ -237,6 +237,46 @@ pub trait MirrorBackend: Send + Sync {
     /// Removes the records `ids` from the collection `collection`. An id that the collection
     /// does not hold is no error.
     async fn delete(&self, collection: &str, ids: &[[u8; ID_LEN]]) -> Result<(), MirrorFailure>;
+
+    /// Registers the channels `channels` (the key bytes of each channel digest) of the space
+    /// `space` in the collection `collection`, so the reconciler can repair them.
+    async fn register(
+        &self,
+        collection: &str,
+        space: &SpaceId,
+        channels: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), MirrorFailure>;
+
+    /// The mirror collections of the node: the collections whose name starts with
+    /// [`COLLECTION_PREFIX`].
+    async fn collections(&self) -> Result<Vec<String>, MirrorFailure>;
+
+    /// The registry of the collection `collection`: its space, its registered channels and its
+    /// watermark.
+    async fn registry(&self, collection: &str) -> Result<MirrorRegistry, MirrorFailure>;
+
+    /// The ids of the records of the channel `channel` in the collection `collection`.
+    async fn ids(
+        &self,
+        collection: &str,
+        channel: &str,
+    ) -> Result<BTreeSet<[u8; ID_LEN]>, MirrorFailure>;
+
+    /// Sets the watermark of the collection `collection` to `watermark`.
+    async fn set_watermark(&self, collection: &str, watermark: u64) -> Result<(), MirrorFailure>;
+}
+
+/// The registry of a mirror collection (P6 step 7c): the space of the collection, the channels
+/// that the journal of the node wrote, by channel digest, and the last finalized block that the
+/// reconciler applied.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MirrorRegistry {
+    /// The space of the collection, or `None` before the first registration.
+    pub space: Option<SpaceId>,
+    /// The key bytes of each registered channel, by channel digest.
+    pub channels: BTreeMap<String, Vec<u8>>,
+    /// The last finalized block that the reconciler applied, or 0.
+    pub watermark: u64,
 }
 
 /// The embedder of a node without a model.
@@ -289,14 +329,48 @@ impl MirrorBackend for UnavailableMirror {
     async fn delete(&self, _collection: &str, _ids: &[[u8; ID_LEN]]) -> Result<(), MirrorFailure> {
         Err(MirrorFailure::Unavailable)
     }
+
+    async fn register(
+        &self,
+        _collection: &str,
+        _space: &SpaceId,
+        _channels: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), MirrorFailure> {
+        Err(MirrorFailure::Unavailable)
+    }
+
+    async fn collections(&self) -> Result<Vec<String>, MirrorFailure> {
+        Err(MirrorFailure::Unavailable)
+    }
+
+    async fn registry(&self, _collection: &str) -> Result<MirrorRegistry, MirrorFailure> {
+        Err(MirrorFailure::Unavailable)
+    }
+
+    async fn ids(
+        &self,
+        _collection: &str,
+        _channel: &str,
+    ) -> Result<BTreeSet<[u8; ID_LEN]>, MirrorFailure> {
+        Err(MirrorFailure::Unavailable)
+    }
+
+    async fn set_watermark(&self, _collection: &str, _watermark: u64) -> Result<(), MirrorFailure> {
+        Err(MirrorFailure::Unavailable)
+    }
 }
 
-/// The writes of one published batch, applied in this order: the collection, the upserts, the
-/// deletes.
+/// The writes of one published batch, applied in this order: the collection, the registration of
+/// its channels, the upserts, the deletes.
 async fn apply(mirror: &dyn MirrorBackend, batch: &MirrorBatch) -> Result<(), MirrorFailure> {
     mirror
         .ensure_collection(&batch.collection, batch.metric)
         .await?;
+    if !batch.channels.is_empty() {
+        mirror
+            .register(&batch.collection, &batch.space, &batch.channels)
+            .await?;
+    }
     if !batch.upserts.is_empty() {
         mirror.upsert(&batch.collection, &batch.upserts).await?;
     }
@@ -306,6 +380,26 @@ async fn apply(mirror: &dyn MirrorBackend, batch: &MirrorBatch) -> Result<(), Mi
     Ok(())
 }
 
+/// A collection whose mirror misses writes, with what its repair needs: the space, the distance
+/// and the channels of the batches that the writer did not apply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirtyCollection {
+    pub space: SpaceId,
+    pub metric: MirrorMetric,
+    pub channels: BTreeMap<String, Vec<u8>>,
+}
+
+impl DirtyCollection {
+    /// The dirty state of the batch `batch`.
+    fn of(batch: &MirrorBatch) -> Self {
+        Self {
+            space: batch.space,
+            metric: batch.metric,
+            channels: batch.channels.clone(),
+        }
+    }
+}
+
 /// The progress of a mirror writer: the batches that its queue took, the batches that its task
 /// finished, and the collections whose mirror misses writes.
 #[derive(Default)]
@@ -313,15 +407,22 @@ struct WriterProgress {
     sent: AtomicU64,
     finished: AtomicU64,
     changed: Notify,
-    dirty: Mutex<BTreeSet<String>>,
+    dirty: Mutex<BTreeMap<String, DirtyCollection>>,
 }
 
 impl WriterProgress {
-    fn mark_dirty(&self, collection: String) {
-        self.dirty
+    /// Marks the collection `collection` dirty with `state`, merged with an earlier mark.
+    fn mark_dirty(&self, collection: String, state: DirtyCollection) {
+        let mut dirty = self
+            .dirty
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(collection);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match dirty.get_mut(&collection) {
+            Some(known) => known.channels.extend(state.channels),
+            None => {
+                dirty.insert(collection, state);
+            }
+        }
     }
 }
 
@@ -370,7 +471,8 @@ impl MirrorWriter {
                     }
                 }
                 if !applied {
-                    task_progress.mark_dirty(batch.collection);
+                    let state = DirtyCollection::of(&batch);
+                    task_progress.mark_dirty(batch.collection, state);
                 }
                 task_progress.finished.fetch_add(1, Ordering::SeqCst);
                 task_progress.changed.notify_waiters();
@@ -388,7 +490,8 @@ impl MirrorWriter {
                 Ok(()) => {}
                 Err(TrySendError::Full(batch) | TrySendError::Closed(batch)) => {
                     self.progress.sent.fetch_sub(1, Ordering::SeqCst);
-                    self.progress.mark_dirty(batch.collection);
+                    let state = DirtyCollection::of(&batch);
+                    self.progress.mark_dirty(batch.collection, state);
                     self.progress.changed.notify_waiters();
                 }
             }
@@ -410,17 +513,20 @@ impl MirrorWriter {
         }
     }
 
-    /// The collections whose mirror misses writes, without removing them.
+    /// The names of the collections whose mirror misses writes, without removing them.
     pub fn dirty(&self) -> BTreeSet<String> {
         self.progress
             .dirty
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+            .keys()
+            .cloned()
+            .collect()
     }
 
-    /// Removes and returns the collections whose mirror misses writes.
-    pub fn take_dirty(&self) -> BTreeSet<String> {
+    /// Removes and returns the collections whose mirror misses writes, with what their repair
+    /// needs.
+    pub fn take_dirty(&self) -> BTreeMap<String, DirtyCollection> {
         std::mem::take(
             &mut *self
                 .progress
@@ -428,6 +534,11 @@ impl MirrorWriter {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )
+    }
+
+    /// Marks the collection `collection` dirty again, after a repair that did not finish.
+    pub fn mark_dirty(&self, collection: String, state: DirtyCollection) {
+        self.progress.mark_dirty(collection, state);
     }
 }
 
@@ -504,7 +615,50 @@ pub fn current() -> Arc<VectorDbServices> {
 /// The name of the mirror collection of the space `sid`: `rrs-` and the lowercase hex of the
 /// first 16 bytes of the space id.
 pub fn collection_name(sid: &[u8; SID_LEN]) -> String {
-    format!("rrs-{}", hex::encode(&sid[..COLLECTION_ID_BYTES]))
+    format!(
+        "{COLLECTION_PREFIX}{}",
+        hex::encode(&sid[..COLLECTION_ID_BYTES])
+    )
+}
+
+/// The registry of the collection metadata `metadata`: the space id, the registered channels and
+/// the watermark. A value of another shape is `Unavailable`, because only this node writes the
+/// metadata of its collections.
+pub fn registry_of<'m>(
+    metadata: impl IntoIterator<Item = (&'m str, RegistryValue<'m>)>,
+) -> Result<MirrorRegistry, MirrorFailure> {
+    let mut registry = MirrorRegistry::default();
+    for (key, value) in metadata {
+        match (key, value) {
+            (SPACE_ID_METADATA, RegistryValue::Text(text)) => {
+                let bytes = hex::decode(text).map_err(|_| MirrorFailure::Unavailable)?;
+                registry.space = Some(
+                    <SpaceId>::try_from(bytes.as_slice())
+                        .map_err(|_| MirrorFailure::Unavailable)?,
+                );
+            }
+            (WATERMARK_METADATA, RegistryValue::Int(watermark)) => {
+                registry.watermark =
+                    u64::try_from(watermark).map_err(|_| MirrorFailure::Unavailable)?;
+            }
+            (key, RegistryValue::Text(text)) if key.starts_with(REGISTERED_CHANNEL_PREFIX) => {
+                let digest = &key[REGISTERED_CHANNEL_PREFIX.len()..];
+                let bytes = hex::decode(text).map_err(|_| MirrorFailure::Unavailable)?;
+                registry.channels.insert(digest.to_string(), bytes);
+            }
+            (SPACE_ID_METADATA | WATERMARK_METADATA, _) => return Err(MirrorFailure::Unavailable),
+            _ => {}
+        }
+    }
+    Ok(registry)
+}
+
+/// A metadata value of a mirror collection, as [`registry_of`] reads it.
+#[derive(Clone, Copy, Debug)]
+pub enum RegistryValue<'m> {
+    Text(&'m str),
+    Int(i64),
+    Other,
 }
 
 /// The digest of the collection key `key` in the mirror: the lowercase hex of `Blake2b256` of its
@@ -519,6 +673,16 @@ pub const CHANNEL_METADATA: &str = "channel";
 
 /// The key of the metadata of a mirror collection that holds its watermark.
 pub const WATERMARK_METADATA: &str = "watermark";
+
+/// The prefix of the name of every mirror collection.
+pub const COLLECTION_PREFIX: &str = "rrs-";
+
+/// The metadata key of a mirror collection that holds the lowercase hex of its space id.
+pub const SPACE_ID_METADATA: &str = "space";
+
+/// The prefix of the metadata key of a registered channel: the prefix and the channel digest. The
+/// value is the lowercase hex of the key bytes of the channel.
+pub const REGISTERED_CHANNEL_PREFIX: &str = "channel:";
 
 /// The metadata key of a mirror record that holds its persistence.
 pub const PERSISTENT_METADATA: &str = "persistent";
@@ -555,7 +719,8 @@ pub use chroma_backend::{ChromaMirror, SbertEmbedder};
 /// The backends of the `chromadb` feature.
 #[cfg(feature = "chromadb")]
 mod chroma_backend {
-    use std::sync::Arc;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use chroma::client::ChromaHttpClientError;
@@ -565,12 +730,13 @@ mod chroma_backend {
         PrimitiveOperator, UpdateMetadata, UpdateMetadataValue, Where,
     };
     use chroma::{ChromaCollection, ChromaHttpClient};
-    use tokio::sync::OnceCell;
+    use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
     use super::{
-        EmbedFailure, Embedder, MirrorBackend, MirrorFailure, MirrorMetric, MirrorRecord,
-        Neighbour, CHANNEL_METADATA, ID_LEN, MODEL, PERSISTENT_METADATA, SPACE_METADATA,
-        WATERMARK_METADATA,
+        registry_of, EmbedFailure, Embedder, MirrorBackend, MirrorFailure, MirrorMetric,
+        MirrorRecord, MirrorRegistry, Neighbour, RegistryValue, SpaceId, CHANNEL_METADATA,
+        COLLECTION_PREFIX, ID_LEN, MODEL, PERSISTENT_METADATA, REGISTERED_CHANNEL_PREFIX,
+        SPACE_ID_METADATA, SPACE_METADATA, WATERMARK_METADATA,
     };
     use crate::rust::interpreter::util::sbert_embeddings::SBERTEmbeddings;
 
@@ -629,23 +795,95 @@ mod chroma_backend {
         }
     }
 
-    /// The ChromaDB mirror of a node.
+    /// The collections of one page of `list_collections`.
+    const COLLECTION_PAGE: usize = 100;
+
+    /// The record ids of one page of `get`.
+    const ID_PAGE: u32 = 1000;
+
+    /// The ChromaDB mirror of a node. ChromaDB `modify` replaces the whole metadata map of a
+    /// collection, so every read-modify-write of metadata (`register`, `set_watermark`) holds
+    /// `metadata_lock`. The writer and the reconciler of the node share this mirror, and the
+    /// database of the node has no other writer.
     pub struct ChromaMirror {
         client: ChromaHttpClient,
+        /// Set once the database of the node exists ([`ChromaMirror::ready`]).
+        database: OnceCell<()>,
+        metadata_lock: AsyncMutex<()>,
+        /// The registered channel digests of each collection, as far as this mirror wrote or
+        /// read them.
+        registered: Mutex<BTreeMap<String, BTreeSet<String>>>,
     }
 
     impl ChromaMirror {
         /// The mirror of the environment of the node, or `None` when the environment names no
         /// valid endpoint.
         pub fn from_env() -> Option<Self> {
-            ChromaHttpClient::from_env()
-                .ok()
-                .map(|client| Self { client })
+            ChromaHttpClient::from_env().ok().map(|client| Self {
+                client,
+                database: OnceCell::new(),
+                metadata_lock: AsyncMutex::new(()),
+                registered: Mutex::new(BTreeMap::new()),
+            })
+        }
+
+        /// Makes sure that the database of the node (`CHROMA_DATABASE`) exists, once. A node has
+        /// its own database, which may not exist yet. Every call that reads or writes the
+        /// database waits for it.
+        async fn ready(&self) -> Result<(), MirrorFailure> {
+            self.database
+                .get_or_try_init(|| async {
+                    let name = self
+                        .client
+                        .get_database_name()
+                        .await
+                        .map_err(|_| MirrorFailure::Unavailable)?;
+                    let databases = self
+                        .client
+                        .list_databases()
+                        .await
+                        .map_err(|_| MirrorFailure::Unavailable)?;
+                    match databases.iter().any(|database| database.name == name) {
+                        true => Ok(()),
+                        false => self
+                            .client
+                            .create_database(&name)
+                            .await
+                            .map_err(|_| MirrorFailure::Unavailable),
+                    }
+                })
+                .await
+                .map(drop)
+        }
+
+        /// True when every digest of `digests` is registered in `collection`, as far as this
+        /// mirror knows.
+        fn knows(&self, collection: &str, digests: impl Iterator<Item = String>) -> bool {
+            let registered = self
+                .registered
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(known) = registered.get(collection) else {
+                return false;
+            };
+            let mut digests = digests;
+            digests.all(|digest| known.contains(&digest))
+        }
+
+        /// Records that `digests` are registered in `collection`.
+        fn remember(&self, collection: &str, digests: impl Iterator<Item = String>) {
+            self.registered
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(collection.to_string())
+                .or_default()
+                .extend(digests);
         }
 
         /// The collection `name`, or `None` when the server does not hold it: the mirror then
         /// holds no record of the space yet.
         async fn collection(&self, name: &str) -> Result<Option<ChromaCollection>, MirrorFailure> {
+            self.ready().await?;
             match self.client.get_collection(name).await {
                 Ok(collection) => Ok(Some(collection)),
                 Err(ChromaHttpClientError::ApiError(_, status)) if status.as_u16() == NOT_FOUND => {
@@ -669,18 +907,11 @@ mod chroma_backend {
                 return Ok(Vec::new());
             };
             let n_results = u32::try_from(k).map_err(|_| MirrorFailure::Unavailable)?;
-            let filter = Where::Metadata(MetadataExpression {
-                key: CHANNEL_METADATA.to_string(),
-                comparison: MetadataComparison::Primitive(
-                    PrimitiveOperator::Equal,
-                    MetadataValue::Str(channel.to_string()),
-                ),
-            });
             let response = collection
                 .query(
                     vec![vector.to_vec()],
                     Some(n_results),
-                    Some(filter),
+                    Some(channel_filter(channel)),
                     None,
                     Some(IncludeList(vec![Include::Distance])),
                 )
@@ -738,6 +969,7 @@ mod chroma_backend {
                 SPACE_METADATA.to_string(),
                 MetadataValue::Str(metric.space().to_string()),
             )]);
+            self.ready().await?;
             self.client
                 .get_or_create_collection(collection, None, Some(metadata))
                 .await
@@ -796,6 +1028,156 @@ mod chroma_backend {
                 .map(drop)
                 .map_err(|_| MirrorFailure::Unavailable)
         }
+
+        async fn register(
+            &self,
+            collection: &str,
+            space: &SpaceId,
+            channels: &BTreeMap<String, Vec<u8>>,
+        ) -> Result<(), MirrorFailure> {
+            if self.knows(collection, channels.keys().cloned()) {
+                return Ok(());
+            }
+            let _guard = self.metadata_lock.lock().await;
+            let mut held = self
+                .collection(collection)
+                .await?
+                .ok_or(MirrorFailure::Unavailable)?;
+            let mut metadata = held.metadata().clone().unwrap_or_default();
+            let mut changed = false;
+            if !metadata.contains_key(SPACE_ID_METADATA) {
+                metadata.insert(
+                    SPACE_ID_METADATA.to_string(),
+                    MetadataValue::Str(hex::encode(space)),
+                );
+                changed = true;
+            }
+            for (digest, key) in channels {
+                let name = format!("{REGISTERED_CHANNEL_PREFIX}{digest}");
+                if !metadata.contains_key(&name) {
+                    metadata.insert(name, MetadataValue::Str(hex::encode(key)));
+                    changed = true;
+                }
+            }
+            if changed {
+                held.modify(None::<&str>, Some(metadata.clone()))
+                    .await
+                    .map_err(|_| MirrorFailure::Unavailable)?;
+            }
+            self.remember(
+                collection,
+                metadata.keys().filter_map(|key| {
+                    key.strip_prefix(REGISTERED_CHANNEL_PREFIX)
+                        .map(str::to_string)
+                }),
+            );
+            Ok(())
+        }
+
+        async fn collections(&self) -> Result<Vec<String>, MirrorFailure> {
+            self.ready().await?;
+            let mut names = Vec::new();
+            let mut offset = 0;
+            loop {
+                let page = self
+                    .client
+                    .list_collections(COLLECTION_PAGE, Some(offset))
+                    .await
+                    .map_err(|_| MirrorFailure::Unavailable)?;
+                let count = page.len();
+                names.extend(
+                    page.iter()
+                        .map(|collection| collection.name().to_string())
+                        .filter(|name| name.starts_with(COLLECTION_PREFIX)),
+                );
+                if count < COLLECTION_PAGE {
+                    return Ok(names);
+                }
+                offset += count;
+            }
+        }
+
+        async fn registry(&self, collection: &str) -> Result<MirrorRegistry, MirrorFailure> {
+            let Some(held) = self.collection(collection).await? else {
+                return Ok(MirrorRegistry::default());
+            };
+            let metadata = held.metadata().clone().unwrap_or_default();
+            let registry = registry_of(metadata.iter().map(|(key, value)| {
+                let value = match value {
+                    MetadataValue::Str(text) => RegistryValue::Text(text),
+                    MetadataValue::Int(number) => RegistryValue::Int(*number),
+                    _ => RegistryValue::Other,
+                };
+                (key.as_str(), value)
+            }))?;
+            self.remember(collection, registry.channels.keys().cloned());
+            Ok(registry)
+        }
+
+        async fn ids(
+            &self,
+            collection: &str,
+            channel: &str,
+        ) -> Result<BTreeSet<[u8; ID_LEN]>, MirrorFailure> {
+            let Some(held) = self.collection(collection).await? else {
+                return Ok(BTreeSet::new());
+            };
+            let mut ids = BTreeSet::new();
+            let mut offset = 0;
+            loop {
+                let page = held
+                    .get(
+                        None,
+                        Some(channel_filter(channel)),
+                        Some(ID_PAGE),
+                        Some(offset),
+                        Some(IncludeList(Vec::new())),
+                    )
+                    .await
+                    .map_err(|_| MirrorFailure::Unavailable)?;
+                let count = page.ids.len();
+                // An id that is not the hex of 32 bytes names no record of a space.
+                ids.extend(page.ids.iter().filter_map(|id| {
+                    <[u8; ID_LEN]>::try_from(hex::decode(id).ok()?.as_slice()).ok()
+                }));
+                if count < ID_PAGE as usize {
+                    return Ok(ids);
+                }
+                offset += u32::try_from(count).map_err(|_| MirrorFailure::Unavailable)?;
+            }
+        }
+
+        async fn set_watermark(
+            &self,
+            collection: &str,
+            watermark: u64,
+        ) -> Result<(), MirrorFailure> {
+            let watermark = i64::try_from(watermark).map_err(|_| MirrorFailure::Unavailable)?;
+            let _guard = self.metadata_lock.lock().await;
+            let mut held = self
+                .collection(collection)
+                .await?
+                .ok_or(MirrorFailure::Unavailable)?;
+            let mut metadata = held.metadata().clone().unwrap_or_default();
+            metadata.insert(
+                WATERMARK_METADATA.to_string(),
+                MetadataValue::Int(watermark),
+            );
+            held.modify(None::<&str>, Some(metadata))
+                .await
+                .map_err(|_| MirrorFailure::Unavailable)
+        }
+    }
+
+    /// The filter of the records of the channel `channel`.
+    fn channel_filter(channel: &str) -> Where {
+        Where::Metadata(MetadataExpression {
+            key: CHANNEL_METADATA.to_string(),
+            comparison: MetadataComparison::Primitive(
+                PrimitiveOperator::Equal,
+                MetadataValue::Str(channel.to_string()),
+            ),
+        })
     }
 }
 
@@ -957,11 +1339,46 @@ mod tests {
             let ids: Vec<u8> = ids.iter().map(|id| id[0]).collect();
             self.call(format!("delete {collection} {ids:?}")).await
         }
+
+        async fn register(
+            &self,
+            collection: &str,
+            space: &SpaceId,
+            channels: &BTreeMap<String, Vec<u8>>,
+        ) -> Result<(), MirrorFailure> {
+            let digests: Vec<&String> = channels.keys().collect();
+            self.call(format!("register {collection} {} {digests:?}", space[0]))
+                .await
+        }
+
+        async fn collections(&self) -> Result<Vec<String>, MirrorFailure> { Ok(Vec::new()) }
+
+        async fn registry(&self, _collection: &str) -> Result<MirrorRegistry, MirrorFailure> {
+            Ok(MirrorRegistry::default())
+        }
+
+        async fn ids(
+            &self,
+            _collection: &str,
+            _channel: &str,
+        ) -> Result<BTreeSet<[u8; ID_LEN]>, MirrorFailure> {
+            Ok(BTreeSet::new())
+        }
+
+        async fn set_watermark(
+            &self,
+            collection: &str,
+            watermark: u64,
+        ) -> Result<(), MirrorFailure> {
+            self.call(format!("watermark {collection} {watermark}"))
+                .await
+        }
     }
 
     /// A batch of `collection` that upserts the record `byte` and deletes the record `byte + 1`.
     fn batch(collection: &str, byte: u8) -> MirrorBatch {
         MirrorBatch {
+            space: [9; SID_LEN],
             collection: collection.to_string(),
             metric: MirrorMetric::Cosine,
             upserts: vec![MirrorRecord {
@@ -972,6 +1389,18 @@ mod tests {
                 document: None,
             }],
             deletes: vec![[byte + 1; ID_LEN]],
+            channels: BTreeMap::new(),
+        }
+    }
+
+    /// [`batch`] with the channels `channels`, each with the key bytes `[channel]`.
+    fn batch_on(collection: &str, byte: u8, channels: &[u8]) -> MirrorBatch {
+        MirrorBatch {
+            channels: channels
+                .iter()
+                .map(|channel| (format!("d{channel}"), vec![*channel]))
+                .collect(),
+            ..batch(collection, byte)
         }
     }
 
@@ -1044,11 +1473,93 @@ mod tests {
         ]);
         assert_eq!(mirror.calls(), expected);
         assert_eq!(writer.dirty(), BTreeSet::from(["rrs-a".to_string()]));
-        assert_eq!(writer.take_dirty(), BTreeSet::from(["rrs-a".to_string()]));
+        assert_eq!(
+            writer.take_dirty().into_keys().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["rrs-a".to_string()])
+        );
         assert!(
             writer.dirty().is_empty(),
             "take_dirty removes the collections"
         );
+    }
+
+    /// A batch with channels registers them after it makes the collection and before its
+    /// upserts (P6 step 7c).
+    #[tokio::test]
+    async fn mirror_writer_registers_the_channels_of_a_batch() {
+        let mirror = ScriptedMirror::new(0, false);
+        let writer = MirrorWriter::spawn(Arc::clone(&mirror) as Arc<dyn MirrorBackend>);
+        writer.publish(vec![batch_on("rrs-a", 1, &[3, 4])]);
+        writer.flush().await;
+        assert_eq!(mirror.calls(), vec![
+            "ensure rrs-a cosine",
+            "register rrs-a 9 [\"d3\", \"d4\"]",
+            "upsert rrs-a [1]",
+            "delete rrs-a [2]",
+        ]);
+    }
+
+    /// A dirty collection keeps what its repair needs: the space, the distance and the union of
+    /// the channels of every batch that the writer did not apply (P6 step 7c). A repair that does
+    /// not finish marks the collection dirty again.
+    #[tokio::test]
+    async fn mirror_writer_keeps_what_a_repair_needs() {
+        let mirror = ScriptedMirror::new(2 * DESIGNED_ATTEMPTS, false);
+        let writer = MirrorWriter::spawn(Arc::clone(&mirror) as Arc<dyn MirrorBackend>);
+        writer.publish(vec![batch_on("rrs-a", 1, &[3]), batch_on("rrs-a", 5, &[4])]);
+        writer.flush().await;
+        let expected = DirtyCollection {
+            space: [9; SID_LEN],
+            metric: MirrorMetric::Cosine,
+            channels: BTreeMap::from([("d3".to_string(), vec![3]), ("d4".to_string(), vec![4])]),
+        };
+        let dirty = writer.take_dirty();
+        assert_eq!(
+            dirty,
+            BTreeMap::from([("rrs-a".to_string(), expected.clone())])
+        );
+        writer.mark_dirty("rrs-a".to_string(), expected.clone());
+        assert_eq!(
+            writer.take_dirty(),
+            BTreeMap::from([("rrs-a".to_string(), expected)])
+        );
+    }
+
+    /// The registry of a collection reads the space id, the registered channels and the
+    /// watermark from its metadata. Other keys are ignored, and a malformed registry key fails.
+    #[test]
+    fn vectordb_services_registry_of_reads_the_metadata() {
+        let space = hex::encode([7; SID_LEN]);
+        let key = hex::encode([1, 2, 3]);
+        let channel = format!("{REGISTERED_CHANNEL_PREFIX}abc");
+        let registry = registry_of([
+            (SPACE_ID_METADATA, RegistryValue::Text(&space)),
+            (channel.as_str(), RegistryValue::Text(&key)),
+            (WATERMARK_METADATA, RegistryValue::Int(12)),
+            (SPACE_METADATA, RegistryValue::Text("cosine")),
+            ("other", RegistryValue::Other),
+        ])
+        .expect("a registry");
+        assert_eq!(registry, MirrorRegistry {
+            space: Some([7; SID_LEN]),
+            channels: BTreeMap::from([("abc".to_string(), vec![1, 2, 3])]),
+            watermark: 12,
+        });
+        assert_eq!(registry_of([]), Ok(MirrorRegistry::default()));
+        for (key, value) in [
+            (SPACE_ID_METADATA, RegistryValue::Text("not hex")),
+            (SPACE_ID_METADATA, RegistryValue::Text("0102")),
+            (SPACE_ID_METADATA, RegistryValue::Int(1)),
+            (WATERMARK_METADATA, RegistryValue::Int(-1)),
+            (WATERMARK_METADATA, RegistryValue::Text("1")),
+            (channel.as_str(), RegistryValue::Text("not hex")),
+        ] {
+            assert_eq!(
+                registry_of([(key, value)]),
+                Err(MirrorFailure::Unavailable),
+                "{key} {value:?}"
+            );
+        }
     }
 
     /// Publication never waits: with a stalled mirror, a batch that finds the queue full marks

@@ -27,7 +27,8 @@ The [decision register](decision-register.md) is normative, and the [design](des
 17. [Phase P6, step 6: `rho:lang:vector`](#17-phase-p6-step-6-rholangvector)
 18. [Phase P6, step 7a: the recorded processes `embed` and `ann`](#18-phase-p6-step-7a-the-recorded-processes-embed-and-ann)
 19. [Phase P6, step 7b: the mirror journal and its publication](#19-phase-p6-step-7b-the-mirror-journal-and-its-publication)
-20. [References](#references)
+20. [Phase P6, step 7c: the mirror reconciler, the docker pin and the live leg](#20-phase-p6-step-7c-the-mirror-reconciler-the-docker-pin-and-the-live-leg)
+21. [References](#references)
 
 ## 1. Purpose and scope
 
@@ -4114,6 +4115,169 @@ To run the checks of step 7b, do these steps from the repository root:
 2. Run `python3 scripts/verify-reified/mirror-mutants.py`, which must report `FAIL=0`.
 3. Run `cargo check -p rholang --features chromadb`.
 4. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+
+
+## 20. Phase P6, step 7c: the mirror reconciler, the docker pin and the live leg
+
+Step 7c adds the reconciler of the mirror ([decision 58](decision-register.md#decision-58), [decision 61](decision-register.md#decision-61)).
+On each finalized block, it repairs the channels that the journal of the node registered to the state of that block.
+It reads Casper state only through read-only calls, and it writes only the ChromaDB mirror of the node (plan decision 70).
+The step also pins the ChromaDB image, passes its environment to the nodes, and adds the live leg against a real server.
+
+### 20.1 The channel registry
+
+Each net write of a transaction knows its channel.
+A store takes the channel of the captured store, and a removal takes the channel of the matched result of its COMM.
+The journal keeps the channel digest and the key bytes of each channel that has a net write.
+A batch carries them with the 32-byte space id.
+
+The writer applies a batch in this order: it makes the collection, registers the channels, upserts the records and deletes the ids.
+The registry lives in the metadata of the collection:
+
+*Table 119. The metadata of a mirror collection.*
+
+| Key | Value | Writer |
+|---|---|---|
+| `hnsw:space` | `cosine`, `ip` or `l2` | the writer, when it makes the collection |
+| `space` | the lowercase hex of the 32-byte space id | the writer, at the first registration |
+| `channel:<digest>` | the lowercase hex of the key bytes of the channel | the writer, once for each channel |
+| `watermark` | the last finalized block that a pass applied | the reconciler |
+
+ChromaDB `modify` replaces the whole metadata map.
+So `ChromaMirror` holds one lock for each read-modify-write of metadata, and it caches the digests that it knows to be registered.
+The writer and the reconciler of a node share one mirror, and the database of the node has no other writer.
+
+A dirty collection keeps what its repair needs: the space, the distance and the channels of each batch that the writer did not apply.
+
+### 20.2 A pass
+
+The reconciler takes the newest finalized block of the node, and one pass runs at a time.
+The pass below repairs a collection when its watermark is below the block, or when the writer marked it dirty.
+
+```text
+pass(L, R):                          -- L is the number of the block, R its post-state root
+  D := take the dirty collections of the writer
+  for each dirty collection c:       -- so a repair knows its channels
+    make c with its distance, and register its channels
+  for each collection c of the node:
+    if watermark(c) >= L and c not in D: leave c
+    else:
+      for each registered channel (digest, key) of c:
+        S := the records of the data channel of key at R, as mirror records
+        M := the ids of the mirror records of the channel
+        delete M - ids(S); upsert the records of S whose ids are not in M
+      set watermark(c) := max(watermark(c), L)
+  every dirty collection that the pass did not repair becomes dirty again
+```
+
+A failed call ends the repair of its collection without a new watermark, so the next pass repeats the collection.
+The watermark never decreases, because a dirty collection can be repaired at an older block than a pass already applied.
+
+Every pass reconciles every registered channel.
+A pass sets the channels to the finalized view, so the optimistic writes of later blocks leave the mirror until those blocks are finalized.
+`ann` reports the watermark, so a contract knows which finalized block the mirror reflects.
+
+The registry also sets the limits of the repair:
+
+- After an LFS bootstrap, the records of a channel that this node never journaled are absent until the channel changes.
+- After a restart, the dirty state of the writer is lost. A failed batch is repaired only when its channels were registered before the failure, or when they change again.
+
+### 20.3 The node and the docker environment
+
+`setup.rs` gains one spawn call ([decision 61](decision-register.md#decision-61)).
+The call passes two read-only closures to `mirror_reconciler::spawn`.
+The first closure maps a block hash to the post-state root of the block from the block store.
+The second closure gives a runtime at a root through `RuntimeManager::spawn_runtime` and `RhoRuntime::reset`.
+`spawn` installs `node_services()`, and it starts the reconciler only when the services have a mirror writer.
+A node without the `chromadb` feature, or without a ChromaDB endpoint, starts no task.
+
+`docker/shard.yml` pins the server image by digest (server version 1.0.0).
+Each node gets `CHROMA_ENDPOINT` (`http://chroma-db:8000`) and its own `CHROMA_DATABASE`, so nodes never write each other's mirror.
+The environment of the node anchor became a map, because Compose merges the environment of a service with the anchor only in that form.
+The resolved configuration differs from the base only by these entries and by the pinned image.
+`ChromaMirror` creates the database of the node once, before its first call that reads or writes it.
+
+### 20.4 Facts of the pinned server
+
+A disposable container of the pinned image answered the calls of the backend as follows.
+
+*Table 120. The behavior of the pinned ChromaDB server (REST API v2).*
+
+| Call | Behavior |
+|---|---|
+| `modify` with `new_metadata` | It replaces the whole metadata map. |
+| distance | It lives in the configuration of the collection, which `modify` never changes. |
+| `get_or_create` on an existing collection | It keeps the stored metadata. |
+| upsert | It accepts bool metadata and null documents. |
+| `get` with `where` and an empty `include` | It returns the ids only. |
+| delete of an absent id | It succeeds. |
+| a missing collection | It answers 404. |
+
+On this host, `docker run -p` fails, because iptables has no DNAT support in the running kernel.
+The live leg therefore reaches the container on its bridge address, which needs no NAT rule.
+
+### 20.5 Tests
+
+*Table 121. The tests of step 7c.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `mirror_reconciler_skips_a_collection_at_its_watermark` | `reified/mirror_reconciler.rs` | A collection at the watermark of the block makes no call. |
+| `mirror_reconciler_sets_the_watermark_of_a_collection_without_channels` | the same | A collection without channels needs no runtime, and its watermark advances. |
+| `mirror_reconciler_keeps_the_watermark_without_a_runtime` | the same | Without a runtime at the root, the repair stops before the watermark. |
+| `mirror_reconciler_keeps_the_dirty_marks_of_a_refused_listing` | the same | A refused listing fails the pass, and every dirty collection stays dirty. |
+| `mirror_reconciler_keeps_the_dirty_mark_of_a_collection_that_it_cannot_make` | the same | A dirty collection that the pass cannot make stays dirty, and the other collections are repaired. |
+| `mirror_reconciler_repairs_a_dirty_collection_at_its_watermark` | the same | A dirty collection is repaired at its watermark, and the watermark never decreases. |
+| `mirror_writer_registers_the_channels_of_a_batch` | `reified/vectordb_services.rs` | A batch registers its channels after it makes the collection and before its upserts. |
+| `mirror_writer_keeps_what_a_repair_needs` | the same | A dirty collection keeps the space, the distance and the union of the channels of its failed batches. |
+| `vectordb_services_registry_of_reads_the_metadata` | the same | The registry reads the space id, the channels and the watermark, ignores other keys, and refuses a malformed registry key. |
+| `mirror_reconcile_removes_orphans` | `rholang/tests/reified_vectordb_chroma.rs` | A pass deletes an orphan, adds a missing record and sets the watermark. A pass at the watermark leaves the collection, and a failed pass keeps the watermark. |
+| `mirror_restart_rescans_reports` | the same | After a restart, a pass repairs every channel that the metadata registry names. |
+| `mirror_reconcile_repairs_a_dirty_collection` | the same | A failed batch leaves its collection dirty, and the next pass repairs it at its watermark. |
+| `mirror_reconciler_follows_the_finalized_blocks` | the same | The reconciler maps the `BlockFinalised` events to post-state roots, and its passes reach the newest block that the node holds. |
+| `chroma_live_mirror_calls` | `rholang/tests/reified_vectordb_chroma_live.rs` | Every call of `ChromaMirror` against the pinned server, the metadata read-modify-write and the database of the node included. |
+| `chroma_live_publish_and_reconcile` | the same | A native deploy publishes its records to the server through the writer, and a pass repairs an orphan and a missing record. |
+| `chroma_live_sbert_embedder` | the same | The SBERT model gives one finite vector of 384 values for each text. |
+
+The native tests read the finalized state of a chain of native deploys (`ChainState` in `rholang/tests/support/native.rs`).
+It spawns a runtime over the history of the chain and resets it to a root, as the runtime manager of a node does.
+The live suite compiles only with the `chromadb` feature, and it fails when `CHROMA_ENDPOINT` is not set.
+`scripts/verify-reified/chroma-live.sh` starts a disposable server of the pinned image, gives each run a new database, and keeps the model cache under `target/`.
+
+### 20.6 Negative controls
+
+The harness `scripts/verify-reified/mirror-mutants.py` now holds the mutants of steps 7b and 7c.
+Six mutants of step 7b moved with the code of step 7c, because the removal loop, the record builder and the dirty marks changed.
+The run after step 7c applies all 34 mutants.
+
+*Table 122. The mutation controls of step 7c.*
+
+| Mutant | What it changes | Tests that fail |
+|---|---|---|
+| `registry-not-written` | A batch never registers its channels. | 4 |
+| `capture-channels-dropped` | The capture keeps no channel of its writes. | 5 |
+| `orphans-kept` | A pass keeps the orphans. | `mirror_reconcile_removes_orphans`, `mirror_reconcile_repairs_a_dirty_collection` |
+| `missing-not-added` | A pass never adds a missing record. | 4 |
+| `watermark-not-advanced` | A pass never advances the watermark. | 4 |
+| `watermark-decreases` | A pass can lower the watermark. | `mirror_reconciler_repairs_a_dirty_collection_at_its_watermark` |
+| `current-collection-repaired` | A pass repairs a collection at its watermark again. | `mirror_reconciler_skips_a_collection_at_its_watermark`, `mirror_reconcile_removes_orphans` |
+| `dirty-ignored` | A dirty collection at its watermark is not repaired. | `mirror_reconciler_repairs_a_dirty_collection_at_its_watermark`, `mirror_reconcile_repairs_a_dirty_collection` |
+| `dirty-not-remarked` | A dirty collection that a pass did not repair loses its mark. | `mirror_reconciler_keeps_the_dirty_mark_of_a_collection_that_it_cannot_make`, `mirror_reconciler_keeps_the_dirty_marks_of_a_refused_listing` |
+| `dirty-not-prepared` | A pass neither makes a dirty collection nor registers its channels. | `mirror_reconciler_keeps_the_dirty_mark_of_a_collection_that_it_cannot_make` |
+| `events-ignored` | The event task maps no block to its post-state. | `mirror_reconciler_follows_the_finalized_blocks` |
+
+All 34 mutants fail tests, the 23 mutants of step 7b among them, and the harness restores the files.
+The ChromaDB backend runs only in the live leg, so no mutant of the harness changes it.
+
+### 20.7 Running the step-7c checks
+
+To run the checks of step 7c, do these steps from the repository root:
+
+1. Run `cargo test -p rholang --lib --test reified_vectordb_chroma -- mirror_ vectordb_services gate_9`.
+2. Run `python3 scripts/verify-reified/mirror-mutants.py`, which must report `FAIL=0`.
+3. Run `bash scripts/verify-reified/chroma-live.sh` on a host with Docker.
+4. Run `cargo check -p node --features rholang/chromadb`.
+5. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
 
 
 ## References

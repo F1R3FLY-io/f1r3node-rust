@@ -24,14 +24,18 @@ x-rnode: &default-rnode
   restart: always
   networks:
     - f1r3fly
-  environment:
-    - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+  # A map, so each node merges it with its own CHROMA_DATABASE.
+  environment: &rnode-environment
+    OPENAI_ENABLED: ${OPENAI_ENABLED:-false}
     # Limit glibc arena proliferation and return freed heap pages faster.
-    - MALLOC_ARENA_MAX=2
-    - MALLOC_TRIM_THRESHOLD_=131072
-    - MALLOC_MMAP_THRESHOLD_=131072
+    MALLOC_ARENA_MAX: "2"
+    MALLOC_TRIM_THRESHOLD_: "131072"
+    MALLOC_MMAP_THRESHOLD_: "131072"
     # Passed only when set, so logging.filter in the node config applies by default.
-    - RUST_LOG
+    RUST_LOG:
+    # The ChromaDB server of the mirror of the Reified VectorDB spaces (profile chromadb).
+    # A node built without the chromadb feature ignores it.
+    CHROMA_ENDPOINT: ${CHROMA_ENDPOINT:-http://chroma-db:8000}
   logging:
     driver: json-file
     options:
@@ -46,6 +50,10 @@ services:
   boot:
     <<: *default-rnode
     container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}
+    environment:
+      <<: *rnode-environment
+      # Each node keeps its own mirror database.
+      CHROMA_DATABASE: rnode-bootstrap
     command:
       - run
       - --host=${BOOTSTRAP_HOST:-rnode.bootstrap}
@@ -76,7 +84,8 @@ services:
 
   chroma-db:
     profiles: ["chromadb"]
-    image: chromadb/chroma
+    # Pinned by digest (server 1.0.0), so the mirror and its live tests run one server version.
+    image: chromadb/chroma@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6
     networks: [f1r3fly]
     restart: unless-stopped
     volumes:
@@ -90,6 +99,10 @@ services:
   validator1:
     <<: *default-rnode
     container_name: ${VALIDATOR1_HOST:-rnode.validator1}
+    environment:
+      <<: *rnode-environment
+      # Each node keeps its own mirror database.
+      CHROMA_DATABASE: rnode-validator1
     command:
       - run
       - --host=${VALIDATOR1_HOST:-rnode.validator1}
@@ -122,6 +135,10 @@ services:
   validator2:
     <<: *default-rnode
     container_name: ${VALIDATOR2_HOST:-rnode.validator2}
+    environment:
+      <<: *rnode-environment
+      # Each node keeps its own mirror database.
+      CHROMA_DATABASE: rnode-validator2
     command:
       - run
       - --host=${VALIDATOR2_HOST:-rnode.validator2}
@@ -154,6 +171,10 @@ services:
   validator3:
     <<: *default-rnode
     container_name: ${VALIDATOR3_HOST:-rnode.validator3}
+    environment:
+      <<: *rnode-environment
+      # Each node keeps its own mirror database.
+      CHROMA_DATABASE: rnode-validator3
     command:
       - run
       - --host=${VALIDATOR3_HOST:-rnode.validator3}
@@ -187,6 +208,10 @@ services:
   readonly:
     <<: *default-rnode
     container_name: ${READONLY_HOST:-rnode.readonly}
+    environment:
+      <<: *rnode-environment
+      # Each node keeps its own mirror database.
+      CHROMA_DATABASE: rnode-readonly
     command:
       - run
       - --host=${READONLY_HOST:-rnode.readonly}

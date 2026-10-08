@@ -25,7 +25,7 @@
 //! | remove | remove | a record leaves the collection | delete |
 //! | store | remove | a new record leaves in the same transaction | none |
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use models::rhoapi::expr::ExprInstance;
@@ -112,17 +112,24 @@ impl MirrorWrite {
 /// The net writes of one transaction to the mirror collection of its space.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MirrorWrites {
+    /// The space of the collection.
+    pub space: SpaceId,
     /// The mirror collection of the space.
     pub collection: String,
     /// The distance of the collection.
     pub metric: MirrorMetric,
     /// The writes, in record-id order.
     pub writes: Vec<MirrorWrite>,
+    /// The channels of the writes: the channel digest and the key bytes of each (P6 step 7c).
+    /// The writer registers them in the collection, and the reconciler repairs them.
+    pub channels: BTreeMap<String, Vec<u8>>,
 }
 
 /// The writes of one collection, ready to publish.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MirrorBatch {
+    /// The space of the collection.
+    pub space: SpaceId,
     /// The mirror collection.
     pub collection: String,
     /// The distance of the collection.
@@ -131,6 +138,15 @@ pub struct MirrorBatch {
     pub upserts: Vec<MirrorRecord>,
     /// The record ids to delete, in order.
     pub deletes: Vec<[u8; ID_LEN]>,
+    /// The channels of the writes, by channel digest: the key bytes of each.
+    pub channels: BTreeMap<String, Vec<u8>>,
+}
+
+/// A data channel of a space: its channel digest and its key bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DataChannel {
+    digest: String,
+    key: Vec<u8>,
 }
 
 /// One store that a plan stages on a data channel of a space with a mirror.
@@ -138,7 +154,7 @@ pub struct MirrorBatch {
 struct CapturedStore {
     record: ListParWithRandom,
     persistent: bool,
-    channel: String,
+    channel: DataChannel,
 }
 
 /// The capture state of a plan of a VectorDB space with a mirror.
@@ -205,7 +221,7 @@ impl MirrorCapture {
         let Some(active) = self.active.as_mut() else {
             return;
         };
-        let Some(channel) = data_channel_digest(channel, &active.space) else {
+        let Some(channel) = data_channel_of(channel, &active.space) else {
             return;
         };
         active.stores.insert(index, CapturedStore {
@@ -219,14 +235,15 @@ impl MirrorCapture {
     /// capture or a transaction without writes.
     pub fn writes(&self, receipt: &ParSpaceReceipt) -> Option<MirrorWrites> {
         let active = self.active.as_ref()?;
-        let mut events: Vec<([u8; ID_LEN], EventKind, Option<&CapturedStore>)> = Vec::new();
+        let mut events: Vec<([u8; ID_LEN], EventKind, Option<&CapturedStore>, DataChannel)> =
+            Vec::new();
         for (index, op) in receipt.ops.iter().enumerate() {
             match op {
                 SpaceOpReceipt::Stored { produce } => {
                     if let (Some(store), Some(id)) =
                         (active.stores.get(&index), record_id(&produce.hash))
                     {
-                        events.push((id, EventKind::Store, Some(store)));
+                        events.push((id, EventKind::Store, Some(store), store.channel.clone()));
                     }
                 }
                 SpaceOpReceipt::Fired {
@@ -235,23 +252,26 @@ impl MirrorCapture {
                     produce: incoming,
                     ..
                 } => {
-                    let channels: BTreeSet<Blake2b256Hash> = results
+                    let channels: BTreeMap<Blake2b256Hash, DataChannel> = results
                         .iter()
-                        .filter(|result| is_data_channel(&result.channel, &active.space))
-                        .map(|result| stable_hash_provider::hash(&result.channel))
+                        .filter_map(|result| {
+                            data_channel_of(&result.channel, &active.space).map(|channel| {
+                                (stable_hash_provider::hash(&result.channel), channel)
+                            })
+                        })
                         .collect();
                     for produce in &comm.produces {
                         let incoming = incoming
                             .as_ref()
                             .is_some_and(|incoming| incoming.hash == produce.hash);
-                        if produce.persistent
-                            || incoming
-                            || !channels.contains(&produce.channel_hash)
-                        {
+                        if produce.persistent || incoming {
                             continue;
                         }
+                        let Some(channel) = channels.get(&produce.channel_hash) else {
+                            continue;
+                        };
                         if let Some(id) = record_id(&produce.hash) {
-                            events.push((id, EventKind::Remove, None));
+                            events.push((id, EventKind::Remove, None, channel.clone()));
                         }
                     }
                 }
@@ -259,27 +279,35 @@ impl MirrorCapture {
             }
         }
         let mut first: BTreeMap<[u8; ID_LEN], EventKind> = BTreeMap::new();
-        let mut last: BTreeMap<[u8; ID_LEN], (EventKind, Option<&CapturedStore>)> = BTreeMap::new();
-        for (id, kind, store) in events {
+        let mut last: BTreeMap<[u8; ID_LEN], (EventKind, Option<&CapturedStore>, DataChannel)> =
+            BTreeMap::new();
+        for (id, kind, store, channel) in events {
             first.entry(id).or_insert(kind);
-            last.insert(id, (kind, store));
+            last.insert(id, (kind, store, channel));
         }
-        let writes: Vec<MirrorWrite> = last
-            .into_iter()
-            .filter_map(|(id, (kind, store))| match (first.get(&id), kind) {
+        let mut channels = BTreeMap::new();
+        let mut writes = Vec::with_capacity(last.len());
+        for (id, (kind, store, channel)) in last {
+            let write = match (first.get(&id), kind) {
                 (Some(EventKind::Store), EventKind::Store) => store
                     .and_then(|store| mirror_record(id, store))
                     .map(MirrorWrite::Upsert),
                 (Some(EventKind::Remove), EventKind::Remove) => Some(MirrorWrite::Delete(id)),
                 _ => None,
-            })
-            .collect();
+            };
+            if let Some(write) = write {
+                channels.insert(channel.digest, channel.key);
+                writes.push(write);
+            }
+        }
         match writes.is_empty() {
             true => None,
             false => Some(MirrorWrites {
+                space: active.space,
                 collection: active.collection.clone(),
                 metric: active.metric,
                 writes,
+                channels,
             }),
         }
     }
@@ -290,16 +318,15 @@ fn record_id(hash: &Blake2b256Hash) -> Option<[u8; ID_LEN]> {
     <[u8; ID_LEN]>::try_from(hash.0.as_slice()).ok()
 }
 
-/// True when `channel` is a data channel of the space `space`.
-fn is_data_channel(channel: &Par, space: &SpaceId) -> bool {
-    matches!(namespace::reified_id_of(channel), Some(ReifiedId::Data(native, _)) if native.sid == *space)
-}
-
-/// The channel digest of the collection of the data channel `channel` of the space `space`.
-fn data_channel_digest(channel: &Par, space: &SpaceId) -> Option<String> {
+/// The channel digest and the key bytes of the data channel `channel` of the space `space`, or
+/// `None` for any other channel.
+fn data_channel_of(channel: &Par, space: &SpaceId) -> Option<DataChannel> {
     match namespace::reified_id_of(channel) {
         Some(ReifiedId::Data(native, key)) if native.sid == *space => {
-            CollectionKey::from_bytes(key.to_vec()).map(|key| channel_digest(&key))
+            CollectionKey::from_bytes(key.to_vec()).map(|collection| DataChannel {
+                digest: channel_digest(&collection),
+                key: key.to_vec(),
+            })
         }
         _ => None,
     }
@@ -308,7 +335,19 @@ fn data_channel_digest(channel: &Par, space: &SpaceId) -> Option<String> {
 /// The mirror record of the store `store` with the id `id`, or `None` for a record without an
 /// embedding or with an embedding that is not finite as `f32` values.
 fn mirror_record(id: [u8; ID_LEN], store: &CapturedStore) -> Option<MirrorRecord> {
-    let decoded = record::unwrap_vdb_datum(&store.record).ok()?;
+    record_of_datum(id, &store.record, &store.channel.digest, store.persistent)
+}
+
+/// The mirror record of the VectorDB datum record `record` with the id `id`, on the channel of
+/// the digest `channel`, or `None` for a record without an embedding or with an embedding that
+/// is not finite as `f32` values. The capture and the reconciler share these rules.
+pub fn record_of_datum(
+    id: [u8; ID_LEN],
+    record: &ListParWithRandom,
+    channel: &str,
+    persistent: bool,
+) -> Option<MirrorRecord> {
+    let decoded = record::unwrap_vdb_datum(record).ok()?;
     let embedding = f32_embedding(decoded.embedding.as_ref()?)?;
     let document =
         decoded
@@ -322,8 +361,8 @@ fn mirror_record(id: [u8; ID_LEN], store: &CapturedStore) -> Option<MirrorRecord
     Some(MirrorRecord {
         id,
         embedding,
-        channel: store.channel.clone(),
-        persistent: store.persistent,
+        channel: channel.to_string(),
+        persistent,
         document,
     })
 }
@@ -348,8 +387,10 @@ fn f32_embedding(par: &Par) -> Option<Vec<f32>> {
 /// The writes of one collection in the journal.
 #[derive(Debug)]
 struct CollectionJournal {
+    space: SpaceId,
     metric: MirrorMetric,
     writes: BTreeMap<[u8; ID_LEN], MirrorWrite>,
+    channels: BTreeMap<String, Vec<u8>>,
 }
 
 /// The mirror journal of one evaluation. It keeps the last write of each record id of each
@@ -373,12 +414,15 @@ impl MirrorJournal {
             collections
                 .entry(writes.collection)
                 .or_insert_with(|| CollectionJournal {
+                    space: writes.space,
                     metric: writes.metric,
                     writes: BTreeMap::new(),
+                    channels: BTreeMap::new(),
                 });
         for write in writes.writes {
             collection.writes.insert(*write.id(), write);
         }
+        collection.channels.extend(writes.channels);
     }
 
     /// Removes and returns the writes of the journal, one batch for each collection.
@@ -401,10 +445,12 @@ impl MirrorJournal {
                     }
                 }
                 MirrorBatch {
+                    space: journal.space,
                     collection,
                     metric: journal.metric,
                     upserts,
                     deletes,
+                    channels: journal.channels,
                 }
             })
             .collect()
@@ -625,8 +671,14 @@ mod tests {
             ],
         };
         let writes = capture.writes(&receipt).expect("the transaction writes");
+        assert_eq!(writes.space, sid());
         assert_eq!(writes.collection, collection_name(&sid()));
         assert_eq!(writes.metric, MirrorMetric::Cosine);
+        assert_eq!(
+            writes.channels,
+            BTreeMap::from([(channel_digest(&key(1)), key(1).as_bytes().to_vec())]),
+            "the channel of the writes, and no channel of a write that coalesced away"
+        );
         let mut expected = vec![
             MirrorWrite::Upsert(MirrorRecord {
                 id: id(&produce(&new, false)),
@@ -727,27 +779,32 @@ mod tests {
         })
     }
 
-    fn writes(collection: &str, writes: Vec<MirrorWrite>) -> MirrorWrites {
+    /// The writes `writes` of `collection` on the channel `channel`.
+    fn writes(collection: &str, writes: Vec<MirrorWrite>, channel: u8) -> MirrorWrites {
         MirrorWrites {
+            space: sid(),
             collection: collection.to_string(),
             metric: MirrorMetric::Cosine,
             writes,
+            channels: BTreeMap::from([(format!("digest-{channel}"), vec![channel])]),
         }
     }
 
     /// The journal keeps the last write of each record id of each collection, and it gives one
-    /// batch for each collection, in record-id order.
+    /// batch for each collection, in record-id order, with the union of the channels of its
+    /// writes.
     #[test]
     fn mirror_journal_keeps_the_last_write_of_each_record() {
         let journal = MirrorJournal::new();
         assert!(journal.is_empty());
-        journal.record(writes("rrs-b", vec![upsert(3), upsert(1)]));
-        journal.record(writes("rrs-a", vec![upsert(2)]));
-        journal.record(writes("rrs-b", vec![
-            MirrorWrite::Delete([1; ID_LEN]),
-            upsert(4),
-        ]));
-        journal.record(writes("rrs-b", vec![upsert(3)]));
+        journal.record(writes("rrs-b", vec![upsert(3), upsert(1)], 7));
+        journal.record(writes("rrs-a", vec![upsert(2)], 5));
+        journal.record(writes(
+            "rrs-b",
+            vec![MirrorWrite::Delete([1; ID_LEN]), upsert(4)],
+            8,
+        ));
+        journal.record(writes("rrs-b", vec![upsert(3)], 7));
         assert!(!journal.is_empty());
         let MirrorWrite::Upsert(two) = upsert(2) else {
             unreachable!("an upsert")
@@ -760,20 +817,27 @@ mod tests {
         };
         assert_eq!(journal.take(), vec![
             MirrorBatch {
+                space: sid(),
                 collection: "rrs-a".to_string(),
                 metric: MirrorMetric::Cosine,
                 upserts: vec![two],
                 deletes: Vec::new(),
+                channels: BTreeMap::from([("digest-5".to_string(), vec![5])]),
             },
             MirrorBatch {
+                space: sid(),
                 collection: "rrs-b".to_string(),
                 metric: MirrorMetric::Cosine,
                 upserts: vec![three, four],
                 deletes: vec![[1; ID_LEN]],
+                channels: BTreeMap::from([
+                    ("digest-7".to_string(), vec![7]),
+                    ("digest-8".to_string(), vec![8]),
+                ]),
             },
         ]);
         assert!(journal.is_empty(), "take empties the journal");
-        journal.record(writes("rrs-a", vec![upsert(5)]));
+        journal.record(writes("rrs-a", vec![upsert(5)], 5));
         journal.clear();
         assert!(journal.is_empty());
         assert_eq!(journal.take(), Vec::new());

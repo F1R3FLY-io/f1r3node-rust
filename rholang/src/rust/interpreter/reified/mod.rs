@@ -11,6 +11,7 @@ pub mod execution;
 pub mod factory;
 pub mod handle;
 pub mod legacy_charges;
+pub mod mirror_reconciler;
 pub mod route;
 pub mod runtime;
 pub mod scope;

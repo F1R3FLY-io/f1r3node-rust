@@ -682,6 +682,46 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         });
     }
 
+    // The mirror reconciler of the Reified VectorDB spaces (P6 step 7c, decision 61). It reads the
+    // finalized state through read-only calls and writes only the ChromaDB mirror of the node.
+    {
+        use rholang::rust::interpreter::reified::mirror_reconciler::{spawn, ClosureState};
+        use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let blocks = block_store.clone();
+        let runtimes = runtime_manager.clone();
+        spawn(
+            &event_publisher,
+            Arc::new(ClosureState::new(
+                move |hash: Vec<u8>| {
+                    let block = blocks.get(&BlockHash::from(hash));
+                    async move {
+                        block.map_err(|error| error.to_string()).map(|block| {
+                            block.map(|block| {
+                                Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash)
+                            })
+                        })
+                    }
+                },
+                move |root: Blake2b256Hash| {
+                    let runtimes = runtimes.clone();
+                    async move {
+                        let mut runtime = runtimes
+                            .spawn_runtime()
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        runtime
+                            .reset(&root)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        Ok(runtime)
+                    }
+                },
+            )),
+        );
+    }
+
     // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value
     let trigger_propose_f_opt_for_web_api = trigger_propose_f_opt.clone();
     let trigger_propose_f_opt_for_admin_web_api = trigger_propose_f_opt.clone();

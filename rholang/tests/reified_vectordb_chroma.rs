@@ -1,6 +1,7 @@
 //! The suite of the recorded VectorDB processes `rho:vectordb:embed` and `rho:vectordb:ann`, of
-//! the `config` reply of a mirrored VectorDB space (P6 step 7a), and of the mirror journal and
-//! its publication (P6 step 7b). Design v3 4.9, plan decisions 57, 58 and 66 to 69.
+//! the `config` reply of a mirrored VectorDB space (P6 step 7a), of the mirror journal and its
+//! publication (P6 step 7b), and of the mirror reconciler (P6 step 7c). Design v3 4.9, plan
+//! decisions 57, 58 and 66 to 70.
 //!
 //! `embed` and `ann` ask node-local services: an embedder and the ChromaDB mirror of a space. The
 //! dispatcher records the whole reply of a call on its produce event, and replay produces the
@@ -31,6 +32,10 @@
 //! | `mirror_fired_send_is_never_mirrored` | A send that fires a parked waiter never enters the collection, so nothing reaches the mirror. |
 //! | `mirror_collection_distance_follows_the_metric` | The collections of spaces with the metrics `cosine`, `dot` and `euclidean` have the distances `cosine`, `ip` and `l2`. |
 //! | `mirror_exploratory_evaluation_publishes_nothing` | An evaluation without a deploy result (`RhoRuntime::inj`) publishes nothing, and its journal does not reach the next deploy. |
+//! | `mirror_reconcile_removes_orphans` | A pass deletes an orphan, adds a missing record and sets the watermark. A pass at the watermark leaves the collection, and a failed pass keeps the watermark. |
+//! | `mirror_restart_rescans_reports` | After a restart, a pass repairs every channel that the metadata registry names. |
+//! | `mirror_reconcile_repairs_a_dirty_collection` | A failed batch leaves its collection dirty, and the next pass repairs it at its watermark. |
+//! | `mirror_reconciler_follows_the_finalized_blocks` | The reconciler maps the `BlockFinalised` events to post-state roots, and its passes reach the newest block. |
 //! | `mirror_replay_publishes_its_own_journal` | Native replay certification publishes the journal of each replayed deploy to the mirror of the replaying node. |
 //!
 //! Plan decision 67 needs no test of its own here: the config read of an `ann` call is a
@@ -50,15 +55,22 @@ use models::rust::host_work::{HostWorkDimension, HostWorkLimit};
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reified::handle::MIRROR_ENTRY;
+use rholang::rust::interpreter::reified::mirror_reconciler::{self, reconcile, Finalized};
 use rholang::rust::interpreter::reified::vectordb_services::{
-    channel_digest, collection_name, Neighbour, ServiceReplyCode, MAX_TEXTS, MAX_TEXT_BYTES,
+    channel_digest, collection_name, current as current_services, Neighbour, ServiceReplyCode,
+    MAX_TEXTS, MAX_TEXT_BYTES,
 };
 use rholang::rust::interpreter::spaces::mirror::{MirrorMetric, MirrorRecord};
 use rholang::rust::interpreter::spaces::namespace::NativeSpace;
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
-use support::backends::{self, services, EmbedMode, FakeMirror, MirrorCall, MockEmbedder};
+use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use support::backends::{
+    self, services, EmbedMode, FakeMirror, MirrorCall, MockEmbedder, WriteMode,
+};
 use support::native::{
     assert_reproduces, certify, host_work, native_play, native_play_result, native_play_with,
     Certification, NativeChain, Played, AMPLE_LIMIT, OUT,
@@ -1322,7 +1334,10 @@ async fn mirror_never_blocks_deploy() {
         .expect("the first batch reaches the mirror")
         .records
         .is_empty());
-    assert_eq!(writer.take_dirty(), BTreeSet::from([collection]));
+    assert_eq!(
+        writer.take_dirty().into_keys().collect::<BTreeSet<_>>(),
+        BTreeSet::from([collection])
+    );
 
     let down = FakeMirror::down();
     lock.replace(services(&embedder, &down));
@@ -1586,5 +1601,288 @@ async fn mirror_replay_publishes_its_own_journal() {
     assert_eq!(
         replayed_with.collection(&collection),
         played_with.collection(&collection)
+    );
+}
+
+// ─── reconciler (step 7c) ────────────────────────────────────────────────────────────────────
+
+/// A deploy that makes a mirrored space with the records `[1.0, 0.0]` and `[0.0, 1.0]` on one
+/// name, and sends the space and the name on `rrs-reconcile-names`.
+fn reconcile_setup() -> String {
+    format!(
+        r#"new vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED})) {{ for (mn <- m!?("gensym")) {{
+    @"rrs-reconcile-names"!(*m, *mn) | mn!([1.0, 0.0]) | mn!([0.0, 1.0])
+  }} }}
+}}"#
+    )
+}
+
+/// The deploy after [`reconcile_setup`]: it consumes `[1.0, 0.0]` and stores `[0.6, 0.8]`.
+const RECONCILE_CHANGE: &str = r#"for (_, mn <<- @"rrs-reconcile-names") {
+  for (@x <- mn ~ ([1.0, 0.0])) { mn!([0.6, 0.8]) }
+}"#;
+
+/// The expected mirror records of every payload that the reconciler tests store.
+fn reconcile_expected() -> Expected {
+    [
+        (vec![vector64(&[1.0, 0.0])], (vec![1.0, 0.0], None, false)),
+        (vec![vector64(&[0.0, 1.0])], (vec![0.0, 1.0], None, false)),
+        (
+            vec![vector64(&[0.6, 0.8])],
+            (vec![0.6f64 as f32, 0.8f64 as f32], None, false),
+        ),
+    ]
+    .into_iter()
+    .map(|(pars, record)| (format!("{pars:?}"), record))
+    .collect()
+}
+
+/// A record that no state holds, on the channel `digest`: the write of a fork.
+fn orphan(digest: &str) -> MirrorRecord {
+    MirrorRecord {
+        id: [0xEE; 32],
+        embedding: vec![0.5, 0.5],
+        channel: digest.to_string(),
+        persistent: false,
+        document: None,
+    }
+}
+
+/// The reconciler repairs a collection to the finalized state: it deletes an orphan that a
+/// fork wrote, adds a record that a later removal took out, and sets the watermark. A second
+/// pass at the same block leaves the collection, and a pass whose writes fail keeps the
+/// watermark and the divergence for the next pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_reconcile_removes_orphans() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let setup = reconcile_setup();
+    let played = chain.play(&setup, "rrs-reconcile-setup", AMPLE_LIMIT).await;
+    assert_played("reconcile setup", &played);
+    backends::writer().flush().await;
+    let [m, mn] = <[Par; 2]>::try_from(handles(&chain, "rrs-reconcile-names").await)
+        .expect("a handle and a name");
+    let space = native(&m);
+    let collection = collection_name(&space.sid);
+    let digest = channel_digest(&key(&mn));
+    let records = mirror_records(&chain, space, &mn, &reconcile_expected()).await;
+    let held = mirror
+        .collection(&collection)
+        .expect("the mirror collection");
+    assert_eq!(held.records, records, "the journal published both records");
+    assert_eq!(
+        held.space,
+        Some(space.sid),
+        "the journal registered the space"
+    );
+    assert_eq!(
+        held.channels,
+        BTreeMap::from([(digest.clone(), key(&mn).as_bytes().to_vec())]),
+        "the journal registered the channel"
+    );
+
+    let first = *records.keys().next().expect("a record");
+    let mut diverged = held.clone();
+    diverged.records.remove(&first);
+    diverged.records.insert(orphan(&digest).id, orphan(&digest));
+    mirror.put(&collection, diverged);
+    let state = chain.finalized_state();
+    let block = Finalized {
+        block_number: 1,
+        root: played.root.clone(),
+    };
+    let report = reconcile(&current_services(), state.as_ref(), &block).await;
+    assert_eq!(report.repaired, BTreeSet::from([collection.clone()]));
+    assert_eq!((report.deleted, report.added), (1, 1));
+    let repaired = mirror
+        .collection(&collection)
+        .expect("the mirror collection");
+    assert_eq!(
+        repaired.records, records,
+        "the mirror holds the finalized records"
+    );
+    assert_eq!(repaired.watermark, 1);
+
+    let report = reconcile(&current_services(), state.as_ref(), &block).await;
+    assert_eq!(report.current, BTreeSet::from([collection.clone()]));
+    assert!(report.repaired.is_empty() && report.failed.is_empty());
+
+    let mut diverged = repaired.clone();
+    diverged.records.insert(orphan(&digest).id, orphan(&digest));
+    mirror.put(&collection, diverged.clone());
+    mirror.set_writes(WriteMode::Refuse);
+    let next = Finalized {
+        block_number: 2,
+        root: played.root.clone(),
+    };
+    let report = reconcile(&current_services(), state.as_ref(), &next).await;
+    assert_eq!(report.failed, BTreeSet::from([collection.clone()]));
+    assert_eq!(
+        mirror.collection(&collection),
+        Some(diverged),
+        "a failed pass keeps the watermark and the orphan"
+    );
+}
+
+/// After a restart, the writer and its memory are gone, and the mirror keeps its registry. The
+/// reconciler rescans every registered channel: a mirror that lost every record of a collection
+/// gets them back from the finalized state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_restart_rescans_reports() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let played = chain
+        .play(&reconcile_setup(), "rrs-reconcile-setup", AMPLE_LIMIT)
+        .await;
+    assert_played("restart setup", &played);
+    backends::writer().flush().await;
+    let [m, mn] = <[Par; 2]>::try_from(handles(&chain, "rrs-reconcile-names").await)
+        .expect("a handle and a name");
+    let space = native(&m);
+    let collection = collection_name(&space.sid);
+    let records = mirror_records(&chain, space, &mn, &reconcile_expected()).await;
+    let mut lost = mirror
+        .collection(&collection)
+        .expect("the mirror collection");
+    lost.records.clear();
+    mirror.put(&collection, lost);
+    lock.replace(services(&embedder, &mirror));
+    let state = chain.finalized_state();
+    let block = Finalized {
+        block_number: 3,
+        root: played.root.clone(),
+    };
+    let report = reconcile(&current_services(), state.as_ref(), &block).await;
+    assert_eq!(report.repaired, BTreeSet::from([collection.clone()]));
+    assert_eq!((report.deleted, report.added), (0, 2));
+    let repaired = mirror
+        .collection(&collection)
+        .expect("the mirror collection");
+    assert_eq!(repaired.records, records);
+    assert_eq!(repaired.watermark, 3);
+}
+
+/// A batch that fails leaves its collection dirty with its channels. The next pass repairs the
+/// collection even at its watermark, from the state that holds the new record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_reconcile_repairs_a_dirty_collection() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let setup = reconcile_setup();
+    let first = chain.play(&setup, "rrs-reconcile-setup", AMPLE_LIMIT).await;
+    assert_played("dirty setup", &first);
+    let writer = backends::writer();
+    writer.flush().await;
+    let [m, mn] = <[Par; 2]>::try_from(handles(&chain, "rrs-reconcile-names").await)
+        .expect("a handle and a name");
+    let space = native(&m);
+    let collection = collection_name(&space.sid);
+    let state = chain.finalized_state();
+    let block = |root: &Blake2b256Hash| Finalized {
+        block_number: 1,
+        root: root.clone(),
+    };
+    let report = reconcile(&current_services(), state.as_ref(), &block(&first.root)).await;
+    assert_eq!(report.repaired, BTreeSet::from([collection.clone()]));
+
+    mirror.set_writes(WriteMode::Refuse);
+    let second = chain
+        .play(RECONCILE_CHANGE, "rrs-reconcile-change", AMPLE_LIMIT)
+        .await;
+    assert_played("dirty change", &second);
+    writer.flush().await;
+    assert_eq!(writer.dirty(), BTreeSet::from([collection.clone()]));
+    mirror.set_writes(WriteMode::Apply);
+    let report = reconcile(&current_services(), state.as_ref(), &block(&second.root)).await;
+    assert_eq!(
+        report.repaired,
+        BTreeSet::from([collection.clone()]),
+        "a dirty collection is repaired at its watermark"
+    );
+    assert_eq!((report.deleted, report.added), (1, 1));
+    assert!(
+        writer.dirty().is_empty(),
+        "the repair clears the dirty mark"
+    );
+    let records = mirror_records(&chain, space, &mn, &reconcile_expected()).await;
+    assert_eq!(
+        mirror
+            .collection(&collection)
+            .expect("the mirror collection")
+            .records,
+        records
+    );
+}
+
+/// The reconciler of a node follows its `BlockFinalised` events: it maps each block to its
+/// post-state root, and the passes reach the newest finalized block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirror_reconciler_follows_the_finalized_blocks() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(Vec::new(), 0);
+    let _lock = backends::install(services(&embedder, &mirror)).await;
+    let mut chain = NativeChain::new().await;
+    let first = chain
+        .play(&reconcile_setup(), "rrs-reconcile-setup", AMPLE_LIMIT)
+        .await;
+    assert_played("events setup", &first);
+    let second = chain
+        .play(RECONCILE_CHANGE, "rrs-reconcile-change", AMPLE_LIMIT)
+        .await;
+    assert_played("events change", &second);
+    backends::writer().flush().await;
+    let [m, mn] = <[Par; 2]>::try_from(handles(&chain, "rrs-reconcile-names").await)
+        .expect("a handle and a name");
+    let space = native(&m);
+    let collection = collection_name(&space.sid);
+    let mut lost = mirror
+        .collection(&collection)
+        .expect("the mirror collection");
+    lost.records.clear();
+    mirror.put(&collection, lost);
+
+    let state = chain.finalized_state();
+    state.finalize(&[1; 32], &first.root);
+    state.finalize(&[2; 32], &second.root);
+    let events = F1r3flyEvents::new();
+    mirror_reconciler::start(&events, state.clone());
+    for (hash, number) in [([1u8; 32], 1), ([2u8; 32], 2), ([9u8; 32], 9)] {
+        events
+            .publish(F1r3flyEvent::block_finalised(
+                hex::encode(hash),
+                number,
+                0,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                String::new(),
+                0,
+            ))
+            .expect("the event is published");
+    }
+    let reached = tokio::time::timeout(CERTIFY_TIMEOUT, async {
+        loop {
+            let held = mirror
+                .collection(&collection)
+                .expect("the mirror collection");
+            if held.watermark == 2 {
+                return held;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the passes reach the newest block that the node holds");
+    let records = mirror_records(&chain, space, &mn, &reconcile_expected()).await;
+    assert_eq!(
+        reached.records, records,
+        "the mirror holds the state of block 2"
     );
 }

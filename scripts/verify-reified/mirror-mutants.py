@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Mutation controls of the mirror journal and its publication (P6 step 7b).
+"""Mutation controls of the mirror of the VectorDB spaces (P6 steps 7b and 7c).
 
 Each mutant reverts one rule of the mirror of a VectorDB space: the capture of the net writes of
-a transaction (rholang/src/rust/interpreter/spaces/mirror.rs and the store hook of
-rholang/src/rust/interpreter/spaces/generic.rs), the journal of an evaluation and its
+a transaction and of their channels (rholang/src/rust/interpreter/spaces/mirror.rs and the store
+hook of rholang/src/rust/interpreter/spaces/generic.rs), the journal of an evaluation and its
 publication with the final result (rholang/src/rust/interpreter/reified/runtime.rs and the two
 settle lines of rholang/src/rust/interpreter/interpreter.rs and
-rholang/src/rust/interpreter/rho_runtime.rs), or the mirror writer
-(rholang/src/rust/interpreter/reified/vectordb_services.rs). The harness applies one mutant at a
+rholang/src/rust/interpreter/rho_runtime.rs), the mirror writer and its channel registry
+(rholang/src/rust/interpreter/reified/vectordb_services.rs), or the reconciler
+(rholang/src/rust/interpreter/reified/mirror_reconciler.rs). The ChromaDB backend itself runs
+only in the live leg (scripts/verify-reified/chroma-live.sh). The harness applies one mutant at a
 time, runs the mirror tests (`cargo test -p rholang --lib --test reified_vectordb_chroma --
 mirror_ vectordb_services gate_9`, with `--no-fail-fast` so that a failure of the library tests
 does not hide the suite) and restores the source files. A mutant passes the control when at
@@ -45,6 +47,7 @@ GENERIC = INTERPRETER / "spaces/generic.rs"
 RUNTIME = INTERPRETER / "reified/runtime.rs"
 SERVICES = INTERPRETER / "reified/vectordb_services.rs"
 EVALUATION = INTERPRETER / "interpreter.rs"
+RECONCILER = INTERPRETER / "reified/mirror_reconciler.rs"
 RHO_RUNTIME = INTERPRETER / "rho_runtime.rs"
 
 # (name, file, old text, new text): each mutant reverts one rule of the mirror.
@@ -83,16 +86,22 @@ MUTANTS = (
      "                (Some(_), EventKind::Remove) => Some(MirrorWrite::Delete(id)),"),
     # A persistent record that a COMM matches is deleted.
     ("persistent-removed", MIRROR,
-     "                        if produce.persistent\n                            || incoming\n",
-     "                        if incoming\n"),
+     "                        if produce.persistent || incoming {",
+     "                        if incoming {"),
     # The incoming datum of a produce-triggered fire counts as a removal.
     ("incoming-removed", MIRROR,
-     "                            || incoming\n",
-     ""),
+     "                        if produce.persistent || incoming {",
+     "                        if produce.persistent {"),
     # A COMM on a channel that is not a data channel of the space removes a mirror record.
     ("foreign-channel-removed", MIRROR,
-     "                            || !channels.contains(&produce.channel_hash)\n",
-     ""),
+     "                        let Some(channel) = channels.get(&produce.channel_hash) else {\n"
+     "                            continue;\n"
+     "                        };\n",
+     "                        let foreign = DataChannel {\n"
+     "                            digest: String::new(),\n"
+     "                            key: vec![0],\n"
+     "                        };\n"
+     "                        let channel = channels.get(&produce.channel_hash).unwrap_or(&foreign);\n"),
     # An embedding that is not finite as f32 values is mirrored.
     ("non-finite-mirrored", MIRROR,
      "        if !element.is_finite() {\n            return None;\n        }\n",
@@ -103,8 +112,8 @@ MUTANTS = (
      "        document: document.filter(|_| false),\n    })"),
     # A mirror record never carries its persistence.
     ("persistence-dropped", MIRROR,
-     "        persistent: store.persistent,",
-     "        persistent: false,"),
+     "        persistent,\n        document,\n    })",
+     "        persistent: false && persistent,\n        document,\n    })"),
     # A VectorDB space without the param mirror is captured.
     ("capture-without-mirror-param", MIRROR,
      "        if !config.params.contains_key(MIRROR_PARAM) {\n            return Self::inactive();\n        }\n",
@@ -127,12 +136,12 @@ MUTANTS = (
      "    pub const ATTEMPTS: u32 = 1;"),
     # A batch that fails after its retries leaves its collection clean.
     ("failed-batch-not-dirty", SERVICES,
-     "                    task_progress.mark_dirty(batch.collection);\n",
-     "                    drop(batch);\n"),
+     "                    task_progress.mark_dirty(batch.collection, state);\n",
+     "                    drop((batch, state));\n"),
     # A batch that finds the queue full leaves its collection clean.
     ("full-queue-not-dirty", SERVICES,
-     "                    self.progress.mark_dirty(batch.collection);\n",
-     "                    drop(batch);\n"),
+     "                    self.progress.mark_dirty(batch.collection, state);\n",
+     "                    drop((batch, state));\n"),
     # A batch writes to a collection that it never creates.
     ("collection-not-ensured", SERVICES,
      "    mirror\n        .ensure_collection(&batch.collection, batch.metric)\n        .await?;\n",
@@ -141,6 +150,53 @@ MUTANTS = (
     ("deletes-skipped", SERVICES,
      "        mirror.delete(&batch.collection, &batch.deletes).await?;\n",
      ""),
+    # Step 7c. A batch never registers its channels.
+    ("registry-not-written", SERVICES,
+     "    if !batch.channels.is_empty() {\n        mirror\n"
+     "            .register(&batch.collection, &batch.space, &batch.channels)\n"
+     "            .await?;\n    }\n",
+     ""),
+    # The capture keeps no channel of its writes.
+    ("capture-channels-dropped", MIRROR,
+     "                channels.insert(channel.digest, channel.key);\n",
+     ""),
+    # A pass keeps the orphans.
+    ("orphans-kept", RECONCILER,
+     "                mirror.delete(collection, &orphans).await?;\n",
+     ""),
+    # A pass never adds a missing record.
+    ("missing-not-added", RECONCILER,
+     "                mirror.upsert(collection, &missing).await?;\n",
+     ""),
+    # A pass never advances the watermark.
+    ("watermark-not-advanced", RECONCILER,
+     "        .set_watermark(collection, finalized.block_number.max(registry.watermark))",
+     "        .set_watermark(collection, registry.watermark)"),
+    # A pass can lower the watermark.
+    ("watermark-decreases", RECONCILER,
+     "        .set_watermark(collection, finalized.block_number.max(registry.watermark))",
+     "        .set_watermark(collection, finalized.block_number)"),
+    # A pass repairs a collection at its watermark again.
+    ("current-collection-repaired", RECONCILER,
+     "                if registry.watermark >= finalized.block_number",
+     "                if registry.watermark > finalized.block_number"),
+    # A dirty collection at its watermark is not repaired.
+    ("dirty-ignored", RECONCILER,
+     "                if registry.watermark >= finalized.block_number\n"
+     "                    && !dirty.contains_key(&collection) =>",
+     "                if registry.watermark >= finalized.block_number =>"),
+    # A dirty collection that a pass did not repair loses its mark.
+    ("dirty-not-remarked", RECONCILER,
+     "            writer.mark_dirty(collection.clone(), entry.clone());\n",
+     ""),
+    # A pass neither makes a dirty collection nor registers its channels.
+    ("dirty-not-prepared", RECONCILER,
+     "        if prepare_dirty(mirror, collection, entry).await.is_err() {",
+     "        if prepare_dirty(mirror, collection, entry).await.is_err() && false {"),
+    # The event task maps no block to its post-state.
+    ("events-ignored", RECONCILER,
+     "            if let Ok(Some(root)) = lookup.post_state(&hash).await {",
+     "            if let Ok(Some(root)) = lookup.post_state(&[]).await {"),
 )
 
 
