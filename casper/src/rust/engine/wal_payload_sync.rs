@@ -296,10 +296,10 @@ impl WalPayloadSyncDriver {
     ///     or retry if the previous request timed out, or give up
     ///     after `MAX_RETRIES`.
     ///
-    /// Also runs eviction passes once per tick (currently just
-    /// blacklist TTL; the retriever's stale-request eviction is a
-    /// follow-up slice that depends on
-    /// `WalPayloadRetriever::evict_stale` being ported to triage).
+    /// Also runs eviction passes once per tick: the blacklist TTL
+    /// (slice 5.112's `evict_expired_blacklist`) + the retriever's
+    /// stale-request eviction (slice 5.118's
+    /// `WalPayloadRetriever::evict_stale`).
     ///
     /// Each hash's send-or-skip decision is isolated via the
     /// [`TickAction`] enum (slice 5.110):
@@ -317,10 +317,7 @@ impl WalPayloadSyncDriver {
         connections_cell: &ConnectionsCell,
     ) {
         let _evicted_blacklist = self.evict_expired_blacklist().await;
-        // NOTE: `self.retriever.evict_stale().await` not yet reachable
-        // on triage; `WalPayloadRetriever::evict_stale` lands in a
-        // follow-up retriever slice.  Omitting is safe for a joiner
-        // because `tick` still bounds re-sends via `MAX_RETRIES`.
+        let _evicted_stale = self.retriever.evict_stale().await;
 
         let pending: Vec<[u8; 32]> = self.retriever.pending_hashes().await;
         for hash in pending {
