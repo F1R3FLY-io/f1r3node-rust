@@ -78,7 +78,7 @@ mr_status:
 epic_id: EPIC-023
 title: "Disk Admission Test Flake and the Lint Job Scope"
 status: in_progress
-priority: p1
+priority: p0
 user_story: null
 issues: []
 blocked_by: []
@@ -104,6 +104,7 @@ tasks:
   - id: TASK-023-1
     title: "Remove the wait that keeps log-probe-vanished near its driver timeout"
     status: pending
+    priority: p0
     claimed_by: null
     blocked_by: []
     acceptance:
@@ -114,6 +115,7 @@ tasks:
   - id: TASK-023-2
     title: "Make a disk admission fixture failure diagnosable from the CI log"
     status: pending
+    priority: p0
     claimed_by: null
     blocked_by: []
     acceptance:
@@ -123,6 +125,7 @@ tasks:
   - id: TASK-023-3
     title: "Measure the 20 s driver cap of the short full-iteration scenarios under CI load"
     status: pending
+    priority: p0
     claimed_by: null
     blocked_by: [TASK-023-2]
     acceptance:
@@ -131,6 +134,7 @@ tasks:
   - id: TASK-023-4
     title: "Reorganize the CI jobs by purpose"
     status: pending
+    priority: p0
     claimed_by: null
     blocked_by: []
     branch_note: "Separate branch, because the change moves jobs that the merge queue and the branch rulesets require."
@@ -143,6 +147,7 @@ tasks:
   - id: TASK-023-6
     title: "Relabel the CI jobs and steps so that each name states what it runs"
     status: pending
+    priority: p0
     claimed_by: null
     blocked_by: [TASK-023-4]
     branch_note: "Same branch as TASK-023-4, so that the rulesets change once."
@@ -154,6 +159,7 @@ tasks:
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
+    priority: p0
     claimed_by: null
     blocked_by: [TASK-023-1]
     acceptance:
