@@ -1799,10 +1799,14 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
         table.seed_next_fd_from_state_hash(&hash);
-        // hi = u64::MAX (all 8 leading bytes are 0xFF).
-        // watermark = u64::MAX & !((1 << 20) - 1) = u64::MAX ^ 0xFFFFF = 0xFFFF_FFFF_FFF0_0000.
-        // seed_next_fd_watermark stores watermark + 1 = 0xFFFF_FFFF_FFF0_0001.
-        assert_eq!(table.snapshot_next_fd(), 0xFFFF_FFFF_FFF0_0001);
+        // hi (raw) = u64::MAX (all 8 leading bytes are 0xFF).
+        // Bit-63 mask (slice-5.78 follow-up on PR #669): keep the
+        // watermark in `[0, i64::MAX]` so the Fd GInt contract holds
+        // on every allocated fd.  hi = u64::MAX & 0x7FFF_FFFF_FFFF_FFFF
+        // = 0x7FFF_FFFF_FFFF_FFFF.
+        // Headroom mask: hi & !((1 << 20) - 1) = 0x7FFF_FFFF_FFF0_0000.
+        // seed_next_fd_watermark stores watermark + 1 = 0x7FFF_FFFF_FFF0_0001.
+        assert_eq!(table.snapshot_next_fd(), 0x7FFF_FFFF_FFF0_0001);
     }
 
     /// `truncate_to` closes every fd allocated past the snapshot.
