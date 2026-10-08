@@ -27,12 +27,33 @@ use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::floor_of_block;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
 use crate::rust::safety::clique_oracle::FtThreshold;
+
+/// Phase 7b-1 (2026-08-27): snapshot chunk-fetch context threaded
+/// through the running engine's packet dispatch.  Optional so
+/// nodes without a snapshot backing store don't have to wire it up.
+///
+/// * `sync_driver` — the joiner-side orchestrator that admits
+///   incoming `SnapshotChunkResponse` / `HasSnapshot` replies via
+///   its handler hooks.
+/// * `snapshot_dir` — on-disk directory where completed snapshots
+///   are materialized.
+/// * `snapshot_merkle_roots` — shared cache populated by the
+///   finalization effect; keyed by block hash, each entry
+///   is `(atomic_root, merkle_root)`.
+#[derive(Clone)]
+pub struct SnapshotChunkContext {
+    pub sync_driver: Arc<SnapshotChunkSyncDriver>,
+    pub snapshot_dir: std::path::PathBuf,
+    pub snapshot_merkle_roots:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasperMessageStatus {

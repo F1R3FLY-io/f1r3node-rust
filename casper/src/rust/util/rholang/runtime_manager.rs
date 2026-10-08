@@ -289,6 +289,27 @@ pub struct RuntimeManager {
     exploratory_deploy_phlo_limit: i64,
     exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
+    /// Slice 30b: shared snapshot-writer config threaded into every
+    /// runtime spawned by this manager.  `None` when the operator
+    /// has no consensus-static provisioning (backward compat).
+    /// Populated at boot via `set_fs_snapshot_writer`.  Wrapped in
+    /// `Arc<RwLock<_>>` so a Cloned `RuntimeManager` shares the
+    /// same slot — a boot-time set on one clone is visible to all
+    /// others.  Default on triage: `Arc::new(RwLock::new(None))`.
+    pub fs_snapshot_writer:
+        Arc<tokio::sync::RwLock<Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>>>,
+    /// Phase 7b-1 (2026-08-27): per-block snapshot Merkle roots
+    /// keyed by finalized block hash.  Populated by the
+    /// `WalSnapshotWrite` finalization effect after `maybe_write`
+    /// returns `Some((root, merkle_root))`; consumed by the
+    /// snapshot-chunk retriever so joiners can verify chunks over
+    /// `get_snapshot_chunk` against a locally-anchored Merkle root.
+    /// Values are `(atomic_root, merkle_root)`.  Default on triage:
+    /// `Arc::new(RwLock::new(HashMap::new()))` — no writer wires
+    /// in production yet; the slice-5.103 `snapshot_chunk_sync`
+    /// driver reads this cache in its boot enumerator.
+    pub snapshot_merkle_roots:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -1515,6 +1536,10 @@ impl RuntimeManager {
             exploratory_deploy_phlo_limit: exploratory_deploy_config.phlo_limit,
             exploratory_deploy_execution_timeout: exploratory_deploy_config.execution_timeout,
             external_services,
+            fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
+            snapshot_merkle_roots: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 

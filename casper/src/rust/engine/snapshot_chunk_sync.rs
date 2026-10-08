@@ -587,16 +587,6 @@ impl SnapshotChunkSyncDriver {
     pub fn snapshot_dir(&self) -> &std::path::Path { &self.snapshot_dir }
 }
 
-// Triage port note: `build_snapshot_chunk_context` depends on three
-// fileio additions not yet ported to triage:
-//   * `RuntimeManager::fs_snapshot_writer` field
-//   * `RuntimeManager::snapshot_merkle_roots` field
-//   * `running::SnapshotChunkContext` struct
-// The factory is gated out until those land in a follow-up slice.
-// Everything else in this module (driver + enumerator + tick) compiles
-// standalone against the already-ported `snapshot_chunk_retriever` +
-// `snapshot_chunk_wire` deps.
-#[cfg(any())]
 /// Boot-time factory: assemble the joiner-side snapshot chunk-fetch
 /// wiring from a live RuntimeManager.  Returns `None` when the node
 /// has no `fs_snapshot_writer` configured — that includes:
