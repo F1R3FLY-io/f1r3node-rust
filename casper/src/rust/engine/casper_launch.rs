@@ -433,14 +433,52 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
         record_direct_to_running_init_metrics();
 
-        // Scala equivalent: Engine.transitionToRunning[F](...)
+        // Phase 7b-1: build the snapshot chunk-fetch context if
+        // this node has an `fs_snapshot_writer`.  On observer
+        // nodes or misconfigured deployments the builder returns
+        // `None` and snapshot dispatch stays disabled.
+        let snapshot_chunk_ctx =
+            crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                &self.runtime_manager,
+            )
+            .await;
+
+        // Phase 7b-2: build the WAL payload-fetch context.  The
+        // payload lookup is derived from the shared
+        // `RuntimeManager.payload_store` bundle, which the boot
+        // pipeline populates with a `DirectoryPayloadStore`
+        // pointing at `<data-dir>/wal_payload_store/`.  Leader-side
+        // writes and joiner-side reads hit the same on-disk dir.
         //
-        // Phase 7b-1 / 7b-2: context construction (via
-        // `build_snapshot_chunk_context(&runtime_manager)` for
-        // snapshot and the matching WAL-payload builder) + install
-        // here is a follow-up slice.  Both `None` preserve current
-        // behavior: no snapshot or WAL payload dispatch wiring,
-        // joiner falls back to the pre-Phase-7b paths.
+        // Falls back to an empty in-memory store if the runtime
+        // manager slot is `None` (test harnesses that skip the
+        // boot pipeline).  The empty store just returns
+        // `UnknownPayload` on every request, which is safe.
+        let wal_payload_ctx = {
+            use crate::rust::engine::running::WalPayloadContext;
+            use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
+            use crate::rust::engine::wal_payload_server::{InMemoryPayloadStore, PayloadLookup};
+            use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
+            let retriever = Arc::new(WalPayloadRetriever::new());
+            let sync_driver = Arc::new(WalPayloadSyncDriver::new(Arc::clone(&retriever)));
+            let lookup: Arc<dyn PayloadLookup> =
+                match self.runtime_manager.payload_store.read().await.as_ref() {
+                    Some(b) => b.lookup.clone(),
+                    None => Arc::new(InMemoryPayloadStore::new()),
+                };
+            Some(WalPayloadContext {
+                sync_driver,
+                payload_lookup: lookup,
+                // Tick-stop handle is installed later by the slice
+                // that wires `wal_payload_sync::spawn_periodic_tick`
+                // (requires threading `recovery_context` /
+                // `ConnectionsCell` through `transition_to_running`).
+                // `None` here means "no live tick loop yet".
+                tick_stop: None,
+            })
+        };
+
+        // Scala equivalent: Engine.transitionToRunning[F](...)
         transition_to_running(
             self.block_processing_queue_tx.clone(),
             self.blocks_in_processing.clone(),
@@ -451,8 +489,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
-            None,
-            None,
+            snapshot_chunk_ctx,
+            wal_payload_ctx,
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),
