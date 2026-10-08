@@ -16,6 +16,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use comm::rust::peer_node::PeerNode;
+use tokio::sync::RwLock;
+
+use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
 
 /// Security cap on the per-payload source set — number of distinct
 /// peers that can advertise they can serve a single payload hash.
@@ -75,6 +78,74 @@ pub(crate) enum TickAction {
 pub(crate) fn add_blacklist_capped(map: &mut HashMap<PeerNode, u64>, peer: PeerNode, now_ms: u64) {
     if map.len() < MAX_BLACKLISTED {
         map.insert(peer, now_ms);
+    }
+}
+
+/// The joiner-side driver.  Owns a single [`WalPayloadRetriever`]
+/// + a per-hash source map + a global blacklist.  WAL payload
+/// namespace is FLAT (hash-addressed), not per-snapshot, so there's
+/// a single driver (vs. snapshot-chunk sync's per-snapshot shape).
+///
+/// This slice lands the struct + the forwarder API
+/// (`new`, `enqueue_payload`, `pending_count`, `is_complete`,
+/// `take_bytes`).  The wire-protocol methods (`on_has_wal_payload`,
+/// `on_payload_response`, `tick`) land in follow-up slices.
+#[derive(Debug, Clone)]
+pub struct WalPayloadSyncDriver {
+    /// Verifies + stores payloads.  Shared with the incoming
+    /// message dispatch path.
+    pub retriever: Arc<WalPayloadRetriever>,
+    /// Per-payload_hash source lists (peers that advertised
+    /// they can serve it).
+    #[allow(dead_code)]
+    per_hash_sources: Arc<RwLock<HashMap<[u8; 32], PayloadSources>>>,
+    /// Peers globally blacklisted after producing a byzantine
+    /// response.  Once a peer is blacklisted it's skipped for ALL
+    /// payloads; this is a stronger stance than snapshot-chunk
+    /// blacklisting because a peer producing bad bytes for ONE
+    /// hash is very likely to produce bad bytes for others (or is
+    /// otherwise adversarial).
+    ///
+    /// Value is the Unix-ms timestamp at which the peer was
+    /// blacklisted.  Entries older than [`BLACKLIST_TTL_MS`] are
+    /// evicted at the next tick — a byzantine burst followed by
+    /// good behavior lets a peer re-enter the candidate pool.
+    #[allow(dead_code)]
+    blacklisted: Arc<RwLock<HashMap<PeerNode, u64>>>,
+}
+
+impl WalPayloadSyncDriver {
+    pub fn new(retriever: Arc<WalPayloadRetriever>) -> Self {
+        Self {
+            retriever,
+            per_hash_sources: Arc::new(RwLock::new(HashMap::new())),
+            blacklisted: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Register a payload_hash we need to fetch.  Idempotent —
+    /// repeated calls with the same hash leave the retriever +
+    /// source map in the same state.
+    pub async fn enqueue_payload(&self, payload_hash: [u8; 32]) {
+        self.retriever.enqueue(payload_hash).await;
+        let mut g = self.per_hash_sources.write().await;
+        g.entry(payload_hash).or_default();
+    }
+
+    /// How many payload hashes are still outstanding on the
+    /// retriever.  Forwarder for `WalPayloadRetriever::pending_count`.
+    pub async fn pending_count(&self) -> usize { self.retriever.pending_count().await }
+
+    /// Query: is all pending work complete?  Forwarder for
+    /// `WalPayloadRetriever::is_complete`.
+    pub async fn is_complete(&self) -> bool { self.retriever.is_complete().await }
+
+    /// Retrieve verified bytes for a hash, if resolved.  Forwarder
+    /// for `WalPayloadRetriever::get_bytes` (not a take — the
+    /// retriever's current API retains the bytes; this method
+    /// returns a clone).
+    pub async fn take_bytes(&self, payload_hash: &[u8; 32]) -> Option<Vec<u8>> {
+        self.retriever.get_bytes(payload_hash).await
     }
 }
 
@@ -364,6 +435,48 @@ mod tests {
         assert_eq!(MAX_BLACKLISTED, 1024);
         assert_eq!(BLACKLIST_TTL_MS, 60 * 60 * 1000);
         assert_eq!(TICK_PERIOD_MS, 5_000);
+    }
+
+    #[tokio::test]
+    async fn driver_new_has_zero_pending_and_is_complete() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        assert_eq!(driver.pending_count().await, 0);
+        assert!(driver.is_complete().await);
+    }
+
+    #[tokio::test]
+    async fn enqueue_payload_increments_pending_and_is_idempotent() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xA1; 32];
+        driver.enqueue_payload(h).await;
+        assert_eq!(driver.pending_count().await, 1);
+        assert!(!driver.is_complete().await);
+        // Idempotent — repeated enqueue does not re-count.
+        driver.enqueue_payload(h).await;
+        assert_eq!(
+            driver.pending_count().await,
+            1,
+            "enqueue_payload must be idempotent on the retriever"
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_clone_shares_underlying_state() {
+        // LOAD-BEARING: `#[derive(Clone)]` on an Arc-only struct
+        // must share the inner retriever + source map + blacklist.
+        // Verify by enqueuing on one clone and reading pending_count
+        // from another.
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let driver_b = driver.clone();
+        driver.enqueue_payload([0xBB; 32]).await;
+        assert_eq!(driver_b.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn take_bytes_returns_none_for_unresolved_hash() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        driver.enqueue_payload([0xCC; 32]).await;
+        assert!(driver.take_bytes(&[0xCC; 32]).await.is_none());
     }
 
     #[test]
