@@ -247,8 +247,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn rejected_deploy_buffer_contains_sig(&self, sig: &[u8]) -> Result<bool, CasperError> {
         self.rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .lock()?
             .contains_sig(sig)
             .map_err(Into::into)
     }

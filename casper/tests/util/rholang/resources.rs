@@ -429,9 +429,7 @@ pub async fn key_value_deploy_storage_from_dyn(
     let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
         KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
 
-    Ok(KeyValueDeployStorage {
-        store: deploy_storage_db,
-    })
+    Ok(KeyValueDeployStorage::from_store(deploy_storage_db))
 }
 
 pub async fn key_value_rejected_deploy_buffer_from_dyn(
@@ -458,7 +456,7 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
     let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
         KeyValueTypedStoreImpl::new(buffer_kv_store);
 
-    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
+    Ok(KeyValueRejectedDeployBuffer::from_store(buffer_db))
 }
 
 pub async fn casper_buffer_storage_from_dyn(

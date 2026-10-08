@@ -1065,8 +1065,8 @@ impl Validate {
     }
 
     /// Validates that the block does not contain deploys that have expired based on their
-    /// expirationTimestamp field. A deploy is time-expired if its expirationTimestamp is
-    /// set (> 0) and the block's timestamp exceeds the expirationTimestamp.
+    /// expiration_timestamp field. A deploy is time-expired if its expiration_timestamp is
+    /// set (> 0) and the block's timestamp exceeds the expiration_timestamp.
     pub fn time_based_expiration(b: &BlockMessage) -> ValidBlockProcessing {
         let block_timestamp = b.header.timestamp;
         let processed_deploys = proto_util::deploys(b);

@@ -413,8 +413,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
 
     let rejected = this
         .rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .read_all()
         .map_err(|e| {
             CasperError::RuntimeError(format!("Failed to read rejected deploy buffer: {:?}", e))
