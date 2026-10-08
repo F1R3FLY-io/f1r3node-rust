@@ -668,8 +668,16 @@ impl RuntimeManager {
                 .fs_handles
                 .share_payload_store(Some(bundle.persistence.clone()));
         }
-        if let Some(writer) = self.fs_snapshot_writer.read().await.as_ref() {
-            runtime.set_fs_snapshot_writer(Some(writer.clone())).await;
+        // Snapshot the writer out of the manager's read guard
+        // BEFORE awaiting the runtime's own write guard.  Avoids
+        // holding `self.fs_snapshot_writer.read()` across the
+        // `.await` on `runtime.set_fs_snapshot_writer`.  Both
+        // locks are on different objects so no deadlock risk
+        // today — this is defensive scoping that keeps the hot
+        // path free of cross-object-held async guards.
+        let writer = self.fs_snapshot_writer.read().await.clone();
+        if let Some(writer) = writer {
+            runtime.set_fs_snapshot_writer(Some(writer)).await;
         }
     }
 
