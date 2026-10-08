@@ -15,7 +15,7 @@ Where this register and the ledger differ, this register applies.
 - Read the statement for the decision itself, and the reason for its rationale.
 
 The plan quotes the words of the user for some decisions, and the entries keep these words in double quotes.
-Decisions 19 to 51 override the earlier plan sections where they conflict.
+Decisions 19 to 65 override the earlier plan sections where they conflict.
 The minimal-footprint revision (M-1 to M-5) overrides the target architecture of the plan where they conflict.
 
 ## Terms used in this register
@@ -40,6 +40,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 - **Crates:** `casper` is the consensus crate, `rspace++` holds RSpace, `models` holds the Par types, and `rholang` holds the interpreter.
 - **EPathMap and EPM1:** EPathMap is the PathMap value of Rholang, written `{|…|}`. EPM1 is its trie-based representation on the feature/mettail branch.
 - **FLT:** a Foreign Language Term, which is a scoped term of an installed guest language in F1r3lang.
+- **GSLT:** a graph-structured lambda theory: the form in which F1r3lang defines a language, with its sorts, term constructors, equations and rewrites.
 - **URI binder:** a `new` binder with a URN, such as ``new x(`rho:io:stdout`)``.
 - **Acronyms:** API is application programming interface, ABI is application binary interface, AST is abstract syntax tree, and CLI is command-line interface. TLA+ is the specification language of the TLA model checks.
 
@@ -98,16 +99,20 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 49](#decision-49) | One fire count for each space transaction | 2026-10-06 | In force. Implemented in P5 wave W2 |
 | [Decision 50](#decision-50) | Joined set collections cascade | 2026-10-07 | In force. Implemented in P5 wave W3 |
 | [Decision 51](#decision-51) | A PathMap bag or set peek bumps the token when its second send changes state | 2026-10-07 | In force. Implemented in P5 wave W3 (Phase 2 of the PathMap engine) |
-| [Decision 52](#decision-52) | Tensor logic and the ChromaDB backend join the VectorDB phase P6 | 2026-10-07 | In force. Implementation in P6 |
-| [Decision 53](#decision-53) | The tensor-logic fragment TL_V | 2026-10-07 | In force. Implementation in P6 |
-| [Decision 54](#decision-54) | The number model of tensor logic | 2026-10-07 | In force. Implementation in P6 |
-| [Decision 55](#decision-55) | The tensor-logic syntax | 2026-10-07 | In force. Implementation in P6, typed form at P12 |
-| [Decision 56](#decision-56) | The VectorDB vocabulary | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 52](#decision-52) | Tensor logic and the ChromaDB backend join the VectorDB phase P6 | 2026-10-07 | In force. Tensor logic moved to P12 by decision 65 |
+| [Decision 53](#decision-53) | The tensor-logic fragment TL_V | 2026-10-07 | Moved to P12 by decision 65 |
+| [Decision 54](#decision-54) | The number model of tensor logic | 2026-10-07 | In force for P6 decisions. TL-only functions moved to P12 by decision 65 |
+| [Decision 55](#decision-55) | The tensor-logic syntax | 2026-10-07 | Superseded by decision 62 on 2026-10-07 |
+| [Decision 56](#decision-56) | The VectorDB vocabulary | 2026-10-07 | In force, amended by decision 62 |
 | [Decision 57](#decision-57) | The recorded processes `embed` and `ann` | 2026-10-07 | In force. Implementation in P6 |
 | [Decision 58](#decision-58) | The ChromaDB mirror is a hint index | 2026-10-07 | In force. Implementation in P6 |
 | [Decision 59](#decision-59) | The test policy for live services | 2026-10-07 | In force. Implementation in P6 |
 | [Decision 60](#decision-60) | The VectorDB tie-break follows decision 41 | 2026-10-07 | In force. Implementation in P6 |
 | [Decision 61](#decision-61) | Footprint exceptions for the ChromaDB mirror | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 62](#decision-62) | Tensor-logic equations are FLT terms of a TensorLogic GSLT | 2026-10-07 | In force. Implementation at P12, after SIG-F |
+| [Decision 63](#decision-63) | The TensorLogic GSLT has an index-notation core and familiar sugar | 2026-10-07 | In force. Implementation at P12 |
+| [Decision 64](#decision-64) | The TensorLogic surface is paper-first, functional and Rholang-flavored | 2026-10-07 | In force. Implementation at P12 |
+| [Decision 65](#decision-65) | The TensorLogic language waits for F1r3lang and does not block VectorDB | 2026-10-07 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -1484,7 +1489,7 @@ So each lift of a set has an identity of its own.
 - A peek whose marker returns changes no state, so it needs no bump.
 - So concurrent pure reads of a bag or a set stay free of conflicts.
 
-## User decisions 52 to 61
+## User decisions 52 to 65
 
 Decisions 53 to 61 come from the P6 design pass of decision 52. The report is the design record of these entries.
 Its main terms are these:
@@ -1498,7 +1503,7 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6, after [decision 47](#decision-47) |
+| Status | In force. Implementation in P6, after [decision 47](#decision-47). [Decision 65](#decision-65) moves the tensor-logic part to P12 |
 | Amends | The deferred follow-ups `rrs-fu-tensor-ops` and `rrs-fu-external-backends` (ChromaDB part) of the design ledger |
 | Related | [Decision 40](#decision-40), [decision 41](#decision-41), [decision 48](#decision-48), decisions 53 to 61 |
 
@@ -1528,7 +1533,7 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6 |
+| Status | Moved to P12 by [decision 65](#decision-65), after the F1r3lang readiness signal |
 | Amends | none |
 | Related | [Decision 52](#decision-52), [decision 37](#decision-37), [decision 29](#decision-29) |
 
@@ -1552,7 +1557,7 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6 |
+| Status | In force for the exact decisions of P6. The functions that only tensor logic uses move to P12 ([decision 65](#decision-65)) |
 | Amends | The wording of ledger item D-5 (exact mode) |
 | Related | [I-9](#i-9), [decision 40](#decision-40) |
 
@@ -1577,7 +1582,7 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6, typed form at P12 |
+| Status | Superseded by [decision 62](#decision-62) on 2026-10-07 |
 | Amends | none |
 | Related | [Decision 18](#decision-18), [decision 21](#decision-21), [decision 24](#decision-24), [decision 17](#decision-17) |
 
@@ -1602,7 +1607,7 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6 |
+| Status | In force, amended by [decision 62](#decision-62): no `score` and no `tensors` |
 | Amends | The query-param table of the [syntax contract](syntax-contract.md) |
 | Related | [Decision 21](#decision-21), [decision 55](#decision-55) |
 
@@ -1707,6 +1712,127 @@ Its main terms are these:
 
 **Findings for other owners.** The design found ten defects in the existing `rho:chroma:*` integration (C-1 to C-10 of the design report).
 The campaign records them as findings for their owner.
+
+### <a id="decision-62"></a>Decision 62: Tensor-logic equations are FLT terms of a TensorLogic GSLT
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation at P12, after the F1r3lang readiness signal |
+| Amends | [Decision 55](#decision-55), the keys `score` and `tensors` of [decision 56](#decision-56), and the syntax choice of [decision 52](#decision-52) |
+| Related | [Decision 17](#decision-17), [decision 18](#decision-18), decisions 63 to 65 |
+
+**Statement.**
+
+- A tensor-logic equation is a foreign-language term (FLT) of a TensorLogic GSLT of F1r3lang.
+- P6 has no string syntax for equations: no `score` or `tensors` string params, and no string `eval` of `rho:lang:vector`.
+- The GSLT gives the syntax and the typing. An allow-listed host capability evaluates the reflected term natively ([decision 17](#decision-17)).
+- The FLT surface `tl:Category` lands at P12, after the readiness signal SIG-F, and it lowers to one frontend-neutral syntax tree.
+
+**User's words.**
+
+- "For the tensor logic syntax, wouldn't it be cleaner to go with a foreign language terms of a TensorLogic GSLT from F1r3lang? Would that be feasible or infeasible? The string expression syntax is going to be problematic."
+- The user chose "FLT only, gated on SIG-F (Recommended)".
+
+**Reason.**
+
+- A string syntax needs its own lexer, its own error offsets and its own escapes, and P12 would then have to migrate it.
+- The FLT lexer modes, the language installation and the reflection ABI exist only in F1r3lang. In the repository `mettail-rust`, they are lines 647 to 669 of `languages/src/rholang.rs` and the file `rholang-codegen/src/rho_net_lower.rs`. So the FLT form waits for the F1r3lang merge.
+- The installed-theory intrinsics of F1r3lang have no rational or tensor arithmetic, so evaluation stays native.
+- Rejected alternatives: an interim FLT bridge in the tree-sitter grammar, the string syntax of decision 55, and the F1r3lang merge first.
+
+### <a id="decision-63"></a>Decision 63: The TensorLogic GSLT has an index-notation core and familiar sugar
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation at P12 |
+| Amends | none |
+| Related | [Decision 62](#decision-62), [decision 64](#decision-64) |
+
+**Statement.**
+
+- The core is the index notation of the paper, a superset of einsum. Named indices are the arguments of a relation, so a product is a join and a sum is a projection.
+- A specified numpy-like subset is sugar:
+  - `@`, and elementwise arithmetic with the broadcasting rules of numpy
+  - `.T`, `transpose(axes)`, `sum` and `max` with `axis=`, and `einsum`
+  - `exp`, `sigmoid`, `relu` and `softmax(axis=)`
+  - slices with constant bounds
+- The GSLT defines each sugar form as a derived constructor with a rewrite into the core. Rocq proves that each rewrite keeps the denotation, so equal computations normalize to one core term.
+- The documented differences from numpy are exact arithmetic, transcendental functions at a declared precision, no in-place change, and no shape that depends on data.
+
+**User's words.**
+
+- "Would it be good to support a numpy-like syntax for the TensorLogic GSLT?"
+- The user chose "Index core + numpy sugar (Recommended)".
+
+**Reason.**
+
+- The index notation keeps the logic reading of an equation, and the sugar makes common programs familiar.
+- One normal form keeps the reflected `Par` and the content identity of a theory canonical.
+- Static shapes keep the static demand bound and the metering of [decision 40](#decision-40).
+
+### <a id="decision-64"></a>Decision 64: The TensorLogic surface is paper-first, functional and Rholang-flavored
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force. Implementation at P12. The full grammar needs the approval of the user before code |
+| Amends | The sugar of [decision 63](#decision-63) (refined) |
+| Related | [Decision 62](#decision-62), [decision 65](#decision-65) |
+
+**Statement.**
+
+- The core follows section 3.1 of the paper:
+  - equations such as `Y[i] = step(W[i] X[i])`, with joins by juxtaposition
+  - the projections `max=` and `avg=`, element lists, slices and index arithmetic
+  - the normalized index `p'.`, the Datalog forms, and the query `Y?`
+- Primes are ASCII single quotes (`n'`, `M''`). The Unicode primes in user names normalize to them.
+- `let` defines pure, non-recursive functions that the GSLT inlines. Recursion stays in equations over indices.
+- `|` is the parallel composition of Rholang: `E1 | E2` means that both equations hold, and equations with one left side accumulate, as the paper states.
+- Built-in operators, symbols, functions and methods are pure ASCII. User functions and operators may have Unicode names under UAX #31 and NFC, with the confusable checks of UTS #39.
+
+**Correction (verified on 2026-10-07).** A construction hole of F1r3lang must be bound by an enclosing FLT pattern: lines 4720 to 4745 of `rholang-runtime/src/rholang_ast.rs` in the repository `mettail-rust`.
+So tensor data reaches a term through the space: the agent binds reserved names, and user weights come from a named-tensor map param.
+
+**User's words.**
+
+- "For built-in operators, symbols, and methods we should use pure ASCII, but we should allow users to define unicode symbols and such for custom functions and things."
+- "maybe something more functionally inspired and more aligned with Rholang and TensorLogic than numpy, but still with familiar syntax?"
+- "I don't mean backticks, I mean single quotes for prime like you suggested"
+- The user chose "Record it (Recommended)".
+
+**Reason.** The paper is the authority for the semantics, and a functional, Rholang-flavored surface fits the host language. Pure functions and static shapes keep evaluation bounded.
+
+### <a id="decision-65"></a>Decision 65: The TensorLogic language waits for F1r3lang and does not block VectorDB
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-07 |
+| Status | In force |
+| Amends | The P6 scope of [decision 52](#decision-52) and [decision 53](#decision-53) |
+| Related | [Decision 62](#decision-62), [decision 17](#decision-17) |
+
+**Statement.**
+
+- The TensorLogic GSLT, its FLT surface, and the parts that serve only the language move to P12. P12 starts after the readiness signal SIG-F, with the OSLF-related work.
+- These parts are the TL evaluator, its frontend-neutral syntax tree, `TensorLogic.v`, `TensorGSLT.v`, and the TL legs of Sage and Z3.
+- P6 is the VectorDB space and the ChromaDB integration:
+  - the built-in metrics with `k`, `threshold` and `radius`, and exact arithmetic
+  - the vocabulary without the TL keys
+  - `embed` and `ann`, the mirror, and the test policy
+- The tracker moves the TL leaves of decision 52 to P12 before any P6 code.
+
+**User's words.**
+
+- "Also, the TensorLogic syntax will need to wait for the F1r3lang merge into this branch just like the OSLF-related Reified RSpace"
+- "It should not block the VectorDB Reified RSpace work"
+
+**Reason.**
+
+- Code with no syntax to reach it would be dead until P12.
+- The FIPS VectorDB requirement needs no tensor logic (`Reifying RSpaces.md:255-257`). The FIPS tensor-logic item is exploratory (`:259`), and the GSLT with FLT integration delivers it at P12.
+- A query param is a `Par` ([decision 21](#decision-21)), and an FLT term reflects to a `Par`. So the P12 key for an equation is an additive change.
 
 ## Minimal-footprint revision: M-1 to M-5
 
