@@ -1423,7 +1423,7 @@
       "property_files": []
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin. Step 6 adds rho:lang:vector: add, scale, dot, norm and distance, exact in the widest kind of the inputs, the replies [true, value] and [false, code, detail], the packing of a call into [ret, [op, x…]] and the metering of the process.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1443,7 +1443,9 @@
         "rholang/src/rust/interpreter/reified/system_processes.rs",
         "models/src/rust/reified/validation.rs",
         "models/src/rust/reified/query_spec.rs",
-        "rspace++/src/rspace/space_store_handle.rs"
+        "rspace++/src/rspace/space_store_handle.rs",
+        "rholang/src/rust/interpreter/tensor/ops.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs"
       ],
       "entry_points": [
         {
@@ -1613,6 +1615,34 @@
         {
           "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
           "pattern": "pub const P6_SYSTEM_CHANNELS"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+          "pattern": "pub fn evaluate(call: &Par, meter: &ScanMeter) -> Result<Par, OpFailure> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+          "pattern": "pub fn reply(result: Result<Par, OpFailure>, meter: &ScanMeter) -> Result<Par, OpFailure> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+          "pattern": "pub enum ReplyCode {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const VECTOR_PROCESS: SystemChannel = SystemChannel {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const P6_PROCESSES: [SystemChannel; 1] = [VECTOR_PROCESS];"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const fn packs_arguments(op: u8) -> bool {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+          "pattern": "async fn vector("
         }
       ],
       "tests": [
@@ -1621,7 +1651,9 @@
         "rholang/src/rust/interpreter/tensor/num.rs",
         "rholang/src/rust/interpreter/tensor/exact.rs",
         "rholang/tests/reified_vectordb.rs",
-        "rholang/tests/support/props.rs"
+        "rholang/tests/support/props.rs",
+        "rholang/src/rust/interpreter/tensor/ops.rs",
+        "rholang/tests/reified_vector_ops.rs"
       ],
       "property_files": [
         "rholang/src/rust/interpreter/tensor/exact.rs",

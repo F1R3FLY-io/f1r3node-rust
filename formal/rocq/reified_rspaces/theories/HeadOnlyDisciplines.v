@@ -104,7 +104,7 @@
                             spaces/generic.rs:1574, 1667 (offer_head and
                             receive_head: the re-issue sets
                             reissued_ord: op.persistent.then_some(ord))
-   round, run_rounds        reified/reducer_hooks.rs:662-712
+   round, run_rounds        reified/reducer_hooks.rs:666-716
                             (dispatch_space_outcome: a re-issue is a new
                             Intent::Space, the last dispatch branch of the
                             same deploy)

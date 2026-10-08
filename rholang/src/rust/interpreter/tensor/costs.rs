@@ -8,6 +8,7 @@
 //! | Step | Operations | Scanned bytes | Backing bytes |
 //! |---|---|---|---|
 //! | decode `n` bytes | `1 + ⌈n/8⌉` | `n` | `n` |
+//! | encode an integer `x` | `ℓ(x) + 1` | `8ℓ(x)` | `8ℓ(x) + 1` |
 //! | ingress of a float | `FLOAT_INGRESS_OPERATIONS` | `FLOAT_INGRESS_BYTES` | `FLOAT_INGRESS_BYTES` |
 //! | product `a × b` | `ℓ(a)·ℓ(b)` | `8(ℓ(a)+ℓ(b))` | `8(ℓ(a)+ℓ(b))` |
 //! | sum `a + b` | `max(ℓ(a), ℓ(b))` | `8(ℓ(a)+ℓ(b))` | `8(max+1)` |
@@ -80,6 +81,19 @@ fn square(count: usize) -> Option<usize> { count.checked_mul(count) }
 pub fn reserve_bytes_decode(length: usize, meter: &ScanMeter) -> Result<(), RSpaceError> {
     reserve(meter, || {
         Some((length.div_ceil(8).checked_add(1)?, length, length))
+    })
+}
+
+/// The encode of the integer `x` into its big-endian two's complement bytes: one pass over its
+/// limbs, which writes at most `8ℓ(x) + 1` bytes (`rho:lang:vector`, P6 step 6).
+pub fn reserve_integer_encode(x: &BigInt, meter: &ScanMeter) -> Result<(), RSpaceError> {
+    reserve(meter, || {
+        let length = limbs(x)?;
+        Some((
+            length.checked_add(1)?,
+            bytes(length)?,
+            bytes(length)?.checked_add(1)?,
+        ))
     })
 }
 

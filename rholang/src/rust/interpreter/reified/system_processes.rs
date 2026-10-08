@@ -6,6 +6,7 @@
 //! | `rho:space:getSpaceAgent`       | `getSpaceAgent!(ret, s)`                  |
 //! | `rho:assert:assertEqual`        | `assertEqual!(ret, a, b)` (decision 33)   |
 //! | `rho:reified:internal:handleOp` | the handle process (`handle.rs`, A6)      |
+//! | `rho:lang:vector`               | `vec!(ret, op, x…)` (P6 step 6)           |
 //!
 //! `create_rho_env` calls [`register`] with the runtime of the host store, before
 //! `setup_maps_and_refs` binds the URNs. `dispatch_table_creator` drains the vector, so a
@@ -18,6 +19,11 @@
 //! Every other result is a typed error reply (A22): `DanglingHandle` for a missing config
 //! record, `NotANativeSpace` for a user agent, and the code of the reference error otherwise.
 //! `assertEqual!(ret, a, b)` replies `true` for equal `a` and `b` after `ParSortMatcher`.
+//!
+//! `vec!(ret, op, x…)` reaches the process as `[ret, [op, x…]]`, because the reducer packs the
+//! arguments after `ret` (I-18). `tensor::ops` computes the value with the host-work budget of
+//! the deploy, and the process replies `[true, value]` or `[false, code, detail]` on `ret`
+//! (decision 57). A host-work rejection fails the deploy.
 
 use std::sync::Arc;
 
@@ -26,15 +32,17 @@ use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::new_gbool_par;
 
+use super::costs::ScanMeter;
 use super::factory::{ContractArgs, FactoryProcess};
 use super::handle::{typed_error, HandleProcess};
 use super::runtime::ReifiedRuntime;
 use super::scope::{classify_space_ref, SpaceRef};
 use super::system_channels::{
     SystemChannel, ASSERT_EQUAL_PROCESS, GET_SPACE_AGENT_PROCESS, HANDLE_OP_PROCESS,
-    P4_SYSTEM_CHANNELS,
+    P4_SYSTEM_CHANNELS, P6_PROCESSES, VECTOR_PROCESS,
 };
 use crate::rust::interpreter::contract_call::ContractCall;
+use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
     submit_space, SpaceRequest,
 };
@@ -47,6 +55,7 @@ use crate::rust::interpreter::spaces::families::FamilyAgent;
 use crate::rust::interpreter::spaces::namespace::NativeSpace;
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 use crate::rust::interpreter::system_processes::{Definition, ProcessContext};
+use crate::rust::interpreter::tensor::ops::{self, OpFailure};
 
 /// The native agent of every wired family: the family agent (P5 design v3, A.3.4). It reads the
 /// config of a space once and runs the agent of the family that the config names. Every config
@@ -58,16 +67,21 @@ pub fn native_agent() -> Arc<dyn SpaceAgent> { Arc::new(FamilyAgent) }
 /// the handle process. Then come the factory of each registered family of P5, in family-index
 /// order, the factory of each registered alias (`urn::registered_p5_families`,
 /// `urn::registered_aliases`), and the factory of each registered family of P6
-/// (`urn::registered_p6_families`). An alias has the channel, the arity, the body ref and the
-/// handler of its family, so the second install of its channel changes nothing: the install
-/// map and the dispatch table are keyed by the channel and by the body ref.
+/// (`urn::registered_p6_families`), then `rho:lang:vector` (`P6_PROCESSES`). An alias has the
+/// channel, the arity, the body ref and the handler of its family, so the second install of its
+/// channel changes nothing: the install map and the dispatch table are keyed by the channel and
+/// by the body ref.
 pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     let agent = native_agent();
     let families: Vec<_> = urn::registered_p5_families().collect();
     let aliases: Vec<_> = urn::registered_aliases().collect();
     let p6_families: Vec<_> = urn::registered_p6_families().collect();
     let mut definitions = Vec::with_capacity(
-        P4_SYSTEM_CHANNELS.len() + families.len() + aliases.len() + p6_families.len(),
+        P4_SYSTEM_CHANNELS.len()
+            + families.len()
+            + aliases.len()
+            + p6_families.len()
+            + P6_PROCESSES.len(),
     );
     let factory = |family, channel| {
         definition(
@@ -106,6 +120,7 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     for (family, channel) in p6_families {
         definitions.push(factory(family, channel));
     }
+    definitions.push(definition(VECTOR_PROCESS, ReifiedProcess::Vector));
     definitions
 }
 
@@ -123,6 +138,7 @@ enum ReifiedProcess {
     },
     AssertEqual,
     Handle(HandleProcess),
+    Vector,
 }
 
 impl ReifiedProcess {
@@ -138,6 +154,7 @@ impl ReifiedProcess {
             }
             ReifiedProcess::AssertEqual => assert_equal(contract, contract_args).await,
             ReifiedProcess::Handle(handle) => handle.call(contract, contract_args).await,
+            ReifiedProcess::Vector => vector(contract, contract_args).await,
         }
     }
 }
@@ -254,6 +271,35 @@ async fn assert_equal(
     };
     let equal = ParSortMatcher::sort_match(left).term == ParSortMatcher::sort_match(right).term;
     let reply = vec![new_gbool_par(equal, Vec::new(), false)];
+    produce(&reply, ret).await?;
+    Ok(reply)
+}
+
+/// `vec!(ret, op, x…)`, packed as `[ret, [op, x…]]` (P6 step 6, design v3 4.7). The work is
+/// reserved on the host-work budget of the deploy (decision 42), which the reduction context
+/// holds, as `submit_space` reads it. Without a budget the meter accepts every reservation.
+async fn vector(
+    contract: &ContractCall,
+    contract_args: ContractArgs,
+) -> Result<Vec<Par>, InterpreterError> {
+    let Some((produce, _, _, args)) = contract.unapply(contract_args) else {
+        return Err(illegal_argument_error(VECTOR_PROCESS.urn));
+    };
+    let [ret, call] = args.as_slice() else {
+        return Err(illegal_argument_error(VECTOR_PROCESS.urn));
+    };
+    let meter = ScanMeter::new(
+        deterministic_reduction::current().and_then(|context| context.host_work_budget()),
+    );
+    let reply = match ops::reply(ops::evaluate(call, &meter), &meter) {
+        Ok(reply) => reply,
+        Err(OpFailure::HostWork(error)) => return Err(error.into()),
+        Err(OpFailure::Inconsistent(reason)) => return Err(SpaceError::Inconsistent(reason).into()),
+        Err(OpFailure::Reply(_)) => {
+            return Err(SpaceError::Inconsistent("a reply failure became a reply").into())
+        }
+    };
+    let reply = vec![reply];
     produce(&reply, ret).await?;
     Ok(reply)
 }
@@ -526,7 +572,8 @@ mod tests {
         let runtime = unavailable();
         let defined = definitions(&runtime);
         // The four processes of P4 first, then the registered families of P5 in family-index
-        // order, then the registered aliases, then the registered families of P6.
+        // order, then the registered aliases, then the registered families of P6, then the
+        // processes of P6.
         let p5: Vec<SystemChannel> = urn::registered_p5_families()
             .map(|(_, channel)| channel)
             .chain(urn::registered_aliases().map(|(channel, _)| channel))
@@ -542,6 +589,7 @@ mod tests {
             .iter()
             .chain(p5.iter())
             .chain(p6.iter())
+            .chain(P6_PROCESSES.iter())
             .copied()
             .collect();
         assert_eq!(defined.len(), expected.len());
@@ -610,6 +658,68 @@ mod tests {
             assert_eq!(of_alias.to_urn_map().1, of_family.to_urn_map().1);
             assert_eq!(Some(of_alias.to_urn_map().1), factory_capability(family));
         }
+    }
+
+    /// `rho:lang:vector` reserves its work on the host-work budget of the deploy, which the
+    /// reduction context holds (P6 step 6). One unit less of host work rejects the call with
+    /// `HostWorkRejected`, and the call sends no reply.
+    #[tokio::test]
+    async fn space_system_ops_vector_ops_reserve_on_the_deploy_budget() {
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+        use crate::rust::interpreter::deterministic_reduction::{
+            root_with_host_work, ReductionCoordinator,
+        };
+        use crate::rust::interpreter::host_work::HostWorkBudget;
+        use crate::rust::interpreter::rho_runtime::RhoISpace;
+
+        let fixture = Fixture::new().await;
+        let session: RhoISpace = Arc::new(Box::new(fixture.rspace.clone()));
+        let dot = list(vec![
+            string("dot"),
+            list(vec![int(1), int(2)]),
+            list(vec![int(3), int(4)]),
+        ]);
+        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let ret = reply_name(1);
+        let reply = root_with_host_work(
+            session.clone(),
+            super::harness::budget(),
+            ReductionCoordinator::default(),
+            Some(host_work.clone()),
+            vector(
+                &fixture.contract,
+                call(vec![ret.clone(), dot.clone()], b"vector"),
+            ),
+        )
+        .await
+        .expect("the vector process replies");
+        assert_eq!(reply, vec![list(vec![
+            new_gbool_par(true, Vec::new(), false),
+            int(11)
+        ])]);
+        assert_eq!(fixture.data(&ret).await, vec![reply]);
+        let used = host_work
+            .usage(HostWorkDimension::VerificationOperations)
+            .get();
+        assert!(used > 0, "the process reserves on the budget of the deploy");
+        let tight = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(used - 1)));
+        let rejected = root_with_host_work(
+            session,
+            super::harness::budget(),
+            ReductionCoordinator::default(),
+            Some(tight),
+            vector(&fixture.contract, call(vec![reply_name(2), dot], b"vector")),
+        )
+        .await;
+        assert!(
+            matches!(rejected, Err(InterpreterError::HostWorkRejected)),
+            "{rejected:?}"
+        );
+        assert!(
+            fixture.data(&reply_name(2)).await.is_empty(),
+            "a rejected call sends no reply"
+        );
     }
 
     #[tokio::test]

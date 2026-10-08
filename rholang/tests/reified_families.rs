@@ -44,7 +44,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::runtime::unavailable;
 use rholang::rust::interpreter::reified::system_channels::{
-    SystemChannel, P4_SYSTEM_CHANNELS, P5_SYSTEM_CHANNELS, P6_SYSTEM_CHANNELS,
+    SystemChannel, P4_SYSTEM_CHANNELS, P5_SYSTEM_CHANNELS, P6_PROCESSES, P6_SYSTEM_CHANNELS,
 };
 use rholang::rust::interpreter::reified::system_processes::definitions;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
@@ -453,13 +453,14 @@ async fn space_factory_families_registered() {
     }
     // The definitions: the four of P4, then the registered families of P5 in family-index
     // order, then the registered aliases, then the registered families of P6 in family-index
-    // order.
+    // order, then the processes of P6 (`rho:lang:vector`).
     let expected: Vec<(String, i64)> = P4_SYSTEM_CHANNELS
         .iter()
         .copied()
         .chain(registered_p5_families().map(|(_, channel)| channel))
         .chain(registered_aliases().map(|(channel, _)| channel))
         .chain(registered_p6_families().map(|(_, channel)| channel))
+        .chain(P6_PROCESSES)
         .map(|channel| (channel.urn.to_string(), channel.body_ref()))
         .collect();
     let defined: Vec<(String, i64)> = definitions(&unavailable())
@@ -1217,8 +1218,9 @@ async fn space_factory_kwargs_are_stored_canonical() {
 /// `registered_families_complete` (F26): a family is registered exactly when it has a row and
 /// its dispatch arm. A registered family has the op of its index, the body ref `200 + op`, its
 /// URN, a constructor schema and a send schema. The definitions are the four of P4, the
-/// registered P5 rows in row order, the registered aliases and the registered P6 rows in row
-/// order, and nothing else: each factory definition names a registered family by its op.
+/// registered P5 rows in row order, the registered aliases, the registered P6 rows in row order
+/// and the processes of P6, and nothing else: each factory definition names a registered family
+/// by its op.
 #[test]
 fn prop_registered_families_complete() {
     let defined: Vec<(String, i64)> = definitions(&unavailable())
@@ -1262,8 +1264,14 @@ fn prop_registered_families_complete() {
                 })
                 .map(|channel| (channel.urn.to_string(), channel.body_ref())),
         );
+        expected.extend(
+            P6_PROCESSES
+                .iter()
+                .map(|channel| (channel.urn.to_string(), channel.body_ref())),
+        );
         prop_assert_eq!(&defined, &expected);
-        for (urn, body) in defined.iter().skip(P4_SYSTEM_CHANNELS.len()) {
+        let factories = &defined[P4_SYSTEM_CHANNELS.len()..defined.len() - P6_PROCESSES.len()];
+        for (urn, body) in factories {
             let named = SpaceFactoryUrn::parse(urn).map_err(|error| {
                 TestCaseError::fail(format!("{urn} is not a factory URN: {error}"))
             })?;

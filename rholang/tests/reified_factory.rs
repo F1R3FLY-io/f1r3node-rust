@@ -31,7 +31,7 @@ use rholang::rust::interpreter::reified::runtime::unavailable;
 use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
 use rholang::rust::interpreter::reified::system_channels::{
     body_ref, SystemChannel, ASSERT_EQUAL_PROCESS, BODY_REF_BASE, GET_SPACE_AGENT_PROCESS,
-    HANDLE_OP_PROCESS, HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS,
+    HANDLE_OP_PROCESS, HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS, P6_PROCESSES,
 };
 use rholang::rust::interpreter::reified::system_processes::definitions;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -405,6 +405,11 @@ const P6_PINNED: [(&str, u8, i32, i64); 2] = [
     ("rho:space:vector:vectordb", 0x19, 2, 225),
 ];
 
+/// The system processes of P6 that are not factories (P6 step 6), as `(urn, op, arity, body
+/// ref)`, after the VectorDB families: `rho:lang:vector`, whose calls the reducer packs into
+/// `[ret, [op, x…]]` (I-18).
+const P6_PROCESS_PINS: [(&str, u8, i32, i64); 1] = [("rho:lang:vector", 0x23, 2, 235)];
+
 /// The system channels of the registered families of P6, in the order of the definitions.
 fn registered_p6_channels() -> Vec<SystemChannel> {
     registered_p6_families()
@@ -447,7 +452,7 @@ async fn space_private_channels_unique() {
     // op channel of its family (P5 design v3, A.7).
     let p5 = registered_p5_channels();
     let p6 = registered_p6_channels();
-    for channel in p5.iter().chain(p6.iter()) {
+    for channel in p5.iter().chain(p6.iter()).chain(P6_PROCESSES.iter()) {
         assert_eq!(
             urn_map.get(channel.urn),
             Some(&write_bundle(channel.channel())),
@@ -464,6 +469,7 @@ async fn space_private_channels_unique() {
         .iter()
         .chain(p5.iter())
         .chain(p6.iter())
+        .chain(P6_PROCESSES.iter())
         .map(|channel| channel.urn)
         .collect();
     let mut owners: BTreeMap<Vec<u8>, &str> = BTreeMap::new();
@@ -549,6 +555,7 @@ async fn space_private_channels_body_refs_disjoint() {
     let mut expected = vec![201, 233, 234, 248];
     expected.extend(registered_p5_pins().into_iter().map(|(.., body)| body));
     expected.extend(registered_p6_pins().into_iter().map(|(.., body)| body));
+    expected.extend(P6_PROCESS_PINS.into_iter().map(|(.., body)| body));
     assert_eq!(
         refs, expected,
         "the P4 body refs are 200 + op, and the registered P5 and P6 rows follow"
@@ -1345,7 +1352,7 @@ async fn space_system_ops_get_space_agent_not_native() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_system_ops_arity_and_body_refs_stable() {
     // The four processes of P4 first, then the registered rows of P5 in the order of the table,
-    // then the registered rows of P6.
+    // then the registered rows of P6, then the processes of P6.
     let mut pinned = vec![
         ("rho:space:hashmap:queue", 0x01_u8, 2, 201),
         ("rho:space:getSpaceAgent", 0x21, 2, 233),
@@ -1354,6 +1361,7 @@ async fn space_system_ops_arity_and_body_refs_stable() {
     ];
     pinned.extend(registered_p5_pins());
     pinned.extend(registered_p6_pins());
+    pinned.extend(P6_PROCESS_PINS);
     let defined = definitions(&unavailable());
     assert_eq!(defined.len(), pinned.len());
     for (definition, (urn, op, arity, body)) in defined.iter().zip(pinned) {

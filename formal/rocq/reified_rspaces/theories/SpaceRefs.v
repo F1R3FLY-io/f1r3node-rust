@@ -57,7 +57,7 @@
    r7_produce               rholang/src/rust/interpreter/reified/execution.rs:
                             112-129 (produce routes with no context)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:734-739
+     without_context        reducer_hooks.rs:738-743
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             106-129
@@ -89,20 +89,20 @@
                             models/src/rust/reified/encoding.rs:346-356,
                             369-374 (marker_of, sole_marker_tuple)
    decode_source, h4_passes rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:719-730 (reject_query_source),
+                            reducer_hooks.rs:723-734 (reject_query_source),
                             models/src/rust/reified/encoding.rs:841-848
                             (decode_query_source)
    takes_fast_path          rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:761-763
+                            reducer_hooks.rs:765-767
    read_channel             rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:778-786 (readable_channel)
+                            reducer_hooks.rs:782-790 (readable_channel)
    read_bind, route_bind    rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:759-773, 475-494 (query_bind,
+                            reducer_hooks.rs:763-777, 479-498 (query_bind,
                             route_receive)
    single_target            rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:790-820 (single_bind_route)
+                            reducer_hooks.rs:794-824 (single_bind_route)
    receive_one              rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:394-471 (reified_consume)
+                            reducer_hooks.rs:398-475 (reified_consume)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction

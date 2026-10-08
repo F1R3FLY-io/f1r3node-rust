@@ -8,7 +8,7 @@
 //! | `rho:assert:assertEqual`        | `[E0, 22]`  | 3     | 234     | P4         |
 //! | `rho:reified:internal:handleOp` | `[E0, 30]`  | 2     | 248     | P4         |
 //! | the other families              | `[E0, 00..1F]` | 2  | 200 + op | P5 and P6 |
-//! | `rho:lang:vector`               | `[E0, 23]`  | —     | 235     | P6         |
+//! | `rho:lang:vector`               | `[E0, 23]`  | 2     | 235     | P6         |
 //! | the matcher and the sink        | `[E0, 31]`, `[E0, 32]` | — | 249, 250 | P8 |
 //!
 //! The body ref of an op is `200 + op`. HEAD uses the body refs 0 to 36 and 101 to 108, and
@@ -376,6 +376,27 @@ pub const P5_SYSTEM_CHANNELS: [SystemChannel; 25] = [
 pub const P6_SYSTEM_CHANNELS: [SystemChannel; 2] =
     [HASHMAP_VECTORDB_FACTORY, VECTOR_VECTORDB_FACTORY];
 
+/// `vec!(ret, op, x…)` (P6 step 6, design v3 4.7): the five operations of `rho:lang:vector`.
+/// The reducer packs the arguments after `ret` into one list, as for a factory call, so the
+/// process has the fixed arity 2 (I-18).
+pub const VECTOR_PROCESS: SystemChannel = SystemChannel {
+    urn: "rho:lang:vector",
+    op: VECTOR,
+    arity: 2,
+};
+
+/// The system processes of P6 that are not factories, after the VectorDB factories, so every
+/// earlier definition keeps its place.
+///
+/// | URN               | Channel    | Arity | BodyRef |
+/// |-------------------|------------|-------|---------|
+/// | `rho:lang:vector` | `[E0, 23]` | 2     | 235     |
+pub const P6_PROCESSES: [SystemChannel; 1] = [VECTOR_PROCESS];
+
+/// True for an op whose call the reducer packs into `[ret, [x…]]` (I-18): every factory, and
+/// `rho:lang:vector`.
+pub const fn packs_arguments(op: u8) -> bool { is_factory_op(op) || op == VECTOR }
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -524,6 +545,40 @@ mod tests {
                 .iter()
                 .all(|channel| !earlier.contains(&channel.op)),
             "a VectorDB factory has an op of its own"
+        );
+    }
+
+    #[test]
+    fn p6_processes_have_the_table_values() {
+        let expected = [("rho:lang:vector", 0x23, 2, 235)];
+        assert_eq!(P6_PROCESSES.len(), expected.len());
+        for (channel, (urn, op, arity, body)) in P6_PROCESSES.iter().zip(expected) {
+            assert_eq!(
+                (channel.urn, channel.op, channel.arity, channel.body_ref()),
+                (urn, op, arity, body)
+            );
+            assert_eq!(op_of(&channel.channel()), Some(op));
+            assert!(!is_factory_op(channel.op), "{}", channel.urn);
+            assert!(is_call_op(channel.op), "{}", channel.urn);
+            assert!(packs_arguments(channel.op), "{}", channel.urn);
+        }
+        let earlier: BTreeSet<u8> = P4_SYSTEM_CHANNELS
+            .iter()
+            .chain(P5_SYSTEM_CHANNELS.iter())
+            .chain(P6_SYSTEM_CHANNELS.iter())
+            .map(|channel| channel.op)
+            .collect();
+        assert!(
+            P6_PROCESSES
+                .iter()
+                .all(|channel| !earlier.contains(&channel.op)),
+            "a P6 process has an op of its own"
+        );
+        let packing: Vec<u8> = (0..=u8::MAX).filter(|op| packs_arguments(*op)).collect();
+        let expected: Vec<u8> = (0x00..=0x20).chain([0x23]).collect();
+        assert_eq!(
+            packing, expected,
+            "the factories, the engine factory and rho:lang:vector pack their arguments"
         );
     }
 

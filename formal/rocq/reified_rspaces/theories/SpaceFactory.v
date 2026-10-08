@@ -872,11 +872,11 @@ Print Assumptions space_already_exists_is_deterministic_abort.
                             rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:174-178, 190-195, 199-203, 206-210
    definitions, binds       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:64-110 (definitions),
+                            reified/system_processes.rs:74-125 (definitions),
                             rholang/src/rust/
                             interpreter/system_processes.rs:491-499 (to_urn_map)
    get_space_agent_of       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:170-206 (get_space_agent),
+                            reified/system_processes.rs:187-223 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:208-226 (family_of), urn.rs:221-223
                             (factory_capability)

@@ -55,7 +55,7 @@ use crate::rust::interpreter::reified::scope::{
     classify_space_ref, wrap_body, SpaceRef, UseTarget,
 };
 use crate::rust::interpreter::reified::system_channels::{
-    check_persistent_send, handle_of, is_factory_op, op_of,
+    check_persistent_send, handle_of, is_factory_op, op_of, packs_arguments,
 };
 use crate::rust::interpreter::reified::system_processes::native_agent;
 use crate::rust::interpreter::spaces::agent::{
@@ -296,8 +296,9 @@ impl ReducerCore {
     ///    `Malformed`.
     /// 2. The channel routes with the use-context of the reducer.
     /// 3. On the default space, a persistent send to an op channel or to a handle aborts (A21).
-    ///    A factory call gets its constructor as one list. A handle call keeps its params. Every
-    ///    other channel rejects params.
+    ///    A factory call gets its constructor as one list, and a call of `rho:lang:vector` gets
+    ///    its method and operands as one list (I-18). A handle call keeps its params. Every other
+    ///    channel, `rho:lang:vector` included, rejects params.
     /// 4. On a native space, the produce runs with `space_op`. Its named params go to the agent
     ///    in `ProduceOp::params` (`space_params`), and the PARAMS tuple leaves the datum.
     ///    Positional params abort.
@@ -336,7 +337,10 @@ impl ReducerCore {
                 let data = match (op_of(&chan), handle_of(&chan)) {
                     (Some(op), _) if is_factory_op(op) => {
                         reject_positional(params.as_ref())?;
-                        pack_constructor(data)
+                        pack_arguments(data)
+                    }
+                    (Some(op), _) if packs_arguments(op) && params.is_none() => {
+                        pack_arguments(data)
                     }
                     (_, Some(_)) => {
                         reject_positional(params.as_ref())?;
@@ -976,10 +980,11 @@ fn space_params(params: SendParams) -> Result<BTreeMap<String, Par>, Interpreter
 //     }
 // }
 
-/// Packs the arguments of a factory call into `[ret, [ctor…]]`, so every factory has the fixed
-/// arity 2 (I-18). The list holds the arguments after `ret`, the PARAMS tuple included. A send
-/// without arguments is unchanged.
-fn pack_constructor(data: ListParWithRandom) -> ListParWithRandom {
+/// Packs the arguments of a call into `[ret, [x…]]`, so the process has the fixed arity 2
+/// (I-18): a factory call, whose list holds its constructor with the PARAMS tuple, and a call
+/// of `rho:lang:vector`, whose list holds its method and its operands. A send without arguments
+/// is unchanged.
+fn pack_arguments(data: ListParWithRandom) -> ListParWithRandom {
     let ListParWithRandom {
         pars,
         random_state,

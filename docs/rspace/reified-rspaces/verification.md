@@ -1729,11 +1729,11 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1954` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1719` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1769` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1959` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1724` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1774` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:193` | Q55 |
-| `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:581` | Q54 |
+| `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:636` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
 | `agent_tagged_names_route_to_the_agent` | `reified/route.rs:312` | Q42 |
 | `space_names_route_intrinsically` | `reified/route.rs:269` | Q43 |
@@ -3602,6 +3602,128 @@ To run the checks of step 5, do these steps from the repository root:
 
 1. Run `cargo test -p rholang --test reified_native_spaces`.
 2. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+
+## 17. Phase P6, step 6: `rho:lang:vector`
+
+Step 6 of the P6 design adds the system process `rho:lang:vector` on the channel `[0xE0, 0x23]`, with the body reference 235 (design v3 4.7).
+It has five operations: `add`, `scale`, `dot`, `norm` and `distance`.
+There is no `eval` ([decision 62](decision-register.md#decision-62)).
+A program calls it as `vec!?(op, x…)`, and the process replies on the reply channel ([decision 57](decision-register.md#decision-57)).
+
+### 17.1 Calls and replies
+
+A call has one or two operands.
+So the reducer packs the arguments after the reply channel into one list, as for a factory call (I-18).
+The process therefore receives `[ret, [op, x…]]` and has the fixed arity 2.
+A call with params aborts with `ParamsUnsupported`, and a persistent call aborts with `PersistentOpCall` (A21).
+
+The reply is one datum: `[true, value]`, or `[false, code, detail]`, so `!?` and `try … catch` apply.
+The detail is a fixed text and never repeats an operand.
+A host-work rejection is not a reply: the deploy fails with `HostWorkRejected` ([decision 40](decision-register.md#decision-40)).
+
+*Table 105. The operations of `rho:lang:vector` (`rholang/src/rust/interpreter/tensor/ops.rs`).*
+
+| Operation | Operands | Value |
+|---|---|---|
+| `add` | two vectors of one length | the vector $`a + b`$, in the widest kind |
+| `scale` | a vector $`v`$, then a number $`s`$ | the vector $`s \cdot v`$, in the widest kind |
+| `dot` | two vectors of one length | the number $`a \cdot b`$, in the widest kind |
+| `norm` | one vector $`v`$ | the `f64` $`\mathrm{RN}_{53}(\sqrt{v \cdot v})`$ |
+| `distance` | two vectors of one length | the `f64` $`\mathrm{RN}_{53}(\sqrt{\lVert a - b \rVert^2})`$ |
+
+The kinds are ordered: an integer (`GInt`, `GBigInt`, `GBool`), then a rational (`GBigRat`, `GFixedPoint`), then a float (`GDouble`, `GFloat32`).
+The value has the widest kind of the inputs (plan decision 66).
+An integer leaves as `GInt`, or as `GBigInt` beyond the range of `i64`.
+A rational leaves as a reduced `GBigRat`, also when its value is an integer.
+A float leaves as the `GDouble` of $`\mathrm{RN}_{53}`$ of the exact value, and a value beyond the finite range of `f64` replies `ValueOutOfRange`.
+
+*Table 106. The reply codes of `rho:lang:vector`.*
+
+| Code | When |
+|---|---|
+| `UnknownMethod` | The first element of the call is not the name of an operation. |
+| `BadArgument` | The operation has another number of operands. |
+| `NotAVector` | A vector operand is not one list of numbers. |
+| `NotANumber` | An element or the factor of `scale` is not a number. |
+| `NonFiniteValue` | A number is NaN or an infinity. |
+| `MalformedNumber` | A big rational has a denominator that is not positive. |
+| `DimensionMismatch` | The two vectors of a pair have different lengths. |
+| `ValueOutOfRange` | A float value is beyond the range of `f64`, or a fixed-point scale is above 4096. |
+
+### 17.2 Host work
+
+The process builds its meter from the host-work budget of the deploy, which the reduction context holds, as `submit_space` reads it.
+Each step reserves its work before it runs:
+
+- the comparison of the method name and the kind test of each element
+- the decodes and each exact operation
+- each rounding, and the encode of each number and of each list.
+
+The encode of an integer reserves $`\ell(x) + 1`$ operations, $`8\ell(x)`$ scanned bytes and $`8\ell(x) + 1`$ backing bytes (`reserve_integer_encode`).
+The process touches no space, so it runs without an `Intent::Space`.
+Its work is a pure function of its arguments, so native play and native replay reserve the same amounts.
+
+### 17.3 Tests
+
+*Table 107. The tests of step 6.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `vector_ops_keep_the_widest_kind` and six more unit tests | `tensor/ops.rs` | The kinds, the widening to `GBigInt`, the exact sums, the correct roots, every reply code, the reply shape, and the reservations with a rejection one unit below. |
+| `space_system_ops_vector_ops_reserve_on_the_deploy_budget` | `reified/system_processes.rs` | The process reserves on the budget of the reduction context, and one unit less rejects the call with no reply. |
+| `p6_processes_have_the_table_values` | `reified/system_channels.rs` | The channel, the arity and the body reference, and the ops that pack their arguments: `0x00` to `0x20` and `0x23`. |
+| `vector_ops_source_programs_compute_each_operation` | `rholang/tests/reified_vector_ops.rs` | Each operation replies its value to a Rholang program. |
+| `vector_ops_keep_the_widest_kind_in_source` | the same | Big integers, big rationals, fixed points, booleans, floats and `f32` values give their widest kind. |
+| `vector_ops_are_exact_before_the_rounding` | the same | $`[10^{16}, 1, -10^{16}] \cdot [1, 1, 1] = 1`$, where `f64` accumulation gives 0. |
+| `vector_ops_failures_reply_their_codes` | the same | Each failure that a program can make replies its code, and the deploy goes on. |
+| `vector_ops_try_catch_reads_the_reply` | the same | `try … catch` reads the value and the code of a reply. |
+| `vector_ops_params_and_persistent_sends_abort` | the same | Params abort with `ParamsUnsupported`, and a persistent call with `PersistentOpCall`. |
+| `vector_ops_native_replay_equal` | the same | Six calls play natively at the v6 limits, and native replay reproduces the play. |
+
+*Table 108. The properties of step 6 (`rholang/tests/reified_vector_ops.rs`).*
+
+| Property | Statement | Oracle |
+|---|---|---|
+| `prop_vector_ops_agree_with_an_exact_oracle` | `add`, `scale` and `dot` on integers, rationals and fixed points equal the exact values, in the widest kind. | `BigRational` arithmetic |
+| `prop_vector_ops_float_inputs_give_floats` | With a float among the inputs, the values are floats, and they equal the exact values. | `f64` quotients of values with fewer than 34 significant bits |
+| `prop_vector_ops_dot_laws` | $`a \cdot b = b \cdot a`$, and one permutation of both vectors keeps the value (S6 of `Similarity.v`). | the operation itself |
+| `prop_vector_ops_distance_laws` | The distance is not negative and symmetric, it is 0 from a vector to itself, and the norm of $`v`$ is its distance to 0 (S7). | the operation itself |
+| `prop_vector_ops_roots_are_correctly_rounded` | No `f64` is nearer to $`\sqrt{v \cdot v}`$ than the reply of `norm`. | the squares of the midpoints next to the reply, compared exactly |
+
+The float oracle stays independent of the conversions of `num-rational`.
+Its generator keeps every value of `add`, `scale` and `dot` exact in `f64`, so an IEEE quotient of two exact `f64` values is exact.
+Design step 8 adds the properties to the invariant map with those of section 15.
+
+### 17.4 Negative controls
+
+The harness `scripts/verify-reified/vector-ops-mutants.py` applies each mutant, runs every test whose name holds `vector_ops`, and restores the source files.
+It runs the library tests and the suite with `--no-fail-fast`.
+The first run had no such flag.
+A failure of the library tests then stopped cargo before the suite, so the counts hid the strength of the suite.
+
+*Table 109. The mutation controls of step 6.*
+
+| Mutant | What it changes | Tests that fail |
+|---|---|---|
+| `kind-narrowest` | The value of `add` has the narrowest kind. | 4, both oracle properties included |
+| `rational-by-value` | An integral rational leaves as an integer. | 6 |
+| `norm-without-root` | `norm` replies the square of the norm. | 4, the rounding property included |
+| `distance-is-dot` | `distance` takes the root of the dot product. | 3, the distance laws included |
+| `no-dimension-check` | Two vectors of different lengths pass. | 3 |
+| `vector-not-packed` | The reducer does not pack a call, so it never meets the process. | 6 |
+| `reply-without-ok` | The reply is the bare value. | 6 |
+| `process-unmetered` | The process ignores the host-work budget of the deploy. | 1 (the process test) |
+
+Native replay cannot see `process-unmetered`, because play and replay then both reserve nothing and still agree.
+Only the process test, which reads the budget of the reduction context, kills it.
+
+### 17.5 Running the step-6 checks
+
+To run the checks of step 6, do these steps from the repository root:
+
+1. Run `cargo test -p rholang --lib --test reified_vector_ops -- vector_ops`.
+2. Run `python3 scripts/verify-reified/vector-ops-mutants.py`, which must report `FAIL=0`.
+3. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
 
 ## References
 
