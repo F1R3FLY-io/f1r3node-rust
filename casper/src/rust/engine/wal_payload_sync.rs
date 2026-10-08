@@ -147,6 +147,59 @@ impl WalPayloadSyncDriver {
     pub async fn take_bytes(&self, payload_hash: &[u8; 32]) -> Option<Vec<u8>> {
         self.retriever.get_bytes(payload_hash).await
     }
+
+    /// Pick the next non-blacklisted source for a payload hash,
+    /// rotating the FIFO one position (pop_front + push_back on
+    /// every candidate).  Returns `None` if no eligible source is
+    /// available.  TTL-expired blacklist entries are treated as
+    /// unblacklisted — they'll be evicted by the next
+    /// [`evict_expired_blacklist`](Self::evict_expired_blacklist)
+    /// pass.
+    #[allow(dead_code)]
+    pub(crate) async fn next_source_for(&self, hash: &[u8; 32]) -> Option<PeerNode> {
+        let now = now_ms();
+        let blacklist_snap: HashMap<PeerNode, u64> = self.blacklisted.read().await.clone();
+        let mut g = self.per_hash_sources.write().await;
+        let sources = g.get_mut(hash)?;
+        let n = sources.sources.len();
+        for _ in 0..n {
+            let peer = sources.sources.pop_front()?;
+            sources.sources.push_back(peer.clone());
+            let is_active_blacklist = blacklist_snap
+                .get(&peer)
+                .map(|ts| now.saturating_sub(*ts) < BLACKLIST_TTL_MS)
+                .unwrap_or(false);
+            if !is_active_blacklist {
+                return Some(peer);
+            }
+        }
+        None
+    }
+
+    /// Evict blacklist entries whose TTL has expired.  Called
+    /// once per tick from the (future) driver tick loop.  Returns
+    /// the number evicted (for metrics / testing).
+    pub async fn evict_expired_blacklist(&self) -> usize {
+        let now = now_ms();
+        let mut b = self.blacklisted.write().await;
+        let before = b.len();
+        b.retain(|_, ts| now.saturating_sub(*ts) < BLACKLIST_TTL_MS);
+        before - b.len()
+    }
+}
+
+/// Milliseconds since Unix epoch.  Private helper used by the
+/// driver's blacklist-TTL logic.  `duration_since(UNIX_EPOCH)`
+/// cannot error outside of pre-epoch system clocks; the
+/// `unwrap_or(Duration::ZERO)` is defense-in-depth that treats
+/// such a reading as "0 ms since epoch" (which simply retains all
+/// blacklist entries — safer than panicking).
+fn now_ms() -> u64 {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_millis() as u64
 }
 
 /// Graceful-stop handle for the (future) periodic tick task.  Held
@@ -470,6 +523,120 @@ mod tests {
         let driver_b = driver.clone();
         driver.enqueue_payload([0xBB; 32]).await;
         assert_eq!(driver_b.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn next_source_for_returns_none_without_enqueue() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        assert!(driver.next_source_for(&[0xD1; 32]).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_source_for_returns_none_with_empty_source_set() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xD2; 32];
+        driver.enqueue_payload(h).await;
+        // enqueue inits the entry but doesn't add any sources.
+        assert!(driver.next_source_for(&h).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_source_for_rotates_fifo_and_skips_blacklisted() {
+        // Seed the internal state directly: driver has no public
+        // source-insertion method yet (that lands with
+        // on_has_wal_payload in a follow-up slice).
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xA2; 32];
+        let alice = mk_peer("alice");
+        let bob = mk_peer("bob");
+        let carol = mk_peer("carol");
+        {
+            let mut g = driver.per_hash_sources.write().await;
+            let entry = g.entry(h).or_default();
+            entry.sources.push_back(alice.clone());
+            entry.sources.push_back(bob.clone());
+            entry.sources.push_back(carol.clone());
+        }
+        {
+            // Blacklist bob with a fresh timestamp.
+            let mut b = driver.blacklisted.write().await;
+            b.insert(bob.clone(), now_ms());
+        }
+        // Round 1: alice.  Round 2: bob is blacklisted, so carol
+        // (FIFO rotation pushes bob to the back; next eligible is
+        // carol).
+        let first = driver.next_source_for(&h).await.unwrap();
+        assert_eq!(first, alice, "FIFO head must be alice");
+        let second = driver.next_source_for(&h).await.unwrap();
+        assert_eq!(
+            second, carol,
+            "bob is actively blacklisted; next_source_for must skip to carol"
+        );
+    }
+
+    #[tokio::test]
+    async fn next_source_for_returns_none_when_all_blacklisted() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xA3; 32];
+        let alice = mk_peer("alice");
+        let bob = mk_peer("bob");
+        {
+            let mut g = driver.per_hash_sources.write().await;
+            let entry = g.entry(h).or_default();
+            entry.sources.push_back(alice.clone());
+            entry.sources.push_back(bob.clone());
+        }
+        {
+            let mut b = driver.blacklisted.write().await;
+            let t = now_ms();
+            b.insert(alice, t);
+            b.insert(bob, t);
+        }
+        assert!(driver.next_source_for(&h).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_source_for_treats_expired_blacklist_as_eligible() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xA4; 32];
+        let alice = mk_peer("alice");
+        {
+            let mut g = driver.per_hash_sources.write().await;
+            g.entry(h).or_default().sources.push_back(alice.clone());
+        }
+        {
+            // Timestamp older than the TTL — the entry is logically
+            // expired even though `evict_expired_blacklist` hasn't
+            // run yet.
+            let mut b = driver.blacklisted.write().await;
+            b.insert(alice.clone(), now_ms().saturating_sub(BLACKLIST_TTL_MS + 1));
+        }
+        assert_eq!(driver.next_source_for(&h).await, Some(alice));
+    }
+
+    #[tokio::test]
+    async fn evict_expired_blacklist_drops_stale_entries() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let alice = mk_peer("alice");
+        let bob = mk_peer("bob");
+        {
+            let mut b = driver.blacklisted.write().await;
+            let now = now_ms();
+            // alice: fresh.  bob: stale by 1ms.
+            b.insert(alice.clone(), now);
+            b.insert(bob.clone(), now.saturating_sub(BLACKLIST_TTL_MS + 1));
+        }
+        let evicted = driver.evict_expired_blacklist().await;
+        assert_eq!(evicted, 1, "exactly one stale entry evicted");
+        let b = driver.blacklisted.read().await;
+        assert!(b.contains_key(&alice), "fresh entry retained");
+        assert!(!b.contains_key(&bob), "stale entry gone");
+    }
+
+    #[tokio::test]
+    async fn evict_expired_blacklist_is_no_op_on_empty_map() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        assert_eq!(driver.evict_expired_blacklist().await, 0);
     }
 
     #[tokio::test]
