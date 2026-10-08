@@ -16,11 +16,17 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::casper::protocol::casper_message::{HasWalPayload, WalPayloadResponse};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::rust::engine::wal_payload_retriever::{AdmitOutcome, WalPayloadRetriever};
+use crate::rust::engine::wal_payload_retriever::{AdmitOutcome, WalPayloadRetriever, MAX_RETRIES};
+use crate::rust::engine::wal_payload_wire::{
+    broadcast_has_wal_payload_request, send_get_wal_payload_request,
+};
 
 /// Security cap on the per-payload source set — number of distinct
 /// peers that can advertise they can serve a single payload hash.
@@ -282,6 +288,141 @@ impl WalPayloadSyncDriver {
         let before = b.len();
         b.retain(|_, ts| now.saturating_sub(*ts) < BLACKLIST_TTL_MS);
         before - b.len()
+    }
+
+    /// Send an outbound tick: for each pending payload, either
+    ///   * broadcast a `HasWalPayloadRequest` (first time only), AND
+    ///   * send a `GetWalPayloadRequest` to the next eligible source,
+    ///     or retry if the previous request timed out, or give up
+    ///     after `MAX_RETRIES`.
+    ///
+    /// Also runs eviction passes once per tick (currently just
+    /// blacklist TTL; the retriever's stale-request eviction is a
+    /// follow-up slice that depends on
+    /// `WalPayloadRetriever::evict_stale` being ported to triage).
+    ///
+    /// Each hash's send-or-skip decision is isolated via the
+    /// [`TickAction`] enum (slice 5.110):
+    ///   * `SendFresh` — never asked before (`last_request_ms == 0`);
+    ///     send a request immediately.
+    ///   * `WaitInFlight` — asked before but retry budget remains;
+    ///     wait for the outstanding response or a timeout.
+    ///   * `GiveUp` — retry budget exhausted; stop sending.  The
+    ///     entry stays in the retriever until a (future)
+    ///     stale-eviction pass drops it.
+    pub async fn tick<T: TransportLayer + Send + Sync>(
+        &self,
+        transport: &T,
+        conf: &RPConf,
+        connections_cell: &ConnectionsCell,
+    ) {
+        let _evicted_blacklist = self.evict_expired_blacklist().await;
+        // NOTE: `self.retriever.evict_stale().await` not yet reachable
+        // on triage; `WalPayloadRetriever::evict_stale` lands in a
+        // follow-up retriever slice.  Omitting is safe for a joiner
+        // because `tick` still bounds re-sends via `MAX_RETRIES`.
+
+        let pending: Vec<[u8; 32]> = self.retriever.pending_hashes().await;
+        for hash in pending {
+            // Broadcast HasWalPayloadRequest if we haven't yet.
+            let need_broadcast = {
+                let mut g = self.per_hash_sources.write().await;
+                match g.get_mut(&hash) {
+                    Some(s) => {
+                        let need = !s.broadcasted_has_request;
+                        if need {
+                            s.broadcasted_has_request = true;
+                        }
+                        need
+                    }
+                    None => {
+                        // Payload is pending in retriever but has
+                        // no source tracking entry.  Create one now
+                        // (edge case: `retriever.enqueue` called
+                        // directly, bypassing `enqueue_payload`).
+                        g.insert(hash, PayloadSources {
+                            sources: VecDeque::new(),
+                            broadcasted_has_request: true,
+                        });
+                        true
+                    }
+                }
+            };
+            if need_broadcast {
+                if let Err(e) =
+                    broadcast_has_wal_payload_request(transport, connections_cell, conf, &hash)
+                        .await
+                {
+                    warn!(
+                        target: "f1r3fly.casper.wal_payload_sync",
+                        error = %e,
+                        "broadcast_has_wal_payload_request failed"
+                    );
+                }
+            }
+
+            let source = match self.next_source_for(&hash).await {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Re-request timed-out payloads.
+            let timed_out = self.retriever.timed_out_hashes().await;
+            if timed_out.contains(&hash) {
+                if let Err(e) = send_get_wal_payload_request(transport, conf, &source, &hash).await
+                {
+                    warn!(
+                        target: "f1r3fly.casper.wal_payload_sync",
+                        error = %e,
+                        "send_get_wal_payload_request failed for retry"
+                    );
+                    continue;
+                }
+                self.retriever
+                    .record_request_sent(&hash, source.id.key.as_ref())
+                    .await;
+                self.retriever.record_retry(&hash).await;
+                continue;
+            }
+
+            // Decide whether to send a fresh request.
+            let action = {
+                let g = self.retriever.payloads.read().await;
+                match g.get(&hash) {
+                    Some(s) if s.last_request_ms == 0 => TickAction::SendFresh,
+                    Some(s) if s.retry_count < MAX_RETRIES => TickAction::WaitInFlight,
+                    Some(_) => TickAction::GiveUp,
+                    None => TickAction::WaitInFlight,
+                }
+            };
+            match action {
+                TickAction::WaitInFlight => continue,
+                TickAction::GiveUp => {
+                    debug!(
+                        target: "f1r3fly.casper.wal_payload_sync",
+                        hash = hex::encode(hash),
+                        max_retries = MAX_RETRIES,
+                        "retry budget exhausted; not resending"
+                    );
+                    continue;
+                }
+                TickAction::SendFresh => {
+                    if let Err(e) =
+                        send_get_wal_payload_request(transport, conf, &source, &hash).await
+                    {
+                        warn!(
+                            target: "f1r3fly.casper.wal_payload_sync",
+                            error = %e,
+                            "send_get_wal_payload_request failed"
+                        );
+                        continue;
+                    }
+                    self.retriever
+                        .record_request_sent(&hash, source.id.key.as_ref())
+                        .await;
+                }
+            }
+        }
     }
 }
 
@@ -637,6 +778,56 @@ mod tests {
         assert_eq!(driver_b.pending_count().await, 1);
     }
 
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use comm::rust::errors::CommError;
+    use comm::rust::transport::transport_layer::Blob;
+    use models::routing::Protocol;
+
+    #[derive(Default)]
+    struct CapturingTransport {
+        sends: Mutex<Vec<(PeerNode, Protocol)>>,
+        broadcasts: Mutex<Vec<Protocol>>,
+    }
+
+    impl CapturingTransport {
+        fn new() -> Self { Self::default() }
+    }
+
+    #[async_trait]
+    impl TransportLayer for CapturingTransport {
+        async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
+            self.sends.lock().unwrap().push((peer.clone(), msg.clone()));
+            Ok(())
+        }
+        async fn broadcast(&self, _peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError> {
+            self.broadcasts.lock().unwrap().push(msg.clone());
+            Ok(())
+        }
+        async fn stream(&self, _peer: &PeerNode, _blob: &Blob) -> Result<(), CommError> { Ok(()) }
+        async fn stream_mult(&self, _peers: &[PeerNode], _blob: &Blob) -> Result<(), CommError> {
+            Ok(())
+        }
+        async fn disconnect(&self, _peer: &PeerNode) -> Result<(), CommError> { Ok(()) }
+        async fn get_channeled_peers(&self) -> Result<HashSet<PeerNode>, CommError> {
+            Ok(HashSet::new())
+        }
+    }
+
+    fn mk_rpconf() -> RPConf {
+        RPConf::new(
+            mk_peer("local"),
+            "test-network".to_string(),
+            None,
+            Duration::from_secs(5),
+            10,
+            5,
+        )
+    }
+
     fn mk_announcement(hash: &[u8]) -> HasWalPayload {
         use prost::bytes::Bytes;
         HasWalPayload {
@@ -888,6 +1079,100 @@ mod tests {
         assert_eq!(slice_to_hash(&[0u8; 31]), None);
         assert_eq!(slice_to_hash(&[0u8; 33]), None);
         assert_eq!(slice_to_hash(&[]), None);
+    }
+
+    #[tokio::test]
+    async fn tick_on_idle_driver_sends_nothing() {
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let cell = ConnectionsCell::new();
+        driver.tick(&transport, &conf, &cell).await;
+        assert!(transport.sends.lock().unwrap().is_empty());
+        assert!(transport.broadcasts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tick_broadcasts_has_request_once_per_hash() {
+        // LOAD-BEARING: first tick broadcasts a HasWalPayloadRequest;
+        // second tick on the SAME hash does NOT re-broadcast
+        // (per_hash_sources.broadcasted_has_request flag flips to
+        // true on first pass).
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let cell = ConnectionsCell::new();
+        let h = [0x11; 32];
+        driver.enqueue_payload(h).await;
+        driver.tick(&transport, &conf, &cell).await;
+        assert_eq!(transport.broadcasts.lock().unwrap().len(), 1);
+        driver.tick(&transport, &conf, &cell).await;
+        assert_eq!(
+            transport.broadcasts.lock().unwrap().len(),
+            1,
+            "second tick must not re-broadcast"
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_sends_fresh_request_when_source_available() {
+        // Seed a source for the hash, then tick → one broadcast +
+        // one targeted send to the known source.
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0x22; 32];
+        driver.enqueue_payload(h).await;
+        {
+            let mut g = driver.per_hash_sources.write().await;
+            g.entry(h).or_default().sources.push_back(mk_peer("alice"));
+        }
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let cell = ConnectionsCell::new();
+        driver.tick(&transport, &conf, &cell).await;
+        let sends = transport.sends.lock().unwrap();
+        assert_eq!(sends.len(), 1, "exactly one targeted GetWalPayloadRequest");
+        assert_eq!(sends[0].0, mk_peer("alice"));
+    }
+
+    #[tokio::test]
+    async fn tick_without_sources_skips_targeted_send() {
+        // Hash is enqueued but no peers advertised yet → tick
+        // broadcasts a HasWalPayloadRequest but does NOT send a
+        // targeted GetWalPayloadRequest (nowhere to send it).
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0x33; 32];
+        driver.enqueue_payload(h).await;
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let cell = ConnectionsCell::new();
+        driver.tick(&transport, &conf, &cell).await;
+        assert_eq!(transport.broadcasts.lock().unwrap().len(), 1);
+        assert!(
+            transport.sends.lock().unwrap().is_empty(),
+            "no targeted send without a known source"
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_runs_blacklist_eviction() {
+        // Pre-seed the blacklist with a stale entry; tick should
+        // evict it via the first-line `evict_expired_blacklist`
+        // call.  Verify by direct map inspection.
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let stale = mk_peer("stale-peer");
+        {
+            let mut b = driver.blacklisted.write().await;
+            b.insert(stale.clone(), now_ms().saturating_sub(BLACKLIST_TTL_MS + 1));
+        }
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let cell = ConnectionsCell::new();
+        driver.tick(&transport, &conf, &cell).await;
+        let b = driver.blacklisted.read().await;
+        assert!(
+            !b.contains_key(&stale),
+            "tick must call evict_expired_blacklist"
+        );
     }
 
     #[tokio::test]
