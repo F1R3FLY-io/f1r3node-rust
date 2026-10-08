@@ -1700,14 +1700,17 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
             >();
             snap_ctx.sync_driver.install_completion_sink(tx);
-            // Empty-stub RootIdentityRegistry pending node::setup
-            // wiring that populates it from the operator's fs
-            // bundle.  `allowed_roots` now reads the shared
+            // Share the manager's `RootIdentityRegistry` into the
+            // subscriber via `.clone()` — the two-layer indirection
+            // means Clone shares the outer slot, so any post-spawn
+            // `register(logical, root)` on the manager is visible
+            // through this handle.  Empty today pending node::setup
+            // wiring; empty falls through to pre-Shape-A behavior.
+            // `allowed_roots` reads the shared
             // `RuntimeManager.consensus_static_roots` slot (slice
-            // 5.134) — still empty by default; `node::setup` will
-            // populate it alongside the registry.
-            let registry =
-                rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new();
+            // 5.134) — same empty-today / populated-at-boot
+            // discipline.
+            let registry = self.runtime_manager.root_registry.clone();
             let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             let _subscriber_handle =
                 crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(

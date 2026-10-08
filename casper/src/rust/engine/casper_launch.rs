@@ -512,13 +512,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
             >();
             snap_ctx.sync_driver.install_completion_sink(tx);
-            // RootIdentityRegistry construction here is a Default
-            // (empty) stub pending node::setup wiring that
-            // populates it from the operator's fs bundle.  An
-            // empty registry falls through to pre-Shape-A behavior
-            // (every entry.path is treated as absolute on-disk).
-            let registry =
-                rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new();
+            // Share the manager's `RootIdentityRegistry` into the
+            // subscriber via `.clone()` — the two-layer indirection
+            // means Clone shares the outer slot, so any post-spawn
+            // `register(logical, root)` on the manager is visible
+            // through this handle.  Empty today pending node::setup
+            // wiring that populates the registry from the operator's
+            // fs bundle; empty falls through to pre-Shape-A behavior.
+            let registry = self.runtime_manager.root_registry.clone();
             let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             let _subscriber_handle =
                 crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(

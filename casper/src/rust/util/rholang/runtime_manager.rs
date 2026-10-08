@@ -347,6 +347,21 @@ pub struct RuntimeManager {
     /// clone is visible to every other clone (same discipline as
     /// `payload_store` / `fs_snapshot_writer`).
     pub consensus_static_roots: Arc<tokio::sync::RwLock<Vec<std::path::PathBuf>>>,
+    /// Manager-shared `RootIdentityRegistry`.  Owns the two-layer
+    /// indirection (`Arc<RwLock<Arc<RwLock<Inner>>>>`); every
+    /// spawned runtime's `fs_handles.root_registry` is pointed at
+    /// this backing via `share_root_registry` so a boot-time
+    /// `register(logical, root)` on the manager-held handle is
+    /// visible to every runtime clone (same discipline as
+    /// `payload_store` and the WAL registries).
+    ///
+    /// Populated at boot via
+    /// [`RootIdentityRegistry::register`] for each entry in the
+    /// operator's fs bundle (file paths + dir paths).  Empty on
+    /// observer nodes without consensus provisioning; handlers'
+    /// `safe_descend` falls through to the identity branch
+    /// (matches pre-Shape-A behavior).
+    pub root_registry: rholang::rust::interpreter::io::path::identity::RootIdentityRegistry,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -713,6 +728,17 @@ impl RuntimeManager {
         if let Some(writer) = writer {
             runtime.set_fs_snapshot_writer(Some(writer)).await;
         }
+        // Share the manager's `RootIdentityRegistry` backing with
+        // the spawned runtime via the two-layer-indirection
+        // discipline (see `RootIdentityRegistry::share_from`).
+        // After this call, the runtime's own `fs_handles.root_registry`
+        // routes every read through the manager's inner map — so a
+        // post-spawn `register(logical, root)` on the manager is
+        // visible through the runtime's handlers.  Idempotent on
+        // re-spawn (sharing the same inner twice is a no-op).
+        runtime
+            .fs_handles
+            .share_root_registry(self.root_registry.clone());
     }
 
     pub async fn compute_state(
@@ -1677,6 +1703,8 @@ impl RuntimeManager {
             )),
             payload_store: Arc::new(tokio::sync::RwLock::new(None)),
             consensus_static_roots: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            root_registry:
+                rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new(),
         }
     }
 
