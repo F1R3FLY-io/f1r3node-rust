@@ -708,6 +708,8 @@ impl Drop for GenerationLeaseV1 {
 
 #[cfg(test)]
 mod registry_tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn reference(byte: u8) -> ObjectRefV1 {
@@ -924,6 +926,70 @@ mod registry_tests {
                 registry.acquire(key),
                 Err(GenerationLeaseError::Retired(retired_key)) if retired_key == key
             ));
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(92435926),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn generated_pack_range_retirement_preserves_overlap_and_frontier(
+            first in 1u64..128,
+            old_len in 1u64..16,
+            overlap_extension in 1u64..16,
+            successor_len in 1u64..16,
+            epoch in 1u64..100_000,
+            index in 1u64..100_000,
+        ) {
+            let last = first + old_len - 1;
+            let old = GenerationLeaseKeyV1::new(epoch, first, last, index);
+            let older = GenerationLeaseKeyV1::new(epoch - 1, first, last, index);
+            let partial = GenerationLeaseKeyV1::new(
+                epoch + 1,
+                last,
+                last + overlap_extension,
+                index + 1,
+            );
+            let successor = GenerationLeaseKeyV1::new(
+                epoch + 2,
+                last + 1,
+                last + successor_len,
+                index + 2,
+            );
+            let registry = GenerationLeaseRegistryV1::default();
+            let older_pin = registry.acquire(older).unwrap();
+            let partial_pin = registry.acquire(partial).unwrap();
+            let successor_pin = registry.acquire(successor).unwrap();
+
+            prop_assert!(!registry.retire_pack_range_if_unleased(old).unwrap());
+            drop(older_pin);
+            prop_assert!(!registry.retire_pack_range_if_unleased(old).unwrap());
+            drop(partial_pin);
+            prop_assert!(registry.retire_pack_range_if_unleased(old).unwrap());
+            prop_assert_eq!(registry.state.lock().unwrap().retired_pack_through, last);
+            prop_assert!(matches!(registry.acquire(old), Err(GenerationLeaseError::Retired(key)) if key == old));
+            prop_assert!(matches!(registry.acquire(older), Err(GenerationLeaseError::Retired(key)) if key == older));
+            prop_assert!(matches!(registry.acquire(partial), Err(GenerationLeaseError::Retired(key)) if key == partial));
+            prop_assert!(registry.retire_pack_range_if_unleased(old).unwrap());
+            prop_assert_eq!(registry.state.lock().unwrap().retired_pack_through, last);
+            prop_assert!(!registry.retire_pack_range_if_unleased(successor).unwrap());
+
+            drop(successor_pin);
+            prop_assert!(registry.acquire(successor).is_ok());
+            prop_assert_eq!(registry.state.lock().unwrap().retired_pack_through, last);
+            prop_assert!(registry.retire_pack_range_if_unleased(successor).unwrap());
+            prop_assert_eq!(registry.state.lock().unwrap().retired_pack_through, successor.active_pack());
+            prop_assert!(matches!(registry.acquire(successor), Err(GenerationLeaseError::Retired(key)) if key == successor));
+            prop_assert!(registry.acquire(GenerationLeaseKeyV1::new(
+                epoch + 3,
+                successor.active_pack() + 1,
+                successor.active_pack() + 2,
+                index + 3,
+            )).is_ok());
         }
     }
 }
