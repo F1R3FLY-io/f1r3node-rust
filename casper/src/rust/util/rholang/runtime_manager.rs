@@ -562,6 +562,43 @@ impl RuntimeManager {
         }
     }
 
+    /// Phase 7b-2 boot hook: install (or clear) the shared
+    /// payload persistence backend.  Writes to the `payload_store`
+    /// slot are visible across every clone of the `RuntimeManager`
+    /// because the outer slot is an `Arc<RwLock<_>>` shared by
+    /// construction.
+    ///
+    /// Consensus-safety: `journal_write` reads the store slot per
+    /// call; a boot-time set is immediately visible to every live
+    /// runtime.  Store identity (which dir, which retention) is a
+    /// per-node local concern and does not affect consensus — only
+    /// the WAL entries themselves are consensus-observable.
+    ///
+    /// Idempotent: a boot pipeline that calls this a second time
+    /// with the same bundle replaces the slot's contents atomically
+    /// without disturbing concurrent reads.
+    pub async fn set_payload_store(
+        &self,
+        bundle: Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>,
+    ) {
+        *self.payload_store.write().await = bundle;
+    }
+
+    /// Slice-30b boot hook: install (or clear) the shared
+    /// `SnapshotWriter` config.  Same clone-visibility discipline
+    /// as [`set_payload_store`](Self::set_payload_store) — the
+    /// slot's `Arc<RwLock<_>>` is shared across clones.
+    ///
+    /// A `None` writer disables Consensus-mode WAL-snapshot
+    /// scheduling (the pre-slice-30b default); an observer boot
+    /// without consensus provisioning passes `None` here.
+    pub async fn set_fs_snapshot_writer(
+        &self,
+        writer: Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>,
+    ) {
+        *self.fs_snapshot_writer.write().await = writer;
+    }
+
     pub async fn spawn_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_space = self.space.spawn().expect("Failed to spawn RSpace");
