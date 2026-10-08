@@ -124,6 +124,24 @@ mod tests {
     }
 
     #[test]
+    fn deploy_storage_rejects_tampered_signed_fields() {
+        for parameters in [Vec::new(), vec![DeployParameter {
+            name: "input".into(),
+            value: RholangValue::Int(42),
+        }]] {
+            let mut deploy = signed(parameters);
+            assert_eq!(decode(&encode(&deploy).unwrap()).unwrap(), deploy);
+            deploy.data.expiration_timestamp = Some(999);
+            let bytes = encode(&deploy).unwrap();
+            assert!(bytes.starts_with(PREFIX));
+            assert!(matches!(
+                decode(&bytes),
+                Err(KvStoreError::SerializationError(error)) if error == "Invalid signature"
+            ));
+        }
+    }
+
+    #[test]
     fn deploy_storage_counts_only_legacy_decode_attempts() {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
