@@ -714,3 +714,34 @@ invariant. Ledger README section 2.2 states that rule.
 and can require a FIP as a condition.
 *Avoid*: "FIPS approval" for one proposal, and "FIPS 204" or "FIPS 205",
 which are NIST signature standards and not this process.
+
+## Replication Boundary Mapping
+
+CBC Casper is the `cbc` [replication medium](../Glossary.md#replication-medium)
+of the [replication boundary design](../designs/replication-boundary.md). The
+table maps each boundary term to its Casper term. The Casper terms stay
+canonical inside Casper documents.
+
+| Boundary term | Casper term |
+|---|---|
+| [Commit](../Glossary.md#commit) | Block, with its parents and deploys |
+| [Finality event](../Glossary.md#finality-event) | A new [last finalized block (LFB)](#last-finalized-block-lfb) from the clique oracle |
+| [Mechanism evidence](../Glossary.md#mechanism-evidence) | Justifications, sequence number, bonds, and the fault tolerance value |
+| [Membership view](../Glossary.md#membership-view) | Bonded validators and their stake |
+| `DagMedium` capability | Parents, [merge scope](#merge-scope), and the [finalized floor](#finalized-floor) |
+| `EquivocationEvidence` capability | Equivocation records of the [equivocation detector](#equivocation-detector) |
+| Proposal timing (`on_tick`) | Heartbeat proposal and [block proposal](#block-proposal) |
+
+## Coalition Structure Mapping
+
+The [semitopology glossary](../semitopology/GLOSSARY.md) states the
+coalition vocabulary of the boundary. Section 16 of the
+[replication boundary design](../designs/replication-boundary.md) proposes
+the `CoalitionStructure` type.
+
+| Semitopology term | Casper term |
+|---|---|
+| Point | Bonded validator |
+| [Actionable coalition](../Glossary.md#actionable-coalition) | A clique of agreeing validators with stake `w > S(1 + t) / 2`, where `S` is the total stake and `t` is the fault tolerance threshold |
+| [Intertwined](../semitopology/GLOSSARY.md#intertwined) | Two such cliques share more than `tS` stake |
+| `CoalitionStructure` form | `Threshold`, with the bonds as weights |

@@ -68,6 +68,8 @@ Two execution machines are in scope. Ordering protocols are not additional machi
 
 A third *mode* of the rho runtime exists: simulation or inference versus an observable RSpace commit. That is an interpreter distinction. It is not a third consensus machine and not a fourth ordering medium.
 
+**Update of 2026-10-05.** ADR-0002 in the Rholang-RGB repository replaces ALuVM with Rholang and RSpace++. RGB transitions therefore execute on machine A. Client-side validation stays the RGB security model, and the RGB contract state machine stays a separate concept from the ordering media. The [replication boundary design](../designs/replication-boundary.md) records this correction.
+
 Non-conflicting RSpace deploys commute. If two deploys do not share consume or produce names in a conflicting way, their parallel composition is a valid `Par`. Casper, Casanova, and a seal need not serialize them. Conflicting deploys are a merge problem in Casper (`ConflictSetMerger`) or a line-item veto in Casanova. In RGB and in blocklace equivocation, they are a second close of the same seal.
 
 ### 3.2 Media (order and uniqueness)
@@ -78,6 +80,7 @@ Non-conflicting RSpace deploys commute. If two deploys do not share consume or p
 | **RGB seals** | Bitcoin TxO2 and Lightning channel UTXOs as single-use seals | That a given seal closed over at most one committed message | Double-spend of the UTXO or channel output | A commitment (opret, tapret, or LN state) to an RGB transition. Rho names may be sealed the same way |
 | **Casanova** | Leaderless PoS blockDAG | An FTM lock on a *conflicting* transaction set, while non-conflicting blocks confirm in parallel | Line-item veto: only the conflict enters extra voting | Specified to sit in front of the same execution layer, not implemented in `f1r3node-rust` |
 | **Cordial Miners** | Blocklace (partial order first, τ total order later) | Dissemination, equivocation exclusion, and τ-order without Reliable Broadcast | Equivocation lives in the lace, with cordial dissemination | Cited only. The same "partial order first" story as the RGB seal DAG |
+| **RGB peer clique** | Byzantine fault tolerant committee of three to seven peers, one transaction per commit | Which transaction commits at each height, through a quorum certificate | Only one transaction commits at a height | Machine A, then a Bitcoin or Lightning anchor commitment after finality ([peer-clique glossary](../peer-clique/GLOSSARY.md)) |
 
 ---
 
@@ -130,6 +133,8 @@ The RGB repository may be private. Treat in-tree public code as absent until tha
 
 The tier is `alpha`, not `prototype`. Partial real services exist, in the form of actual Bitcoin and Lightning seal closes. Client-side validation and the stash remain the source of contract state.
 
+SoW2 workstream WS5 adds a peer-clique replication medium in front of the seals. A peer clique finalizes each transaction commit with a quorum certificate. The seal close or Lightning state update then anchors the finalized commit. Anchoring follows finality and is not the ordering medium.
+
 ---
 
 ## 6. Casanova (specified optimistic DAG)
@@ -142,7 +147,7 @@ Design that matters for consensus neutrality:
 
 - Blocks form a DAG, not a single chain. Members produce blocks in parallel.
 - The happy path records transactions without a per-block leader race.
-- The protocol singles out conflicts, such as a double spend or mutually exclusive transactions. Consensus voting concentrates on the conflict. Non-conflicting transactions in the same block do not pass through a full block-invalidation path. This is the "line-item veto".
+- The protocol singles out conflicts, such as a double spend or mutually exclusive transactions. Consensus voting concentrates on the conflict. Non-conflicting transactions in the same block do not pass through a full block-invalidation path. The paper calls this mechanism the conflict exclusion protocol. "Line-item veto" is a description used in this note, not a paper term. See the [Casanova glossary](../casanova/GLOSSARY.md).
 - Safety holds under asynchrony. Liveness holds under partial synchrony. FTM (fault-tolerant majority) locks decide.
 
 Casanova is the protocol that most directly states what the Casper merge already does. Do not discard a block because one deploy collided. Isolate the collision. A future adapter must reuse RSpace and the conflict records, not invent a second tuple space.
@@ -227,7 +232,7 @@ The formal tree and the CbC tags follow the same cut. Each check covers one mach
 
 **Follow-ups the split depends on**
 
-- **Interface crate.** The `MultiParentCasper` trait is defined inside the casper crate. The node therefore names its boundary through the medium it should be neutral to. A neutral interface crate comes first. Section 12 records the open question of a thinner `OrderingMedium` trait for RGB.
+- **Interface crate.** The `MultiParentCasper` trait is defined inside the casper crate. The node therefore names its boundary through the medium it should be neutral to. A neutral interface crate comes first. The [replication boundary design](../designs/replication-boundary.md) defines it with the `ReplicationMedium` trait.
 - **Rocq coverage gap.** The formal gate rebuilds only slashing, fork choice, and rspace guards. The merge algebra, finalized floor, and runtime isolation proofs ship as committed build outputs, and CI does not recheck them. The keystone needs a CI rebuild before anything cites it by pin.
 - **Execution glue in the medium crate.** Three Rholang runtime files under the casper crate are machine A code. They move with the interface work.
 - **Runtime isolation splits.** `ShardRuntimeIsolation` is machine A. `BlockHeapLifecycle` is substrate. The area is cut in two at the move.
@@ -248,6 +253,7 @@ The tiers come from the Smart Assets standard. `coming_soon` is the only non-int
 | F1r3fly-RGB SM with BTC and LN seals | `alpha` | Partial real seal media, with a client-side stash | Private tree. Publish path to be decided |
 | Casanova adapter | `coming_soon` | Specification only (Pyrofex, arXiv:1812.02232) | Implementation work in progress. No crate in `f1r3node-rust` |
 | Cordial Miners adapter | `coming_soon` | Paper only | Parallel repository later. Cited only in this tree |
+| RGB peer-clique medium | `coming_soon` | Specification only (Rholang-RGB SoW2 WS5) | Bitcoin and Lightning anchoring follows each finalized commit |
 
 Promotion rules for an adapter:
 
@@ -290,7 +296,7 @@ Promotion rules for an adapter:
 - Specify the name-to-seal binding. Which rho names are sealed, who constructs the consignment, and how a Casper-finalized deploy may *emit* a seal close without making Bitcoin a Casper parent.
 - Casanova: the first vertical slice is conflict isolation plus an FTM lock that feeds the rejected-deploy buffer Casper already has. It is not a second runtime.
 - Cordial: when the parallel repository exists, map the blocklace τ onto content ordering and merge, not onto RSpace reduce.
-- Decide whether `Arc<dyn MultiParentCasper>` grows a thinner `OrderingMedium` trait, so that RGB is not forced into a DAG-parent API.
+- Resolved on 2026-10-05: the thin core trait is `ReplicationMedium`, and DAG parents are an optional `DagMedium` capability. See the [replication boundary design](../designs/replication-boundary.md).
 - Close the two verification gaps in section 9: the neutral interface crate and the Rocq CI rebuild of the merge algebra.
 
 ---
