@@ -182,10 +182,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
         )
         .supervised(worker_shutdown.clone());
         workers.spawn("block processor", async move {
-            block_task.await.map_err(native_error)
-        });
-        workers.spawn("block results", async move {
-            while block_results.recv().await.is_some() {}
+            tokio::try_join!(async { block_task.await.map_err(native_error) }, async {
+                while block_results.recv().await.is_some() {}
+                Ok(())
+            },)?;
             Ok(())
         });
         if let (Some(proposer), Some(state)) = (proposer, proposer_state) {

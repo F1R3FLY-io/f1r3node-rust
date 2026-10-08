@@ -1,5 +1,6 @@
 // See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.scala
 
+use std::future::Future;
 use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
@@ -74,31 +75,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
         }
     }
 
-    /// Create and start the block processor stream
-    /// Returns a handle that can be used to await the processing task
-    ///
-    /// This is equivalent to Scala's `BlockProcessorInstance.create` method.
-    /// It processes blocks with bounded parallelism.
-    ///
-    /// # Arguments
-    ///
-    /// * `blocks_queue_tx` - Sender to enqueue blocks for processing (for
-    ///   re-enqueuing buffer pendants)
-    pub fn create(
-        self,
-    ) -> Result<mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>, CasperError> {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let (result_rx, task) = self.supervised(shutdown_rx);
-        tokio::spawn(async move {
-            let _shutdown_tx = shutdown_tx;
-            task.await
-        });
-        Ok(result_rx)
-    }
-
     pub fn supervised(
         self,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
+        shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> (
         mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>,
         impl std::future::Future<Output = Result<(), CasperError>> + Send,
@@ -107,7 +86,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 
         let task = async move {
             let Self {
-                mut blocks_queue_rx,
+                blocks_queue_rx,
                 block_queue_tx,
                 block_processor,
                 blocks_in_processing,
@@ -122,39 +101,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 "source" => BLOCK_PROCESSOR_METRICS_SOURCE
             )
             .set(MAX_PARALLEL_BLOCKS as f64);
-            let mut processing_tasks = tokio::task::JoinSet::new();
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_BLOCKS));
-
-            let mut stopping = false;
-            loop {
-                let next = tokio::select! {
-                biased;
-                _ = async { let _ = shutdown.wait_for(|stopping| *stopping).await; }, if !stopping => {
-                    stopping = true;
-                    blocks_queue_rx.close();
-                    blocks_queue_rx.recv().await
-                }
-                value = blocks_queue_rx.recv() => value,
-                Some(result) = processing_tasks.join_next(), if !processing_tasks.is_empty() => {
-                    result.map_err(|error| CasperError::Other(error.to_string()))?;
-                    continue;
-                }
-                };
-                let Some((casper, block, in_flight_guard)) = next else {
-                    break;
-                };
+            run_block_tasks(blocks_queue_rx, shutdown, move |(casper, block, in_flight_guard)| {
                 let block_processor = block_processor.clone();
                 let blocks_in_processing = blocks_in_processing.clone();
                 let block_queue_tx = block_queue_tx.clone();
                 let casper = casper.clone();
                 let result_tx = result_tx.clone();
 
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-
-                while let Some(result) = processing_tasks.try_join_next() {
-                    result.map_err(|error| CasperError::Other(error.to_string()))?;
-                }
-                processing_tasks.spawn(async move {
+                async move {
                     let _active_guard = ActiveBlockProcessingGuard::new();
                     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
                     // Process the block with all its validation steps
@@ -306,13 +260,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         }
                     }
 
-                    drop(permit);
-                });
-            }
-
-            while let Some(result) = processing_tasks.join_next().await {
-                result.map_err(|error| CasperError::Other(error.to_string()))?;
-            }
+                }
+            }).await?;
             tracing::info!("Block processing queue closed, stopping processor");
 
             Result::<(), CasperError>::Ok(())
@@ -320,6 +269,55 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
         (result_rx, task)
     }
 }
+
+async fn run_block_tasks<Item, Process, Task>(
+    mut queue: mpsc::Receiver<Item>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    process: Process,
+) -> Result<(), CasperError>
+where
+    Item: Send + 'static,
+    Process: Fn(Item) -> Task,
+    Task: Future<Output = ()> + Send + 'static,
+{
+    let mut tasks = tokio::task::JoinSet::new();
+    let result = async {
+        let mut stopping = false;
+        loop {
+            tokio::select! {
+                biased;
+                Some(result) = tasks.join_next(), if !tasks.is_empty() => {
+                    result.map_err(block_task_error)?;
+                }
+                _ = shutdown.wait_for(|stopping| *stopping), if !stopping => {
+                    stopping = true;
+                    queue.close();
+                }
+                item = queue.recv(), if tasks.len() < MAX_PARALLEL_BLOCKS => {
+                    match item {
+                        Some(item) => { tasks.spawn(process(item)); }
+                        None => break,
+                    }
+                }
+            }
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.map_err(block_task_error)?;
+        }
+        Ok(())
+    }
+    .await;
+    queue.close();
+    tasks.shutdown().await;
+    result
+}
+
+fn block_task_error(error: tokio::task::JoinError) -> CasperError {
+    CasperError::Other(format!("Block processing task failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests;
 
 /// A processing attempt's outcome. The non-`Processed` variants are normal
 /// pipeline exits — a duplicate delivery, a malformed block, a block waiting
