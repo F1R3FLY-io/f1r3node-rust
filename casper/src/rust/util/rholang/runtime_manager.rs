@@ -610,6 +610,7 @@ impl RuntimeManager {
             self.external_services.clone(),
         )
         .await?;
+        self.broadcast_fs_slots(&runtime).await;
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -631,12 +632,45 @@ impl RuntimeManager {
             self.external_services.clone(),
         )
         .await?;
+        self.broadcast_fs_slots(&runtime).await;
         metrics::counter!(RUNTIME_SPAWN_REPLAY_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
         Ok(runtime)
+    }
+
+    /// Phase 7b boot broadcast: push the manager's shared
+    /// `payload_store` and `fs_snapshot_writer` slot contents onto
+    /// a freshly-spawned runtime.  Called by `spawn_runtime` and
+    /// `spawn_replay_runtime` so every runtime the manager hands
+    /// out starts with the same handler-facing state regardless
+    /// of boot-sequence ordering (the slots can be populated
+    /// before OR after any given spawn — both orderings end up
+    /// consistent).
+    ///
+    /// Both slots are `Option<_>`:
+    ///   * `payload_store` populated by `set_payload_store` at boot
+    ///     — the broadcast threads `bundle.persistence` into
+    ///     `fs_handles.share_payload_store` so every Consensus-cap
+    ///     write handler can content-address-persist its bytes.
+    ///   * `fs_snapshot_writer` populated by `set_fs_snapshot_writer`
+    ///     — the broadcast threads it onto the runtime's own
+    ///     `fs_snapshot_writer` slot so the WAL-snapshot scheduler
+    ///     can fire on cadence-hit blocks.
+    ///
+    /// A `None` slot is a no-op broadcast — matches the observer /
+    /// unconfigured deployment case.
+    async fn broadcast_fs_slots(&self, runtime: &RhoRuntimeImpl) {
+        if let Some(bundle) = self.payload_store.read().await.as_ref() {
+            runtime
+                .fs_handles
+                .share_payload_store(Some(bundle.persistence.clone()));
+        }
+        if let Some(writer) = self.fs_snapshot_writer.read().await.as_ref() {
+            runtime.set_fs_snapshot_writer(Some(writer.clone())).await;
+        }
     }
 
     pub async fn compute_state(
