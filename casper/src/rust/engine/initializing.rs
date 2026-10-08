@@ -1641,6 +1641,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // `Initializing` are a follow-up slice.  `None`
             // preserves current behavior.
             None,
+            // Phase 7b-2: WAL payload context construction (reads
+            // the `RuntimeManager.payload_store` slot via
+            // `get_payload_store` for the lookup trait object)
+            // lands in the same follow-up slice.
+            None,
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),

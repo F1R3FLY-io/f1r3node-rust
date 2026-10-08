@@ -435,11 +435,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
 
         // Scala equivalent: Engine.transitionToRunning[F](...)
         //
-        // Phase 7b-1: snapshot chunk-fetch context construction
-        // (via `build_snapshot_chunk_context(&runtime_manager)`)
-        // + install here is a follow-up slice.  Passing `None`
-        // preserves current behavior: no snapshot dispatch wiring,
-        // joiner falls back to the pre-Phase-7b snapshot path.
+        // Phase 7b-1 / 7b-2: context construction (via
+        // `build_snapshot_chunk_context(&runtime_manager)` for
+        // snapshot and the matching WAL-payload builder) + install
+        // here is a follow-up slice.  Both `None` preserve current
+        // behavior: no snapshot or WAL payload dispatch wiring,
+        // joiner falls back to the pre-Phase-7b paths.
         transition_to_running(
             self.block_processing_queue_tx.clone(),
             self.blocks_in_processing.clone(),
@@ -450,6 +451,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            None,
             None,
             &self.engine_cell,
             &self.event_publisher,

@@ -218,12 +218,14 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     // `Running::install_snapshot_chunk_context` after construction
     // + before `engine_cell.set` so no CasperMessage reaches a
     // half-wired Running.
-    //
-    // Phase 7b-2 `wal_payload_ctx` lands as a follow-up slice
-    // (requires `Running::install_wal_payload_context` + the
-    // `wal_payload_ctx: OnceLock<WalPayloadContext>` field on
-    // Running, mirroring slice 5.105's snapshot shape).
     snapshot_chunk_ctx: Option<crate::rust::engine::running::SnapshotChunkContext>,
+    // Phase 7b-2: optional WAL payload-fetch context.  Same
+    // install-before-publish shape as `snapshot_chunk_ctx`.  Tick-
+    // loop spawn + `tick_stop` population are a follow-up slice
+    // (requires threading `recovery_context` / `ConnectionsCell`
+    // through this function to feed `wal_payload_sync::
+    // spawn_periodic_tick`).
+    wal_payload_ctx: Option<crate::rust::engine::running::WalPayloadContext>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
     state_items_tx: Option<
@@ -268,6 +270,9 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     // call silently no-ops.
     if let Some(ctx) = snapshot_chunk_ctx {
         running.install_snapshot_chunk_context(ctx);
+    }
+    if let Some(ctx) = wal_payload_ctx {
+        running.install_wal_payload_context(ctx);
     }
 
     engine_cell.set(running).await;

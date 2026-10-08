@@ -167,6 +167,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     // (no prior snapshot exists), so passing `None` is
                     // correct here regardless of boot pipeline state.
                     None,
+                    // Phase 7b-2: ceremony-master also has no prior
+                    // WAL slice to fetch between snapshots, so the
+                    // payload-fetch dispatch stays disabled.
+                    None,
                     &engine_cell,
                     event_publisher,
                     // The ceremony master transitions genesis-rooted: its
