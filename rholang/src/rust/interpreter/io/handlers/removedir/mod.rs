@@ -27,17 +27,22 @@
 //     `walk_and_unlink_recursive_with_journal` tying the walker
 //     to the reply builders + WAL journaling + per-entry ack
 //     seeds.
-//   * `handler.rs` (future slice): the `impl FsProcesses` block
-//     carrying `fs_remove_dir` + `finalize_failure_journal` +
-//     `journal_path_mutation_single`.
+//   * `handler.rs` (slice 5.141): the `impl FsProcesses` block
+//     carrying `fs_remove_dir`.  Composes everything above into
+//     a dispatchable handler method.  The trait-exempt stub
+//     (`SystemProcesses::fs_remove_dir_stub` in `system_processes.rs`)
+//     continues to serve runtime dispatch until a follow-up slice
+//     swaps the URN registration from the stub to this handler.
+//     Supporting helpers `finalize_failure_journal` and
+//     `journal_path_mutation_single` live in triage as
+//     `_via_table` helpers in `handlers::helpers::journal` and
+//     are reused directly here.
 //
 // Each submodule lands as its own reviewed slice.  Until the
-// handler-side slice lands, the trait-exempt stub
-// `SystemProcesses::fs_remove_dir_stub` (which replies
-// `FSERR_UNSUPPORTED`) continues to serve runtime dispatch — this
-// module's items are reachable but no production code calls them
-// yet.
+// URN-registration swap, the module's items are reachable but no
+// production code calls them yet (the stub keeps serving).
 
+pub mod handler;
 pub mod journal;
 pub mod reply;
 pub mod walk;
