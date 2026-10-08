@@ -21,7 +21,7 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::casper::protocol::casper_message::{HasWalPayload, WalPayloadResponse};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::rust::engine::wal_payload_retriever::{AdmitOutcome, WalPayloadRetriever, MAX_RETRIES};
 use crate::rust::engine::wal_payload_wire::{
@@ -512,18 +512,69 @@ impl std::fmt::Debug for WalPayloadTickStop {
     }
 }
 
-/// Returned by the (future) `spawn_periodic_tick`.  Carries both
-/// the tick task's `JoinHandle` (so the caller can `abort()` on
-/// shutdown) and a [`WalPayloadTickStop`] handle (so the block-
-/// processing catch-up path can raise the graceful-stop signal).
-///
-/// Fields are `pub` so `spawn_periodic_tick` (follow-up slice)
-/// constructs via struct-literal; no accessor churn needed when
-/// the spawn site lands.
-#[allow(dead_code)]
+/// Returned by [`spawn_periodic_tick`].  Carries both the tick
+/// task's `JoinHandle` (so the caller can `abort()` on shutdown)
+/// and a [`WalPayloadTickStop`] handle (so the block-processing
+/// catch-up path can raise the graceful-stop signal).
 pub struct WalPayloadTickHandle {
     pub join_handle: tokio::task::JoinHandle<()>,
     pub stop: WalPayloadTickStop,
+}
+
+/// Spawn a periodic tick task that calls
+/// [`WalPayloadSyncDriver::tick`] every [`TICK_PERIOD_MS`].
+/// Returns a [`WalPayloadTickHandle`] with:
+///
+///   * `join_handle` — the tokio `JoinHandle` for hard-abort at
+///     shutdown (operators should prefer `.stop()`).
+///   * `stop` — a cloneable [`WalPayloadTickStop`] whose
+///     `stop()` method raises a `tokio::sync::Notify` the loop
+///     selects on; the tick task exits cleanly at the next select
+///     boundary.
+///
+/// The graceful stop path is preferred over aborting the
+/// `JoinHandle` because:
+///   * it lets the current `driver.tick(...)` finish (evictions +
+///     any in-flight send finish rather than being cancelled
+///     mid-`.await`),
+///   * it flips the loop's exit intent into an `info!` trace
+///     rather than a task-panic in the runtime.
+///
+/// The first interval tick is skipped — the boot enumerator gets
+/// a chance to populate the driver before the loop begins
+/// beating.  Subsequent ticks fire regardless of pending-set
+/// contents so eviction (both blacklist TTL and future stale-
+/// retriever entries) runs every period.
+pub fn spawn_periodic_tick<T>(
+    driver: Arc<WalPayloadSyncDriver>,
+    transport: Arc<T>,
+    conf: RPConf,
+    connections_cell: ConnectionsCell,
+) -> WalPayloadTickHandle
+where
+    T: TransportLayer + Send + Sync + 'static,
+{
+    let stop = WalPayloadTickStop::new();
+    let signal_for_task = Arc::clone(stop.signal());
+    let join_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(TICK_PERIOD_MS));
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    driver.tick(&*transport, &conf, &connections_cell).await;
+                }
+                _ = signal_for_task.notified() => {
+                    info!(
+                        target: "f1r3fly.casper.wal_payload_sync",
+                        "stop signal received; wal_payload_sync tick loop exiting"
+                    );
+                    break;
+                }
+            }
+        }
+    });
+    WalPayloadTickHandle { join_handle, stop }
 }
 
 /// Counters produced by the (future) enumerator — how many of the
@@ -1079,6 +1130,60 @@ mod tests {
         assert_eq!(slice_to_hash(&[0u8; 31]), None);
         assert_eq!(slice_to_hash(&[0u8; 33]), None);
         assert_eq!(slice_to_hash(&[]), None);
+    }
+
+    #[tokio::test]
+    async fn spawn_periodic_tick_stops_cleanly_on_signal() {
+        // LOAD-BEARING: the graceful-stop path exits the loop at
+        // the next `select!` boundary.  TICK_PERIOD_MS is 5s so
+        // the next interval tick is 5s away — the stop signal
+        // must win the race, giving a sub-second test runtime.
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        let transport = Arc::new(CapturingTransport::new());
+        let conf = mk_rpconf();
+        let cell = ConnectionsCell::new();
+        let handle = spawn_periodic_tick(driver, transport, conf, cell);
+        // Yield so the spawned task reaches its select! boundary
+        // before we fire the stop signal.
+        tokio::task::yield_now().await;
+        handle.stop.stop();
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle.join_handle)
+            .await
+            .expect("tick task did not exit within 2s of stop signal")
+            .expect("tick task panicked");
+    }
+
+    #[tokio::test]
+    async fn spawn_periodic_tick_skips_first_interval_tick() {
+        // LOAD-BEARING: `interval.tick().await` is consumed BEFORE
+        // the select! loop so the boot enumerator gets a chance to
+        // populate the driver before the loop starts beating.
+        // Enqueue a hash, start the tick task, stop before the
+        // next interval period elapses → no sends, no broadcasts.
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        driver.enqueue_payload([0xAB; 32]).await;
+        let transport = Arc::new(CapturingTransport::new());
+        let conf = mk_rpconf();
+        let cell = ConnectionsCell::new();
+        let handle = spawn_periodic_tick(driver, transport.clone(), conf, cell);
+        tokio::task::yield_now().await;
+        handle.stop.stop();
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle.join_handle)
+            .await
+            .expect("tick task did not exit")
+            .expect("tick task panicked");
+        assert!(
+            transport.sends.lock().unwrap().is_empty(),
+            "no targeted sends should fire before an interval period elapses"
+        );
+        assert!(
+            transport.broadcasts.lock().unwrap().is_empty(),
+            "no broadcast should fire before an interval period elapses"
+        );
     }
 
     #[tokio::test]
