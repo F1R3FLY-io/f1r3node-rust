@@ -47,11 +47,19 @@ mod tests {
     /// Compute the expected watermark for a given 32-byte hash.  Must
     /// stay in sync with `FileHandleTable::seed_next_fd_from_state_hash`.
     /// H-28-F1 review-fix derivation: first 8 bytes as u64 (big-endian),
+    /// bit 63 masked (keep in `[0, i64::MAX]` for the Fd GInt contract),
     /// low 20 bits masked to zero.
     fn expected_watermark(hash: &[u8]) -> u64 {
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&hash[..8]);
         let hi = u64::from_be_bytes(buf);
+        // Bit 63 mask keeps the watermark in [0, i64::MAX] — fd values
+        // flow through the Rholang tuplespace as GInt (i64) and the
+        // native `response::Fd::try_from(u64)` rejects out-of-range
+        // values.  Without this mask, state hashes with bit 7 set in
+        // byte 0 would produce watermarks > i64::MAX and every fs_open
+        // after reset would reply FSERR_QUOTA_EXCEEDED.
+        let hi = hi & 0x7FFF_FFFF_FFFF_FFFF;
         hi & !((1u64 << 20) - 1)
     }
 

@@ -1016,6 +1016,21 @@ impl FileHandleTable {
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&hash[..8]);
         let hi = u64::from_be_bytes(buf);
+        // Mask bit 63 so the watermark stays in `[0, i64::MAX]`.
+        // Fd values traverse the Rholang boundary as GInt (i64)
+        // and `response::Fd::try_from(u64)` rejects values outside
+        // `[0, i64::MAX]`.  Pre-fix, a state hash whose first byte
+        // had bit 7 set would produce a watermark >= 2^63; the
+        // first `insert()` after reset would then allocate an fd
+        // that fails `Fd::try_from`, surfacing as
+        // `FSERR_QUOTA_EXCEEDED "allocator produced out-of-range
+        // fd"` on every single fs_open — breaking
+        // `fileio_dir_spec::dir_openfile_child_readn_roundtrip`,
+        // `fileio_file_spec::file_cursor_size_and_readn_on_read_only`,
+        // `fileio_file_spec::file_truncate_write_mode_roundtrip`,
+        // and ~50% of other end-to-end fs tests whose genesis root
+        // hash happens to have bit 7 set in byte 0.
+        let hi = hi & 0x7FFF_FFFF_FFFF_FFFF;
         // Mask off the low headroom bits so a full runtime
         // lifetime cannot overflow into the next watermark's
         // range.
