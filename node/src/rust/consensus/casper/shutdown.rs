@@ -100,10 +100,12 @@ mod tests {
             let tasks = std::array::from_fn(|_| Arc::new(TaskScope::default()));
             for scope in &tasks {
                 let guard = TaskGuard(events.clone());
-                scope.spawn("pending", async move {
-                    let _guard = guard;
-                    std::future::pending().await
-                });
+                scope
+                    .spawn("pending", async move {
+                        let _guard = guard;
+                        std::future::pending().await
+                    })
+                    .unwrap();
             }
             let expected = match exit {
                 Exit::Success => Ok(()),

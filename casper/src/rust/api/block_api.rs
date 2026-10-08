@@ -525,7 +525,7 @@ impl BlockAPI {
                 let casper_for_propose = casper.clone();
                 let max_attempts = deploy_propose_max_attempts();
                 let retry_delay = deploy_propose_retry_delay();
-                crate::rust::background_tasks::spawn(
+                if let Err(error) = crate::rust::background_tasks::spawn(
                     background_tasks,
                     "deploy autopropose",
                     Box::pin(async move {
@@ -597,7 +597,9 @@ impl BlockAPI {
                         }
                         Ok(())
                     }),
-                );
+                ) {
+                    tracing::warn!(%error, "Deploy accepted, but background auto-propose was rejected");
+                }
             }
 
             Ok(format!(

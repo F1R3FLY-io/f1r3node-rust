@@ -254,10 +254,12 @@ async fn interrupted_scope_shutdown_can_still_join_its_tasks() {
     let scope = TaskScope::default();
     let events = Events::default();
     let guard = ExecutionGuard(events.clone());
-    scope.spawn("pending", async move {
-        let _guard = guard;
-        std::future::pending().await
-    });
+    scope
+        .spawn("pending", async move {
+            let _guard = guard;
+            std::future::pending().await
+        })
+        .unwrap();
     let mut first_shutdown = Box::pin(scope.shutdown());
     assert!(futures::poll!(&mut first_shutdown).is_pending());
     drop(first_shutdown);

@@ -708,7 +708,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     .await
                 }
             }),
-        );
+        )?;
 
         let genesis_ceremony_master = GenesisCeremonyMaster::new(Arc::new(abp));
         self.engine_cell

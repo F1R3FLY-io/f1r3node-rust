@@ -302,17 +302,21 @@ async fn dynamic_tasks_are_supervised_and_drained() {
     let waiting = scope.join_next();
     tokio::pin!(waiting);
     assert!(futures::poll!(&mut waiting).is_pending());
-    scope.spawn("late task", async { Ok(()) });
-    assert_eq!(waiting.await.unwrap(), "late task");
+    scope.spawn("late task", async { Ok(()) }).unwrap();
+    assert_eq!(waiting.await.unwrap().as_deref(), Some("late task"));
     let dropped = Arc::new(AtomicBool::new(false));
     let guard = DropFlag(dropped.clone());
-    scope.spawn("pending", async move {
-        let _guard = guard;
-        std::future::pending().await
-    });
-    scope.spawn("failed", async {
-        Err(ConsensusError::Protocol("failed".into()))
-    });
+    scope
+        .spawn("pending", async move {
+            let _guard = guard;
+            std::future::pending().await
+        })
+        .unwrap();
+    scope
+        .spawn("failed", async {
+            Err(ConsensusError::Protocol("failed".into()))
+        })
+        .unwrap();
     assert!(
         matches!(scope.join_next().await, Err(ConsensusError::TaskFailed { task, .. }) if task == "failed")
     );
@@ -332,10 +336,11 @@ async fn stopped_scopes_reject_tasks_from_retained_spawners() {
         }
         let dropped = Arc::new(AtomicBool::new(false));
         let guard = DropFlag(dropped.clone());
-        retained.spawn("late child", async move {
+        let result = retained.spawn("late child", async move {
             let _guard = guard;
-            std::future::pending().await
+            panic!("Rejected task was polled");
         });
+        assert_eq!(result, Err(ConsensusError::Stopped));
         assert!(dropped.load(Ordering::SeqCst));
         scope.shutdown().await;
     }

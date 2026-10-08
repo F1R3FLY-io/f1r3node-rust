@@ -74,6 +74,15 @@ Cleanup runs after normal completion, execution failure, startup failure, panic,
 Casper registers cleanup before launch. Its cleanup aborts and joins managed task scopes, stops the observer, and then calls the store manager shutdown.
 Task scopes retain their join handles if a graceful shutdown wait is canceled, so cleanup can still join those tasks.
 
+`TaskScope::spawn` returns `Ok(())` when it accepts a task, or `ConsensusError::Stopped` after the scope closes.
+Rejection drops the supplied future without polling it. Acceptance does not guarantee completion because shutdown can abort an accepted task.
+`join_next` returns `Some(name)` for a successful task and an error for a failed or aborted task.
+It waits when the scope is open and empty. It returns `None` when the scope is closed and empty.
+Closing a scope wakes an existing join waiter. Concurrent join and shutdown calls serialize access to task completion.
+
+The native Casper callback also returns a scheduling result. Genesis startup propagates rejection of its required approval task.
+Deploy submission logs rejected auto-propose scheduling and preserves the result of the deploy that was already accepted.
+
 A drain timeout reports `ShutdownTimeout`. A cleanup timeout reports `CleanupTimeout`.
 If execution and cleanup both fail, `ShutdownFailed` preserves both errors. Any failure produces `Phase::Failed`, rather than a clean stopped status.
 If cleanup itself times out before tasks stop, explicit storage shutdown might not run. The runtime reports this failure and drops the remaining cleanup resources.

@@ -440,6 +440,7 @@ impl TaskGroup {
 pub struct TaskScope {
     state: std::sync::Mutex<TaskScopeState>,
     changed: tokio::sync::Notify,
+    joiner: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -453,6 +454,7 @@ impl Default for TaskScope {
         Self {
             state: std::sync::Mutex::new(TaskScopeState::default()),
             changed: tokio::sync::Notify::new(),
+            joiner: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -472,30 +474,36 @@ impl TaskScope {
         &self,
         name: impl Into<String>,
         task: impl Future<Output = Result<(), ConsensusError>> + Send + 'static,
-    ) {
+    ) -> Result<(), ConsensusError> {
         let name = name.into();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.closed {
-            return;
+            return Err(ConsensusError::Stopped);
         }
         state.tasks.spawn(async move { (name, task.await) });
         self.changed.notify_one();
+        Ok(())
     }
 
-    pub async fn join_next(&self) -> Result<String, ConsensusError> {
+    pub async fn join_next(&self) -> Result<Option<String>, ConsensusError> {
+        let _joiner = self.joiner.lock().await;
         loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             tokio::select! {
-                _ = self.changed.notified() => {},
+                _ = &mut changed => {},
                 outcome = futures::future::poll_fn(|cx| {
-                    match self.state.lock().unwrap_or_else(|e| e.into_inner()).tasks.poll_join_next(cx) {
-                        std::task::Poll::Ready(None) => std::task::Poll::Pending,
+                    let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    match state.tasks.poll_join_next(cx) {
+                        std::task::Poll::Ready(None) if !state.closed => std::task::Poll::Pending,
                         outcome => outcome,
                     }
                 }) => return match outcome {
-                    Some(Ok((name, Ok(())))) => Ok(name),
+                    Some(Ok((name, Ok(())))) => Ok(Some(name)),
                     Some(Ok((task, Err(error)))) => Err(ConsensusError::TaskFailed { task, reason: error.to_string() }),
                     Some(Err(error)) => Err(ConsensusError::TaskFailed { task: "native child".into(), reason: error.to_string() }),
-                    None => unreachable!(),
+                    None => Ok(None),
                 },
             }
         }
@@ -503,6 +511,7 @@ impl TaskScope {
 
     pub async fn shutdown(&self) {
         self.abort();
+        let _joiner = self.joiner.lock().await;
         futures::future::poll_fn(|cx| {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             loop {
@@ -520,5 +529,6 @@ impl TaskScope {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.closed = true;
         state.tasks.abort_all();
+        self.changed.notify_waiters();
     }
 }

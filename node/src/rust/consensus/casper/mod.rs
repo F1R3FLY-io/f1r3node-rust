@@ -178,7 +178,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
         }
         let (stop_workers, worker_shutdown) = watch::channel(false);
         for (name, task) in background {
-            tasks.spawn(name, async move { task.await.map_err(native_error) });
+            tasks.spawn(name, async move { task.await.map_err(native_error) })?;
         }
         for (name, operation) in loops {
             tasks.spawn(name, async move {
@@ -188,7 +188,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     }
                 }
-            });
+            })?;
         }
         let (mut block_results, block_task) = BlockProcessorInstance::new(
             (block_rx, block_tx),
@@ -202,7 +202,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                 Ok(())
             },)?;
             Ok(())
-        });
+        })?;
         if let (Some(proposer), Some(state)) = (proposer, proposer_state) {
             let (mut results, task) = ProposerInstance::new(
                 (proposer_rx, proposer_tx),
@@ -212,11 +212,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                 proposer_capacity,
             )
             .supervised(worker_shutdown);
-            workers.spawn("proposer", async move { task.await.map_err(native_error) });
+            workers.spawn("proposer", async move { task.await.map_err(native_error) })?;
             workers.spawn("proposal results", async move {
                 while results.recv().await.is_some() {}
                 Ok(())
-            });
+            })?;
         }
         if let Some(validator) = validator {
             if let Some(task) = HeartbeatProposer::create(
@@ -231,7 +231,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                 let mut task = OwnedTask(task);
                 tasks.spawn("heartbeat", async move {
                     (&mut task.0).await.map_err(native_error)
-                });
+                })?;
             }
         }
         let initialized = Arc::new(AtomicBool::new(false));
@@ -249,7 +249,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
             events.seal_startup();
             initialization_done.store(true, Ordering::Release);
             std::future::pending().await
-        });
+        })?;
         let ready_engine = engine.clone();
         let ready_flag = ready.clone();
         let control = context.control.clone();
@@ -282,24 +282,38 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-        });
+        })?;
         let result = loop {
             tokio::select! {
                 _ = context.control.cancelled() => break Ok(()),
-                outcome = native_tasks.join_next() => { if let Err(error) = outcome { break Err(error); } },
+                outcome = native_tasks.join_next() => match outcome {
+                    Ok(Some(_)) => {},
+                    Ok(None) => break Err(ConsensusError::Stopped),
+                    Err(error) => break Err(error),
+                },
                 outcome = tasks.join_next() => break match outcome {
                     Err(error) => Err(error),
-                    Ok(task) => Err(ConsensusError::TaskFailed { task, reason: "completed unexpectedly".into() }),
+                    Ok(Some(task)) => Err(ConsensusError::TaskFailed { task, reason: "completed unexpectedly".into() }),
+                    Ok(None) => Err(ConsensusError::Stopped),
                 },
                 outcome = workers.join_next() => break match outcome {
                     Err(error) => Err(error),
-                    Ok(task) => Err(ConsensusError::TaskFailed { task, reason: "completed unexpectedly".into() }),
+                    Ok(Some(task)) => Err(ConsensusError::TaskFailed { task, reason: "completed unexpectedly".into() }),
+                    Ok(None) => Err(ConsensusError::Stopped),
                 },
-                outcome = packet_requests.join_next() => { if let Err(error) = outcome { break Err(error); } },
-                outcome = command_requests.join_next() => { if let Err(error) = outcome { break Err(error); } },
+                outcome = packet_requests.join_next() => match outcome {
+                    Ok(Some(_)) => {},
+                    Ok(None) => break Err(ConsensusError::Stopped),
+                    Err(error) => break Err(error),
+                },
+                outcome = command_requests.join_next() => match outcome {
+                    Ok(Some(_)) => {},
+                    Ok(None) => break Err(ConsensusError::Stopped),
+                    Err(error) => break Err(error),
+                },
                 Some(request) = context.packets.recv(), if packet_requests.len() < 32 => {
                     let handler = packet_handler.clone();
-                    packet_requests.spawn("packet", async move {
+                    if let Err(error) = packet_requests.spawn("packet", async move {
                         if request.reply.is_closed() { return Ok(()); }
                         let packet = request.packet;
                         let peer = PeerNode { id: NodeIdentifier { key: packet.peer.id.into() }, endpoint: Endpoint::new(packet.peer.host, packet.peer.tcp_port, packet.peer.udp_port) };
@@ -307,14 +321,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                         let result = handler.handle_packet(&peer, &packet).await.map_err(native_error);
                         let _ = request.reply.send(result);
                         Ok(())
-                    });
+                    }) { break Err(error); }
                 },
                 Some(command) = context.commands.recv(), if command_requests.len() < 16 => {
                     let engine = engine.clone();
                     let propose = propose.clone();
                     let shard = shard.clone();
                     let task_spawner = task_spawner.clone();
-                    command_requests.spawn("command", async move {
+                    if let Err(error) = command_requests.spawn("command", async move {
                         use casper::rust::api::block_api::BlockAPI;
                         let Some(command) = command.try_start() else { return Ok(()); };
                         match command {
@@ -344,7 +358,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                             }
                         }
                         Ok(())
-                    });
+                    }) { break Err(error); }
                 },
             }
         };

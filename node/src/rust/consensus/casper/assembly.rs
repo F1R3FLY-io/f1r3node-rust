@@ -105,7 +105,9 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     let task_scope = native_tasks.clone();
     let task_spawner: casper::rust::background_tasks::BackgroundTaskSpawner =
         Arc::new(move |name, task| {
-            task_scope.spawn(name, async move { task.await.map_err(super::native_error) });
+            task_scope
+                .spawn(name, async move { task.await.map_err(super::native_error) })
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))
         });
     let mut background: Vec<(&'static str, NativeTask)> = Vec::new();
     let block_retriever = BlockRetriever::new(
