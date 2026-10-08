@@ -47,4 +47,5 @@ pub mod lifecycle;
 pub mod lock;
 pub mod mutation;
 pub mod observation;
+pub mod removedir;
 pub mod stream;
