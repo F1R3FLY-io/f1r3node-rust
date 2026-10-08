@@ -78,7 +78,10 @@ where
         let mut ps = Vec::new();
         self.work.reserve_vec(&mut ps, patterns.len())?;
         for pattern in patterns {
-            self.work.reserve_clone(&ts)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.work.reserve_clone(&ts)?;
+            self.work.reserve_blocks_copy_and_cleanup(&ts)?;
             ps.push((pattern, ts.clone()));
         }
         for pattern in ps {
@@ -90,9 +93,14 @@ where
         let mut result = Vec::new();
         self.work.reserve_vec(&mut result, self.matches.len())?;
         for (target, (pattern, match_result)) in &self.matches {
-            self.work.reserve_clone(&target.value)?;
-            self.work.reserve_clone(&pattern.0)?;
-            self.work.reserve_clone(match_result)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.work.reserve_clone(&target.value)?;
+            // self.work.reserve_clone(&pattern.0)?;
+            // self.work.reserve_clone(match_result)?;
+            self.work.reserve_blocks_copy_and_cleanup(&target.value)?;
+            self.work.reserve_blocks_copy_and_cleanup(&pattern.0)?;
+            self.work.reserve_blocks_copy_and_cleanup(match_result)?;
             result.push((
                 target.value.clone(),
                 pattern.0.clone(),
@@ -127,15 +135,26 @@ where
                             next += 1;
                             continue;
                         }
-                        self.work.reserve_clone(&pattern)?;
-                        self.work.reserve_clone(&candidate.value)?;
+                        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                        // once per enclosing block.
+                        // self.work.reserve_clone(&pattern)?;
+                        // self.work.reserve_clone(&candidate.value)?;
+                        self.work.reserve_blocks_copy_and_cleanup(&pattern)?;
+                        self.work
+                            .reserve_blocks_copy_and_cleanup(&candidate.value)?;
                         let matched =
                             (self.match_function)(pattern.clone(), candidate.value.clone());
                         self.work.reserve(0, 0, 0)?;
                         if let Some(result) = matched {
-                            self.work.reserve_clone(candidate)?;
+                            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                            // once per enclosing block.
+                            // self.work.reserve_clone(candidate)?;
+                            self.work.reserve_blocks_copy_and_cleanup(candidate)?;
                             let candidate = candidate.clone();
-                            self.work.reserve_clone(&candidate)?;
+                            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                            // once per enclosing block.
+                            // self.work.reserve_clone(&candidate)?;
+                            self.work.reserve_blocks_copy_and_cleanup(&candidate)?;
                             self.add_seen(candidate.clone())?;
                             let previous_pattern = self.get_match(&candidate)?;
                             if next != 0 {
@@ -207,8 +226,17 @@ where
     }
 
     fn not_seen(&self, candidate: &Candidate<T>) -> Option<bool> {
-        self.work.reserve_inspect(candidate)?;
-        self.work.reserve_inspect(&self.seen_targets)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.work.reserve_inspect(candidate)?;
+        // self.work.reserve_inspect(&self.seen_targets)?;
+        self.work.inspect_blocks(candidate)?;
+        self.work.inspect_blocks(&self.seen_targets)?;
+        // Added by D-E2 (DR-109): the B-tree search compares the candidate
+        // with keys in lockstep, so it reads no more of the candidate than of
+        // the keys. A second inspection of the keys pays that side
+        // (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+        self.work.inspect_blocks(&self.seen_targets)?;
         Some(!self.seen_targets.contains(candidate))
     }
 
@@ -220,18 +248,39 @@ where
             return self.work.reject(RSpaceError::HostWorkRejected);
         };
         self.work.reserve(operations, bytes, bytes)?;
-        self.work.reserve_inspect(&candidate)?;
-        self.work.reserve_inspect(&self.seen_targets)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.work.reserve_inspect(&candidate)?;
+        // self.work.reserve_inspect(&self.seen_targets)?;
+        self.work.inspect_blocks(&candidate)?;
+        self.work.inspect_blocks(&self.seen_targets)?;
+        // Added by D-E2 (DR-109): the B-tree search compares the candidate
+        // with keys in lockstep, so it reads no more of the candidate than of
+        // the keys. A second inspection of the keys pays that side
+        // (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+        self.work.inspect_blocks(&self.seen_targets)?;
         self.seen_targets.insert(candidate);
         Some(())
     }
 
     fn get_match(&self, candidate: &Candidate<T>) -> Option<Option<Pattern<P, T>>> {
-        self.work.reserve_inspect(candidate)?;
-        self.work.reserve_inspect(&self.matches)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.work.reserve_inspect(candidate)?;
+        // self.work.reserve_inspect(&self.matches)?;
+        self.work.inspect_blocks(candidate)?;
+        self.work.inspect_blocks(&self.matches)?;
+        // Added by D-E2 (DR-109): the B-tree search compares the candidate
+        // with keys in lockstep, so it reads no more of the candidate than of
+        // the keys. A second inspection of the keys pays that side
+        // (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+        self.work.inspect_blocks(&self.matches)?;
         match self.matches.get(candidate) {
             Some(matched) => {
-                self.work.reserve_clone(&matched.0)?;
+                // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                // once per enclosing block.
+                // self.work.reserve_clone(&matched.0)?;
+                self.work.reserve_blocks_copy_and_cleanup(&matched.0)?;
                 Some(Some(matched.0.clone()))
             }
             None => Some(None),
@@ -252,8 +301,17 @@ where
             return self.work.reject(RSpaceError::HostWorkRejected);
         };
         self.work.reserve(operations, bytes, bytes)?;
-        self.work.reserve_inspect(&candidate)?;
-        self.work.reserve_inspect(&self.matches)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.work.reserve_inspect(&candidate)?;
+        // self.work.reserve_inspect(&self.matches)?;
+        self.work.inspect_blocks(&candidate)?;
+        self.work.inspect_blocks(&self.matches)?;
+        // Added by D-E2 (DR-109): the B-tree search compares the candidate
+        // with keys in lockstep, so it reads no more of the candidate than of
+        // the keys. A second inspection of the keys pays that side
+        // (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+        self.work.inspect_blocks(&self.matches)?;
         self.matches.insert(candidate, (pattern, result));
         Some(())
     }
@@ -390,5 +448,101 @@ mod metered_tests {
                 Err(error) => panic!("unexpected matcher error: {error}"),
             }
         }
+    }
+
+    /// The reservations of one block inspection of `value`, in call order.
+    fn inspection<T: CloneBacking>(value: &T) -> Vec<[usize; 3]> {
+        let log = std::cell::RefCell::new(Vec::new());
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            log.borrow_mut().push([operations, scanned, backing]);
+            Ok::<(), BackingError>(())
+        };
+        shared::rust::clone_backing::inspect_blocks(value, &meter).expect("an unlimited meter");
+        log.into_inner()
+    }
+
+    /// D-E2 (DR-109): each B-tree search of the bipartite matcher inspects the
+    /// candidate once and the keys twice before it searches
+    /// (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+    #[test]
+    fn bipartite_searches_charge_two_container_traversals() {
+        let log = Mutex::new(Vec::with_capacity(1_024));
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            log.lock()
+                .expect("log lock")
+                .push([operations, scanned, backing]);
+            Ok(())
+        };
+        let context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let mut search: MaximumBipartiteMatch<'_, Vec<u8>, Vec<u8>, Vec<u8>> =
+            MaximumBipartiteMatch::new(
+                Box::new(|_: Vec<u8>, target: Vec<u8>| Some(target)),
+                context.work().expect("matcher work"),
+            );
+        let candidate = Indexed {
+            value: vec![7u8; 300],
+            index: 0,
+        };
+        let other = Indexed {
+            value: vec![9u8; 50],
+            index: 1,
+        };
+        let mark = || log.lock().expect("log lock").len();
+        let since = |start: usize| log.lock().expect("log lock")[start..].to_vec();
+        search.add_seen(other.clone()).expect("seen");
+
+        let start = mark();
+        assert_eq!(search.not_seen(&candidate), Some(true));
+        let seen = inspection(&search.seen_targets);
+        let expected = [inspection(&candidate), seen.clone(), seen].concat();
+        assert_eq!(since(start), expected, "not_seen");
+
+        let (operations, bytes) = tree_backing::<Candidate<Vec<u8>>, ()>(2).expect("tree");
+        let seen = inspection(&search.seen_targets);
+        let start = mark();
+        search.add_seen(candidate.clone()).expect("seen");
+        let expected = [
+            vec![[operations, bytes, bytes]],
+            inspection(&candidate),
+            seen.clone(),
+            seen,
+        ]
+        .concat();
+        assert_eq!(since(start), expected, "add_seen");
+
+        let pattern = (vec![1u8; 20], vec![other.clone()]);
+        let (operations, bytes) =
+            tree_backing::<Candidate<Vec<u8>>, (Pattern<Vec<u8>, Vec<u8>>, Vec<u8>)>(1)
+                .expect("tree");
+        let matches = inspection(&search.matches);
+        let start = mark();
+        search
+            .claim_match(candidate.clone(), pattern.clone(), vec![2u8; 10])
+            .expect("claim");
+        let expected = [
+            vec![[operations, bytes, bytes]],
+            inspection(&candidate),
+            matches.clone(),
+            matches,
+        ]
+        .concat();
+        assert_eq!(since(start), expected, "claim_match");
+
+        let matches = inspection(&search.matches);
+        let copy = {
+            let copy_log = std::cell::RefCell::new(Vec::new());
+            let copy_meter = |operations: usize, scanned: usize, backing: usize| {
+                copy_log.borrow_mut().push([operations, scanned, backing]);
+                Ok::<(), BackingError>(())
+            };
+            shared::rust::clone_backing::reserve_blocks_copy_and_cleanup(&pattern, &copy_meter)
+                .expect("an unlimited meter");
+            copy_log.into_inner()
+        };
+        let start = mark();
+        assert_eq!(search.get_match(&candidate), Some(Some(pattern)));
+        let expected = [inspection(&candidate), matches.clone(), matches, copy].concat();
+        assert_eq!(since(start), expected, "get_match");
+        assert!(context.take_error().is_none());
     }
 }

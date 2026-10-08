@@ -12,6 +12,7 @@
  * Might be able to use '::default()' at certain points
 */
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use connective::ConnectiveInstance::*;
 use expr::ExprInstance::*;
@@ -27,6 +28,7 @@ use proptest::prelude::*;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::{prepend_connective, prepend_expr};
+use rspace_plus_plus::rspace::errors::RSpaceError;
 
 fn assert_spatial_match(
     target: Par,
@@ -36,9 +38,16 @@ fn assert_spatial_match(
     // println!("\ntest target: {:?}", target);
     // println!("\ntest pattern: {:?}", pattern);
 
+    // Changed by D-E2 (DR-109): the metered twin below matches copies of the
+    // same values.
+    // let mut spatial_matcher = SpatialMatcherContext::new();
+    // let spatial_match_result = spatial_matcher.spatial_match(target, pattern);
     let mut spatial_matcher = SpatialMatcherContext::new();
-    let spatial_match_result = spatial_matcher.spatial_match(target, pattern);
+    let spatial_match_result = spatial_matcher.spatial_match(target.clone(), pattern.clone());
     let result = spatial_matcher.free_map;
+
+    // Added by D-E2 (DR-109): the metered matcher must give the same result.
+    assert_metered_spatial_match(&target, &pattern, spatial_match_result.is_some(), &result);
 
     match (spatial_match_result.is_some(), expected_captures) {
         (true, Some(expected)) => assert_eq!(result, expected),
@@ -46,6 +55,100 @@ fn assert_spatial_match(
     }
 
     Ok(())
+}
+
+/// The result, the free map and the recorded error of one metered match.
+type MeteredMatch = (bool, BTreeMap<i32, Par>, Option<RSpaceError>);
+
+/// The outcome of a match with a meter that refuses any charge past
+/// `limit`, or `None` when the meter refuses the context's own setup charge,
+/// and the charge that the meter accepted.
+fn limited_spatial_match(
+    target: &Par,
+    pattern: &Par,
+    limit: Option<[usize; 3]>,
+) -> (Option<MeteredMatch>, [usize; 3]) {
+    let used = Mutex::new([0usize; 3]);
+    let meter = |operations: usize, scanned: usize, backing: usize| {
+        let mut totals = used.lock().expect("totals lock");
+        let next = [
+            totals[0] + operations,
+            totals[1] + scanned,
+            totals[2] + backing,
+        ];
+        if limit.is_some_and(|limit| next.iter().zip(limit).any(|(used, max)| *used > max)) {
+            return Err(RSpaceError::HostWorkRejected);
+        }
+        *totals = next;
+        Ok(())
+    };
+    let outcome = match SpatialMatcherContext::with_meter(&meter) {
+        Ok(mut context) => {
+            let matched = context
+                .spatial_match(target.clone(), pattern.clone())
+                .is_some();
+            let error = context.take_error();
+            Some((matched, context.free_map, error))
+        }
+        Err(RSpaceError::HostWorkRejected) => None,
+        Err(error) => panic!("unexpected matcher error: {error}"),
+    };
+    let totals = *used.lock().expect("totals lock");
+    (outcome, totals)
+}
+
+/// D-E2 (DR-109): with an unlimited meter, the metered matcher gives the
+/// result and the free map of the unmetered one. It succeeds with exactly
+/// the credit that it reserves. A credit one unit short in any dimension
+/// rejects it with the host error.
+///
+/// The metered conversion of a set or a map sorts its elements in the
+/// iteration order of a randomly seeded hash table, so its charge varies
+/// from run to run (pgmcp bug
+/// `metered-set-and-map-construction-charges-depend-on-hashset-hashmap-iteration-order-nondeterministic-host-work-475811`).
+/// For a target or a pattern that holds a set or a map, only the result is
+/// compared.
+fn assert_metered_spatial_match(
+    target: &Par,
+    pattern: &Par,
+    matched: bool,
+    free_map: &BTreeMap<i32, Par>,
+) {
+    let (outcome, required) = limited_spatial_match(target, pattern, None);
+    let (metered, metered_map, error) = outcome.expect("an unlimited meter");
+    assert_eq!(metered, matched);
+    if matched {
+        assert_eq!(&metered_map, free_map);
+    }
+    assert!(error.is_none(), "unlimited meter error: {error:?}");
+    let shapes = format!("{target:?}{pattern:?}");
+    if shapes.contains("ESetBody") || shapes.contains("EMapBody") {
+        return;
+    }
+    let (exact, used) = limited_spatial_match(target, pattern, Some(required));
+    let (exact_match, exact_map, exact_error) = exact.expect("the exact credit");
+    assert_eq!((exact_match, used), (matched, required));
+    assert_eq!(exact_map, metered_map);
+    assert!(exact_error.is_none(), "exact credit error: {exact_error:?}");
+    for dimension in 0..3 {
+        let Some(short) = required[dimension].checked_sub(1) else {
+            continue;
+        };
+        let mut limit = required;
+        limit[dimension] = short;
+        if let (Some((short_match, _, short_error)), _) =
+            limited_spatial_match(target, pattern, Some(limit))
+        {
+            assert!(
+                !short_match,
+                "dimension {dimension} matched with less credit"
+            );
+            assert!(
+                matches!(short_error, Some(RSpaceError::HostWorkRejected)),
+                "dimension {dimension}: {short_error:?}"
+            );
+        }
+    }
 }
 
 #[test]

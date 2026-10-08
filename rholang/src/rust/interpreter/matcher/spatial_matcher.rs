@@ -8,7 +8,9 @@ use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::utils::*;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
-use shared::rust::clone_backing::{self, arc_allocation_bytes, BackingError, CloneBacking};
+use shared::rust::clone_backing::{
+    self, arc_allocation_bytes, BackingError, BackingMeter, CloneBacking,
+};
 use shared::rust::collection_backing::{tree_growth, tree_insert_moves, tree_search_bound};
 
 use super::exports::*;
@@ -137,6 +139,10 @@ impl<'a> MatcherWork<'a> {
         Some(())
     }
 
+    // D-E2 (DR-109): the matcher sites use the block walks below. The
+    // per-level helpers remain only as the reference charges of the tests,
+    // so they compile only for tests.
+    #[cfg(test)]
     fn reserve_backing<T: CloneBacking>(&self, value: &T, inspect: bool) -> Option<()> {
         if self.meter.is_none() {
             return self.reserve(0, 0, 0);
@@ -156,14 +162,17 @@ impl<'a> MatcherWork<'a> {
         Some(())
     }
 
+    #[cfg(test)]
     pub fn reserve_clone<T: CloneBacking>(&self, value: &T) -> Option<()> {
         self.reserve_backing(value, false)
     }
 
+    #[cfg(test)]
     pub fn reserve_inspect<T: CloneBacking>(&self, value: &T) -> Option<()> {
         self.reserve_backing(value, true)
     }
 
+    #[cfg(test)]
     pub fn reserve_slice<T: CloneBacking>(&self, values: &[T]) -> Option<()> {
         if self.meter.is_none() {
             return self.reserve(0, 0, 0);
@@ -176,6 +185,46 @@ impl<'a> MatcherWork<'a> {
             return self.reject(RSpaceError::HostWorkRejected);
         }
         Some(())
+    }
+
+    /// D-E2 (DR-109): runs one block walk of the shared walker (DR-92) with
+    /// the matcher's meter. Without a meter it walks nothing, as the
+    /// per-level helpers did, and a recorded error still stops the match. A
+    /// rejected reservation records the meter's error.
+    fn block_walk(
+        &self,
+        walk: impl FnOnce(&dyn BackingMeter) -> Result<(), BackingError>,
+    ) -> Option<()> {
+        if self.meter.is_none() {
+            return self.reserve(0, 0, 0);
+        }
+        let meter = |operations, scanned, backing| {
+            self.reserve(operations, scanned, backing)
+                .ok_or(BackingError::Rejected)
+        };
+        if walk(&meter).is_err() {
+            return self.reject(RSpaceError::HostWorkRejected);
+        }
+        Some(())
+    }
+
+    /// D-E2 (DR-109): one linear traversal of `value`.
+    pub fn inspect_blocks<T: CloneBacking>(&self, value: &T) -> Option<()> {
+        self.block_walk(|meter| clone_backing::inspect_blocks(value, meter))
+    }
+
+    /// D-E2 (DR-109): one clone of `value` and the release of the clone.
+    pub fn reserve_blocks_copy_and_cleanup<T: CloneBacking>(&self, value: &T) -> Option<()> {
+        self.block_walk(|meter| clone_backing::reserve_blocks_copy_and_cleanup(value, meter))
+    }
+
+    /// D-E2 (DR-109): the copy of a slice into a new vector, and the release
+    /// of the copy.
+    pub fn reserve_blocks_slice_copy_and_cleanup<T: CloneBacking>(
+        &self,
+        values: &[T],
+    ) -> Option<()> {
+        self.block_walk(|meter| clone_backing::reserve_blocks_slice_copy_and_cleanup(values, meter))
     }
 
     /// D-D1a (DR-103): one search of a free map with `entries` entries reads
@@ -330,8 +379,17 @@ const _: () = assert!(
 pub(super) fn merge_set_remainder(p: &mut Par, r: Vec<Par>, work: &MatcherWork<'_>) -> Option<()> {
     let mut unique = Vec::new();
     for element in r {
-        work.reserve_inspect(&element)?;
-        work.reserve_inspect(&unique)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // work.reserve_inspect(&element)?;
+        // work.reserve_inspect(&unique)?;
+        work.inspect_blocks(&element)?;
+        work.inspect_blocks(&unique)?;
+        // Added by D-E2 (DR-109): `contains` reads the element once for each
+        // item, in lockstep with the item, so it reads no more of the element
+        // than of the items. A second inspection of `unique` pays that side
+        // (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+        work.inspect_blocks(&unique)?;
         if !unique.contains(&element) {
             work.reserve_vec(&mut unique, 1)?;
             unique.push(element);
@@ -361,8 +419,17 @@ pub(super) fn merge_map_remainder(
 ) -> Option<()> {
     let mut unique = Vec::new();
     for (key, value) in r {
-        work.reserve_inspect(&key)?;
-        work.reserve_inspect(&unique)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // work.reserve_inspect(&key)?;
+        // work.reserve_inspect(&unique)?;
+        work.inspect_blocks(&key)?;
+        work.inspect_blocks(&unique)?;
+        // Added by D-E2 (DR-109): `position` reads the key once for each
+        // entry, in lockstep with the entry's key, so it reads no more of the
+        // key than of the entries. A second inspection of `unique` pays that
+        // side (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+        work.inspect_blocks(&unique)?;
         if let Some(index) = unique
             .iter()
             .position(|(existing, _): &(Par, Par)| existing == &key)
@@ -430,16 +497,59 @@ impl<'a> SpatialMatcherContext<'a> {
         self.work.reserve_vec(values, additional)
     }
 
+    // D-E2 (DR-109): the per-level delegations remain only as the reference
+    // charges of the tests.
+    #[cfg(test)]
     pub fn reserve_clone<T: CloneBacking>(&self, value: &T) -> Option<()> {
         self.work.reserve_clone(value)
     }
 
+    #[cfg(test)]
     pub fn reserve_inspect<T: CloneBacking>(&self, value: &T) -> Option<()> {
         self.work.reserve_inspect(value)
     }
 
+    #[cfg(test)]
     pub fn reserve_slice<T: CloneBacking>(&self, values: &[T]) -> Option<()> {
         self.work.reserve_slice(values)
+    }
+
+    /// D-E2 (DR-109): one linear traversal of `value`.
+    pub fn inspect_blocks<T: CloneBacking>(&self, value: &T) -> Option<()> {
+        self.work.inspect_blocks(value)
+    }
+
+    /// D-E2 (DR-109): one clone of `value` and the release of the clone.
+    pub fn reserve_blocks_copy_and_cleanup<T: CloneBacking>(&self, value: &T) -> Option<()> {
+        self.work.reserve_blocks_copy_and_cleanup(value)
+    }
+
+    /// D-E2 (DR-109): the copy of a slice into a new vector, and the release
+    /// of the copy.
+    pub fn reserve_blocks_slice_copy_and_cleanup<T: CloneBacking>(
+        &self,
+        values: &[T],
+    ) -> Option<()> {
+        self.work.reserve_blocks_slice_copy_and_cleanup(values)
+    }
+
+    /// D-E2 (DR-109): `single_expr` clones the only expression of a target
+    /// that has no sends, receives, news, matches or bundles, and drops the
+    /// clone. This reserves that copy and its release, under the same
+    /// condition. The inspection of the target pays the reads of the
+    /// condition.
+    pub(super) fn reserve_single_expr_copy(&self, target: &Par) -> Option<()> {
+        if target.sends.is_empty()
+            && target.receives.is_empty()
+            && target.news.is_empty()
+            && target.matches.is_empty()
+            && target.bundles.is_empty()
+        {
+            if let [expr] = target.exprs.as_slice() {
+                self.reserve_blocks_copy_and_cleanup(expr)?;
+            }
+        }
+        Some(())
     }
 
     pub(super) fn reserve_free_map_search(&self, entries: usize) -> Option<()> {
@@ -463,8 +573,12 @@ impl<'a> SpatialMatcherContext<'a> {
     /// target than of the pattern, and two inspections of the pattern cover
     /// both sides (`MatcherReadsByReference.two_pattern_inspections_cover_lockstep_reads`).
     pub(super) fn match_ground_par(&self, target: &Par, pattern: &Par) -> Option<()> {
-        self.reserve_inspect(pattern)?;
-        self.reserve_inspect(pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(pattern)?;
+        // self.reserve_inspect(pattern)?;
+        self.inspect_blocks(pattern)?;
+        self.inspect_blocks(pattern)?;
         guard(match_pars(target, pattern))
     }
 
@@ -644,12 +758,18 @@ impl<'a> SpatialMatcherContext<'a> {
         Self: ListMatch<T> + HasLocallyFreeRef<T>,
     {
         for element in field {
-            self.reserve_inspect(element)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_inspect(element)?;
+            self.inspect_blocks(element)?;
             if !self.locally_free_is_empty(element, 0) {
                 return None;
             }
         }
-        self.reserve_slice(field)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_slice(field)?;
+        self.reserve_blocks_slice_copy_and_cleanup(field)?;
         let copied = field.to_vec();
         self.handle_remainder(copied, level, merger)
     }
@@ -672,8 +792,12 @@ impl<'a> SpatialMatcherContext<'a> {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - forTuple
 impl<'a> SpatialMatcher<(Par, Par), (Par, Par)> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: (Par, Par), pattern: (Par, Par)) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         self.spatial_match(target.0, pattern.0)
             .and_then(|_| self.spatial_match(target.1, pattern.1))
     }
@@ -682,21 +806,44 @@ impl<'a> SpatialMatcher<(Par, Par), (Par, Par)> for SpatialMatcherContext<'a> {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - connectiveMatcher
 impl<'a> SpatialMatcher<Par, Connective> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Par, pattern: Connective) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
+        // Added by D-E2 (DR-109): the scalar connectives test the target with
+        // `single_expr`, which copies its only expression and drops the copy.
+        // The per-level inspection of the target paid those reads, and no
+        // charge paid the copy's backing.
+        if matches!(
+            pattern.connective_instance,
+            Some(ConnBool(_) | ConnInt(_) | ConnString(_) | ConnUri(_) | ConnByteArray(_))
+        ) {
+            self.reserve_single_expr_copy(&target)?;
+        }
         match pattern.connective_instance {
             Some(ConnAndBody(connective_body)) => {
                 connective_body.ps.into_iter().try_fold((), |_, p| {
-                    self.reserve_clone(&target)?;
+                    // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // self.reserve_clone(&target)?;
+                    self.reserve_blocks_copy_and_cleanup(&target)?;
                     let match_result = self.spatial_match(target.clone(), p);
                     match_result.map(|_| ())
                 })
             }
 
             Some(ConnOrBody(connective_body)) => connective_body.ps.into_iter().find_map(|p| {
-                self.reserve_clone(&self.free_map)?;
+                // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                // once per enclosing block.
+                // self.reserve_clone(&self.free_map)?;
+                self.reserve_blocks_copy_and_cleanup(&self.free_map)?;
                 let matches = self.free_map.clone();
-                self.reserve_clone(&target)?;
+                // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                // once per enclosing block.
+                // self.reserve_clone(&target)?;
+                self.reserve_blocks_copy_and_cleanup(&target)?;
                 self.spatial_match(target.clone(), p)?;
                 self.free_map = matches;
                 Some(())
@@ -790,13 +937,19 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
             // binds the target's fields without an inspection of the target.
             // self.reserve_inspect(&target)?;
             // self.reserve_inspect(&pattern)?;
-            self.reserve_inspect(&pattern)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_inspect(&pattern)?;
+            self.inspect_blocks(&pattern)?;
             if self.free_variable_fast_path() {
                 if let Some(level) = free_variable_level(&pattern) {
                     return self.bind_free_variable(target, level);
                 }
             }
-            self.reserve_inspect(&target)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_inspect(&target)?;
+            self.inspect_blocks(&target)?;
             let var_level: Option<i32> = pattern.exprs.iter().find_map(|expr| match expr {
                 Expr {
                     expr_instance:
@@ -837,7 +990,10 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
 
             let mut individual_bounds = Vec::new();
             for con in &pattern.connectives {
-                self.reserve_inspect(con)?;
+                // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                // once per enclosing block.
+                // self.reserve_inspect(con)?;
+                self.inspect_blocks(con)?;
                 self.reserve_vec(&mut individual_bounds, 1)?;
                 individual_bounds.push(pc.min_max_con(con));
             }
@@ -871,7 +1027,10 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
                 )?;
                 for sp in subsets {
                     let sp = sp?;
-                    s.reserve_clone(con)?;
+                    // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // s.reserve_clone(con)?;
+                    s.reserve_blocks_copy_and_cleanup(con)?;
                     if s.spatial_match(sp.0, con.clone()).is_some() {
                         return Some(sp.1);
                     }
@@ -1019,24 +1178,36 @@ impl<'a> SpatialMatcher<Par, Par> for SpatialMatcherContext<'a> {
 
 impl<'a> SpatialMatcher<If, If> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: If, pattern: If) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         guard(target == pattern)
     }
 }
 
 impl<'a> SpatialMatcher<CostSignedTerm, CostSignedTerm> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: CostSignedTerm, pattern: CostSignedTerm) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         guard(target == pattern)
     }
 }
 
 impl<'a> SpatialMatcher<CostStack, CostStack> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: CostStack, pattern: CostStack) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         guard(target == pattern)
     }
 }
@@ -1045,8 +1216,12 @@ impl<'a> SpatialMatcher<CostStack, CostStack> for SpatialMatcherContext<'a> {
 // Apparently this code is never reached according to Scala code comment
 impl<'a> SpatialMatcher<Bundle, Bundle> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Bundle, pattern: Bundle) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         guard(pattern == target)
     }
 }
@@ -1054,8 +1229,12 @@ impl<'a> SpatialMatcher<Bundle, Bundle> for SpatialMatcherContext<'a> {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - sendSpatialMatcherInstance
 impl<'a> SpatialMatcher<Send, Send> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Send, pattern: Send) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         let result = guard(target.persistent == pattern.persistent)
             .and_then(|_| self.spatial_match(target.chan.unwrap(), pattern.chan.unwrap()))
             .and_then(|_| self.fold_match(&target.data, &pattern.data, None));
@@ -1067,8 +1246,12 @@ impl<'a> SpatialMatcher<Send, Send> for SpatialMatcherContext<'a> {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - receiveSpatialMatcherInstance
 impl<'a> SpatialMatcher<Receive, Receive> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Receive, pattern: Receive) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         guard(target.persistent == pattern.persistent)
             .and_then(|_| self.list_match_single(target.binds, pattern.binds))
             .and_then(|_| self.spatial_match(target.body.unwrap(), pattern.body.unwrap()))
@@ -1078,8 +1261,12 @@ impl<'a> SpatialMatcher<Receive, Receive> for SpatialMatcherContext<'a> {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - newSpatialMatcherInstance
 impl<'a> SpatialMatcher<New, New> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: New, pattern: New) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         guard(target.bind_count == pattern.bind_count)
             .and_then(|_| self.spatial_match(target.p.unwrap(), pattern.p.unwrap()))
     }
@@ -1088,8 +1275,12 @@ impl<'a> SpatialMatcher<New, New> for SpatialMatcherContext<'a> {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - exprSpatialMatcherInstance
 impl<'a> SpatialMatcher<Expr, Expr> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Expr, pattern: Expr) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         match (target.expr_instance, pattern.expr_instance) {
             (
                 Some(EListBody(EList {
@@ -1353,8 +1544,12 @@ impl<'a> SpatialMatcher<Expr, Expr> for SpatialMatcherContext<'a> {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - matchSpatialMatcherInstance
 impl<'a> SpatialMatcher<Match, Match> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: Match, pattern: Match) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         let result = self
             .spatial_match(target.target.unwrap(), pattern.target.unwrap())
             .and_then(|_| self.fold_match(&target.cases, &pattern.cases, None));
@@ -1367,8 +1562,12 @@ impl<'a> SpatialMatcher<Match, Match> for SpatialMatcherContext<'a> {
 // Apparently this code is never reached according to Scala code comment
 impl<'a> SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: GUnforgeable, pattern: GUnforgeable) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         match (target.unf_instance, pattern.unf_instance) {
             (Some(GPrivateBody(t)), Some(GPrivateBody(p))) => guard(t == p),
             (Some(GDeployerIdBody(t)), Some(GDeployerIdBody(p))) => guard(t == p),
@@ -1380,8 +1579,12 @@ impl<'a> SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext<'a
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - receiveBindSpatialMatcherInstance
 impl<'a> SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: ReceiveBind, pattern: ReceiveBind) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         guard(target.patterns == pattern.patterns)
             .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
     }
@@ -1390,8 +1593,12 @@ impl<'a> SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext<'a> 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - matchCaseSpatialMatcherInstance
 impl<'a> SpatialMatcher<MatchCase, MatchCase> for SpatialMatcherContext<'a> {
     fn spatial_match(&mut self, target: MatchCase, pattern: MatchCase) -> Option<()> {
-        self.reserve_inspect(&target)?;
-        self.reserve_inspect(&pattern)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // self.reserve_inspect(&target)?;
+        // self.reserve_inspect(&pattern)?;
+        self.inspect_blocks(&target)?;
+        self.inspect_blocks(&pattern)?;
         guard(target.pattern == pattern.pattern)
             .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
     }
@@ -2453,5 +2660,542 @@ mod metered_tests {
                 reserved
             );
         }
+    }
+
+    // D-E2 (DR-109): the matcher sites in block mode.
+
+    /// The result of `action` on a metered context, and the reservations that
+    /// it makes, in call order, after the context's own setup charge.
+    fn matcher_calls<R>(
+        action: impl FnOnce(&mut SpatialMatcherContext<'_>) -> R,
+    ) -> (R, Vec<[usize; 3]>) {
+        let log = Mutex::new(Vec::with_capacity(1_024));
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            log.lock()
+                .expect("log lock")
+                .push([operations, scanned, backing]);
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let start = log.lock().expect("log lock").len();
+        let result = action(&mut context);
+        assert!(context.take_error().is_none());
+        let calls = log.lock().expect("log lock")[start..].to_vec();
+        (result, calls)
+    }
+
+    /// The reservations of one walk of the shared walker, in call order.
+    fn walk_calls(
+        walk: impl FnOnce(&dyn BackingMeter) -> Result<(), BackingError>,
+    ) -> Vec<[usize; 3]> {
+        let log = std::cell::RefCell::new(Vec::new());
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            log.borrow_mut().push([operations, scanned, backing]);
+            Ok::<(), BackingError>(())
+        };
+        walk(&meter).expect("an unlimited meter");
+        log.into_inner()
+    }
+
+    fn scanned(calls: &[[usize; 3]]) -> usize { calls.iter().map(|call| call[1]).sum() }
+
+    fn large_string_par(length: usize) -> Par {
+        Par {
+            exprs: vec![new_gstring_expr("s".repeat(length))],
+            ..Par::default()
+        }
+    }
+
+    /// The charge of `MatcherWork::reserve_vec` for one more element of a
+    /// vector of `len` elements whose capacity is `capacity`.
+    fn vec_growth<T>(len: usize, capacity: &mut usize) -> [usize; 3] {
+        let needed = len + 1;
+        if needed <= *capacity {
+            return [1, 0, 0];
+        }
+        let next = needed.max(*capacity * 2).max(4);
+        *capacity = next;
+        [
+            1,
+            len * std::mem::size_of::<T>(),
+            next * std::mem::size_of::<T>(),
+        ]
+    }
+
+    /// D-E2 (DR-109): each block wrapper of the matcher makes exactly the
+    /// reservations of the shared block walk that it names. Without a meter
+    /// it walks nothing, and after a rejection it reserves nothing more.
+    #[test]
+    fn matcher_block_wrappers_charge_the_shared_block_walks() {
+        let par = Par {
+            exprs: vec![new_gint_expr(3), new_gstring_expr("value".repeat(20))],
+            sends: vec![Send {
+                data: vec![ground_par(2)],
+                ..Default::default()
+            }],
+            ..Par::default()
+        };
+        let pars = vec![par.clone(), ground_par(4), Par::default()];
+        let free_map: FreeMap = (0..3).map(|key| (key, ground_par(2))).collect();
+        let (_, inspected) = matcher_calls(|context| context.inspect_blocks(&par));
+        assert_eq!(
+            inspected,
+            walk_calls(|meter| clone_backing::inspect_blocks(&par, meter))
+        );
+        let (_, copied) =
+            matcher_calls(|context| context.reserve_blocks_copy_and_cleanup(&free_map));
+        assert_eq!(
+            copied,
+            walk_calls(|meter| clone_backing::reserve_blocks_copy_and_cleanup(&free_map, meter))
+        );
+        let (_, sliced) =
+            matcher_calls(|context| context.reserve_blocks_slice_copy_and_cleanup(&pars));
+        assert_eq!(
+            sliced,
+            walk_calls(|meter| clone_backing::reserve_blocks_slice_copy_and_cleanup(&pars, meter))
+        );
+        let unmetered = SpatialMatcherContext::new();
+        assert_eq!(unmetered.inspect_blocks(&par), Some(()));
+        assert_eq!(
+            unmetered.reserve_blocks_copy_and_cleanup(&free_map),
+            Some(())
+        );
+        assert_eq!(
+            unmetered.reserve_blocks_slice_copy_and_cleanup(&pars),
+            Some(())
+        );
+        let made = Mutex::new(0usize);
+        // The first call is the context's setup charge; the second is refused.
+        let meter = |_: usize, _: usize, _: usize| {
+            let mut calls = made.lock().expect("calls lock");
+            *calls += 1;
+            if *calls == 2 {
+                Err(RSpaceError::HostWorkRejected)
+            } else {
+                Ok(())
+            }
+        };
+        let rejecting = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        assert_eq!(rejecting.inspect_blocks(&par), None);
+        let calls = *made.lock().expect("calls lock");
+        assert_eq!(rejecting.reserve_blocks_copy_and_cleanup(&free_map), None);
+        assert_eq!(rejecting.reserve_blocks_slice_copy_and_cleanup(&pars), None);
+        assert_eq!(*made.lock().expect("calls lock"), calls);
+        assert!(matches!(
+            rejecting.take_error(),
+            Some(RSpaceError::HostWorkRejected)
+        ));
+    }
+
+    /// D-E2 (DR-109): each block wrapper returns `None` at every cut, records
+    /// the meter's error, and reserves nothing after the cut.
+    #[test]
+    fn matcher_block_wrappers_stop_at_every_cut() {
+        let par = large_string_par(64);
+        let pars = vec![par.clone(), ground_par(3)];
+        let wrappers: [(&str, &dyn Fn(&SpatialMatcherContext<'_>) -> Option<()>); 3] = [
+            ("inspection", &|context| context.inspect_blocks(&par)),
+            ("copy", &|context| {
+                context.reserve_blocks_copy_and_cleanup(&par)
+            }),
+            ("slice copy", &|context| {
+                context.reserve_blocks_slice_copy_and_cleanup(&pars)
+            }),
+        ];
+        for (name, wrapper) in wrappers {
+            let (_, baseline) = matcher_calls(|context| wrapper(context));
+            assert!(!baseline.is_empty(), "{name}");
+            for cut in 0..baseline.len() {
+                let made = Mutex::new(0usize);
+                // The first call is the context's setup charge.
+                let meter = |_: usize, _: usize, _: usize| {
+                    let mut calls = made.lock().expect("calls lock");
+                    *calls += 1;
+                    if *calls == cut + 2 {
+                        Err(RSpaceError::HostWorkRejected)
+                    } else {
+                        Ok(())
+                    }
+                };
+                let context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+                assert_eq!(wrapper(&context), None, "{name}, cut {cut}");
+                assert_eq!(
+                    *made.lock().expect("calls lock"),
+                    cut + 2,
+                    "{name}, cut {cut}"
+                );
+                assert!(
+                    matches!(context.take_error(), Some(RSpaceError::HostWorkRejected)),
+                    "{name}, cut {cut}"
+                );
+            }
+        }
+    }
+
+    /// D-E2 (DR-109): a ground comparison charges two block inspections of the
+    /// pattern and nothing that depends on the target
+    /// (`MatcherReadsByReference.two_pattern_inspections_cover_lockstep_reads`).
+    #[test]
+    fn ground_comparison_charges_two_block_pattern_inspections() {
+        let pattern = ground_par(3);
+        let pattern_walk = walk_calls(|meter| clone_backing::inspect_blocks(&pattern, meter));
+        let expected = [pattern_walk.clone(), pattern_walk].concat();
+        for size in [1usize, 3, 4_096] {
+            let target = ground_par(size);
+            let (result, calls) =
+                matcher_calls(|context| context.match_ground_par(&target, &pattern));
+            assert_eq!(result.is_some(), size == 3, "{size}");
+            assert_eq!(calls, expected, "{size}");
+        }
+    }
+
+    /// D-E2 (DR-109): merging a set remainder inspects each element once and
+    /// the vector of unique elements twice before each `contains` scan
+    /// (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+    #[test]
+    fn merge_set_remainder_charges_two_container_traversals() {
+        let elements = vec![
+            ground_par(2),
+            large_string_par(256),
+            ground_par(2),
+            ground_par(5),
+        ];
+        let (result, calls) = matcher_calls(|context| {
+            let work = context.work()?;
+            let mut binding = Par::default();
+            merge_set_remainder(&mut binding, elements.clone(), &work)
+        });
+        assert!(result.is_some());
+        // `work()` charges one operation.
+        let mut expected = vec![[1, 0, 0]];
+        let mut unique: Vec<Par> = Vec::new();
+        let mut capacity = 0;
+        for element in &elements {
+            expected.extend(walk_calls(|meter| {
+                clone_backing::inspect_blocks(element, meter)
+            }));
+            for _ in 0..2 {
+                expected.extend(walk_calls(|meter| {
+                    clone_backing::inspect_blocks(&unique, meter)
+                }));
+            }
+            if !unique.contains(element) {
+                expected.push(vec_growth::<Par>(unique.len(), &mut capacity));
+                unique.push(element.clone());
+            }
+        }
+        assert_eq!(&calls[..expected.len()], expected.as_slice());
+    }
+
+    /// D-E2 (DR-109): merging a map remainder inspects each key once and the
+    /// vector of unique entries twice before each `position` scan.
+    #[test]
+    fn merge_map_remainder_charges_two_container_traversals() {
+        let entries = vec![
+            (ground_par(1), ground_par(2)),
+            (large_string_par(256), ground_par(3)),
+            (ground_par(1), ground_par(4)),
+        ];
+        let (result, calls) = matcher_calls(|context| {
+            let work = context.work()?;
+            let mut binding = Par::default();
+            merge_map_remainder(&mut binding, entries.clone(), &work)
+        });
+        assert!(result.is_some());
+        let mut expected = vec![[1, 0, 0]];
+        let mut unique: Vec<(Par, Par)> = Vec::new();
+        let mut capacity = 0;
+        for (key, value) in &entries {
+            expected.extend(walk_calls(|meter| {
+                clone_backing::inspect_blocks(key, meter)
+            }));
+            for _ in 0..2 {
+                expected.extend(walk_calls(|meter| {
+                    clone_backing::inspect_blocks(&unique, meter)
+                }));
+            }
+            if let Some(index) = unique.iter().position(|(existing, _)| existing == key) {
+                unique[index].1 = value.clone();
+            } else {
+                expected.push(vec_growth::<(Par, Par)>(unique.len(), &mut capacity));
+                unique.push((key.clone(), value.clone()));
+            }
+        }
+        assert_eq!(&calls[..expected.len()], expected.as_slice());
+    }
+
+    /// D-E2 (DR-109): a scalar connective tests the target with `single_expr`,
+    /// which copies the target's only expression. The test reserves exactly
+    /// that copy and its release, and the backing covers the copy of a 4 KiB
+    /// string. A target with two expressions, and a connective that does not
+    /// call `single_expr`, reserve no copy.
+    #[test]
+    fn scalar_connective_test_reserves_the_single_expression_copy() {
+        let target = large_string_par(4_096);
+        let string = Connective {
+            connective_instance: Some(ConnString(true)),
+        };
+        let inspections = |target: &Par, connective: &Connective| {
+            [
+                walk_calls(|meter| clone_backing::inspect_blocks(target, meter)),
+                walk_calls(|meter| clone_backing::inspect_blocks(connective, meter)),
+            ]
+            .concat()
+        };
+        let log = Mutex::new(Vec::with_capacity(1_024));
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            log.lock()
+                .expect("log lock")
+                .push([operations, scanned, backing]);
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let start = log.lock().expect("log lock").len();
+        let (target_argument, pattern_argument) = (target.clone(), string.clone());
+        let (result, allocated) =
+            crate::rust::interpreter::accounting::measured_allocations(|| {
+                context.spatial_match(target_argument, pattern_argument)
+            });
+        assert_eq!(result, Some(()));
+        let calls = log.lock().expect("log lock")[start..].to_vec();
+        let copy = walk_calls(|meter| {
+            clone_backing::reserve_blocks_copy_and_cleanup(&target.exprs[0], meter)
+        });
+        assert_eq!(calls, [inspections(&target, &string), copy].concat());
+        let reserved: usize = calls.iter().map(|call| call[2]).sum();
+        assert!(
+            allocated <= reserved,
+            "allocated {allocated}, reserved {reserved}"
+        );
+        let two = Par {
+            exprs: vec![new_gstring_expr("a".to_owned()); 2],
+            ..Par::default()
+        };
+        let (result, calls) =
+            matcher_calls(|context| context.spatial_match(two.clone(), string.clone()));
+        assert_eq!(result, None);
+        assert_eq!(calls, inspections(&two, &string));
+        let reference = Connective {
+            connective_instance: Some(VarRefBody(VarRef::default())),
+        };
+        let (result, calls) =
+            matcher_calls(|context| context.spatial_match(target.clone(), reference.clone()));
+        assert_eq!(result, None);
+        assert_eq!(calls, inspections(&target, &reference));
+    }
+
+    /// D-E2 (DR-109): the copies of the fields that a free-variable pattern
+    /// binds fit the reserved backing also when the fields hold large
+    /// payloads. A release walk alone would reserve less than one payload.
+    #[test]
+    fn free_variable_copies_of_large_fields_fit_reserved_backing() {
+        let target = Par {
+            exprs: vec![new_gstring_expr("e".repeat(4_096)); 2],
+            sends: vec![Send {
+                data: vec![large_string_par(4_096)],
+                ..Default::default()
+            }],
+            ..Par::default()
+        };
+        let release: usize = walk_calls(|meter| clone_backing::inspect_blocks(&target, meter))
+            .iter()
+            .map(|call| call[2])
+            .sum();
+        assert!(release < 4_096, "release backing {release}");
+        let totals = Mutex::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut sum = totals.lock().expect("totals lock");
+            for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let start = totals.lock().expect("totals lock")[2];
+        let (result, allocated) =
+            crate::rust::interpreter::accounting::measured_allocations(|| {
+                context.bind_free_variable_by_reference(&target, 0)
+            });
+        assert!(result.is_some());
+        let reserved = totals.lock().expect("totals lock")[2] - start;
+        assert!(
+            allocated <= reserved,
+            "allocated {allocated}, reserved {reserved}"
+        );
+    }
+
+    /// D-E2 (DR-109): for the `Par` values that the matcher walks, a block walk
+    /// never charges more VerificationBytes than the per-level walk, for an
+    /// inspection, a copy and cleanup, and a slice copy and cleanup.
+    #[test]
+    fn block_charge_le_per_level_for_matcher_values() {
+        let values = vec![
+            Par::default(),
+            ground_par(1),
+            ground_par(64),
+            large_string_par(1),
+            large_string_par(4_096),
+            Par {
+                sends: vec![Send {
+                    data: vec![ground_par(2), large_string_par(32)],
+                    ..Default::default()
+                }],
+                exprs: vec![new_freevar_expr(0), new_gint_expr(5)],
+                ..Par::default()
+            },
+            new_elist_par(
+                vec![ground_par(1), large_string_par(8)],
+                Vec::new(),
+                false,
+                Some(new_freevar_var(0)),
+                Vec::new(),
+                false,
+            ),
+        ];
+        let per_level = |action: &dyn Fn(&SpatialMatcherContext<'_>) -> Option<()>| {
+            scanned(&matcher_calls(|context| action(context)).1)
+        };
+        for value in &values {
+            assert!(
+                per_level(&|context| context.inspect_blocks(value))
+                    <= per_level(&|context| context.reserve_inspect(value)),
+                "inspection of {value:?}"
+            );
+            assert!(
+                per_level(&|context| context.reserve_blocks_copy_and_cleanup(value))
+                    <= per_level(&|context| context.reserve_clone(value)),
+                "copy of {value:?}"
+            );
+        }
+        assert!(
+            per_level(&|context| context.reserve_blocks_slice_copy_and_cleanup(&values))
+                <= per_level(&|context| context.reserve_slice(&values))
+        );
+    }
+
+    /// Negative control for `block_charge_le_per_level_for_matcher_values`: a
+    /// remainder variable is a chain of entries smaller than 19 bytes
+    /// (`Option<Var>`, `Var`, `Option<VarInstance>`, `VarInstance`). Each entry
+    /// costs two entry constants in block mode, against two pushes of three
+    /// reads of its bytes in per-level mode, so the block copy and cleanup
+    /// charges more. The root is read five times in block mode.
+    #[test]
+    fn block_copy_exceeds_per_level_for_remainder_variables() {
+        use models::rhoapi::var::VarInstance;
+        let entry = shared::rust::clone_backing::BLOCK_ENTRY_SCANNED;
+        let field = shared::rust::clone_backing::BLOCK_FIELD_SCANNED;
+        let root = std::mem::size_of::<Option<Var>>();
+        let chain = std::mem::size_of::<Option<Var>>()
+            + std::mem::size_of::<Var>()
+            + std::mem::size_of::<Option<VarInstance>>()
+            + std::mem::size_of::<VarInstance>();
+        let free = Some(new_freevar_var(0));
+        let wildcard = Some(new_wildcard_var());
+        let charge = |copy: bool, value: &Option<Var>| {
+            scanned(&walk_calls(|meter| {
+                if copy {
+                    clone_backing::reserve_blocks_copy_and_cleanup(value, meter)
+                } else {
+                    clone_backing::reserve_copy_and_cleanup(value, meter)
+                }
+            }))
+        };
+        // A free variable ends in an `i32` field. A wildcard ends in an empty
+        // message, which is one more entry.
+        assert_eq!(charge(true, &free), 5 * root + 2 * (4 * entry + field));
+        assert_eq!(
+            charge(false, &free),
+            2 * (3 * chain + 3 * std::mem::size_of::<i32>())
+        );
+        assert_eq!(charge(true, &wildcard), 5 * root + 2 * (5 * entry));
+        assert_eq!(charge(false, &wildcard), 2 * (3 * chain));
+        assert!(charge(true, &free) > charge(false, &free));
+        assert!(charge(true, &wildcard) > charge(false, &wildcard));
+    }
+
+    /// Negative control for `block_charge_le_per_level_for_matcher_values`: the
+    /// node of a free map with one binding has eleven slots. The block copy
+    /// and cleanup reads the whole node five times, against four times in
+    /// per-level mode, and one binding saves less than that extra read.
+    #[test]
+    fn block_copy_exceeds_per_level_for_sparse_free_maps() {
+        let free_map: FreeMap = [(0, Par::default())].into_iter().collect();
+        let node = shared::rust::collection_backing::tree_backing::<i32, Par>(1)
+            .expect("one node")
+            .1;
+        let block = scanned(&walk_calls(|meter| {
+            clone_backing::reserve_blocks_copy_and_cleanup(&free_map, meter)
+        }));
+        let per_level = scanned(&walk_calls(|meter| {
+            clone_backing::reserve_copy_and_cleanup(&free_map, meter)
+        }));
+        assert!(block > per_level, "{block} against {per_level}");
+        assert!(
+            block - per_level <= node,
+            "{} of a {node}-byte node",
+            block - per_level
+        );
+    }
+
+    /// D-E2 (DR-109): for the values that the matcher copies, the backing of
+    /// a block copy and cleanup covers the allocations of its walks, of the
+    /// clone and of its release, and the backing of a block inspection covers
+    /// the allocations of its walk.
+    #[test]
+    fn block_walks_cover_matcher_copy_and_worklist_allocations() {
+        fn covered<T: CloneBacking + Clone>(value: &T, name: &str) {
+            let reserved = std::cell::Cell::new(0usize);
+            let meter = |_: usize, _: usize, backing: usize| {
+                reserved.set(reserved.get() + backing);
+                Ok::<(), BackingError>(())
+            };
+            let ((), allocated) =
+                crate::rust::interpreter::accounting::measured_allocations(|| {
+                    clone_backing::reserve_blocks_copy_and_cleanup(value, &meter)
+                        .expect("an unlimited meter");
+                    drop(value.clone());
+                });
+            assert!(
+                allocated <= reserved.get(),
+                "{name}: {allocated} > {}",
+                reserved.get()
+            );
+            reserved.set(0);
+            let ((), allocated) =
+                crate::rust::interpreter::accounting::measured_allocations(|| {
+                    clone_backing::inspect_blocks(value, &meter).expect("an unlimited meter");
+                });
+            assert!(
+                allocated <= reserved.get(),
+                "{name}: {allocated} > {}",
+                reserved.get()
+            );
+        }
+        let nested = Par {
+            sends: vec![Send {
+                chan: Some(large_string_par(4_096)),
+                data: vec![ground_par(3), large_string_par(512)],
+                ..Default::default()
+            }],
+            exprs: vec![new_freevar_expr(0), new_gstring_expr("x".repeat(2_048))],
+            ..Par::default()
+        };
+        covered(&Par::default(), "empty par");
+        covered(&ground_par(64), "ground par");
+        covered(&large_string_par(4_096), "string par");
+        covered(&nested, "nested par");
+        covered(&vec![nested.clone(), ground_par(2)], "par vector");
+        covered(&nested.exprs[1], "expression");
+        let free_map: FreeMap = (0..12).map(|key| (key, nested.clone())).collect();
+        covered(&free_map, "free map");
+        covered(&Some(new_freevar_var(0)), "remainder variable");
+        covered(
+            &Connective {
+                connective_instance: Some(ConnAndBody(ConnectiveBody {
+                    ps: vec![nested.clone(), ground_par(1)],
+                })),
+            },
+            "connective",
+        );
     }
 }

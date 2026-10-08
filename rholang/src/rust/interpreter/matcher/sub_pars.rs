@@ -10,7 +10,10 @@ use super::par_count::ParCount;
 use super::spatial_matcher::MatcherWork;
 
 fn clone_slice<A: Clone + CloneBacking>(values: &[A], work: &MatcherWork<'_>) -> Option<Vec<A>> {
-    work.reserve_slice(values)?;
+    // Changed by D-O1 (DR-109): block accounting charges inline bytes
+    // once per enclosing block.
+    // work.reserve_slice(values)?;
+    work.reserve_blocks_slice_copy_and_cleanup(values)?;
     Some(values.to_vec())
 }
 
@@ -30,7 +33,10 @@ fn insert_head<A: Clone + CloneBacking>(
         .checked_mul(size_of::<A>())
         .or_else(|| work.reject(RSpaceError::HostWorkRejected))?;
     work.reserve(1, scanned, 0)?;
-    work.reserve_clone(head)?;
+    // Changed by D-O1 (DR-109): block accounting charges inline bytes
+    // once per enclosing block.
+    // work.reserve_clone(head)?;
+    work.reserve_blocks_copy_and_cleanup(head)?;
     work.reserve_vec(values, 1)?;
     values.insert(0, head.clone());
     Some(())

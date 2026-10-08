@@ -6053,6 +6053,9 @@ Tests:
 - The existing every-cut and differential tests of candidate selection and
   installation pass unchanged.
 
+**Amendment (DR-109).** The commit guard also pays the release of its
+owned result, with a second block inspection (DR-109, decision 5).
+
 **Cross-refs.** DR-76 (C12, the same read-coverage rule for the COMM
 observation), DR-81, DR-82. Leaf `ofp-2-cap-d-a1-commit-check-reads`.
 
@@ -8876,6 +8879,10 @@ copies in `sub_pars`, and the copies in `list_match`.
 `bind_free_variable_by_reference` also reserve the cleanup of the values
 that they bind.
 
+**Amendment (DR-109).** The charged clone of a free map is a block copy
+and cleanup (DR-109, decision 2). The insert charges that follow still
+start from the backing of the cloned map.
+
 **Cross-refs.** DR-77, DR-78, DR-91. Leaves
 `ofp-2-cap-d-d1a-free-map-charges` and `ofp-2-cap-d-d1b-in-place-merge`.
 
@@ -9072,6 +9079,11 @@ VerificationBytes and 1.07 in SearchStateBytes.
 it chooses its path, and it inspects the target only on the general path. A
 pattern that is one free variable binds the target directly (DR-105).
 
+**Amendment (DR-109).** Under block accounting, the two inspections of a
+ground pattern are block inspections. The lockstep bound holds unchanged,
+because each read of the target mirrors a read of the pattern of the same
+size (DR-109).
+
 **Cross-refs.** DR-79, DR-88, DR-91, DR-92, DR-94, DR-103. Phase D item D-E2
 moves the matcher's walker calls to block mode. Leaf
 `ofp-2-cap-d-d2-matcher-reads-by-reference`.
@@ -9252,6 +9264,9 @@ and 22 times it. The saving is about twice the 17.5 MB of the plan, because
 the fast path also skips the inspection of the target, the bounds vector
 and the filter. In multiples of the original caps, the replay falls to 4.46
 in VerificationBytes and 1.05 in SearchStateBytes.
+
+**Amendment (DR-109).** The copies of the borrowed fields are block slice
+copies (DR-109, decision 2).
 
 **Cross-refs.** DR-88, DR-103, DR-104. Leaf
 `ofp-2-cap-d-d3-free-variable-fast-path`.
@@ -10161,5 +10176,336 @@ does not change. In multiples of the original caps, the replay of the
 gateway block is now at 2.57 in VerificationBytes and 0.90 in
 SearchStateBytes.
 
+**Amendment (DR-109).** The bound of the comparison with the per-level
+charge holds only when every entry has at least 19 bytes. An entry costs
+two entry constants (112 bytes) in block mode, and two pushes of three
+reads of its bytes in per-level mode. A remainder variable of the matcher
+is a chain of smaller entries (DR-109).
+
 **Cross-refs.** DR-83, DR-92, DR-93, DR-94, DR-96, DR-106, DR-107. Leaf
 `ofp-2-cap-d-e1-rspace-sites`.
+
+## DR-109 — The matcher walker sites in block mode, with second traversals for membership scans
+
+**Status.** Part 1, the walker sites of the rholang matcher (decisions 1 to
+6), implemented 2026-10-08 for Phase D item D-E2 of epic 8946 (D-O1 Stage
+B). Part 2, the walker sites of `rho-pure-eval`, follows. A read-only design
+pass took the inventory of the matcher sites. The user decided to put the
+`rho-pure-eval` sites into D-E2 as a second commit.
+
+**Context.**
+
+- After DR-108, the 90 walker sites of the matcher
+  (`rholang/src/rust/interpreter/matcher`) were the largest group of
+  per-level walks in the replay of the gateway funding block: 34 MiB of
+  VerificationBytes and 4 MiB of SearchStateBytes in both probe runs.
+- DR-94 states the precondition of a block-mode site. The site prepays
+  exactly one linear traversal, or one clone and one release. The design
+  pass audited each matcher site against it and found three kinds of site
+  where one per-level charge paid more:
+  - Seven membership scans: `Vec::contains`, `Iterator::position` and
+    B-tree searches. A scan compares the probe with items of the container,
+    so it reads the probe once for each item that it compares. The
+    per-level inspection of the container counted each inline byte three
+    times, which paid both sides.
+  - The scalar connectives (`ConnBool`, `ConnInt`, `ConnString`, `ConnUri`,
+    `ConnByteArray`) test the target with `single_expr`. It clones the
+    target's only expression and drops the clone. The per-level inspection
+    of the target paid those reads. No charge, in either mode, paid the
+    backing of the clone.
+  - The commit guard owns the result of its evaluation. The per-level
+    inspection of the result also paid its release.
+- D-D2 (DR-104, decision 4) compares a ground pattern by reference with two
+  inspections of the pattern (the lockstep bound). That bound holds in block
+  mode unchanged.
+
+**Decision.**
+
+1. The wrappers. `MatcherWork` gets a private `block_walk`, which runs one
+   block walk of the shared walker with the matcher's meter, and three thin
+   wrappers: `inspect_blocks`, `reserve_blocks_copy_and_cleanup` and
+   `reserve_blocks_slice_copy_and_cleanup`. `SpatialMatcherContext`
+   delegates to them, and its `reserve_single_expr_copy` reserves the copy
+   of decision 4. Without a meter, a wrapper walks nothing, as the per-level
+   helpers did. A recorded error still stops the match. The per-level helpers
+   compile only for tests, as reference charges. `match.rs` calls the
+   shared block walks directly.
+2. The site switch. Each of the 90 sites moves to the block call that
+   prepays the same work (audit below). The ground comparison keeps two
+   block inspections of the pattern.
+3. The second traversals. Before each of the seven membership scans, the
+   site inspects the container a second time.
+4. The single expression. Before a scalar connective test, the matcher
+   reserves a block copy and cleanup of the target's only expression, under
+   the condition of `single_expr`.
+5. The guard result. The commit guard inspects its owned result a second
+   time, which pays the release.
+6. Each replaced line stays in the source, commented out with its reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨block wrapper⟩ ≡
+  if the context has no meter: walk nothing (a recorded error still stops the match)
+  run the shared block walk with the matcher's meter
+  if a reservation fails: record the error and stop
+
+⟨membership scan of probe x in container C⟩ ≡     -- contains, position, B-tree search
+  inspect_blocks(x)          -- kept from the per-level code
+  inspect_blocks(C)          -- the container side
+  inspect_blocks(C)          -- the probe side, at most C's reads in lockstep
+  scan C for x
+
+⟨ground comparison of target t with pattern p⟩ ≡
+  inspect_blocks(p); inspect_blocks(p)               -- the lockstep bound (DR-104)
+  match_pars(t, p)
+
+⟨scalar connective test⟩ ≡
+  inspect_blocks(t); inspect_blocks(c)
+  if t has one expression and no sends, receives, news, matches or bundles:
+    reserve_blocks_copy_and_cleanup(t.exprs[0])      -- single_expr copies it and drops the copy
+  single_expr(t) and the variant test
+
+⟨guard result r⟩ ≡
+  r ← eval_metered(guard)
+  inspect_blocks(r)          -- extract_bool
+  inspect_blocks(r)          -- the release of the owned result
+```
+
+**Soundness.**
+
+- An inspection prepays one traversal
+  (`WalkerBlockCharge.block_inspection_covers_walk_and_traversal`). A copy
+  and cleanup prepays one clone and one release
+  (`block_copy_covers_walk_and_clone`, with the release as the consumer
+  traversal). A slice copy is the same walk with a block root.
+- A membership scan reads no more of the probe than the container holds,
+  so two inspections of the container cover both sides
+  (`MatcherReadsByReference.membership_probe_reads_le_items`,
+  `membership_item_reads_le_items`,
+  `two_container_inspections_cover_membership_scan`). The model compares
+  the probe with every item. This bounds a scan that stops early and a
+  B-tree search that compares only one path of keys.
+- The ground comparison reads both sides in lockstep
+  (`MatcherReadsByReference.two_pattern_inspections_cover_lockstep_reads`).
+- The copy of the single expression and the release of the guard result are
+  one copy and one traversal of an owned value.
+- The charge of every site depends only on the values and on the order of
+  the matcher's steps, so every role charges the same. One exception
+  remains outside this item (see "Recorded gap").
+
+**Audit.** One row per site, with the two sides of one comparison in one
+row. All paths are under `rholang/src/rust/interpreter/matcher/`. "Copy"
+means one clone and its release. Owned values that a site only reads are
+released where they are consumed. The copy that created them prepaid the
+release (DR-103, as amended by DR-104).
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `spatial_matcher.rs:386` (`merge_set_remainder`) | element | the element side of `contains`, and its move into the vector | block inspection | a set pattern with a remainder |
+| `spatial_matcher.rs:387`, `:392` (`merge_set_remainder`) | vector of unique elements | the container side of `contains`, and the element side (decision 3) | block inspection, twice | a set pattern with a remainder |
+| `spatial_matcher.rs:426` (`merge_map_remainder`) | key | the key side of `position`, and its move | block inspection | a map pattern with a remainder |
+| `spatial_matcher.rs:427`, `:432` (`merge_map_remainder`) | vector of unique entries | the container side of `position`, and the key side (decision 3) | block inspection, twice | a map pattern with a remainder |
+| `spatial_matcher.rs:580`, `:581` (`match_ground_par`) | pattern | both sides of `match_pars` (lockstep, DR-104) | block inspection, twice | every ground pattern |
+| `spatial_matcher.rs:764` (`bind_field_by_reference`) | element of a borrowed field | the locally free predicate | block inspection | a free-variable pattern (DR-105) |
+| `spatial_matcher.rs:772` (`bind_field_by_reference`) | borrowed field | the copy of the field and its release | block slice copy | a free-variable pattern (DR-105) |
+| `spatial_matcher.rs:799`, `:800` (`spatial_match` of pairs) | owned pair target and pattern | nothing beyond the recursion's own charges (redundant) | block inspection, twice | map entries with connectives |
+| `spatial_matcher.rs:813` (`spatial_match` of a connective) | owned target | the reads of the connective arms | block inspection | each connective |
+| `spatial_matcher.rs:814` (`spatial_match` of a connective) | owned connective | its discriminant, and the scan for an `or` body | block inspection | each connective |
+| `spatial_matcher.rs:823` (`spatial_match` of a connective) | the target's only expression | the copy of `single_expr` and its release (decision 4) | block copy | each scalar connective |
+| `spatial_matcher.rs:831` (`and` connective) | owned target | the copy for each conjunct | block copy | each conjunct |
+| `spatial_matcher.rs:841` (`or` connective) | free map | the copy that is saved and restored | block copy | each disjunct |
+| `spatial_matcher.rs:846` (`or` connective) | owned target | the copy for each disjunct | block copy | each disjunct |
+| `spatial_matcher.rs:943` (`spatial_match` of a Par) | owned pattern | the free-variable test, the variable scans, the counts and the connective header (DR-105) | block inspection | every owned pattern with connectives |
+| `spatial_matcher.rs:952` (`spatial_match` of a Par) | owned target | the list lengths and the field moves | block inspection | patterns with connectives that are not one free variable |
+| `spatial_matcher.rs:996` (`spatial_match` of a Par) | connective | the bounds of `min_max_con` | block inspection | each connective of such a pattern |
+| `spatial_matcher.rs:1033` (`match_connective_with_bounds`) | connective | the copy for each candidate | block copy | each candidate subset |
+| `spatial_matcher.rs:1185`, `:1186` (`If`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1197`, `:1198` (`CostSignedTerm`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1209`, `:1210` (`CostStack`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1223`, `:1224` (`Bundle`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1236`, `:1237` (`Send`) | owned target and pattern | the flags (the channel and the data recurse) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1253`, `:1254` (`Receive`) | owned target and pattern | the flags (the binds and the body recurse) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1268`, `:1269` (`New`) | owned target and pattern | the bind count (the body recurses) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1282`, `:1283` (`Expr`) | owned target and pattern | the discriminants and the variable comparison (lists, sets and maps recurse) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1551`, `:1552` (`Match`) | owned target and pattern | nothing beyond the recursion | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1569`, `:1570` (`GUnforgeable`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1586`, `:1587` (`ReceiveBind`) | owned target and pattern | the pattern comparison (the source recurses) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1600`, `:1601` (`MatchCase`) | owned target and pattern | the pattern comparison (the source recurses) | block inspection, twice | term patterns with connectives |
+| `list_match.rs:103` (`list_match_single_`) | target | the remainder predicate | block inspection | lists with a remainder and no element patterns |
+| `list_match.rs:136` (`list_match`) | free map | the copy into the match closure | block copy | each bipartite match |
+| `list_match.rs:146` (`list_match`) | targets | the copy for the bipartite match | block copy | each bipartite match |
+| `list_match.rs:154` (`list_match`) | free map of a result | the copy for the aggregation | block copy | each bipartite match |
+| `list_match.rs:162` (`list_match`) | free map | the copy for the aggregation | block copy | each bipartite match |
+| `list_match.rs:172` (`list_match`) | remainder target | the copy into the remainder targets | block copy | each bipartite match with a remainder |
+| `list_match.rs:184` (`list_match`) | target | the probe side of `contains` (redundant after decision 3) | block inspection | each bipartite match |
+| `list_match.rs:185`, `:191` (`list_match`) | remainder targets | the container side of `contains`, and the probe side (decision 3) | block inspection, twice | each bipartite match |
+| `list_match.rs:196` (`list_match`) | target | the copy into the sorted remainder | block copy | each bipartite match with a remainder |
+| `list_match.rs:282` (`match_function`) | owned pattern | the connective flag | block inspection | each match attempt |
+| `list_match.rs:288`, `:289` (`match_function`) | owned target and pattern | both sides of a ground comparison | block inspection, twice | each ground attempt |
+| `list_match.rs:299` (`match_function`) | owned target | the remainder predicate | block inspection | each remainder attempt |
+| `list_match.rs:313` (`match_function`) | free map | the copy returned as the result | block copy | each successful attempt |
+| `fold_match.rs:58`, `:59` (`fold_match`) | target and pattern | the copies for `spatial_match` | block copy, twice | arguments whose pattern uses connectives |
+| `fold_match.rs:99` (`free_check`) | element | the remainder predicate | block inspection | surplus elements of a list remainder |
+| `fold_match.rs:106` (`free_check`) | element | the copy into the binding | block copy | surplus elements of a list remainder |
+| `fold_match.rs:128`, `:129` (`fold_match`) | match cases | the copies for `spatial_match` | block copy, twice | match cases |
+| `fold_match.rs:166` (`free_check`) | match case | the remainder predicate | block inspection | case remainders |
+| `fold_match.rs:173` (`free_check`) | match case | the copy into the binding | block copy | case remainders |
+| `match.rs:33` (`get_with_context`) | remainder variable | the copy for `fold_match` | block copy | every metered match |
+| `match.rs:78` (`get_with_context`) | random state | the copy into the result | block copy | every successful match |
+| `match.rs:79` (`get_with_context`) | cost authority | the copy into the result | block copy | every successful match |
+| `match.rs:201` (`check_commit_metered`) | guard | the emptiness test | block inspection | guarded continuations |
+| `match.rs:247` (`guard_passes_metered`) | bound value | the copy into the environment | block copy | each bound value of a guard |
+| `match.rs:256`, `:261` (`guard_passes_metered`) | owned result | its read, and its release (decision 5) | block inspection, twice | each guard result |
+| `maximum_bipartite_match.rs:84` (`find_matches`) | indexed targets | the copy for each pattern | block copy | each bipartite match |
+| `maximum_bipartite_match.rs:101`, `:102`, `:103` (`find_matches`) | target, pattern and free map | the result copies | block copy, three times | each matched pair |
+| `maximum_bipartite_match.rs:142`, `:144` (`find_match`) | pattern and candidate | the arguments of the match function | block copy, twice | each attempt |
+| `maximum_bipartite_match.rs:152`, `:157` (`find_match`) | indexed candidate | the copies into the search state | block copy, twice | each attempt |
+| `maximum_bipartite_match.rs:233` (`not_seen`) | candidate | the probe side of the search | block inspection | each attempt |
+| `maximum_bipartite_match.rs:234`, `:239` (`not_seen`) | seen targets | the keys side and the probe side (decision 3) | block inspection, twice | each attempt |
+| `maximum_bipartite_match.rs:255` (`add_seen`) | candidate | the probe side, and its move | block inspection | each attempt |
+| `maximum_bipartite_match.rs:256`, `:261` (`add_seen`) | seen targets | the keys side and the probe side (decision 3) | block inspection, twice | each attempt |
+| `maximum_bipartite_match.rs:271` (`get_match`) | candidate | the probe side | block inspection | each reassignment |
+| `maximum_bipartite_match.rs:272`, `:277` (`get_match`) | matches | the keys side and the probe side (decision 3) | block inspection, twice | each reassignment |
+| `maximum_bipartite_match.rs:283` (`get_match`) | matched pattern | the copy pushed as a frame | block copy | each reassignment |
+| `maximum_bipartite_match.rs:308` (`claim_match`) | candidate | the probe side, and its move | block inspection | each claimed match |
+| `maximum_bipartite_match.rs:309`, `:314` (`claim_match`) | matches | the keys side and the probe side (decision 3) | block inspection, twice | each claimed match |
+| `sub_pars.rs:16` (`clone_slice`) | slice of terms | the copy and its release | block slice copy | sub-par enumeration |
+| `sub_pars.rs:39` (`insert_head`) | term | the copy and its release | block copy | sub-par enumeration |
+
+The set and map conversions of the `ESet` and `EMap` arms use the
+`SorterMeter`, which D-E4 switches.
+
+**Comparison with the per-level charge.** The test uses representative
+`Par` values: empty, ground, strings of 1 to 4,096 bytes, sends, variables
+and lists with remainders. For these values, a block walk charges no more
+VerificationBytes than the per-level walk. This holds for an inspection, for
+a copy and cleanup and for a slice copy. Two kinds of small value charge
+more:
+
+- A remainder variable is a chain of entries smaller than 19 bytes
+  (`Option<Var>`, `Var`, `Option<VarInstance>`, `VarInstance`). Each entry
+  costs two entry constants (112 bytes) in block mode, against two pushes
+  of three reads of its 8 bytes (48 bytes) in per-level mode. The copy of a
+  free-variable remainder charges 504 bytes against 216, and a wildcard
+  remainder 600 against 192.
+- A free map with few bindings has a sparse B-tree node. The block walks
+  read the whole node five times, against four.
+
+Both occur at most once or twice in each match. In the probe they add less
+than 0.1 MB. They show that the bound of DR-108 holds only when every entry
+has at least 19 bytes (amendment below).
+
+**Recorded gap.** The metered conversion of a set or a map sorts its
+elements in the iteration order of a randomly seeded hash table. So its
+charge varies from run to run (`SortedParHashSet::create_from_vec_metered`,
+`SortedParMap::create_from_vec_metered`). The D-E2 tests found it. It
+predates this item: the same tests fail against the code before D-E2. The
+user decided to record it and not to fix it in D-E2. It is the pgmcp bug
+`metered-set-and-map-construction-charges-depend-on-hashset-hashmap-iteration-order-nondeterministic-host-work-475811`.
+The exact-credit checks below therefore leave out matches that hold a set
+or a map, and they compare only the result for those matches.
+
+**Verification (part 1).** `MatcherReadsByReference.v` proves, without
+axioms, in its section (e): `membership_item_reads_le_items`,
+`membership_probe_reads_le_items` and
+`two_container_inspections_cover_membership_scan`. The negative control
+`probe_and_container_inspections_undercount_scan` shows that one inspection
+of the probe and one of the container pay 12 of the 18 elements that a scan
+can read.
+
+Tests:
+
+- `spatial_matcher.rs`:
+  - `matcher_block_wrappers_charge_the_shared_block_walks` and
+    `matcher_block_wrappers_stop_at_every_cut`: each wrapper makes exactly
+    the reservations of its shared walk, walks nothing without a meter, and
+    stops at every cut with the meter's error.
+  - `ground_comparison_charges_two_block_pattern_inspections`: exactly two
+    inspections of the pattern, the same for targets of 1, 3 and 4,096
+    elements.
+  - `merge_set_remainder_charges_two_container_traversals` and
+    `merge_map_remainder_charges_two_container_traversals`: an exact mirror
+    of the reservations of each scan.
+  - `scalar_connective_test_reserves_the_single_expression_copy`: the exact
+    reservations, and a backing that covers the copy of a 4 KiB string. A
+    target with two expressions, and a connective that does not call
+    `single_expr`, reserve no copy.
+  - `free_variable_copies_of_large_fields_fit_reserved_backing` and
+    `block_walks_cover_matcher_copy_and_worklist_allocations`: the backing
+    covers the copies of 4 KiB payloads.
+  - `block_charge_le_per_level_for_matcher_values`, and the negative
+    controls `block_copy_exceeds_per_level_for_remainder_variables` (exact,
+    term by term) and `block_copy_exceeds_per_level_for_sparse_free_maps`.
+- `list_match.rs`: `list_match_remainder_sort_charges_two_container_traversals`
+  finds the run of one target inspection and two inspections of the
+  remainder targets for each scan, in order.
+  `list_match_copies_fit_reserved_backing` covers 4 KiB targets.
+- `maximum_bipartite_match.rs`:
+  `bipartite_searches_charge_two_container_traversals` states the exact
+  reservations of `not_seen`, `add_seen`, `claim_match` and `get_match`.
+- `match.rs`: `guard_result_charges_an_inspection_and_a_release` mirrors the
+  guard's reservations exactly.
+- `rholang/tests/matcher/match_test.rs`: every one of the 52 tests runs the
+  metered matcher too. With an unlimited meter, it gives the result and the
+  free map of the unmetered matcher. It succeeds with exactly the credit
+  that it reserves, and a credit one unit short in any dimension rejects it
+  with the host error. Matches that hold a set or a map compare only the
+  result (see "Recorded gap").
+- The free-map insert proptest in `list_match.rs` charges its clone with the
+  block copy, as the matcher does.
+
+Eight mutations in a scratch copy fail tests:
+
+- A merge of a set remainder, a `list_match` remainder sort or a bipartite
+  search with one container inspection. Each fails its exact scan test.
+- A ground comparison with one pattern inspection fails the exact ground
+  test.
+- A free-variable field that is inspected but not copied fails the two
+  allocation tests of the free-variable fast path.
+- A guard without the release of its result fails the exact guard test.
+- A single-expression copy that is reserved for the wrong connective fails
+  the scalar connective test.
+- A wrapper that calls the per-level walk fails seven tests, among them the
+  wrapper test.
+
+Suites (part 1):
+
+- Shared, rspace++ and rholang: 4,271 of 4,271 tests pass.
+- Casper and models with the original caps: 2,142 of 2,148 tests pass. The
+  6 failures are a subset of the known failures of DR-108. One more registry
+  test of DR-101 now passes with the original caps:
+  `a_signer_spends_a_deposit_that_another_signer_made`. After DR-108 it
+  stopped at the VerificationBytes limit, with 266.6 MB used of 268.4 MB.
+- Casper with the provisional caps: 1,688 of 1,692 tests pass. The 4
+  failures are the known failures of DR-108.
+- The doctests pass. The proof gate passes with 272 modules and 3,069 closed
+  assumption queries.
+
+**Measurement (part 1).** The D-G0 probe ran the gateway test three times
+with DR-108 and three times with part 1 of DR-109, under the provisional
+caps. The design pass found that the expected change is close to the
+difference between two runs of one build, so each arm has three runs. Every
+role charged exactly the same usage in every run. The replay of the
+gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-108, run 1 | 692,100,826 | 121,150,356 | 57,617,237 |
+| DR-108, run 2 | 688,251,351 | 120,990,821 | 57,630,520 |
+| DR-108, run 3 | 692,867,624 | 121,348,377 | 57,656,887 |
+| DR-109 part 1, run 1 | 664,412,416 | 120,349,146 | 57,602,014 |
+| DR-109 part 1, run 2 | 673,223,881 | 120,837,351 | 57,630,978 |
+| DR-109 part 1, run 3 | 668,777,744 | 120,557,226 | 57,632,746 |
+| Change of the means | −22.3 MB (−3.2 %) | −0.58 MB (−0.5 %) | −0.01 M (0.0 %) |
+
+The VerificationBytes runs of the two builds do not overlap. The largest
+run of DR-109 is 15.0 MB below the smallest run of DR-108. The sampled
+share of the matcher walker in a validator replay falls from 34, 34 and 32
+MiB to 10, 14 and 8 MiB. The design estimated −23 MB (±30 %) and 10 to 14
+MiB. The producer's execution does not change, because it has no matcher
+frames. In multiples of the original caps, the replay of the gateway block
+is now at 2.49 in VerificationBytes and 0.90 in SearchStateBytes.
+
+**Cross-refs.** DR-88, DR-92, DR-94, DR-103, DR-104, DR-105, DR-108. Leaf
+`ofp-2-cap-d-e2-matcher-sites`.

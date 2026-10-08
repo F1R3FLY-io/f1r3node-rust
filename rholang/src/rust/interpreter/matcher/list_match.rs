@@ -97,7 +97,10 @@ macro_rules! list_match {
                         // by reference, so an inspection replaces the copy.
                         // self.reserve_clone(target)?;
                         // if !self.locally_free(target.to_owned(), 0).is_empty() {
-                        self.reserve_inspect(target)?;
+                        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                        // once per enclosing block.
+                        // self.reserve_inspect(target)?;
+                        self.inspect_blocks(target)?;
                         if !self.locally_free_is_empty(target, 0) {
                             return None;
                         }
@@ -127,31 +130,46 @@ macro_rules! list_match {
                 }
                 all_patterns.extend(patterns.into_iter().map(Pattern::Term));
 
-                self.reserve_clone(&self.free_map)?;
+                // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                // once per enclosing block.
+                // self.reserve_clone(&self.free_map)?;
+                self.reserve_blocks_copy_and_cleanup(&self.free_map)?;
                 let mut cloned_self = self.clone();
                 self.reserve(1, 0, std::mem::size_of::<SpatialMatcherContext<'a>>() + std::mem::size_of::<usize>() * 2)?;
                 let _match_function = Box::new(move |pattern, t| cloned_self.match_function(pattern, t));
                 // NOTE: Bypassing 'memoizeInHashMap' here
                 let mut maximum_bipartite_match: MaximumBipartiteMatch<'_, Pattern<$type>, $type, FreeMap> = MaximumBipartiteMatch::new(_match_function, self.work()?);
 
-                self.reserve_clone(&targets)?;
+                // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                // once per enclosing block.
+                // self.reserve_clone(&targets)?;
+                self.reserve_blocks_copy_and_cleanup(&targets)?;
                 let matches = maximum_bipartite_match.find_matches(all_patterns, targets.clone())?;
 
                 let mut free_maps = Vec::new();
                 for (_, _, free_map) in &matches {
-                    self.reserve_clone(free_map)?;
+                    // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // self.reserve_clone(free_map)?;
+                    self.reserve_blocks_copy_and_cleanup(free_map)?;
                     self.reserve_vec(&mut free_maps, 1)?;
                     free_maps.push(free_map.clone());
                 }
 
-                self.reserve_clone(&self.free_map)?;
+                // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                // once per enclosing block.
+                // self.reserve_clone(&self.free_map)?;
+                self.reserve_blocks_copy_and_cleanup(&self.free_map)?;
                 let updated_free_map = aggregate_updates(self.free_map.clone(), free_maps, &self.work()?)?;
                 self.free_map = updated_free_map;
 
                 let mut remainder_targets = Vec::new();
                 for (target, pattern, _) in &matches {
                     if matches!(pattern, Pattern::Remainder(_)) {
-                        self.reserve_clone(target)?;
+                        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                        // once per enclosing block.
+                        // self.reserve_clone(target)?;
+                        self.reserve_blocks_copy_and_cleanup(target)?;
                         self.reserve_vec(&mut remainder_targets, 1)?;
                         remainder_targets.push(target.clone());
                     }
@@ -159,10 +177,23 @@ macro_rules! list_match {
 
                 let mut remainder_targets_sorted = Vec::new();
                 for target in &targets {
-                    self.reserve_inspect(target)?;
-                    self.reserve_inspect(&remainder_targets)?;
+                    // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // self.reserve_inspect(target)?;
+                    // self.reserve_inspect(&remainder_targets)?;
+                    self.inspect_blocks(target)?;
+                    self.inspect_blocks(&remainder_targets)?;
+                    // Added by D-E2 (DR-109): `contains` reads the target once
+                    // for each remainder target, in lockstep, so it reads no
+                    // more of the target than of the remainder targets. A
+                    // second inspection of them pays that side
+                    // (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+                    self.inspect_blocks(&remainder_targets)?;
                     if remainder_targets.contains(target) {
-                        self.reserve_clone(target)?;
+                        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                        // once per enclosing block.
+                        // self.reserve_clone(target)?;
+                        self.reserve_blocks_copy_and_cleanup(target)?;
                         self.reserve_vec(&mut remainder_targets_sorted, 1)?;
                         remainder_targets_sorted.push(target.clone());
                     }
@@ -245,17 +276,27 @@ macro_rules! list_match {
                      // by reference, so an inspection replaces the copy.
                      // self.reserve_clone(&p)?;
                      // if !self.connective_used(p.clone()) {
-                     self.reserve_inspect(&p)?;
+                     // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                     // once per enclosing block.
+                     // self.reserve_inspect(&p)?;
+                     self.inspect_blocks(&p)?;
                      if !self.connective_used_ref(&p) {
-                         self.reserve_inspect(&t)?;
-                         self.reserve_inspect(&p)?;
+                         // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                         // once per enclosing block.
+                         // self.reserve_inspect(&t)?;
+                         // self.reserve_inspect(&p)?;
+                         self.inspect_blocks(&t)?;
+                         self.inspect_blocks(&p)?;
                          guard(t == p)
                       } else {
                          self.spatial_match(t, p)
                       }
                   }
                   Pattern::Remainder(_) => {
-                      self.reserve_inspect(&t)?;
+                      // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                      // once per enclosing block.
+                      // self.reserve_inspect(&t)?;
+                      self.inspect_blocks(&t)?;
                       // Changed by D-D2 (D-M8, DR-104): the predicate reads the target
                       // by reference and builds no union bitset.
                       // guard(self.locally_free(t, 0).is_empty())
@@ -266,7 +307,10 @@ macro_rules! list_match {
                 match match_effect {
                   Some(_) => {
                     let free_map = &self.free_map;
-                    self.reserve_clone(free_map)?;
+                    // Changed by D-O1 (DR-109): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // self.reserve_clone(free_map)?;
+                    self.reserve_blocks_copy_and_cleanup(free_map)?;
                     Some(free_map.clone())},
                   None => None,
                 }
@@ -561,7 +605,12 @@ mod metered_tests {
             };
             let context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
             let start = totals.lock().expect("totals lock")[2];
-            context.reserve_clone(&original).expect("clone charge");
+            // Changed by D-O1 (DR-109): the matcher charges a free-map clone
+            // with a block copy, so the test does too.
+            // context.reserve_clone(&original).expect("clone charge");
+            context
+                .reserve_blocks_copy_and_cleanup(&original)
+                .expect("clone charge");
             let (mut map, mut allocated) =
                 crate::rust::interpreter::accounting::measured_allocations(|| original.clone());
             for key in keys {
@@ -909,5 +958,102 @@ mod metered_tests {
             }
             proptest::prop_assert!(rejections > 0, "a short budget rejects the merge");
         }
+    }
+
+    /// The reservations of one shared block walk, in call order.
+    fn walk_calls(
+        walk: impl FnOnce(
+            &dyn shared::rust::clone_backing::BackingMeter,
+        ) -> Result<(), shared::rust::clone_backing::BackingError>,
+    ) -> Vec<[usize; 3]> {
+        let log = std::cell::RefCell::new(Vec::new());
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            log.borrow_mut().push([operations, scanned, backing]);
+            Ok::<(), shared::rust::clone_backing::BackingError>(())
+        };
+        walk(&meter).expect("an unlimited meter");
+        log.into_inner()
+    }
+
+    fn string_par(length: usize) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(models::rhoapi::expr::ExprInstance::GString(
+                    "t".repeat(length),
+                )),
+            }],
+            ..Par::default()
+        }
+    }
+
+    /// D-E2 (DR-109): before each `contains` scan of the remainder targets,
+    /// `list_match` inspects the target once and the remainder targets twice
+    /// (`MatcherReadsByReference.two_container_inspections_cover_membership_scan`).
+    /// The reservation log holds that run for each target, in order.
+    #[test]
+    fn list_match_remainder_sort_charges_two_container_traversals() {
+        let target = string_par(128);
+        let targets = vec![target.clone(); 3];
+        let log = Mutex::new(Vec::with_capacity(4_096));
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            log.lock()
+                .expect("log lock")
+                .push([operations, scanned, backing]);
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let merger = |_: &mut Par, _: Vec<Par>, _: &MatcherWork<'_>| Some(());
+        assert!(context
+            .list_match(targets.clone(), Vec::new(), &merger, Some(0), false)
+            .is_some());
+        assert!(context.take_error().is_none());
+        let calls = log.lock().expect("log lock").clone();
+        let remainder = vec![target.clone(); 3];
+        let inspect_remainder =
+            walk_calls(|meter| shared::rust::clone_backing::inspect_blocks(&remainder, meter));
+        let run = [
+            walk_calls(|meter| shared::rust::clone_backing::inspect_blocks(&target, meter)),
+            inspect_remainder.clone(),
+            inspect_remainder,
+        ]
+        .concat();
+        let mut from = 0;
+        for scan in 0..targets.len() {
+            let found = (from..=calls.len().saturating_sub(run.len()))
+                .find(|start| calls[*start..*start + run.len()] == run[..])
+                .unwrap_or_else(|| panic!("no two-traversal run for scan {scan}"));
+            from = found + run.len();
+        }
+    }
+
+    /// D-E2 (DR-109): the copies that `list_match` makes fit the reserved
+    /// backing when the targets hold 4 KiB payloads, which the walks' own
+    /// worklist backing would not cover.
+    #[test]
+    fn list_match_copies_fit_reserved_backing() {
+        let targets = vec![string_par(4_096), string_par(4_096), string_par(8)];
+        let totals = Mutex::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut sum = totals.lock().expect("totals lock");
+            for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let merger = |_: &mut Par, _: Vec<Par>, _: &MatcherWork<'_>| Some(());
+        let start = totals.lock().expect("totals lock")[2];
+        let (arguments, patterns) = (targets.clone(), vec![string_par(8)]);
+        let (result, allocated) =
+            crate::rust::interpreter::accounting::measured_allocations(|| {
+                context.list_match(arguments, patterns, &merger, Some(0), false)
+            });
+        assert!(result.is_some());
+        assert!(context.take_error().is_none());
+        let reserved = totals.lock().expect("totals lock")[2] - start;
+        assert!(
+            allocated <= reserved,
+            "allocated {allocated}, reserved {reserved}"
+        );
     }
 }

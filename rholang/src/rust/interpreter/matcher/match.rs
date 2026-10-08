@@ -27,7 +27,10 @@ impl Matcher {
         if data.cost_stack.is_some() {
             return None;
         }
-        spatial_matcher.reserve_clone(&pattern.remainder)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // spatial_matcher.reserve_clone(&pattern.remainder)?;
+        spatial_matcher.reserve_blocks_copy_and_cleanup(&pattern.remainder)?;
         let caught_rem =
             spatial_matcher.fold_match(&data.pars, &pattern.patterns, pattern.remainder.clone())?;
         let mut free_map = std::mem::take(&mut spatial_matcher.free_map);
@@ -68,8 +71,12 @@ impl Matcher {
         //     }
         // }
         let bound_pars = Self::extract_bound_pars(free_map, pattern.free_count, spatial_matcher)?;
-        spatial_matcher.reserve_clone(&data.random_state)?;
-        spatial_matcher.reserve_clone(&data.cost_authority)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // spatial_matcher.reserve_clone(&data.random_state)?;
+        // spatial_matcher.reserve_clone(&data.cost_authority)?;
+        spatial_matcher.reserve_blocks_copy_and_cleanup(&data.random_state)?;
+        spatial_matcher.reserve_blocks_copy_and_cleanup(&data.cost_authority)?;
         Some(ListParWithRandom {
             pars: bound_pars,
             random_state: data.random_state.clone(),
@@ -188,7 +195,10 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
             }
         };
         let result = (|| {
-            clone_backing::inspect(guard, &backing)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // clone_backing::inspect(guard, &backing)?;
+            clone_backing::inspect_blocks(guard, &backing)?;
             if is_empty_par(guard) {
                 Ok(true)
             } else {
@@ -231,13 +241,24 @@ fn guard_passes_metered(
     for binding in matched {
         meter.reserve(1, 0, 0)?;
         for par in &binding.pars {
-            clone_backing::reserve_copy_and_cleanup(par, meter)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // clone_backing::reserve_copy_and_cleanup(par, meter)?;
+            clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
             env.push_metered(par.clone(), meter)?;
         }
     }
     match rho_pure_eval::eval_metered(condition, &env, meter) {
         Ok(result) => {
-            clone_backing::inspect(&result, meter)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // clone_backing::inspect(&result, meter)?;
+            clone_backing::inspect_blocks(&result, meter)?;
+            // Added by D-E2 (DR-109): `result` is an owned value, and nothing
+            // else prepays its release at the end of this arm. A block
+            // inspection prepays one traversal, so a second one pays the
+            // release.
+            clone_backing::inspect_blocks(&result, meter)?;
             Ok(extract_bool(&result) == Some(true))
         }
         Err(rho_pure_eval::EvalError::HostWork(error)) => Err(error),
@@ -653,5 +674,64 @@ mod metered_tests {
                 Err(RSpaceError::HostWorkRejected)
             ));
         }
+    }
+
+    /// D-E2 (DR-109): the commit guard charges the copies of the bound values,
+    /// the environment and the evaluation, and then two block inspections of
+    /// the owned result: its read and its release. The mirror below states
+    /// the same steps in the same order.
+    #[test]
+    fn guard_result_charges_an_inspection_and_a_release() {
+        let condition = Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GBool(true)),
+            }],
+            ..Par::default()
+        };
+        let bound = ListParWithRandom {
+            pars: vec![
+                Par {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GString("bound".repeat(40))),
+                    }],
+                    ..Par::default()
+                },
+                Par::default(),
+            ],
+            ..ListParWithRandom::default()
+        };
+        let matched = [&bound];
+        fn record(
+            log: &std::cell::RefCell<Vec<[usize; 3]>>,
+        ) -> impl Fn(usize, usize, usize) -> Result<(), BackingError> + '_ {
+            move |operations, scanned, backing| {
+                log.borrow_mut().push([operations, scanned, backing]);
+                Ok(())
+            }
+        }
+        let actual = std::cell::RefCell::new(Vec::new());
+        assert_eq!(
+            guard_passes_metered(&condition, &matched, &record(&actual)),
+            Ok(true)
+        );
+        let expected = std::cell::RefCell::new(Vec::new());
+        let meter = record(&expected);
+        let mut env: PureEnv<Par> = PureEnv::new();
+        for binding in matched {
+            meter.reserve(1, 0, 0).expect("an unlimited meter");
+            for par in &binding.pars {
+                clone_backing::reserve_blocks_copy_and_cleanup(par, &meter)
+                    .expect("an unlimited meter");
+                env.push_metered(par.clone(), &meter)
+                    .expect("an unlimited meter");
+            }
+        }
+        let result =
+            rho_pure_eval::eval_metered(&condition, &env, &meter).expect("an unlimited meter");
+        for _ in 0..2 {
+            clone_backing::inspect_blocks(&result, &meter).expect("an unlimited meter");
+        }
+        drop(meter);
+        assert_eq!(actual.into_inner(), expected.into_inner());
     }
 }

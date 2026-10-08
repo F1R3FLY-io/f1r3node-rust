@@ -31,6 +31,14 @@
        before D-D2 inspected the whole target, so it grew with elements that
        the comparison never reads (target_inspection_grows_with_unread_target).
 
+   (e) D-E2 (DR-109): a membership scan (contains, position, a B-tree
+       search) compares a probe with items of a container in lockstep. It
+       reads no more of the probe than the container holds
+       (membership_probe_reads_le_items), so two inspections of the container
+       cover both sides (two_container_inspections_cover_membership_scan).
+       One inspection of the probe and one of the container undercount
+       (probe_and_container_inspections_undercount_scan).
+
    No axiom, parameter or admission is used. Section variables are
    universally quantified when the sections close.
 
@@ -150,6 +158,71 @@ Example legacy_ground_charge_example :
   prefix_reads Nat.compare 2 (0 :: repeat 1 4096) [1] = (1, 1)
   /\ legacy_ground_charge (0 :: repeat 1 4096) [1] = 4098.
 Proof. split; vm_compute; reflexivity. Qed.
+
+(* (e) D-E2 (DR-109): membership scans. Vec::contains, Iterator::position
+   and a B-tree search compare a probe with items of a container, each with
+   one lockstep comparison. The model compares the probe with every item,
+   which bounds a scan that stops early or a search that compares only some
+   items. Each comparison reads as much of the probe as of the item, so the
+   probe side reads no more than the container holds
+   (membership_probe_reads_le_items), and two inspections of the container
+   cover both sides (two_container_inspections_cover_membership_scan). One
+   inspection of the probe and one of the container undercount
+   (probe_and_container_inspections_undercount_scan). *)
+
+Section MembershipScan.
+  Context {A : Type} (cmp : A -> A -> comparison).
+
+  (* The elements that a scan of probe [x] over [items] reads, from the
+     probe and from the items, with at most [n] pairs per comparison. *)
+  Fixpoint scan_reads (n : nat) (x : list A) (items : list (list A)) : nat * nat :=
+    match items with
+    | [] => (0, 0)
+    | y :: rest =>
+        let here := prefix_reads cmp n x y in
+        let later := scan_reads n x rest in
+        (fst here + fst later, snd here + snd later)
+    end.
+
+  (* The elements that the container holds. *)
+  Fixpoint items_length (items : list (list A)) : nat :=
+    match items with
+    | [] => 0
+    | y :: rest => length y + items_length rest
+    end.
+
+  Theorem membership_item_reads_le_items : forall n x items,
+    snd (scan_reads n x items) <= items_length items.
+  Proof.
+    induction items as [| y rest IH]; simpl; [lia |].
+    pose proof (lockstep_reads_bounded_by_pattern cmp n x y). lia.
+  Qed.
+
+  Theorem membership_probe_reads_le_items : forall n x items,
+    fst (scan_reads n x items) <= items_length items.
+  Proof.
+    induction items as [| y rest IH]; simpl; [lia |].
+    pose proof (lockstep_reads_equal cmp n x y) as Hequal.
+    pose proof (lockstep_reads_bounded_by_pattern cmp n x y). lia.
+  Qed.
+
+  Corollary two_container_inspections_cover_membership_scan : forall n x items,
+    fst (scan_reads n x items) + snd (scan_reads n x items) <= 2 * items_length items.
+  Proof.
+    intros n x items.
+    pose proof (membership_probe_reads_le_items n x items).
+    pose proof (membership_item_reads_le_items n x items). lia.
+  Qed.
+End MembershipScan.
+
+(* Negative control: the probe [1; 1; 1] scanned over three items of three
+   elements reads 9 elements from each side, 18 in all. One inspection of
+   the probe and one of the container pay 3 + 9 = 12. *)
+Example probe_and_container_inspections_undercount_scan :
+  scan_reads Nat.compare 3 [1; 1; 1] [[1; 1; 2]; [1; 1; 2]; [1; 1; 1]] = (9, 9)
+  /\ items_length [[1; 1; 2]; [1; 1; 2]; [1; 1; 1]] = 9
+  /\ 3 + 9 < 9 + 9.
+Proof. split; [| split]; [vm_compute; reflexivity | reflexivity | lia]. Qed.
 
 (* (b) Vec::retain. *)
 

@@ -51,8 +51,12 @@ impl<'a> FoldMatch<Par, Par> for SpatialMatcherContext<'a> {
                     continue;
                 }
             }
-            self.reserve_clone(&tlist[i])?;
-            self.reserve_clone(&plist[i])?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_clone(&tlist[i])?;
+            // self.reserve_clone(&plist[i])?;
+            self.reserve_blocks_copy_and_cleanup(&tlist[i])?;
+            self.reserve_blocks_copy_and_cleanup(&plist[i])?;
             let __clone_start = std::time::Instant::now();
             let t_owned = tlist[i].clone();
             let p_owned = plist[i].clone();
@@ -89,11 +93,17 @@ impl<'a> FoldMatch<Par, Par> for SpatialMatcherContext<'a> {
             // reference, so an inspection replaces the copy.
             // self.reserve_clone(item)?;
             // if !self.locally_free(item.to_owned(), 0).is_empty() {
-            self.reserve_inspect(item)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_inspect(item)?;
+            self.inspect_blocks(item)?;
             if !self.locally_free_is_empty(item, 0) {
                 return None;
             }
-            self.reserve_clone(item)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_clone(item)?;
+            self.reserve_blocks_copy_and_cleanup(item)?;
             self.reserve_vec(&mut acc, 1)?;
             acc.push(item.clone());
         }
@@ -111,8 +121,12 @@ impl<'a> FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext<'a> {
         // Iterative pair-walk; head-pair clone per iteration, no tail-vec clone.
         let n = tlist.len().min(plist.len());
         for i in 0..n {
-            self.reserve_clone(&tlist[i])?;
-            self.reserve_clone(&plist[i])?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_clone(&tlist[i])?;
+            // self.reserve_clone(&plist[i])?;
+            self.reserve_blocks_copy_and_cleanup(&tlist[i])?;
+            self.reserve_blocks_copy_and_cleanup(&plist[i])?;
             self.spatial_match(tlist[i].clone(), plist[i].clone())?;
         }
 
@@ -146,11 +160,17 @@ impl<'a> FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext<'a> {
             // reference, so an inspection replaces the copy.
             // self.reserve_clone(item)?;
             // if !self.locally_free(item.to_owned(), 0).is_empty() {
-            self.reserve_inspect(item)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_inspect(item)?;
+            self.inspect_blocks(item)?;
             if !self.locally_free_is_empty(item, 0) {
                 return None;
             }
-            self.reserve_clone(item)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // self.reserve_clone(item)?;
+            self.reserve_blocks_copy_and_cleanup(item)?;
             self.reserve_vec(&mut acc, 1)?;
             acc.push(item.clone());
         }
