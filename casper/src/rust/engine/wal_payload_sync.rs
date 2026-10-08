@@ -71,6 +71,83 @@ impl std::fmt::Debug for WalPayloadTickStop {
     }
 }
 
+/// Returned by the (future) `spawn_periodic_tick`.  Carries both
+/// the tick task's `JoinHandle` (so the caller can `abort()` on
+/// shutdown) and a [`WalPayloadTickStop`] handle (so the block-
+/// processing catch-up path can raise the graceful-stop signal).
+///
+/// Fields are `pub` so `spawn_periodic_tick` (follow-up slice)
+/// constructs via struct-literal; no accessor churn needed when
+/// the spawn site lands.
+#[allow(dead_code)]
+pub struct WalPayloadTickHandle {
+    pub join_handle: tokio::task::JoinHandle<()>,
+    pub stop: WalPayloadTickStop,
+}
+
+/// Counters produced by the (future) enumerator — how many of the
+/// unique payload hashes extracted from a WAL slice the local
+/// reducer resolved vs. how many got enqueued for peer fetch.
+/// Telemetry carries these so operators can distinguish "reducer
+/// worked, no wire traffic needed" from "we're depending on peers
+/// to serve every byte."
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EnumerateStats {
+    /// Payload hashes handed to the retriever with reproduced
+    /// bytes (via `mark_resolved`).  Fetch protocol will NOT
+    /// contact peers for these.
+    pub resolved_locally: usize,
+    /// Payload hashes enqueued for peer fetch (via
+    /// `enqueue_payload`) — either because the reducer returned
+    /// `None` or because its reproduced bytes failed the hash
+    /// check.
+    pub enqueued_for_fetch: usize,
+}
+
+/// Report from the (future) `apply_wal_slice_after_fetch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootApplyReport {
+    pub enumerated: EnumerateStats,
+    /// Number of unique payload hashes populated in the sidecar
+    /// (equal to `enumerated.resolved_locally +
+    /// enumerated.enqueued_for_fetch` on the happy path; less if
+    /// peers failed to serve some).
+    pub sidecar_populated: usize,
+    /// Number of WAL entries in the applied slice (informational —
+    /// includes observation-only variants the applier skips).
+    pub wal_entries: usize,
+}
+
+/// Reasons the (future) `apply_wal_slice_after_fetch` can fail.
+/// Callers pattern-match to distinguish "byzantine input, log +
+/// skip" from "genuine peer/network shortfall, retry later".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootApplyError {
+    /// `driver.is_complete()` did not return true within the
+    /// configured timeout.  `pending_count` is the number of
+    /// hashes still outstanding when the timeout fired.  Callers
+    /// may re-issue the flow after peer conditions improve.
+    PayloadFetchTimeout { pending_count: usize },
+    /// A hash the enumerator populated is missing from the driver
+    /// by the time `take_bytes` ran — indicates the driver dropped
+    /// a resolved entry between `is_complete()` and the sidecar
+    /// build (stale-eviction races with the poll loop, or a
+    /// `driver.stop()` called mid-collect).
+    MissingResolvedHash { hash_hex: String },
+    /// The applier returned an `ApplierError` variant (missing
+    /// sidecar / unsupported PayloadRef / out-of-allowed-roots
+    /// path / NSS failure / IO error / etc).  Byzantine or
+    /// misconfigured input; the subscriber logs + continues to
+    /// the next snapshot.
+    ApplierFailed { message: String },
+    /// The `spawn_blocking` task carrying the applier panicked.
+    /// Defense-in-depth variant: today's applier is Result-based
+    /// with no panic paths of its own, but a future refactor that
+    /// reintroduces a panic will surface here rather than killing
+    /// the subscriber loop.
+    ApplierPanic { message: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +202,61 @@ mod tests {
         let formatted = format!("{handle:?}");
         assert!(formatted.contains("WalPayloadTickStop"));
         assert!(formatted.contains("tokio::sync::Notify"));
+    }
+
+    #[test]
+    fn enumerate_stats_default_is_zero() {
+        let stats = EnumerateStats::default();
+        assert_eq!(stats.resolved_locally, 0);
+        assert_eq!(stats.enqueued_for_fetch, 0);
+    }
+
+    #[test]
+    fn enumerate_stats_eq_and_copy() {
+        let a = EnumerateStats {
+            resolved_locally: 3,
+            enqueued_for_fetch: 7,
+        };
+        let b = a;
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn boot_apply_report_builds_and_compares() {
+        let a = BootApplyReport {
+            enumerated: EnumerateStats {
+                resolved_locally: 5,
+                enqueued_for_fetch: 2,
+            },
+            sidecar_populated: 7,
+            wal_entries: 12,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+        assert_eq!(
+            a.sidecar_populated,
+            a.enumerated.resolved_locally + a.enumerated.enqueued_for_fetch,
+            "happy-path invariant: sidecar == resolved + enqueued"
+        );
+    }
+
+    #[test]
+    fn boot_apply_error_variants_distinct_under_eq() {
+        let timeout = BootApplyError::PayloadFetchTimeout { pending_count: 3 };
+        let missing = BootApplyError::MissingResolvedHash {
+            hash_hex: "deadbeef".to_string(),
+        };
+        let failed = BootApplyError::ApplierFailed {
+            message: "io".to_string(),
+        };
+        let panicked = BootApplyError::ApplierPanic {
+            message: "boom".to_string(),
+        };
+        assert_ne!(timeout, missing);
+        assert_ne!(missing, failed);
+        assert_ne!(failed, panicked);
+        assert_eq!(timeout, BootApplyError::PayloadFetchTimeout {
+            pending_count: 3
+        });
     }
 }
