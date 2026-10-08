@@ -16,12 +16,9 @@
 //! reproduces the example's contract, (3) reference this test from
 //! the example's docstring under "Companion regression".
 //!
-//! **Triage port status (slice 5.86)**: 10 of 15 examples run and
-//! pass individually against triage's current state.  5 tests are
-//! `#[ignore]`-gated with specific un-ignore conditions:
-//!   * `fileio_rows_readlinesinto` and `fileio_static_line_copy` —
-//!     require Rholang reducer `decodeUtf8` / `validUtf8PrefixLen`
-//!     String methods not yet ported to triage.
+//! **Triage port status (slices 5.86 + 5.89)**: 12 of 15 examples
+//! run and pass individually against triage's current state.  3 tests
+//! are `#[ignore]`-gated with specific un-ignore conditions:
 //!   * `fileio_lockrange_wait_true_admit_after_release` — depends on
 //!     the `deterministic_reduction::park_external_during` wiring
 //!     (G-01 harness, deferred).
@@ -30,6 +27,10 @@
 //!     `has_finished=false` on triage; the exact gap (likely a
 //!     Consensus-mode flow or missing membrane plumbing) requires
 //!     further investigation.
+//!
+//! Slice 5.89 un-ignored `fileio_rows_readlinesinto` and
+//! `fileio_static_line_copy` by porting the Rholang reducer's
+//! `validUtf8PrefixLen` and `decodeUtf8` ByteArray methods.
 //!
 //! **Flake note**: each running test uses a distinct `fs_bundle`, so
 //! `GenesisBuilder`'s cache misses on every test, and running the
@@ -603,7 +604,6 @@ in {{
 /// acquires + releases a whole-file sequential lock on dest (Phase 8
 /// §Sequential-vs-positional coordination), so a real syscall path
 /// exercises both the stream plumbing and the lock protocol.
-#[ignore = "triage: Rholang reducer is missing decodeUtf8 / validUtf8PrefixLen String methods required by LineStream — un-ignore when those reducer methods land"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fileio_static_line_copy() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1610,7 +1610,6 @@ in {{
 /// the composed path (Allocator versioned lookup → allocRows → Rows
 /// wrapping N inner Buffers → File.readLinesInto → Rows.getAt →
 /// inner Buffer.toByteArray) works end-to-end.
-#[ignore = "triage: Rholang reducer is missing validUtf8PrefixLen String method required by the LineStream decoder — un-ignore when that reducer method lands"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fileio_rows_readlinesinto() {
     let dir = tempfile::tempdir().expect("tempdir");
