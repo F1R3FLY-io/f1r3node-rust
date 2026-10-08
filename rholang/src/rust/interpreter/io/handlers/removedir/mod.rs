@@ -18,13 +18,16 @@
 //
 //   * `reply.rs` (slice 5.137): reply builders + wire helpers
 //     + `RemoveKind::as_wire` + io-error → FSERR code bridge.
-//   * `walk.rs` (slice 5.138, pending): recursive-walk functions
-//     (`collect_recursive_manifest`, `walk_dirfd_recursive`,
-//     `walk_and_unlink_recursive_with_journal`,
-//     `remove_dir_recursive`).
+//   * `walk.rs` (slice 5.138): recursive-walk syscall primitives
+//     (`unlink_manifest_entry`, `collect_recursive_manifest`,
+//     `walk_dirfd_recursive`, `remove_dir_recursive`).  Heavy
+//     unsafe libc blocks; see each function's inline SAFETY
+//     comments.
 //   * `handler.rs` (future slice): the `impl FsProcesses` block
 //     carrying `fs_remove_dir` + `finalize_failure_journal` +
-//     `journal_path_mutation_single`.
+//     `journal_path_mutation_single` + the Consensus-recursive
+//     composer `walk_and_unlink_recursive_with_journal` that
+//     ties the walker to the reply builders + WAL journaling.
 //
 // Each submodule lands as its own reviewed slice.  Until the
 // handler-side slice lands, the trait-exempt stub
@@ -34,3 +37,4 @@
 // yet.
 
 pub mod reply;
+pub mod walk;
