@@ -332,6 +332,21 @@ pub struct RuntimeManager {
     pub payload_store: Arc<
         tokio::sync::RwLock<Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>>,
     >,
+    /// Operator-provisioned consensus-static roots.  Threaded into
+    /// the WAL applier's `allowed_roots` via the boot apply
+    /// subscriber (slice 5.131) as defense-in-depth: a WAL entry
+    /// whose target path does not sit under one of these roots is
+    /// rejected by the applier.
+    ///
+    /// Populated at boot via `register_consensus_static_root` from
+    /// each entry in the operator's fs bundle (file paths + dir
+    /// paths).  Empty on observer nodes without consensus
+    /// provisioning; the applier skips validation on empty.
+    ///
+    /// Shared `Arc<RwLock<_>>` so a boot-time register from one
+    /// clone is visible to every other clone (same discipline as
+    /// `payload_store` / `fs_snapshot_writer`).
+    pub consensus_static_roots: Arc<tokio::sync::RwLock<Vec<std::path::PathBuf>>>,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -597,6 +612,25 @@ impl RuntimeManager {
         writer: Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>,
     ) {
         *self.fs_snapshot_writer.write().await = writer;
+    }
+
+    /// Boot hook: append `root` to the operator's consensus-static
+    /// root list.  Called from `node::setup` for each entry in the
+    /// operator's fs bundle (file paths + dir paths).  Duplicates
+    /// are permitted (the applier's `allowed_roots` check uses
+    /// `starts_with`, which is set-semantic — duplicate entries
+    /// cost one extra prefix compare per lookup but don't change
+    /// the accept/reject outcome).  No normalization applied here;
+    /// callers are expected to pass canonical absolute paths.
+    pub async fn register_consensus_static_root(&self, root: std::path::PathBuf) {
+        self.consensus_static_roots.write().await.push(root);
+    }
+
+    /// Snapshot the current consensus-static root list.  Used by
+    /// the boot apply subscriber (slice 5.131) to populate the
+    /// WAL applier's `allowed_roots` defense-in-depth check.
+    pub async fn consensus_static_roots(&self) -> Vec<std::path::PathBuf> {
+        self.consensus_static_roots.read().await.clone()
     }
 
     pub async fn spawn_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
@@ -1642,6 +1676,7 @@ impl RuntimeManager {
                 std::collections::HashMap::new(),
             )),
             payload_store: Arc::new(tokio::sync::RwLock::new(None)),
+            consensus_static_roots: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         }
     }
 

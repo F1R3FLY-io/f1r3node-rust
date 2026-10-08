@@ -1700,18 +1700,22 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
             >();
             snap_ctx.sync_driver.install_completion_sink(tx);
-            // Empty-stub RootIdentityRegistry + empty allowed_roots
-            // pending node::setup wiring that populates both from
-            // the operator's fs bundle.
+            // Empty-stub RootIdentityRegistry pending node::setup
+            // wiring that populates it from the operator's fs
+            // bundle.  `allowed_roots` now reads the shared
+            // `RuntimeManager.consensus_static_roots` slot (slice
+            // 5.134) — still empty by default; `node::setup` will
+            // populate it alongside the registry.
             let registry =
                 rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new();
+            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             let _subscriber_handle =
                 crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                     rx,
                     Arc::clone(&wal_ctx.sync_driver),
                     snap_ctx.snapshot_dir.clone(),
                     registry,
-                    Vec::new(),
+                    allowed_roots,
                     Some(Arc::clone(&wal_ctx.payload_lookup)),
                 );
             // JoinHandle intentionally dropped — subscriber exits

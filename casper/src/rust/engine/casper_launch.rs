@@ -519,13 +519,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // (every entry.path is treated as absolute on-disk).
             let registry =
                 rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new();
+            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             let _subscriber_handle =
                 crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                     rx,
                     std::sync::Arc::clone(&wal_ctx.sync_driver),
                     snap_ctx.snapshot_dir.clone(),
                     registry,
-                    Vec::new(),
+                    allowed_roots,
                     Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
                 );
             // JoinHandle intentionally dropped — the subscriber
