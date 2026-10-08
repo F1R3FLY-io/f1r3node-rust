@@ -23,11 +23,13 @@
 //     `walk_dirfd_recursive`, `remove_dir_recursive`).  Heavy
 //     unsafe libc blocks; see each function's inline SAFETY
 //     comments.
+//   * `journal.rs` (slice 5.140): Consensus-recursive composer
+//     `walk_and_unlink_recursive_with_journal` tying the walker
+//     to the reply builders + WAL journaling + per-entry ack
+//     seeds.
 //   * `handler.rs` (future slice): the `impl FsProcesses` block
 //     carrying `fs_remove_dir` + `finalize_failure_journal` +
-//     `journal_path_mutation_single` + the Consensus-recursive
-//     composer `walk_and_unlink_recursive_with_journal` that
-//     ties the walker to the reply builders + WAL journaling.
+//     `journal_path_mutation_single`.
 //
 // Each submodule lands as its own reviewed slice.  Until the
 // handler-side slice lands, the trait-exempt stub
@@ -36,5 +38,6 @@
 // module's items are reachable but no production code calls them
 // yet.
 
+pub mod journal;
 pub mod reply;
 pub mod walk;
