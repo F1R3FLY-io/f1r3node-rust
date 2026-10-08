@@ -1,9 +1,9 @@
 // Trait-exempt `fs_remove_dir` handler method on `FsProcesses`.
 //
-// This is the entry point the runtime dispatcher calls once the
-// trait-exempt stub (`SystemProcesses::fs_remove_dir_stub` in
-// `system_processes.rs`) is swapped out.  Composes everything in
-// the sibling submodules:
+// This is the entry point the runtime dispatcher calls for the
+// `rho:io:fs:native:1.0.0/removeDir` URN (registered by slice
+// 5.142's URN-swap in `rho_runtime::dispatch_table_creator`).
+// Composes everything in the sibling submodules:
 //
 //   * slice 5.136 — `per_entry_ack_seed` + `MAX_RECURSION_DEPTH`.
 //   * slice 5.137 — reply builders (`ok_with_count`,

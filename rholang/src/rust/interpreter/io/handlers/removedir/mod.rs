@@ -29,18 +29,15 @@
 //     seeds.
 //   * `handler.rs` (slice 5.141): the `impl FsProcesses` block
 //     carrying `fs_remove_dir`.  Composes everything above into
-//     a dispatchable handler method.  The trait-exempt stub
-//     (`SystemProcesses::fs_remove_dir_stub` in `system_processes.rs`)
-//     continues to serve runtime dispatch until a follow-up slice
-//     swaps the URN registration from the stub to this handler.
-//     Supporting helpers `finalize_failure_journal` and
-//     `journal_path_mutation_single` live in triage as
-//     `_via_table` helpers in `handlers::helpers::journal` and
-//     are reused directly here.
+//     a dispatchable handler method.  Slice 5.142 swapped the
+//     slice-5.44 stub for this handler at the runtime URN
+//     registration in `rho_runtime::dispatch_table_creator`;
+//     slice 5.143 deleted the stub.  Supporting helpers
+//     `finalize_failure_journal` and `journal_path_mutation_single`
+//     live in triage as `_via_table` helpers in
+//     `handlers::helpers::journal` and are reused directly here.
 //
-// Each submodule lands as its own reviewed slice.  Until the
-// URN-registration swap, the module's items are reachable but no
-// production code calls them yet (the stub keeps serving).
+// Each submodule landed as its own reviewed slice.
 
 pub mod handler;
 pub mod journal;
