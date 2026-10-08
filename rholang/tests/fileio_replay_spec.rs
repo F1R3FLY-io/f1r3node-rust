@@ -402,11 +402,12 @@ mod tests {
     /// covers only the leader-side no-journal invariant) by
     /// extending to the leader/follower rig replay.
     ///
-    /// **Triage status**: double-blocked — triage ships only the
-    /// slice-5.44 FSERR_UNSUPPORTED stub for `removeDir`, AND
-    /// `check_replay_data` would fail even if removeDir worked
-    /// (same symptom as the other replay tests in this file).
-    #[ignore = "removeDir in triage is a FSERR_UNSUPPORTED stub (slice 5.44) + the replay harness has the same UnusedCommEvent gap as the sibling tests"]
+    /// **Triage status**: `#[ignore]` — the removeDir stub blocker
+    /// was cleared by slices 5.141–5.143 (real handler + URN swap +
+    /// stub cleanup), but `check_replay_data` still fails on this
+    /// test for the same reason as the other replay tests in this
+    /// file (follower WAL mirroring gap + UnusedCommEvent symptom).
+    #[ignore = "replay harness has the same UnusedCommEvent gap as the sibling tests in this file (follower WAL mirroring); the slice-5.44 removeDir stub blocker was separately cleared by slices 5.141-5.143"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn oracular_recursive_remove_dir_replays_without_journaling() {
         let dir = tempfile::tempdir().unwrap();
