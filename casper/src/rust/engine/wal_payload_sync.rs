@@ -12,7 +12,7 @@
 // by the serving validator.  Keeping it adjacent to the eventual
 // `WalPayloadSyncDriver` reduces churn when the driver lands.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use comm::rust::peer_node::PeerNode;
@@ -453,6 +453,97 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
         .as_millis() as u64
+}
+
+/// Enumerate WAL entries in a captured WAL slice, extract the
+/// unique `payload_ref: Hash(...)` values, and either:
+///   * hand the reducer's reproduced bytes to the retriever (via
+///     `mark_resolved`) if the reducer returned `Some`, OR
+///   * enqueue the hash for peer fetch (via `enqueue_payload`) if
+///     the reducer returned `None` OR its bytes failed the
+///     defense-in-depth hash check.
+///
+/// The reducer signature is
+/// `FnMut(&WalEntry) -> Option<Vec<u8>>`.  The reducer gets the
+/// full [`WalEntry`](rholang::rust::interpreter::io::wal::WalEntry)
+/// (op, path, offset, mode_bits, owner, group, payload_ref,
+/// outcome) so it can attempt reconstruction from on-chain sources
+/// — e.g., a `Write` whose bytes came from a deploy argument the
+/// joiner already has in block storage.  If the reducer can
+/// produce bytes, no peer traffic is needed for that payload.
+///
+/// # Interior hash check
+///
+/// A reducer bug that returns bytes not matching `payload_hash`
+/// is caught by `mark_resolved`'s rehash pass; the enumerator
+/// falls back to a peer fetch (logged at info).  This avoids the
+/// applier reconstructing corrupt file state.
+///
+/// # Observation-only skip
+///
+/// Observation-only WAL ops (Stat / Read / ... — see
+/// [`WalOp::is_observation_only`](rholang::rust::interpreter::io::wal::WalOp::is_observation_only))
+/// carry `PayloadRef::Hash` for follower-side re-executed-syscall
+/// verification, NOT for peer fetch.  Skipping them here keeps the
+/// fetch protocol from waiting on bytes no peer's payload_store
+/// has — otherwise a mixed-op WAL (openFile emits Stat + fs_write
+/// emits Write) would deadlock joiner boot at
+/// `PayloadFetchTimeout` waiting for Stat's reply hash.
+///
+/// # Test convenience
+///
+/// For test / early-integration paths, callers can pass
+/// `|_| None` (fetch everything).
+pub async fn enumerate_and_enqueue_payloads<F>(
+    driver: &WalPayloadSyncDriver,
+    wal_slice: &[rholang::rust::interpreter::io::wal::WalEntry],
+    mut reducer: F,
+) -> EnumerateStats
+where
+    F: FnMut(&rholang::rust::interpreter::io::wal::WalEntry) -> Option<Vec<u8>>,
+{
+    use rholang::rust::interpreter::io::wal::PayloadRef;
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    let mut stats = EnumerateStats::default();
+    for entry in wal_slice {
+        if entry.op.is_observation_only() {
+            continue;
+        }
+        let Some(PayloadRef::Hash(h)) = entry.payload_ref else {
+            continue;
+        };
+        if !seen.insert(h) {
+            continue;
+        }
+        match reducer(entry) {
+            Some(bytes) => {
+                if driver.retriever.mark_resolved(h, bytes).await {
+                    stats.resolved_locally += 1;
+                } else {
+                    info!(
+                        target: "f1r3fly.casper.wal_payload_sync",
+                        hash = hex::encode(h),
+                        "reducer output failed hash check; falling back to peer fetch"
+                    );
+                    driver.enqueue_payload(h).await;
+                    stats.enqueued_for_fetch += 1;
+                }
+            }
+            None => {
+                driver.enqueue_payload(h).await;
+                stats.enqueued_for_fetch += 1;
+            }
+        }
+    }
+    if stats.enqueued_for_fetch > 0 || stats.resolved_locally > 0 {
+        info!(
+            target: "f1r3fly.casper.wal_payload_sync",
+            enqueued_for_fetch = stats.enqueued_for_fetch,
+            resolved_locally = stats.resolved_locally,
+            "boot-time enumerator pass complete"
+        );
+    }
+    stats
 }
 
 /// Graceful-stop handle for the (future) periodic tick task.  Held
@@ -1130,6 +1221,131 @@ mod tests {
         assert_eq!(slice_to_hash(&[0u8; 31]), None);
         assert_eq!(slice_to_hash(&[0u8; 33]), None);
         assert_eq!(slice_to_hash(&[]), None);
+    }
+
+    fn mk_wal_entry(
+        op: rholang::rust::interpreter::io::wal::WalOp,
+        payload_ref: Option<rholang::rust::interpreter::io::wal::PayloadRef>,
+    ) -> rholang::rust::interpreter::io::wal::WalEntry {
+        use rholang::rust::interpreter::io::wal::{WalEntry, WalOutcome};
+        WalEntry {
+            op,
+            path: std::path::PathBuf::from("/dummy"),
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }
+    }
+
+    #[tokio::test]
+    async fn enumerate_without_payload_ref_is_noop() {
+        use rholang::rust::interpreter::io::wal::WalOp;
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let slice = vec![mk_wal_entry(WalOp::Chmod, None)];
+        let stats = enumerate_and_enqueue_payloads(&driver, &slice, |_| None).await;
+        assert_eq!(stats, EnumerateStats::default());
+        assert_eq!(driver.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn enumerate_skips_observation_only_ops() {
+        // LOAD-BEARING: observation-only ops (Stat/Read/...) carry
+        // PayloadRef::Hash for follower verification but NOT for
+        // peer fetch.  Including them would deadlock boot at
+        // PayloadFetchTimeout.
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalOp};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let slice = vec![
+            mk_wal_entry(WalOp::Stat, Some(PayloadRef::Hash([0x11; 32]))),
+            mk_wal_entry(WalOp::Read, Some(PayloadRef::Hash([0x22; 32]))),
+            mk_wal_entry(WalOp::Exists, Some(PayloadRef::Hash([0x33; 32]))),
+        ];
+        let stats = enumerate_and_enqueue_payloads(&driver, &slice, |_| None).await;
+        assert_eq!(stats, EnumerateStats::default());
+        assert_eq!(driver.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn enumerate_fetch_everything_reducer_enqueues_write_hashes() {
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalOp};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let slice = vec![
+            mk_wal_entry(WalOp::Write, Some(PayloadRef::Hash([0xA1; 32]))),
+            mk_wal_entry(WalOp::WriteAt, Some(PayloadRef::Hash([0xA2; 32]))),
+        ];
+        let stats = enumerate_and_enqueue_payloads(&driver, &slice, |_| None).await;
+        assert_eq!(stats.resolved_locally, 0);
+        assert_eq!(stats.enqueued_for_fetch, 2);
+        assert_eq!(driver.pending_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn enumerate_deduplicates_repeated_hashes() {
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalOp};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let h = [0xB1; 32];
+        let slice = vec![
+            mk_wal_entry(WalOp::Write, Some(PayloadRef::Hash(h))),
+            mk_wal_entry(WalOp::Write, Some(PayloadRef::Hash(h))),
+            mk_wal_entry(WalOp::WriteAt, Some(PayloadRef::Hash(h))),
+        ];
+        let stats = enumerate_and_enqueue_payloads(&driver, &slice, |_| None).await;
+        assert_eq!(stats.resolved_locally, 0);
+        assert_eq!(stats.enqueued_for_fetch, 1, "repeated hash must dedup");
+        assert_eq!(driver.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn enumerate_full_reducer_coverage_needs_no_fetch() {
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalOp};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let bytes_a = b"payload-a".to_vec();
+        let bytes_b = b"payload-b".to_vec();
+        let h_a = blake2b256(&bytes_a);
+        let h_b = blake2b256(&bytes_b);
+        let slice = vec![
+            mk_wal_entry(WalOp::Write, Some(PayloadRef::Hash(h_a))),
+            mk_wal_entry(WalOp::Write, Some(PayloadRef::Hash(h_b))),
+        ];
+        let bytes_a_ref = bytes_a.clone();
+        let bytes_b_ref = bytes_b.clone();
+        let stats =
+            enumerate_and_enqueue_payloads(&driver, &slice, |entry| match entry.payload_ref {
+                Some(PayloadRef::Hash(h)) if h == h_a => Some(bytes_a_ref.clone()),
+                Some(PayloadRef::Hash(h)) if h == h_b => Some(bytes_b_ref.clone()),
+                _ => None,
+            })
+            .await;
+        assert_eq!(stats.resolved_locally, 2);
+        assert_eq!(stats.enqueued_for_fetch, 0);
+        assert!(driver.is_complete().await);
+    }
+
+    #[tokio::test]
+    async fn enumerate_reducer_wrong_bytes_falls_back_to_fetch() {
+        // LOAD-BEARING: mark_resolved's defensive rehash catches
+        // a reducer bug returning bytes that don't hash to the
+        // expected key; the enumerator falls back to peer fetch
+        // rather than storing corrupt bytes.
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalOp};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let real_bytes = b"the real payload".to_vec();
+        let h = blake2b256(&real_bytes);
+        let slice = vec![mk_wal_entry(WalOp::Write, Some(PayloadRef::Hash(h)))];
+        let stats =
+            enumerate_and_enqueue_payloads(&driver, &slice, |_| Some(b"WRONG BYTES".to_vec()))
+                .await;
+        assert_eq!(
+            stats.resolved_locally, 0,
+            "wrong bytes must NOT count as resolved"
+        );
+        assert_eq!(stats.enqueued_for_fetch, 1);
+        assert_eq!(driver.pending_count().await, 1);
     }
 
     #[tokio::test]
