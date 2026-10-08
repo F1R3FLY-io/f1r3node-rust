@@ -1421,6 +1421,60 @@
         "rholang/src/rust/interpreter/reified/schedule.rs"
       ],
       "property_files": []
+    },
+    "p6": {
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded.",
+      "sources": [
+        "rholang/src/rust/interpreter/spaces/record.rs",
+        "rholang/src/rust/interpreter/spaces/generic.rs",
+        "rholang/src/rust/interpreter/spaces/join.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+        "rholang/src/rust/interpreter/spaces/errors.rs",
+        "rholang/src/rust/interpreter/spaces/types/config.rs"
+      ],
+      "entry_points": [
+        {
+          "file": "rholang/src/rust/interpreter/spaces/record.rs",
+          "pattern": "pub enum WaiterPolicy {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/record.rs",
+          "pattern": "pub fn policy_of(par: &Par) -> Option<WaiterPolicy> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/record.rs",
+          "pattern": "pub fn wrap_policy_continuation_metered("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/record.rs",
+          "pattern": "pub fn continuation_policy_slots_metered("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/record.rs",
+          "pattern": "pub fn wrap_vdb_datum_metered("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/record.rs",
+          "pattern": "pub fn unwrap_vdb_datum_metered("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "pub enum SideBound {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "    pub fn config(&self) -> &'p SpaceConfig { self.plan.config }"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "    CapacityExceeded,"
+        }
+      ],
+      "tests": [
+        "rholang/src/rust/interpreter/spaces/record.rs",
+        "rholang/src/rust/interpreter/spaces/generic.rs"
+      ],
+      "property_files": []
     }
   }
 }

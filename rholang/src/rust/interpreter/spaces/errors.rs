@@ -68,6 +68,11 @@ pub enum SpaceError {
     /// The check runs before the staging, so the operation stages nothing.
     #[error("the cell is occupied")]
     CellOccupied,
+    /// A store on a collection that already holds the most records of its space (P6): the
+    /// `capacity` of a VectorDB space bounds the records of each collection. The check runs
+    /// before the staging, so the operation stages nothing.
+    #[error("the collection holds the most records of its space")]
+    CapacityExceeded,
     /// A named param whose value the schema of its channel does not accept, for example a
     /// priority outside `0..priorities` (P5b).
     #[error("the value of the param {key:?} is not accepted")]
@@ -132,6 +137,7 @@ impl SpaceError {
             SpaceError::DanglingName => "DanglingName",
             SpaceError::CounterOverflow => "CounterOverflow",
             SpaceError::CellOccupied => "CellOccupied",
+            SpaceError::CapacityExceeded => "CapacityExceeded",
             SpaceError::InvalidParam { .. } => "InvalidParam",
             SpaceError::MissingParam { .. } => "MissingParam",
             SpaceError::OutOfNames => "OutOfNames",
@@ -255,6 +261,7 @@ mod tests {
             SpaceError::DanglingName,
             SpaceError::CounterOverflow,
             SpaceError::CellOccupied,
+            SpaceError::CapacityExceeded,
             SpaceError::InvalidParam {
                 key: "priority".to_string(),
             },

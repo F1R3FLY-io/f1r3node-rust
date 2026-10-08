@@ -59,7 +59,7 @@
    check_persistent_send    rholang/src/rust/interpreter/reified/
                             system_channels.rs:101, 105, 110-122
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
-                            2533-2651
+                            2591-2709
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction

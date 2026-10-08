@@ -146,10 +146,10 @@ use super::errors::SpaceError;
 use super::generic::{
     self, operation_ord, peek_set, peek_set_all, receive_candidate, CollectionTxn, Cx, Discipline,
     GenericSpace, JoinWindow, Ordered, OuterStore, ParCandidate, ParDatum, ParWaiter, ReceiveFire,
-    Side, GPRIVATE,
+    Side, SideBound, GPRIVATE,
 };
 use super::namespace::{self, CollectionKey, NativeSpace, RandomPurpose, ReifiedId};
-use super::record::{self, Introduction, JoinSlot, OperationAuthority};
+use super::record::{self, Introduction, JoinSlot, OperationAuthority, WaiterPolicy};
 use super::settle::{lift_body, lift_continuation, lift_pattern, settle_operation};
 use super::types::config::SpaceConfig;
 use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, ScanMeter, FIRE_ROUND_CAP};
@@ -675,7 +675,7 @@ pub(crate) fn run_join_with<Src: JoinSource>(
     source: &Src,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
     let meter = &env.meter;
-    let CollectionTxn { txn, .. } = opened;
+    let CollectionTxn { txn, config, .. } = opened;
     let authority = meter.copy(introduction_authority(&op))?;
     let first = scope.own.first().ok_or(SpaceError::Inconsistent(
         "a join scope has no own collection",
@@ -688,7 +688,7 @@ pub(crate) fn run_join_with<Src: JoinSource>(
             "a collection is outside its join scope",
         ))?
         .data;
-    generic::run_plan(env, txn, data, &authority, |cx| {
+    generic::run_plan(env, txn, data, &config, &authority, |cx| {
         let engine = Engine::new(source, &scope, &op, cx.meter())?;
         engine.run(cx, op)
     })
@@ -825,8 +825,19 @@ pub(crate) trait JoinSource {
     /// The window shape of the discipline.
     fn shape(&self) -> JoinWindow;
 
-    /// The most entries of each side of a collection, or `None` (F15).
-    fn capacity(&self) -> Option<usize>;
+    // Replaced by P6 (design v3 4.0): the bound of a side may depend on the config of the
+    // space, so the source gives the bound of each side.
+    // /// The most entries of each side of a collection, or `None` (F15).
+    // fn capacity(&self) -> Option<usize>;
+
+    /// The bound of `side` of a collection of a space with the config `config`, or `None` (F15,
+    /// P6). The reads of the bound are reserved on `meter`.
+    fn bound(
+        &self,
+        config: &SpaceConfig,
+        side: Side,
+        meter: &ScanMeter,
+    ) -> Result<Option<SideBound>, SpaceError>;
 
     /// Bumps the counter of the collection `coll` (decision 31) with the random state `random`
     /// and the authorities `authority`, and returns the value before the bump, or `None` for a
@@ -1149,7 +1160,7 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
     /// otherwise.
     fn lane_of(&self, slot: &JoinSlot) -> Option<Lane> {
         match D::JOIN_WINDOW {
-            JoinWindow::Lanes => Some(Lane::of_slot(slot.priority)),
+            JoinWindow::Lanes => Some(Lane::of_slot(slot.policy.level())),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
         }
     }
@@ -1449,7 +1460,17 @@ fn slot_at(slots: &[JoinSlot], position: usize) -> Result<&JoinSlot, SpaceError>
 impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
     fn shape(&self) -> JoinWindow { D::JOIN_WINDOW }
 
-    fn capacity(&self) -> Option<usize> { D::CAPACITY }
+    // Replaced by P6 (design v3 4.0): the bound of the discipline under the config.
+    // fn capacity(&self) -> Option<usize> { D::CAPACITY }
+
+    fn bound(
+        &self,
+        config: &SpaceConfig,
+        side: Side,
+        meter: &ScanMeter,
+    ) -> Result<Option<SideBound>, SpaceError> {
+        self.discipline.bound(config, side, meter)
+    }
 
     fn touch(
         &self,
@@ -1537,13 +1558,13 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                         JoinSlot {
                             ord,
                             bind: 0,
-                            priority,
+                            policy: WaiterPolicy::of_level(priority),
                         }
                     }
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => JoinSlot {
                         ord: record::continuation_ord_metered(&waiter.continuation, meter)?,
                         bind: 0,
-                        priority: None,
+                        policy: WaiterPolicy::None,
                     },
                 };
                 let mut slots = meter.buffer::<JoinSlot>(1)?;
@@ -1555,7 +1576,7 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                 let lanes_fit = match D::JOIN_WINDOW {
                     JoinWindow::Lanes => true,
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
-                        slots.iter().all(|slot| slot.priority.is_none())
+                        slots.iter().all(|slot| slot.policy == WaiterPolicy::None)
                     }
                 };
                 match (slots.len() == width, lanes_fit) {
@@ -2735,7 +2756,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         slots.push(JoinSlot {
             ord,
             bind: 0,
-            priority: lane.and_then(Lane::slot),
+            policy: WaiterPolicy::of_level(lane.and_then(Lane::slot)),
         });
         let mut patterns = meter.buffer::<BindPattern>(1)?;
         patterns.push(meter.copy(&op.pattern)?);
@@ -2786,7 +2807,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             slots.push(JoinSlot {
                 ord: self.ord_on(coll)?,
                 bind: position,
-                priority: lane.and_then(Lane::slot),
+                policy: WaiterPolicy::of_level(lane.and_then(Lane::slot)),
             });
             patterns.push(meter.copy(&bind.pattern)?);
         }
@@ -2851,7 +2872,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     ) -> Result<Vec<Option<Lane>>, SpaceError> {
         let mut lanes = meter.buffer::<Option<Lane>>(slots.len())?;
         lanes.extend(slots.iter().map(|slot| match self.source.shape() {
-            JoinWindow::Lanes => Some(Lane::of_slot(slot.priority)),
+            JoinWindow::Lanes => Some(Lane::of_slot(slot.policy.level())),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
         }));
         Ok(lanes)
@@ -3261,11 +3282,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// STORE (joins plan section 4.5): the element in flight `x` is stored on its collection,
     /// after the capacity check (F15) and its touch.
     fn store(&mut self, cx: &mut Cx<'_, '_>, x: Incoming) -> Result<(), SpaceError> {
-        if let Some(capacity) = self.source.capacity() {
+        // Replaced by P6 (design v3 4.0): the bound of the data side under the config.
+        // if let Some(capacity) = self.source.capacity() {
+        if let Some(bound) = self.source.bound(cx.config(), Side::Data, cx.meter())? {
             let held = self.source.held(cx, self.scope, &x)?;
             cx.meter().compare(size_of::<usize>(), size_of::<usize>())?;
-            if held >= capacity {
-                return Err(SpaceError::CellOccupied);
+            if held >= bound.limit() {
+                return Err(bound.full());
             }
         }
         self.touch(cx, x.coll)?;
@@ -3712,7 +3735,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// PARK (joins plan section 4.4): the waiter of the operation parks on its group, after the
     /// capacity check of each of its collections (F15) and their touch.
     fn park(&mut self, cx: &mut Cx<'_, '_>, w: NewWaiter) -> Result<(), SpaceError> {
-        if let Some(capacity) = self.source.capacity() {
+        // Replaced by P6 (design v3 4.0): the bound of the waiter side under the config.
+        // if let Some(capacity) = self.source.capacity() {
+        if let Some(bound) = self.source.bound(cx.config(), Side::Waiters, cx.meter())? {
             let mut checked: Vec<usize> = Vec::new();
             for &coll in &w.colls {
                 if checked.contains(&coll) {
@@ -3721,8 +3746,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 generic::push_reserved(&mut checked, coll, cx.meter())?;
                 let held = self.source.waiter_count(cx, self.scope, coll)?;
                 cx.meter().compare(size_of::<usize>(), size_of::<usize>())?;
-                if held >= capacity {
-                    return Err(SpaceError::CellOccupied);
+                if held >= bound.limit() {
+                    return Err(bound.full());
                 }
             }
         }

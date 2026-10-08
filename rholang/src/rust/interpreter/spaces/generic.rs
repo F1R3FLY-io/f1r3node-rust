@@ -260,6 +260,34 @@ pub enum JoinWindow {
     Classes,
 }
 
+/// The bound of one side of a collection (F15, P6): the most entries of the side, and the error
+/// of a store or a park beyond it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideBound {
+    /// The bound of a cell (F15): a store or a park beyond it fails with `CellOccupied`.
+    Cell(usize),
+    /// The record bound of a VectorDB space (P6): a store beyond it fails with
+    /// `CapacityExceeded`.
+    Records(usize),
+}
+
+impl SideBound {
+    /// The most entries of the side.
+    pub fn limit(&self) -> usize {
+        match self {
+            SideBound::Cell(limit) | SideBound::Records(limit) => *limit,
+        }
+    }
+
+    /// The error of a store or a park on a full side.
+    pub fn full(&self) -> SpaceError {
+        match self {
+            SideBound::Cell(_) => SpaceError::CellOccupied,
+            SideBound::Records(_) => SpaceError::CapacityExceeded,
+        }
+    }
+}
+
 /// The inner collection of a family: the order in which the entries of a collection interact,
 /// and the plans of its operations (P5 design v3, A.3.3).
 ///
@@ -289,6 +317,19 @@ pub trait Discipline: Default + Send + Sync + 'static {
     /// The most entries of each side of a collection, or `None` for no bound. A cell holds one
     /// record and one waiter (F15).
     const CAPACITY: Option<usize> = None;
+
+    /// The bound of `side` of a collection of a space with the config `config`, or `None` for
+    /// no bound (P6, design v3 4.0). The default is [`Discipline::CAPACITY`] on both sides,
+    /// whose excess is `CellOccupied` (F15), and it reads nothing. A VectorDB space bounds the
+    /// records of each collection by its `capacity`, and it reserves its reads on `meter`.
+    fn bound(
+        &self,
+        _config: &SpaceConfig,
+        _side: Side,
+        _meter: &ScanMeter,
+    ) -> Result<Option<SideBound>, SpaceError> {
+        Ok(Self::CAPACITY.map(SideBound::Cell))
+    }
 
     /// The window of a join bind on a collection of the discipline (P5c). The default is the
     /// head window of the head-only disciplines.
@@ -618,6 +659,9 @@ enum Staged {
 /// What the plans of one operation share.
 struct Plan<'a> {
     data: &'a Par,
+    /// The config of the space, read once at the begin of the operation (decision 42). A
+    /// VectorDB plan reads its metric and its `capacity` from it (P6, design v3 4.0).
+    config: &'a SpaceConfig,
     matcher: &'a SpaceMatcher<'a>,
     /// The introduction of the operation, which every staged operation registers by default.
     introduction: &'a Arc<Introduction>,
@@ -673,6 +717,10 @@ impl<'p> Cx<'_, 'p> {
 
     /// The data channel `D(sid,k)` of the collection of the operation.
     pub fn data_channel(&self) -> &'p Par { self.plan.data }
+
+    /// The config of the space of the operation (P6, design v3 4.0). It is the config that the
+    /// begin of the operation read once (decision 42), so a plan only borrows it.
+    pub fn config(&self) -> &'p SpaceConfig { self.plan.config }
 
     /// The introduction of the operation.
     pub fn introduction(&self) -> &'p Arc<Introduction> { self.plan.introduction }
@@ -881,19 +929,26 @@ impl<'p> Cx<'_, 'p> {
         }
     }
 
-    /// Fails with `CellOccupied` when `side` of the collection already holds `D::CAPACITY`
-    /// entries (F15). The check reads the size of the side and stages nothing, so the dropped
-    /// transaction of a failed store or park applies nothing (decision 19, D6). A discipline
-    /// without a capacity does no work.
+    /// Fails when `side` of the collection already holds the most entries of its bound: a cell
+    /// holds one record and one waiter (F15, `CellOccupied`), and a VectorDB space bounds the
+    /// records of each collection by its `capacity` (P6, `CapacityExceeded`). The check reads
+    /// the size of the side and stages nothing, so the dropped transaction of a failed store or
+    /// park applies nothing (decision 19, D6). A side without a bound does no work.
     pub fn check_capacity<D: Discipline>(&mut self, side: Side) -> Result<(), SpaceError> {
-        let Some(capacity) = D::CAPACITY else {
+        // Replaced by P6 (design v3 4.0): the bound of a side may depend on the config of the
+        // space, so the discipline gives it. The default bound is `D::CAPACITY` on both sides
+        // with `CellOccupied`, so the check of every family of P5 does the same work.
+        // let Some(capacity) = D::CAPACITY else {
+        //     return Ok(());
+        // };
+        let Some(bound) = D::default().bound(self.plan.config, side, self.meter())? else {
             return Ok(());
         };
         let held = self.side_len(side)?;
         self.meter()
             .compare(size_of::<usize>(), size_of::<usize>())?;
-        match held >= capacity {
-            true => Err(SpaceError::CellOccupied),
+        match held >= bound.limit() {
+            true => Err(bound.full()),
             false => Ok(()),
         }
     }
@@ -1905,6 +1960,7 @@ pub(crate) fn run_plan(
     env: &SpaceEnv,
     mut txn: ParSpaceTxn,
     data: &Par,
+    config: &SpaceConfig,
     introduction_authority: &CostAuthority,
     stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<Option<SpaceReissue>, SpaceError>,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
@@ -1914,6 +1970,7 @@ pub(crate) fn run_plan(
     let introduction = Introduction::new(&env.budget, introduction_authority, meter)?;
     let mut plan = Plan {
         data,
+        config,
         matcher: &matcher,
         introduction: &introduction,
         staged,
@@ -2257,6 +2314,7 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
         let introduction = Introduction::new(&env.budget, introduction_authority, meter)?;
         let mut plan = Plan {
             data: channels.data(),
+            config: &config,
             matcher: &matcher,
             introduction: &introduction,
             staged,
@@ -4895,8 +4953,10 @@ mod tests {
         let mut txn = env.store.begin(ch.lock_keys()).await?;
         let matcher = SpaceMatcher::metered(env)?;
         let introduction = Introduction::new(&env.budget, &CostAuthority::default(), &env.meter)?;
+        let config = SpaceConfig::new(SPACE.sid, "hashmap", "queue", SpaceQualifier::Default);
         let mut plan = Plan {
             data: ch.data(),
+            config: &config,
             matcher: &matcher,
             introduction: &introduction,
             staged: env.meter.buffer::<Staged>(MAX_STAGED)?,
@@ -5339,7 +5399,7 @@ mod tests {
         record::JoinSlot {
             ord: 0,
             bind,
-            priority: None,
+            policy: record::WaiterPolicy::None,
         }
     }
 
@@ -5464,8 +5524,10 @@ mod tests {
         let mut txn = env.store.begin(keys).await?;
         let matcher = SpaceMatcher::metered(env)?;
         let introduction = Introduction::new(&env.budget, &CostAuthority::default(), &env.meter)?;
+        let config = SpaceConfig::new(SPACE.sid, "hashmap", "queue", SpaceQualifier::Default);
         let mut plan = Plan {
             data: &keys[0],
+            config: &config,
             matcher: &matcher,
             introduction: &introduction,
             staged: env.meter.buffer::<Staged>(MAX_STAGED)?,
@@ -5962,5 +6024,30 @@ mod tests {
             Some(unavailable)
         );
         assert!(fresh.take_event_log().await.is_empty());
+    }
+
+    // ── The bound of a side (P6, design v3 4.0) ──────────────────────────────────────────────
+
+    #[test]
+    fn space_side_bound_defaults_to_the_capacity_of_the_discipline() {
+        use crate::rust::interpreter::spaces::disciplines::bag::BagDiscipline;
+        use crate::rust::interpreter::spaces::disciplines::cell::CellDiscipline;
+
+        let config = SpaceConfig::new(SPACE.sid, "hashmap", "cell", SpaceQualifier::Default);
+        let meter = ScanMeter::new(None);
+        // A cell holds one record and one waiter (F15), and its excess is `CellOccupied`.
+        for side in [Side::Data, Side::Waiters] {
+            assert_eq!(
+                CellDiscipline.bound(&config, side, &meter),
+                Ok(Some(SideBound::Cell(1)))
+            );
+            assert_eq!(BagDiscipline.bound(&config, side, &meter), Ok(None));
+            assert_eq!(QueueDiscipline.bound(&config, side, &meter), Ok(None));
+        }
+        assert_eq!(SideBound::Cell(1).limit(), 1);
+        assert_eq!(SideBound::Cell(1).full(), SpaceError::CellOccupied);
+        // The record bound of a VectorDB space fails with its own code (P6).
+        assert_eq!(SideBound::Records(7).limit(), 7);
+        assert_eq!(SideBound::Records(7).full(), SpaceError::CapacityExceeded);
     }
 }

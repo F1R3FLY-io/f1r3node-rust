@@ -103,7 +103,7 @@ use rholang::rust::interpreter::spaces::families::FamilyAgent;
 use rholang::rust::interpreter::spaces::namespace::{
     self, CollectionKey, Durability, NativeSpace, RandomPurpose, SID_LEN,
 };
-use rholang::rust::interpreter::spaces::record::{self, JoinSlot};
+use rholang::rust::interpreter::spaces::record::{self, JoinSlot, WaiterPolicy};
 use rholang::rust::interpreter::spaces::settle::{lift_continuation, lift_pattern};
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -556,7 +556,7 @@ fn slots_of(channels: &[&Par], ords: &[i64]) -> Vec<JoinSlot> {
         .map(|bind| JoinSlot {
             ord: ords[bind],
             bind,
-            priority: None,
+            policy: WaiterPolicy::None,
         })
         .collect()
 }
@@ -1249,7 +1249,7 @@ async fn space_joins_multi_ord_envelope_roundtrip() {
         .await
         .into_iter()
         .flat_map(|row| row.slots)
-        .map(|slot| (slot.bind, slot.priority))
+        .map(|slot| (slot.bind, slot.policy.level()))
         .collect();
     let mut by_bind = lanes.clone();
     by_bind.sort();

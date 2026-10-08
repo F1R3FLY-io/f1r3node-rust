@@ -648,7 +648,7 @@ A divergent pair or the cap re-issues the element in flight, and every read and 
 A cell collection holds at most one record and at most one waiting continuation (F15).
 The family `hashmap:cell` runs `CellDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/cell.rs:53-88`) on the head driver of the engine.
 
-**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:888-899`).
+**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:937-954`).
 The job drops the transaction, so the failed operation logs no event, bumps no counter, and makes no legacy charge.
 
 **Rule CL-2: both sides meet.** A fresh send always meets the waiting continuation of the cell, and a fresh receive always meets the record of the cell.
@@ -684,7 +684,7 @@ The settle fires the top pair. It lifts a stored record that is not persistent w
 **Rule SK-4: peeks in a settle.** A record that a peek waiter did not spend stays in flight, and it lands at its order when the settle ends (Rule E).
 
 **Rule SK-5: fire count.** One transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21)).
-The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1435-1448`).
+The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1490-1503`).
 A plan whose transaction is full after the settle before it stages nothing, and its operation re-issues.
 
 **Rule SK-6: re-issues.** At the cap or at a divergent pair, the settle before the plan re-issues the operation, which it has not inserted yet.
@@ -764,7 +764,7 @@ A send without a priority puts its datum in the unprioritized level, which comes
 **Rule PQ-2: lanes.** A receive with `priority = p` waits in the lane of the level $`p`$.
 A receive without a priority waits in the unrestricted lane (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:157-193`).
 
-**Rule PQ-3: no storage for each level.** A record holds its level in the priority slot of its envelope, and a continuation holds its lane in its policy slot (`rholang/src/rust/interpreter/spaces/record.rs:855-1221`).
+**Rule PQ-3: no storage for each level.** A record holds its level in the priority slot of its envelope, and a continuation holds its lane in its policy slot (`rholang/src/rust/interpreter/spaces/record.rs:867-1233`).
 So the priority queue keeps no storage for each level (I-10).
 
 **Rule PQ-4: heads.** Each level and each lane is a FIFO queue whose head has the least pair (ord, bincode bytes) (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:355-397`).

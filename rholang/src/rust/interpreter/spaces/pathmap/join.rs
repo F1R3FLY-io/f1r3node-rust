@@ -82,7 +82,7 @@ use crate::rust::interpreter::spaces::disciplines::scan::{
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{
     self, CollectionTxn, Cx, Discipline, GenericSpace, JoinWindow, Ordered, OuterStore,
-    ParCandidate, ParDatum, ParWaiter, Side,
+    ParCandidate, ParDatum, ParWaiter, Side, SideBound,
 };
 use crate::rust::interpreter::spaces::join::{
     self, Bound, Claim, Entry, EntryAt, FireSite, Incoming, JoinRoute, JoinScope, JoinSource,
@@ -92,7 +92,7 @@ use crate::rust::interpreter::spaces::namespace::{
     self, CollectionKey, NativeSpace, RandomPurpose, ReifiedId,
 };
 use crate::rust::interpreter::spaces::outer::pathmap::PathMapOuter;
-use crate::rust::interpreter::spaces::record::{self, JoinSlot, OperationAuthority};
+use crate::rust::interpreter::spaces::record::{self, JoinSlot, OperationAuthority, WaiterPolicy};
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 
 /// The terminator byte of a path key.
@@ -863,7 +863,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     /// The lane of the slot `slot` in this discipline.
     fn lane_of(&self, slot: &JoinSlot) -> Option<Lane> {
         match D::JOIN_WINDOW {
-            JoinWindow::Lanes => Some(Lane::of_slot(slot.priority)),
+            JoinWindow::Lanes => Some(Lane::of_slot(slot.policy.level())),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
         }
     }
@@ -2081,7 +2081,17 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
 impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
     fn shape(&self) -> JoinWindow { D::JOIN_WINDOW }
 
-    fn capacity(&self) -> Option<usize> { D::CAPACITY }
+    // Replaced by P6 (design v3 4.0): the bound of the discipline under the config.
+    // fn capacity(&self) -> Option<usize> { D::CAPACITY }
+
+    fn bound(
+        &self,
+        config: &SpaceConfig,
+        side: Side,
+        meter: &ScanMeter,
+    ) -> Result<Option<SideBound>, SpaceError> {
+        self.discipline.bound(config, side, meter)
+    }
 
     /// The token `S(sid)` orders every prefix of the space (decision 31, D-2). Both counter
     /// channels of the bump are the token, so `counter::bump` takes its branch of a stored
@@ -2173,13 +2183,13 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                         JoinSlot {
                             ord,
                             bind: 0,
-                            priority,
+                            policy: WaiterPolicy::of_level(priority),
                         }
                     }
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => JoinSlot {
                         ord: record::continuation_ord_metered(&waiter.continuation, meter)?,
                         bind: 0,
-                        priority: None,
+                        policy: WaiterPolicy::None,
                     },
                 };
                 let mut slots = meter.buffer::<JoinSlot>(1)?;
@@ -2191,7 +2201,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                 let lanes_fit = match D::JOIN_WINDOW {
                     JoinWindow::Lanes => true,
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
-                        slots.iter().all(|slot| slot.priority.is_none())
+                        slots.iter().all(|slot| slot.policy == WaiterPolicy::None)
                     }
                 };
                 match (slots.len() == width, lanes_fit) {

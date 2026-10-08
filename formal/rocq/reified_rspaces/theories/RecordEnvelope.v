@@ -39,58 +39,58 @@
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    record_kind, kind_byte, tag_bytes, tag
-                            spaces/record.rs:82, 85, 90-95, 107-109, 112
+                            spaces/record.rs:84, 87, 92-97, 109-111, 114
                             (RECORD_TAG_MARK, RECORD_VERSION, RecordKind,
                             tag_bytes, tag)
-   sole shapes of rpar      spaces/record.rs:134-169, 172-179 (sole_expr,
+   sole shapes of rpar      spaces/record.rs:136-171, 174-181 (sole_expr,
                             expr_par)
-   list_par                 spaces/record.rs:183-206 (the bit sets of the
+   list_par                 spaces/record.rs:185-208 (the bit sets of the
                             normalizer)
-   list_elements            spaces/record.rs:211-230 (strict flags)
+   list_elements            spaces/record.rs:213-232 (strict flags)
    is_tag, is_nil, natural_of
-                            spaces/record.rs:232-237, 239, 241-246
+                            spaces/record.rs:234-239, 241, 243-248
    datum_envelope, wrap_datum, datum_ord, unwrap_datum
-                            spaces/record.rs:251-258, 262-272, 275-285,
-                            298-313
+                            spaces/record.rs:253-260, 264-274, 277-287,
+                            300-315
    continuation_envelope, wrap_continuation, continuation_parts,
-   unwrap_continuation      spaces/record.rs:316-323, 328-348, 351-368,
-                            386-401
+   unwrap_continuation      spaces/record.rs:318-325, 330-350, 353-370,
+                            388-403
    counter_record, counter_value
-                            spaces/record.rs:410-421, 424-433
+                            spaces/record.rs:412-423, 426-435
    config_record, config_map
-                            spaces/record.rs:440-447, 450-463
-   key_priority             spaces/record.rs:855 (PRIORITY_KEY)
-   priority_slot,           spaces/record.rs:859-864, 868-873
+                            spaces/record.rs:442-449, 452-465
+   key_priority             spaces/record.rs:867 (PRIORITY_KEY)
+   priority_slot,           spaces/record.rs:871-876, 880-885
    level_of_slot            (priority_slot, level_of_slot)
-   pq_datum_envelope,       spaces/record.rs:878-885, 890-904, 909-922,
+   pq_datum_envelope,       spaces/record.rs:890-897, 902-916, 921-934,
    wrap_pq_datum,           925-941 (pq_datum_envelope, wrap_pq_datum,
    pq_datum_slots,          pq_datum_slots, unwrap_pq_datum)
    unwrap_pq_datum
-   pq_policy,               spaces/record.rs:960-973, 979-1006 (pq_policy,
+   pq_policy,               spaces/record.rs:972-985, 991-1018 (pq_policy,
    level_of_policy          level_of_policy)
    pq_continuation_envelope,
-   wrap_pq_continuation,    spaces/record.rs:1010-1017, 1022-1043,
+   wrap_pq_continuation,    spaces/record.rs:1022-1029, 1034-1055,
    pq_continuation_parts,   1035-1052, 1076-1092
    unwrap_pq_continuation   (pq_continuation_envelope, wrap_pq_continuation,
                             pq_continuation_parts, unwrap_pq_continuation)
-   into_continuation        spaces/record.rs:765-802 (into_continuation, the
+   into_continuation        spaces/record.rs:773-814 (into_continuation, the
                             outcome decoder of every family)
    join_continuation_version, join_tag_bytes, join_tag, is_join_tag
-                            spaces/record.rs:1241, 1244-1249, 1277,
-                            1279-1284 (JOIN_CONTINUATION_VERSION,
+                            spaces/record.rs:1706, 1709-1714, 1746,
+                            1748-1753 (JOIN_CONTINUATION_VERSION,
                             JOIN_CONTINUATION_TAG, join_tag, is_join_tag)
-   join_slot                spaces/record.rs:1253-1262 (JoinSlot)
-   level_ok, slots_fresh,   spaces/record.rs:1289-1303 (join_slots_valid:
+   join_slot                spaces/record.rs:1722-1731 (JoinSlot)
+   level_ok, slots_fresh,   spaces/record.rs:1758-1772 (join_slots_valid:
    join_slots_valid         two or more slots, natural ords and levels,
                             and a fresh bind index below the count)
-   slot_par                 spaces/record.rs:1307-1314 (join_slot_par)
+   slot_par                 spaces/record.rs:1776-1783 (join_slot_par)
    join_continuation_envelope, wrap_join_continuation
-                            spaces/record.rs:1317-1333, 1338-1358
+                            spaces/record.rs:1786-1802, 1807-1827
                             (join_envelope_of, join_continuation_envelope,
                             wrap_join_continuation)
    join_slot_of, join_slots_of, join_continuation_parts,
-   unwrap_join_continuation spaces/record.rs:1361-1375, 1378-1401,
-                            1411-1426
+   unwrap_join_continuation spaces/record.rs:1830-1840, 1843-1866,
+                            1876-1891
    space_config, to_par, from_par
                             spaces/types/config.rs:31-49, 53-64, 85-106,
                             112-141, 160-208 (the keys, SpaceConfig,

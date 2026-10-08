@@ -1611,8 +1611,8 @@ For a queue space with the default qualifier, the map is `{"spaceId": GByteArray
 The decoder `SpaceConfig::from_par` accepts only the exact image of `to_par`, and in P4 the theory must be `Nil`.
 Each read of a config record also requires that its `spaceId` is the space id of the space, otherwise the operation fails with `Inconsistent`.
 
-**Authorities.** Each operation builds one `Introduction`, which holds its introduction authority and the phlo budget of the deploy (`spaces/record.rs:1642-1683`).
-Each staged operation registers that authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:1691-1713`).
+**Authorities.** Each operation builds one `Introduction`, which holds its introduction authority and the phlo budget of the deploy (`spaces/record.rs:2118-2159`).
+Each staged operation registers that authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:2167-2189`).
 Table N2.4 gives the authorities of each record (P4 design B.7).
 
 *Table N2.4. The authorities of the records.*
@@ -1754,23 +1754,23 @@ The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConfli
 
 ### N4. GenericSpace and the queue discipline
 
-`GenericSpace<S, D>` (`spaces/generic.rs:488-491`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
+`GenericSpace<S, D>` (`spaces/generic.rs:529-532`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
 The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:54`).
 The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:273-283`, `422-513`).
 Two traits separate the parts of a family:
 
 - `OuterStore` (`spaces/generic.rs:134-226`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`. Its P5 hooks check a routed key, stage the records of a creation, and allocate index names. The defaults of the hooks do no work.
-- `Discipline` (`spaces/generic.rs:269-433`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, which send and query params it takes, and how many entries a side can hold. It holds the plans of the operations, and the default plans are the head driver of this section.
+- `Discipline` (`spaces/generic.rs:297-474`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, which send and query params it takes, and how many entries a side can hold. It holds the plans of the operations, and the default plans are the head driver of this section.
 
 `HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:26-56`).
 It keeps the default hooks.
 `QueueDiscipline` uses a counter, takes no send or query params, and keeps every default plan (`spaces/disciplines/queue.rs:32-75`).
-The family agent runs only the wired families, and a config that names another family fails with `FamilyUnavailable` (`spaces/generic.rs:1988-1999`).
+The family agent runs only the wired families, and a config that names another family fails with `FamilyUnavailable` (`spaces/generic.rs:2045-2056`).
 [Decision 29](decision-register.md#decision-29) removes the P4 gate that ran only counter disciplines without joins, because joins into ordered collections arrive in P5c.
 Until then, a collection that is part of a join fails with `Inconsistent`.
 
-**A collection operation.** `begin_collection` (`spaces/generic.rs:1831-1984`) opens the transaction and reads the config once.
-`run_with` (`spaces/generic.rs:2211-2343`) then stages the operation in that transaction.
+**A collection operation.** `begin_collection` (`spaces/generic.rs:1886-2041`) opens the transaction and reads the config once.
+`run_with` (`spaces/generic.rs:2268-2401`) then stages the operation in that transaction.
 The job commits the transaction exactly once (`spaces/agent.rs:475-487`).
 
 ```text
@@ -1883,7 +1883,7 @@ A re-issued persistent element re-enters at its place.
 It meets the other side only when it precedes the head of its own side.
 Otherwise it is stored or parked behind the head, and it fires nothing.
 
-**The produce plan.** `offer_head` (`spaces/generic.rs:1456-1523`) is the plan of a send, as the default of `Discipline::offer`.
+**The produce plan.** `offer_head` (`spaces/generic.rs:1511-1578`) is the plan of a send, as the default of `Discipline::offer`.
 It is the OFFER of the substrate design ([S5.8](#s58-peek-re-offer-fr-10)), with the fire-round rule of A10 and of [I-21](decision-register.md#i-21).
 
 ```text
@@ -1910,7 +1910,7 @@ A head waiter that does not match blocks every waiter behind it, and the datum i
 A peek waiter leaves the datum alive, so the next round re-offers the datum with the same produce identity ([decision 30](decision-register.md#decision-30)).
 A persistent send `!!` fires the waiters one after another and stores the datum when no waiter matches.
 
-**The consume plan.** `receive_head` (`spaces/generic.rs:1532-1616`) is the plan of a receive, as the default of `Discipline::receive`, and it mirrors OFFER.
+**The consume plan.** `receive_head` (`spaces/generic.rs:1587-1671`) is the plan of a receive, as the default of `Discipline::receive`, and it mirrors OFFER.
 
 ```text
 RECEIVE(op, ord):                              ▷ receive_head
@@ -2015,7 +2015,7 @@ Then the matching heads would stay with nothing in flight.
 
 The headlines `queue_fifo` (`HeadOnlyDisciplines.v:1135`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`) prove the order of delivery and the blocking of a head.
 
-**Outcome and dispatch.** `outcome` (`spaces/generic.rs:1723-1808`) turns the receipts into a `SpaceOutcome`.
+**Outcome and dispatch.** `outcome` (`spaces/generic.rs:1778-1863`) turns the receipts into a `SpaceOutcome`.
 It checks that each receipt has the kind of its staged operation, and it drops the counter fires.
 It also drops a retirement and a lift, which P5 stages and never dispatches.
 Each other fire gives its continuation without the envelope and the results of the substrate, in staging order.
@@ -2435,10 +2435,10 @@ Figure N7 shows the lifecycle of a native handle, from the factory call to a rep
 
 A Reified failure is either an abort of the deploy or a [typed reply](glossary.md#typed-reply).
 An abort is the error `InterpreterError::ReduceError` with the text `reified:<Code>: <message>`, which the soft checkpoint of the deploy then reverts.
-A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:167-174`).
+A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:173-180`).
 The message text is not consensus state, but the code names the failure for tests and for users.
 
-The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:153-161`):
+The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:159-167`):
 
 - `SpaceTxnError::Host` becomes `SpaceError::Host`, which keeps the class of the host error.
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
@@ -2460,7 +2460,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `OrderedJoinUnsupported` | Retired in P5 wave W3 ([decision 29](decision-register.md#decision-29)). A join whose binds route to one native space runs on the join engine (N12), and the code stays commented out in `reified/errors.rs`. |
 | `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. |
 
-*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-107`).*
+*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-112`).*
 
 | Code | Trigger |
 |---|---|
@@ -2585,7 +2585,7 @@ The callback of operation $`i`$ wraps the registration of the introduction (`rho
 
 Every staged operation of a space job goes through the chain.
 This covers the counter bump (`counter::bump`), the plans of the queue, the [re-store](glossary.md#re-store), and the operations that create a space.
-The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:2330`, `2385`, `2634`).
+The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:2388`, `2443`, `2692`).
 
 **Out of phlo.** A charge that runs out of phlo stops the run where the host program stops.
 A carried post-charge or a pre-charge fails inside the callback of its operation.
@@ -2729,7 +2729,7 @@ The settle after the plan and a settle job re-issue a settle job (`spaces/settle
 
 One space transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21), [decision 49](decision-register.md#decision-49)).
 `Plan` holds one `FireRounds` for each transaction.
-The settle before the plan, the plan and the settle after it count on it through `Cx::rounds` (`spaces/generic.rs:689`).
+The settle before the plan, the plan and the settle after it count on it through `Cx::rounds` (`spaces/generic.rs:737`).
 The settles of a stack once started counts of their own, so one transaction could make $`3 \times \mathrm{FIRE\_ROUND\_CAP}`$ fires.
 
 ```text
@@ -2740,7 +2740,7 @@ OPEN-PLAN(D, op):                               ▷ generic.rs, open_plan
   return none                                   ▷ the plan runs below the cap
 ```
 
-Every plan calls `open_plan` before it stages (`spaces/generic.rs:1435-1448`).
+Every plan calls `open_plan` before it stages (`spaces/generic.rs:1490-1503`).
 A plan then fires only below the cap, because `after_fire` continues an element only while the count stays below the cap.
 The settle loop checks the cap before each fire, and RESTORE-SCAN checks it before the second send (section N11.2).
 A queue, a bag and a cell have no settle, so their plans start at the count 0.
@@ -2758,7 +2758,7 @@ Their `check_key` accepts only the index names of the space, so a forged channel
 
 An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family agent reads the config once, and the agent of the family runs `run_allocate`.
 `AllocationRule::plan` gives the indices and the next value of the fixed Array, the cyclic Array and the Vector (`spaces/allocator.rs:109-162`).
-`AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2407-2455`).
+`AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2465-2513`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
 The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:555-595`).
@@ -2852,7 +2852,7 @@ The check does no work for a bag.
 #### N11.10 The priority queue
 
 `PriorityQueueDiscipline` keeps its records in levels and its waiters in lanes ([decision 38](decision-register.md#decision-38), `spaces/disciplines/priority_queue.rs:232-346`).
-A record holds its level in the priority slot of its envelope, and a continuation holds its lane in its policy slot (`spaces/record.rs:855-1221`).
+A record holds its level in the priority slot of its envelope, and a continuation holds its lane in its policy slot (`spaces/record.rs:867-1233`).
 So the queue keeps no storage for each level (I-10). `lane_heads` builds the map of the heads of the levels or of the lanes in one pass over a side (`spaces/disciplines/priority_queue.rs:355-397`).
 
 ```text
@@ -2882,7 +2882,7 @@ Strict confluence fails for a priority queue (readiness review S4).
 So `PriorityQueueView::next_fire` plans the fireable lane head with the least order (`spaces/disciplines/priority_queue.rs:978-1072`).
 When that fire binds a stored record while a record is in flight, the settle lands the record in flight first (`spaces/settle.rs:425-430`).
 
-The fire outcome decodes a fired continuation with `into_continuation`, which accepts the PQ policy slot and is strict on `Nil` for every other discipline (`spaces/record.rs:765-802`).
+The fire outcome decodes a fired continuation with `into_continuation`, which accepts the PQ policy slot and is strict on `Nil` for every other discipline (`spaces/record.rs:773-814`).
 The send param and the query param `priority` take a `GInt` of at least 0, below the bound `priorities` when the space sets it.
 A positional query part fails with `PositionalParamsUnsupported`.
 
@@ -2921,8 +2921,8 @@ Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` 
 #### N12.2 Classification and the scope
 
 A collection operation opens one transaction over its own collections and reads the config once.
-A join opens it with `begin_join`, over the distinct collections of its binds (`spaces/generic.rs:1947-1984`).
-`prepare_collection_op` then lets `classify` decide the route (`spaces/generic.rs:1863-1896`, `spaces/join.rs:367-400`).
+A join opens it with `begin_join`, over the distinct collections of its binds (`spaces/generic.rs:2004-2041`).
+`prepare_collection_op` then lets `classify` decide the route (`spaces/generic.rs:1918-1951`, `spaces/join.rs:367-400`).
 An operation that no join reaches keeps the driver of its collection.
 The classification reserves exactly the reads of the join check of P4.
 So such an operation keeps its host work, and the queue parity golden does not change.
@@ -3003,7 +3003,7 @@ Both searches reserve each envelope decode, each payload decode, each match and 
 #### N12.4 The transaction
 
 `run_join` runs the engine in one plan of the transaction (`spaces/join.rs:653-695`).
-`Engine::run` follows RUN-JOIN (`spaces/join.rs:2518-2605`).
+`Engine::run` follows RUN-JOIN (`spaces/join.rs:2539-2626`).
 Figure N12.4 shows one transaction, from the classification to the commit.
 
 ```text
@@ -3028,12 +3028,12 @@ TOUCH(c):                                        ▷ join.rs, Engine::touch
   if the discipline has a counter and c is not bumped yet: bump S(sid, c) once, before its first staging
 ```
 
-OFFER offers the element in flight to the waiters of its collection, in the order of the source (`spaces/join.rs:3287-3427`).
+OFFER offers the element in flight to the waiters of its collection, in the order of the source (`spaces/join.rs:3310-3450`).
 A head that refuses stores the element, and on the other shapes a refusal moves on to the next waiter.
-RECEIVE parks the waiter at its places, unless it is the head of each head-only collection and its search and guard pass (`spaces/join.rs:3501-3689`).
+RECEIVE parks the waiter at its places, unless it is the head of each head-only collection and its search and guard pass (`spaces/join.rs:3524-3712`).
 A receive with one bind on a set keeps its class fire over $`[D; n]`$.
 A join with two or more binds fires one consume over its group.
-PARK checks the capacity of each cell collection before it stages anything (`spaces/join.rs:3714-3742`).
+PARK checks the capacity of each cell collection before it stages anything (`spaces/join.rs:3737-3767`).
 
 ![Activity diagram of one transaction of the join engine. PREPARE begins over the own collections of the operation and reads the config once. CLASSIFY sends an operation that no join reaches to the driver of its collection, whose reservations equal the P4 join check. Otherwise JOIN-SCOPE checks each bind and closes the collections under their join groups, and a transaction that does not cover the scope is dropped before any staging and begun once again over the lock keys of the scope. RUN-JOIN bumps each own collection once and takes the orders, or the carried orders of decision 43. A settle job puts its pending second sends on the work stack and marks every collection dirty. Another operation runs the settle before the plan when its discipline cascades, which is the queue, the stack, the cell, the priority queue and the set, and not the bag. A stopped transaction or a full fire count commits and re-issues the operation. Otherwise the plan offers the datum or receives the waiter, with the windows, the greedy search and one guard check, and a peek fire pushes its second sends. DRAIN-AND-CASCADE then loops while a second send is owed or a waiter of a dirty collection can fire: a full count stops it and carries the rest, a second send is popped and offered in receipt order with its own identity, and otherwise NEXT-FIRE picks the head, the oldest lane head or the first set waiter of the least dirty collection, and LIFT-AND-REOFFER lifts the first non-persistent bound record with K_lift, keyed by the counter and the step or by the source hash on a set, offers it to the waiter, and retires the bound set classes. COMMIT re-issues one settle job with the pending sends, the dirty seeds and the resume when the transaction stopped with owed work, and otherwise re-issues the operation only when its element is still in flight.](diagrams/26-join-engine.svg)
 
@@ -3042,7 +3042,7 @@ PARK checks the capacity of each cell collection before it stages anything (`spa
 #### N12.5 Rule E in joins: the second sends
 
 A peek fire removes each non-persistent stored record that it binds, as a host COMM does ([decision 45](decision-register.md#decision-45)).
-The same transaction sends each such record again through OFFER, with its identity and its own authority (`spaces/join.rs:3170-3211`).
+The same transaction sends each such record again through OFFER, with its identity and its own authority (`spaces/join.rs:3191-3232`).
 
 ```text
 PUSH-SECOND-SENDS(σ, x at p?):                   ▷ join.rs, second_sends; the results in receipt order
@@ -3060,7 +3060,7 @@ A second send registers the authority of its record (`Introduction::for_record`)
 
 A fire can make another waiter of the scope fireable ([decision 50](decision-register.md#decision-50)).
 A head-only collection can get a new head, or a set class can move to a new place.
-DRAIN-AND-CASCADE fires each such waiter in the same transaction (`spaces/join.rs:3771-3800`).
+DRAIN-AND-CASCADE fires each such waiter in the same transaction (`spaces/join.rs:3796-3825`).
 
 ```text
 DRAIN-AND-CASCADE():                             ▷ join.rs, drain_and_cascade
@@ -3093,7 +3093,7 @@ LIFT-AND-REOFFER(W, σ):                          ▷ join.rs, lift_and_reoffer
   if the fire count says Reissue(cause): stop with cause   ▷ a stored divergent pair (A10)
 ```
 
-A collection with a counter keys `K_lift` by the counter value of the transaction and the step, as the settle of a stack does (`spaces/join.rs:3916-3968`).
+A collection with a counter keys `K_lift` by the counter value of the transaction and the step, as the settle of a stack does (`spaces/join.rs:3941-3993`).
 A set has no counter, so its `K_lift` is keyed by the source hash of the lifted record, as `K_retire` is.
 So every lift of a set has an identity of its own, also when a re-issue repeats the random state and the step.
 
@@ -3116,13 +3116,13 @@ So their fires commute (`cascade_order_independent`).
 Strict confluence fails for a priority queue, which has two lanes for each collection, and for a set, which has many waiters for each collection.
 So NEXT-FIRE fixes an order: the oldest lane head of a priority queue, and the DR-75 order of the union for a set.
 
-RETIRE-SET-BINDS runs after every fire of a waiter that does not peek, on the consume side, on the produce side, and in the cascade (`spaces/join.rs:2108-2142`).
+RETIRE-SET-BINDS runs after every fire of a waiter that does not peek, on the consume side, on the produce side, and in the cascade (`spaces/join.rs:2129-2163`).
 It retires the other non-persistent stored members of each bound set class with single-channel `K_retire` COMMs, in canonical order.
 A peek retires nothing, and a bag has no classes, so the step does nothing there.
 
 #### N12.7 Stop, re-issue and the settle job
 
-`commit` decides the re-issue of the transaction (`spaces/join.rs:3973-4035`).
+`commit` decides the re-issue of the transaction (`spaces/join.rs:3998-4060`).
 A divergent own element does not stop the transaction: the element stays in flight, and the drain fires the other owed pairs.
 Only the fire cap and a stored divergent pair of the cascade stop a transaction.
 A stored divergent pair then fires once in each settle job (A10).
@@ -3156,14 +3156,14 @@ One outcome holds one re-issue, so `resume` keeps the order: first the owed seco
 
 #### N12.8 The record of a join waiter
 
-A join waiter parks with version 2 of the continuation envelope, with one [join slot](glossary.md#join-slot) for each position of its group (`spaces/record.rs:1328-1333`).
+A join waiter parks with version 2 of the continuation envelope, with one [join slot](glossary.md#join-slot) for each position of its group (`spaces/record.rs:1797-1802`).
 A slot holds the order of the waiter in the collection of its position and the index of its bind.
 It also holds the lane policy of a priority-queue bind.
 The bind indices are a permutation of the binds.
-So `restore_bind_order` puts the results of a fire, which follow the group order, back into the bind order of the receive (`spaces/record.rs:1471-1497`).
+So `restore_bind_order` puts the results of a fire, which follow the group order, back into the bind order of the receive (`spaces/record.rs:1936-1962`).
 
 A waiter with one bind keeps the version 1 record, and the decoders of each version reject the other version.
-The engine prepays the unwrap of a fired join record at staging, so the outcome after the commit only moves values (`spaces/record.rs:1621-1637`).
+The engine prepays the unwrap of a fired join record at staging, so the outcome after the commit only moves values (`spaces/record.rs:2097-2113`).
 
 ![The space records as a component diagram, from left to right. The record tag is a GByteArray of four bytes: 0xE0, 0x52, the kind and the version, with the kinds D for a datum, K for a continuation, S for a counter and C for the config, version 1 for every record and version 2 for a join waiter. A datum record of version 1 on D(sid, k) holds the list of its tag, its order, its priority and its embedding as its first par, and then the payload of the send, while the random state, the cost authority and the cost stack stay outside the envelope, and a priority queue puts the level of the record in its priority slot. A counter on S(sid) or S(sid, k) holds the list of its tag and then the counter value, and the config on C(sid) holds the list of its tag and then the config map, so no space datum is a single number. A continuation of one bind of version 1 on [D(sid, k)] holds the list of its tag, its order, its policy and the body, with the policy Nil or the lane of a priority queue. A continuation of a join of version 2 on its canonical group holds the list of its tag, the list of its slots and the body, where the slot of the position i holds the order of the waiter in the collection of the position, the bind of the position in the receive, and the policy of the position, and the bind indices are a permutation. A fire of a join waiter gives its results in group order, and restore_bind_order puts the result of the position i at its bind, so the body binds its values in bind order. A note states that the decoders of each version compare the whole tag and are strict.](diagrams/11-record-envelope.svg)
 
@@ -3205,9 +3205,9 @@ A fire removes the join entries of its group when no waiter of the group is left
 
 #### N12.11 The seam of a store
 
-The engine reaches the discipline, the windows and the records of a store through the trait `JoinSource` (`spaces/join.rs:824-1116`).
-`KeyedSource` implements it for the keyed stores HashMap, Array and Vector (`spaces/join.rs:1449-2101`).
-Its offer order and its cascade order for a set merge the canonical orders of the groups of a collection by source hash (`spaces/join.rs:2166-2245`).
+The engine reaches the discipline, the windows and the records of a store through the trait `JoinSource` (`spaces/join.rs:824-1127`).
+`KeyedSource` implements it for the keyed stores HashMap, Array and Vector (`spaces/join.rs:1460-2122`).
+Its offer order and its cascade order for a set merge the canonical orders of the groups of a collection by source hash (`spaces/join.rs:2187-2266`).
 
 The keyed source holds the records and the waiters of a collection on one data channel.
 The PathMap store keeps its waiters and markers on index channels and its records on data channels.

@@ -301,7 +301,7 @@ The reply is one datum, the tuple of three elements that `typed_error` builds (`
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:182-194`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:188-200`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|

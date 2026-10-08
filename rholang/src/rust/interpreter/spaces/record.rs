@@ -53,6 +53,7 @@
 //! makes them (DR-88 of `feature/cost-accounted-rho`). Then it calls the plain form, so both
 //! forms give the same record. Without a budget every reservation is free.
 
+use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::sync::{Arc, LazyLock};
 
@@ -71,6 +72,7 @@ use rspace_plus_plus::rspace::space_store_handle::BeforeObserve;
 use super::agent::{ConsumeOp, ProduceOp};
 use super::errors::SpaceError;
 use super::namespace::REIFIED_TAG;
+use super::types::config::{map_entries, map_par, string_par};
 use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use crate::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
@@ -750,18 +752,24 @@ pub fn prepay_continuation_unwrap(
     meter: &ScanMeter,
 ) -> Result<(), SpaceError> {
     reserve_continuation_envelope(continuation, meter)?;
+    // A VectorDB waiter carries its query (P6). The decode of a query policy is more than the
+    // read of its slot, so it is reserved here; `Nil` and a level reserve nothing more.
+    if let Some(policy) = continuation_policy_par(continuation) {
+        reserve_policy_decode(policy, meter)?;
+    }
     for slot in CONTINUATION_MOVED_SLOTS {
         meter.moved(slot)?;
     }
     Ok(())
 }
 
-/// Decodes an owned parked continuation (the inverse of [`wrap_continuation`] and of
-/// [`wrap_pq_continuation`]). It moves the original body, the random state, the guard and the
-/// cost authority out of the record, so it copies nothing. [`prepay_continuation_unwrap`]
-/// reserves its work. The outcome of every family decodes its fired continuations here, and
-/// the fired waiter of a priority queue carries its policy (P5b), so this decoder accepts the
-/// policy slot `Nil` and the policy of a priority queue.
+/// Decodes an owned parked continuation (the inverse of [`wrap_continuation`], of
+/// [`wrap_pq_continuation`] and of [`wrap_policy_continuation`]). It moves the original body,
+/// the random state, the guard and the cost authority out of the record, so it copies nothing.
+/// [`prepay_continuation_unwrap`] reserves its work. The outcome of every family decodes its
+/// fired continuations here, and a fired waiter carries its policy: the level of a priority
+/// queue (P5b) or the query of a VectorDB waiter (P6). So this decoder accepts every policy
+/// that [`policy_of`] accepts.
 pub fn into_continuation(
     continuation: TaggedContinuation,
 ) -> Result<ContinuationRecord, MalformedRecord> {
@@ -770,7 +778,11 @@ pub fn into_continuation(
     // priority queue, so a fire of such a waiter would fail after its commit. The decoder of the
     // priority queue accepts `Nil` and that policy, and it is the strict decoder on `Nil`.
     // let ord = continuation_ord(&continuation)?;
-    let (ord, _) = pq_continuation_slots(&continuation)?;
+    // Replaced by P6 (design v3 4.0): the decoder of the priority queue rejects the query policy
+    // of a VectorDB waiter, so a fire of such a waiter would fail after its commit. The decoder
+    // of every policy accepts `Nil`, the level of a priority queue and a VectorDB query.
+    // let (ord, _) = pq_continuation_slots(&continuation)?;
+    let (ord, _) = continuation_policy_slots(&continuation)?;
     let TaggedContinuation {
         tagged_cont,
         guard,
@@ -1220,6 +1232,459 @@ pub fn pq_continuation_slots_metered(
     Ok(pq_continuation_slots(continuation)?)
 }
 
+// ── Waiter policies and the records of a VectorDB space (P6, design v3 4.0 and 4.3) ───────
+//
+// The policy slot of a parked waiter (version 1) and of a join slot (version 2) holds one of
+// three values. A priority queue writes `Nil` or its level map (P5b, decision 38). A VectorDB
+// waiter writes `Nil` for a receive without a query, or the canonical map of its query: the
+// query vector under `q` and the named params of the receive, one entry for each present key.
+// The decoder of the policy is strict: it accepts `Nil`, the exact image of `pq_policy`, and a
+// non-empty map whose keys are in `VDB_QUERY_KEYS` and that equals its own re-encoding. The two
+// maps cannot be confused, because `"priority"` is not a query key.
+//
+// A datum of a VectorDB space keeps envelope version 1 and fills the embedding slot: the vector
+// of the record, a ground list, or `Nil` for a record without one. The agent checks the
+// elements of the vector before it stores the record, so the codec checks only the shape.
+
+/// The keys that the query map of a VectorDB waiter may hold (P6): the query vector `q` and the
+/// named params of the receive, in bytewise order.
+pub const VDB_QUERY_KEYS: [&str; 8] = [
+    "ids",
+    "k",
+    "metric",
+    "q",
+    "radius",
+    "results",
+    "scores",
+    "threshold",
+];
+
+/// The policy slot of a parked waiter (version 1) and of a join slot (version 2).
+///
+/// The query map is boxed, so the policy has the size of the `Option<i64>` that the slot held
+/// before P6, and every reservation that the join engine makes by the size of a slot stays the
+/// same for the families of P5.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum WaiterPolicy {
+    /// `Nil`: a waiter without a policy.
+    #[default]
+    None,
+    /// The waiter queue of the level `p` of a priority queue (P5b, decision 38): the exact image
+    /// of [`pq_policy`] with `p ≥ 0`.
+    Level(i64),
+    /// The query of a VectorDB waiter (P6): one value for each present key of
+    /// [`VDB_QUERY_KEYS`], as the agent checked it.
+    Query(Box<BTreeMap<String, Par>>),
+}
+
+impl WaiterPolicy {
+    /// The policy of a priority-queue lane: `Level(p)` for `Some(p)` and `None` for `None`.
+    pub fn of_level(level: Option<i64>) -> Self {
+        match level {
+            Some(level) => WaiterPolicy::Level(level),
+            None => WaiterPolicy::None,
+        }
+    }
+
+    /// The level of a priority-queue policy, and `None` for every other policy.
+    pub fn level(&self) -> Option<i64> {
+        match self {
+            WaiterPolicy::Level(level) => Some(*level),
+            WaiterPolicy::None | WaiterPolicy::Query(_) => None,
+        }
+    }
+
+    /// The query map of a VectorDB policy, and `None` for every other policy.
+    pub fn query(&self) -> Option<&BTreeMap<String, Par>> {
+        match self {
+            WaiterPolicy::Query(entries) => Some(entries),
+            WaiterPolicy::None | WaiterPolicy::Level(_) => None,
+        }
+    }
+}
+
+/// The par of a policy: `Nil`, the map of [`pq_policy`], or the canonical query map, whose
+/// entries `ParMap` sorts.
+pub fn policy_par(policy: &WaiterPolicy) -> Par {
+    match policy {
+        WaiterPolicy::None => Par::default(),
+        WaiterPolicy::Level(level) => pq_policy(Some(*level)),
+        WaiterPolicy::Query(entries) => map_par(
+            entries
+                .iter()
+                .map(|(key, value)| (string_par(key), value.clone()))
+                .collect(),
+        ),
+    }
+}
+
+/// True when `par` cannot be a level policy or `Nil`, so that its decode is the decode of a
+/// query map. The check reads the structure of the slot only.
+fn is_query_policy(par: &Par) -> bool { level_of_policy(par).is_none() }
+
+/// The policy of a policy slot: `Nil`, the exact image of [`pq_policy`] with a natural level,
+/// or a non-empty map whose keys are in [`VDB_QUERY_KEYS`] and that equals its re-encoding.
+/// Every other value is `None`.
+pub fn policy_of(par: &Par) -> Option<WaiterPolicy> {
+    match level_of_policy(par) {
+        Some(Some(level)) => return Some(WaiterPolicy::Level(level)),
+        Some(None) => return Some(WaiterPolicy::None),
+        None => {}
+    }
+    let entries = map_entries(par)?;
+    if entries.is_empty() || !entries.keys().all(|key| VDB_QUERY_KEYS.contains(key)) {
+        return None;
+    }
+    let policy = WaiterPolicy::Query(Box::new(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.clone()))
+            .collect(),
+    ));
+    (policy_par(&policy) == *par).then_some(policy)
+}
+
+/// Reserves the decode of the policy slot `par` beyond its read: nothing for `Nil` and for a
+/// level, whose decode the read covers, and for a query map the decode of its entries, their
+/// re-encoding and the comparison of the two maps (the config record decodes the same way).
+fn reserve_policy_decode(par: &Par, meter: &ScanMeter) -> Result<(), SpaceError> {
+    if is_query_policy(par) {
+        meter.reserve_copy(par)?;
+        meter.reserve_copy(par)?;
+        meter.inspect(par)?;
+        meter.inspect(par)?;
+    }
+    Ok(())
+}
+
+/// Reserves the encode of `policy` into its par: nothing for `Nil`, the template of the level
+/// map for a level, and for a query map the copy of each key and value and the buffer of the
+/// entries.
+fn reserve_policy_encode(policy: &WaiterPolicy, meter: &ScanMeter) -> Result<(), SpaceError> {
+    match policy {
+        WaiterPolicy::None => Ok(()),
+        WaiterPolicy::Level(_) => meter.reserve_copy(&*PQ_POLICY).map_err(SpaceError::from),
+        WaiterPolicy::Query(entries) => {
+            meter.reserve_buffer::<KeyValuePair>(entries.len())?;
+            for (key, value) in entries.iter() {
+                meter.reserve_copy(key)?;
+                meter.reserve_copy(value)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The envelope of a parked continuation with the order `ord` and the policy `policy` around
+/// `body`. With `Nil` it is [`continuation_envelope`], and with a level it is
+/// [`pq_continuation_envelope`].
+pub fn policy_continuation_envelope(ord: i64, policy: &WaiterPolicy, body: Par) -> Par {
+    list_par(vec![
+        RecordKind::Continuation.tag(),
+        int_par(ord),
+        policy_par(policy),
+        body,
+    ])
+}
+
+/// The parked continuation of `continuation` with the order `ord` and the policy `policy`: its
+/// body inside the envelope. The random state, the guard and the cost authority stay as they
+/// are. Only a `ParBody` with a body has a continuation record.
+pub fn wrap_policy_continuation(
+    ord: i64,
+    policy: &WaiterPolicy,
+    continuation: &TaggedContinuation,
+) -> Result<TaggedContinuation, MalformedRecord> {
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body),
+            random_state,
+        })) => Ok(TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(policy_continuation_envelope(ord, policy, body.clone())),
+                random_state: random_state.clone(),
+            })),
+            guard: continuation.guard.clone(),
+            cost_authority: continuation.cost_authority.clone(),
+        }),
+        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
+        | Some(TaggedCont::ScalaBodyRef(_))
+        | None => Err(MalformedRecord(RecordKind::Continuation)),
+    }
+}
+
+/// The order, the policy and the original body of a parked continuation of version 1. The
+/// policy slot holds a value that [`policy_of`] accepts, and the other slots are the slots that
+/// [`continuation_ord`] accepts.
+fn policy_continuation_parts(
+    continuation: &TaggedContinuation,
+) -> Result<(i64, WaiterPolicy, &Par, &ParWithRandom), MalformedRecord> {
+    let malformed = MalformedRecord(RecordKind::Continuation);
+    let body = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => body,
+        Some(TaggedCont::ScalaBodyRef(_)) | None => return Err(malformed),
+    };
+    match body.body.as_ref().and_then(list_elements) {
+        Some([tag, ord, policy, original]) if is_tag(tag, RecordKind::Continuation) => {
+            match (natural_of(ord), policy_of(policy)) {
+                (Some(ord), Some(policy)) => Ok((ord, policy, original, body)),
+                (None, _) | (_, None) => Err(malformed),
+            }
+        }
+        _ => Err(malformed),
+    }
+}
+
+/// The order and the policy of a parked continuation of version 1. Only the envelope is
+/// decoded.
+pub fn continuation_policy_slots(
+    continuation: &TaggedContinuation,
+) -> Result<(i64, WaiterPolicy), MalformedRecord> {
+    policy_continuation_parts(continuation).map(|(ord, policy, _, _)| (ord, policy))
+}
+
+/// A decoded parked continuation of version 1 with its policy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PolicyContinuationRecord {
+    /// The order of the continuation in its collection.
+    pub ord: i64,
+    /// The policy of the waiter.
+    pub policy: WaiterPolicy,
+    /// The continuation as the program parked it: the original body, its random state, its
+    /// guard and its cost authority.
+    pub continuation: TaggedContinuation,
+}
+
+/// Decodes a parked continuation of version 1 with its policy (the inverse of
+/// [`wrap_policy_continuation`]).
+pub fn unwrap_policy_continuation(
+    continuation: &TaggedContinuation,
+) -> Result<PolicyContinuationRecord, MalformedRecord> {
+    let (ord, policy, original, body) = policy_continuation_parts(continuation)?;
+    Ok(PolicyContinuationRecord {
+        ord,
+        policy,
+        continuation: TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(original.clone()),
+                random_state: body.random_state.clone(),
+            })),
+            guard: continuation.guard.clone(),
+            cost_authority: continuation.cost_authority.clone(),
+        },
+    })
+}
+
+/// [`wrap_policy_continuation`] built from the parts of a receive, with one copy of each part.
+/// The reservations are those of [`wrap_continuation_metered`] and the encode of the policy.
+pub fn wrap_policy_continuation_metered(
+    ord: i64,
+    policy: &WaiterPolicy,
+    body: &ParWithRandom,
+    guard: &Option<Par>,
+    cost_authority: Option<&CostAuthority>,
+    meter: &ScanMeter,
+) -> Result<TaggedContinuation, SpaceError> {
+    let Some(original) = &body.body else {
+        return Err(MalformedRecord(RecordKind::Continuation).into());
+    };
+    meter.reserve_copy(&*CONTINUATION_ENVELOPE)?;
+    reserve_policy_encode(policy, meter)?;
+    meter.reserve_copy(original)?;
+    meter.reserve_copy(&original.locally_free)?;
+    meter.reserve_buffer::<u8>(original.locally_free.len())?;
+    meter.reserve_copy(&original.locally_free)?;
+    meter.reserve_copy(&body.random_state)?;
+    meter.reserve_copy(guard)?;
+    let cost_authority = cost_authority
+        .map(|authority| meter.copy(authority))
+        .transpose()?;
+    Ok(TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(policy_continuation_envelope(ord, policy, original.clone())),
+            random_state: body.random_state.clone(),
+        })),
+        guard: guard.clone(),
+        cost_authority,
+    })
+}
+
+/// [`continuation_policy_slots`] with its read reserved: the spine and the small slots of the
+/// envelope, and the decode of a query policy.
+pub fn continuation_policy_slots_metered(
+    continuation: &TaggedContinuation,
+    meter: &ScanMeter,
+) -> Result<(i64, WaiterPolicy), SpaceError> {
+    reserve_continuation_envelope(continuation, meter)?;
+    if let Some(policy) = continuation_policy_par(continuation) {
+        reserve_policy_decode(policy, meter)?;
+    }
+    Ok(continuation_policy_slots(continuation)?)
+}
+
+/// The policy slot of a continuation record of version 1, read without a check.
+fn continuation_policy_par(continuation: &TaggedContinuation) -> Option<&Par> {
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => match sole_expr(body) {
+            Some(ExprInstance::EListBody(EList { ps, .. })) => ps.get(2),
+            _ => None,
+        },
+        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
+        | Some(TaggedCont::ScalaBodyRef(_))
+        | None => None,
+    }
+}
+
+/// True when `par` can fill the embedding slot of a datum of a VectorDB space: one list without
+/// a remainder, free variables or connectives. The agent checks its elements first.
+fn is_embedding(par: &Par) -> bool {
+    list_elements(par).is_some() && !par.connective_used && par.locally_free.is_empty()
+}
+
+/// The envelope of a datum of a VectorDB space with the order `ord` and the embedding
+/// `embedding`, or `Nil` without one. Without an embedding it is [`datum_envelope`].
+pub fn vdb_datum_envelope(ord: i64, embedding: Option<&Par>) -> Par {
+    list_par(vec![
+        RecordKind::Datum.tag(),
+        int_par(ord),
+        Par::default(),
+        embedding.cloned().unwrap_or_default(),
+    ])
+}
+
+/// The datum record of `datum` in a VectorDB space, with the order `ord` and the embedding
+/// `embedding`: the envelope, then the payload. The random state, the cost authority and the
+/// cost stack of `datum` stay as they are. An embedding that is not a ground list is rejected.
+pub fn wrap_vdb_datum(
+    ord: i64,
+    embedding: Option<&Par>,
+    datum: &ListParWithRandom,
+) -> Result<ListParWithRandom, MalformedRecord> {
+    if embedding.is_some_and(|vector| !is_embedding(vector)) {
+        return Err(MalformedRecord(RecordKind::Datum));
+    }
+    let mut pars = Vec::with_capacity(datum.pars.len() + 1);
+    pars.push(vdb_datum_envelope(ord, embedding));
+    pars.extend(datum.pars.iter().cloned());
+    Ok(ListParWithRandom {
+        pars,
+        random_state: datum.random_state.clone(),
+        cost_authority: datum.cost_authority.clone(),
+        cost_stack: datum.cost_stack.clone(),
+    })
+}
+
+/// The order and the embedding of a datum record of a VectorDB space. Only the envelope is
+/// decoded. The priority slot holds `Nil`, and the embedding slot holds `Nil` or a ground list.
+pub fn vdb_datum_slots(record: &ListParWithRandom) -> Result<(i64, Option<&Par>), MalformedRecord> {
+    let malformed = MalformedRecord(RecordKind::Datum);
+    match record.pars.first().and_then(list_elements) {
+        Some([tag, ord, priority, embedding])
+            if is_tag(tag, RecordKind::Datum) && is_nil(priority) =>
+        {
+            let embedding = match is_nil(embedding) {
+                true => None,
+                false if is_embedding(embedding) => Some(embedding),
+                false => return Err(malformed),
+            };
+            natural_of(ord).map(|ord| (ord, embedding)).ok_or(malformed)
+        }
+        _ => Err(malformed),
+    }
+}
+
+/// A decoded datum record of a VectorDB space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VdbDatumRecord {
+    /// The order of the record in its collection.
+    pub ord: i64,
+    /// The vector of the record, or `None` for a record without one.
+    pub embedding: Option<Par>,
+    /// The datum as the program sent it: the payload, its random state, its cost authority and
+    /// its cost stack.
+    pub datum: ListParWithRandom,
+}
+
+/// Decodes a datum record of a VectorDB space (the inverse of [`wrap_vdb_datum`]).
+pub fn unwrap_vdb_datum(record: &ListParWithRandom) -> Result<VdbDatumRecord, MalformedRecord> {
+    let (ord, embedding) = vdb_datum_slots(record)?;
+    let payload = record
+        .pars
+        .get(1..)
+        .ok_or(MalformedRecord(RecordKind::Datum))?;
+    Ok(VdbDatumRecord {
+        ord,
+        embedding: embedding.cloned(),
+        datum: ListParWithRandom {
+            pars: payload.to_vec(),
+            random_state: record.random_state.clone(),
+            cost_authority: record.cost_authority.clone(),
+            cost_stack: record.cost_stack.clone(),
+        },
+    })
+}
+
+/// [`wrap_vdb_datum`] with its copies reserved: the envelope, the embedding, the buffer of the
+/// envelope and the payload, each payload par, the random state, the cost authority and the
+/// cost stack of `datum`.
+pub fn wrap_vdb_datum_metered(
+    ord: i64,
+    embedding: Option<&Par>,
+    datum: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<ListParWithRandom, SpaceError> {
+    let length = datum
+        .pars
+        .len()
+        .checked_add(1)
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve_copy(&*DATUM_ENVELOPE)?;
+    if let Some(vector) = embedding {
+        meter.inspect(vector)?;
+        meter.reserve_copy(vector)?;
+    }
+    meter.reserve_buffer::<Par>(length)?;
+    for par in &datum.pars {
+        meter.reserve_copy(par)?;
+    }
+    meter.reserve_copy(&datum.random_state)?;
+    meter.reserve_copy(&datum.cost_authority)?;
+    meter.reserve_copy(&datum.cost_stack)?;
+    Ok(wrap_vdb_datum(ord, embedding, datum)?)
+}
+
+/// [`vdb_datum_slots`] with its read reserved: the envelope, the embedding included.
+pub fn vdb_datum_slots_metered<'r>(
+    record: &'r ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<(i64, Option<&'r Par>), SpaceError> {
+    if let Some(envelope) = record.pars.first() {
+        meter.inspect(envelope)?;
+    }
+    Ok(vdb_datum_slots(record)?)
+}
+
+/// [`unwrap_vdb_datum`] with its reads and copies reserved: the envelope, the embedding, the
+/// payload, the random state, the cost authority and the cost stack.
+pub fn unwrap_vdb_datum_metered(
+    record: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<VdbDatumRecord, SpaceError> {
+    if let Some(envelope) = record.pars.first() {
+        meter.inspect(envelope)?;
+        meter.reserve_copy(envelope)?;
+    }
+    if let Some(payload) = record.pars.get(1..) {
+        meter.reserve_copy_slice(payload)?;
+    }
+    meter.reserve_copy(&record.random_state)?;
+    meter.reserve_copy(&record.cost_authority)?;
+    meter.reserve_copy(&record.cost_stack)?;
+    Ok(unwrap_vdb_datum(record)?)
+}
+
 // ── The continuation record of a join (P5c, decision 29) ──────────────────────────────────
 //
 // A waiter with two or more binds parks on the group of its channels in canonical order
@@ -1249,16 +1714,20 @@ pub const JOIN_CONTINUATION_TAG: [u8; 4] = [
 ];
 
 /// The slot of one group position of a join waiter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// The slot was `Copy` with a level `priority: Option<i64>` until P6. The policy of P6 also holds
+/// the query of a VectorDB bind (design v3 4.0), boxed, so the slot keeps its size and the join
+/// engine reserves the same work for the families of P5.
+#[derive(Clone, Debug, PartialEq)]
 pub struct JoinSlot {
     /// The order of the waiter in the collection of the position. Repeated channels of one
     /// collection have equal orders, and a bag or a set gives the order 0.
     pub ord: i64,
     /// The index of the bind of the position in the receive.
     pub bind: usize,
-    /// The waiter queue of the bind in a priority queue: `Some(p)` for the level `p`, and
-    /// `None` for the unrestricted queue and for every other discipline.
-    pub priority: Option<i64>,
+    /// The policy of the bind: the level of its waiter queue in a priority queue, the query of a
+    /// VectorDB bind, and `None` for the unrestricted queue and for every other discipline.
+    pub policy: WaiterPolicy,
 }
 
 /// A decoded continuation record of a join.
@@ -1290,7 +1759,7 @@ fn join_slots_valid(slots: &[JoinSlot]) -> bool {
     let mut seen = vec![false; slots.len()];
     slots.len() >= 2
         && slots.iter().all(|slot| {
-            let level = slot.priority.is_none_or(|level| level >= 0);
+            let level = slot.policy.level().is_none_or(|level| level >= 0);
             let fresh = match seen.get_mut(slot.bind) {
                 Some(flag @ false) => {
                     *flag = true;
@@ -1309,7 +1778,7 @@ fn join_slot_par(slot: &JoinSlot) -> Result<Par, MalformedRecord> {
     Ok(list_par(vec![
         int_par(slot.ord),
         int_par(bind),
-        pq_policy(slot.priority),
+        policy_par(&slot.policy),
     ]))
 }
 
@@ -1363,12 +1832,8 @@ fn join_slot_of(par: &Par, count: usize) -> Option<JoinSlot> {
         Some([ord, bind, policy]) => {
             let ord = natural_of(ord)?;
             let bind = usize::try_from(natural_of(bind)?).ok()?;
-            let priority = level_of_policy(policy)?;
-            (bind < count).then_some(JoinSlot {
-                ord,
-                bind,
-                priority,
-            })
+            let policy = policy_of(policy)?;
+            (bind < count).then_some(JoinSlot { ord, bind, policy })
         }
         _ => None,
     }
@@ -1536,9 +2001,7 @@ pub fn wrap_join_continuation_metered(
     meter.reserve_buffer::<Par>(slots.len())?;
     for slot in slots {
         meter.reserve_copy(&*JOIN_SLOT)?;
-        if slot.priority.is_some() {
-            meter.reserve_copy(&*PQ_POLICY)?;
-        }
+        reserve_policy_encode(&slot.policy, meter)?;
     }
     meter.reserve_copy(original)?;
     meter.reserve_copy(&original.locally_free)?;
@@ -1600,6 +2063,19 @@ fn reserve_join_envelope(
     };
     meter.reserve_buffer::<JoinSlot>(count)?;
     meter.reserve_buffer::<bool>(count)?;
+    // The decode of a query policy of a VectorDB bind is more than the read of the slot list
+    // (P6); `Nil` and a level reserve nothing more.
+    if let [_, slot_list, ..] = envelope_elements(continuation) {
+        if let Some(ExprInstance::EListBody(EList { ps, .. })) = sole_expr(slot_list) {
+            for slot in ps {
+                if let Some(ExprInstance::EListBody(EList { ps: parts, .. })) = sole_expr(slot) {
+                    if let Some(policy) = parts.get(2) {
+                        reserve_policy_decode(policy, meter)?;
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2566,7 +3042,7 @@ mod tests {
         JoinSlot {
             ord,
             bind,
-            priority,
+            policy: WaiterPolicy::of_level(priority),
         }
     }
 
@@ -2922,5 +3398,336 @@ mod tests {
         // A lane policy is reserved.
         let laned = vec![slot(0, 0, Some(1)), slot(0, 1, None)];
         assert!(usage_of(&laned) > usage_of(&two));
+    }
+
+    // ── Waiter policies and the records of a VectorDB space (P6, design v3 4.0) ───────────
+
+    fn double(value: f64) -> Par { expr_par(ExprInstance::GDouble(value.to_bits())) }
+
+    fn query(entries: Vec<(&str, Par)>) -> WaiterPolicy {
+        WaiterPolicy::Query(Box::new(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        ))
+    }
+
+    /// Query policies with every key of `VDB_QUERY_KEYS` and with one key alone.
+    fn query_policies() -> Vec<WaiterPolicy> {
+        let id = expr_par(ExprInstance::GByteArray(vec![7; 32]));
+        vec![
+            query(vec![("q", list_par(vec![int(1), double(0.5)]))]),
+            query(vec![("k", int(2))]),
+            query(vec![
+                ("ids", list_par(vec![id])),
+                ("k", int(3)),
+                ("metric", string("cosine")),
+                ("q", list_par(vec![int(1), int(0)])),
+                ("scores", expr_par(ExprInstance::GBool(true))),
+                ("threshold", double(0.75)),
+            ]),
+            query(vec![
+                ("metric", string("euclidean")),
+                ("q", list_par(vec![double(0.25), double(-1.5)])),
+                ("radius", double(0.3)),
+                ("results", string("all")),
+            ]),
+        ]
+    }
+
+    #[test]
+    fn space_record_waiter_policy_keeps_the_size_of_a_level() {
+        // The join engine reserves its slot buffers by size, so the policy of P6 keeps the size
+        // of the `Option<i64>` level of P5, and a slot keeps its size.
+        assert_eq!(size_of::<WaiterPolicy>(), size_of::<Option<i64>>());
+        assert_eq!(
+            size_of::<JoinSlot>(),
+            size_of::<i64>() + size_of::<usize>() + size_of::<Option<i64>>()
+        );
+    }
+
+    #[test]
+    fn space_record_policy_slot_roundtrips() {
+        assert_eq!(policy_par(&WaiterPolicy::None), Par::default());
+        assert_eq!(policy_of(&Par::default()), Some(WaiterPolicy::None));
+        for level in [0, 1, 9, i64::MAX] {
+            let policy = WaiterPolicy::Level(level);
+            // A level is the policy of P5b, byte for byte.
+            assert_eq!(policy_par(&policy), pq_policy(Some(level)));
+            assert_eq!(policy_of(&policy_par(&policy)), Some(policy.clone()));
+            assert_eq!(policy.level(), Some(level));
+            assert_eq!(WaiterPolicy::of_level(Some(level)), policy);
+        }
+        assert_eq!(WaiterPolicy::of_level(None), WaiterPolicy::None);
+        for policy in query_policies() {
+            let par = policy_par(&policy);
+            assert_eq!(policy_of(&par), Some(policy.clone()));
+            assert_eq!(policy.level(), None);
+            assert!(policy.query().is_some());
+            assert!(is_query_policy(&par));
+        }
+        assert!(!is_query_policy(&Par::default()));
+        assert!(!is_query_policy(&pq_policy(Some(2))));
+    }
+
+    #[test]
+    fn space_record_policy_decoder_rejects_malformed_policies() {
+        use models::rust::par_map::ParMap;
+        use models::rust::par_map_type_mapper::ParMapTypeMapper;
+        // An empty map is not `Nil`, and a waiter without a query has the policy `Nil`.
+        assert_eq!(policy_of(&map_par(Vec::new())), None);
+        // Keys outside the query keys: the keys of tensor logic and `precision` left P6
+        // (decisions 62 and 66), and a key of the priority queue does not mix with them.
+        for key in ["score", "tensors", "precision", "embedding", "priority"] {
+            let par = map_par(vec![
+                (string(key), int(1)),
+                (string("q"), list_par(vec![int(1)])),
+            ]);
+            assert_eq!(policy_of(&par), None, "the key {key} is not a query key");
+        }
+        // A map whose entries are not in the canonical order of `ParMap` is not the image of
+        // the encoder.
+        let canonical = policy_par(&query(vec![("k", int(2)), ("metric", string("dot"))]));
+        let reversed = match sole_expr(&canonical) {
+            Some(ExprInstance::EMapBody(EMap {
+                kvs,
+                locally_free,
+                connective_used,
+                remainder,
+            })) => {
+                let mut kvs = kvs.clone();
+                kvs.reverse();
+                expr_par(ExprInstance::EMapBody(EMap {
+                    kvs,
+                    locally_free: locally_free.clone(),
+                    connective_used: *connective_used,
+                    remainder: remainder.clone(),
+                }))
+            }
+            _ => panic!("the policy of a query is a map"),
+        };
+        assert_ne!(reversed, canonical);
+        assert_eq!(policy_of(&reversed), None);
+        // A map with a remainder is not a policy.
+        let with_remainder = {
+            let mut map = ParMapTypeMapper::par_map_to_emap(ParMap::create_from_vec(vec![(
+                string("k"),
+                int(2),
+            )]));
+            map.remainder = Some(models::rhoapi::Var {
+                var_instance: Some(models::rhoapi::var::VarInstance::FreeVar(0)),
+            });
+            expr_par(ExprInstance::EMapBody(map))
+        };
+        assert_eq!(policy_of(&with_remainder), None);
+        // A level that is not natural is not a policy.
+        assert_eq!(policy_of(&canonical_policy(-1)), None);
+    }
+
+    #[test]
+    fn space_record_every_policy_waiter_decodes_after_its_fire() {
+        let original = parked(int(9));
+        let mut policies = vec![WaiterPolicy::None, WaiterPolicy::Level(4)];
+        policies.extend(query_policies());
+        for policy in policies {
+            let wrapped = wrap_policy_continuation(5, &policy, &original).expect("a body");
+            assert_eq!(continuation_policy_slots(&wrapped), Ok((5, policy.clone())));
+            assert_eq!(
+                unwrap_policy_continuation(&wrapped).map(|record| record.continuation),
+                Ok(original.clone())
+            );
+            // The outcome of every family decodes a fired waiter with `into_continuation`.
+            let decoded = into_continuation(wrapped.clone()).expect("a fired waiter decodes");
+            assert_eq!(decoded.ord, 5);
+            assert_eq!(decoded.continuation, original);
+            // `Nil` and a level give the records of P4 and P5b, byte for byte.
+            match &policy {
+                WaiterPolicy::None => {
+                    assert_eq!(wrapped, wrap_continuation(5, &original).expect("a body"))
+                }
+                WaiterPolicy::Level(level) => assert_eq!(
+                    wrapped,
+                    wrap_pq_continuation(5, Some(*level), &original).expect("a body")
+                ),
+                WaiterPolicy::Query(_) => {
+                    // The strict decoders of P4 and P5b reject a query policy.
+                    assert!(continuation_ord(&wrapped).is_err());
+                    assert!(pq_continuation_slots(&wrapped).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn space_record_join_slot_with_a_query_roundtrips() {
+        for policy in query_policies() {
+            let slots = vec![
+                JoinSlot {
+                    ord: 0,
+                    bind: 1,
+                    policy: policy.clone(),
+                },
+                slot(3, 0, Some(2)),
+                slot(0, 2, None),
+            ];
+            let wrapped = wrap_join_continuation(&slots, &parked(int(9))).expect("a join record");
+            assert_eq!(join_continuation_slots(&wrapped), Ok(slots.clone()));
+            let decoded = into_join_continuation(wrapped).expect("a join record decodes");
+            assert_eq!(decoded.slots, slots);
+        }
+    }
+
+    #[test]
+    fn space_record_vdb_datum_roundtrips_and_rejects_malformed_slots() {
+        let original = datum(vec![string("payload"), int(3)]);
+        let vector = list_par(vec![int(1), double(-0.5), int(0)]);
+        for embedding in [None, Some(&vector)] {
+            let record = wrap_vdb_datum(0, embedding, &original).expect("a record");
+            assert_eq!(vdb_datum_slots(&record), Ok((0, embedding)));
+            let decoded = unwrap_vdb_datum(&record).expect("a record decodes");
+            assert_eq!(decoded.embedding.as_ref(), embedding);
+            assert_eq!(decoded.datum, original);
+            match embedding {
+                // Without an embedding the record is the record of P4.
+                None => assert_eq!(record, wrap_datum(0, &original)),
+                // The strict decoder of P4 rejects an embedding.
+                Some(_) => assert!(datum_ord(&record).is_err()),
+            }
+        }
+        // An embedding is a ground list.
+        assert!(wrap_vdb_datum(0, Some(&int(1)), &original).is_err());
+        assert!(wrap_vdb_datum(0, Some(&new_freevar_par(0, Vec::new())), &original).is_err());
+        let malformed = |envelope: Par| {
+            let mut record = wrap_datum(0, &original);
+            record.pars[0] = envelope;
+            vdb_datum_slots(&record).is_err()
+        };
+        let tag = RecordKind::Datum.tag();
+        assert!(malformed(list_par(vec![
+            tag.clone(),
+            int(0),
+            Par::default(),
+            int(4)
+        ])));
+        assert!(malformed(list_par(vec![
+            tag.clone(),
+            int(0),
+            int(1),
+            vector.clone()
+        ])));
+        assert!(malformed(list_par(vec![
+            tag.clone(),
+            int(-1),
+            Par::default(),
+            vector.clone()
+        ])));
+        assert!(malformed(list_par(vec![
+            RecordKind::Continuation.tag(),
+            int(0),
+            Par::default(),
+            vector.clone()
+        ])));
+    }
+
+    #[test]
+    fn space_record_vdb_metered_forms_equal_the_plain_forms_and_reserve_first() {
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+        use crate::rust::interpreter::host_work::HostWorkBudget;
+
+        let unbounded =
+            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let operations = HostWorkDimension::VerificationOperations;
+        let original = datum(vec![string("payload"), int(3)]);
+        let vector = list_par(vec![int(1), double(-0.5), int(0)]);
+        let body = ParWithRandom {
+            body: Some(int(9)),
+            random_state: vec![5, 6],
+        };
+        let mut policies = vec![WaiterPolicy::None, WaiterPolicy::Level(1)];
+        policies.extend(query_policies());
+        for (embedding, policy) in [None, Some(&vector)].into_iter().cycle().zip(policies) {
+            let budget = unbounded();
+            let meter = ScanMeter::new(Some(budget.clone()));
+            let record = wrap_vdb_datum_metered(0, embedding, &original, &meter).expect("a record");
+            assert_eq!(
+                record,
+                wrap_vdb_datum(0, embedding, &original).expect("a record")
+            );
+            assert_eq!(vdb_datum_slots_metered(&record, &meter), Ok((0, embedding)));
+            assert_eq!(
+                unwrap_vdb_datum_metered(&record, &meter).map(|decoded| decoded.datum),
+                Ok(original.clone())
+            );
+            let continuation = wrap_policy_continuation_metered(
+                3,
+                &policy,
+                &body,
+                &Some(int(1)),
+                Some(&region(7)),
+                &meter,
+            )
+            .expect("a continuation");
+            assert_eq!(
+                continuation,
+                wrap_policy_continuation(3, &policy, &parked(int(9))).expect("a body")
+            );
+            assert_eq!(
+                continuation_policy_slots_metered(&continuation, &meter),
+                Ok((3, policy.clone()))
+            );
+            prepay_continuation_unwrap(&continuation, &meter).expect("an unbounded prepay");
+            let usage = budget.usage(operations).get();
+            assert!(usage > 0, "the forms reserve their work");
+            // A budget one unit short rejects the forms before they return a value.
+            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            limits.set(operations, HostWorkLimit::new(usage - 1));
+            let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
+            let outcome =
+                wrap_vdb_datum_metered(0, embedding, &original, &cut).and_then(|record| {
+                    vdb_datum_slots_metered(&record, &cut)?;
+                    unwrap_vdb_datum_metered(&record, &cut)?;
+                    let continuation = wrap_policy_continuation_metered(
+                        3,
+                        &policy,
+                        &body,
+                        &Some(int(1)),
+                        Some(&region(7)),
+                        &cut,
+                    )?;
+                    continuation_policy_slots_metered(&continuation, &cut)?;
+                    prepay_continuation_unwrap(&continuation, &cut)
+                });
+            assert_eq!(
+                outcome,
+                Err(SpaceError::Host(RSpaceError::HostWorkRejected))
+            );
+        }
+        // The decode of `Nil` and of a level reserves nothing beyond the read of the slot, so
+        // the prepay of every waiter of P5 does the same work as before P6. A query reserves
+        // its decode.
+        let decode_usage = |policy: &Par| {
+            let budget = unbounded();
+            let meter = ScanMeter::new(Some(budget.clone()));
+            reserve_policy_decode(policy, &meter).expect("an unbounded reservation");
+            budget.usage(operations).get()
+        };
+        assert_eq!(decode_usage(&Par::default()), 0);
+        assert_eq!(decode_usage(&pq_policy(Some(3))), 0);
+        for policy in query_policies() {
+            assert!(decode_usage(&policy_par(&policy)) > 0);
+        }
+        // A waiter with a query reserves more than a waiter without one.
+        let usage_of = |policy: &WaiterPolicy| {
+            let budget = unbounded();
+            let meter = ScanMeter::new(Some(budget.clone()));
+            wrap_policy_continuation_metered(3, policy, &body, &None, None, &meter)
+                .expect("a continuation");
+            budget.usage(operations).get()
+        };
+        for policy in query_policies() {
+            assert!(usage_of(&policy) > usage_of(&WaiterPolicy::None));
+        }
     }
 }

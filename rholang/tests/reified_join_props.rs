@@ -86,7 +86,7 @@ use rholang::rust::interpreter::spaces::namespace::{
     CollectionKey, Durability, NativeSpace, SID_LEN,
 };
 use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
-use rholang::rust::interpreter::spaces::record::{self, JoinSlot};
+use rholang::rust::interpreter::spaces::record::{self, JoinSlot, WaiterPolicy};
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
@@ -688,7 +688,7 @@ struct Rec {
 }
 
 /// A waiter as the model sees it: one entry for each position of its group.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Wait {
     /// The source hash of the waiter.
     hash: Blake2b256Hash,
@@ -792,7 +792,7 @@ async fn read_view(host: &ParRSpace, kind: Kind) -> View {
                         vec![JoinSlot {
                             ord: parked.ord,
                             bind: 0,
-                            priority: parked.priority,
+                            policy: WaiterPolicy::of_level(parked.priority),
                         }],
                         parked.continuation,
                     )
@@ -975,7 +975,7 @@ fn positions_of(wait: &Wait) -> Vec<Position> {
         .map(|((coll, pat), slot)| Position {
             coll: *coll,
             pat: *pat,
-            lane: slot.priority,
+            lane: slot.policy.level(),
         })
         .collect()
 }
@@ -1062,7 +1062,10 @@ fn seats(view: &View, coll: usize) -> Vec<(&Wait, i64, Vec<Option<i64>>)> {
                 .filter(|index| wait.colls[*index] == coll)
                 .collect();
             let first = *on.first()?;
-            let lanes = on.iter().map(|index| wait.slots[*index].priority).collect();
+            let lanes = on
+                .iter()
+                .map(|index| wait.slots[*index].policy.level())
+                .collect();
             Some((wait, wait.slots[first].ord, lanes))
         })
         .collect()
@@ -1096,7 +1099,7 @@ fn at_head(view: &View, wait: &Wait, coll: usize) -> bool {
         Win::Lanes => (0..wait.colls.len())
             .filter(|index| wait.colls[*index] == coll)
             .all(|index| {
-                head_seat(view.kind, &all, Some(wait.slots[index].priority))
+                head_seat(view.kind, &all, Some(wait.slots[index].policy.level()))
                     .is_some_and(|head| head.hash == wait.hash)
             }),
     }
@@ -1674,7 +1677,7 @@ fn slots_of(group: &[(usize, Position)]) -> Vec<JoinSlot> {
         .map(|(bind, position)| JoinSlot {
             ord: 0,
             bind: *bind,
-            priority: position.lane,
+            policy: WaiterPolicy::of_level(position.lane),
         })
         .collect()
 }
@@ -2203,7 +2206,7 @@ fn prop_bind_permutation_restores_order() {
             .map(|bind| JoinSlot {
                 ord: 0,
                 bind: *bind,
-                priority: None,
+                policy: WaiterPolicy::None,
             })
             .collect();
         let results: Vec<usize> = positions.clone();
@@ -2287,7 +2290,7 @@ fn prop_continuation_v2_roundtrip() {
                 .map(|((bind, ord), lane)| JoinSlot {
                     ord: *ord,
                     bind: *bind,
-                    priority: *lane,
+                    policy: WaiterPolicy::of_level(*lane),
                 })
                 .collect();
             let guard = Guard::LastAboveFirst.par(width).filter(|_| guarded);
@@ -2370,7 +2373,7 @@ fn wait_of(
                 vec![JoinSlot {
                     ord: parked.ord,
                     bind: 0,
-                    priority: parked.priority,
+                    policy: WaiterPolicy::of_level(parked.priority),
                 }],
                 parked.continuation,
             )
@@ -2385,7 +2388,7 @@ fn wait_of(
                         .map(|_| JoinSlot {
                             ord: parked.ord,
                             bind: 0,
-                            priority: parked.priority,
+                            policy: WaiterPolicy::of_level(parked.priority),
                         })
                         .collect(),
                     parked.continuation,
@@ -2429,7 +2432,7 @@ fn reaches_heads(view: &View, wait: &Wait) -> bool {
         Win::Head | Win::Lanes => wait.colls.iter().enumerate().all(|(index, coll)| {
             let all = seats(view, *coll);
             let lane = match view.kind.win() {
-                Win::Lanes => Some(wait.slots[index].priority),
+                Win::Lanes => Some(wait.slots[index].policy.level()),
                 Win::Head | Win::Scan | Win::Classes => None,
             };
             match head_seat(view.kind, &all, lane) {
@@ -2517,7 +2520,7 @@ impl Shadow {
                 )));
             };
             prop_assert!(
-                sees(view.kind, wait.slots[index].priority, *level),
+                sees(view.kind, wait.slots[index].policy.level(), *level),
                 "{} binds a level that its lane does not see",
                 wait.name
             );
@@ -3152,7 +3155,7 @@ async fn raw_join(
         .map(|(bind, position)| JoinSlot {
             ord: ords[*bind],
             bind: *bind,
-            priority: position.lane,
+            policy: WaiterPolicy::of_level(position.lane),
         })
         .collect();
     let channels: Vec<Par> = group

@@ -157,9 +157,9 @@ impl SpaceConfig {
     }
 }
 
-fn string_par(value: &str) -> Par { expr_par(ExprInstance::GString(value.to_owned())) }
+pub(crate) fn string_par(value: &str) -> Par { expr_par(ExprInstance::GString(value.to_owned())) }
 
-fn map_par(pairs: Vec<(Par, Par)>) -> Par {
+pub(crate) fn map_par(pairs: Vec<(Par, Par)>) -> Par {
     let map = ParMapTypeMapper::par_map_to_emap(ParMap::create_from_vec(pairs));
     Par {
         locally_free: map.locally_free.clone(),
@@ -187,7 +187,7 @@ fn bytes_of(par: &Par) -> Option<&[u8]> {
 
 /// The entries of a `Par` that is exactly one map without a remainder whose keys are distinct
 /// strings.
-fn map_entries(par: &Par) -> Option<BTreeMap<&str, &Par>> {
+pub(crate) fn map_entries(par: &Par) -> Option<BTreeMap<&str, &Par>> {
     match sole_expr(par) {
         Some(ExprInstance::EMapBody(EMap {
             kvs,

@@ -514,7 +514,7 @@ A re-issued persistent operation keeps the order of its first round ([decision 4
 A re-entered element therefore meets no equal order (`token_ord_reentry`, `PathMapPrefix.v:3126`).
 It enters the head of a queue only when it is older than every stored entry.
 
-An ordered discipline bumps the token once in each transaction, before its plan (`touch`, `spaces/pathmap/join.rs:2091-2107`).
+An ordered discipline bumps the token once in each transaction, before its plan (`touch`, `spaces/pathmap/join.rs:2101-2117`).
 The prefix source shares one counter (`shares_counter`), so the engine bumps the token once, although every prefix of the scope names it.
 The bump uses $`S(\mathit{sid})`$ as both counter channels of `counter::bump`, which is intended, because the token is the collection counter of every prefix.
 

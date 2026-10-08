@@ -34,35 +34,35 @@
    step                     reified/costs.rs:98-103, 107-112, 124-127
                             (ScanMeter::inspect, reserve_copy, copy:
                             reserve, then work)
-   scan                     spaces/generic.rs:772-788, 792-805, 809-820
+   scan                     spaces/generic.rs:820-836, 840-853, 857-868
                             (Cx::scan_head, Cx::head_waiter, Cx::head_datum:
                             the buffer, one envelope decode for each entry,
                             the head copy) and
                             spaces/disciplines/queue.rs:41-59, 88-123
                             (head_metered: one comparison for each entry
                             after the first)
-   round_staged             spaces/generic.rs:1456-1523, 1532-1616
+   round_staged             spaces/generic.rs:1511-1578, 1587-1671
                             (offer_head and receive_head: the scan, the
                             payload decode of a receive, the metered match,
                             the prepaid unwrap, the staged fire). For a peek
                             receive of a non-persistent record, the staging
                             of the round also holds the re-store of decision
                             45: the reserved copy of the record and the
-                            steps of Cx::restore (spaces/generic.rs:998-1013:
+                            steps of Cx::restore (spaces/generic.rs:1053-1068:
                             the channel copy, Introduction::for_record and
                             register_introduction), each self-metered
-   round_after_commit       spaces/generic.rs:1723-1808 (outcome: the moves of
+   round_after_commit       spaces/generic.rs:1778-1863 (outcome: the moves of
                             into_continuation, prepaid by
-                            spaces/record.rs:748-757)
-   operation_trace          spaces/generic.rs:1831-1984, 2211-2343
+                            spaces/record.rs:750-764)
+   operation_trace          spaces/generic.rs:1886-2041, 2268-2401
                             (begin_collection and run_with: the channels, the
                             config, the staged list, the matcher handle, the
                             introduction, the bump, the record, the rounds and
                             the prepaid outcome buffer). The re-entry checks of
                             decision 43 are self-metered: the two comparisons of
-                            operation_ord (spaces/generic.rs:1647-1675), and the
+                            operation_ord (spaces/generic.rs:1702-1730), and the
                             scan of Cx::head_ord and Cx::at_head
-                            (spaces/generic.rs:824-844, 861-882: the buffer and
+                            (spaces/generic.rs:872-892, 909-930: the buffer and
                             the envelope decodes, with no copy) with the
                             comparison of the two orders and
                             QueueDiscipline::precedes

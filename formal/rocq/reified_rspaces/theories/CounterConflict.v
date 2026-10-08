@@ -111,7 +111,7 @@
                             165-245, 251-309 (bump, and take: the COMM has
                             no peeks)
    exec (the plan)          rholang/src/rust/interpreter/spaces/generic.rs:
-                            2211-2343 (run_with: bump, then plan)
+                            2268-2401 (run_with: bump, then plan)
    list_diff                rspace++/src/rspace/merger/channel_change.rs:
                             74-82 (vec_diff), rspace++/src/rspace/merger/
                             state_change.rs:318-357 (multiset_diff gives
@@ -144,7 +144,7 @@
                             (the block index skips a failed user deploy,
                             so a CellOccupied abort never reaches check #1)
    the cell abort (P5)      rholang/src/rust/interpreter/spaces/generic.rs:
-                            888-899 (Cx::check_capacity: CellOccupied
+                            937-954 (Cx::check_capacity: CellOccupied
                             before any staging), rholang/src/rust/
                             interpreter/spaces/disciplines/cell.rs:57
                             (CAPACITY = Some 1)
@@ -157,9 +157,9 @@
    bump, bump_all (P5c)     rholang/src/rust/interpreter/spaces/counter.rs:
                             165-245 (bump, as in exec), one for each
                             collection of the group: Engine::touch and
-                            Engine::touch_all of spaces/join.rs:2458-2502
+                            Engine::touch_all of spaces/join.rs:2479-2523
                             (TOUCH, joins plan 4.3)
-   jstep, exec_join,        the join step: spaces/join.rs:2518-2605
+   jstep, exec_join,        the join step: spaces/join.rs:2539-2626
    run_jsteps, join_bumps   (Engine::run: TOUCH of each own collection,
    (P5c)                    then the settle before the plan and the plan),
                             1913-1925 (touch_all of the distinct
@@ -173,26 +173,26 @@
                             K_retire COMMs of RETIRE-CLASS (scan.rs:785-800,
                             810-870) and of RETIRE-SET-BINDS in a join
                             (rholang/src/rust/interpreter/spaces/join.rs:
-                            2108-2142)
+                            2129-2163)
    set_view (W3)            the class view of a set: one representative of
                             each class in the canonical order of DR-75
                             (decision 41), a parameter of headline 14
    token_bump, exec_pmap    the token of a PathMap space: TOUCH of the
    (P5e)                    prefix source, spaces/pathmap/join.rs:
-                            2091-2107 (an ordered discipline bumps S(sid)
+                            2101-2117 (an ordered discipline bumps S(sid)
                             as both counter channels of counter.rs bump),
-                            FINISH, spaces/pathmap/join.rs:2711-2732 (a bag
+                            FINISH, spaces/pathmap/join.rs:2721-2742 (a bag
                             or a set bumps S(sid) once when the transaction
                             changed the state), and the shared bump of the
-                            engine, spaces/join.rs:2458-2487 (once in a
+                            engine, spaces/join.rs:2479-2508 (once in a
                             transaction)
    peffect, pstep_changes   the changed flag of a transaction: spaces/
-   (P5e)                    join.rs:3273-3275 (a store that is not a
+   (P5e)                    join.rs:3296-3298 (a store that is not a
                             restore), 3333-3341 (an offer fire), 3581-3583
                             and 3625-3628 (the fires of a receive), 3738-
                             3739 (a park), 3832-3834 (a cascade fire), and
                             the class retire of the prefix source,
-                            spaces/pathmap/join.rs:2887-2888
+                            spaces/pathmap/join.rs:2897-2898
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
