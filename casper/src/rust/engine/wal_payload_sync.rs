@@ -12,7 +12,71 @@
 // by the serving validator.  Keeping it adjacent to the eventual
 // `WalPayloadSyncDriver` reduces churn when the driver lands.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+
+use comm::rust::peer_node::PeerNode;
+
+/// Security cap on the per-payload source set — number of distinct
+/// peers that can advertise they can serve a single payload hash.
+/// Typical joiner sees ~10 sources; the cap defends against an
+/// attacker rotating peer identities to exhaust memory.
+pub const MAX_SOURCES: usize = 256;
+
+/// Security cap on the global per-driver blacklist.  Typical
+/// blacklist stays near zero.  Cap paired with [`BLACKLIST_TTL_MS`]
+/// so sustained attacker churn eventually trips the cap and new
+/// bad peers get silently ignored rather than evicting good ones.
+pub const MAX_BLACKLISTED: usize = 1024;
+
+/// Time-to-live for a peer's blacklist entry.  A byzantine burst
+/// followed by an hour of good behavior lets a peer re-enter the
+/// candidate pool.  Not tuned yet — pick a conservative default;
+/// operators can revisit if telemetry shows churn.
+pub const BLACKLIST_TTL_MS: u64 = 60 * 60 * 1000;
+
+/// Default tick period between outbound-request rounds for the
+/// (future) `spawn_periodic_tick` loop.  Matches
+/// `snapshot_chunk_sync::TICK_PERIOD_MS` so operators have one
+/// knob covering both sync families.
+pub const TICK_PERIOD_MS: u64 = 5_000;
+
+/// Per-payload source tracking.  Records which peers advertised
+/// they can serve each payload hash (from `HasWalPayload` replies).
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+pub(crate) struct PayloadSources {
+    /// Peers known to have this payload.  FIFO for round-robin.
+    pub(crate) sources: VecDeque<PeerNode>,
+    /// Whether we've broadcast `HasWalPayloadRequest` yet.  Avoids
+    /// duplicate broadcasts on repeat ticks.
+    pub(crate) broadcasted_has_request: bool,
+}
+
+/// Per-hash tick decision.  Isolates the three-way branch in the
+/// (future) `tick`'s send-or-skip path.
+#[allow(dead_code)]
+pub(crate) enum TickAction {
+    /// Send a fresh `GetWalPayloadRequest` for this hash.
+    SendFresh,
+    /// An outstanding request is in flight and the retry budget
+    /// has not been exhausted; wait for a response or a timeout.
+    WaitInFlight,
+    /// Retry budget exhausted; stop sending.  The entry stays in
+    /// the retriever until stale-eviction drops it.
+    GiveUp,
+}
+
+/// Insert into the blacklist with a size cap and a timestamp.
+/// Silent no-op past [`MAX_BLACKLISTED`].  Timestamp lets tick
+/// eviction drop entries older than [`BLACKLIST_TTL_MS`] so a
+/// peer that misfires once doesn't get killed forever.
+#[allow(dead_code)]
+pub(crate) fn add_blacklist_capped(map: &mut HashMap<PeerNode, u64>, peer: PeerNode, now_ms: u64) {
+    if map.len() < MAX_BLACKLISTED {
+        map.insert(peer, now_ms);
+    }
+}
 
 /// Graceful-stop handle for the (future) periodic tick task.  Held
 /// by the block-processing catch-up path on the joiner; `.stop()`
@@ -238,6 +302,85 @@ mod tests {
             a.enumerated.resolved_locally + a.enumerated.enqueued_for_fetch,
             "happy-path invariant: sidecar == resolved + enqueued"
         );
+    }
+
+    fn mk_peer(name: &str) -> PeerNode {
+        use comm::rust::peer_node::{Endpoint, NodeIdentifier};
+        use prost::bytes::Bytes;
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::copy_from_slice(name.as_bytes()),
+            },
+            endpoint: Endpoint {
+                host: format!("{name}.local"),
+                tcp_port: 40400,
+                udp_port: 40404,
+            },
+        }
+    }
+
+    #[test]
+    fn payload_sources_default_is_empty() {
+        let s = PayloadSources::default();
+        assert!(s.sources.is_empty());
+        assert!(!s.broadcasted_has_request);
+    }
+
+    #[test]
+    fn add_blacklist_inserts_under_cap() {
+        let mut map: HashMap<PeerNode, u64> = HashMap::new();
+        add_blacklist_capped(&mut map, mk_peer("alice"), 1_000);
+        add_blacklist_capped(&mut map, mk_peer("bob"), 2_000);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(&mk_peer("alice")), Some(&1_000));
+        assert_eq!(map.get(&mk_peer("bob")), Some(&2_000));
+    }
+
+    #[test]
+    fn add_blacklist_is_no_op_at_cap() {
+        // LOAD-BEARING: silent no-op past MAX_BLACKLISTED defends
+        // against byzantine peer-identity rotation exhausting
+        // memory.  Verify directly rather than materializing
+        // MAX_BLACKLISTED entries by pre-seeding the map at the
+        // cap with sentinel entries.
+        let mut map: HashMap<PeerNode, u64> = HashMap::new();
+        for i in 0..MAX_BLACKLISTED {
+            map.insert(mk_peer(&format!("filler-{i}")), 0);
+        }
+        assert_eq!(map.len(), MAX_BLACKLISTED);
+        add_blacklist_capped(&mut map, mk_peer("overflow"), 9_000);
+        assert_eq!(map.len(), MAX_BLACKLISTED, "insert must be a no-op at cap");
+        assert!(
+            map.get(&mk_peer("overflow")).is_none(),
+            "overflow peer must not be in map"
+        );
+    }
+
+    #[test]
+    fn constants_have_expected_values() {
+        // Pin consensus-flavored constants so a future refactor
+        // can't silently shift the security caps or tick cadence.
+        assert_eq!(MAX_SOURCES, 256);
+        assert_eq!(MAX_BLACKLISTED, 1024);
+        assert_eq!(BLACKLIST_TTL_MS, 60 * 60 * 1000);
+        assert_eq!(TICK_PERIOD_MS, 5_000);
+    }
+
+    #[test]
+    fn tick_action_variants_pattern_match() {
+        // Trivial coverage of the three-way branch.  If a future
+        // refactor renames or deletes a variant, this test fires.
+        for action in [
+            TickAction::SendFresh,
+            TickAction::WaitInFlight,
+            TickAction::GiveUp,
+        ] {
+            let _ = match action {
+                TickAction::SendFresh => 0u8,
+                TickAction::WaitInFlight => 1u8,
+                TickAction::GiveUp => 2u8,
+            };
+        }
     }
 
     #[test]
