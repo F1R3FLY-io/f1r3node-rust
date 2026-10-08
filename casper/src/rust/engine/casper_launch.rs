@@ -436,25 +436,56 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         // Phase 7b-1: build the snapshot chunk-fetch context if
         // this node has an `fs_snapshot_writer`.  On observer
         // nodes or misconfigured deployments the builder returns
-        // `None` and snapshot dispatch stays disabled.
-        let snapshot_chunk_ctx =
-            crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+        // `None` and snapshot dispatch stays disabled.  When
+        // `Some`, spawn the periodic tick loop that drives
+        // outbound snapshot-chunk requests.  The `JoinHandle` is
+        // intentionally dropped — the task lives for the lifetime
+        // of the running engine (process shutdown ends it).
+        let snapshot_chunk_ctx = {
+            let ctx = crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
                 &self.runtime_manager,
             )
             .await;
+            if let Some(ref ctx) = ctx {
+                let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
+                    std::sync::Arc::clone(&ctx.sync_driver),
+                    self.transport_layer.clone(),
+                    self.rp_conf_ask.clone(),
+                    self.connections_cell.clone(),
+                );
+            }
+            ctx
+        };
 
         // Phase 7b-2: build the WAL payload-fetch context from
-        // the shared `RuntimeManager.payload_store` slot.  See
+        // the shared `RuntimeManager.payload_store` slot.  Spawn
+        // the periodic tick loop and attach its stop handle to
+        // the context — the block-processing catch-up detector
+        // (or shutdown orchestrator) can later call
+        // `tick_stop.stop()` for a graceful exit at the next
+        // select boundary.  See
         // [`WalPayloadContext::from_runtime_manager`] for the
         // production vs. test-harness fallback discipline.
-        // `tick_stop` is `None` here — the spawn site that has
-        // `ConnectionsCell` in hand will later set it.
-        let wal_payload_ctx = Some(
-            crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
+        let wal_payload_ctx = {
+            let mut ctx = crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
                 &self.runtime_manager,
             )
-            .await,
-        );
+            .await;
+            let tick = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
+                std::sync::Arc::clone(&ctx.sync_driver),
+                self.transport_layer.clone(),
+                self.rp_conf_ask.clone(),
+                self.connections_cell.clone(),
+            );
+            ctx.tick_stop = Some(tick.stop);
+            // JoinHandle intentionally dropped: the task either lives
+            // for the process lifetime or exits cleanly when
+            // `tick_stop.stop()` fires.  Preferring graceful stop to
+            // `JoinHandle::abort` lets the current in-flight
+            // `driver.tick(...)` finish before exit.
+            drop(tick.join_handle);
+            Some(ctx)
+        };
 
         // Scala equivalent: Engine.transitionToRunning[F](...)
         transition_to_running(

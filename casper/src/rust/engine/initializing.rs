@@ -1625,31 +1625,64 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
 
+        // The spawn_periodic_tick calls below need `Arc<T>`; the
+        // `Initializing` struct stores `T` directly (same shape as
+        // `transition_to_running`'s existing transport-layer
+        // conversion a few lines down).  Build the Arc once and
+        // reuse for both tick spawns.
+        let transport_for_ticks = Arc::new(self.transport_layer.clone());
+
         // Phase 7b-1: build the snapshot chunk-fetch context if
         // this node has an `fs_snapshot_writer`.  The joiner-side
         // path through `Initializing` is where snapshot sync is
         // actually consequential — this is the engine that
         // observes a new finalized horizon and needs to fetch
         // snapshot chunks for state reconstruction.  Returns
-        // `None` on observer / unconfigured deployments.
-        let snapshot_chunk_ctx =
-            crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+        // `None` on observer / unconfigured deployments.  When
+        // `Some`, spawn the periodic tick loop that drives
+        // outbound snapshot-chunk requests.  The `JoinHandle` is
+        // intentionally dropped — the task lives for the engine's
+        // lifetime.
+        let snapshot_chunk_ctx = {
+            let ctx = crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
                 &self.runtime_manager,
             )
             .await;
+            if let Some(ref ctx) = ctx {
+                let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
+                    Arc::clone(&ctx.sync_driver),
+                    Arc::clone(&transport_for_ticks),
+                    self.rp_conf_ask.clone(),
+                    self.connections_cell.clone(),
+                );
+            }
+            ctx
+        };
 
         // Phase 7b-2: build the WAL payload-fetch context from
-        // the shared `RuntimeManager.payload_store` slot.  See
+        // the shared `RuntimeManager.payload_store` slot.  Spawn
+        // the periodic tick loop and attach its stop handle to
+        // the context.  See
         // [`WalPayloadContext::from_runtime_manager`] for the
         // production vs. test-harness fallback discipline.
-        // `tick_stop` is `None` here — the spawn site that has
-        // `ConnectionsCell` in hand will later set it.
-        let wal_payload_ctx = Some(
-            crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
+        let wal_payload_ctx = {
+            let mut ctx = crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
                 &self.runtime_manager,
             )
-            .await,
-        );
+            .await;
+            let tick = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
+                Arc::clone(&ctx.sync_driver),
+                Arc::clone(&transport_for_ticks),
+                self.rp_conf_ask.clone(),
+                self.connections_cell.clone(),
+            );
+            ctx.tick_stop = Some(tick.stop);
+            // JoinHandle intentionally dropped: the task either
+            // lives for the process lifetime or exits cleanly when
+            // `tick_stop.stop()` fires.
+            drop(tick.join_handle);
+            Some(ctx)
+        };
 
         transition_to_running(
             self.block_processing_queue_tx.clone(),
