@@ -101,8 +101,12 @@ where
                 let mut consumed = false;
                 if !datum.persist {
                     for (previous, selected) in &chosen {
-                        native_backing::inspect(channel, &meter)?;
-                        native_backing::inspect(previous, &meter)?;
+                        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                        // once per enclosing block.
+                        // native_backing::inspect(channel, &meter)?;
+                        // native_backing::inspect(previous, &meter)?;
+                        native_backing::inspect_blocks(channel, &meter)?;
+                        native_backing::inspect_blocks(previous, &meter)?;
                         meter.reserve(1, 0, 0)?;
                         if previous == channel && *selected == index {
                             consumed = true;
@@ -122,7 +126,10 @@ where
                 };
                 matched.push(value);
                 if !datum.persist {
-                    native_backing::reserve_copy_and_cleanup(channel, &meter)?;
+                    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // native_backing::reserve_copy_and_cleanup(channel, &meter)?;
+                    native_backing::reserve_blocks_copy_and_cleanup(channel, &meter)?;
                     chosen.push((channel.clone(), index));
                 }
                 found = true;

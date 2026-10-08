@@ -40,6 +40,9 @@ fn walk(
     result.map_err(|_| RSpaceError::HostWorkRejected)
 }
 
+// D-E1 (DR-108): the walker sites of rspace++ use the block-mode wrappers
+// below. The per-level wrappers remain only as the reference charges of the
+// tests, so they compile only for tests.
 #[cfg(test)]
 pub(crate) fn reserve<T: CloneBacking>(
     value: &T,
@@ -47,24 +50,28 @@ pub(crate) fn reserve<T: CloneBacking>(
 ) -> Result<(), RSpaceError> {
     walk(meter, |reserve| clone_backing::reserve(value, reserve))
 }
+#[cfg(test)]
 pub(crate) fn reserve_copy_and_cleanup<T: CloneBacking>(
     value: &T,
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
     walk(meter, |reserve| clone_backing::reserve_copy_and_cleanup(value, reserve))
 }
+#[cfg(test)]
 pub(crate) fn reserve_slice_copy_and_cleanup<T: CloneBacking>(
     values: &[T],
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
     walk(meter, |reserve| clone_backing::reserve_slice_copy_and_cleanup(values, reserve))
 }
+#[cfg(test)]
 pub(crate) fn inspect<T: CloneBacking>(
     value: &T,
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
     walk(meter, |reserve| clone_backing::inspect(value, reserve))
 }
+#[cfg(test)]
 pub(crate) fn reserve_cleanup<T: CloneBacking>(
     value: &T,
     meter: &dyn SourceMeter,
@@ -77,6 +84,7 @@ pub(crate) fn reserve_cleanup<T: CloneBacking>(
 /// payload. The cleanup walk visits each pointer and skips its payload,
 /// because each payload's release was prepaid when it entered the cache
 /// (C1, DR-81).
+#[cfg(test)]
 pub(crate) fn reserve_shared_copy_and_cleanup<T: CloneBacking>(
     values: &Vec<std::sync::Arc<T>>,
     meter: &dyn SourceMeter,
@@ -87,12 +95,14 @@ pub(crate) fn reserve_shared_copy_and_cleanup<T: CloneBacking>(
 
 /// C5 (DR-83): the cleanup of one store-owned shared pointer, without the
 /// walk into its prepaid payload.
+#[cfg(test)]
 pub(crate) fn reserve_shared_cleanup<T: CloneBacking>(
     value: &std::sync::Arc<T>,
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
     walk(meter, |reserve| clone_backing::inspect_shared_pointers(value, reserve))
 }
+#[cfg(test)]
 pub(crate) fn inspect_slice<T: CloneBacking>(
     values: &[T],
     meter: &dyn SourceMeter,
@@ -107,6 +117,66 @@ pub(crate) fn inspect_blocks<T: CloneBacking>(
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
     walk(meter, |reserve| clone_backing::inspect_blocks(value, reserve))
+}
+
+/// D-E1 (DR-108): the block-mode copy of `value` and the release of the copy.
+/// The copy writes and allocates each block of `value` once, and the release
+/// reads each block once (DR-92).
+pub(crate) fn reserve_blocks_copy_and_cleanup<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::reserve_blocks_copy_and_cleanup(value, reserve))
+}
+
+/// D-E1 (DR-108): `reserve_blocks_copy_and_cleanup` for the elements of a
+/// slice, copied into a new vector.
+pub(crate) fn reserve_blocks_slice_copy_and_cleanup<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::reserve_blocks_slice_copy_and_cleanup(values, reserve))
+}
+
+/// D-E1 (DR-108): `inspect_blocks` for the elements of a slice: one linear
+/// traversal of the elements.
+pub(crate) fn inspect_blocks_slice<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::inspect_blocks_slice(values, reserve))
+}
+
+/// D-E1 (DR-108): the block-mode release of a value that the store owns. A
+/// release reads each block once, as an inspection does.
+pub(crate) fn reserve_blocks_cleanup<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    inspect_blocks(value, meter)
+}
+
+/// D-E1 (DR-108): the block-mode form of `reserve_shared_copy_and_cleanup`
+/// (C5, DR-83). The copy writes the vector of pointers and the strong count
+/// of each pointer. The cleanup reads the vector and writes each strong
+/// count, and it skips each payload, whose release was prepaid when it
+/// entered the cache (C1, DR-81).
+pub(crate) fn reserve_shared_blocks_copy_and_cleanup<T: CloneBacking>(
+    values: &Vec<std::sync::Arc<T>>,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::reserve_blocks(values, reserve))?;
+    walk(meter, |reserve| clone_backing::inspect_shared_pointers_blocks(values, reserve))
+}
+
+/// D-E1 (DR-108): the block-mode form of `reserve_shared_cleanup` (C5,
+/// DR-83): the release of one store-owned shared pointer, which writes its
+/// strong count and skips its prepaid payload.
+pub(crate) fn reserve_shared_blocks_cleanup<T: CloneBacking>(
+    value: &std::sync::Arc<T>,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::inspect_shared_pointers_blocks(value, reserve))
 }
 
 impl CloneBacking for Blake2b256Hash {
@@ -201,6 +271,9 @@ impl CloneBacking for IOEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod block_tests;
 
 #[cfg(test)]
 mod tests {

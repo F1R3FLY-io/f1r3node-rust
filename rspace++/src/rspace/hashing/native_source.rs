@@ -208,7 +208,10 @@ pub fn produce<C: Serialize, A: Serialize>(
 }
 
 pub fn clone_produce(source: &Produce, meter: &dyn SourceMeter) -> Result<Produce> {
-    crate::rspace::native_backing::reserve_copy_and_cleanup(source, meter)?;
+    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+    // once per enclosing block.
+    // crate::rspace::native_backing::reserve_copy_and_cleanup(source, meter)?;
+    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(source, meter)?;
     Ok(source.clone())
 }
 

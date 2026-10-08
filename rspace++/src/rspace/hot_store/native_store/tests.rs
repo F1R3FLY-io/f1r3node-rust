@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 
 use proptest::prelude::*;
+use shared::rust::clone_backing::{BLOCK_SHARED_HEADER_SCANNED, BackingError, Walker};
 
 use super::*;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -18,7 +19,7 @@ use crate::rspace::hot_store_action::{
     InsertData, InsertJoins, NativeExportAction,
 };
 use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-use crate::rspace::trace::event::Consume;
+use crate::rspace::trace::event::{Consume, Produce};
 
 type Store = NativeHotStore<String, String, String, String>;
 type Legacy = Box<dyn HotStore<String, String, String, String>>;
@@ -37,17 +38,27 @@ impl HistoryReaderBase<String, String, String, String> for EmptyReader {
 fn legacy() -> Legacy { HotStoreInstances::create_from_hr(Box::new(EmptyReader)) }
 
 /// A meter that sums every charge and rejects the charge at index `reject`.
+/// D-E1 (DR-108): it also rejects a charge that would take any dimension
+/// past `limit`, and that charge is not counted.
 #[derive(Default)]
 struct Meter {
     calls: Cell<usize>,
     reject: Option<usize>,
     used: Cell<[usize; 3]>,
+    limit: Option<[usize; 3]>,
 }
 
 impl Meter {
     fn rejecting(reject: usize) -> Self {
         Self {
             reject: Some(reject),
+            ..Self::default()
+        }
+    }
+
+    fn limited(limit: [usize; 3]) -> Self {
+        Self {
+            limit: Some(limit),
             ..Self::default()
         }
     }
@@ -66,7 +77,16 @@ impl SourceMeter for Meter {
             return Err(RSpaceError::HostWorkRejected);
         }
         let [o, s, b] = self.used.get();
-        self.used.set([o + operations, s + scanned, b + backing]);
+        // Changed by D-E1 (DR-108): a charge past the limit is rejected.
+        // self.used.set([o + operations, s + scanned, b + backing]);
+        let used = [o + operations, s + scanned, b + backing];
+        if self
+            .limit
+            .is_some_and(|limit| used.iter().zip(limit).any(|(value, limit)| *value > limit))
+        {
+            return Err(RSpaceError::HostWorkRejected);
+        }
+        self.used.set(used);
         Ok(())
     }
 }
@@ -775,6 +795,392 @@ fn every_native_store_cut_preserves_state() {
                 meter.used.get()[2]
             );
             assert_eq!(observed(&store), before, "{name}, cut {cut}");
+        }
+    }
+}
+
+/// D-E1 (DR-108): each of the 12 production calls of the store succeeds
+/// with exactly the credit that it reserves. It then charges that credit,
+/// allocates at most the reserved backing, and leaves the state of an
+/// unlimited call. A credit one unit short in any dimension rejects the
+/// call with the host error, allocates at most the backing reserved before
+/// the rejection, and leaves the store unchanged.
+#[test]
+fn every_native_store_call_accepts_exact_credit_and_rejects_each_smaller_dimension() {
+    let before = observed(&prepared());
+    let mut production = 0;
+    for index in 0..calls().len() {
+        let (name, call) = calls().swap_remove(index);
+        // `changes` is an export of the tests, not a production call.
+        if name == "changes" {
+            continue;
+        }
+        production += 1;
+        let unlimited = prepared();
+        let baseline = Meter::default();
+        run(&unlimited, call, &baseline).unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        let exact = baseline.used.get();
+        let store = prepared();
+        let (_, call) = calls().swap_remove(index);
+        let meter = Meter::limited(exact);
+        let (result, allocated) = measure_allocations(|| run(&store, call, &meter));
+        assert_eq!(result, Ok(()), "{name}: exact credit {exact:?}");
+        assert_eq!(meter.used.get(), exact, "{name}");
+        assert!(allocated <= exact[2], "{name}: allocated {allocated}, reserved {}", exact[2]);
+        assert_eq!(observed(&store), observed(&unlimited), "{name}");
+        for dimension in 0..3 {
+            let Some(short) = exact[dimension].checked_sub(1) else {
+                continue;
+            };
+            let mut limit = exact;
+            limit[dimension] = short;
+            let store = prepared();
+            let (_, call) = calls().swap_remove(index);
+            let meter = Meter::limited(limit);
+            let (result, allocated) = measure_allocations(|| run(&store, call, &meter));
+            assert_eq!(result, Err(RSpaceError::HostWorkRejected), "{name}, dimension {dimension}");
+            assert!(
+                allocated <= meter.used.get()[2],
+                "{name}, dimension {dimension}: allocated {allocated}, reserved {}",
+                meter.used.get()[2]
+            );
+            assert_eq!(observed(&store), before, "{name}, dimension {dimension}");
+        }
+    }
+    assert_eq!(production, 12);
+}
+
+/// The change of a charge between two runs, in each dimension.
+fn growth(from: [usize; 3], to: [usize; 3]) -> [i64; 3] {
+    let signed = |value: usize| i64::try_from(value).expect("a small charge");
+    [
+        signed(to[0]) - signed(from[0]),
+        signed(to[1]) - signed(from[1]),
+        signed(to[2]) - signed(from[2]),
+    ]
+}
+
+/// D-E1 (DR-108): `store_consume` prepays the release of the stored
+/// continuation (DR-83) with a block inspection, which reads the whole
+/// continuation. So the charge grows with the continuation body by exactly
+/// the growth of that inspection, which reads each added byte once.
+#[test]
+fn store_consume_release_charge_grows_with_the_waiting_body() {
+    let pair = group(&[0, 1]);
+    let charge = |body: &str| {
+        let store = prepared();
+        let meter = Meter::default();
+        store
+            .store_consume(&pair, &keys(&pair), waiting(&pair, body, false, true), &meter)
+            .expect("an unlimited meter");
+        meter.used.get()
+    };
+    let release = |body: &str| {
+        let meter = Meter::default();
+        native_backing::inspect_blocks(&waiting(&pair, body, false, true), &meter)
+            .expect("an unlimited meter");
+        meter.used.get()
+    };
+    let long = "k".repeat(4_096);
+    let stored = growth(charge("k"), charge(&long));
+    assert_eq!(stored, growth(release("k"), release(&long)));
+    assert_eq!(stored, [0, 4_095, 0]);
+}
+
+/// D-E1 (DR-108; `WalkerBlockCharge.shared_release_charge_covers_work`): a
+/// non-persistent continuation match copies the group's vector of shared
+/// pointers, releases the copy and the retired pointer, and moves the
+/// pointers after the retired one. Each further stored continuation adds
+/// one pointer to these steps. The copy writes the pointer and its strong
+/// count, the release reads the pointer and writes its strong count, and
+/// the move reads the pointer. No step reads a payload.
+#[test]
+fn retire_produce_match_charges_each_released_pointer() {
+    let pair = group(&[0, 1]);
+    let charge = |stored: usize, body: usize| {
+        let store = prepared();
+        for index in 0..stored {
+            let value = waiting(&pair, &format!("{index}{}", "x".repeat(body)), false, false);
+            store
+                .store_consume(&pair, &keys(&pair), value, &free())
+                .expect("an unlimited meter");
+        }
+        let data = vec![result_of("a", "h1", false), result_of("bb", "h3", false)];
+        let meter = Meter::default();
+        store
+            .retire_produce_match(&pair, &keys(&pair), 0, false, &data, &[(0, 0), (1, 0)], &meter)
+            .expect("an unlimited meter");
+        meter.used.get()
+    };
+    let pointer = i64::try_from(size_of::<Arc<Waiting>>()).expect("a small size");
+    let header = i64::try_from(BLOCK_SHARED_HEADER_SCANNED).expect("a small size");
+    let per_pointer = [2 + 2 + 1, (2 * pointer + header) + (pointer + header) + pointer, pointer];
+    for stored in 1..4 {
+        let fewer = charge(stored, 1);
+        assert_eq!(growth(fewer, charge(stored + 1, 1)), per_pointer, "{stored} stored");
+        assert_eq!(charge(stored, 4_096), fewer, "{stored} stored");
+    }
+}
+
+/// D-E1 (DR-108): a nested store value. Its walks meet entries, fields,
+/// opaque and visited blocks, an option and a box, so the copies and the
+/// releases of the store reach every block rule.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Nested {
+    label: String,
+    children: Vec<Nested>,
+    payload: Option<Box<Payload>>,
+}
+
+/// The boxed bytes of a nested value.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Payload {
+    bytes: Vec<u8>,
+}
+
+impl CloneBacking for Nested {
+    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
+        let Self {
+            label,
+            children,
+            payload,
+        } = self;
+        walker.push(label)?;
+        walker.push(children)?;
+        walker.push(payload)
+    }
+}
+
+impl CloneBacking for Payload {
+    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
+        walker.push(&self.bytes)
+    }
+}
+
+/// D-E1 (DR-108): the payload of a nested value. A clone of the value
+/// allocates more than the worklist backing that a walk of it reserves, so
+/// a copy whose charge is only a release walk leaves an unpaid allocation.
+/// `nested_values_cover_allocations_at_every_store_cut` checks that a walk
+/// of a nested value reserves less backing than one payload.
+const NESTED_PAYLOAD: usize = 4_096;
+
+fn nested(label: &str, depth: usize) -> Nested {
+    Nested {
+        label: label.to_owned(),
+        children: (0..depth)
+            .map(|index| nested(&format!("{label}.{index}"), depth - 1))
+            .collect(),
+        payload: depth.is_multiple_of(2).then(|| {
+            Box::new(Payload {
+                bytes: vec![7; NESTED_PAYLOAD],
+            })
+        }),
+    }
+}
+
+type NestedStore = NativeHotStore<String, Nested, Nested, Nested>;
+type NestedWaiting = WaitingContinuation<Nested, Nested>;
+
+fn nested_datum(channel: &str, label: &str, persist: bool) -> Datum<Nested> {
+    Datum {
+        a: nested(label, 2),
+        persist,
+        source: Produce::create(&channel.to_owned(), &label.to_owned(), persist),
+    }
+}
+
+fn nested_waiting(channels: &[String], body: &str, persist: bool) -> NestedWaiting {
+    let patterns = vec!["p".to_owned(); channels.len()];
+    WaitingContinuation {
+        patterns: patterns.iter().map(|pattern| nested(pattern, 1)).collect(),
+        continuation: nested(body, 2),
+        persist,
+        peeks: BTreeSet::new(),
+        source: Consume::create(&channels.to_vec(), &patterns, &body.to_owned(), persist),
+    }
+}
+
+fn nested_result(channel: &str, label: &str) -> RSpaceResult<String, Nested> {
+    RSpaceResult {
+        channel: channel.to_owned(),
+        matched_datum: nested(label, 2),
+        removed_datum: nested(label, 2),
+        persistent: false,
+    }
+}
+
+/// A nested store with cached data for "a" and "bb", the group ["a", "bb"]
+/// with one stored continuation, and the joins of "a" and "bb".
+fn prepared_nested() -> NestedStore {
+    let store = NestedStore::new();
+    let pair = group(&[0, 1]);
+    let stored = || Ok(vec![nested_waiting(&pair, "stored", false)]);
+    store
+        .continuation_views(&pair, &keys(&pair), &stored, &free())
+        .expect("a free meter");
+    for name in &pair {
+        store
+            .joins(name, key(name), &|| Ok(history_joins(name)), &free())
+            .expect("a free meter");
+        let data = || Ok(vec![nested_datum(name, "h1", false), nested_datum(name, "h2", true)]);
+        store
+            .data_view(name, key(name), &data, &free())
+            .expect("a free meter");
+    }
+    store
+}
+
+fn nested_observed(store: &NestedStore) -> ([usize; 5], String) {
+    (store.entry_counts(), format!("{:?}", store.changes(&free())))
+}
+
+type NestedCall = Box<dyn FnOnce(&NestedStore, &Meter) -> Result<(), RSpaceError>>;
+
+/// One call of each store method that copies or releases a nested value,
+/// on the state of `prepared_nested`. Each call builds its inputs before
+/// the measured run, and a history read hands over a prebuilt value.
+fn nested_calls() -> Vec<(&'static str, NestedCall)> {
+    let a = channel(0);
+    let ccc = channel(2);
+    let pair = group(&[0, 1]);
+    let swapped = group(&[1, 0]);
+    let cold_data = RefCell::new(vec![nested_datum(&ccc, "cold", false)]);
+    let cold_view = RefCell::new(vec![nested_datum(&ccc, "view", true)]);
+    let cold_continuations = RefCell::new(vec![nested_waiting(&swapped, "cold", false)]);
+    let cold_views = RefCell::new(vec![nested_waiting(&swapped, "views", true)]);
+    let (a_key, ccc_key) = (key(&a), key(&ccc));
+    let (pair_keys, swapped_keys) = (keys(&pair), keys(&swapped));
+    let warm = RefCell::new(Vec::new());
+    let warm_continuations = RefCell::new(Vec::new());
+    let consumed = nested_waiting(&pair, "new", false);
+    let put = nested_datum(&a, "put", false);
+    let installed = nested_waiting(&pair, "installed", true);
+    let retired = vec![nested_result("a", "h1")];
+    let matched = vec![nested_result("a", "h1"), nested_result("bb", "h1")];
+    vec![
+        ("data warm", {
+            let a = a.clone();
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store.data(&a, a_key, &handover(&warm), meter).map(drop)
+            })
+        }),
+        ("data cold", {
+            let ccc = ccc.clone();
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store
+                    .data(&ccc, ccc_key, &handover(&cold_data), meter)
+                    .map(drop)
+            })
+        }),
+        ("data_view cold", {
+            let ccc = ccc.clone();
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store
+                    .data_view(&ccc, ccc_key, &handover(&cold_view), meter)
+                    .map(drop)
+            })
+        }),
+        ("continuations warm", {
+            let (pair, pair_keys) = (pair.clone(), pair_keys.clone());
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store
+                    .continuations(&pair, &pair_keys, &handover(&warm_continuations), meter)
+                    .map(drop)
+            })
+        }),
+        ("continuations cold", {
+            let (swapped, swapped_keys) = (swapped.clone(), swapped_keys.clone());
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store
+                    .continuations(&swapped, &swapped_keys, &handover(&cold_continuations), meter)
+                    .map(drop)
+            })
+        }),
+        ("continuation_views cold", {
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store
+                    .continuation_views(&swapped, &swapped_keys, &handover(&cold_views), meter)
+                    .map(drop)
+            })
+        }),
+        ("store_consume", {
+            let (pair, pair_keys) = (pair.clone(), pair_keys.clone());
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store
+                    .store_consume(&pair, &pair_keys, consumed, meter)
+                    .map(drop)
+            })
+        }),
+        ("put_datum", {
+            let a = a.clone();
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store.put_datum(&a, a_key, put, meter)
+            })
+        }),
+        (
+            "retire_data",
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store.retire_data(&retired, &[a_key], &[(0, 0)], meter)
+            }),
+        ),
+        ("retire_produce_match", {
+            let (pair, pair_keys) = (pair.clone(), pair_keys.clone());
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store.retire_produce_match(
+                    &pair,
+                    &pair_keys,
+                    0,
+                    false,
+                    &matched,
+                    &[(0, 0), (1, 0)],
+                    meter,
+                )
+            })
+        }),
+        (
+            "install_continuation",
+            Box::new(move |store: &NestedStore, meter: &Meter| {
+                store.install_continuation(&pair, &pair_keys, installed, meter)
+            }),
+        ),
+    ]
+}
+
+/// D-E1 (DR-108): with nested values, every store call that copies or
+/// releases a value allocates at most the backing it reserved. At each cut
+/// the call returns the host error, allocates at most the backing reserved
+/// before the cut, and leaves the store unchanged.
+#[test]
+fn nested_values_cover_allocations_at_every_store_cut() {
+    // The premise of `NESTED_PAYLOAD`: a copy charged only as a release walk
+    // would leave the clone's payloads unpaid.
+    let walk = Meter::default();
+    native_backing::inspect_blocks(&nested("premise", 2), &walk).expect("an unlimited meter");
+    assert!(walk.used.get()[2] < NESTED_PAYLOAD, "walk backing {:?}", walk.used.get());
+    let before = nested_observed(&prepared_nested());
+    for index in 0..nested_calls().len() {
+        let (name, call) = nested_calls().swap_remove(index);
+        let store = prepared_nested();
+        let baseline = Meter::default();
+        let (result, allocated) = measure_allocations(|| call(&store, &baseline));
+        result.unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        assert!(
+            allocated <= baseline.used.get()[2],
+            "{name}: allocated {allocated}, reserved {}",
+            baseline.used.get()[2]
+        );
+        for cut in 0..baseline.calls.get() {
+            let store = prepared_nested();
+            let (_, call) = nested_calls().swap_remove(index);
+            let meter = Meter::rejecting(cut);
+            let (result, allocated) = measure_allocations(|| call(&store, &meter));
+            assert_eq!(result, Err(RSpaceError::HostWorkRejected), "{name}, cut {cut}");
+            assert!(
+                allocated <= meter.used.get()[2],
+                "{name}, cut {cut}: allocated {allocated}, reserved {}",
+                meter.used.get()[2]
+            );
+            assert_eq!(nested_observed(&store), before, "{name}, cut {cut}");
         }
     }
 }

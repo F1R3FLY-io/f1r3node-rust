@@ -150,6 +150,12 @@ struct Epoch {
     bytes: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
     remaining_calls: Arc<Mutex<Option<usize>>>,
+    /// D-E1 (DR-108): a charge that would take the work or the bytes past
+    /// this limit is rejected and not counted.
+    limit: Arc<Mutex<Option<[usize; 2]>>>,
+    /// D-E1 (DR-108): the bytes of the comparison charges, so that the
+    /// backing is the bytes less these.
+    compared: Arc<AtomicUsize>,
 }
 
 struct Boundary(Epoch);
@@ -179,6 +185,13 @@ impl NativeReplayEpoch for Epoch {
             }
             *remaining -= 1;
         }
+        if let Some([work, limit_bytes]) = *self.limit.lock().expect("the limit lock") {
+            if self.work.load(Ordering::Relaxed) + operations > work ||
+                self.bytes.load(Ordering::Relaxed) + bytes > limit_bytes
+            {
+                return Err(unavailable());
+            }
+        }
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.work.fetch_add(operations, Ordering::Relaxed);
         self.bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -186,7 +199,11 @@ impl NativeReplayEpoch for Epoch {
     }
 
     fn reserve_comparison(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError> {
-        self.reserve_work(operations, bytes)
+        // Changed by D-E1 (DR-108): the comparison bytes are also counted.
+        // self.reserve_work(operations, bytes)
+        self.reserve_work(operations, bytes)?;
+        self.compared.fetch_add(bytes, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -753,17 +770,211 @@ fn checkpoint_metadata_prepays_clone_and_cleanup() {
     produce.output_value = vec![vec![7; 512]];
     let log = vec![Event::IoEvent(IOEvent::Produce(produce.clone()))];
     let counters = BTreeMap::from([(produce, 1)]);
-    let clone_only = Epoch::default();
-    let clone_meter = |operations, scanned, backing| {
-        clone_only.reserve_comparison(operations, scanned)?;
-        clone_only.reserve_work(0, backing)
+    // Changed by D-O1 (DR-108): the metadata copies with block accounting,
+    // whose copy and release do not charge the same work. The prepaid charge
+    // is exactly one block copy and one block release of the log and of the
+    // counters, so it exceeds the copy alone.
+    // let clone_only = Epoch::default();
+    // let clone_meter = |operations, scanned, backing| {
+    //     clone_only.reserve_comparison(operations, scanned)?;
+    //     clone_only.reserve_work(0, backing)
+    // };
+    // crate::rspace::native_backing::reserve(&log, &clone_meter).unwrap();
+    // crate::rspace::native_backing::reserve(&counters, &clone_meter)
+    //     .unwrap();
+    let charge = |release: bool| {
+        use shared::rust::clone_backing::{BackingError, inspect_blocks, reserve_blocks};
+        let used = std::cell::Cell::new([0_usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [work, read, held] = used.get();
+            used.set([work + operations, read + scanned, held + backing]);
+            Ok::<(), BackingError>(())
+        };
+        reserve_blocks(&log, &meter).expect("log copy");
+        reserve_blocks(&counters, &meter).expect("counter copy");
+        if release {
+            inspect_blocks(&log, &meter).expect("log release");
+            inspect_blocks(&counters, &meter).expect("counter release");
+        }
+        used.get()
     };
-    crate::rspace::native_backing::reserve(&log, &clone_meter).unwrap();
-    crate::rspace::native_backing::reserve(&counters, &clone_meter).unwrap();
     let prepaid = Epoch::default();
     reserve_checkpoint_metadata(&prepaid, &log, &counters).unwrap();
-    assert!(prepaid.work.load(Ordering::Relaxed) >= clone_only.work.load(Ordering::Relaxed) * 2);
-    assert!(prepaid.bytes.load(Ordering::Relaxed) >= clone_only.bytes.load(Ordering::Relaxed));
+    // assert!(
+    //     prepaid.work.load(Ordering::Relaxed)
+    //         >= clone_only.work.load(Ordering::Relaxed) * 2
+    // );
+    // assert!(
+    //     prepaid.bytes.load(Ordering::Relaxed)
+    //         >= clone_only.bytes.load(Ordering::Relaxed)
+    // );
+    let (copy, both) = (charge(false), charge(true));
+    assert_eq!(prepaid.work.load(Ordering::Relaxed), both[0]);
+    assert_eq!(prepaid.bytes.load(Ordering::Relaxed), both[1] + both[2]);
+    assert!(both[0] > copy[0] && both[1] > copy[1]);
+}
+
+/// D-E1 (DR-108): the checkpoint metadata succeeds with exactly the credit
+/// that it reserves, and the walks of the block copies and releases of the
+/// log and the counters, with the copies themselves, allocate at most the
+/// reserved backing. A credit one unit short in the work or in the bytes
+/// rejects it, and the walks then allocate at most the backing reserved
+/// before the rejection.
+#[test]
+fn checkpoint_metadata_accepts_exact_credit_and_rejects_each_smaller_dimension() {
+    let mut produce = Produce::create(&"channel", &"payload", false);
+    produce.output_value = vec![vec![7; 512], vec![9; 33]];
+    let consume = Consume::create(&vec!["channel"], &vec!["pattern"], &"body", false);
+    let comm = COMM {
+        consume: consume.clone(),
+        produces: vec![produce.clone()],
+        peeks: BTreeSet::from([0]),
+        times_repeated: BTreeMap::from([(produce.clone(), 3)]),
+    };
+    let log = vec![
+        Event::IoEvent(IOEvent::Produce(produce.clone())),
+        Event::IoEvent(IOEvent::Consume(consume)),
+        Event::Comm(comm),
+    ];
+    let counters = BTreeMap::from([(produce, 1)]);
+    let backing = |epoch: &Epoch| {
+        epoch.bytes.load(Ordering::Relaxed) - epoch.compared.load(Ordering::Relaxed)
+    };
+    let unlimited = Epoch::default();
+    reserve_checkpoint_metadata(&unlimited, &log, &counters).expect("an unlimited epoch");
+    let exact = [unlimited.work.load(Ordering::Relaxed), unlimited.bytes.load(Ordering::Relaxed)];
+    let bounded = Epoch::default();
+    *bounded.limit.lock().expect("the limit lock") = Some(exact);
+    let (result, allocated) = crate::rspace::history::native_reader::measure_allocations(|| {
+        reserve_checkpoint_metadata(&bounded, &log, &counters)?;
+        drop((log.clone(), counters.clone()));
+        Ok::<(), RSpaceError>(())
+    });
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        [bounded.work.load(Ordering::Relaxed), bounded.bytes.load(Ordering::Relaxed)],
+        exact
+    );
+    assert!(allocated <= backing(&bounded), "allocated {allocated}");
+    for dimension in 0..2 {
+        let mut limit = exact;
+        limit[dimension] -= 1;
+        let short = Epoch::default();
+        *short.limit.lock().expect("the limit lock") = Some(limit);
+        let (result, allocated) =
+            crate::rspace::history::native_reader::measure_allocations(|| {
+                reserve_checkpoint_metadata(&short, &log, &counters)
+            });
+        assert_eq!(result, Err(unavailable()), "dimension {dimension}");
+        assert!(allocated <= backing(&short), "dimension {dimension}: allocated {allocated}");
+    }
+}
+
+/// The operations and the bytes, scanned and backing, that `action` charges.
+fn recorded(action: impl FnOnce(&dyn SourceMeter) -> Result<(), RSpaceError>) -> [i64; 2] {
+    let used = std::cell::Cell::new([0_i64; 2]);
+    let meter = |operations: usize, scanned: usize, backing: usize| {
+        let [work, bytes] = used.get();
+        let signed = |value: usize| i64::try_from(value).expect("a small charge");
+        used.set([work + signed(operations), bytes + signed(scanned) + signed(backing)]);
+        Ok::<(), RSpaceError>(())
+    };
+    action(&meter).expect("an unlimited meter");
+    used.get()
+}
+
+/// The charge of a budgeted data read of `channel` on a fresh session.
+async fn data_read_charge(channel: &String) -> [i64; 2] {
+    let session = session().await;
+    let used = Mutex::new([0_i64; 2]);
+    session
+        .get_data_with_budget(channel, |operations, bytes| {
+            let mut used = used.lock().expect("the charge lock");
+            used[0] += i64::try_from(operations).expect("a small charge");
+            used[1] += i64::try_from(bytes).expect("a small charge");
+            Ok(())
+        })
+        .await
+        .expect("a budgeted read");
+    let charge = *used.lock().expect("the charge lock");
+    charge
+}
+
+/// The epoch charge of a join read, or of a continuation read, of
+/// `channel` on a fresh session.
+async fn epoch_read_charge(channel: &String, joins: bool) -> [i64; 2] {
+    let session = session().await;
+    let total = |epoch: &Epoch| {
+        [
+            i64::try_from(epoch.work.load(Ordering::Relaxed)).expect("a small charge"),
+            i64::try_from(epoch.bytes.load(Ordering::Relaxed)).expect("a small charge"),
+        ]
+    };
+    let before = total(&session.epoch);
+    if joins {
+        session.get_joins(channel).await.expect("a join read");
+    } else {
+        session
+            .get_continuations(std::slice::from_ref(channel))
+            .await
+            .expect("a continuation read");
+    }
+    let after = total(&session.epoch);
+    [after[0] - before[0], after[1] - before[1]]
+}
+
+/// D-E1 (DR-108): a block inspection prepays one traversal of a channel.
+/// The session's key reads hash the channel for the lock and encode it for
+/// the store key, so each read pays two block inspections of the channel
+/// (sites 495, 511 and 536). The charge of each read grows with the channel
+/// by exactly two inspections, the encoding of the store key, and the
+/// store's copy and release of the channel as the entry key: a channel for
+/// a data or join entry, and a slice of channels for a continuation entry.
+#[tokio::test]
+async fn session_key_reads_charge_two_channel_traversals() {
+    let short = "c".to_owned();
+    let long = format!("c{}", "x".repeat(4_096));
+    let growth = |from: [i64; 2], to: [i64; 2]| [to[0] - from[0], to[1] - from[1]];
+    let parts = |channel: &String| {
+        let inspection =
+            recorded(|meter| crate::rspace::native_backing::inspect_blocks(channel, meter));
+        let key =
+            recorded(|meter| channel_key(channel, &|o, s, b| meter.reserve(o, s, b)).map(drop));
+        let copy = recorded(|meter| {
+            crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(channel, meter)
+        });
+        let slice_copy = recorded(|meter| {
+            crate::rspace::native_backing::reserve_blocks_slice_copy_and_cleanup(
+                std::slice::from_ref(channel),
+                meter,
+            )
+        });
+        (inspection, key, copy, slice_copy)
+    };
+    let (short_parts, long_parts) = (parts(&short), parts(&long));
+    let inspection = growth(short_parts.0, long_parts.0);
+    let key = growth(short_parts.1, long_parts.1);
+    let copy = growth(short_parts.2, long_parts.2);
+    let slice_copy = growth(short_parts.3, long_parts.3);
+    let expected = |store_copy: [i64; 2]| {
+        [2 * inspection[0] + key[0] + store_copy[0], 2 * inspection[1] + key[1] + store_copy[1]]
+    };
+    assert_eq!(inspection, [0, 4_096]);
+    assert_eq!(
+        growth(data_read_charge(&short).await, data_read_charge(&long).await),
+        expected(copy),
+        "data read"
+    );
+    assert_eq!(
+        growth(epoch_read_charge(&short, true).await, epoch_read_charge(&long, true).await),
+        expected(copy),
+        "join read"
+    );
+    assert_eq!(
+        growth(epoch_read_charge(&short, false).await, epoch_read_charge(&long, false).await),
+        expected(slice_copy),
+        "continuation read"
+    );
 }
 
 proptest! {

@@ -29,7 +29,10 @@ type Continuations<P, K> = Vec<Arc<WaitingContinuation<P, K>>>;
 /// The charge of storing a key value in a new entry: its copy, its release,
 /// and the allocation of its `Arc`.
 fn reserve_key<T: CloneBacking>(key: &T, meter: &dyn SourceMeter) -> Result<(), RSpaceError> {
-    native_backing::reserve_copy_and_cleanup(key, meter)?;
+    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+    // once per enclosing block.
+    // native_backing::reserve_copy_and_cleanup(key, meter)?;
+    native_backing::reserve_blocks_copy_and_cleanup(key, meter)?;
     let bytes = arc_allocation_bytes::<T>().ok_or(RSpaceError::HostWorkRejected)?;
     meter.reserve(2, bytes, bytes)
 }
@@ -39,7 +42,10 @@ fn reserve_slice_key<T: CloneBacking>(
     key: &[T],
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
-    native_backing::reserve_slice_copy_and_cleanup(key, meter)?;
+    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+    // once per enclosing block.
+    // native_backing::reserve_slice_copy_and_cleanup(key, meter)?;
+    native_backing::reserve_blocks_slice_copy_and_cleanup(key, meter)?;
     let bytes = arc_allocation_bytes::<Vec<T>>().ok_or(RSpaceError::HostWorkRejected)?;
     meter.reserve(2, bytes, bytes)
 }
@@ -88,8 +94,12 @@ fn check_channel<C: CloneBacking + PartialEq>(
     sought: &C,
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
-    native_backing::inspect(stored, meter)?;
-    native_backing::inspect(sought, meter)?;
+    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+    // once per enclosing block.
+    // native_backing::inspect(stored, meter)?;
+    // native_backing::inspect(sought, meter)?;
+    native_backing::inspect_blocks(stored, meter)?;
+    native_backing::inspect_blocks(sought, meter)?;
     meter.reserve(1, 0, 0)?;
     if stored == sought {
         Ok(())
@@ -105,8 +115,12 @@ fn check_group<C: CloneBacking + PartialEq>(
     sought: &[C],
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
-    native_backing::inspect_slice(stored, meter)?;
-    native_backing::inspect_slice(sought, meter)?;
+    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+    // once per enclosing block.
+    // native_backing::inspect_slice(stored, meter)?;
+    // native_backing::inspect_slice(sought, meter)?;
+    native_backing::inspect_blocks_slice(stored, meter)?;
+    native_backing::inspect_blocks_slice(sought, meter)?;
     meter.reserve(1, 0, 0)?;
     if stored == sought {
         Ok(())
@@ -467,7 +481,10 @@ where
                 Some(entry) => {
                     // D-C2e (DR-96): the entry must hold the sought channel.
                     check_channel(entry.key.as_ref(), channel, meter)?;
-                    native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
+                    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
+                    native_backing::reserve_blocks_copy_and_cleanup(&entry.value, meter)?;
                     Some(entry.value.clone())
                 }
                 None => None,
@@ -477,7 +494,10 @@ where
             return Ok(values);
         }
         let values = read()?;
-        native_backing::reserve_copy_and_cleanup(&values, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_copy_and_cleanup(&values, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(&values, meter)?;
         let cached = values.clone();
         reserve_key(channel, meter)?;
         let mut shard = self.data.write(&key);
@@ -513,7 +533,10 @@ where
             return Ok(NativeDataView::from_entry(entry));
         }
         let values = read()?;
-        native_backing::reserve_cleanup(&values, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_cleanup(&values, meter)?;
+        native_backing::reserve_blocks_cleanup(&values, meter)?;
         reserve_key(channel, meter)?;
         let mut shard = self.data.write(&key);
         let entry = self.data.insert_new(
@@ -542,7 +565,10 @@ where
                 Some(entry) => {
                     // D-C2e (DR-96): the entry must hold the sought channel.
                     check_channel(entry.key.as_ref(), channel, meter)?;
-                    native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
+                    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
+                    native_backing::reserve_blocks_copy_and_cleanup(&entry.value, meter)?;
                     entry.value.clone()
                 }
                 None => Vec::new(),
@@ -554,7 +580,10 @@ where
                 Some(entry) => {
                     // D-C2e (DR-96): the entry must hold the sought channel.
                     check_channel(entry.key.as_ref(), channel, meter)?;
-                    native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
+                    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
+                    native_backing::reserve_blocks_copy_and_cleanup(&entry.value, meter)?;
                     Some(entry.value.clone())
                 }
                 None => None,
@@ -564,7 +593,10 @@ where
             return merge(installed, values, meter);
         }
         let values = read()?;
-        native_backing::reserve_copy_and_cleanup(&values, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_copy_and_cleanup(&values, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(&values, meter)?;
         let cached = values.clone();
         let result = merge(installed, values, meter)?;
         reserve_key(channel, meter)?;
@@ -605,7 +637,10 @@ where
             Some(entry) => {
                 // D-C2e (DR-96): the entry must hold the sought group.
                 check_group(entry.key.as_ref(), channels, meter)?;
-                native_backing::reserve_copy_and_cleanup(entry.value.as_ref(), meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::reserve_copy_and_cleanup(entry.value.as_ref(), meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(entry.value.as_ref(), meter)?;
                 Ok(Some(entry.value.as_ref().clone()))
             }
             None => Ok(None),
@@ -637,7 +672,10 @@ where
                     check_group(entry.key.as_ref(), channels, meter)?;
                     let mut result = buffer(entry.value.len(), meter)?;
                     for value in &entry.value {
-                        native_backing::reserve_copy_and_cleanup(value.as_ref(), meter)?;
+                        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                        // once per enclosing block.
+                        // native_backing::reserve_copy_and_cleanup(value.as_ref(), meter)?;
+                        native_backing::reserve_blocks_copy_and_cleanup(value.as_ref(), meter)?;
                         result.push(value.as_ref().clone());
                     }
                     Some(result)
@@ -653,7 +691,10 @@ where
             .ok_or(RSpaceError::HostWorkRejected)?;
         let mut cached = buffer(values.len(), meter)?;
         for value in &values {
-            native_backing::reserve_copy_and_cleanup(value, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_copy_and_cleanup(value, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(value, meter)?;
             meter.reserve(2, allocation, allocation)?;
             cached.push(Arc::new(value.clone()));
         }
@@ -725,7 +766,10 @@ where
         let mut shared = buffer(values.len(), meter)?;
         let mut cached = buffer(values.len(), meter)?;
         for value in values {
-            native_backing::reserve_cleanup(&value, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_cleanup(&value, meter)?;
+            native_backing::reserve_blocks_cleanup(&value, meter)?;
             meter.reserve(2, allocation, allocation)?;
             let value = Arc::new(value);
             meter.reserve(1, pointer, 0)?;
@@ -756,7 +800,10 @@ where
         waiting: WaitingContinuation<P, K>,
         meter: &dyn SourceMeter,
     ) -> Result<(bool, usize), RSpaceError> {
-        native_backing::reserve_cleanup(&waiting, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_cleanup(&waiting, meter)?;
+        native_backing::reserve_blocks_cleanup(&waiting, meter)?;
         if keys.channels.len() != channels.len() {
             return Err(RSpaceError::HostWorkRejected);
         }
@@ -833,7 +880,10 @@ where
             None
         } else {
             DigestShards::<Vec<C>, Continuations<P, K>>::reserve_replace(meter)?;
-            native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
+            native_backing::reserve_shared_blocks_copy_and_cleanup(existing, meter)?;
             let mut values = existing.clone();
             let count = values
                 .len()
@@ -918,8 +968,12 @@ where
             let values = &entry.value;
             let mut present = false;
             for join in values {
-                native_backing::inspect_slice(join, meter)?;
-                native_backing::inspect_slice(channels, meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::inspect_slice(join, meter)?;
+                // native_backing::inspect_slice(channels, meter)?;
+                native_backing::inspect_blocks_slice(join, meter)?;
+                native_backing::inspect_blocks_slice(channels, meter)?;
                 meter.reserve(1, 0, 0)?;
                 if join.as_slice() == channels {
                     present = true;
@@ -930,7 +984,10 @@ where
                 continue;
             }
             DigestShards::<C, Vec<Vec<C>>>::reserve_replace(meter)?;
-            native_backing::reserve_copy_and_cleanup(values, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_copy_and_cleanup(values, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(values, meter)?;
             let mut updated = values.clone();
             let count = updated
                 .len()
@@ -943,7 +1000,10 @@ where
             updated
                 .try_reserve_exact(1)
                 .map_err(|_| RSpaceError::HostWorkRejected)?;
-            native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+            native_backing::reserve_blocks_slice_copy_and_cleanup(channels, meter)?;
             updated.insert(0, channels.to_vec());
             // Changed by D-C2e (D-S1, DR-96): the update records its position.
             // join_updates.push((*channel_key, updated));
@@ -1007,9 +1067,15 @@ where
             .checked_mul(size_of::<Datum<A>>())
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(count, vector_bytes, vector_bytes)?;
-        native_backing::reserve_cleanup(&datum, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_cleanup(&datum, meter)?;
+        native_backing::reserve_blocks_cleanup(&datum, meter)?;
         DigestShards::<C, Vec<Datum<A>>>::reserve_replace(meter)?;
-        native_backing::reserve_copy_and_cleanup(values, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_copy_and_cleanup(values, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(values, meter)?;
         let mut updated = Vec::new();
         updated
             .try_reserve_exact(count)
@@ -1119,7 +1185,10 @@ where
                 check_channel(entry.key.as_ref(), channel, meter)?;
                 let values = &entry.value;
                 DigestShards::<C, Vec<Datum<A>>>::reserve_replace(meter)?;
-                native_backing::reserve_copy_and_cleanup(values, meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::reserve_copy_and_cleanup(values, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(values, meter)?;
                 updates.push((key, *position, values.clone()));
                 updates.len() - 1
             };
@@ -1130,7 +1199,10 @@ where
                 ));
             }
             let index = *datum_index as usize;
-            native_backing::reserve_cleanup(&values[index], meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_cleanup(&values[index], meter)?;
+            native_backing::reserve_blocks_cleanup(&values[index], meter)?;
             let moved = values
                 .len()
                 .checked_sub(index)
@@ -1203,10 +1275,16 @@ where
                 ));
             }
             DigestShards::<Vec<C>, Continuations<P, K>>::reserve_replace(meter)?;
-            native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
+            native_backing::reserve_shared_blocks_copy_and_cleanup(existing, meter)?;
             let mut values = existing.clone();
             let index = index as usize;
-            native_backing::reserve_shared_cleanup(&values[index], meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_shared_cleanup(&values[index], meter)?;
+            native_backing::reserve_shared_blocks_cleanup(&values[index], meter)?;
             let moved = values
                 .len()
                 .checked_sub(index)
@@ -1302,8 +1380,12 @@ where
             let existing = &entry.value;
             let mut position = None;
             for (candidate, value) in existing.iter().enumerate() {
-                native_backing::inspect_slice(value, meter)?;
-                native_backing::inspect_slice(join, meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::inspect_slice(value, meter)?;
+                // native_backing::inspect_slice(join, meter)?;
+                native_backing::inspect_blocks_slice(value, meter)?;
+                native_backing::inspect_blocks_slice(join, meter)?;
                 meter.reserve(1, 0, 0)?;
                 if value.as_slice() == join {
                     position = Some(candidate);
@@ -1312,9 +1394,15 @@ where
             }
             if let Some(position) = position {
                 DigestShards::<C, Vec<Vec<C>>>::reserve_replace(meter)?;
-                native_backing::reserve_copy_and_cleanup(existing, meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::reserve_copy_and_cleanup(existing, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(existing, meter)?;
                 let mut values = existing.clone();
-                native_backing::reserve_cleanup(&values[position], meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::reserve_cleanup(&values[position], meter)?;
+                native_backing::reserve_blocks_cleanup(&values[position], meter)?;
                 let moved = values
                     .len()
                     .checked_sub(position)
@@ -1343,7 +1431,10 @@ where
         value: WaitingContinuation<P, K>,
         meter: &dyn SourceMeter,
     ) -> Result<(), RSpaceError> {
-        native_backing::reserve_cleanup(&value, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_cleanup(&value, meter)?;
+        native_backing::reserve_blocks_cleanup(&value, meter)?;
         let allocation = arc_allocation_bytes::<WaitingContinuation<P, K>>()
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(2, allocation, allocation)?;
@@ -1391,14 +1482,21 @@ where
             Some(entry) => {
                 // D-C2e (DR-96): the entry must hold the channel.
                 check_channel(entry.key.as_ref(), channel, meter)?;
-                native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(&entry.value, meter)?;
                 entry.value.clone()
             }
             None => Vec::new(),
         };
         for existing in &values {
-            native_backing::inspect_slice(existing, meter)?;
-            native_backing::inspect_slice(join, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::inspect_slice(existing, meter)?;
+            // native_backing::inspect_slice(join, meter)?;
+            native_backing::inspect_blocks_slice(existing, meter)?;
+            native_backing::inspect_blocks_slice(join, meter)?;
             meter.reserve(1, 0, 0)?;
             if existing.as_slice() == join {
                 return Ok(());
@@ -1415,7 +1513,10 @@ where
         values
             .try_reserve_exact(1)
             .map_err(|_| RSpaceError::HostWorkRejected)?;
-        native_backing::reserve_slice_copy_and_cleanup(join, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_slice_copy_and_cleanup(join, meter)?;
+        native_backing::reserve_blocks_slice_copy_and_cleanup(join, meter)?;
         values.insert(0, join.to_vec());
         if present {
             DigestShards::<C, Vec<Vec<C>>>::reserve_replace(meter)?;

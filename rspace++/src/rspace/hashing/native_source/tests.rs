@@ -116,9 +116,27 @@ fn returned_produce_clone_reserves_nested_payload_backing_before_copy() {
     assert_eq!(bincode::serialize(&copied).unwrap(), bincode::serialize(&source).unwrap());
     let required = baseline.used.get();
     assert!(required.iter().all(|amount| *amount > 0));
-    let clone_only = Meter::default();
-    crate::rspace::native_backing::reserve(&source, &clone_only).unwrap();
-    assert!(required[0] >= clone_only.used.get()[0] * 2);
+    // Changed by D-O1 (DR-108): the clone copies with block accounting, whose
+    // copy and release do not charge the same work. The required charge is
+    // exactly one block copy and its release, it exceeds the copy alone, and
+    // its backing covers the clone's allocations.
+    // let clone_only = Meter::default();
+    // crate::rspace::native_backing::reserve(&source, &clone_only).unwrap();
+    // assert!(required[0] >= clone_only.used.get()[0] * 2);
+    let copy_and_release = Meter::default();
+    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(&source, &copy_and_release)
+        .expect("copy and release charge");
+    assert_eq!(required, copy_and_release.used.get());
+    let copy = Cell::new([0_usize; 3]);
+    shared::rust::clone_backing::reserve_blocks(&source, &|operations, scanned, backing| {
+        let [work, read, held] = copy.get();
+        copy.set([work + operations, read + scanned, held + backing]);
+        Ok(())
+    })
+    .expect("copy charge");
+    assert!(required[0] > copy.get()[0] && required[1] > copy.get()[1]);
+    let (_, cloned) = crate::rspace::history::native_reader::measure_allocations(|| source.clone());
+    assert!(cloned <= required[2], "allocated {cloned}, reserved {}", required[2]);
     for dimension in 0..3 {
         let mut limits = required;
         limits[dimension] -= 1;

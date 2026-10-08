@@ -89,8 +89,12 @@ fn reserve_checkpoint_metadata<E: NativeReplayEpoch>(
         epoch.reserve_comparison(operations, scanned)?;
         epoch.reserve_work(0, backing)
     };
-    crate::rspace::native_backing::reserve_copy_and_cleanup(log, &meter)?;
-    crate::rspace::native_backing::reserve_copy_and_cleanup(counters, &meter)
+    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+    // once per enclosing block.
+    // crate::rspace::native_backing::reserve_copy_and_cleanup(log, &meter)?;
+    // crate::rspace::native_backing::reserve_copy_and_cleanup(counters, &meter)
+    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(log, &meter)?;
+    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(counters, &meter)
 }
 
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
@@ -492,12 +496,19 @@ where
         let _shared = self.gate.read().await;
         self.ensure_open()?;
         reserve(1, 0, 0)?;
-        crate::rspace::native_backing::inspect(channel, &reserve)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // crate::rspace::native_backing::inspect(channel, &reserve)?;
+        crate::rspace::native_backing::inspect_blocks(channel, &reserve)?;
         let hashes = [striped_locks::channel_hash(channel)];
         let _channels = self
             .consume_lock_with(&hashes, |operations, bytes| reserve(operations, 0, bytes))
             .await?;
         self.ensure_open()?;
+        // Added by D-E1 (DR-108): a block inspection prepays one traversal.
+        // The lock hash reads the channel once, and the store key encodes it
+        // a second time.
+        crate::rspace::native_backing::inspect_blocks(channel, &reserve)?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
         // self.read_data_with(channel, &reserve)
         let key = channel_key(channel, &reserve)?;
@@ -508,12 +519,26 @@ where
         let _shared = self.gate.read().await;
         self.ensure_open()?;
         self.epoch.reserve_work(1, 0)?;
-        crate::rspace::native_backing::inspect(channel, &|operations, scanned, backing| {
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // crate::rspace::native_backing::inspect(
+        //     channel,
+        //     &|operations, scanned, backing| {
+        //         self.history_reserve(operations, scanned, backing)
+        //     },
+        // )?;
+        crate::rspace::native_backing::inspect_blocks(channel, &|operations, scanned, backing| {
             self.history_reserve(operations, scanned, backing)
         })?;
         let hashes = [striped_locks::channel_hash(channel)];
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
+        // Added by D-E1 (DR-108): a block inspection prepays one traversal.
+        // The lock hash reads the channel once, and the store key encodes it
+        // a second time.
+        crate::rspace::native_backing::inspect_blocks(channel, &|operations, scanned, backing| {
+            self.history_reserve(operations, scanned, backing)
+        })?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
         // self.read_joins(channel)
         let key = channel_key(channel, &|operations, scanned, backing| {
@@ -531,6 +556,13 @@ where
         let hashes = self.channel_hashes(channels, channels.len())?;
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
+        // Added by D-E1 (DR-108): a block inspection prepays one traversal.
+        // The lock hashes read each channel once, and the group keys encode
+        // each channel a second time.
+        crate::rspace::native_backing::inspect_blocks_slice(
+            channels,
+            &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
+        )?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the group keys.
         // self.read_continuations(channels)
         let keys = GroupKeys::build(channels, &|operations, scanned, backing| {

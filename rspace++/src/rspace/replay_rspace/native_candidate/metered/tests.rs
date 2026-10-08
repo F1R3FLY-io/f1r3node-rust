@@ -284,15 +284,39 @@ async fn counter_preparation_prepays_nested_source_cleanup() {
             .unwrap();
         meter.used.get()[0]
     };
-    let copy_work = |source: &Produce| {
+    // Changed by D-O1 (DR-108): the preparation copies the source with block
+    // accounting. A block copy and its release do not charge the same work,
+    // so the added work is stated exactly: it is the added block copy and
+    // release, and it exceeds the added block copy alone.
+    // let copy_work = |source: &Produce| {
+    //     let meter = Meter::default();
+    //     native_backing::reserve(source, &meter).unwrap();
+    //     meter.used.get()[0]
+    // };
+    // let added_work = measure(&large) - measure(&small);
+    // let added_copy_work = copy_work(&large) - copy_work(&small);
+    // assert!(added_copy_work > 0);
+    // assert!(added_work >= added_copy_work * 2);
+    let copy_and_release_work = |source: &Produce| {
         let meter = Meter::default();
-        native_backing::reserve(source, &meter).unwrap();
+        native_backing::reserve_blocks_copy_and_cleanup(source, &meter)
+            .expect("copy and release charge");
         meter.used.get()[0]
+    };
+    let copy_work = |source: &Produce| {
+        let operations = std::cell::Cell::new(0_usize);
+        shared::rust::clone_backing::reserve_blocks(source, &|added, _, _| {
+            operations.set(operations.get() + added);
+            Ok(())
+        })
+        .expect("copy charge");
+        operations.get()
     };
     let added_work = measure(&large) - measure(&small);
     let added_copy_work = copy_work(&large) - copy_work(&small);
     assert!(added_copy_work > 0);
-    assert!(added_work >= added_copy_work * 2);
+    assert_eq!(added_work, copy_and_release_work(&large) - copy_and_release_work(&small));
+    assert!(added_work > added_copy_work);
     assert!(space.produce_counter.lock().unwrap().is_empty());
 }
 
@@ -311,7 +335,11 @@ async fn counter_charge_is_logarithmic() {
         [bound, bound * 2 * hash_bytes, 0]
     };
     let copy = Meter::default();
-    native_backing::reserve_copy_and_cleanup(&probe, &copy).expect("copy charge");
+    // Changed by D-O1 (DR-108): the preparation copies with block accounting,
+    // so the charge of one copy does too.
+    // native_backing::reserve_copy_and_cleanup(&probe, &copy)
+    //     .expect("copy charge");
+    native_backing::reserve_blocks_copy_and_cleanup(&probe, &copy).expect("copy charge");
     let copy = copy.used.get();
     for size in [0_usize, 1, 10, 11, 70, 71, 430, 431, 2_000] {
         {
@@ -1019,9 +1047,14 @@ where
             let Some(matched) = space.matcher.get_metered(pattern, &datum.a, meter)? else {
                 continue;
             };
-            native_backing::reserve_copy_and_cleanup(channel, meter)?;
-            native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
-            native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+            // Changed by D-O1 (DR-108): the frozen selection mirrors the walker sites,
+            // which use block accounting.
+            // native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            // native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
+            // native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(&datum.source, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(&datum.a, meter)?;
             candidates.push(ConsumeCandidate {
                 channel: channel.clone(),
                 datum: Datum {
@@ -1190,7 +1223,10 @@ proptest! {
             // }
             let value_copy = Meter::default();
             if let Some((value, _)) = incoming {
-                native_backing::reserve_copy_and_cleanup(&value, &value_copy)
+                // Changed by D-O1 (DR-108): the selection copies with block accounting, so the
+                // charge of one copy does too.
+                // native_backing::reserve_copy_and_cleanup(&value, &value_copy)
+                native_backing::reserve_blocks_copy_and_cleanup(&value, &value_copy)
                     .expect("value copy charge");
             }
             let (current, searches, legacy, value_copy) =
@@ -1307,7 +1343,12 @@ async fn legacy_position_search_charge_grew_with_position_and_channel_size() {
     };
     let inspection = |size: usize| {
         let meter = Meter::default();
-        native_backing::inspect(&sized_channels(size)[0], &meter).expect("channel inspection");
+        // Changed by D-O1 (DR-108): the search inspects each channel with block
+        // accounting, so the charge of one visit does too.
+        // native_backing::inspect(&sized_channels(size)[0], &meter)
+        //     .expect("channel inspection");
+        native_backing::inspect_blocks(&sized_channels(size)[0], &meter)
+            .expect("channel inspection");
         meter.used.get()
     };
     for size in [1, 4_096] {
@@ -1543,16 +1584,24 @@ where
         }
         let mut values = sorted(borrowed, reader.meter)?;
         if let Some((trigger, data, persist, source)) = incoming {
-            native_backing::inspect(channel, reader.meter)?;
-            native_backing::inspect(trigger, reader.meter)?;
+            // Changed by D-O1 (DR-108): the frozen selection mirrors the walker sites,
+            // which use block accounting.
+            // native_backing::inspect(channel, reader.meter)?;
+            // native_backing::inspect(trigger, reader.meter)?;
+            native_backing::inspect_blocks(channel, reader.meter)?;
+            native_backing::inspect_blocks(trigger, reader.meter)?;
             if channel == trigger {
                 let count = values
                     .len()
                     .checked_add(1)
                     .ok_or(RSpaceError::HostWorkRejected)?;
                 let mut all = buffer(count, reader.meter)?;
-                native_backing::reserve_copy_and_cleanup(data, reader.meter)?;
-                native_backing::reserve_copy_and_cleanup(source, reader.meter)?;
+                // Changed by D-O1 (DR-108): the frozen selection mirrors the walker sites,
+                // which use block accounting.
+                // native_backing::reserve_copy_and_cleanup(data, reader.meter)?;
+                // native_backing::reserve_copy_and_cleanup(source, reader.meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(data, reader.meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(source, reader.meter)?;
                 copies.values.set(copies.values.get() + 1);
                 copies.sources.set(copies.sources.get() + 1);
                 all.push((
@@ -1653,9 +1702,14 @@ where
             let Some(matched) = space.matcher.get_metered(pattern, &datum.a, meter)? else {
                 continue;
             };
-            native_backing::reserve_copy_and_cleanup(channel, meter)?;
-            native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
-            native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+            // Changed by D-O1 (DR-108): the frozen selection mirrors the walker sites,
+            // which use block accounting.
+            // native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            // native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
+            // native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(&datum.source, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(&datum.a, meter)?;
             if *index == -1 {
                 copies.values.set(copies.values.get() + 1);
             }
@@ -1745,7 +1799,10 @@ where
             copies,
         )?;
         for (continuation, index) in continuations {
-            native_backing::inspect(&continuation.source, reader.meter)?;
+            // Changed by D-O1 (DR-108): the frozen selection mirrors the walker sites,
+            // which use block accounting.
+            // native_backing::inspect(&continuation.source, reader.meter)?;
+            native_backing::inspect_blocks(&continuation.source, reader.meter)?;
             if let Some(identity) = expected {
                 if !identity.metered_matches_consume(&continuation.source, reader.meter)? {
                     continue;
@@ -1776,7 +1833,13 @@ where
                     return Ok(None);
                 }
             }
-            native_backing::reserve_copy_and_cleanup(continuation.as_ref(), reader.meter)?;
+            // Changed by D-O1 (DR-108): the frozen selection mirrors the walker
+            // sites, which use block accounting.
+            // native_backing::reserve_copy_and_cleanup(
+            //     continuation.as_ref(),
+            //     reader.meter,
+            // )?;
+            native_backing::reserve_blocks_copy_and_cleanup(continuation.as_ref(), reader.meter)?;
             let continuation = continuation.as_ref().clone();
             let candidate = ProduceCandidate {
                 channels,
@@ -1798,7 +1861,11 @@ fn fill_pass<A>(count: usize) -> [usize; 3] {
 /// D-D5 (DR-107): the charge of one copy and cleanup of `value`.
 fn copy_charge<T: CloneBacking>(value: &T) -> [usize; 3] {
     let meter = Meter::default();
-    native_backing::reserve_copy_and_cleanup(value, &meter).expect("copy charge");
+    // Changed by D-O1 (DR-108): the selection copies with block accounting,
+    // so the charge of one copy does too.
+    // native_backing::reserve_copy_and_cleanup(value, &meter)
+    //     .expect("copy charge");
+    native_backing::reserve_blocks_copy_and_cleanup(value, &meter).expect("copy charge");
     meter.used.get()
 }
 
@@ -1935,7 +2002,11 @@ async fn legacy_incoming_charge_counts_two_copies() {
 fn copy_allocation<T: Clone + CloneBacking>(value: &T) -> usize {
     let meter = Meter::default();
     let ((), walk) = measure_allocations(|| {
-        native_backing::reserve_copy_and_cleanup(value, &meter).expect("copy charge");
+        // Changed by D-O1 (DR-108): the selection copies with block
+        // accounting, so the walk of one copy charge does too.
+        // native_backing::reserve_copy_and_cleanup(value, &meter)
+        //     .expect("copy charge");
+        native_backing::reserve_blocks_copy_and_cleanup(value, &meter).expect("copy charge");
     });
     walk + measure_allocations(|| value.clone()).1
 }
@@ -2166,6 +2237,108 @@ async fn incoming_fill_accepts_exact_credit_and_rejects_each_smaller_dimension()
         assert!(bytes <= meter.used.get()[2], "dimension {dimension}");
         assert_eq!(string_state(&space), before);
     }
+}
+
+/// D-E1 (DR-108) fixtures: a string space whose channel "c" holds one
+/// waiting continuation with a body of `body` bytes, the keys of its join
+/// group, and the continuation. One selection warms the space.
+async fn large_continuation_space(
+    body: usize,
+) -> (StringSpace, Vec<Vec<String>>, OperationKeys, WaitingContinuation<String, String>) {
+    let space = string_space().await;
+    let channels = vec!["c".to_string()];
+    let patterns = vec!["a".repeat(256)];
+    let continuation = "k".repeat(body);
+    let source = Consume::create(&channels, &patterns, &continuation, false);
+    let waiting = WaitingContinuation {
+        patterns,
+        continuation,
+        persist: false,
+        peeks: BTreeSet::new(),
+        source,
+    };
+    space
+        .get_store()
+        .put_continuation(&channels, waiting.clone());
+    let joins = vec![channels];
+    let keys = string_operation_keys(&joins);
+    warm_string_selection(&space, &joins, &keys, "a-value", false);
+    (space, joins, keys, waiting)
+}
+
+/// D-E1 (DR-108): the produce selection copies the selected continuation
+/// (site 956) and the pieces of its COMM with block accounting. With a
+/// 64 KiB continuation body, it succeeds with exactly the credit that it
+/// reserves and allocates at most the reserved backing. A credit one unit
+/// short in any dimension rejects it before an unpaid allocation and leaves
+/// the space unchanged. The charge grows with the body by exactly the
+/// growth of one block copy and release of the continuation.
+#[tokio::test]
+async fn produce_selection_with_a_large_continuation_accepts_exact_credit_and_rejects_each_smaller_dimension()
+ {
+    let channel = "c".to_string();
+    let incoming = || Datum::create(&channel, "a-value".to_string(), false);
+    let selection_charge = |space: &StringSpace, joins: &[Vec<String>], keys: &OperationKeys| {
+        let meter = Meter::default();
+        with_string_reader(space, &meter, |reader| {
+            space.prepare_metered_produce_candidate(
+                &channel,
+                incoming(),
+                joins.to_vec(),
+                keys,
+                None,
+                reader,
+            )
+        })
+        .expect("metered selection");
+        meter.used.get()
+    };
+    let (space, joins, keys, waiting) = large_continuation_space(65_536).await;
+    let run = |meter: &Meter, incoming: Datum<String>, joins: Vec<Vec<String>>| {
+        with_string_reader(&space, meter, |reader| {
+            space.prepare_metered_produce_candidate(&channel, incoming, joins, &keys, None, reader)
+        })
+    };
+    let baseline = Meter::default();
+    let (selection, bytes) = measure_allocations(|| run(&baseline, incoming(), joins.clone()));
+    let (expected, _) = matched(selection.expect("metered selection")).expect("a match");
+    assert!(bytes <= baseline.used.get()[2], "allocated {bytes}");
+    assert_eq!(expected.candidate.continuation.continuation, waiting.continuation);
+    let before = string_state(&space);
+    let exact = Meter {
+        limit: Some(baseline.used.get()),
+        ..Meter::default()
+    };
+    let (actual, bytes) = measure_allocations(|| run(&exact, incoming(), joins.clone()));
+    let (actual, _) = matched(actual.expect("exact credit")).expect("a match");
+    assert_eq!(exact.used.get(), baseline.used.get());
+    assert!(bytes <= exact.used.get()[2], "allocated {bytes}");
+    same_data(&actual.candidate.data_candidates, &expected.candidate.data_candidates);
+    assert_eq!(actual.candidate.continuation.continuation, waiting.continuation);
+    for dimension in 0..3 {
+        let mut limit = baseline.used.get();
+        limit[dimension] -= 1;
+        let meter = Meter {
+            limit: Some(limit),
+            ..Meter::default()
+        };
+        let (result, bytes) = measure_allocations(|| run(&meter, incoming(), joins.clone()));
+        assert!(matches!(result, Err(RSpaceError::HostWorkRejected)), "dimension {dimension}");
+        assert!(bytes <= meter.used.get()[2], "dimension {dimension}: allocated {bytes}");
+        assert_eq!(string_state(&space), before, "dimension {dimension}");
+    }
+    let (small_space, small_joins, small_keys, small_waiting) = large_continuation_space(1).await;
+    let large = selection_charge(&space, &joins, &keys);
+    let small = selection_charge(&small_space, &small_joins, &small_keys);
+    let (large_copy, small_copy) = (copy_charge(&waiting), copy_charge(&small_waiting));
+    for dimension in 0..3 {
+        assert_eq!(
+            large[dimension] - small[dimension],
+            large_copy[dimension] - small_copy[dimension],
+            "dimension {dimension}"
+        );
+    }
+    assert_eq!(large[2] - small[2], 65_535);
 }
 
 /// D-D5 (DR-107; `IncomingDatumMove.fill_trace_covered`): a rejection at

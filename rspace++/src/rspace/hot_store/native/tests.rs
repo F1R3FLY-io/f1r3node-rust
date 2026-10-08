@@ -15,6 +15,9 @@ struct Meter {
     backing: Cell<usize>,
     operations: Cell<usize>,
     scanned: Cell<usize>,
+    /// D-E1 (DR-108): a charge that would take the operations, the scanned
+    /// bytes or the backing past this limit is rejected and not counted.
+    limit: Option<[usize; 3]>,
 }
 
 impl Meter {
@@ -25,6 +28,14 @@ impl Meter {
             backing: Cell::new(0),
             operations: Cell::new(0),
             scanned: Cell::new(0),
+            limit: None,
+        }
+    }
+
+    fn limited(limit: [usize; 3]) -> Self {
+        Self {
+            limit: Some(limit),
+            ..Self::new(usize::MAX)
         }
     }
 }
@@ -38,6 +49,14 @@ impl SourceMeter for Meter {
     ) -> Result<(), RSpaceError> {
         if self.remaining.get() == 0 {
             return Err(RSpaceError::HostWorkRejected);
+        }
+        if let Some([operation_limit, scanned_limit, backing_limit]) = self.limit {
+            if self.operations.get() + operations > operation_limit ||
+                self.scanned.get() + scanned > scanned_limit ||
+                self.backing.get() + backing > backing_limit
+            {
+                return Err(RSpaceError::HostWorkRejected);
+            }
         }
         self.remaining.set(self.remaining.get() - 1);
         self.calls.set(self.calls.get() + 1);
@@ -106,8 +125,14 @@ fn warm_cache_copy_prepays_cleanup_before_caller_rejection() {
     let key = CollisionKey(7, "warm".to_owned());
     let payload = vec!["nested".to_owned(); 512];
     map.insert(key.clone(), payload.clone());
-    let one_copy = Meter::new(usize::MAX);
-    native_backing::reserve(&payload, &one_copy).unwrap();
+    // Changed by D-O1 (DR-108): the read copies with block accounting, whose
+    // copy and release do not charge the same work. The reference is one
+    // block copy and its release.
+    // let one_copy = Meter::new(usize::MAX);
+    // native_backing::reserve(&payload, &one_copy).unwrap();
+    let copy_and_release = Meter::new(usize::MAX);
+    native_backing::reserve_blocks_copy_and_cleanup(&payload, &copy_and_release)
+        .expect("copy and release charge");
     let baseline = Meter::new(usize::MAX);
     assert_eq!(map.native_get(&key, &baseline).unwrap(), Some(payload.clone()));
     let rejecting = Meter::new(baseline.calls.get());
@@ -117,7 +142,9 @@ fn warm_cache_copy_prepays_cleanup_before_caller_rejection() {
         Ok::<_, RSpaceError>(value)
     })();
     assert_eq!(result, Err(RSpaceError::HostWorkRejected));
-    assert!(rejecting.operations.get() >= one_copy.operations.get() * 2);
+    // assert!(rejecting.operations.get() >= one_copy.operations.get() * 2);
+    assert!(rejecting.operations.get() >= copy_and_release.operations.get());
+    assert!(rejecting.scanned.get() >= copy_and_release.scanned.get());
     assert_eq!(map.get(&key), Some(payload));
 }
 
@@ -125,9 +152,18 @@ fn warm_cache_copy_prepays_cleanup_before_caller_rejection() {
 fn shared_map_insertion_prepays_copied_entry_cleanup() {
     let small = vec!["payload".to_owned()];
     let large = vec!["payload".to_owned(); 512];
+    // Changed by D-O1 (DR-108): the insertion copies with block accounting,
+    // whose copy and release do not charge the same work. The reference is
+    // the added work of one block copy and its release.
+    // let copy_work = |value: &Vec<String>| {
+    //     let meter = Meter::new(usize::MAX);
+    //     native_backing::reserve(value, &meter).unwrap();
+    //     meter.operations.get()
+    // };
     let copy_work = |value: &Vec<String>| {
         let meter = Meter::new(usize::MAX);
-        native_backing::reserve(value, &meter).unwrap();
+        native_backing::reserve_blocks_copy_and_cleanup(value, &meter)
+            .expect("copy and release charge");
         meter.operations.get()
     };
     let added_copy_work = copy_work(&large) - copy_work(&small);
@@ -147,7 +183,8 @@ fn shared_map_insertion_prepays_copied_entry_cleanup() {
             }
             meter.operations.get()
         };
-        assert!(work(large.clone()) - work(small.clone()) >= added_copy_work * 2);
+        // assert!(work(large.clone()) - work(small.clone()) >= added_copy_work * 2);
+        assert!(work(large.clone()) - work(small.clone()) >= added_copy_work);
     }
 }
 
@@ -760,8 +797,14 @@ fn export_late_rejection_uses_prepaid_cleanup_for_earlier_payloads() {
         peeks: Default::default(),
         source: Consume::default(),
     };
-    let one_copy = Meter::new(usize::MAX);
-    native_backing::reserve(&waiting, &one_copy).unwrap();
+    // Changed by D-O1 (DR-108): the export copies with block accounting, whose
+    // copy and release do not charge the same work. The reference is one
+    // block copy and its release.
+    // let one_copy = Meter::new(usize::MAX);
+    // native_backing::reserve(&waiting, &one_copy).unwrap();
+    let copy_and_release = Meter::new(usize::MAX);
+    native_backing::reserve_blocks_copy_and_cleanup(&waiting, &copy_and_release)
+        .expect("copy and release charge");
     store.put_continuation(std::slice::from_ref(&channel), waiting);
     let first = Meter::new(usize::MAX);
     assert_eq!(store.changes_metered(&first).unwrap().len(), 1);
@@ -773,7 +816,9 @@ fn export_late_rejection_uses_prepaid_cleanup_for_earlier_payloads() {
     let before = store.snapshot();
     let rejected = Meter::new(first.calls.get());
     assert_eq!(store.changes_metered(&rejected), Err(RSpaceError::HostWorkRejected),);
-    assert!(rejected.operations.get() >= one_copy.operations.get() * 2);
+    // assert!(rejected.operations.get() >= one_copy.operations.get() * 2);
+    assert!(rejected.operations.get() >= copy_and_release.operations.get());
+    assert!(rejected.scanned.get() >= copy_and_release.scanned.get());
     let after = store.snapshot();
     assert_eq!(after.data_flat(), before.data_flat());
     assert_eq!(after.continuations_flat(), before.continuations_flat());
@@ -1219,6 +1264,63 @@ fn uncached_data_read_covers_allocations_and_rejects_without_mutation() {
         (values, totals(&meter))
     };
     assert_eq!(warm(true), warm(false), "warm uncached and legacy reads differ");
+}
+
+/// D-E1 (DR-108): an uncached data read succeeds with exactly the credit
+/// that it reserves, cold and warm. A cold read prepays the release of the
+/// decoded values (site 1151), and a warm read copies the resident entry.
+/// A credit one unit short in any dimension rejects the read with the host
+/// error, allocates at most the backing reserved before the rejection, and
+/// leaves the store unchanged.
+#[test]
+fn uncached_data_read_accepts_exact_credit_and_rejects_each_smaller_dimension() {
+    let rows = Rows::new();
+    let added = Datum {
+        a: "written".to_owned(),
+        persist: false,
+        source: Produce::default(),
+    };
+    let cold = || installed();
+    let warm = || {
+        let store = store();
+        owned_data(&store, &rows.data, &Meter::new(usize::MAX));
+        store.put_datum(&String::new(), added.clone());
+        store
+    };
+    let stores: [(&str, &dyn Fn() -> Store); 2] = [("cold", &cold), ("warm", &warm)];
+    for (name, prepare) in stores {
+        let unlimited = Meter::new(usize::MAX);
+        let expected =
+            uncached_data(&prepare(), &rows, &Cell::new(0), &unlimited).expect("an unlimited read");
+        let exact = [unlimited.operations.get(), unlimited.scanned.get(), unlimited.backing.get()];
+        let store = prepare();
+        let before = store.snapshot().data_flat();
+        let meter = Meter::limited(exact);
+        let (result, allocated) =
+            measure_allocations(|| uncached_data(&store, &rows, &Cell::new(0), &meter));
+        assert_eq!(result, Ok(expected), "{name}");
+        assert_eq!(totals(&meter), totals(&unlimited), "{name}");
+        assert!(allocated <= exact[2], "{name}: allocated {allocated}, reserved {}", exact[2]);
+        assert_eq!(store.snapshot().data_flat(), before, "{name}");
+        for dimension in 0..3 {
+            let Some(short) = exact[dimension].checked_sub(1) else {
+                continue;
+            };
+            let mut limit = exact;
+            limit[dimension] = short;
+            let store = prepare();
+            let meter = Meter::limited(limit);
+            let (result, allocated) =
+                measure_allocations(|| uncached_data(&store, &rows, &Cell::new(0), &meter));
+            assert_eq!(result, Err(RSpaceError::HostWorkRejected), "{name}, {dimension}");
+            assert!(
+                allocated <= meter.backing.get(),
+                "{name}, dimension {dimension}: allocated {allocated}, reserved {}",
+                meter.backing.get()
+            );
+            assert_eq!(store.snapshot().data_flat(), before, "{name}, dimension {dimension}");
+        }
+    }
 }
 
 fn charge(reserve: impl FnOnce(&Meter) -> Result<(), RSpaceError>) -> (usize, usize, usize) {

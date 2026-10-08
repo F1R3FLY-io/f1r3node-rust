@@ -67,8 +67,17 @@ where
             if hashes.len() == count {
                 return Err(RSpaceError::HostWorkRejected);
             }
-            crate::rspace::native_backing::inspect_slice(
-                std::slice::from_ref(channel),
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block. The channel is read through a
+            // reference, as at the other lock sites.
+            // crate::rspace::native_backing::inspect_slice(
+            //     std::slice::from_ref(channel),
+            //     &|operations, scanned, backing| {
+            //         self.history_reserve(operations, scanned, backing)
+            //     },
+            // )?;
+            crate::rspace::native_backing::inspect_blocks(
+                channel,
                 &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
             )?;
             hashes.push(striped_locks::channel_hash(channel));
@@ -102,7 +111,15 @@ where
         key: crate::rspace::hashing::native_source::StoreKey,
     ) -> Result<(ChannelLockGuard, ChannelLockGuard), RSpaceError> {
         self.epoch.reserve_work(1, 0)?;
-        crate::rspace::native_backing::inspect(channel, &|operations, scanned, backing| {
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // crate::rspace::native_backing::inspect(
+        //     channel,
+        //     &|operations, scanned, backing| {
+        //         self.history_reserve(operations, scanned, backing)
+        //     },
+        // )?;
+        crate::rspace::native_backing::inspect_blocks(channel, &|operations, scanned, backing| {
             self.history_reserve(operations, scanned, backing)
         })?;
         let hash = [striped_locks::channel_hash(channel)];

@@ -118,7 +118,10 @@ fn fill_incoming<C, A: Clone + CloneBacking>(
             first = Some(candidate);
             continue;
         }
-        native_backing::reserve_copy_and_cleanup(&value, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_copy_and_cleanup(&value, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(&value, meter)?;
         candidate.removed_datum = value.clone();
     }
     if let Some(first) = first {
@@ -208,7 +211,10 @@ impl<D: Serialize + CloneBacking> OrderWork<D> for MeteredOrder<'_> {
     }
 
     fn digest(&self, value: &D) -> Result<Blake2b256Hash> {
-        native_backing::inspect(value, self.0)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::inspect(value, self.0)?;
+        native_backing::inspect_blocks(value, self.0)?;
         native_source::hash(value, &|operations, scanned, backing| {
             self.0.reserve(operations, scanned, backing)
         })
@@ -290,10 +296,16 @@ fn channel_position<C: Eq + CloneBacking, A: Clone>(
     meter: &dyn SourceMeter,
 ) -> Result<Option<usize>> {
     for (position, existing) in channels.iter().enumerate() {
-        native_backing::inspect(channel, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::inspect(channel, meter)?;
+        native_backing::inspect_blocks(channel, meter)?;
         // Changed by D-D4 (DR-106): the entry borrows its channel.
         // native_backing::inspect(&existing.channel, meter)?;
-        native_backing::inspect(existing.channel, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::inspect(existing.channel, meter)?;
+        native_backing::inspect_blocks(existing.channel, meter)?;
         meter.reserve(1, 0, 0)?;
         // if channel == &existing.channel {
         if channel == existing.channel {
@@ -365,7 +377,10 @@ where
             .unwrap_or(0)
             .checked_add(1)
             .ok_or(RSpaceError::HostWorkRejected)?;
-        native_backing::reserve_copy_and_cleanup(source, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_copy_and_cleanup(source, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(source, meter)?;
         // Disabled by C13 (DR-77): the produce-counter map lives for the whole
         // replay, so charging its whole backing on every produce charged a
         // quadratic total.
@@ -416,7 +431,10 @@ where
         let Some(expected) = expected else {
             return Ok(true);
         };
-        native_backing::inspect(&datum.source, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::inspect(&datum.source, meter)?;
+        native_backing::inspect_blocks(&datum.source, meter)?;
         if !expected.metered_matches_produce(&datum.source, meter)? {
             return Ok(false);
         }
@@ -496,8 +514,12 @@ where
             // Changed by D-D5 (DR-107): the incoming datum is borrowed.
             // if let Some((trigger, data, persist, source)) = incoming {
             if let Some((trigger, datum)) = incoming {
-                native_backing::inspect(channel, reader.meter)?;
-                native_backing::inspect(trigger, reader.meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::inspect(channel, reader.meter)?;
+                // native_backing::inspect(trigger, reader.meter)?;
+                native_backing::inspect_blocks(channel, reader.meter)?;
+                native_backing::inspect_blocks(trigger, reader.meter)?;
                 if channel == trigger {
                     let count = values
                         .len()
@@ -635,8 +657,12 @@ where
                 let Some(matched) = self.matcher.get_metered(pattern, &datum.a, meter)? else {
                     continue;
                 };
-                native_backing::reserve_copy_and_cleanup(channel, meter)?;
-                native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::reserve_copy_and_cleanup(channel, meter)?;
+                // native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(&datum.source, meter)?;
                 // Changed by D-D5 (DR-107): the removed value of an incoming
                 // candidate is the produce's own value, which the produce
                 // preparation moves in after the selection (`fill_incoming`).
@@ -645,7 +671,10 @@ where
                 let removed_datum = if *index == INCOMING_INDEX {
                     A::default()
                 } else {
-                    native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+                    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+                    native_backing::reserve_blocks_copy_and_cleanup(&datum.a, meter)?;
                     datum.a.clone()
                 };
                 candidates.push(ConsumeCandidate {
@@ -705,7 +734,10 @@ where
     ) -> Result<COMM> {
         let mut indexed = buffer(data.len(), meter)?;
         for (index, candidate) in data.iter().enumerate() {
-            native_backing::reserve_copy_and_cleanup(&candidate.datum.source, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_copy_and_cleanup(&candidate.datum.source, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(&candidate.datum.source, meter)?;
             indexed.push((candidate.datum.source.clone(), index));
         }
         sort(
@@ -787,11 +819,18 @@ where
             //     meter.reserve(1, key.hash.0.len(), 0)?;
             // }
             reserve_ordered_lookup(times_repeated.len(), source.hash.0.len(), meter)?;
-            native_backing::reserve_copy_and_cleanup(source, meter)?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block.
+            // native_backing::reserve_copy_and_cleanup(source, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(source, meter)?;
             times_repeated.insert(source.clone(), count);
         }
-        native_backing::reserve_copy_and_cleanup(consume, meter)?;
-        native_backing::reserve_copy_and_cleanup(peeks, meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::reserve_copy_and_cleanup(consume, meter)?;
+        // native_backing::reserve_copy_and_cleanup(peeks, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(consume, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(peeks, meter)?;
         Ok(COMM {
             consume: consume.clone(),
             produces,
@@ -812,7 +851,10 @@ where
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<Option<PreparedConsumeCandidate<C, A>>> {
-        native_backing::inspect(consume, reader.meter)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // native_backing::inspect(consume, reader.meter)?;
+        native_backing::inspect_blocks(consume, reader.meter)?;
         if let Some(identity) = expected {
             if !identity.metered_matches_consume(consume, reader.meter)? {
                 return Ok(None);
@@ -919,7 +961,10 @@ where
                 reader,
             )?;
             for (continuation, index) in continuations {
-                native_backing::inspect(&continuation.source, reader.meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::inspect(&continuation.source, reader.meter)?;
+                native_backing::inspect_blocks(&continuation.source, reader.meter)?;
                 if let Some(identity) = expected {
                     if !identity.metered_matches_consume(&continuation.source, reader.meter)? {
                         continue;
@@ -953,7 +998,16 @@ where
                     }
                 }
                 // C1 (DR-81): only the selected continuation is copied.
-                native_backing::reserve_copy_and_cleanup(continuation.as_ref(), reader.meter)?;
+                // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                // once per enclosing block.
+                // native_backing::reserve_copy_and_cleanup(
+                //     continuation.as_ref(),
+                //     reader.meter,
+                // )?;
+                native_backing::reserve_blocks_copy_and_cleanup(
+                    continuation.as_ref(),
+                    reader.meter,
+                )?;
                 let continuation = continuation.as_ref().clone();
                 // Changed by D-D5 (DR-107): the incoming candidates receive
                 // the produce's value, and the source goes back.

@@ -7360,6 +7360,12 @@ An operation can check one entry more than once. For example, a consume
 checks its group in the prefetch, in the candidate read and in the stored
 consume.
 
+**Amendment (DR-108).** Decision 5: the bincode pass of `channel_key` and
+`GroupKeys::build` reads the channel, and the writer reserves only the
+output bytes. At the three key reads of the native session, a per-level
+inspection of the channel also paid this read. Under block accounting, a
+second block inspection before the key pays it (DR-108, decision 6).
+
 **Cross-refs.** DR-77, DR-82, DR-95. Leaves `ofp-2-cap-d-c2a-digest-keys`,
 `ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,
 `ofp-2-cap-d-c2d-digest-cold-fill-export` and
@@ -9699,10 +9705,10 @@ original SearchStateBytes cap.
 
 **Status.** Part 1, the walker (decisions 1 and 2), implemented 2026-10-07
 for Phase D item D-E1 of epic 8946 (D-O1 Stage B). Part 2, the walker sites
-of rspace++, follows. A read-only design pass took the inventory of the
-walker sites of rspace++. It found that the site switch needs these two
-walker changes, which the D-E1 item did not name. The user approved them as
-part of D-E1.
+of rspace++ (decisions 4 to 7), implemented 2026-10-07. A read-only design
+pass took the inventory of the walker sites of rspace++. It found that the
+site switch needs these two walker changes, which the D-E1 item did not
+name. The user approved them as part of D-E1.
 
 **Context.**
 
@@ -9857,6 +9863,303 @@ multiples of the original caps, the replay is now at 4.11 in
 VerificationBytes and 0.92 in SearchStateBytes, which is below the original
 SearchStateBytes cap.
 
+**Decision (part 2).**
 
-**Cross-refs.** DR-83, DR-92, DR-93, DR-94. Leaf
+4. The wrappers. `rspace++/src/rspace/native_backing.rs` gets six block-mode
+   wrappers. Each is a thin call of the shared block walks (DR-92):
+   - `reserve_blocks_copy_and_cleanup` and
+     `reserve_blocks_slice_copy_and_cleanup` prepay one clone and its
+     release.
+   - `inspect_blocks_slice` prepays one traversal of the elements of a slice.
+   - `reserve_blocks_cleanup` prepays one release, which reads each block
+     once, as an inspection does.
+   - `reserve_shared_blocks_copy_and_cleanup` prepays the copy of a
+     store-owned vector of shared pointers and the release of the copy. It
+     pays the strong counts and skips the payloads (DR-83, decision 2).
+   - `reserve_shared_blocks_cleanup` prepays the release of one store-owned
+     shared pointer.
+
+   The per-level wrappers compile only for tests. They remain the reference
+   charges of the tests.
+5. The site switch. Every production walker call of rspace++ moves to the
+   block wrapper that prepays the same work (audit below). The legacy store
+   `hot_store/native.rs` has lines that only the test oracles reach. They
+   switch with the same mapping, so that a later item can make the per-level
+   walker test-only. The export `changes` of the digest store is a test function
+   that runs on unlimited meters, so it stays per-level. Each old call stays
+   in the source, commented out with its reason.
+6. The second traversals. Three key reads of the native session read each
+   channel twice. The lock reads the channel for the SipHash, and the store
+   key encodes it with bincode. A per-level inspection charges each inline
+   byte three times, which paid both reads. A block inspection prepays one
+   traversal. So each read adds a second block inspection before its key:
+   `inspect_blocks(channel)` in `get_data_prepared` and in `get_joins`, and
+   `inspect_blocks_slice(channels)` in `get_continuations`.
+7. The lock paths `channel_hashes` and `produce_lock` read each channel once,
+   for the SipHash. Each uses one `inspect_blocks(channel)`. In
+   `channel_hashes`, this replaces the inspection of a one-element slice, so
+   all lock sites inspect the channel through a reference.
+
+**Algorithm (part 2, literate form).**
+
+```text
+⟨session key read of channel c⟩ ≡
+  reserve one operation
+  inspect_blocks(c)                     -- prepays the SipHash pass
+  h ← SipHash(c);  acquire the locks of h
+  inspect_blocks(c)                     -- prepays the bincode pass of the key
+  k ← Blake2b(bincode(c))               -- the writer reserves its output bytes
+  read the store entry of k
+
+⟨copy of a stored value v⟩ ≡
+  reserve_blocks_copy_and_cleanup(v)    -- one clone of v and one release
+  v′ ← clone(v)
+```
+
+**Soundness (part 2).** Each block call prepays the work in the column
+"Prepaid work" of the audit:
+
+- A copy and cleanup prepays one clone and one release
+  (`WalkerBlockCharge.block_copy_covers_walk_and_clone`, with the release as
+  the consumer traversal of `block_inspection_covers_walk_and_traversal`).
+- An inspection, or the release of a value that the store owns, prepays one
+  traversal (`block_inspection_covers_walk_and_traversal`).
+- The release of a store-owned shared pointer prepays the pointer and its
+  strong count (`shared_release_charge_covers_work`, part 1).
+- A key read prepays its two traversals with two inspections. The writer of
+  the key still reserves its output bytes (DR-96, decision 5).
+
+**Audit (part 2).** The table has one row per production call line. The
+lines of `hot_store/native.rs` that only the test oracles reach have one row
+per method. All paths are under `rspace++/src/rspace/`. "Copy" means one
+clone and its later release.
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `hot_store/native_store.rs:35` (`reserve_key`) | channel | the copy of a new entry key into an `Arc`, released with the entry | block copy | cold `data`, `data_view` and `joins`, and `install_join` |
+| `hot_store/native_store.rs:48` (`reserve_slice_key`) | channel slice | the copy of a new group key into an `Arc`, released with the entry | block slice copy | cold `continuations` and `continuation_views`, and `install_continuation` |
+| `hot_store/native_store.rs:101` (`check_channel`) | stored channel | one side of the key-collision comparison | block inspection | each found entry of a channel |
+| `hot_store/native_store.rs:102` (`check_channel`) | sought channel | the other side of the comparison | block inspection | each found entry of a channel |
+| `hot_store/native_store.rs:122` (`check_group`) | stored channels | one side of the key-collision comparison | block slice inspection | each found entry of a group |
+| `hot_store/native_store.rs:123` (`check_group`) | sought channels | the other side of the comparison | block slice inspection | each found entry of a group |
+| `hot_store/native_store.rs:487` (`data`) | cached data | the copy returned to the caller | block copy | warm data read (`get_data_prepared`, installation) |
+| `hot_store/native_store.rs:500` (`data`) | decoded data | the copy kept in the cache | block copy | cold data read |
+| `hot_store/native_store.rs:539` (`data_view`) | decoded data | the release of the data moved into the cache | block release | cold data view (operation readers) |
+| `hot_store/native_store.rs:571` (`joins`) | installed joins | the copy returned to the caller | block copy | join read of an installed channel |
+| `hot_store/native_store.rs:586` (`joins`) | cached joins | the copy returned to the caller | block copy | warm join read |
+| `hot_store/native_store.rs:599` (`joins`) | decoded joins | the copy kept in the cache | block copy | cold join read |
+| `hot_store/native_store.rs:643` (`installed_copy`) | installed continuation | the copy returned to the caller | block copy | continuation read of an installed group |
+| `hot_store/native_store.rs:678` (`continuations`) | cached continuation | the copy of each continuation returned to the caller | block copy | warm continuation read (`get_continuations`) |
+| `hot_store/native_store.rs:697` (`continuations`) | decoded continuation | the copy of each continuation kept in the cache | block copy | cold continuation read |
+| `hot_store/native_store.rs:772` (`continuation_views`) | decoded continuation | the release of each continuation moved into its `Arc` | block release | cold continuation view (operation readers) |
+| `hot_store/native_store.rs:806` (`store_consume`) | waiting continuation | the release of the stored continuation (DR-83) | block release | every stored consume |
+| `hot_store/native_store.rs:886` (`store_consume`) | vector of continuation pointers | the copy of the vector and its release, with the strong counts, without the payloads | block shared copy | every stored consume that is not a duplicate |
+| `hot_store/native_store.rs:975` (`store_consume`) | stored join | one side of the join comparison | block slice inspection | every stored consume |
+| `hot_store/native_store.rs:976` (`store_consume`) | consume channels | the other side of the join comparison | block slice inspection | every stored consume |
+| `hot_store/native_store.rs:990` (`store_consume`) | join list | the copy of the list before the update | block copy | a stored consume with a new join |
+| `hot_store/native_store.rs:1006` (`store_consume`) | consume channels | the copy of the channels into the join list | block slice copy | a stored consume with a new join |
+| `hot_store/native_store.rs:1073` (`put_datum`) | published datum | the release of the datum moved into the store | block release | every stored produce |
+| `hot_store/native_store.rs:1078` (`put_datum`) | cached data | the copy of the data before the update | block copy | every stored produce |
+| `hot_store/native_store.rs:1191` (`prepare_retire_data`) | cached data | the copy of the data before the removal | block copy | every consume match |
+| `hot_store/native_store.rs:1205` (`prepare_retire_data`) | removed datum | the release of the removed datum | block release | every consume match of a non-persistent datum |
+| `hot_store/native_store.rs:1281` (`retire_produce_match`) | vector of continuation pointers | the copy of the vector and its release, with the strong counts, without the payloads | block shared copy | every produce match of a non-persistent continuation |
+| `hot_store/native_store.rs:1287` (`retire_produce_match`) | retired continuation pointer | the release of the pointer and its strong count, payload prepaid | block shared release | every produce match of a non-persistent continuation |
+| `hot_store/native_store.rs:1387` (`prepare_retire_joins`) | stored join | one side of the join comparison | block slice inspection | the last continuation of a group retires |
+| `hot_store/native_store.rs:1388` (`prepare_retire_joins`) | retired group | the other side of the join comparison | block slice inspection | the last continuation of a group retires |
+| `hot_store/native_store.rs:1400` (`prepare_retire_joins`) | join list | the copy of the list before the removal | block copy | the last continuation of a group retires |
+| `hot_store/native_store.rs:1405` (`prepare_retire_joins`) | removed join | the release of the removed join | block release | the last continuation of a group retires |
+| `hot_store/native_store.rs:1437` (`install_continuation`) | installed continuation | the release of the continuation moved into the store | block release | genesis installation |
+| `hot_store/native_store.rs:1488` (`install_join`) | join list | the copy of the list before the update | block copy | genesis installation |
+| `hot_store/native_store.rs:1498` (`install_join`) | stored join | one side of the join comparison | block slice inspection | genesis installation |
+| `hot_store/native_store.rs:1499` (`install_join`) | installed join | the other side of the join comparison | block slice inspection | genesis installation |
+| `hot_store/native_store.rs:1519` (`install_join`) | installed join | the copy of the join into the list | block slice copy | genesis installation |
+| `replay_rspace/native_candidate/metered.rs:124` (`fill_incoming`) | incoming value | the copy for each incoming candidate after the first (DR-107) | block copy | a produce whose value fills more than one candidate |
+| `replay_rspace/native_candidate/metered.rs:217` (`digest`) | candidate | the bincode pass of the tie digest | block inspection | candidates whose source hashes tie (DR-75) |
+| `replay_rspace/native_candidate/metered.rs:302` (`channel_position`) | channel of an earlier entry | one side of the channel comparison | block inspection | each channel of a selection, against the earlier entries (DR-106) |
+| `replay_rspace/native_candidate/metered.rs:308` (`channel_position`) | sought channel | the other side of the comparison | block inspection | each channel of a selection, against the earlier entries (DR-106) |
+| `replay_rspace/native_candidate/metered.rs:383` (`prepare_metered_produce_counter`) | produce source | the copy of the source into the counter map | block copy | every non-persistent produce of a COMM |
+| `replay_rspace/native_candidate/metered.rs:437` (`metered_candidate_matches`) | candidate source | nothing that the identity does not reserve itself (redundant) | block inspection | replay identity checks |
+| `replay_rspace/native_candidate/metered.rs:521` (`metered_channel_data`) | channel | one side of the trigger comparison | block inspection | every produce selection |
+| `replay_rspace/native_candidate/metered.rs:522` (`metered_channel_data`) | trigger channel | the other side of the comparison | block inspection | every produce selection |
+| `replay_rspace/native_candidate/metered.rs:664` (`metered_match_data`) | channel | the copy into the candidate | block copy | every matched datum |
+| `replay_rspace/native_candidate/metered.rs:665` (`metered_match_data`) | datum source | the copy into the candidate | block copy | every matched datum |
+| `replay_rspace/native_candidate/metered.rs:677` (`metered_match_data`) | stored value | the copy of the removed value | block copy | every matched stored datum |
+| `replay_rspace/native_candidate/metered.rs:740` (`metered_comm`) | datum source | the copy into the COMM | block copy | every COMM |
+| `replay_rspace/native_candidate/metered.rs:825` (`metered_comm`) | produce source | the copy into the repetition counts | block copy | every COMM |
+| `replay_rspace/native_candidate/metered.rs:832` (`metered_comm`) | consume source | the copy into the COMM | block copy | every COMM |
+| `replay_rspace/native_candidate/metered.rs:833` (`metered_comm`) | peeks | the copy into the COMM | block copy | every COMM |
+| `replay_rspace/native_candidate/metered.rs:857` (`prepare_metered_consume_candidate`) | consume source | nothing that the identity does not reserve itself (redundant) | block inspection | every consume selection |
+| `replay_rspace/native_candidate/metered.rs:967` (`prepare_metered_produce_candidate`) | continuation source | nothing that the identity does not reserve itself (redundant) | block inspection | each candidate continuation of a produce |
+| `replay_rspace/native_candidate/metered.rs:1007` (`prepare_metered_produce_candidate`) | selected continuation | the copy of the selected continuation and its release | block copy | every matched produce |
+| `replay_rspace/native_session.rs:96` (`reserve_checkpoint_metadata`) | event log | the copy into the checkpoint and its release | block copy | every session checkpoint |
+| `replay_rspace/native_session.rs:97` (`reserve_checkpoint_metadata`) | produce counters | the copy into the checkpoint and its release | block copy | every session checkpoint |
+| `replay_rspace/native_session.rs:502` (`get_data_prepared`) | channel | the SipHash pass of the lock | block inspection | session data read |
+| `replay_rspace/native_session.rs:511` (`get_data_prepared`) | channel | the bincode pass of the store key (decision 6) | block inspection | session data read |
+| `replay_rspace/native_session.rs:530` (`get_joins`) | channel | the SipHash pass of the lock | block inspection | session join read |
+| `replay_rspace/native_session.rs:539` (`get_joins`) | channel | the bincode pass of the store key (decision 6) | block inspection | session join read |
+| `replay_rspace/native_session.rs:562` (`get_continuations`) | channels | the bincode passes of the group keys (decision 6) | block slice inspection | session continuation read |
+| `replay_rspace/native_session/installation.rs:108` (`install`) | channel of the pattern | one side of the comparison with a chosen datum | block inspection | installation of a continuation |
+| `replay_rspace/native_session/installation.rs:109` (`install`) | channel of a chosen datum | the other side of the comparison | block inspection | installation of a continuation |
+| `replay_rspace/native_session/installation.rs:132` (`install`) | channel | the copy into the chosen list | block copy | installation of a continuation |
+| `replay_rspace/native_session/locks.rs:79` (`channel_hashes`) | channel | the SipHash pass of the lock | block inspection | every consume, the continuation read, and the join locks of every produce |
+| `replay_rspace/native_session/locks.rs:122` (`produce_lock`) | channel | the SipHash pass of the lock | block inspection | every produce |
+| `hashing/native_source.rs:214` (`clone_produce`) | produce source | the copy returned to rholang and its release | block copy | rholang source preparation |
+| `trace/event.rs:115`, `:116`, `:117` (`cost_identity_metered`) | COMM fields | one bincode pass (DR-94) | block inspection | unchanged by this item |
+| `hot_store/native.rs:17` (`inspect_key`) | key | one traversal per step of the persistent-map lookup | block inspection, scaled | uncached data read |
+| `hot_store/native.rs:45` (`lookup`) | each key of the shard | one comparison traversal | block inspection | uncached data read |
+| `hot_store/native.rs:176` (`continuation_identity_metered`) | waiting continuation | the formatting pass of the identity | block inspection | stored consume with a duplicate source hash |
+| `hot_store/native.rs:212` (`native_with`) | key | the shard hash | block inspection | uncached data read |
+| `hot_store/native.rs:243` (`native_get`) | resident data | the copy returned to the caller | block copy | warm uncached data read |
+| `hot_store/native.rs:1318` (`native_data_uncached`) | decoded data | the release of the decoded data | block release | cold uncached data read (`ispace_impl.rs`, `replay_rspace.rs`) |
+| `hot_store/native.rs`, `native_snapshot` (1 line) | key | the shard hash | block inspection | test oracles only |
+| `hot_store/native.rs`, `native_insert_new_with` (4 lines) | key, value | the insert copies and the releases | block copy and inspection | test oracles only |
+| `hot_store/native.rs`, `native_insert_replace` (1 line) | key | the shard hash | block inspection | test oracles only |
+| `hot_store/native.rs`, `reserve_replace`, `reserve_replace_shared`, `reserve_replace_with` (4 lines) | keys, values | the shard copy on replace | block copy and shared copy | test oracles only |
+| `hot_store/native.rs`, `native_data`, `native_data_view` (4 lines) | channel, data | the copies and releases of the legacy reads | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_joins` (1 line) | joins | the copy of the legacy read | block copy | test oracles only |
+| `hot_store/native.rs`, `native_continuations`, `native_continuation_views` (5 lines) | continuations | the copies and releases of the legacy reads | block copy and release | test oracles only |
+| `hot_store/native.rs`, `native_store_consume` (12 lines) | continuation, joins | the legacy publication | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_put_datum` (2 lines) | datum, data | the legacy publication | block copy and release | test oracles only |
+| `hot_store/native.rs`, `prepare_native_retire_data` (7 lines) | data | the legacy retirement | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_retire_produce_match` (4 lines) | continuation pointers | the legacy retirement | block shared copy and release | test oracles only |
+| `hot_store/native.rs`, `prepare_native_retire_joins` (9 lines) | joins | the legacy retirement | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_install_continuation`, `native_install_join` (5 lines) | installed values | the legacy installation | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_changes` (6 lines) | store entries | the legacy export | block copy | test oracles only |
+
+**Comparison with the per-level charge.** A block inspection of a record of
+RSpace never charges more VerificationBytes than its per-level inspection. A
+block copy and cleanup can charge more for a small value, in two cases:
+
+- A B-tree node. The block walks read the whole node five times, against
+  four times in per-level mode. A sparse node holds few entries, which save
+  less than this extra read.
+- A small root. The root pays two entry constants (112 bytes), against one
+  more read of its bytes in per-level mode.
+
+So for one value, the excess is at most the bytes of the B-tree nodes plus
+$`\max(0, 112 - s)`$. Here $`s`$ is the size of the root in bytes. For a
+slice of values, the excess is at most the bytes of the B-tree nodes. A
+design check expected "block at most per-level" for all records. A
+property test of 256 cases found a counterexample: a map of one produce
+counter. A probe of 20,000 generated records then measured the two
+effects, and the bounds above hold with a margin of at least 17 bytes. The
+production values (for example a `Par` channel, with a root of more than
+200 bytes) are larger than these test values. The measurement below gives
+the net effect.
+
+**Verification (part 2).** New tests:
+
+- `native_backing/block_tests.rs`:
+  - `rspace_records_block_charges_match_independent_oracle` (256 cases). The
+    records are `Datum`, `WaitingContinuation`, `Produce`, `Consume`,
+    `COMM`, an event log, a counter map and a join list. For one record and
+    for a slice of records, the block walks equal an independent statement
+    of the block rules. This holds for an inspection and for a copy.
+  - `block_wrappers_charge_the_shared_block_walks` (256 cases): each wrapper
+    makes exactly the reservations of the shared walks that it names, in
+    the same order.
+  - `block_charge_le_per_level_for_rspace_records` (256 cases): the
+    comparison above, with its bounds.
+  - `block_walks_cover_copy_and_worklist_allocations` (256 cases): the walks,
+    the clone and its release allocate at most the reserved backing.
+  - `shared_block_wrappers_charge_pointers_and_strong_counts`: the exact
+    charge for one to four pointers, the same for small and large payloads.
+  - `block_wrappers_stop_at_every_cut`: each wrapper returns the meter's
+    error at every cut and reserves nothing after it.
+  - Negative controls: `block_charge_exceeds_per_level_for_bare_scalars`,
+    `block_copy_exceeds_per_level_for_sparse_tree_nodes` and
+    `block_copy_exceeds_per_level_for_small_roots`. The last two state the
+    excess exactly, term by term.
+- `hot_store/native_store/tests.rs`:
+  - `every_native_store_call_accepts_exact_credit_and_rejects_each_smaller_dimension`:
+    the 12 production calls of the store.
+  - `store_consume_release_charge_grows_with_the_waiting_body`: a body that
+    is 4,095 bytes longer adds exactly 4,095 scanned bytes, and nothing else.
+  - `retire_produce_match_charges_each_released_pointer`: each further stored
+    continuation adds exactly 5 operations, 64 scanned bytes and 8 backing
+    bytes, whatever the size of its body.
+  - `nested_values_cover_allocations_at_every_store_cut`: 11 calls on nested
+    values with 4 KiB payloads, at every cut.
+- `hot_store/native/tests.rs`:
+  `uncached_data_read_accepts_exact_credit_and_rejects_each_smaller_dimension`,
+  cold and warm.
+- `replay_rspace/native_candidate/metered/tests.rs`:
+  `produce_selection_with_a_large_continuation_accepts_exact_credit_and_rejects_each_smaller_dimension`.
+  The charge of a 64 KiB body grows by exactly one block copy and release.
+- `replay_rspace/native_session/tests.rs`:
+  `checkpoint_metadata_accepts_exact_credit_and_rejects_each_smaller_dimension`
+  and `session_key_reads_charge_two_channel_traversals`. The charge of each
+  key read grows with the channel by exactly two inspections, the key's
+  encoding, and the store's copy of the channel.
+
+Restated tests, not loosened:
+
+- The frozen selections of DR-106 and DR-107 and the helpers `copy_charge`
+  and `copy_allocation` call the block wrappers, as production does. So the
+  exact relations of DR-106 and DR-107 still hold.
+- Six tests asserted at least two per-level copies. Three of them now
+  assert exactly one block copy and release
+  (`checkpoint_metadata_prepays_clone_and_cleanup`,
+  `returned_produce_clone_reserves_nested_payload_backing_before_copy`,
+  `counter_preparation_prepays_nested_source_cleanup`). The other three
+  assert at least one block copy and release
+  (`warm_cache_copy_prepays_cleanup_before_caller_rejection`,
+  `shared_map_insertion_prepays_copied_entry_cleanup`,
+  `export_late_rejection_uses_prepaid_cleanup_for_earlier_payloads`).
+
+Seven mutations in a scratch copy fail tests:
+
+- `put_datum` charges a release instead of a copy. It fails
+  `nested_values_cover_allocations_at_every_store_cut` (26,532 bytes
+  allocated against 7,464 reserved). With the first fixture, whose payloads
+  had 33 bytes, this mutation passed every test. The worklist backing of the
+  release walk covered the small clone. The fixture now has 4 KiB payloads,
+  and the test checks that premise.
+- The release in `store_consume` reads only the source. It fails
+  `store_consume_release_charge_grows_with_the_waiting_body`.
+- The data, the join or the continuation read has no second traversal. Each
+  fails `session_key_reads_charge_two_channel_traversals`.
+- The selected continuation is inspected instead of copied. It fails three
+  selection tests.
+- The checkpoint copies the log without its release. It fails three
+  checkpoint tests.
+
+Suites (part 2):
+
+- Shared, rspace++ and rholang: 4,256 of 4,256 tests pass.
+- Casper and models with the original caps: 2,141 of 2,148 tests pass. The
+  7 failures are a subset of the 10 known failures of part 1. Three
+  registry tests of DR-101 that failed with the original caps now pass:
+  `another_signer_inserts_into_the_registry_after_a_registry_insert`,
+  `another_signer_looks_up_the_registry_after_a_registry_insert` and
+  `a_registry_lookup_costs_the_same_whoever_wrote_the_registry_last`.
+- Casper with the provisional caps: 1,688 of 1,692 tests pass. The 4
+  failures are the known failures of part 1.
+- The doctests pass. The proof gate passes with 272 modules, as in part 1,
+  because part 2 changes no proof.
+
+**Measurement (part 2).** The D-G0 probe ran the gateway test twice with
+part 2, under the provisional caps. Every role charged exactly the same
+usage, and the self-replay equals each validator. The replay of the gateway
+funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-108 part 1, run 1 | 1,115,496,469 | 124,281,345 | 57,860,329 |
+| DR-108 part 1, run 2 | 1,088,851,334 | 123,896,655 | 57,833,274 |
+| DR-108 part 2, run 1 | 692,100,826 | 121,150,356 | 57,617,237 |
+| DR-108 part 2, run 2 | 688,251,351 | 120,990,821 | 57,630,520 |
+| Change of the means | −412.0 MB (−37.4 %) | −3.02 MB (−2.4 %) | −0.22 M (−0.4 %) |
+
+The VerificationBytes change is about 15 times the largest difference
+between two runs of one build (26.6 MB). The SearchStateBytes change is
+about 8 times that largest difference (0.38 MB). The design estimated about
+690 MB of VerificationBytes after part 2, a SearchStateBytes change of
+−3 to −6 MiB, and about −0.3 M operations. The replays of the two small
+blocks fall by 18 % and 22 % in VerificationBytes. The producer's execution
+does not change. In multiples of the original caps, the replay of the
+gateway block is now at 2.57 in VerificationBytes and 0.90 in
+SearchStateBytes.
+
+**Cross-refs.** DR-83, DR-92, DR-93, DR-94, DR-96, DR-106, DR-107. Leaf
 `ofp-2-cap-d-e1-rspace-sites`.
