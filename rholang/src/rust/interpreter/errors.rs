@@ -28,6 +28,9 @@ pub enum InterpreterError {
     UnrecognizedInterpreterError(String),
     SortMatchError(String),
     ReduceError(String),
+    BitmaskBitsCleared {
+        cleared: Vec<(String, u64)>,
+    },
     MethodNotDefined {
         method: String,
         other_type: String,
@@ -190,6 +193,16 @@ impl fmt::Display for InterpreterError {
             InterpreterError::SortMatchError(msg) => write!(f, "Sort match error: {}", msg),
 
             InterpreterError::ReduceError(msg) => write!(f, "Reduce error: {}", msg),
+
+            InterpreterError::BitmaskBitsCleared { cleared } => write!(
+                f,
+                "BitmaskOr channel bits can only be set, not cleared: {}",
+                cleared
+                    .iter()
+                    .map(|(channel, bits)| format!("{} (bits {:#x} cleared)", channel, bits))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
 
             InterpreterError::MethodNotDefined { method, other_type } => write!(
                 f,

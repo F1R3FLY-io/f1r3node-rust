@@ -519,6 +519,7 @@ impl DebruijnInterpreter {
 
         match res {
             Some((continuation, data_list, peek)) => {
+                self.register_bitmask_channels(&data_list).await;
                 if persistent {
                     // dispatchAndRun
                     let self_clone1 = self.clone();
@@ -856,6 +857,20 @@ impl DebruijnInterpreter {
         if let Some(merge_type) = self.is_mergeable_channel(chan) {
             let mut merge_chs_write = self.merge_chs.write().await;
             merge_chs_write.insert(chan.clone(), merge_type);
+        }
+    }
+
+    async fn register_bitmask_channels(
+        &self,
+        data_list: &[(Par, ListParWithRandom, ListParWithRandom, bool)],
+    ) {
+        for (chan, _, _, _) in data_list {
+            if self.is_mergeable_channel(chan) == Some(MergeType::BitmaskOr) {
+                self.merge_chs
+                    .write()
+                    .await
+                    .insert(chan.clone(), MergeType::BitmaskOr);
+            }
         }
     }
 

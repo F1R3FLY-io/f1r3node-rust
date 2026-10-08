@@ -192,6 +192,10 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()>;
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
+    /// Reads `channel` as it was in `state`, a snapshot of this store. A
+    /// channel absent from the snapshot was unchanged since history, so the
+    /// history reader answers. It fills only the base-history cache and
+    /// does not change the live store.
     fn get_data_at(&self, state: &HotStoreState<C, P, A, K>, channel: &C) -> Vec<Datum<A>>;
     fn put_datum(&self, channel: &C, d: Datum<A>) -> ();
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError>;

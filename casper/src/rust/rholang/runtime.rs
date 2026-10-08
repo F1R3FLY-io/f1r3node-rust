@@ -661,7 +661,20 @@ impl RuntimeOps {
         Ok(result)
     }
 
-    pub async fn reject_bitmask_clears(
+    /// Fails a user deploy that leaves any `BitmaskOr` channel without a bit it
+    /// held when the deploy started (#534). The merge folds these channels as
+    /// `base | (end & !prev)`, so a cleared bit would be silently restored.
+    ///
+    /// - The baseline is the soft checkpoint taken before the deploy, never a
+    ///   read during evaluation, so play and replay reach the same verdict.
+    /// - A channel with no numeric value at the end (consumed and not put back,
+    ///   or replaced by non-numeric data) counts as `0`: it clears every bit.
+    /// - Channels are checked in channel-hash order so the error is identical
+    ///   in play and replay.
+    /// - A deploy that already failed is rolled back anyway, so it is skipped.
+    /// - On rejection `mergeable` is cleared: the rolled-back deploy must not
+    ///   contribute number-channel data to the merge.
+    pub(crate) async fn reject_bitmask_clears(
         &self,
         start: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         eval_result: &mut EvaluateResult,
@@ -679,27 +692,23 @@ impl RuntimeOps {
 
         let mut cleared_channels = Vec::new();
         for (hash, channel) in channels {
-            let before = Self::bitmask_value(&self.runtime.get_data_at(start, channel).await);
-            let after = Self::bitmask_value(&self.runtime.get_data(channel).await);
-            if let (Some(before), Some(after)) = (before, after) {
-                let cleared = (before as u64) & !(after as u64);
-                if cleared != 0 {
-                    cleared_channels.push(format!(
-                        "{} (bits {:#x} cleared)",
-                        hex::encode(hash.bytes()),
-                        cleared
-                    ));
-                }
+            let Some(before) = Self::bitmask_value(&self.runtime.get_data_at(start, channel).await)
+            else {
+                continue;
+            };
+            let after = Self::bitmask_value(&self.runtime.get_data(channel).await).unwrap_or(0);
+            let cleared = (before as u64) & !(after as u64);
+            if cleared != 0 {
+                cleared_channels.push((hex::encode(hash.bytes()), cleared));
             }
         }
 
         if !cleared_channels.is_empty() {
             eval_result
                 .errors
-                .push(InterpreterError::ReduceError(format!(
-                    "BitmaskOr channel bits can only be set, not cleared: {}",
-                    cleared_channels.join(", ")
-                )));
+                .push(InterpreterError::BitmaskBitsCleared {
+                    cleared: cleared_channels,
+                });
             eval_result.mergeable.clear();
         }
     }

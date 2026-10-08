@@ -207,6 +207,11 @@ pub trait RhoRuntime: HasCost {
      */
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>>;
 
+    /**
+     * Get data as it was at `soft_checkpoint`, without reverting to it.
+     *
+     * This function would not change the state in the runtime
+     */
     async fn get_data_at(
         &self,
         soft_checkpoint: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,

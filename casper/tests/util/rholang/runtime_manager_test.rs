@@ -236,6 +236,88 @@ async fn a_deploy_that_clears_bitmask_or_bits_fails_in_play_and_replay() {
             )
             .await;
             assert!(!failed, "a deploy may clear bits it set itself");
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534")) { Nil }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "consuming a BitmaskOr value without putting it back must fail"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534")) { @(*t, "flags-534")!({"k": 1}) }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "replacing a BitmaskOr value with non-numeric data must fail"
+            );
+
+            let (with_join, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534") & @_ <- @"go-534") { Nil }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(!failed);
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@"go-534"!(Nil)"#,
+                &with_join,
+            )
+            .await;
+            assert!(
+                failed,
+                "draining a BitmaskOr value through a waiting join must fail"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bitmask_or_writes_that_keep_every_bit_still_succeed() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+
+            let (with_leaf, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "leaf-534")!(0)"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed);
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "leaf-534")) { @(*t, "leaf-534")!({"k": 1}) }"#,
+                &with_leaf,
+            )
+            .await;
+            assert!(!failed, "a zero bitmap may become a TreeHashMap leaf");
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"new insert(`rho:registry:insertArbitrary`), uri in { insert!("value-534", *uri) }"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed, "a registry insert must still succeed");
         },
     )
     .await

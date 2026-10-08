@@ -63,6 +63,7 @@ pub trait ISpace<
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
 
+    /// Reads `channel` as it was at `checkpoint`, without reverting to it.
     async fn get_data_at(
         &self,
         checkpoint: &SoftCheckpoint<C, P, A, K>,
