@@ -184,6 +184,15 @@ impl Root {
 #[derive(Debug, Default, Clone)]
 pub struct RootIdentityRegistry {
     slot: Arc<RwLock<Arc<RwLock<Inner>>>>,
+    /// X-6c M-04 test-harness opt-out for the Consensus-mode gate.
+    /// Shared across clones via `Arc<AtomicBool>` so a single
+    /// `set_test_permissive(true)` on the manager-held handle is
+    /// visible to every clone a reducer may have taken earlier —
+    /// mirrors `slot`'s reducer-clone-visibility discipline.
+    /// Default `false` (production safety); test harnesses that
+    /// construct raw-tempdir Consensus caps flip it on.  Production
+    /// code MUST NOT enable this.
+    test_permissive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Debug, Default)]
@@ -239,6 +248,88 @@ impl RootIdentityRegistry {
         match self.get(logical) {
             Some(r) => (r.path().to_path_buf(), Some(r.identity())),
             None => (logical.to_path_buf(), None),
+        }
+    }
+
+    /// X-6c M-04 test-harness opt-out: when `true`, the Consensus
+    /// branch of [`resolve_or_identity_gated_for_consensus`] falls
+    /// through to `Ok((logical, None))` instead of erroring on an
+    /// unregistered logical root.  Used by test harnesses that
+    /// construct raw-tempdir Consensus caps without a boot
+    /// registration pass.
+    ///
+    /// Production code MUST NOT enable this — bypassing the gate
+    /// silently disables `safe_descend_verified`'s identity check
+    /// (the entire H-5 rename-and-recreate defense).
+    pub fn set_test_permissive(&self, permissive: bool) {
+        self.test_permissive
+            .store(permissive, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Read the test-permissive flag.  Introspection helper for
+    /// the gated resolver and for tests that assert the flag's
+    /// state.
+    pub fn is_test_permissive(&self) -> bool {
+        self.test_permissive
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// X-6c M-04 (Consensus-fs Shape A gating): gated variant of
+    /// [`resolve_or_identity`] that refuses dispatch when a
+    /// Consensus-mode cap targets an unregistered logical root.
+    ///
+    /// Under Consensus-fs Shape A, every Consensus cap's canonRoot
+    /// is `/@bundle/<X>` and boot registration populates the
+    /// registry with matching mappings.  A Consensus resolve that
+    /// returns `None` therefore means the boot registration path
+    /// failed (bug), the cap carries a non-Shape-A root
+    /// (misconfiguration), or a test constructed a Consensus cap
+    /// without registering it (test-harness bug).  In all cases,
+    /// falling through with `expected_root_id: None` would silently
+    /// disable the identity check inside `safe_descend_verified` —
+    /// the very defense the Consensus mode relies on.  Refusing at
+    /// this gate makes the failure loud.
+    ///
+    /// Returns:
+    ///   * `Ok((on_disk_root, Some(identity)))` on registered
+    ///     logical.
+    ///   * `Ok((logical, None))` on Oracular + unregistered (safe
+    ///     fall-through to pre-Shape-A behavior).
+    ///   * `Ok((logical, None))` on Consensus + unregistered when
+    ///     [`is_test_permissive`] returns true (test opt-out).
+    ///   * `Err((FSERR_UNSUPPORTED, msg))` on Consensus +
+    ///     unregistered with the test-permissive flag off (the
+    ///     production safety stance).
+    pub fn resolve_or_identity_gated_for_consensus(
+        &self,
+        logical: &Path,
+        cmode: super::super::ConsensusMode,
+    ) -> Result<(PathBuf, Option<(u64, u64)>), (super::super::errors::FserrCode, String)> {
+        match self.get(logical) {
+            Some(r) => Ok((r.path().to_path_buf(), Some(r.identity()))),
+            None => match cmode {
+                super::super::ConsensusMode::Consensus => {
+                    if self.is_test_permissive() {
+                        Ok((logical.to_path_buf(), None))
+                    } else {
+                        Err((
+                            super::super::errors::FSERR_UNSUPPORTED,
+                            format!(
+                                "M-04: Consensus-mode cap targets unregistered logical root \
+                                 {logical:?}.  Under Consensus-fs Shape A every Consensus \
+                                 cap's canonRoot must be boot-registered in the \
+                                 RootIdentityRegistry; falling through with \
+                                 expected_root_id=None would silently disable \
+                                 safe_descend's identity check.  Fix: register the cap's \
+                                 canonRoot at boot (see \
+                                 fs_genesis::register_consensus_bundle_roots), or use \
+                                 Oracular mode for unregistered paths."
+                            ),
+                        ))
+                    }
+                }
+                _ => Ok((logical.to_path_buf(), None)),
+            },
         }
     }
 
@@ -641,5 +732,103 @@ mod tests {
 
         reg.share_from(&reg);
         assert!(reg.get(&logical).is_some());
+    }
+
+    // --- test_permissive + Consensus-gated resolve ----------------
+
+    #[test]
+    fn test_permissive_default_is_false() {
+        let reg = RootIdentityRegistry::new();
+        assert!(!reg.is_test_permissive());
+    }
+
+    #[test]
+    fn set_test_permissive_round_trips() {
+        let reg = RootIdentityRegistry::new();
+        reg.set_test_permissive(true);
+        assert!(reg.is_test_permissive());
+        reg.set_test_permissive(false);
+        assert!(!reg.is_test_permissive());
+    }
+
+    #[test]
+    fn test_permissive_clones_share_flag() {
+        // LOAD-BEARING: Clone shares `Arc<AtomicBool>`, matching
+        // the two-layer-indirection discipline — a reducer that
+        // Clone'd the registry before boot's test-harness flip
+        // still sees the flip.
+        let reg_a = RootIdentityRegistry::new();
+        let reg_b = reg_a.clone();
+        reg_a.set_test_permissive(true);
+        assert!(reg_b.is_test_permissive());
+    }
+
+    #[test]
+    fn resolve_gated_registered_logical_returns_on_disk_and_identity() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+        let reg = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/data");
+        reg.register(logical.clone(), root.clone());
+        let (on_disk, id) = reg
+            .resolve_or_identity_gated_for_consensus(
+                &logical,
+                crate::rust::interpreter::io::ConsensusMode::Consensus,
+            )
+            .expect("registered Consensus resolve must succeed");
+        assert_eq!(on_disk, root.path());
+        assert_eq!(id, Some(root.identity()));
+    }
+
+    #[test]
+    fn resolve_gated_oracular_unregistered_falls_through() {
+        let reg = RootIdentityRegistry::new();
+        let logical = Path::new("/some/non/registered/path");
+        let (on_disk, id) = reg
+            .resolve_or_identity_gated_for_consensus(
+                logical,
+                crate::rust::interpreter::io::ConsensusMode::Oracular,
+            )
+            .expect("Oracular + unregistered must fall through");
+        assert_eq!(on_disk, logical);
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn resolve_gated_consensus_unregistered_errors_fsrr_unsupported() {
+        // LOAD-BEARING: the whole point of the gate is to refuse
+        // a Consensus-mode Shape-A cap whose canonRoot the boot
+        // pipeline forgot to register.
+        let reg = RootIdentityRegistry::new();
+        let logical = Path::new("/@bundle/unregistered");
+        let err = reg
+            .resolve_or_identity_gated_for_consensus(
+                logical,
+                crate::rust::interpreter::io::ConsensusMode::Consensus,
+            )
+            .expect_err("Consensus + unregistered must error");
+        assert_eq!(
+            err.0,
+            crate::rust::interpreter::io::errors::FSERR_UNSUPPORTED
+        );
+        assert!(err.1.contains("M-04"), "error msg must cite M-04");
+    }
+
+    #[test]
+    fn resolve_gated_consensus_unregistered_with_test_permissive_falls_through() {
+        // LOAD-BEARING: test-harness opt-out produces the Oracular
+        // fall-through shape so test shards built on raw tempdirs
+        // can exercise Consensus caps without boot registration.
+        let reg = RootIdentityRegistry::new();
+        reg.set_test_permissive(true);
+        let logical = Path::new("/@bundle/test-only");
+        let (on_disk, id) = reg
+            .resolve_or_identity_gated_for_consensus(
+                logical,
+                crate::rust::interpreter::io::ConsensusMode::Consensus,
+            )
+            .expect("test-permissive must allow fall-through");
+        assert_eq!(on_disk, logical);
+        assert!(id.is_none());
     }
 }
