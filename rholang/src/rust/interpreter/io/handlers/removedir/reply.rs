@@ -150,6 +150,172 @@ pub(super) fn err_with_manifest(
 #[allow(dead_code)]
 pub(super) fn io_err_code_u32(e: &std::io::Error) -> u32 { fserr_to_code(io_err_code(e).as_str()) }
 
+// --- Reply-reading helpers (inverse of the builders above) ----
+
+/// Read `nDeleted` from a removeDir reply Par.  Reads position 1
+/// (success) or position 3 (failure) — both indices carry the
+/// count uniformly across every removeDir code path (non-recursive,
+/// recursive Oracular, recursive Consensus) post DD-RemoveDirReplyShape.
+/// Returns `0` for any malformed / non-list reply so cost
+/// accounting fails safe.
+///
+/// Supersedes the pre-shape-change branch-on-(recursive, cmode)
+/// helpers that had to derive the count from the manifest
+/// (Consensus recursive only) or hard-code it (non-recursive = 1,
+/// Oracular recursive = 0).  Post-shape-change the reply itself
+/// is the canonical count source on every code path — including
+/// Oracular recursive, which now bills per-entry symmetrically
+/// with Consensus recursive.
+pub(super) fn extract_removedir_n_deleted(reply: &Par) -> u64 {
+    let expr = match reply.exprs.first() {
+        Some(e) => e,
+        None => return 0,
+    };
+    let outer = match &expr.expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => return 0,
+    };
+    let ok_par = match outer.ps.first() {
+        Some(p) => p,
+        None => return 0,
+    };
+    let n_par = match RhoBoolean::unapply(ok_par) {
+        Some(true) => match outer.ps.get(1) {
+            Some(p) => p,
+            None => return 0,
+        },
+        Some(false) => match outer.ps.get(3) {
+            Some(p) => p,
+            None => return 0,
+        },
+        None => return 0,
+    };
+    match RhoNumber::unapply(n_par) {
+        Some(n) if n >= 0 => n as u64,
+        _ => 0,
+    }
+}
+
+/// Leader-path cost-supplement count — read from the fresh reply
+/// Par.  Thin wrapper so the leader + follower cost-accounting
+/// sites can share the same count-extraction logic without
+/// slice-of-Par vs. Par-ref call-site mix-ups.
+///
+/// `_parsed` + `_cmode` are retained in the signature for
+/// forward-compat with pre-shape-change branch logic that may
+/// re-emerge if a future revision needs mode-aware costing.
+pub(super) fn fs_remove_dir_supplement_count(
+    _parsed: &Option<(String, String, bool)>,
+    _cmode: ConsensusMode,
+    reply: &Par,
+) -> u64 {
+    extract_removedir_n_deleted(reply)
+}
+
+/// Follower-path counterpart — read from `previous[0]`.  Same
+/// helper; the split is preserved so callers can't accidentally
+/// mix slice-of-Par with Par-ref call sites.
+pub(super) fn fs_remove_dir_supplement_count_from_previous(
+    _parsed: &Option<(String, String, bool)>,
+    _cmode: ConsensusMode,
+    previous: &[Par],
+) -> u64 {
+    match previous.first() {
+        Some(reply) => extract_removedir_n_deleted(reply),
+        None => 0,
+    }
+}
+
+/// Parse the recursive-removeDir reply manifest into
+/// `(PathBuf, RemoveKind)` tuples.
+///
+/// Reply shapes (Consensus recursive only; other paths have no
+/// manifest and this returns an empty Vec):
+///   * `[true, nDeleted, [[path, kind], ...]]` — success.
+///   * `[false, code, msg, nDeletedBeforeError, [[path, kind], ...]]`
+///     — partial success followed by failure; the inner list
+///     contains only what was successfully deleted before the
+///     failing entry.
+///
+/// Returns an empty Vec for any other shape (any 4-element
+/// non-Consensus-recursive reply, or malformed input).
+///
+/// Kept available because the Consensus recursive reply ships
+/// the manifest as an implementation-side channel; diagnostics
+/// and future consumers can extract it without re-walking.  The
+/// R5(b) follower reads its own manifest via
+/// `collect_recursive_manifest` rather than consuming the
+/// leader's, so this parser has no production caller today.
+pub(super) fn extract_removedir_manifest(previous: &[Par]) -> Vec<(PathBuf, RemoveKind)> {
+    let head = match previous.first() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let expr = match head.exprs.first() {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let outer = match &expr.expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => return Vec::new(),
+    };
+    // Manifest lives at index 2 (success) or 4 (failure) post
+    // DD-RemoveDirReplyShape.  Detect via the head bool.
+    let ok_par = match outer.ps.first() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let manifest_par = match RhoBoolean::unapply(ok_par) {
+        Some(true) => match outer.ps.get(2) {
+            Some(p) => p,
+            None => return Vec::new(),
+        },
+        Some(false) => match outer.ps.get(4) {
+            Some(p) => p,
+            None => return Vec::new(),
+        },
+        None => return Vec::new(),
+    };
+    let manifest_expr = match manifest_par.exprs.first() {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let manifest_list = match &manifest_expr.expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(manifest_list.ps.len());
+    for entry_par in &manifest_list.ps {
+        let entry_expr = match entry_par.exprs.first() {
+            Some(e) => e,
+            None => continue,
+        };
+        let entry_list = match &entry_expr.expr_instance {
+            Some(ExprInstance::EListBody(l)) => l,
+            _ => continue,
+        };
+        let path_par = match entry_list.ps.first() {
+            Some(p) => p,
+            None => continue,
+        };
+        let kind_par = match entry_list.ps.get(1) {
+            Some(p) => p,
+            None => continue,
+        };
+        let path = match RhoString::unapply(path_par) {
+            Some(s) => PathBuf::from(s),
+            None => continue,
+        };
+        let kind = match RhoString::unapply(kind_par).as_deref() {
+            Some("file") => RemoveKind::File,
+            Some("dir") => RemoveKind::Dir,
+            _ => continue,
+        };
+        out.push((path, kind));
+    }
+    out
+}
+
 // --- Internal Par builders ------------------------------------
 
 fn list_par_from(items: Vec<Par>) -> Par {
@@ -298,6 +464,165 @@ mod tests {
             "early fail",
         );
         assert_eq!(extract_list(&par).len(), 4);
+    }
+
+    // --- Reply-reading helpers ---------------------------------
+
+    #[test]
+    fn extract_n_deleted_from_ok_with_count() {
+        let par = ok_with_count(7);
+        assert_eq!(extract_removedir_n_deleted(&par), 7);
+    }
+
+    #[test]
+    fn extract_n_deleted_from_err_with_count() {
+        let par = err_with_count(crate::rust::interpreter::io::errors::FSERR_IO, "err", 3);
+        assert_eq!(extract_removedir_n_deleted(&par), 3);
+    }
+
+    #[test]
+    fn extract_n_deleted_from_ok_recursive_manifest() {
+        // LOAD-BEARING: Consensus recursive success carries the
+        // count at position 1, same as non-recursive success.
+        // Cost accounting MUST see the same number regardless of
+        // code path.
+        let deleted = vec![
+            (PathBuf::from("a.bin"), RemoveKind::File),
+            (PathBuf::from(""), RemoveKind::Dir),
+        ];
+        let par = ok_recursive_manifest(&deleted);
+        assert_eq!(extract_removedir_n_deleted(&par), 2);
+    }
+
+    #[test]
+    fn extract_n_deleted_from_err_with_manifest() {
+        // LOAD-BEARING: Consensus recursive failure carries
+        // nDeletedBeforeError at position 3, same as non-recursive
+        // failure.
+        let deleted = vec![(PathBuf::from("one.bin"), RemoveKind::File)];
+        let par = err_with_manifest(
+            crate::rust::interpreter::io::errors::FSERR_IO,
+            "mid-walk failure",
+            &deleted,
+        );
+        assert_eq!(extract_removedir_n_deleted(&par), 1);
+    }
+
+    #[test]
+    fn extract_n_deleted_malformed_returns_zero() {
+        // Cost accounting fails-safe: unparseable reply → 0 (don't
+        // over-charge, don't under-charge based on garbage).
+        let empty = Par::default();
+        assert_eq!(extract_removedir_n_deleted(&empty), 0);
+    }
+
+    #[test]
+    fn fs_remove_dir_supplement_count_reads_leader_reply() {
+        let par = ok_with_count(5);
+        assert_eq!(
+            fs_remove_dir_supplement_count(&None, ConsensusMode::Consensus, &par),
+            5
+        );
+    }
+
+    #[test]
+    fn fs_remove_dir_supplement_count_from_previous_reads_follower_slot() {
+        let par = ok_with_count(5);
+        let previous = vec![par];
+        assert_eq!(
+            fs_remove_dir_supplement_count_from_previous(
+                &None,
+                ConsensusMode::Consensus,
+                &previous
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn fs_remove_dir_supplement_count_from_previous_empty_returns_zero() {
+        let previous: Vec<Par> = Vec::new();
+        assert_eq!(
+            fs_remove_dir_supplement_count_from_previous(
+                &None,
+                ConsensusMode::Consensus,
+                &previous
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn extract_manifest_from_ok_recursive() {
+        let deleted = vec![
+            (PathBuf::from("sub/leaf.bin"), RemoveKind::File),
+            (PathBuf::from("sub"), RemoveKind::Dir),
+        ];
+        let par = ok_recursive_manifest(&deleted);
+        let previous = vec![par];
+        let parsed = extract_removedir_manifest(&previous);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0], (PathBuf::from("sub/leaf.bin"), RemoveKind::File));
+        assert_eq!(parsed[1], (PathBuf::from("sub"), RemoveKind::Dir));
+    }
+
+    #[test]
+    fn extract_manifest_from_err_with_manifest() {
+        let deleted = vec![(PathBuf::from("done.bin"), RemoveKind::File)];
+        let par = err_with_manifest(
+            crate::rust::interpreter::io::errors::FSERR_IO,
+            "err",
+            &deleted,
+        );
+        let previous = vec![par];
+        let parsed = extract_removedir_manifest(&previous);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0], (PathBuf::from("done.bin"), RemoveKind::File));
+    }
+
+    #[test]
+    fn extract_manifest_from_non_recursive_shape_returns_empty() {
+        // Non-recursive success is `[true, 1]` with no manifest.
+        let par = ok_with_count(1);
+        let previous = vec![par];
+        let parsed = extract_removedir_manifest(&previous);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn extract_manifest_from_empty_previous_returns_empty() {
+        let previous: Vec<Par> = Vec::new();
+        let parsed = extract_removedir_manifest(&previous);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn extract_manifest_filters_malformed_entries() {
+        // An entry whose kind string isn't "file" / "dir" is
+        // dropped from the parse rather than erroring the whole
+        // reply.  Defensive against future-schema additions a
+        // joiner might not understand.
+        let good = ok_recursive_manifest(&[(PathBuf::from("good.bin"), RemoveKind::File)]);
+        // Hand-build a malformed inner entry [path, kind-with-unknown-string].
+        let mut malformed = good.clone();
+        if let Some(ExprInstance::EListBody(ref mut outer)) =
+            malformed.exprs[0].expr_instance.as_mut()
+        {
+            if let Some(ExprInstance::EListBody(ref mut manifest)) =
+                outer.ps[2].exprs[0].expr_instance.as_mut()
+            {
+                let entry_par = list_par_2(
+                    RhoString::create_par("extra.bin".to_string()),
+                    RhoString::create_par("fifo".to_string()),
+                );
+                manifest.ps.push(entry_par);
+            }
+        }
+        let parsed = extract_removedir_manifest(&[malformed]);
+        // Only the "good" entry parses; the "fifo"-kind one is
+        // filtered.
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0], (PathBuf::from("good.bin"), RemoveKind::File));
     }
 
     #[test]
