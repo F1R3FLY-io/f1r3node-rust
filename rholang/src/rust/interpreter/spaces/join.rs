@@ -142,6 +142,7 @@ use super::agent::{
 use super::counter::CounterChannels;
 use super::disciplines::priority_queue::{receive_lane, send_level, Lane, Level};
 use super::disciplines::scan::{retire_class_on, retire_continuation, same_class};
+use super::disciplines::vectordb::{self, Flight, ListFire, Mode, VdbConfig};
 use super::errors::SpaceError;
 use super::generic::{
     self, operation_ord, peek_set, peek_set_all, receive_candidate, CollectionTxn, Cx, Discipline,
@@ -153,6 +154,8 @@ use super::record::{self, Introduction, JoinSlot, OperationAuthority, WaiterPoli
 use super::settle::{lift_body, lift_continuation, lift_pattern, settle_operation};
 use super::types::config::SpaceConfig;
 use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use crate::rust::interpreter::tensor::exact::Score;
+use crate::rust::interpreter::tensor::num::ExactVector;
 
 // ── Routes and scopes ───────────────────────────────────────────────────────────────────────
 
@@ -448,6 +451,13 @@ fn validate<S: OuterStore, D: Discipline>(
                     .outer()
                     .check_key(config, &bind.channel, &bind.key, meter)?;
                 agent.check_params(config, &no_params, bind.query.as_ref(), meter)?;
+                // A list is one value of one bind (decision 66): a VectorDB bind of a join is in
+                // single mode.
+                if let (JoinWindow::Similarity, Some(query)) = (D::JOIN_WINDOW, &bind.query) {
+                    if vectordb::is_list_query(query, meter)? {
+                        return Err(SpaceError::ListModeInJoin);
+                    }
+                }
             }
             Ok(())
         }
@@ -689,7 +699,7 @@ pub(crate) fn run_join_with<Src: JoinSource>(
         ))?
         .data;
     generic::run_plan(env, txn, data, &config, &authority, |cx| {
-        let engine = Engine::new(source, &scope, &op, cx.meter())?;
+        let engine = Engine::new(source, &scope, &op, cx.config(), cx.meter())?;
         engine.run(cx, op)
     })
 }
@@ -1161,7 +1171,9 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
     fn lane_of(&self, slot: &JoinSlot) -> Option<Lane> {
         match D::JOIN_WINDOW {
             JoinWindow::Lanes => Some(Lane::of_slot(slot.policy.level())),
-            JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
+            JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
+                None
+            }
         }
     }
 
@@ -1508,6 +1520,12 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
             (JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes, None) => {
                 Ok(record::wrap_datum_metered(ord, data, meter)?)
             }
+            // A VectorDB record holds the vector of its send (P6, design v3 4.3), so the engine
+            // builds it from the params of the send (`vectordb::vdb_record`), never from the data
+            // alone.
+            (JoinWindow::Similarity, _) => Err(SpaceError::Inconsistent(
+                "a VectorDB record is built from the params of its send",
+            )),
             _ => Err(SpaceError::Inconsistent(
                 "a record level does not fit its discipline",
             )),
@@ -1527,6 +1545,7 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
                 Ok((record::datum_ord_metered(record, meter)?, None))
             }
+            JoinWindow::Similarity => Ok((record::vdb_datum_slots_metered(record, meter)?.0, None)),
         }
     }
 
@@ -1540,6 +1559,7 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
                 Ok(record::unwrap_datum_metered(record, meter)?.datum)
             }
+            JoinWindow::Similarity => vectordb::payload_of(record, meter),
         }
     }
 
@@ -1566,6 +1586,15 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                         bind: 0,
                         policy: WaiterPolicy::None,
                     },
+                    JoinWindow::Similarity => {
+                        let (ord, policy) =
+                            record::continuation_policy_slots_metered(&waiter.continuation, meter)?;
+                        JoinSlot {
+                            ord,
+                            bind: 0,
+                            policy,
+                        }
+                    }
                 };
                 let mut slots = meter.buffer::<JoinSlot>(1)?;
                 slots.push(slot);
@@ -1577,6 +1606,10 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                     JoinWindow::Lanes => true,
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
                         slots.iter().all(|slot| slot.policy == WaiterPolicy::None)
+                    }
+                    // A VectorDB bind keeps its query map, or Nil without a query.
+                    JoinWindow::Similarity => {
+                        slots.iter().all(|slot| slot.policy.level().is_none())
                     }
                 };
                 match (slots.len() == width, lanes_fit) {
@@ -1660,7 +1693,9 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                 }
                 Ok(window)
             }
-            JoinWindow::Scan | JoinWindow::Classes => {
+            // A similarity bind sees its own eligible records (`Engine::similarity_bind`); this
+            // window of every record is the window of a bind without a query.
+            JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
                 // Every stored record is in the window. An element in flight always lies in the
                 // window of a scan, so it joins it at the end: no stored record takes its place.
                 let order = cx.canonical_data_order(channel)?;
@@ -1699,7 +1734,7 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                 }
                 None => Ok(Claim::Record { coll, at }),
             },
-            JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan => {
+            JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Similarity => {
                 Ok(Claim::Record { coll, at })
             }
         }
@@ -1735,7 +1770,9 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                 }
                 self.oldest_first(&seats, heads, meter)
             }
-            JoinWindow::Scan | JoinWindow::Classes => self.union_order(cx, scope, incoming.coll),
+            JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
+                self.union_order(cx, scope, incoming.coll)
+            }
         }
     }
 
@@ -1776,7 +1813,9 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
             }
             // Decision 50: a set cascades over every waiter of the collection, in canonical order,
             // because a class can move when its first member leaves (F-JF-1). A bag needs none.
-            JoinWindow::Classes => self.union_order(cx, scope, coll),
+            // A VectorDB cascades over its list waiters (decision 66, LM-b), which the engine
+            // picks out of every waiter of the collection.
+            JoinWindow::Classes | JoinWindow::Similarity => self.union_order(cx, scope, coll),
             JoinWindow::Scan => Ok(Vec::new()),
         }
     }
@@ -1792,13 +1831,16 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
     ) -> Result<bool, SpaceError> {
         let meter = cx.meter();
         match D::JOIN_WINDOW {
-            JoinWindow::Scan | JoinWindow::Classes => Ok(true),
+            JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => Ok(true),
             JoinWindow::Head | JoinWindow::Lanes => {
                 let seats = self.seats(cx, scope, coll)?;
                 for lane in self.lanes_on(slots, colls, coll, meter)? {
                     let filter = match D::JOIN_WINDOW {
                         JoinWindow::Lanes => lane,
-                        JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
+                        JoinWindow::Head
+                        | JoinWindow::Scan
+                        | JoinWindow::Classes
+                        | JoinWindow::Similarity => None,
                     };
                     let Some(head) = self.head_seat(&seats.seats, filter, meter)? else {
                         return Ok(false);
@@ -1828,13 +1870,16 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
     ) -> Result<bool, SpaceError> {
         let meter = cx.meter();
         match D::JOIN_WINDOW {
-            JoinWindow::Scan | JoinWindow::Classes => Ok(true),
+            JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => Ok(true),
             JoinWindow::Head | JoinWindow::Lanes => {
                 let seats = self.seats(cx, scope, coll)?;
                 for lane in self.lanes_on(slots, colls, coll, meter)? {
                     let filter = match D::JOIN_WINDOW {
                         JoinWindow::Lanes => lane,
-                        JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
+                        JoinWindow::Head
+                        | JoinWindow::Scan
+                        | JoinWindow::Classes
+                        | JoinWindow::Similarity => None,
                     };
                     let reaches = match carried {
                         None => {
@@ -2351,6 +2396,15 @@ pub(crate) struct Work {
     pub(crate) restore: Option<u8>,
 }
 
+/// A fire that the cascade owes (joins plan section 4.9): a stored pair with one bound entry for
+/// each position, or a VectorDB list waiter with its list (P6, decision 66, LM-b).
+enum Fireable {
+    /// A stored pair.
+    Pair(Waiter, Vec<Bound>),
+    /// A list waiter and the list that it binds.
+    List(Waiter, ListFire),
+}
+
 /// The state of the element of the operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Own {
@@ -2405,6 +2459,8 @@ struct Engine<'r, Src> {
     stop: Option<ReissueCause>,
     /// The order of the operation on each own collection, by scope index.
     ords: Vec<Option<i64>>,
+    /// The params of a VectorDB space (P6), read once, or `None` for every other discipline.
+    vdb: Option<VdbConfig>,
 }
 
 impl<'r, Src: JoinSource> Engine<'r, Src> {
@@ -2412,8 +2468,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         source: &'r Src,
         scope: &'r JoinScope,
         op: &SpaceOp,
+        config: &SpaceConfig,
         meter: &ScanMeter,
     ) -> Result<Self, SpaceError> {
+        let vdb = match source.shape() {
+            JoinWindow::Similarity => Some(vectordb::vdb_config(config, meter)?),
+            JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => None,
+        };
         let (random_state, authority): (&[u8], Option<&CostAuthority>) = match op {
             SpaceOp::Produce(op) => (&op.data.random_state, op.data.cost_authority.as_ref()),
             SpaceOp::Consume(op) => (&op.body.random_state, record::stamped(&op.authority)),
@@ -2454,6 +2515,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             own_placement,
             stop: None,
             ords,
+            vdb,
         })
     }
 
@@ -2465,7 +2527,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     fn cascades(&self) -> bool {
         matches!(
             self.source.shape(),
-            JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Classes
+            JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Classes | JoinWindow::Similarity
         )
     }
 
@@ -2687,9 +2749,20 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let ord = self.ord_on(coll)?;
         let level = match self.source.shape() {
             JoinWindow::Lanes => Some(send_level(&op.params, meter)?),
-            JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
+            JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
+                None
+            }
         };
-        let record = self.source.wrap_record(ord, level, &op.data, meter)?;
+        let record = match self.source.shape() {
+            // The record of a VectorDB send holds its vector (P6, design v3 4.3).
+            JoinWindow::Similarity => {
+                let cfg = vectordb::vdb_config(cx.config(), meter)?;
+                vectordb::vdb_record(&cfg, &op.params, &op.data, meter)?.0
+            }
+            JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => {
+                self.source.wrap_record(ord, level, &op.data, meter)?
+            }
+        };
         let source = Produce::create_metered(
             self.source.home(self.scope, coll)?,
             &record,
@@ -2729,10 +2802,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let ord = self.ord_on(coll)?;
         let lane = match self.source.shape() {
             JoinWindow::Lanes => Some(receive_lane(&op.query, meter)?),
-            JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
+            JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
+                None
+            }
         };
-        let continuation = match lane {
-            Some(lane) => record::wrap_pq_continuation_metered(
+        // A VectorDB waiter keeps its query in its policy slot (P6, design v3 4.3).
+        let query_policy = match self.source.shape() {
+            JoinWindow::Similarity => Some(vectordb::policy_of_query(op.query.as_ref(), meter)?),
+            JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => None,
+        };
+        let continuation = match (lane, &query_policy) {
+            (Some(lane), _) => record::wrap_pq_continuation_metered(
                 ord,
                 lane.slot(),
                 &op.body,
@@ -2740,7 +2820,15 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 record::stamped(&op.authority),
                 meter,
             )?,
-            None => record::wrap_continuation_metered(
+            (None, Some(policy)) => record::wrap_policy_continuation_metered(
+                ord,
+                policy,
+                &op.body,
+                &op.guard,
+                record::stamped(&op.authority),
+                meter,
+            )?,
+            (None, None) => record::wrap_continuation_metered(
                 ord,
                 &op.body,
                 &op.guard,
@@ -2756,7 +2844,10 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         slots.push(JoinSlot {
             ord,
             bind: 0,
-            policy: WaiterPolicy::of_level(lane.and_then(Lane::slot)),
+            policy: match query_policy {
+                Some(policy) => policy,
+                None => WaiterPolicy::of_level(lane.and_then(Lane::slot)),
+            },
         });
         let mut patterns = meter.buffer::<BindPattern>(1)?;
         patterns.push(meter.copy(&op.pattern)?);
@@ -2800,14 +2891,24 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             let coll = self.scope.index_of_key(&bind.key, meter)?;
             let lane = match self.source.shape() {
                 JoinWindow::Lanes => Some(receive_lane(&bind.query, meter)?),
-                JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
+                JoinWindow::Head
+                | JoinWindow::Scan
+                | JoinWindow::Classes
+                | JoinWindow::Similarity => None,
+            };
+            // A VectorDB bind keeps its query in its slot (P6, design v3 4.6).
+            let policy = match self.source.shape() {
+                JoinWindow::Similarity => vectordb::policy_of_query(bind.query.as_ref(), meter)?,
+                JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => {
+                    WaiterPolicy::of_level(lane.and_then(Lane::slot))
+                }
             };
             group.push(meter.copy(self.channel(coll)?)?);
             colls.push(coll);
             slots.push(JoinSlot {
                 ord: self.ord_on(coll)?,
                 bind: position,
-                policy: WaiterPolicy::of_level(lane.and_then(Lane::slot)),
+                policy,
             });
             patterns.push(meter.copy(&bind.pattern)?);
         }
@@ -2873,7 +2974,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let mut lanes = meter.buffer::<Option<Lane>>(slots.len())?;
         lanes.extend(slots.iter().map(|slot| match self.source.shape() {
             JoinWindow::Lanes => Some(Lane::of_slot(slot.policy.level())),
-            JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
+            JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
+                None
+            }
         }));
         Ok(lanes)
     }
@@ -2901,15 +3004,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         Ok(true)
     }
 
-    /// The search of the positions `colls` with `patterns` and `lanes` (joins plan sections 3.4
-    /// and 3.5). `fixed` binds the element in flight at one position first. It returns one
-    /// bound entry for each position, or `None`.
+    /// The search of the positions `colls` with `patterns`, `lanes` and the slots `slots` (joins
+    /// plan sections 3.4 and 3.5). `fixed` binds the element in flight at one position first. It
+    /// returns one bound entry for each position, or `None`. A position on a VectorDB collection
+    /// sees the records that the query of its slot makes eligible (P6, design v3 4.6).
     fn search(
         &self,
         cx: &mut Cx<'_, '_>,
         colls: &[usize],
         patterns: &[BindPattern],
         lanes: &[Option<Lane>],
+        slots: &[JoinSlot],
         fixed: Option<(usize, &Incoming, ListParWithRandom)>,
     ) -> Result<Option<Vec<Bound>>, SpaceError> {
         let meter = cx.meter();
@@ -2945,6 +3050,22 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             let coll = *colls
                 .get(position)
                 .ok_or(SpaceError::Inconsistent("a position has no collection"))?;
+            if let Some(cfg) = &self.vdb {
+                let pattern = patterns
+                    .get(position)
+                    .ok_or(SpaceError::Inconsistent("a position has no pattern"))?;
+                let slot = slot_at(slots, position)?;
+                let Some(found) =
+                    self.similarity_bind(cx, cfg, coll, &slot.policy, pattern, &claimed)?
+                else {
+                    return Ok(None);
+                };
+                generic::push_reserved(&mut claimed, found.claim.clone(), meter)?;
+                if let Some(entry) = bound.get_mut(position) {
+                    *entry = Some(found);
+                }
+                continue;
+            }
             meter.ordered_lookup(windows.len(), size_of::<usize>())?;
             if !windows.contains_key(&coll) {
                 let need = colls.iter().filter(|&&other| other == coll).count();
@@ -3039,6 +3160,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         cx: &mut Cx<'_, '_>,
         waiter: &Waiter,
         x: &Incoming,
+        x_vector: Option<&ExactVector>,
     ) -> Result<Option<(usize, Vec<Bound>)>, SpaceError> {
         if !self.all_at_head(cx, waiter)? {
             return Ok(None);
@@ -3057,6 +3179,32 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 .get(position)
                 .ok_or(SpaceError::Inconsistent("a position has no collection"))?;
             if !self.source.enters(self.scope, x, coll, meter)? {
+                continue;
+            }
+            // P6: `x` enters a VectorDB position when the query of the position makes it
+            // eligible, and the position binds the value that its query delivers.
+            if let Some(cfg) = &self.vdb {
+                let pattern = waiter
+                    .waiting
+                    .patterns
+                    .get(position)
+                    .ok_or(SpaceError::Inconsistent("a position has no pattern"))?;
+                let slot = slot_at(&waiter.slots, position)?;
+                let Some(matched) =
+                    self.similarity_flight_bind(cx, cfg, &slot.policy, pattern, x, x_vector)?
+                else {
+                    continue;
+                };
+                if let Some(bound) = self.search(
+                    cx,
+                    &waiter.colls,
+                    &waiter.waiting.patterns,
+                    &lanes,
+                    &waiter.slots,
+                    Some((position, x, matched)),
+                )? {
+                    return Ok(Some((position, bound)));
+                }
                 continue;
             }
             let known = match first {
@@ -3112,12 +3260,145 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 &waiter.colls,
                 &waiter.waiting.patterns,
                 &lanes,
+                &waiter.slots,
                 Some((position, x, matched)),
             )? {
                 return Ok(Some((position, bound)));
             }
         }
         Ok(None)
+    }
+
+    /// The first stored record of the VectorDB collection `coll` that a bind with the policy
+    /// `policy` and the pattern `pattern` binds, skipping the records of `claimed` (P6, design v3
+    /// 4.6): in the selection order of the query of the policy, with the value that the query
+    /// delivers, or in canonical order without a query. A list-mode bind takes the list paths of
+    /// the engine, never this search.
+    fn similarity_bind(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        cfg: &VdbConfig,
+        coll: usize,
+        policy: &WaiterPolicy,
+        pattern: &BindPattern,
+        claimed: &[Claim],
+    ) -> Result<Option<Bound>, SpaceError> {
+        let meter = cx.meter();
+        let channel = self.channel(coll)?;
+        let query = vectordb::policy_query(cfg, policy, meter)?;
+        let entries: Vec<(usize, Option<Score>)> = match &query {
+            None => {
+                let order = cx.canonical_data_order(channel)?;
+                let mut entries = meter.buffer::<(usize, Option<Score>)>(order.len())?;
+                entries.extend(order.into_iter().map(|index| (index, None)));
+                entries
+            }
+            Some(query) => match query.mode {
+                Mode::List(_) => {
+                    return Err(SpaceError::Inconsistent(
+                        "a list-mode bind reached the search of the engine",
+                    ))
+                }
+                Mode::Single => {
+                    let eligible = vectordb::eligible(cx, cfg, query, channel, None)?;
+                    let mut entries = meter.buffer::<(usize, Option<Score>)>(eligible.len())?;
+                    for entry in eligible {
+                        let index = entry.index.ok_or(SpaceError::Inconsistent(
+                            "a search met an element in flight",
+                        ))?;
+                        entries.push((index, entry.score));
+                    }
+                    entries
+                }
+            },
+        };
+        for (index, score) in entries {
+            let stored = self.source.stored_entry(
+                cx,
+                self.scope,
+                coll,
+                index,
+                "a window index is outside the staged view",
+            )?;
+            if is_claimed(claimed, &stored.claim, meter)? {
+                continue;
+            }
+            let data = match &query {
+                Some(query) => Cow::Owned(vectordb::single_data(
+                    query,
+                    &stored.payload,
+                    score.as_ref(),
+                    meter,
+                )?),
+                None => Cow::Borrowed(&stored.payload),
+            };
+            if let Some(matched) = cx.bind(pattern, &data)? {
+                return Ok(Some(Bound {
+                    at: EntryAt::Stored(index),
+                    matched,
+                    persist: stored.persist,
+                    claim: stored.claim,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The values that the element in flight `x`, with the vector `x_vector`, binds at a VectorDB
+    /// position with the policy `policy` and the pattern `pattern` (P6, design v3 4.6), or `None`
+    /// when the query of the policy does not make it eligible or the pattern refuses its value.
+    fn similarity_flight_bind(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        cfg: &VdbConfig,
+        policy: &WaiterPolicy,
+        pattern: &BindPattern,
+        x: &Incoming,
+        x_vector: Option<&ExactVector>,
+    ) -> Result<Option<ListParWithRandom>, SpaceError> {
+        let meter = cx.meter();
+        let Some(query) = vectordb::policy_query(cfg, policy, meter)? else {
+            return cx.bind(pattern, &x.payload);
+        };
+        if let Mode::List(_) = query.mode {
+            return Err(SpaceError::Inconsistent(
+                "a list-mode bind reached the search of the engine",
+            ));
+        }
+        let flight = Flight {
+            record: &x.record,
+            payload: &x.payload,
+            source: &x.source,
+            persist: x.persist,
+            vector: x_vector,
+        };
+        match vectordb::flight_eligibility(&query, &flight, meter)? {
+            None => Ok(None),
+            Some(score) => {
+                let data = vectordb::single_data(&query, &x.payload, score.as_ref(), meter)?;
+                cx.bind(pattern, &data)
+            }
+        }
+    }
+
+    /// The query and the length of the list of the stored waiter `waiter` when it is a list
+    /// waiter of a VectorDB collection: one bind whose policy holds a list-mode query (decision
+    /// 66, a list waiter always parks on `[D]`). Every other waiter is `None`.
+    fn list_waiter(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        slots: &[JoinSlot],
+    ) -> Result<Option<(vectordb::VdbQuery, Option<usize>)>, SpaceError> {
+        let (Some(cfg), [slot]) = (&self.vdb, slots) else {
+            return Ok(None);
+        };
+        match vectordb::policy_query(cfg, &slot.policy, cx.meter())? {
+            Some(query) => match query.mode {
+                Mode::List(k) => Ok(Some((query, k))),
+                Mode::Single => Ok(None),
+            },
+            None => Ok(None),
+        }
     }
 
     /// The candidates of a fire of the group of `colls` from `bound`, in group order: the
@@ -3309,28 +3590,38 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// moves on to the next waiter (decisions 37 and 38).
     fn offer(&mut self, cx: &mut Cx<'_, '_>, mut x: Incoming) -> Result<(), SpaceError> {
         let meter = cx.meter();
+        // P6: the vector of a VectorDB element, read once for every waiter that it meets.
+        let x_vector = match &self.vdb {
+            Some(cfg) => vectordb::record_vector(&x.record, cfg, meter)?,
+            None => None,
+        };
         loop {
             let order = self.source.offer_order(cx, self.scope, &x)?;
-            let mut fire: Option<(Waiter, usize, Vec<Bound>)> = None;
+            let mut fire: Option<(Waiter, usize, Vec<Bound>, Option<Vec<ParDatum>>)> = None;
             for at in order {
                 let waiter = self.load(cx, at)?;
-                let found = match self.search_produce(cx, &waiter, &x)? {
-                    Some((position, bound)) => {
-                        match self.admits(
-                            cx,
-                            &waiter.waiting.continuation,
-                            &waiter.slots,
-                            &bound,
-                        )? {
-                            true => Some((position, bound)),
-                            false => None,
-                        }
+                let found = match self.list_waiter(cx, &waiter.slots)? {
+                    Some((query, k)) => {
+                        self.offer_list(cx, &waiter, &x, x_vector.as_ref(), &query, k)?
                     }
-                    None => None,
+                    None => match self.search_produce(cx, &waiter, &x, x_vector.as_ref())? {
+                        Some((position, bound)) => {
+                            match self.admits(
+                                cx,
+                                &waiter.waiting.continuation,
+                                &waiter.slots,
+                                &bound,
+                            )? {
+                                true => Some((position, bound, None)),
+                                false => None,
+                            }
+                        }
+                        None => None,
+                    },
                 };
                 match found {
-                    Some((position, bound)) => {
-                        fire = Some((waiter, position, bound));
+                    Some((position, bound, others)) => {
+                        fire = Some((waiter, position, bound, others));
                         break;
                     }
                     None => match self.source.refusal_blocks() {
@@ -3339,7 +3630,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     },
                 }
             }
-            let Some((waiter, position, bound)) = fire else {
+            let Some((waiter, position, bound, list_others)) = fire else {
                 return self.store(cx, x);
             };
             let fired_coll = *waiter
@@ -3412,6 +3703,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     &mut self.dirty,
                 )?;
             }
+            // P6 (decision 66): a list fire retires the other non-persistent members of its list.
+            if let Some(others) = list_others {
+                if vectordb::retire_members(cx, channel, others, &x.record)? {
+                    self.changed = true;
+                    self.mark_dirty(&colls);
+                }
+            }
             match step {
                 FireStep::Done => {
                     if x.own {
@@ -3447,6 +3745,66 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 }
             }
         }
+    }
+
+    /// OFFER-LIST (P6, decision 66): the list waiter `waiter`, with the list-mode query `query`
+    /// and the length `k`, against the element `x` with the vector `x_vector`. When `x` is in the
+    /// list `L(W, R + x)`, the pattern binds the list and the guard admits it, the position 0, its
+    /// bound entry (the element in flight, with the values of the list) and the other stored
+    /// members of the list, which a fire without a peek retires.
+    #[allow(clippy::type_complexity)]
+    fn offer_list(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        waiter: &Waiter,
+        x: &Incoming,
+        x_vector: Option<&ExactVector>,
+        query: &vectordb::VdbQuery,
+        k: Option<usize>,
+    ) -> Result<Option<(usize, Vec<Bound>, Option<Vec<ParDatum>>)>, SpaceError> {
+        let meter = cx.meter();
+        let cfg = self.vdb.as_ref().ok_or(SpaceError::Inconsistent(
+            "a list waiter outside a VectorDB space",
+        ))?;
+        let coll = *waiter
+            .colls
+            .first()
+            .ok_or(SpaceError::Inconsistent("a list waiter has no collection"))?;
+        if coll != x.coll {
+            return Ok(None);
+        }
+        let pattern = waiter
+            .waiting
+            .patterns
+            .first()
+            .ok_or(SpaceError::Inconsistent("a list waiter has no pattern"))?;
+        let flight = Flight {
+            record: &x.record,
+            payload: &x.payload,
+            source: &x.source,
+            persist: x.persist,
+            vector: x_vector,
+        };
+        let channel = self.channel(coll)?;
+        let Some((matched, others)) =
+            vectordb::list_offer(cx, cfg, query, k, pattern, channel, &flight)?
+        else {
+            return Ok(None);
+        };
+        if !cx.admits(&waiter.waiting.continuation, &matched)? {
+            return Ok(None);
+        }
+        let claim = self
+            .source
+            .claim(x.coll, EntryAt::Incoming, &x.payload, meter)?;
+        let mut bound = meter.buffer::<Bound>(1)?;
+        bound.push(Bound {
+            at: EntryAt::Incoming,
+            matched,
+            persist: x.persist,
+            claim,
+        });
+        Ok(Some((0, bound, Some(others))))
     }
 
     /// The candidates of a single-bind consume fire on a set: the representative `bound` and the
@@ -3522,6 +3880,10 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// the group, the patterns and the peek set into the staged consume, and a fire that
     /// continues the loop (a persistent waiter whose partner left) copies them.
     fn receive(&mut self, cx: &mut Cx<'_, '_>, mut w: NewWaiter) -> Result<(), SpaceError> {
+        // P6 (decision 66): a list-mode receive binds one list from the records of its one bind.
+        if let Some((query, k)) = self.list_waiter(cx, &w.slots)? {
+            return self.receive_list(cx, w, &query, k);
+        }
         let meter = cx.meter();
         let lanes = self.lanes(&w.slots, meter)?;
         let width = w.colls.len();
@@ -3545,7 +3907,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             if !reaches {
                 return self.park(cx, w);
             }
-            let Some(bound) = self.search(cx, &w.colls, &w.patterns, &lanes, None)? else {
+            let Some(bound) = self.search(cx, &w.colls, &w.patterns, &lanes, &w.slots, None)?
+            else {
                 return self.park(cx, w);
             };
             if !self.admits(cx, &w.continuation, &w.slots, &bound)? {
@@ -3711,6 +4074,117 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         }
     }
 
+    /// RECEIVE-LIST (P6, decision 66): the list-mode waiter `w` of the operation, with the query
+    /// `query` and the length `k`, fires over `[D; m]` when its list `L(W, R)` is not empty, its
+    /// pattern binds the list and its guard admits it. The outcome dispatches the result of the
+    /// first member, which carries the values of the list, and each other member carries its own
+    /// payload (arbitration A11). A peek removes the non-persistent members, and the transaction
+    /// sends them again in delivery order (Rule E). Otherwise the waiter parks with its query.
+    fn receive_list(
+        &mut self,
+        cx: &mut Cx<'_, '_>,
+        mut w: NewWaiter,
+        query: &vectordb::VdbQuery,
+        k: Option<usize>,
+    ) -> Result<(), SpaceError> {
+        let meter = cx.meter();
+        let cfg = self.vdb.ok_or(SpaceError::Inconsistent(
+            "a list waiter outside a VectorDB space",
+        ))?;
+        let coll = *w
+            .colls
+            .first()
+            .ok_or(SpaceError::Inconsistent("a consume has no collection"))?;
+        let channel = self.channel(coll)?;
+        loop {
+            let pattern = w
+                .patterns
+                .first()
+                .ok_or(SpaceError::Inconsistent("a consume has no pattern"))?;
+            let Some(ListFire { matched, members }) =
+                vectordb::list_selection(cx, &cfg, query, k, pattern, channel, None)?
+            else {
+                return self.park(cx, w);
+            };
+            if !cx.admits(&w.continuation, &matched)? {
+                return self.park(cx, w);
+            }
+            let pattern = meter.copy(pattern)?;
+            let width = members.len();
+            let mut records = meter.buffer::<(ParDatum, usize)>(width)?;
+            for member in members {
+                records.push(member.ok_or(SpaceError::Inconsistent(
+                    "a receive met an element in flight",
+                ))?);
+            }
+            let peek = !w.peeks.is_empty();
+            // Rule E (decision 45): the second sends of the non-persistent members, pushed in
+            // reverse, so the first member runs first.
+            let mut sends = meter.buffer::<Work>(width)?;
+            if peek {
+                for (record, _) in records.iter().rev() {
+                    if !record.persist {
+                        sends.push(Work {
+                            coll,
+                            record: meter.copy(&record.a)?,
+                            persist: false,
+                            own: false,
+                            restore: None,
+                        });
+                    }
+                }
+            }
+            let spent = !w.persist;
+            let persistent = records.iter().any(|(record, _)| record.persist);
+            let step = cx.rounds().after_fire(spent, peek || persistent);
+            record::prepay_continuation_unwrap(&w.continuation, meter)?;
+            if !peek && records.iter().any(|(record, _)| !record.persist) {
+                self.changed = true;
+            }
+            let mut channels = meter.buffer::<Par>(width)?;
+            let mut patterns = meter.buffer::<BindPattern>(width)?;
+            let mut candidates = meter.buffer::<ParCandidate>(width)?;
+            let mut first = Some(matched);
+            for (record, index) in records {
+                let matched = match first.take() {
+                    Some(matched) => matched,
+                    None => vectordb::payload_of(&record.a, meter)?,
+                };
+                let view_index = i32::try_from(index)
+                    .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?;
+                channels.push(meter.copy(channel)?);
+                patterns.push(meter.copy(&pattern)?);
+                candidates.push(receive_candidate(meter.copy(channel)?, ReceiveFire {
+                    head: record,
+                    matched,
+                    view_index,
+                }));
+            }
+            let peeks = match peek {
+                true => peek_set_all(width, meter)?,
+                false => BTreeSet::new(),
+            };
+            let continuation = match step {
+                FireStep::Continue => meter.copy(&w.continuation)?,
+                FireStep::Done | FireStep::Reissue(_) => std::mem::take(&mut w.continuation),
+            };
+            cx.fire_receive_group(
+                channels,
+                patterns,
+                continuation,
+                w.persist,
+                peeks,
+                candidates,
+                1,
+            )?;
+            self.mark_dirty(&w.colls);
+            self.push_work(sends, meter)?;
+            if !self.after_receive(step) {
+                return Ok(());
+            }
+        }
+    }
+
     /// The state after a consume-side fire of the waiter of the operation. It returns `true`
     /// when the waiter fires again: a persistent waiter whose partner left. A divergent pair and
     /// the round cap leave the waiter in flight, and the round cap stops the transaction.
@@ -3768,28 +4242,76 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
 
     /// NEXT-FIRE (joins plan section 4.9): the oldest fireable head of the least dirty
     /// collection, with its search.
-    fn next_fire(&self, cx: &mut Cx<'_, '_>) -> Result<Option<(Waiter, Vec<Bound>)>, SpaceError> {
+    fn next_fire(&self, cx: &mut Cx<'_, '_>) -> Result<Option<Fireable>, SpaceError> {
         for coll in 0..self.dirty.len() {
             if !self.dirty.get(coll).copied().unwrap_or(false) {
                 continue;
             }
             for at in self.source.cascade_order(cx, self.scope, coll)? {
                 let waiter = self.load(cx, at)?;
+                // P6 (decision 66, LM-b): a VectorDB collection cascades over its list waiters
+                // only. A removal never exposes a single-mode waiter (`ref_fill_mono`).
+                if self.vdb.is_some() {
+                    if let Some(fire) = self.list_cascade_fire(cx, &waiter)? {
+                        return Ok(Some(Fireable::List(waiter, fire)));
+                    }
+                    continue;
+                }
                 if !self.all_at_head(cx, &waiter)? {
                     continue;
                 }
                 let lanes = self.lanes(&waiter.slots, cx.meter())?;
-                let Some(bound) =
-                    self.search(cx, &waiter.colls, &waiter.waiting.patterns, &lanes, None)?
+                let Some(bound) = self.search(
+                    cx,
+                    &waiter.colls,
+                    &waiter.waiting.patterns,
+                    &lanes,
+                    &waiter.slots,
+                    None,
+                )?
                 else {
                     continue;
                 };
                 if self.admits(cx, &waiter.waiting.continuation, &waiter.slots, &bound)? {
-                    return Ok(Some((waiter, bound)));
+                    return Ok(Some(Fireable::Pair(waiter, bound)));
                 }
             }
         }
         Ok(None)
+    }
+
+    /// The list of the stored list waiter `waiter` of a VectorDB collection when the cascade owes
+    /// its fire (P6, decision 66, LM-b): the list `L(W, R)` is not empty, the pattern binds it and
+    /// the guard admits it. Every other waiter is `None`.
+    fn list_cascade_fire(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        waiter: &Waiter,
+    ) -> Result<Option<ListFire>, SpaceError> {
+        let Some((query, k)) = self.list_waiter(cx, &waiter.slots)? else {
+            return Ok(None);
+        };
+        let cfg = self.vdb.ok_or(SpaceError::Inconsistent(
+            "a list waiter outside a VectorDB space",
+        ))?;
+        let coll = *waiter
+            .colls
+            .first()
+            .ok_or(SpaceError::Inconsistent("a list waiter has no collection"))?;
+        let pattern = waiter
+            .waiting
+            .patterns
+            .first()
+            .ok_or(SpaceError::Inconsistent("a list waiter has no pattern"))?;
+        let channel = self.channel(coll)?;
+        let Some(fire) = vectordb::list_selection(cx, &cfg, &query, k, pattern, channel, None)?
+        else {
+            return Ok(None);
+        };
+        match cx.admits(&waiter.waiting.continuation, &fire.matched)? {
+            true => Ok(Some(fire)),
+            false => Ok(None),
+        }
     }
 
     /// DRAIN-AND-CASCADE (joins plan section 4.9).
@@ -3813,15 +4335,115 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             if !self.cascades() {
                 return Ok(());
             }
-            let Some((waiter, bound)) = self.next_fire(cx)? else {
+            let Some(fireable) = self.next_fire(cx)? else {
                 return Ok(());
             };
             if cx.rounds().fired() >= FIRE_ROUND_CAP {
                 self.stop = Some(ReissueCause::RoundCap);
                 return Ok(());
             }
-            self.lift_and_reoffer(cx, waiter, bound)?;
+            match fireable {
+                Fireable::Pair(waiter, bound) => self.lift_and_reoffer(cx, waiter, bound)?,
+                Fireable::List(waiter, fire) => self.lift_and_reoffer_list(cx, waiter, fire)?,
+            }
         }
+    }
+
+    /// LIFT-AND-REOFFER-LIST (P6, decision 66, LM-b): the first member `v` of the list of the
+    /// list waiter `waiter` is lifted out of its collection with `K_lift` when it is not
+    /// persistent, and offered again to the waiter, which binds the list `fire`. Without a peek,
+    /// the other non-persistent members of the list leave through `K_retire`. A lifted `v` that a
+    /// peek waiter did not spend is a second send (decision 30). A persistent `v` stays stored.
+    fn lift_and_reoffer_list(
+        &mut self,
+        cx: &mut Cx<'_, '_>,
+        waiter: Waiter,
+        fire: ListFire,
+    ) -> Result<(), SpaceError> {
+        let meter = cx.meter();
+        let ListFire { matched, members } = fire;
+        let coll = *waiter
+            .colls
+            .first()
+            .ok_or(SpaceError::Inconsistent("a list waiter has no collection"))?;
+        let mut records = meter.buffer::<(ParDatum, usize)>(members.len())?;
+        for member in members {
+            records.push(member.ok_or(SpaceError::Inconsistent(
+                "a cascade list holds an element in flight",
+            ))?);
+        }
+        if records.is_empty() {
+            return Err(SpaceError::Inconsistent("a cascade list has no member"));
+        }
+        let (lead, lead_index) = records.remove(0);
+        self.touch_all(cx, &waiter.colls)?;
+        let peeks = !waiter.waiting.peeks.is_empty();
+        if !waiter.waiting.persist
+            || (!peeks && (!lead.persist || records.iter().any(|(record, _)| !record.persist)))
+        {
+            self.changed = true;
+        }
+        let lifted = !lead.persist;
+        let (x, datum) = self
+            .source
+            .stored_element(cx, self.scope, coll, lead_index, lifted)?;
+        if lifted {
+            let step = i64::try_from(cx.rounds().fired())
+                .map_err(|_| SpaceError::Inconsistent("a lift step overflows i64"))?;
+            let counter = self.bumped(coll)?;
+            self.lift(cx, coll, &datum, lead_index, counter, step)?;
+        }
+        let spent = !x.persist && !peeks;
+        let stays = waiter.waiting.persist;
+        let step = cx.rounds().after_fire(spent, stays);
+        let claim = self
+            .source
+            .claim(coll, EntryAt::Incoming, &x.payload, meter)?;
+        let mut bound = meter.buffer::<Bound>(1)?;
+        bound.push(Bound {
+            at: EntryAt::Incoming,
+            matched,
+            persist: x.persist,
+            claim,
+        });
+        let candidates = self.candidates(cx, &waiter.colls, bound, Some(&x), None)?;
+        let colls = meter.copy_slice(&waiter.colls)?;
+        let group = meter.copy(&waiter.at.group)?;
+        let channel = self.channel(coll)?;
+        let data = self.source.incoming_record(cx, self.scope, &x, coll)?;
+        cx.fire_offer_group(
+            channel,
+            data,
+            x.persist,
+            waiter.waiting,
+            group,
+            candidates,
+            &x.introduction,
+        )?;
+        self.mark_dirty(&colls);
+        match peeks {
+            true => {
+                if x.in_flight {
+                    let send = Work {
+                        coll,
+                        record: meter.copy(&x.record)?,
+                        persist: x.persist,
+                        own: false,
+                        restore: None,
+                    };
+                    generic::push_reserved(&mut self.work, send, meter)?;
+                }
+            }
+            false => {
+                let mut others = meter.buffer::<ParDatum>(records.len())?;
+                others.extend(records.into_iter().map(|(record, _)| record));
+                vectordb::retire_members(cx, channel, others, &x.record)?;
+            }
+        }
+        if let FireStep::Reissue(cause) = step {
+            self.stop = Some(cause);
+        }
+        Ok(())
     }
 
     /// LIFT-AND-REOFFER (joins plan section 4.6): a stored pair fires with both sides stored.

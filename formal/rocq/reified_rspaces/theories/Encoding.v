@@ -50,7 +50,7 @@
                             (is_identifier)
    WordLists, is_identifier, is_theory_name (plan decision 27)
                             models/src/rust/reified/validation.rs:18-45,
-                            50-53, 96-98, 101-103 (REJECTED_PARAM_KEYS,
+                            50-53, 99-101, 104-106 (REJECTED_PARAM_KEYS,
                             REJECTED_THEORY_NAMES, is_param_key,
                             is_theory_name)
    par, par_eqb (§5)        models/src/lib.rs:210-225, 466-473, 662-668,

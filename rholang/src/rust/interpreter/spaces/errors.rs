@@ -12,6 +12,7 @@ use rspace_plus_plus::rspace::space_store_handle::SpaceTxnError;
 use rspace_plus_plus::rspace::trace::event::COMM;
 
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::tensor::num::NumError;
 
 /// A failure of a space operation.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -97,6 +98,36 @@ pub enum SpaceError {
     /// default-space receive reports the same code (decision 22), so a program sees one code.
     #[error("a receive from this channel takes no query")]
     QuerySpecUnsupported,
+    /// A cosine query whose vector is zero, which has no direction (P6, design v3 4.1). A zero
+    /// record vector is not an error: that record is not eligible.
+    #[error("the query vector of a cosine query is zero")]
+    ZeroQueryVector,
+    /// A vector whose length is not the dimension of its VectorDB space (P6).
+    #[error("the vector has {found} elements, and the space takes {expected}")]
+    DimensionMismatch { expected: usize, found: usize },
+    /// A vector element that is NaN or an infinity (P6).
+    #[error("a vector element is not finite")]
+    NonFiniteValue,
+    /// A delivered value beyond the finite range of `f64` (P6, decision 66).
+    #[error("a delivered value is beyond the finite range of f64")]
+    ValueOutOfRange,
+    /// A query param that a query without a vector cannot take: `threshold`, `radius`,
+    /// `metric`, `scores` or `ids` (P6, design v3 4.4).
+    #[error("the query param {key:?} needs a query vector")]
+    QueryNeedsVector { key: String },
+    /// A `radius` on a similarity metric (P6).
+    #[error("a radius bounds a distance, and the metric of the query is a similarity")]
+    RadiusNeedsDistance,
+    /// A `threshold` on a distance metric (P6).
+    #[error("a threshold bounds a similarity, and the metric of the query is a distance")]
+    ThresholdNeedsSimilarity,
+    /// A query with both a `threshold` and a `radius` (P6, decision 56).
+    #[error("a query takes a threshold or a radius, not both")]
+    ConflictingParams,
+    /// A receive with two or more binds whose bind on a VectorDB collection is in list mode: a
+    /// list is one value of one bind (P6, decision 66).
+    #[error("a list-mode query is the query of a receive with one bind")]
+    ListModeInJoin,
     /// A space record or the staged view that the agent reads is not well formed.
     #[error("a space record is inconsistent: {0}")]
     Inconsistent(&'static str),
@@ -109,6 +140,29 @@ pub enum SpaceError {
     /// A host or observer error. It converts with `InterpreterError::from(RSpaceError)`.
     #[error("{0}")]
     Host(RSpaceError),
+}
+
+impl SpaceError {
+    /// The space error of a failure of the numeric core (P6) on the value of the param `key`:
+    /// a value that is not a number or not a vector is an invalid value of its param.
+    pub fn of_number(error: NumError, key: &str) -> SpaceError {
+        match error {
+            NumError::NotANumber | NumError::NotAVector | NumError::MalformedNumber => {
+                SpaceError::InvalidParam {
+                    key: key.to_string(),
+                }
+            }
+            NumError::NonFiniteValue => SpaceError::NonFiniteValue,
+            NumError::DimensionMismatch { expected, found } => {
+                SpaceError::DimensionMismatch { expected, found }
+            }
+            NumError::ValueOutOfRange => SpaceError::ValueOutOfRange,
+            NumError::MixedScores => {
+                SpaceError::Inconsistent("two scores of different metrics meet")
+            }
+            NumError::HostWork(error) => SpaceError::Host(error),
+        }
+    }
 }
 
 fn suggestion_text(suggestion: &Option<String>) -> String {
@@ -145,6 +199,15 @@ impl SpaceError {
             SpaceError::UnsupportedPathElement => "UnsupportedPathElement",
             SpaceError::PathTooDeep => "PathTooDeep",
             SpaceError::QuerySpecUnsupported => "QuerySpecUnsupported",
+            SpaceError::ZeroQueryVector => "ZeroQueryVector",
+            SpaceError::DimensionMismatch { .. } => "DimensionMismatch",
+            SpaceError::NonFiniteValue => "NonFiniteValue",
+            SpaceError::ValueOutOfRange => "ValueOutOfRange",
+            SpaceError::QueryNeedsVector { .. } => "QueryNeedsVector",
+            SpaceError::RadiusNeedsDistance => "RadiusNeedsDistance",
+            SpaceError::ThresholdNeedsSimilarity => "ThresholdNeedsSimilarity",
+            SpaceError::ConflictingParams => "ConflictingParams",
+            SpaceError::ListModeInJoin => "ListModeInJoin",
             SpaceError::Inconsistent(_) => "Inconsistent",
             SpaceError::ReplayDivergence(_) => "ReplayDivergence",
             SpaceError::Substrate(_) => "Substrate",
@@ -273,6 +336,20 @@ mod tests {
             SpaceError::UnsupportedPathElement,
             SpaceError::PathTooDeep,
             SpaceError::QuerySpecUnsupported,
+            SpaceError::ZeroQueryVector,
+            SpaceError::DimensionMismatch {
+                expected: 3,
+                found: 2,
+            },
+            SpaceError::NonFiniteValue,
+            SpaceError::ValueOutOfRange,
+            SpaceError::QueryNeedsVector {
+                key: "threshold".to_string(),
+            },
+            SpaceError::RadiusNeedsDistance,
+            SpaceError::ThresholdNeedsSimilarity,
+            SpaceError::ConflictingParams,
+            SpaceError::ListModeInJoin,
             SpaceError::Inconsistent("two counter records"),
             SpaceError::ReplayDivergence(Box::new(COMM {
                 consume: Default::default(),
@@ -312,6 +389,57 @@ mod tests {
                  \"priority\"?"
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn space_errors_of_the_numeric_core_keep_their_class() {
+        assert_eq!(
+            SpaceError::of_number(NumError::NotAVector, "embedding"),
+            SpaceError::InvalidParam {
+                key: "embedding".to_string()
+            }
+        );
+        assert_eq!(
+            SpaceError::of_number(NumError::NotANumber, "q"),
+            SpaceError::InvalidParam {
+                key: "q".to_string()
+            }
+        );
+        assert_eq!(
+            SpaceError::of_number(NumError::MalformedNumber, "threshold"),
+            SpaceError::InvalidParam {
+                key: "threshold".to_string()
+            }
+        );
+        assert_eq!(
+            SpaceError::of_number(NumError::NonFiniteValue, "q"),
+            SpaceError::NonFiniteValue
+        );
+        assert_eq!(
+            SpaceError::of_number(
+                NumError::DimensionMismatch {
+                    expected: 4,
+                    found: 3
+                },
+                "q"
+            ),
+            SpaceError::DimensionMismatch {
+                expected: 4,
+                found: 3
+            }
+        );
+        assert_eq!(
+            SpaceError::of_number(NumError::ValueOutOfRange, "q"),
+            SpaceError::ValueOutOfRange
+        );
+        assert!(matches!(
+            SpaceError::of_number(NumError::MixedScores, "q"),
+            SpaceError::Inconsistent(_)
+        ));
+        assert_eq!(
+            SpaceError::of_number(NumError::HostWork(RSpaceError::HostWorkRejected), "q"),
+            SpaceError::Host(RSpaceError::HostWorkRejected)
         );
     }
 

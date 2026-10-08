@@ -38,6 +38,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::spaces::errors::SpaceReplyCode;
 use rholang::rust::interpreter::spaces::factory::urn::{
     factory_capability, registered_aliases, registered_channel, registered_p5_families,
+    registered_p6_families,
 };
 use rholang::rust::interpreter::spaces::namespace::{
     self, CollectionKey, Durability, Kind, Marker, NameTail, NativeSpace, ReifiedId, AGENT_TAG,
@@ -397,6 +398,32 @@ fn registered_p5_pins() -> Vec<(&'static str, u8, i32, i64)> {
         .collect()
 }
 
+/// The system processes of P6 (design v3 4.2) as `(urn, op, arity, body ref)`, in the order of
+/// the definitions: the two VectorDB families in family-index order, after the rows of P5.
+const P6_PINNED: [(&str, u8, i32, i64); 2] = [
+    ("rho:space:hashmap:vectordb", 0x06, 2, 206),
+    ("rho:space:vector:vectordb", 0x19, 2, 225),
+];
+
+/// The system channels of the registered families of P6, in the order of the definitions.
+fn registered_p6_channels() -> Vec<SystemChannel> {
+    registered_p6_families()
+        .map(|(_, channel)| channel)
+        .collect()
+}
+
+/// The rows of [`P6_PINNED`] that are registered.
+fn registered_p6_pins() -> Vec<(&'static str, u8, i32, i64)> {
+    let registered: BTreeSet<&str> = registered_p6_channels()
+        .into_iter()
+        .map(|channel| channel.urn)
+        .collect();
+    P6_PINNED
+        .into_iter()
+        .filter(|(urn, ..)| registered.contains(urn))
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_private_channels_unique() {
     let mut session = Session::new().await;
@@ -419,7 +446,8 @@ async fn space_private_channels_unique() {
     // Each registered URN of P5, a family or an alias, is bound to the write capability of the
     // op channel of its family (P5 design v3, A.7).
     let p5 = registered_p5_channels();
-    for channel in &p5 {
+    let p6 = registered_p6_channels();
+    for channel in p5.iter().chain(p6.iter()) {
         assert_eq!(
             urn_map.get(channel.urn),
             Some(&write_bundle(channel.channel())),
@@ -435,6 +463,7 @@ async fn space_private_channels_unique() {
     let registered: BTreeSet<&str> = P4_SYSTEM_CHANNELS
         .iter()
         .chain(p5.iter())
+        .chain(p6.iter())
         .map(|channel| channel.urn)
         .collect();
     let mut owners: BTreeMap<Vec<u8>, &str> = BTreeMap::new();
@@ -519,9 +548,10 @@ async fn space_private_channels_body_refs_disjoint() {
         .collect();
     let mut expected = vec![201, 233, 234, 248];
     expected.extend(registered_p5_pins().into_iter().map(|(.., body)| body));
+    expected.extend(registered_p6_pins().into_iter().map(|(.., body)| body));
     assert_eq!(
         refs, expected,
-        "the P4 body refs are 200 + op, and the registered P5 rows follow"
+        "the P4 body refs are 200 + op, and the registered P5 and P6 rows follow"
     );
     for (definition, channel) in defined.iter().zip(P4_SYSTEM_CHANNELS) {
         assert_eq!(definition.body_ref, body_ref(channel.op));
@@ -1067,24 +1097,33 @@ async fn reified_factory_p4_gates_fail_closed() {
             .await;
     }
     // A family or a FIPS alias without a registration has no binding, so a program that names it
-    // fails before any space operation. P5 registers a family only when the family dispatch
-    // wires it, and it never registers the VectorDB families. Phase 2 of P5e wires the PathMap
-    // families, so their factories and the PathMap alias are registered.
+    // fails before any space operation. P5 and P6 register a family only when the family
+    // dispatch wires it. Phase 2 of P5e wires the PathMap families, so their factories and the
+    // PathMap alias are registered, and P6 wires the two VectorDB families.
     let registered: BTreeSet<&str> = registered_p5_channels()
         .into_iter()
+        .chain(registered_p6_channels())
         .map(|channel| channel.urn)
         .collect();
-    for never in ["rho:space:hashmap:vectordb", "rho:space:vector:vectordb"] {
-        assert!(!registered.contains(never), "{never}");
-    }
-    for wired in ["rho:space:pathmap:queue", PATHMAP_BAG_ALIAS] {
+    for wired in [
+        "rho:space:pathmap:queue",
+        PATHMAP_BAG_ALIAS,
+        "rho:space:hashmap:vectordb",
+        "rho:space:vector:vectordb",
+    ] {
         assert!(registered.contains(wired), "{wired}");
+    }
+    // The PathMap and Array stores have no VectorDB family (design v3 4.2), so their factories
+    // are never registered, and the loop always tests them.
+    for never in ["rho:space:pathmap:vectordb", "rho:space:array:vectordb"] {
+        assert!(!registered.contains(never), "{never}");
     }
     for urn in [
         "rho:space:hashmap:bag",
         "rho:space:hashmap:stack",
         "rho:space:pathmap:queue",
-        "rho:space:vector:vectordb",
+        "rho:space:pathmap:vectordb",
+        "rho:space:array:vectordb",
         HASHMAP_BAG_ALIAS,
         PATHMAP_BAG_ALIAS,
     ]
@@ -1305,7 +1344,8 @@ async fn space_system_ops_get_space_agent_not_native() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_system_ops_arity_and_body_refs_stable() {
-    // The four processes of P4 first, then the registered rows of P5 in the order of the table.
+    // The four processes of P4 first, then the registered rows of P5 in the order of the table,
+    // then the registered rows of P6.
     let mut pinned = vec![
         ("rho:space:hashmap:queue", 0x01_u8, 2, 201),
         ("rho:space:getSpaceAgent", 0x21, 2, 233),
@@ -1313,6 +1353,7 @@ async fn space_system_ops_arity_and_body_refs_stable() {
         ("rho:reified:internal:handleOp", 0x30, 2, 248),
     ];
     pinned.extend(registered_p5_pins());
+    pinned.extend(registered_p6_pins());
     let defined = definitions(&unavailable());
     assert_eq!(defined.len(), pinned.len());
     for (definition, (urn, op, arity, body)) in defined.iter().zip(pinned) {

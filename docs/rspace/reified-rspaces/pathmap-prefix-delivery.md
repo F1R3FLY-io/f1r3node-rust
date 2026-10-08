@@ -409,7 +409,7 @@ A refusal moves to the head of the next prefix.
 
 Phase 2 runs every PathMap operation on the join engine of `spaces/join.rs`, a single-bind operation included ([decision 29](decision-register.md#decision-29), joins plan section 9).
 `PathMapOuter` sets `ALWAYS_ESCALATES` and overrides the hooks `classify` and `run_join` of `OuterStore` (`spaces/outer/pathmap.rs:162`, `166-185`).
-The prefix source `PrefixSource` implements the store seam `JoinSource` of the engine for a PathMap space (`spaces/pathmap/join.rs:736-748`).
+The prefix source `PrefixSource` implements the store seam `JoinSource` of the engine for a PathMap space (`spaces/pathmap/join.rs:740-752`).
 Figure 2 shows one operation from its classification to its commit.
 
 ![Activity diagram of one PathMap operation on the join engine. CLASSIFY runs in the first transaction: it checks the path of each channel, the params, the query and the rules of a join, and a failed check stages nothing. PREFIX-SCOPE takes the own prefixes, a send adds every prefix of its path, closes them under the join groups of each index channel, and adds every prefix of every stored datum once a prefix holds a marker, with one read of the root index channel. ALWAYS_ESCALATES drops the first transaction and begins once over C(sid), S(sid), the data channel of each data path and the index channel of each prefix. RUN-JOIN gives each channel the scope key of its path and orders the binds of a join by the hash of their index channels. TOUCH bumps the token once in the transaction for an ordered discipline. WINDOW takes, for each path under a prefix in path-key order, the window of the discipline without the datums in flight. OFFER meets the waiters of each prefix of the path, the most specific first, one head waiter for each prefix, and RECEIVE searches the windows greedily and checks the guard once. A fire is one COMM on the index channel of the waiter. A peek fire owes the marker of each bound datum that is not persistent, as a second send with a restore depth. Otherwise retire_spent runs RETIRE-PLAN and RETIRE-CLASS at every fire site. Without a fire, land stores a fresh element with its markers or restores an owed marker, and a waiter parks on the index channels of its prefixes. FINISH stores each owed marker again, and a bag or a set bumps the token once when the transaction changed the state. A stop with owed work commits and re-issues one settle job with the offers of the second sends, the dirty prefixes and the resume of the operation.](diagrams/27-pathmap-prefix-source.svg)
@@ -459,13 +459,13 @@ So two markers of one datum on nested prefixes claim one entry, and one datum bi
 An element is in flight when a COMM removed its marker on one prefix while its record and its other markers stay.
 The second send of a peek and a lifted element of a cascade are in flight.
 Each one carries the depth of that prefix as its restore depth.
-Every window, member list and count leaves out the datums in flight (`in_flight`, `spaces/pathmap/join.rs:1168-1194`).
+Every window, member list and count leaves out the datums in flight (`in_flight`, `spaces/pathmap/join.rs:1177-1203`).
 These are the second sends that the transaction owes, the element of the offer, and every pending work item with a restore depth.
 So the marker invariant holds for every datum that a search reads (item 5 of the arbitration of the seams of the join engine).
 
 A store of an element with a restore depth stores no new record.
-It stores the owed marker again with the bytes of the stored one (`restore_marker`, `spaces/pathmap/join.rs:1828-1847`).
-A spend of such an element runs RETIRE-PLAN without the owed depth (`spent_element`, `spaces/pathmap/join.rs:2028-2049`).
+It stores the owed marker again with the bytes of the stored one (`restore_marker`, `spaces/pathmap/join.rs:1839-1858`).
+A spend of such an element runs RETIRE-PLAN without the owed depth (`spent_element`, `spaces/pathmap/join.rs:2039-2060`).
 
 **Open item O-2, closed: a second send at the fire cap.**
 A transaction can stop at `FIRE_ROUND_CAP` while it owes the marker of a second send.
@@ -514,7 +514,7 @@ A re-issued persistent operation keeps the order of its first round ([decision 4
 A re-entered element therefore meets no equal order (`token_ord_reentry`, `PathMapPrefix.v:3126`).
 It enters the head of a queue only when it is older than every stored entry.
 
-An ordered discipline bumps the token once in each transaction, before its plan (`touch`, `spaces/pathmap/join.rs:2101-2117`).
+An ordered discipline bumps the token once in each transaction, before its plan (`touch`, `spaces/pathmap/join.rs:2112-2128`).
 The prefix source shares one counter (`shares_counter`), so the engine bumps the token once, although every prefix of the scope names it.
 The bump uses $`S(\mathit{sid})`$ as both counter channels of `counter::bump`, which is intended, because the token is the collection counter of every prefix.
 

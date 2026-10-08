@@ -37,7 +37,7 @@ Decision 47 fixed the space instance of F-47-4 in its own backend (commit `c6cb3
 
 ## 3. F-47-1: space errors have no typed class
 
-A space error that is not a host error becomes `InterpreterError::ReduceError("reified:…")` (`rholang/src/rust/interpreter/spaces/errors.rs:173-180`).
+A space error that is not a host error becomes `InterpreterError::ReduceError("reified:…")` (`rholang/src/rust/interpreter/spaces/errors.rs:236-243`).
 The economic failure policy classifies a `ReduceError` as Unclassified, and an Unclassified failure prevents the economic publication (`docs/casper/theory/cost-accounting-impl/economic-failure-observation.md:29`).
 The production check of an offered witness rejects every failure that is not a user failure.
 So a native deploy that fails with a space error, for example `CellOccupied` or `DanglingHandle`, is never charged.
@@ -59,7 +59,7 @@ For a host operation, native play reads continuations and joins through the plai
 Native replay reads them through the native history reader, which stops a record decode at nesting depth 128 (`rspace++/src/rspace/history/native_reader/typed.rs:15`).
 A continuation nested deeper than that limit could therefore load in play and fail in replay.
 This item was not checked for reachability.
-Decision 47 removes the difference for space transactions: both backends load a cold view through one native-reader helper (`history_records`, `rspace++/src/rspace/space_store_handle.rs:1087`).
+Decision 47 removes the difference for space transactions: both backends load a cold view through one native-reader helper (`history_records`, `rspace++/src/rspace/space_store_handle.rs:1117`).
 
 ## 6. F-47-4: a failed host operation leaves its waiters waiting
 

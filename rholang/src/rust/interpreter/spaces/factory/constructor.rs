@@ -16,8 +16,11 @@
 //! 7. Each param that the family requires is present, else `MissingParam` (the `size` of an
 //!    Array space, F7). The required keys are checked in bytewise order.
 //! 8. The rule of each named param accepts its value, else `InvalidParam` (`defaults::ParamRule`:
-//!    `size` and `cyclic` of F7, `priorities` of I-10). The values are checked in bytewise key
-//!    order.
+//!    `size` and `cyclic` of F7, `priorities` of I-10, and the VectorDB params of P6). The values
+//!    are checked in bytewise key order.
+//! 9. A VectorDB space with a `mirror` has the `default` qualifier and a metric that ChromaDB
+//!    indexes (`cosine`, `dot` or `euclidean`), else `InvalidParam` on `mirror` (P6, design v3
+//!    4.2). The metric is the `metric` param, or `cosine` without it.
 //!
 //! The keys come before the values, as in the check of the send params of the agent (P5 design
 //! v3, A.3.4). Every gate runs before the space exists, so a rejected call creates nothing.
@@ -30,17 +33,22 @@
 
 use std::collections::BTreeMap;
 
+use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
 use models::rust::reified::encoding::SendParams;
 use models::rust::space_factory_urn::{
     SpaceFactoryConstructor, SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier,
 };
 
-use super::defaults::{constructor_schema, required_params, suggestion, ParamRule};
+use super::defaults::{
+    constructor_schema, required_params, suggestion, ParamRule, METRIC_PARAM, MIRROR_PARAM,
+};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{Durability, NativeSpace};
+use crate::rust::interpreter::spaces::record::sole_expr;
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier as ConfigQualifier;
+use crate::rust::interpreter::tensor::exact::Metric;
 
 /// The validated constructor of a factory call.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,10 +112,12 @@ impl FactoryConstructor {
                 key: (*key).to_string(),
             });
         }
+        let params = canonical_params(named)?;
+        check_mirror(qualifier, &params)?;
         Ok(FactoryConstructor {
             family,
             qualifier,
-            params: canonical_params(named)?,
+            params,
         })
     }
 
@@ -143,6 +153,41 @@ const fn config_qualifier(qualifier: SpaceQualifier) -> ConfigQualifier {
 /// Gate 8: each named param in the canonical form of its rule, in bytewise key order. The first
 /// value that its rule refuses fails with `InvalidParam`. Gate 6 has checked every key against
 /// the schema, and every schema key has a rule, so a key without a rule is inconsistent.
+/// Gate 9 (P6, design v3 4.2): a `mirror` needs the `default` qualifier and a metric that
+/// ChromaDB indexes. The params are canonical, so `metric` is one of the six names.
+fn check_mirror(
+    qualifier: SpaceQualifier,
+    params: &BTreeMap<String, Par>,
+) -> Result<(), SpaceError> {
+    if !params.contains_key(MIRROR_PARAM) {
+        return Ok(());
+    }
+    let metric = match params.get(METRIC_PARAM) {
+        Some(value) => match sole_expr(value) {
+            Some(ExprInstance::GString(name)) => Metric::parse(name),
+            _ => None,
+        },
+        None => Some(Metric::Cosine),
+    };
+    match (qualifier, metric) {
+        (SpaceQualifier::Default, Some(Metric::Cosine | Metric::Dot | Metric::Euclidean)) => Ok(()),
+        (
+            SpaceQualifier::Default | SpaceQualifier::Temp | SpaceQualifier::Seq,
+            Some(
+                Metric::Cosine
+                | Metric::Dot
+                | Metric::Euclidean
+                | Metric::Manhattan
+                | Metric::Hamming
+                | Metric::Jaccard,
+            )
+            | None,
+        ) => Err(SpaceError::InvalidParam {
+            key: MIRROR_PARAM.to_string(),
+        }),
+    }
+}
+
 fn canonical_params(named: BTreeMap<String, Par>) -> Result<BTreeMap<String, Par>, SpaceError> {
     let mut params = BTreeMap::new();
     for (key, value) in named {

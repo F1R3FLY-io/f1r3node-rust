@@ -1251,7 +1251,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/families.rs",
-          "pattern": "    pub const WIRED: [Family; 24] = ["
+          "pattern": "    pub const WIRED: [Family; 26] = ["
         },
         {
           "file": "rholang/tests/reified_pathmap.rs",
@@ -1423,7 +1423,7 @@
       "property_files": []
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1433,7 +1433,17 @@
         "rholang/src/rust/interpreter/spaces/types/config.rs",
         "rholang/src/rust/interpreter/tensor/num.rs",
         "rholang/src/rust/interpreter/tensor/exact.rs",
-        "rholang/src/rust/interpreter/tensor/costs.rs"
+        "rholang/src/rust/interpreter/tensor/costs.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+        "rholang/src/rust/interpreter/spaces/families.rs",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+        "rholang/src/rust/interpreter/reified/system_channels.rs",
+        "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "models/src/rust/reified/validation.rs",
+        "models/src/rust/reified/query_spec.rs",
+        "rspace++/src/rspace/space_store_handle.rs"
       ],
       "entry_points": [
         {
@@ -1515,16 +1525,107 @@
         {
           "file": "rholang/src/rust/interpreter/tensor/exact.rs",
           "pattern": "pub fn rank("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub struct VectorDbDiscipline;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub fn vdb_config(config: &SpaceConfig, meter: &ScanMeter) -> Result<VdbConfig, SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub fn query_of("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub fn vdb_record("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub fn eligible("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub fn list_selection("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub fn list_offer("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub fn retire_members("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "pub fn lift_record("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "fn offer_plan("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "fn receive_plan("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+          "pattern": "fn run_tail("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "    fn similarity_bind("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "    fn offer_list("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "    fn receive_list("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "    fn list_cascade_fire("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "    fn lift_and_reoffer_list("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "    Similarity,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "    ListModeInJoin,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/families.rs",
+          "pattern": "Family::HashMapVectorDb"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+          "pattern": "pub const P6_FAMILY_ROWS"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const P6_SYSTEM_CHANNELS"
         }
       ],
       "tests": [
         "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
         "rholang/src/rust/interpreter/tensor/num.rs",
-        "rholang/src/rust/interpreter/tensor/exact.rs"
+        "rholang/src/rust/interpreter/tensor/exact.rs",
+        "rholang/tests/reified_vectordb.rs",
+        "rholang/tests/support/props.rs"
       ],
       "property_files": [
-        "rholang/src/rust/interpreter/tensor/exact.rs"
+        "rholang/src/rust/interpreter/tensor/exact.rs",
+        "rholang/tests/support/props.rs"
       ]
     }
   }

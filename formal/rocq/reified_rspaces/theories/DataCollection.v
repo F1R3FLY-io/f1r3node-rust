@@ -45,7 +45,7 @@
                             stored) and FireSt (Cx::fire_receive_group: the
                             bound record leaves unless it is persistent,
                             space_store_handle.rs removed_records)
-   fits, offer_pass, offer  scan.rs:400-491 (offer_scan with
+   fits, offer_pass, offer  scan.rs:401-492 (offer_scan with
                             first_admitting_waiter at 497-528: one pass
                             over the waiters in canonical order, a guard
                             refusal moves on, after_fire of FireRounds)
@@ -57,7 +57,7 @@
                             persistent datum or of a peek waiter
                             (reduce.rs continue_produce_process,
                             produce_peeks)
-   peek_plan                scan.rs:228-314, 700-710 and 721-753 (receive
+   peek_plan                scan.rs:228-314, 701-711 and 722-754 (receive
                             with restore_in and restore_scan: the second
                             send of the removed record with
                             Introduction::for_record), and 723-744

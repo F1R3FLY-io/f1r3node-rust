@@ -16,7 +16,7 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    EMap, ETuple, Expr, GBigRational, GDeployId, GUnforgeable, KeyValuePair, Par, Var,
+    EMap, ETuple, Expr, GBigRational, GDeployId, GFixedPoint, GUnforgeable, KeyValuePair, Par, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -1337,6 +1337,24 @@ fn reified_builders_reject_invalid_syntax() {
         .map(|(key, value)| (key.to_owned(), value))
         .collect();
     assert_eq!(check_query_params(&both), Err(S::KAndResults));
+    // A query takes a threshold or a radius, not both (decision 56).
+    assert_eq!(
+        query_spec(gstring("ch"), vec![gint(1)], vec![
+            SendParam::Named("radius".to_owned(), gint(2)),
+            SendParam::Named("threshold".to_owned(), gstring("x")),
+        ]),
+        Err(S::ConflictingParams)
+    );
+    let bounds: BTreeMap<String, Par> = [("radius", gint(1)), ("threshold", gint(0))]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
+    assert_eq!(check_query_params(&bounds), Err(S::ConflictingParams));
+    let radius_only: BTreeMap<String, Par> = [("k", gint(1)), ("radius", gint(1))]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
+    assert_eq!(check_query_params(&radius_only), Ok(()));
     assert_eq!(
         query_spec(gstring("ch"), Vec::new(), Vec::new()),
         Err(S::EmptyQuery)
@@ -1405,6 +1423,18 @@ fn reified_builders_reject_invalid_syntax() {
             false,
         )
     };
+    // A fixed-point threshold (decision 56): `unscaled / 10^scale`, with the unscaled value as
+    // big-endian two's complement bytes.
+    let fixed = |unscaled: Vec<u8>, scale: u32| {
+        reified_strategies::expr_par(
+            ExprInstance::GFixedPoint(GFixedPoint { unscaled, scale }),
+            Vec::new(),
+            false,
+        )
+    };
+    // 10^20 and 10^20 + 1.
+    let ten_to_twenty = vec![0x05, 0x6B, 0xC7, 0x5E, 0x2D, 0x63, 0x10, 0x00, 0x00];
+    let above_ten_to_twenty = vec![0x05, 0x6B, 0xC7, 0x5E, 0x2D, 0x63, 0x10, 0x00, 0x01];
     let accepted = [
         ("priority", gint(0)),
         ("priority", gint(7)),
@@ -1419,6 +1449,14 @@ fn reified_builders_reject_invalid_syntax() {
         ("threshold", rational(vec![0], vec![5])),
         ("threshold", rational(vec![0x00, 0x80], vec![0x00, 0xFF])),
         ("threshold", rational(vec![5], vec![5])),
+        ("threshold", fixed(vec![5], 1)),
+        ("threshold", fixed(vec![1], 0)),
+        ("threshold", fixed(vec![0], 3)),
+        ("threshold", fixed(Vec::new(), 2)),
+        ("threshold", fixed(vec![100], 2)),
+        ("threshold", fixed(vec![0x00, 0xFF], 3)),
+        ("threshold", fixed(vec![1], 4096)),
+        ("threshold", fixed(ten_to_twenty, 20)),
         ("ttl", gstring("anything")),
     ];
     for (key, value) in accepted {
@@ -1447,6 +1485,11 @@ fn reified_builders_reject_invalid_syntax() {
         ("threshold", rational(vec![0xFF], vec![2])),
         ("threshold", rational(vec![0x00, 0xFF], vec![0x00, 0x80])),
         ("threshold", rational(vec![1], vec![0])),
+        ("threshold", fixed(vec![0xFF], 1)),
+        ("threshold", fixed(vec![11], 1)),
+        ("threshold", fixed(vec![101], 2)),
+        ("threshold", fixed(vec![2], 0)),
+        ("threshold", fixed(above_ten_to_twenty, 20)),
         ("metric", gstring("cos")),
         ("metric", gint(1)),
     ];

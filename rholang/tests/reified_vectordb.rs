@@ -1,0 +1,2156 @@
+//! The VectorDB discipline of the native spaces (P6, design v3 4.2-4.6): the agent
+//! `GenericSpace<HashMapOuter, VectorDbDiscipline>` runs directly over an in-memory play space
+//! and its replay space.
+//!
+//! The example tests cover the selection rules of design v3 4.4 (single mode, list mode,
+//! `scores`, the bounds, `ids`, the binary metrics, the payload-as-vector default), the error
+//! codes of a send and of a query, the capacity of a collection, Rule E with the embedding of each
+//! record, the LM-b counterexamples CE-1 and CE-2 of the arbitration, the carries at the round
+//! cap (the restores of a list peek and LIST-CASCADE), joins over VectorDB collections and
+//! `ListModeInJoin`, and replay.
+//!
+//! A collection with a join group runs in the join engine (`spaces::join`), and every other
+//! collection runs in the driver of `disciplines::vectordb`. [`Rig::joined`] parks a join whose
+//! patterns refuse every record, so every operation of its collection runs in the engine. The
+//! properties run each program through both, and they check:
+//!
+//! | Property | Statement |
+//! |---|---|
+//! | `prop_vectordb_driver_and_engine_agree` | the driver and the engine fire the same continuations with the same values, and leave the same records and waiters |
+//! | `prop_vectordb_no_pending_match` | after each operation of a program without guards, no parked waiter can fire on the records |
+//! | `prop_vectordb_list_is_ordered_and_complete` | a list holds `min(k, |E|)` values, and its delivered scores follow the selection order |
+//! | `prop_vectordb_replay_equal` | replay stages the transactions of play: equal outcomes, every COMM paired, the root of play |
+
+#[path = "support/mod.rs"]
+mod support;
+
+use std::collections::BTreeMap;
+
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::var::VarInstance;
+use models::rhoapi::{BindPattern, CostAuthority, EEq, EVar, Expr, ListParWithRandom, Par, Var};
+use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
+use models::rust::utils::{
+    new_elist_par, new_freevar_par, new_gbigrat_expr, new_gbool_par, new_gbytearray_par,
+    new_gfixedpoint_expr,
+};
+use proptest::collection::vec;
+use proptest::prelude::*;
+use proptest::test_runner::TestCaseError;
+use rholang::rust::interpreter::host_work::HostWorkBudget;
+use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use rholang::rust::interpreter::spaces::agent::{
+    ConsumeOp, JoinBind, JoinOp, ProduceOp, QueryParams, SpaceEnv, SpaceOp, SpaceOutcome,
+};
+use rholang::rust::interpreter::spaces::disciplines::vectordb::VectorDbDiscipline;
+use rholang::rust::interpreter::spaces::errors::SpaceError;
+use rholang::rust::interpreter::spaces::generic::GenericSpace;
+use rholang::rust::interpreter::spaces::namespace::{Durability, NativeSpace, SID_LEN};
+use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
+use rholang::rust::interpreter::spaces::record::{self, WaiterPolicy};
+use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
+use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
+use rspace_plus_plus::rspace::checkpoint::Checkpoint;
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::rspace_interface::ISpace;
+use rspace_plus_plus::rspace::trace::event::{Event, Produce, COMM};
+use support::agent::{
+    any, body_name, body_of, budget, create, creation, data_channel, env_over, exactly, fired, int,
+    key_of, play, play_and_replay, receive_on, run, string, unbounded_host_work, ParRSpace,
+};
+use support::props::{check, pure_config, tokio_runtime};
+use support::session::{setup_source, with_space, Injections, Session};
+
+// ─── The rig ─────────────────────────────────────────────────────────────────────────────
+
+/// The VectorDB agent.
+type VectorDb = GenericSpace<HashMapOuter, VectorDbDiscipline>;
+
+/// The space of every rig.
+const SPACE: NativeSpace = NativeSpace {
+    sid: [26; SID_LEN],
+    durability: Durability::Durable,
+};
+
+/// The family `hashmap:vectordb`.
+fn vdb_family() -> SpaceFactoryUrn {
+    SpaceFactoryUrn {
+        outer: SpaceOuter::HashMap,
+        inner: SpaceInner::VectorDb,
+    }
+}
+
+/// The channel of the collection of every rig.
+fn channel() -> Par { string("rrs-vdb") }
+
+/// The channel of the second collection of a join.
+fn other() -> Par { string("rrs-vdb-other") }
+
+/// The data channel `D(sid,k)` of the collection.
+fn data() -> Par { data_channel(SPACE, &channel()) }
+
+/// The data channel of the second collection.
+fn other_data() -> Par { data_channel(SPACE, &other()) }
+
+/// The params of a VectorDB space.
+#[derive(Clone, Copy, Debug)]
+struct Shape {
+    capacity: i64,
+    dimensions: i64,
+    metric: &'static str,
+}
+
+/// A cosine space of two dimensions with room for every program of the suite.
+const COSINE: Shape = Shape {
+    capacity: 100,
+    dimensions: 2,
+    metric: "cosine",
+};
+
+/// The config map of a VectorDB space with the params of `shape`.
+fn config(shape: Shape) -> Par {
+    let mut config = SpaceConfig::new(SPACE.sid, "hashmap", "vectordb", SpaceQualifier::Default);
+    config
+        .params
+        .insert("capacity".to_string(), int(shape.capacity));
+    config
+        .params
+        .insert("dimensions".to_string(), int(shape.dimensions));
+    config
+        .params
+        .insert("metric".to_string(), string(shape.metric));
+    config.to_par()
+}
+
+/// A VectorDB space over a fresh in-memory play space.
+struct Rig {
+    host: ParRSpace,
+    env: SpaceEnv,
+}
+
+impl Rig {
+    /// A rig of a space with the params of `shape`.
+    async fn new(shape: Shape) -> Rig { Rig::over(play().await, shape).await }
+
+    /// A rig over `host`, a fresh space.
+    async fn over(host: ParRSpace, shape: Shape) -> Rig {
+        let env = env_over(host.clone(), &budget());
+        create(
+            &VectorDb::default(),
+            &env,
+            creation(SPACE, config(shape), vdb_family()),
+        )
+        .await;
+        host.take_event_log().await;
+        Rig { host, env }
+    }
+
+    /// A rig whose collection runs in the join engine: a join over the collection and a second
+    /// collection parks, and its patterns refuse every record of the suite (a payload of the
+    /// suite is never the integer -1).
+    async fn joined(shape: Shape) -> Rig {
+        let rig = Rig::new(shape).await;
+        let join = JoinOp {
+            space: SPACE,
+            binds: vec![
+                bind(&channel(), exactly(-1), None),
+                bind(&other(), exactly(-1), None),
+            ],
+            body: body_of("never"),
+            persistent: false,
+            peek: false,
+            guard: None,
+            authority: CostAuthority::default(),
+            introduction_authority: CostAuthority::default(),
+            reissued_ords: None,
+        };
+        let outcome = rig.run(SpaceOp::Join(join)).await.expect("the join parks");
+        assert!(outcome.fires.is_empty());
+        rig.host.take_event_log().await;
+        rig
+    }
+
+    /// The same rig with a meter that charges `host_work`.
+    fn metered(self, host_work: &HostWorkBudget) -> Rig {
+        Rig {
+            host: self.host,
+            env: SpaceEnv {
+                meter: ScanMeter::new(Some(host_work.clone())),
+                ..self.env
+            },
+        }
+    }
+
+    async fn run(&self, op: SpaceOp) -> Result<SpaceOutcome, SpaceError> {
+        run(&VectorDb::default(), &self.env, op).await
+    }
+
+    /// Runs `op` and each re-issue that it leaves, and returns every fire in order and the
+    /// causes of the re-issues.
+    async fn run_all(
+        &self,
+        op: SpaceOp,
+    ) -> Result<(Vec<(String, Vec<Par>)>, Vec<ReissueCause>), SpaceError> {
+        let mut fires = Vec::new();
+        let mut causes = Vec::new();
+        let mut next = Some(op);
+        while let Some(op) = next.take() {
+            assert!(causes.len() < 64, "a program of the suite settles");
+            let outcome = self.run(op).await?;
+            fires.extend(fired(&outcome));
+            if let Some(reissue) = outcome.reissue {
+                causes.push(reissue.cause);
+                next = Some(reissue.op);
+            }
+        }
+        Ok((fires, causes))
+    }
+
+    async fn send(&self, op: ProduceOp) -> SpaceOutcome {
+        self.run(SpaceOp::Produce(op))
+            .await
+            .expect("the send commits")
+    }
+
+    async fn receive(&self, op: ConsumeOp) -> SpaceOutcome {
+        self.run(SpaceOp::Consume(op))
+            .await
+            .expect("the receive commits")
+    }
+
+    /// The records of the collection, by source hash.
+    async fn records(&self) -> Vec<Stored> { records_of(&self.host, &data()).await }
+
+    /// The body names of the waiters of the collection, sorted.
+    async fn waiters(&self) -> Vec<String> { waiter_names(&self.host, &data()).await }
+
+    /// The events since the last call.
+    async fn log(&self) -> Vec<Event> { self.host.take_event_log().await }
+}
+
+/// A stored record as a test reads it: its payload, its embedding and its persist flag.
+type Stored = (Vec<Par>, Option<Par>, bool);
+
+/// The records on the data channel `data`, by source hash.
+async fn records_of(space: &ParRSpace, data: &Par) -> Vec<Stored> {
+    let mut records: Vec<(Blake2b256Hash, Stored)> = space
+        .get_data(data)
+        .await
+        .into_iter()
+        .map(|datum| {
+            let record = record::unwrap_vdb_datum(&datum.a).expect("a VectorDB record");
+            assert_eq!(
+                record.ord, 0,
+                "every record of a VectorDB collection has the ord 0"
+            );
+            (
+                datum.source.hash.clone(),
+                (record.datum.pars, record.embedding, datum.persist),
+            )
+        })
+        .collect();
+    records.sort_by(|left, right| left.0.cmp(&right.0));
+    records.into_iter().map(|(_, stored)| stored).collect()
+}
+
+/// The body names of the waiters on the data channel `data`, sorted.
+async fn waiter_names(space: &ParRSpace, data: &Par) -> Vec<String> {
+    let mut names: Vec<String> = space
+        .get_waiting_continuations(vec![data.clone()])
+        .await
+        .iter()
+        .map(|waiter| {
+            let parked = record::unwrap_policy_continuation(&waiter.continuation)
+                .expect("a parked VectorDB waiter");
+            assert_eq!(
+                parked.ord, 0,
+                "every waiter of a VectorDB collection has the ord 0"
+            );
+            body_name(&parked.continuation)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+// ─── Values, sends and receives ───────────────────────────────────────────────────────────
+
+/// The float `value` as a `Par`.
+fn double(value: f64) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GDouble(value.to_bits())),
+    }])
+}
+
+/// The Boolean `value` as a `Par`.
+fn boolean(value: bool) -> Par { new_gbool_par(value, Vec::new(), false) }
+
+/// The ground list of `values`.
+fn list(values: Vec<Par>) -> Par {
+    new_elist_par(values, Vec::new(), false, None, Vec::new(), false)
+}
+
+/// The vector of the floats `values`.
+fn vector(values: &[f64]) -> Par { list(values.iter().map(|value| double(*value)).collect()) }
+
+/// The vector of the integers `values`.
+fn ints(values: &[i64]) -> Par { list(values.iter().map(|value| int(*value)).collect()) }
+
+/// A send of `datum` with the params `params`, whose random state comes from `salt`.
+fn send(datum: Par, params: &[(&str, Par)], salt: &str, persistent: bool) -> ProduceOp {
+    ProduceOp {
+        space: SPACE,
+        key: key_of(&channel()),
+        channel: channel(),
+        data: ListParWithRandom {
+            pars: vec![datum],
+            random_state: Blake2b512Random::create_from_bytes(
+                format!("rrs-vdb-send {salt}").as_bytes(),
+            )
+            .to_bytes(),
+            cost_authority: None,
+            cost_stack: None,
+        },
+        persistent,
+        params: params
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect(),
+        authority: CostAuthority::default(),
+        reissued_ord: None,
+    }
+}
+
+/// A send of the vector `values` as its own embedding (decision 66).
+fn vector_send(values: &[f64], salt: &str) -> ProduceOp { send(vector(values), &[], salt, false) }
+
+/// A send of the string `name` with the embedding `embedding`.
+fn doc_send(name: &str, embedding: &[f64], salt: &str) -> ProduceOp {
+    send(
+        string(name),
+        &[("embedding", vector(embedding))],
+        salt,
+        false,
+    )
+}
+
+/// `op` on the second collection.
+fn on_other(op: ProduceOp) -> ProduceOp {
+    ProduceOp {
+        key: key_of(&other()),
+        channel: other(),
+        ..op
+    }
+}
+
+/// The query with the vector `vector` and the named params `named`.
+fn query(vector: Option<Par>, named: &[(&str, Par)]) -> QueryParams {
+    QueryParams {
+        payload: vector.into_iter().collect(),
+        named: named
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect(),
+    }
+}
+
+/// A receive whose body is the string `name`, with the pattern `pattern` and the query `query`.
+fn receive(name: &str, pattern: BindPattern, query: Option<QueryParams>) -> ConsumeOp {
+    ConsumeOp {
+        query,
+        ..receive_on(SPACE, &channel(), name, pattern)
+    }
+}
+
+/// `op` as a peek (`<<-`).
+fn peeking(op: ConsumeOp) -> ConsumeOp { ConsumeOp { peek: true, ..op } }
+
+/// `op` with the guard `guard`.
+fn guarded(op: ConsumeOp, guard: Par) -> ConsumeOp {
+    ConsumeOp {
+        guard: Some(guard),
+        ..op
+    }
+}
+
+/// `op` with the random state of its body taken from `salt`. The body stays the same.
+fn resalted(op: ConsumeOp, salt: &str) -> ConsumeOp {
+    let mut op = op;
+    op.body.random_state =
+        Blake2b512Random::create_from_bytes(format!("rrs-vdb-receive {salt}").as_bytes())
+            .to_bytes();
+    op
+}
+
+/// A bind of a join on `channel`.
+fn bind(channel: &Par, pattern: BindPattern, query: Option<QueryParams>) -> JoinBind {
+    JoinBind {
+        key: key_of(channel),
+        channel: channel.clone(),
+        pattern,
+        query,
+    }
+}
+
+/// The pattern `[a, b]`: a list of two values.
+fn pair() -> BindPattern {
+    BindPattern {
+        patterns: vec![new_elist_par(
+            vec![
+                new_freevar_par(0, Vec::new()),
+                new_freevar_par(1, Vec::new()),
+            ],
+            Vec::new(),
+            true,
+            None,
+            Vec::new(),
+            true,
+        )],
+        remainder: None,
+        free_count: 2,
+    }
+}
+
+/// The pattern that matches exactly the ground value `value`.
+fn literal(value: Par) -> BindPattern {
+    BindPattern {
+        patterns: vec![value],
+        remainder: None,
+        free_count: 0,
+    }
+}
+
+/// The guard `x == value` over the one bound value `x`.
+fn equals(value: Par) -> Par {
+    let bound = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EVarBody(EVar {
+            v: Some(Var {
+                var_instance: Some(VarInstance::BoundVar(0)),
+            }),
+        })),
+    }]);
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EEqBody(EEq {
+            p1: Some(bound),
+            p2: Some(value),
+        })),
+    }])
+}
+
+/// The id of the record of `op`: the hash of its source produce (design v3 4.4).
+fn record_id(op: &ProduceOp) -> Blake2b256Hash {
+    let embedding = op
+        .params
+        .get("embedding")
+        .or(match op.data.pars.as_slice() {
+            [single] if record_is_vector(single) => Some(single),
+            _ => None,
+        });
+    let record = record::wrap_vdb_datum(0, embedding, &op.data).expect("a VectorDB record");
+    Produce::create(&data(), &record, op.persistent).hash
+}
+
+/// True when `par` is a non-empty list of numbers, as the payload-as-vector rule reads it.
+fn record_is_vector(par: &Par) -> bool {
+    match par.exprs.as_slice() {
+        [Expr {
+            expr_instance: Some(ExprInstance::EListBody(list)),
+        }] => {
+            !list.ps.is_empty()
+                && list.ps.iter().all(|element| {
+                    matches!(element.exprs.as_slice(), [Expr {
+                        expr_instance: Some(
+                            ExprInstance::GInt(_)
+                                | ExprInstance::GDouble(_)
+                                | ExprInstance::GBool(_)
+                        ),
+                    }])
+                })
+        }
+        _ => false,
+    }
+}
+
+/// The fire of the body `name` with the values `values`.
+fn delivery(name: &str, values: Vec<Par>) -> (String, Vec<Par>) { (name.to_string(), values) }
+
+/// The COMM events of a log.
+fn comms(log: &[Event]) -> Vec<COMM> {
+    log.iter()
+        .filter_map(|event| match event {
+            Event::Comm(comm) => Some(comm.clone()),
+            Event::IoEvent(_) => None,
+        })
+        .collect()
+}
+
+/// The error code of a failed operation.
+async fn code_of(rig: &Rig, op: SpaceOp) -> String {
+    rig.run(op)
+        .await
+        .expect_err("the operation fails")
+        .code()
+        .to_string()
+}
+
+// ─── Selection (design v3 4.4) ───────────────────────────────────────────────────────────
+
+/// Single mode binds the record with the best score.
+#[tokio::test]
+async fn space_vectordb_single_mode_takes_the_best_record() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(vector_send(&[0.0, 1.0], "a")).await;
+    rig.send(vector_send(&[1.0, 0.0], "b")).await;
+    rig.send(vector_send(&[1.0, 1.0], "c")).await;
+    let outcome = rig
+        .receive(receive(
+            "r",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.25])), &[])),
+        ))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("r", vec![vector(&[
+        1.0, 0.0
+    ])])]);
+    assert_eq!(rig.records().await.len(), 2);
+    assert!(rig.waiters().await.is_empty());
+}
+
+/// `scores = true` delivers `[score, value]` with the correctly rounded exact score of each
+/// metric (decision 54).
+#[tokio::test]
+async fn space_vectordb_scores_are_the_correctly_rounded_exact_scores() {
+    for (metric, expected) in [
+        ("cosine", 0.6),
+        ("dot", 3.0),
+        ("euclidean", 20f64.sqrt()),
+        ("manhattan", 6.0),
+    ] {
+        let rig = Rig::new(Shape { metric, ..COSINE }).await;
+        rig.send(vector_send(&[3.0, 4.0], "a")).await;
+        let outcome = rig
+            .receive(receive(
+                "r",
+                any(),
+                Some(query(Some(vector(&[1.0, 0.0])), &[(
+                    "scores",
+                    boolean(true),
+                )])),
+            ))
+            .await;
+        assert_eq!(
+            fired(&outcome),
+            vec![delivery("r", vec![list(vec![
+                double(expected),
+                vector(&[3.0, 4.0])
+            ])])],
+            "{metric}"
+        );
+    }
+}
+
+/// A threshold bounds a similarity and a radius bounds a distance. A receive without an
+/// eligible record parks with its query, and a later eligible send fires it.
+#[tokio::test]
+async fn space_vectordb_bounds_select_the_eligible_records() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(vector_send(&[0.0, 1.0], "a")).await;
+    rig.send(vector_send(&[1.0, 1.0], "b")).await;
+    let near = || {
+        Some(query(Some(vector(&[1.0, 0.0])), &[(
+            "threshold",
+            double(0.9),
+        )]))
+    };
+    let outcome = rig.receive(receive("r", any(), near())).await;
+    assert!(outcome.fires.is_empty(), "cos 0.707 and 0 are below 0.9");
+    assert_eq!(rig.waiters().await, vec!["r".to_string()]);
+    let outcome = rig.send(vector_send(&[2.0, 0.5], "c")).await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("r", vec![vector(&[2.0, 0.5])])],
+        "cos 0.97 passes the threshold, and the parked waiter decodes after the commit"
+    );
+    assert!(rig.waiters().await.is_empty());
+    assert_eq!(rig.records().await.len(), 2);
+
+    let rig = Rig::new(Shape {
+        metric: "euclidean",
+        ..COSINE
+    })
+    .await;
+    rig.send(vector_send(&[0.0, 0.0], "a")).await;
+    rig.send(vector_send(&[3.0, 4.0], "b")).await;
+    let within = |radius: f64| {
+        Some(query(Some(vector(&[0.0, 0.0])), &[
+            ("radius", double(radius)),
+            ("results", string("all")),
+        ]))
+    };
+    let outcome = rig.receive(peeking(receive("r", any(), within(5.0)))).await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("r", vec![list(vec![
+            vector(&[0.0, 0.0]),
+            vector(&[3.0, 4.0])
+        ])])],
+        "the radius 5 holds the distance 5"
+    );
+    let outcome = rig.receive(receive("s", any(), within(4.99))).await;
+    assert_eq!(fired(&outcome), vec![delivery("s", vec![list(vec![
+        vector(&[0.0, 0.0])
+    ])])]);
+}
+
+/// A fixed-point threshold and a rational threshold are exact (decision 56, A9).
+#[tokio::test]
+async fn space_vectordb_fixed_point_and_rational_thresholds() {
+    for threshold in [
+        Par::default().with_exprs(vec![new_gfixedpoint_expr(vec![85], 2)]),
+        Par::default().with_exprs(vec![new_gbigrat_expr(vec![17], vec![20])]),
+    ] {
+        let rig = Rig::new(COSINE).await;
+        // cos([1, 0], [6, 5]) = 0.768 and cos([1, 0], [5, 1]) = 0.981.
+        rig.send(vector_send(&[6.0, 5.0], "a")).await;
+        rig.send(vector_send(&[5.0, 1.0], "b")).await;
+        let outcome = rig
+            .receive(receive(
+                "r",
+                any(),
+                Some(query(Some(vector(&[1.0, 0.0])), &[
+                    ("threshold", threshold.clone()),
+                    ("k", int(2)),
+                ])),
+            ))
+            .await;
+        assert_eq!(fired(&outcome), vec![delivery("r", vec![list(vec![
+            vector(&[5.0, 1.0])
+        ])])]);
+    }
+}
+
+/// List mode binds ONE value: the list of the first `k` eligible payload values in selection
+/// order, in one COMM over `[D; m]` (design v3 4.4, A11).
+#[tokio::test]
+async fn space_vectordb_list_mode_delivers_one_list_in_selection_order() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(vector_send(&[0.0, 1.0], "a")).await;
+    rig.send(vector_send(&[1.0, 0.0], "b")).await;
+    rig.send(vector_send(&[1.0, 1.0], "c")).await;
+    rig.log().await;
+    let outcome = rig
+        .receive(receive(
+            "r",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+        ))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("r", vec![list(vec![
+        vector(&[1.0, 0.0]),
+        vector(&[1.0, 1.0])
+    ])])]);
+    let comms = comms(&rig.log().await);
+    assert_eq!(comms.len(), 1, "one COMM");
+    assert_eq!(comms[0].consume.channel_hashes.len(), 2, "over [D; 2]");
+    assert_eq!(comms[0].produces.len(), 2);
+    assert!(comms[0].peeks.is_empty());
+    assert_eq!(rig.records().await, vec![(
+        vec![vector(&[0.0, 1.0])],
+        Some(vector(&[0.0, 1.0])),
+        false
+    )]);
+    let outcome = rig
+        .receive(receive(
+            "s",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[
+                ("results", string("all")),
+                ("scores", boolean(true)),
+            ])),
+        ))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("s", vec![list(vec![
+        list(vec![double(0.0), vector(&[0.0, 1.0])])
+    ])])]);
+    assert!(rig.records().await.is_empty());
+}
+
+/// Without a query vector, a receive reads the records in the canonical order of DR-75: a
+/// plain receive binds the first record whose payload binds, and `k` lists the first records.
+#[tokio::test]
+async fn space_vectordb_reads_without_a_vector_follow_the_canonical_order() {
+    let rig = Rig::new(COSINE).await;
+    let sends = [
+        vector_send(&[0.0, 1.0], "a"),
+        vector_send(&[1.0, 0.0], "b"),
+        vector_send(&[1.0, 1.0], "c"),
+    ];
+    for op in &sends {
+        rig.send(op.clone()).await;
+    }
+    let mut canonical: Vec<&ProduceOp> = sends.iter().collect();
+    canonical.sort_by_key(|op| record_id(op));
+    let value = |op: &ProduceOp| op.data.pars[0].clone();
+    let outcome = rig
+        .receive(peeking(receive(
+            "k",
+            any(),
+            Some(query(None, &[("k", int(2))])),
+        )))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("k", vec![list(vec![
+        value(canonical[0]),
+        value(canonical[1])
+    ])])]);
+    let outcome = rig.receive(receive("plain", any(), None)).await;
+    assert_eq!(fired(&outcome), vec![delivery("plain", vec![value(
+        canonical[0]
+    )])]);
+}
+
+/// The payload is the vector by default (decision 66): a send of one numeric list uses it as its
+/// embedding, `embedding` overrides it, and any other payload has no vector, so a query with a
+/// vector never selects it.
+#[tokio::test]
+async fn space_vectordb_payload_is_the_vector_by_default() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(vector_send(&[3.0, 4.0], "a")).await;
+    rig.send(send(ints(&[1, 2]), &[], "b", false)).await;
+    rig.send(doc_send("doc", &[1.0, 0.0], "c")).await;
+    rig.send(send(string("plain"), &[], "d", false)).await;
+    let two = ListParWithRandom {
+        pars: vec![vector(&[1.0, 1.0]), vector(&[2.0, 2.0])],
+        ..send(int(0), &[], "e", false).data
+    };
+    rig.send(ProduceOp {
+        data: two,
+        ..send(int(0), &[], "e", false)
+    })
+    .await;
+    let mut embeddings: Vec<Option<Par>> = rig
+        .records()
+        .await
+        .into_iter()
+        .map(|(_, embedding, _)| embedding)
+        .collect();
+    embeddings.sort_by_key(|embedding| format!("{embedding:?}"));
+    let mut expected = vec![
+        Some(vector(&[3.0, 4.0])),
+        Some(ints(&[1, 2])),
+        Some(vector(&[1.0, 0.0])),
+        None,
+        None,
+    ];
+    expected.sort_by_key(|embedding| format!("{embedding:?}"));
+    assert_eq!(embeddings, expected);
+    let outcome = rig
+        .receive(receive(
+            "all",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[(
+                "results",
+                string("all"),
+            )])),
+        ))
+        .await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("all", vec![list(vec![
+            string("doc"),
+            vector(&[3.0, 4.0]),
+            ints(&[1, 2])
+        ])])],
+        "cos 1, 0.6 and 0.447: the records without a vector are not eligible"
+    );
+    assert_eq!(rig.records().await.len(), 2);
+}
+
+/// `ids` keeps only the records whose source hashes it lists (design v3 4.4).
+#[tokio::test]
+async fn space_vectordb_ids_keep_only_the_listed_records() {
+    let rig = Rig::new(COSINE).await;
+    let best = vector_send(&[1.0, 0.0], "a");
+    let worse = vector_send(&[1.0, 1.0], "b");
+    rig.send(best).await;
+    rig.send(worse.clone()).await;
+    let ids = list(vec![new_gbytearray_par(
+        record_id(&worse).bytes(),
+        Vec::new(),
+        false,
+    )]);
+    let outcome = rig
+        .receive(receive(
+            "r",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("ids", ids)])),
+        ))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("r", vec![vector(&[
+        1.0, 1.0
+    ])])]);
+}
+
+/// Hamming and jaccard read binary vectors only, and any other record is not eligible (decision
+/// 66). Jaccard of two empty supports is undefined.
+#[tokio::test]
+async fn space_vectordb_binary_metrics_read_binary_vectors_only() {
+    let shape = |metric| Shape {
+        dimensions: 3,
+        metric,
+        ..COSINE
+    };
+    let rig = Rig::new(shape("hamming")).await;
+    rig.send(vector_send(&[1.0, 1.0, 1.0], "a")).await;
+    rig.send(vector_send(&[1.0, 0.0, 1.0], "b")).await;
+    rig.send(vector_send(&[2.0, 0.0, 1.0], "c")).await;
+    let all = |q: &[f64], name: &str| {
+        receive(
+            name,
+            any(),
+            Some(query(Some(vector(q)), &[
+                ("results", string("all")),
+                ("scores", boolean(true)),
+            ])),
+        )
+    };
+    let outcome = rig.receive(peeking(all(&[1.0, 0.0, 1.0], "hamming"))).await;
+    assert_eq!(fired(&outcome), vec![delivery("hamming", vec![list(
+        vec![
+            list(vec![double(0.0), vector(&[1.0, 0.0, 1.0])]),
+            list(vec![double(1.0), vector(&[1.0, 1.0, 1.0])])
+        ]
+    )])]);
+    let outcome = rig.receive(all(&[2.0, 0.0, 1.0], "nonbinary")).await;
+    assert!(
+        outcome.fires.is_empty(),
+        "a query that is not binary selects nothing"
+    );
+    assert_eq!(rig.waiters().await, vec!["nonbinary".to_string()]);
+
+    let rig = Rig::new(shape("jaccard")).await;
+    rig.send(vector_send(&[1.0, 1.0, 1.0], "a")).await;
+    rig.send(vector_send(&[0.0, 0.0, 0.0], "b")).await;
+    let outcome = rig.receive(peeking(all(&[1.0, 0.0, 1.0], "jaccard"))).await;
+    assert_eq!(fired(&outcome), vec![delivery("jaccard", vec![list(
+        vec![
+            list(vec![double(2.0 / 3.0), vector(&[1.0, 1.0, 1.0])]),
+            list(vec![double(0.0), vector(&[0.0, 0.0, 0.0])])
+        ]
+    )])]);
+    let outcome = rig.receive(all(&[0.0, 0.0, 0.0], "empty")).await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("empty", vec![list(vec![list(vec![
+            double(0.0),
+            vector(&[1.0, 1.0, 1.0])
+        ])])])],
+        "the empty supports of the zero query and the zero record have no score"
+    );
+}
+
+// ─── Errors and capacity ─────────────────────────────────────────────────────────────────
+
+/// Each malformed send and query fails with its code before any staging (design v3 4.3, 4.4).
+#[tokio::test]
+async fn space_vectordb_errors_have_their_codes() {
+    let rig = Rig::new(Shape {
+        capacity: 3,
+        ..COSINE
+    })
+    .await;
+    rig.send(vector_send(&[1.0, 0.0], "a")).await;
+    rig.log().await;
+    let sends = [
+        (vector_send(&[1.0, 2.0, 3.0], "x"), "DimensionMismatch"),
+        (doc_send("doc", &[1.0], "x"), "DimensionMismatch"),
+        (vector_send(&[f64::NAN, 0.0], "x"), "NonFiniteValue"),
+        (vector_send(&[f64::INFINITY, 0.0], "x"), "NonFiniteValue"),
+        (
+            send(string("doc"), &[("embedding", string("v"))], "x", false),
+            "InvalidParam",
+        ),
+    ];
+    for (op, code) in sends {
+        assert_eq!(code_of(&rig, SpaceOp::Produce(op)).await, code);
+    }
+    let q = || Some(vector(&[1.0, 0.0]));
+    let queries: Vec<(QueryParams, &str)> = vec![
+        (query(Some(vector(&[0.0, 0.0])), &[]), "ZeroQueryVector"),
+        (
+            query(Some(vector(&[1.0, 0.0, 0.0])), &[]),
+            "DimensionMismatch",
+        ),
+        (query(Some(vector(&[f64::NAN, 1.0])), &[]), "NonFiniteValue"),
+        (
+            query(q(), &[("threshold", double(0.5)), ("radius", double(1.0))]),
+            "ConflictingParams",
+        ),
+        (
+            query(q(), &[
+                ("metric", string("euclidean")),
+                ("threshold", double(0.5)),
+            ]),
+            "ThresholdNeedsSimilarity",
+        ),
+        (
+            query(q(), &[("radius", double(1.0))]),
+            "RadiusNeedsDistance",
+        ),
+        (
+            query(None, &[("threshold", double(0.5))]),
+            "QueryNeedsVector",
+        ),
+        (
+            query(None, &[("scores", boolean(true))]),
+            "QueryNeedsVector",
+        ),
+        (
+            query(None, &[("metric", string("dot"))]),
+            "QueryNeedsVector",
+        ),
+        (query(q(), &[("threshold", double(1.5))]), "InvalidParam"),
+        (query(q(), &[("threshold", double(-0.1))]), "InvalidParam"),
+        (
+            query(q(), &[
+                ("metric", string("euclidean")),
+                ("radius", double(-1.0)),
+            ]),
+            "InvalidParam",
+        ),
+        (query(q(), &[("k", int(0))]), "InvalidParam"),
+        (query(q(), &[("k", int(4))]), "InvalidParam"),
+        (
+            query(q(), &[("k", int(1)), ("results", string("all"))]),
+            "InvalidParam",
+        ),
+        (query(q(), &[("results", string("some"))]), "InvalidParam"),
+        (query(q(), &[("scores", int(1))]), "InvalidParam"),
+        (query(q(), &[("metric", string("l2"))]), "InvalidParam"),
+        (
+            query(q(), &[(
+                "ids",
+                list(vec![new_gbytearray_par(vec![1; 31], Vec::new(), false)]),
+            )]),
+            "InvalidParam",
+        ),
+        (
+            QueryParams {
+                payload: vec![vector(&[1.0, 0.0]), vector(&[0.0, 1.0])],
+                named: BTreeMap::new(),
+            },
+            "PositionalParamsUnsupported",
+        ),
+    ];
+    for (query, code) in queries {
+        assert_eq!(
+            code_of(
+                &rig,
+                SpaceOp::Consume(receive("r", any(), Some(query.clone())))
+            )
+            .await,
+            code,
+            "{query:?}"
+        );
+    }
+    assert!(rig.log().await.is_empty(), "no failed operation commits");
+    assert_eq!(rig.records().await.len(), 1);
+    assert!(rig.waiters().await.is_empty());
+}
+
+/// The `capacity` bounds the records of a collection, not its waiters, and a send that fires a
+/// waiter stores nothing (design v3 4.3).
+#[tokio::test]
+async fn space_vectordb_capacity_bounds_records_not_waiters() {
+    let rig = Rig::new(Shape {
+        capacity: 2,
+        ..COSINE
+    })
+    .await;
+    rig.send(vector_send(&[1.0, 0.0], "a")).await;
+    rig.send(vector_send(&[0.0, 1.0], "b")).await;
+    assert_eq!(
+        code_of(&rig, SpaceOp::Produce(vector_send(&[1.0, 1.0], "c"))).await,
+        "CapacityExceeded"
+    );
+    assert_eq!(rig.records().await.len(), 2);
+    for index in 0..5 {
+        let outcome = rig
+            .receive(resalted(
+                receive(
+                    &format!("w{index}"),
+                    any(),
+                    Some(query(Some(vector(&[1.0, 1.0])), &[(
+                        "threshold",
+                        double(1.0),
+                    )])),
+                ),
+                &format!("w{index}"),
+            ))
+            .await;
+        assert!(outcome.fires.is_empty());
+    }
+    assert_eq!(rig.waiters().await.len(), 5);
+    let outcome = rig.send(vector_send(&[2.0, 2.0], "d")).await;
+    assert_eq!(
+        outcome.fires.len(),
+        1,
+        "the full collection takes a send that fires"
+    );
+    assert_eq!(rig.records().await.len(), 2);
+}
+
+/// A named operation of the reservation test.
+type OpShape = (&'static str, fn() -> SpaceOp);
+
+/// The dimensions that a space job charges (decision 42).
+const AGENT_DIMENSIONS: [HostWorkDimension; 3] = [
+    HostWorkDimension::VerificationOperations,
+    HostWorkDimension::VerificationBytes,
+    HostWorkDimension::SearchStateBytes,
+];
+
+/// The records of the reservation shapes: an image above two documents, and a list waiter that
+/// refuses `[img, doc]` (CE-2).
+async fn reservation_setup(joined: bool) -> Rig {
+    let rig = match joined {
+        false => Rig::new(COSINE).await,
+        true => Rig::joined(COSINE).await,
+    };
+    rig.send(doc_send("img", &[10.0, 1.0], "r1")).await;
+    rig.send(doc_send("doc", &[10.0, 2.0], "r2")).await;
+    rig.send(doc_send("doc", &[10.0, 3.0], "r3")).await;
+    rig.receive(receive(
+        "docs",
+        literal(list(vec![string("doc"), string("doc")])),
+        Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+    ))
+    .await;
+    rig.log().await;
+    rig
+}
+
+/// Each step of a VectorDB operation is reserved before it runs (decision 42): with the measured
+/// budget the operation commits as with no bound, and a budget one unit short in any charged
+/// dimension rejects it with `HostWorkRejected` and no effect. The shapes are a removal that
+/// cascades (CE-2) and a list peek with scores, in the driver and in the engine.
+#[tokio::test]
+async fn space_vectordb_reservation_cut_rejects_without_effect() {
+    let removal = || {
+        SpaceOp::Consume(receive(
+            "img",
+            literal(string("img")),
+            Some(query(Some(vector(&[1.0, 0.0])), &[])),
+        ))
+    };
+    let list_peek = || {
+        SpaceOp::Consume(peeking(receive(
+            "list",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[
+                ("results", string("all")),
+                ("scores", boolean(true)),
+            ])),
+        )))
+    };
+    let shapes: [OpShape; 2] = [("removal", removal), ("list peek", list_peek)];
+    for joined in [false, true] {
+        for (shape, op) in shapes {
+            let measured = unbounded_host_work();
+            let unlimited = reservation_setup(joined).await.metered(&measured);
+            let expected = unlimited.run(op()).await.expect("the operation commits");
+            assert!(!expected.fires.is_empty(), "{shape}");
+            let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            for dimension in AGENT_DIMENSIONS {
+                exact.set(
+                    dimension,
+                    HostWorkLimit::new(measured.usage(dimension).get()),
+                );
+            }
+            let fitting = reservation_setup(joined)
+                .await
+                .metered(&HostWorkBudget::new(exact));
+            assert_eq!(fitting.run(op()).await, Ok(expected), "{shape}");
+            for dimension in AGENT_DIMENSIONS {
+                let usage = measured.usage(dimension).get();
+                assert!(usage > 0, "{shape} charges {dimension}");
+                let mut cut = exact;
+                cut.set(dimension, HostWorkLimit::new(usage - 1));
+                let rig = reservation_setup(joined)
+                    .await
+                    .metered(&HostWorkBudget::new(cut));
+                let (records, waiters) = (rig.records().await, rig.waiters().await);
+                assert_eq!(
+                    rig.run(op()).await,
+                    Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
+                    "{shape} {dimension} (engine {joined})"
+                );
+                assert!(rig.log().await.is_empty(), "{shape} {dimension}");
+                assert_eq!(rig.records().await, records, "{shape} {dimension}");
+                assert_eq!(rig.waiters().await, waiters, "{shape} {dimension}");
+            }
+        }
+    }
+}
+
+// ─── Rule E (decision 45) ────────────────────────────────────────────────────────────────
+
+/// A peek removes the records that it binds and the transaction sends each one again, with its
+/// embedding and its identity (design v3 4.5, A7).
+#[tokio::test]
+async fn space_vectordb_peek_restores_records_with_their_embedding() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(doc_send("doc", &[1.0, 0.0], "a")).await;
+    rig.send(vector_send(&[1.0, 1.0], "b")).await;
+    let before = rig.records().await;
+    rig.log().await;
+    let outcome = rig
+        .receive(peeking(receive(
+            "p",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[])),
+        )))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("p", vec![string("doc")])]);
+    assert_eq!(
+        rig.records().await,
+        before,
+        "the record is back with its embedding"
+    );
+    let log = rig.log().await;
+    assert_eq!(comms(&log).len(), 1);
+    assert!(!comms(&log)[0].peeks.is_empty(), "a peek COMM");
+    let outcome = rig
+        .receive(peeking(receive(
+            "list",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+        )))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("list", vec![list(vec![
+        string("doc"),
+        vector(&[1.0, 1.0])
+    ])])]);
+    assert_eq!(rig.records().await, before, "both records are back");
+}
+
+/// The restores of a list peek that the round cap leaves are carried by one settle job with the
+/// pending records, and the job keeps their embeddings (arbitration A7).
+#[tokio::test]
+async fn space_vectordb_list_peek_restores_carry_at_the_cap() {
+    let rig = Rig::new(COSINE).await;
+    let sends = ordered_sends(&[
+        (string("b"), &[0.5, 1.0]),
+        (string("c"), &[0.0, 1.0]),
+        (string("a"), &[1.0, 0.0]),
+    ]);
+    for op in &sends {
+        rig.send(op.clone()).await;
+    }
+    let before = rig.records().await;
+    // Each guarded peek waiter meets "b" first in canonical order and parks (decision 37).
+    for index in 0..FIRE_ROUND_CAP - 1 {
+        let outcome = rig
+            .receive(resalted(
+                peeking(guarded(
+                    receive(&format!("p{index}"), any(), None),
+                    equals(string("a")),
+                )),
+                &format!("p{index}"),
+            ))
+            .await;
+        assert!(outcome.fires.is_empty());
+    }
+    let outcome = rig
+        .receive(peeking(receive(
+            "list",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[(
+                "results",
+                string("all"),
+            )])),
+        )))
+        .await;
+    assert_eq!(
+        outcome.fires.len(),
+        FIRE_ROUND_CAP,
+        "the list fire and the restore of \"a\" to every guarded waiter share one cap"
+    );
+    let reissue = outcome.reissue.expect("the cap carries the restores");
+    assert_eq!(reissue.cause, ReissueCause::RoundCap);
+    let SpaceOp::Settle(settle) = &reissue.op else {
+        panic!("a settle job carries the restores: {:?}", reissue.op);
+    };
+    let carried = settle.cascade.as_ref().expect("a cascade state");
+    assert_eq!(
+        carried.pending.len(),
+        3,
+        "\"a\" in flight, then \"b\" and \"c\""
+    );
+    assert!(carried.resume.is_none(), "the list receive is spent");
+    let rest = rig.run(reissue.op).await.expect("the settle job commits");
+    assert!(rest.fires.is_empty());
+    assert_eq!(rest.reissue, None);
+    assert_eq!(
+        rig.records().await,
+        before,
+        "every record is back with its embedding"
+    );
+    assert!(rig.waiters().await.is_empty());
+}
+
+/// Sends of the payloads and embeddings `entries` whose records follow each other in canonical
+/// order. The salts are searched in a fixed order, so every run makes the same sends.
+fn ordered_sends(entries: &[(Par, &[f64])]) -> Vec<ProduceOp> {
+    let mut sends: Vec<ProduceOp> = Vec::with_capacity(entries.len());
+    let mut salt = 0;
+    for (payload, embedding) in entries {
+        loop {
+            salt += 1;
+            let candidate = send(
+                payload.clone(),
+                &[("embedding", vector(embedding))],
+                &format!("ordered {salt}"),
+                false,
+            );
+            if sends
+                .last()
+                .is_none_or(|last| record_id(last) < record_id(&candidate))
+            {
+                sends.push(candidate);
+                break;
+            }
+        }
+    }
+    sends
+}
+
+// ─── LM-b (decision 66) ──────────────────────────────────────────────────────────────────
+
+/// CE-1 of the arbitration: a list waiter whose pattern refuses a list of one parks, and a later
+/// send that completes the list fires it with the incoming datum and retires the stored member.
+async fn ce1(rig: &Rig) {
+    let outcome = rig
+        .receive(receive(
+            "pair",
+            pair(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+        ))
+        .await;
+    assert!(outcome.fires.is_empty(), "no record: the waiter parks");
+    let outcome = rig.send(vector_send(&[1.0, 0.0], "x1")).await;
+    assert!(
+        outcome.fires.is_empty(),
+        "the list [x1] does not bind [a, b]"
+    );
+    assert_eq!(rig.records().await.len(), 1);
+    assert_eq!(rig.waiters().await, vec!["pair".to_string()]);
+    let outcome = rig.send(vector_send(&[1.0, 0.5], "x2")).await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("pair", vec![
+            vector(&[1.0, 0.0]),
+            vector(&[1.0, 0.5])
+        ])],
+        "the list [x1, x2] in selection order"
+    );
+    assert!(
+        rig.records().await.is_empty(),
+        "x2 is spent and x1 is retired"
+    );
+    assert!(rig.waiters().await.is_empty());
+}
+
+/// CE-2 of the arbitration: a list waiter refuses `[img, doc]` and parks. A receive that removes
+/// the image exposes `[doc, doc]`, and LIST-CASCADE fires the waiter.
+async fn ce2(rig: &Rig) {
+    rig.send(doc_send("img", &[10.0, 1.0], "r1")).await;
+    rig.send(doc_send("doc", &[10.0, 2.0], "r2")).await;
+    rig.send(doc_send("doc", &[10.0, 3.0], "r3")).await;
+    let docs = literal(list(vec![string("doc"), string("doc")]));
+    let outcome = rig
+        .receive(receive(
+            "docs",
+            docs,
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+        ))
+        .await;
+    assert!(outcome.fires.is_empty(), "[img, doc] does not bind");
+    let outcome = rig
+        .receive(receive(
+            "img",
+            literal(string("img")),
+            Some(query(Some(vector(&[1.0, 0.0])), &[])),
+        ))
+        .await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("img", Vec::new()), delivery("docs", Vec::new())],
+        "the removal of the image fires the parked list waiter in the same transaction"
+    );
+    assert!(rig.records().await.is_empty());
+    assert!(rig.waiters().await.is_empty());
+}
+
+#[tokio::test]
+async fn space_vectordb_ce1_list_waiter_fires_with_the_incoming_datum() {
+    ce1(&Rig::new(COSINE).await).await;
+    ce1(&Rig::joined(COSINE).await).await;
+}
+
+#[tokio::test]
+async fn space_vectordb_ce2_removal_cascade_fires_the_list_waiter() {
+    ce2(&Rig::new(COSINE).await).await;
+    ce2(&Rig::joined(COSINE).await).await;
+}
+
+/// LIST-CASCADE counts on the fire count of its transaction (decision 49). At the round cap the
+/// transaction re-issues a settle job, which cascades on in the join engine.
+async fn cascade_at_the_cap(rig: &Rig) {
+    let waiters = FIRE_ROUND_CAP + 6;
+    rig.send(doc_send("img", &[10.0, 0.0], "img")).await;
+    for index in 1..=waiters {
+        rig.send(doc_send(
+            "doc",
+            &[10.0, index as f64],
+            &format!("doc{index}"),
+        ))
+        .await;
+    }
+    for index in 0..waiters {
+        let outcome = rig
+            .receive(resalted(
+                receive(
+                    &format!("w{index}"),
+                    literal(list(vec![string("doc")])),
+                    Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(1))])),
+                ),
+                &format!("w{index}"),
+            ))
+            .await;
+        assert!(outcome.fires.is_empty(), "[img] does not bind [doc]");
+    }
+    let (fires, causes) = rig
+        .run_all(SpaceOp::Consume(receive(
+            "img",
+            literal(string("img")),
+            Some(query(Some(vector(&[1.0, 0.0])), &[])),
+        )))
+        .await
+        .expect("the program commits");
+    assert_eq!(
+        fires.len(),
+        1 + waiters,
+        "the receive, then one cascade fire for each waiter"
+    );
+    assert_eq!(causes.first(), Some(&ReissueCause::RoundCap));
+    assert!(rig.records().await.is_empty());
+    assert!(rig.waiters().await.is_empty());
+}
+
+#[tokio::test]
+async fn space_vectordb_list_cascade_carries_at_the_cap() {
+    cascade_at_the_cap(
+        &Rig::new(Shape {
+            capacity: 200,
+            ..COSINE
+        })
+        .await,
+    )
+    .await;
+    cascade_at_the_cap(
+        &Rig::joined(Shape {
+            capacity: 200,
+            ..COSINE
+        })
+        .await,
+    )
+    .await;
+}
+
+/// A waiter refused by its guard on a better record parks, and a later worse record that its
+/// guard admits fires it (decision 37, until P12).
+#[tokio::test]
+async fn space_vectordb_guard_refusal_parks_until_a_worse_record_passes() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(doc_send("x", &[1.0, 0.0], "a")).await;
+    rig.send(doc_send("y", &[1.0, 1.0], "b")).await;
+    let outcome = rig
+        .receive(guarded(
+            receive("g", any(), Some(query(Some(vector(&[1.0, 0.0])), &[]))),
+            equals(string("y")),
+        ))
+        .await;
+    assert!(
+        outcome.fires.is_empty(),
+        "the guard refuses the best record \"x\" once"
+    );
+    assert_eq!(rig.waiters().await, vec!["g".to_string()]);
+    let outcome = rig.send(doc_send("y", &[0.0, 1.0], "c")).await;
+    assert_eq!(fired(&outcome), vec![delivery("g", vec![string("y")])]);
+    assert_eq!(rig.records().await.len(), 2);
+}
+
+// ─── Joins (design v3 4.6) ───────────────────────────────────────────────────────────────
+
+/// Each bind of a join sees the records that its own query makes eligible, in its own
+/// selection order.
+#[tokio::test]
+async fn space_vectordb_join_binds_each_position_by_its_query() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(vector_send(&[1.0, 0.0], "a1")).await;
+    rig.send(vector_send(&[0.0, 1.0], "a2")).await;
+    rig.send(on_other(vector_send(&[1.0, 1.0], "b1"))).await;
+    rig.send(on_other(vector_send(&[-1.0, 0.0], "b2"))).await;
+    let join = JoinOp {
+        space: SPACE,
+        binds: vec![
+            bind(
+                &channel(),
+                any(),
+                Some(query(Some(vector(&[1.0, 0.0])), &[])),
+            ),
+            bind(&other(), any(), Some(query(Some(vector(&[0.0, 1.0])), &[]))),
+        ],
+        body: body_of("join"),
+        persistent: false,
+        peek: false,
+        guard: None,
+        authority: CostAuthority::default(),
+        introduction_authority: CostAuthority::default(),
+        reissued_ords: None,
+    };
+    let outcome = rig.run(SpaceOp::Join(join)).await.expect("the join fires");
+    assert_eq!(fired(&outcome), vec![delivery("join", vec![
+        vector(&[1.0, 0.0]),
+        vector(&[1.0, 1.0])
+    ])]);
+    assert_eq!(rig.records().await.len(), 1);
+    assert_eq!(records_of(&rig.host, &other_data()).await.len(), 1);
+}
+
+/// A join bind in list mode fails with `ListModeInJoin` before any staging (decision 66).
+#[tokio::test]
+async fn space_vectordb_list_mode_in_a_join_fails() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(vector_send(&[1.0, 0.0], "a")).await;
+    rig.log().await;
+    let join = JoinOp {
+        space: SPACE,
+        binds: vec![
+            bind(
+                &channel(),
+                any(),
+                Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(1))])),
+            ),
+            bind(&other(), any(), None),
+        ],
+        body: body_of("join"),
+        persistent: false,
+        peek: false,
+        guard: None,
+        authority: CostAuthority::default(),
+        introduction_authority: CostAuthority::default(),
+        reissued_ords: None,
+    };
+    assert_eq!(code_of(&rig, SpaceOp::Join(join)).await, "ListModeInJoin");
+    assert!(rig.log().await.is_empty());
+}
+
+/// A join waiter of VectorDB binds stores each bind's query in its slot, and a send fires it
+/// only when the incoming record is eligible for the query of its position.
+#[tokio::test]
+async fn space_vectordb_join_waiter_fires_on_an_eligible_send() {
+    let rig = Rig::new(COSINE).await;
+    rig.send(on_other(vector_send(&[0.0, 1.0], "b"))).await;
+    let join = JoinOp {
+        space: SPACE,
+        binds: vec![
+            bind(
+                &channel(),
+                any(),
+                Some(query(Some(vector(&[1.0, 0.0])), &[(
+                    "threshold",
+                    double(0.9),
+                )])),
+            ),
+            bind(&other(), any(), None),
+        ],
+        body: body_of("join"),
+        persistent: false,
+        peek: false,
+        guard: None,
+        authority: CostAuthority::default(),
+        introduction_authority: CostAuthority::default(),
+        reissued_ords: None,
+    };
+    let outcome = rig.run(SpaceOp::Join(join)).await.expect("the join parks");
+    assert!(outcome.fires.is_empty());
+    let outcome = rig.send(vector_send(&[1.0, 1.0], "far")).await;
+    assert!(outcome.fires.is_empty(), "cos 0.707 is below the threshold");
+    let outcome = rig.send(vector_send(&[1.0, 0.1], "near")).await;
+    assert_eq!(fired(&outcome), vec![delivery("join", vec![
+        vector(&[1.0, 0.1]),
+        vector(&[0.0, 1.0])
+    ])]);
+}
+
+// ─── Replay ──────────────────────────────────────────────────────────────────────────────
+
+/// A script with single mode, list mode, a peek, a guard and a cascade.
+fn replay_script() -> Vec<SpaceOp> {
+    vec![
+        SpaceOp::Produce(doc_send("img", &[10.0, 1.0], "r1")),
+        SpaceOp::Produce(doc_send("doc", &[10.0, 2.0], "r2")),
+        SpaceOp::Produce(doc_send("doc", &[10.0, 3.0], "r3")),
+        SpaceOp::Consume(receive(
+            "docs",
+            literal(list(vec![string("doc"), string("doc")])),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+        )),
+        SpaceOp::Consume(peeking(receive(
+            "peek",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(3))])),
+        ))),
+        SpaceOp::Consume(receive(
+            "img",
+            literal(string("img")),
+            Some(query(Some(vector(&[1.0, 0.0])), &[])),
+        )),
+        SpaceOp::Produce(vector_send(&[1.0, 0.0], "x1")),
+        SpaceOp::Consume(receive(
+            "pair",
+            pair(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+        )),
+        SpaceOp::Produce(vector_send(&[1.0, 0.5], "x2")),
+    ]
+}
+
+/// Replay stages the transactions of play: equal outcomes, every recorded COMM paired, and the
+/// root of play.
+#[tokio::test]
+async fn space_vectordb_replay_equal() {
+    let (play, replay) = play_and_replay().await;
+    let play_rig = Rig::over(play.clone(), COSINE).await;
+    let start = play
+        .create_checkpoint()
+        .await
+        .expect("a checkpoint after the creation")
+        .root;
+    let mut played = Vec::new();
+    for op in replay_script() {
+        played.push(play_rig.run(op).await.expect("the script plays"));
+    }
+    assert!(
+        played.iter().any(|outcome| outcome.fires.len() == 2),
+        "the cascade fires"
+    );
+    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+    replay
+        .rig_and_reset(start, log)
+        .await
+        .expect("the replay rigs the play log");
+    let replay_rig = Rig {
+        host: play.clone(),
+        env: env_over(replay.clone(), &budget()),
+    };
+    let mut replayed = Vec::new();
+    for op in replay_script() {
+        replayed.push(replay_rig.run(op).await.expect("the script replays"));
+    }
+    assert_eq!(replayed, played);
+    replay
+        .check_replay_data()
+        .await
+        .expect("every recorded COMM is paired");
+    assert_eq!(
+        replay.create_checkpoint().await.expect("a checkpoint").root,
+        root
+    );
+}
+
+// ─── Source programs ─────────────────────────────────────────────────────────────────────
+
+/// The factory of the suite and its constructor: a cosine space of two dimensions.
+const VDB_URN: &str = "rho:space:hashmap:vectordb";
+
+/// Rholang programs run on a play runtime through the whole stack: the normalizer, the factory
+/// with its params, the handle, the send hook with `embedding`, and the receive hook with a
+/// query. A list with scores and a parked waiter that a later send fires come back on public
+/// channels, and the `config` reply holds the params of the factory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_vectordb_source_programs_select_by_similarity() {
+    let mut session = Session::new().await;
+    session
+        .setup(VDB_URN, "\"default\"; capacity=10, dimensions=2")
+        .await;
+    session
+        .run(
+            &with_space(r#"a!([1.0, 0.0]) | a!([0.0, 1.0]) | a!("doc"; embedding=[3.0, 4.0])"#),
+            "rrs-vdb-sends",
+        )
+        .await;
+    session
+        .run(
+            &with_space(
+                r#"for (@list <- a ~ ([1.0, 0.0]; k=2, scores=true)) { @"rrs-vdb-list"!(list) }"#,
+            ),
+            "rrs-vdb-list",
+        )
+        .await;
+    assert_eq!(
+        session.sole("rrs-vdb-list").await,
+        list(vec![
+            list(vec![double(1.0), vector(&[1.0, 0.0])]),
+            list(vec![double(0.6), string("doc")]),
+        ]),
+        "cos 1 and 3/5 in selection order, each [score, value]"
+    );
+    session
+        .run(
+            &with_space(r#"for (@x <- a ~ ([1.0, 0.0]; threshold=0.9)) { @"rrs-vdb-near"!(x) }"#),
+            "rrs-vdb-park",
+        )
+        .await;
+    assert!(
+        session.values("rrs-vdb-near").await.is_empty(),
+        "cos 0 is below the threshold, so the waiter parks"
+    );
+    session
+        .run(&with_space(r#"a!([2.0, 0.1])"#), "rrs-vdb-fire")
+        .await;
+    assert_eq!(
+        session.sole("rrs-vdb-near").await,
+        vector(&[2.0, 0.1]),
+        "the send fires the parked waiter, and its continuation decodes after the commit"
+    );
+    session
+        .run(
+            r#"for (space <<- @"rrs-handle") { for (@config <- space!?("config")) { @"rrs-vdb-config"!(config) } }"#,
+            "rrs-vdb-config",
+        )
+        .await;
+    let config = SpaceConfig::from_par(&session.sole("rrs-vdb-config").await)
+        .expect("the config reply is a config record");
+    assert_eq!(
+        (config.outer.as_str(), config.inner.as_str()),
+        ("hashmap", "vectordb")
+    );
+    assert_eq!(config.params.get("capacity"), Some(&int(10)));
+    assert_eq!(config.params.get("dimensions"), Some(&int(2)));
+}
+
+/// The errors of a source program abort its deploy with their codes, and a failed deploy leaves
+/// no space data: a vector of the wrong length, a zero cosine query, a list-mode bind in a join,
+/// a full collection, and the factory params.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_vectordb_source_errors_have_their_codes() {
+    let mut session = Session::new().await;
+    session
+        .setup(VDB_URN, "\"default\"; capacity=1, dimensions=2")
+        .await;
+    let none = Injections::new();
+    session
+        .fail_with(
+            &with_space(r#"a!([1.0, 2.0, 3.0])"#),
+            "rrs-vdb-dimension",
+            &none,
+            &["DimensionMismatch"],
+        )
+        .await;
+    session
+        .fail_with(
+            &with_space(r#"for (@x <- a ~ ([0.0, 0.0])) { Nil }"#),
+            "rrs-vdb-zero",
+            &none,
+            &["ZeroQueryVector"],
+        )
+        .await;
+    session
+        .fail_with(
+            &with_space(r#"for (@x <- a ~ ([1.0, 0.0]; k=1) & @y <- b) { Nil }"#),
+            "rrs-vdb-join",
+            &none,
+            &["ListModeInJoin"],
+        )
+        .await;
+    session
+        .run(&with_space(r#"a!([1.0, 0.0])"#), "rrs-vdb-first")
+        .await;
+    session
+        .fail_with(&with_space(r#"a!([0.0, 1.0])"#), "rrs-vdb-full", &none, &[
+            "CapacityExceeded",
+        ])
+        .await;
+    for (ctor, code) in [
+        ("\"default\"; capacity=0, dimensions=2", "InvalidParam"),
+        ("\"default\"; capacity=5", "MissingParam"),
+        ("\"default\"; capacity=5, dimensions=4097", "InvalidParam"),
+        // A literal metric is checked by the normalizer. A computed one reaches the rule of the
+        // factory.
+        (
+            "\"default\"; capacity=5, dimensions=2, metric=\"l\" ++ \"2\"",
+            "InvalidParam",
+        ),
+        (
+            "\"default\"; capacity=5, dimensions=2, metric=\"manhattan\", mirror=\"chroma\"",
+            "InvalidParam",
+        ),
+    ] {
+        session
+            .fail_with(
+                &setup_source(VDB_URN, ctor),
+                &format!("rrs-vdb-factory {ctor}"),
+                &none,
+                &[code],
+            )
+            .await;
+    }
+}
+
+// ─── Properties ──────────────────────────────────────────────────────────────────────────
+
+/// The pattern of a generated receive.
+#[derive(Clone, Copy, Debug)]
+enum Pat {
+    /// Binds any one value.
+    Any,
+    /// Binds a list of two values.
+    Pair,
+    /// Binds the string "x".
+    Tag,
+}
+
+/// The mode of a generated receive.
+#[derive(Clone, Debug)]
+enum Mode {
+    /// No query.
+    Plain,
+    /// Single mode with the query vector `q` and the threshold `t / 10`, or none.
+    Single { q: [i64; 2], threshold: Option<u8> },
+    /// List mode with the query vector `q`, or none, and the length `k`, or all.
+    List { q: Option<[i64; 2]>, k: Option<u8> },
+}
+
+/// An operation of a generated program.
+#[derive(Clone, Debug)]
+enum VdbOp {
+    /// A send of the vector `values` as its own embedding.
+    Send {
+        values: [i64; 2],
+        persistent: bool,
+        salt: u8,
+    },
+    /// A send of the string "x" or "y" with the embedding `values`.
+    Doc { x: bool, values: [i64; 2], salt: u8 },
+    /// A receive.
+    Receive {
+        mode: Mode,
+        pattern: Pat,
+        peek: bool,
+        salt: u8,
+    },
+}
+
+fn arb_vector() -> BoxedStrategy<[i64; 2]> {
+    (-3i64..=3, -3i64..=3).prop_map(|(a, b)| [a, b]).boxed()
+}
+
+fn arb_mode() -> BoxedStrategy<Mode> {
+    prop_oneof![
+        1 => Just(Mode::Plain),
+        3 => (arb_vector(), proptest::option::of(0u8..=10))
+            .prop_map(|(q, threshold)| Mode::Single { q, threshold }),
+        3 => (proptest::option::of(arb_vector()), proptest::option::of(1u8..=3))
+            .prop_map(|(q, k)| Mode::List { q, k }),
+    ]
+    .boxed()
+}
+
+/// A send of a generated program: a vector as its own embedding, or a tagged string with an
+/// embedding.
+fn arb_send() -> BoxedStrategy<VdbOp> {
+    prop_oneof![
+        3 => (arb_vector(), proptest::bool::ANY, proptest::num::u8::ANY)
+            .prop_map(|(values, persistent, salt)| VdbOp::Send { values, persistent, salt }),
+        2 => (proptest::bool::ANY, arb_vector(), proptest::num::u8::ANY)
+            .prop_map(|(x, values, salt)| VdbOp::Doc { x, values, salt }),
+    ]
+    .boxed()
+}
+
+/// A list waiter whose list a removal or a send can make acceptable: the pattern `[a, b]`
+/// refuses a list of one or of three, and its length is 3 or all (LM-b, CE-1 and CE-2).
+fn arb_list_waiter() -> BoxedStrategy<VdbOp> {
+    (
+        arb_vector(),
+        prop_oneof![Just(Some(3u8)), Just(None)],
+        proptest::bool::ANY,
+        proptest::num::u8::ANY,
+    )
+        .prop_map(|(q, k, peek, salt)| VdbOp::Receive {
+            mode: Mode::List { q: Some(q), k },
+            pattern: Pat::Pair,
+            peek,
+            salt,
+        })
+        .boxed()
+}
+
+fn arb_op() -> BoxedStrategy<VdbOp> {
+    prop_oneof![
+        5 => arb_send(),
+        4 => (
+            arb_mode(),
+            prop_oneof![Just(Pat::Any), Just(Pat::Pair), Just(Pat::Tag)],
+            proptest::bool::ANY,
+            proptest::num::u8::ANY,
+        )
+            .prop_map(|(mode, pattern, peek, salt)| VdbOp::Receive {
+                mode,
+                pattern,
+                peek,
+                salt,
+            }),
+    ]
+    .boxed()
+}
+
+/// A program: a few sends, then list waiters that their lists can refuse, then any operations.
+/// So the removal cascade and the offer to a list waiter occur in most programs.
+fn arb_program() -> BoxedStrategy<Vec<VdbOp>> {
+    (
+        vec(arb_send(), 2..7),
+        vec(arb_list_waiter(), 1..3),
+        vec(arb_op(), 1..12),
+    )
+        .prop_map(|(sends, waiters, rest)| sends.into_iter().chain(waiters).chain(rest).collect())
+        .boxed()
+}
+
+/// The integer vector `values` as a `Par`.
+fn int_vector(values: [i64; 2]) -> Par { ints(&values) }
+
+/// The space operation of the generated operation `op`, the `index`th of its program. Every
+/// operation has a random state of its own.
+fn space_op(op: &VdbOp, index: usize) -> SpaceOp {
+    match op {
+        VdbOp::Send {
+            values,
+            persistent,
+            salt,
+        } => SpaceOp::Produce(send(
+            int_vector(*values),
+            &[],
+            &format!("{index} {salt}"),
+            *persistent,
+        )),
+        VdbOp::Doc { x, values, salt } => SpaceOp::Produce(send(
+            string(if *x { "x" } else { "y" }),
+            &[("embedding", int_vector(*values))],
+            &format!("{index} {salt}"),
+            false,
+        )),
+        VdbOp::Receive {
+            mode,
+            pattern,
+            peek,
+            salt,
+        } => {
+            let pattern = match pattern {
+                Pat::Any => any(),
+                Pat::Pair => pair(),
+                Pat::Tag => literal(string("x")),
+            };
+            let query = match mode {
+                Mode::Plain => None,
+                Mode::Single { q, threshold } => Some(query(
+                    Some(int_vector(*q)),
+                    &threshold
+                        .map(|t| ("threshold", double(f64::from(t) / 10.0)))
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                )),
+                Mode::List { q, k } => Some(query(q.map(int_vector), &[match k {
+                    Some(k) => ("k", int(i64::from(*k))),
+                    None => ("results", string("all")),
+                }])),
+            };
+            let name = format!("w{index}");
+            let op = resalted(receive(&name, pattern, query), &format!("{index} {salt}"));
+            SpaceOp::Consume(ConsumeOp { peek: *peek, ..op })
+        }
+    }
+}
+
+fn failure(message: impl Into<String>) -> TestCaseError { TestCaseError::fail(message.into()) }
+
+/// The fires of an operation: the body name and the bound values of each fire, in order.
+type Fires = Vec<(String, Vec<Par>)>;
+
+/// The result of one generated operation: its fires and its causes, or its error code.
+type Step = Result<(Fires, Vec<ReissueCause>), String>;
+
+/// Runs the generated program `program` on `rig`, each operation to its end.
+async fn run_program(rig: &Rig, program: &[VdbOp]) -> Vec<Step> {
+    let mut steps = Vec::with_capacity(program.len());
+    for (index, op) in program.iter().enumerate() {
+        steps.push(
+            rig.run_all(space_op(op, index))
+                .await
+                .map_err(|error| error.code().to_string()),
+        );
+    }
+    steps
+}
+
+/// The driver and the engine fire the same continuations with the same values, and leave the
+/// same records and waiters (design v3 4.6).
+#[test]
+fn prop_vectordb_driver_and_engine_agree() {
+    check(pure_config(), arb_program(), |program| {
+        tokio_runtime().block_on(async {
+            let driver = Rig::new(COSINE).await;
+            let engine = Rig::joined(COSINE).await;
+            let by_driver = run_program(&driver, &program).await;
+            let by_engine = run_program(&engine, &program).await;
+            let fires = |steps: &[Step]| -> Vec<Result<Fires, String>> {
+                steps
+                    .iter()
+                    .map(|step| step.clone().map(|(fires, _)| fires))
+                    .collect()
+            };
+            if fires(&by_driver) != fires(&by_engine) {
+                return Err(failure(format!(
+                    "fires differ:\n  driver {by_driver:?}\n  engine {by_engine:?}"
+                )));
+            }
+            if driver.records().await != engine.records().await {
+                return Err(failure("the records differ"));
+            }
+            if driver.waiters().await != engine.waiters().await {
+                return Err(failure("the waiters differ"));
+            }
+            Ok(())
+        })
+    });
+}
+
+/// The query of the policy `policy` of a parked waiter.
+fn query_of_policy(policy: &WaiterPolicy) -> Option<QueryParams> {
+    policy.query().map(|map| {
+        let mut named = map.clone();
+        let payload = named.remove("q").into_iter().collect();
+        QueryParams { payload, named }
+    })
+}
+
+/// After each operation of a program without guards, no parked waiter can fire: a fresh receive
+/// with the pattern and the query of each parked waiter parks too (NoPendingMatch, LM-b).
+#[test]
+fn prop_vectordb_no_pending_match() {
+    check(pure_config(), arb_program(), |program| {
+        tokio_runtime().block_on(async {
+            for engine in [false, true] {
+                let rig = match engine {
+                    false => Rig::new(COSINE).await,
+                    true => Rig::joined(COSINE).await,
+                };
+                for (index, op) in program.iter().enumerate() {
+                    let _ = rig.run_all(space_op(op, index)).await;
+                    let parked: Vec<(BindPattern, Option<QueryParams>, String)> = rig
+                        .host
+                        .get_waiting_continuations(vec![data()])
+                        .await
+                        .iter()
+                        .map(|waiter| {
+                            let parked = record::unwrap_policy_continuation(&waiter.continuation)
+                                .expect("a parked VectorDB waiter");
+                            (
+                                waiter.patterns[0].clone(),
+                                query_of_policy(&parked.policy),
+                                body_name(&parked.continuation),
+                            )
+                        })
+                        .collect();
+                    for (pattern, query, name) in parked {
+                        let checkpoint = rig.host.create_soft_checkpoint().await;
+                        let probe = receive(&format!("probe of {name}"), pattern, query);
+                        let outcome = rig
+                            .run(SpaceOp::Consume(probe))
+                            .await
+                            .map_err(|error| failure(format!("the probe fails: {error:?}")))?;
+                        rig.host
+                            .revert_to_soft_checkpoint(checkpoint)
+                            .await
+                            .expect("the probe reverts");
+                        if !outcome.fires.is_empty() {
+                            return Err(failure(format!(
+                                "the parked waiter {name} has a pending match after op \
+                                 {index} (engine {engine}): {:?}",
+                                fired(&outcome)
+                            )));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
+    });
+}
+
+/// The metrics of the list property, with their direction: true for a similarity.
+const METRICS: [(&str, bool); 6] = [
+    ("cosine", true),
+    ("dot", true),
+    ("euclidean", false),
+    ("manhattan", false),
+    ("hamming", false),
+    ("jaccard", true),
+];
+
+/// True when the record `record` has a score for the query `q` under `metric`.
+fn has_score(metric: &str, q: [i64; 2], record: [i64; 2]) -> bool {
+    let binary = |v: [i64; 2]| v.iter().all(|x| *x == 0 || *x == 1);
+    match metric {
+        "cosine" => record != [0, 0],
+        "hamming" => binary(q) && binary(record),
+        "jaccard" => {
+            binary(q) && binary(record) && q.iter().zip(&record).any(|(a, b)| *a == 1 || *b == 1)
+        }
+        _ => true,
+    }
+}
+
+/// The delivered score of an entry `[score, value]` of a list.
+fn score_of(entry: &Par) -> f64 {
+    match entry.exprs.as_slice() {
+        [Expr {
+            expr_instance: Some(ExprInstance::EListBody(pair)),
+        }] => match pair.ps[0].exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::GDouble(bits)),
+            }] => f64::from_bits(*bits),
+            _ => panic!("a score: {entry:?}"),
+        },
+        _ => panic!("an entry [score, value]: {entry:?}"),
+    }
+}
+
+/// A list holds `min(k, |E|)` values, and its delivered scores follow the selection order: they
+/// never increase for a similarity and never decrease for a distance (design v3 4.4).
+#[test]
+fn prop_vectordb_list_is_ordered_and_complete() {
+    let strategy = (
+        0usize..METRICS.len(),
+        vec(arb_vector(), 0..8),
+        arb_vector(),
+        proptest::option::of(1u8..=8),
+    );
+    check(pure_config(), strategy, |(metric, records, q, k)| {
+        let (metric, similarity) = METRICS[metric];
+        if metric == "cosine" && q == [0, 0] {
+            return Ok(());
+        }
+        tokio_runtime().block_on(async {
+            let rig = Rig::new(Shape { metric, ..COSINE }).await;
+            for (index, values) in records.iter().enumerate() {
+                rig.send(send(int_vector(*values), &[], &format!("r{index}"), false))
+                    .await;
+            }
+            let eligible = records
+                .iter()
+                .filter(|record| has_score(metric, q, **record))
+                .count();
+            let expected = k.map_or(eligible, |k| eligible.min(usize::from(k)));
+            let named = [("scores", boolean(true)), match k {
+                Some(k) => ("k", int(i64::from(k))),
+                None => ("results", string("all")),
+            }];
+            let outcome = rig
+                .receive(receive(
+                    "list",
+                    any(),
+                    Some(query(Some(int_vector(q)), &named)),
+                ))
+                .await;
+            let fires = fired(&outcome);
+            if expected == 0 {
+                return match fires.is_empty() {
+                    true => Ok(()),
+                    false => Err(failure(format!("an empty list fired: {fires:?}"))),
+                };
+            }
+            let [(_, values)] = fires.as_slice() else {
+                return Err(failure(format!("one list fire: {fires:?}")));
+            };
+            let entries = match values[0].exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::EListBody(entries)),
+                }] => entries.ps.clone(),
+                _ => return Err(failure(format!("a list: {values:?}"))),
+            };
+            if entries.len() != expected {
+                return Err(failure(format!(
+                    "{metric}: {} entries, expected {expected}",
+                    entries.len()
+                )));
+            }
+            let scores: Vec<f64> = entries.iter().map(score_of).collect();
+            let ordered = scores.windows(2).all(|pair| match similarity {
+                true => pair[0] >= pair[1],
+                false => pair[0] <= pair[1],
+            });
+            match ordered {
+                true => Ok(()),
+                false => Err(failure(format!("{metric}: scores out of order {scores:?}"))),
+            }
+        })
+    });
+}
+
+/// Replay stages the transactions of play for every generated program: equal outcomes, every
+/// recorded COMM paired, and the root of play.
+#[test]
+fn prop_vectordb_replay_equal() {
+    check(pure_config(), arb_program(), |program| {
+        tokio_runtime().block_on(async {
+            let (play, replay) = play_and_replay().await;
+            let play_rig = Rig::over(play.clone(), COSINE).await;
+            let start = play
+                .create_checkpoint()
+                .await
+                .expect("a checkpoint after the creation")
+                .root;
+            let played = run_program(&play_rig, &program).await;
+            let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+            replay
+                .rig_and_reset(start, log)
+                .await
+                .expect("the replay rigs the play log");
+            let replay_rig = Rig {
+                host: play.clone(),
+                env: env_over(replay.clone(), &budget()),
+            };
+            let replayed = run_program(&replay_rig, &program).await;
+            if replayed != played {
+                return Err(failure(format!(
+                    "replay differs:\n  play {played:?}\n  replay {replayed:?}"
+                )));
+            }
+            replay
+                .check_replay_data()
+                .await
+                .map_err(|error| failure(format!("an unpaired COMM: {error:?}")))?;
+            let replay_root = replay.create_checkpoint().await.expect("a checkpoint").root;
+            match replay_root == root {
+                true => Ok(()),
+                false => Err(failure("the roots differ")),
+            }
+        })
+    });
+}

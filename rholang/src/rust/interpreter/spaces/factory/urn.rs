@@ -7,12 +7,12 @@
 //! family, so the urn map binds the alias to the same capability (plan decision 9.4).
 //!
 //! P4 registers `hashmap:queue` ([`REGISTERED_FAMILIES`]). P5 adds the rows of
-//! [`P5_FAMILY_ROWS`] and [`P5_ALIAS_ROWS`]. A P5 family row is registered exactly when the
-//! family dispatch wires its family (`families::Family`), so no factory creates a space that no
-//! agent runs (F26). An alias row is registered exactly when its family is registered.
-//! [`registered_families`] and [`registered_aliases`] give the registration. A family or an
-//! alias without a registration has no URN binding and no installed process, so it fails
-//! closed.
+//! [`P5_FAMILY_ROWS`] and [`P5_ALIAS_ROWS`], and P6 adds the rows of [`P6_FAMILY_ROWS`] (the two
+//! VectorDB families). A family row of P5 or P6 is registered exactly when the family dispatch
+//! wires its family (`families::Family`), so no factory creates a space that no agent runs (F26).
+//! An alias row is registered exactly when its family is registered. [`registered_families`] and
+//! [`registered_aliases`] give the registration. A family or an alias without a registration has
+//! no URN binding and no installed process, so it fails closed.
 
 use models::rhoapi::Par;
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
@@ -22,11 +22,11 @@ use crate::rust::interpreter::reified::system_channels::{
     SystemChannel, ARRAY_BAG_FACTORY, ARRAY_CELL_FACTORY, ARRAY_PRIORITY_QUEUE_FACTORY,
     ARRAY_QUEUE_FACTORY, ARRAY_SET_FACTORY, ARRAY_STACK_FACTORY, HASHMAP_BAG_FACTORY,
     HASHMAP_BAG_SPACE_ALIAS, HASHMAP_CELL_FACTORY, HASHMAP_PRIORITY_QUEUE_FACTORY,
-    HASHMAP_QUEUE_FACTORY, HASHMAP_SET_FACTORY, HASHMAP_STACK_FACTORY, PATHMAP_BAG_FACTORY,
-    PATHMAP_CELL_FACTORY, PATHMAP_PRIORITY_QUEUE_FACTORY, PATHMAP_QUEUE_FACTORY,
-    PATHMAP_SET_FACTORY, PATHMAP_SPACE_ALIAS, PATHMAP_STACK_FACTORY, VECTOR_BAG_FACTORY,
-    VECTOR_CELL_FACTORY, VECTOR_PRIORITY_QUEUE_FACTORY, VECTOR_QUEUE_FACTORY, VECTOR_SET_FACTORY,
-    VECTOR_STACK_FACTORY,
+    HASHMAP_QUEUE_FACTORY, HASHMAP_SET_FACTORY, HASHMAP_STACK_FACTORY, HASHMAP_VECTORDB_FACTORY,
+    PATHMAP_BAG_FACTORY, PATHMAP_CELL_FACTORY, PATHMAP_PRIORITY_QUEUE_FACTORY,
+    PATHMAP_QUEUE_FACTORY, PATHMAP_SET_FACTORY, PATHMAP_SPACE_ALIAS, PATHMAP_STACK_FACTORY,
+    VECTOR_BAG_FACTORY, VECTOR_CELL_FACTORY, VECTOR_PRIORITY_QUEUE_FACTORY, VECTOR_QUEUE_FACTORY,
+    VECTOR_SET_FACTORY, VECTOR_STACK_FACTORY, VECTOR_VECTORDB_FACTORY,
 };
 use crate::rust::interpreter::spaces::families::Family;
 use crate::rust::interpreter::spaces::namespace;
@@ -139,6 +139,20 @@ pub const P5_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 23] = [
     ),
 ];
 
+/// The families that P6 registers once the family dispatch wires them, with their factory
+/// system channels, in family-index order: `hashmap:vectordb` (6) and `vector:vectordb` (25)
+/// (design v3 4.2). They come after the rows of P5, so the registration of P5 keeps its order.
+pub const P6_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 2] = [
+    (
+        family(SpaceOuter::HashMap, SpaceInner::VectorDb),
+        HASHMAP_VECTORDB_FACTORY,
+    ),
+    (
+        family(SpaceOuter::Vector, SpaceInner::VectorDb),
+        VECTOR_VECTORDB_FACTORY,
+    ),
+];
+
 /// The FIPS aliases that P5 registers once their family is registered: the system channel of
 /// each alias, with the family that the alias names.
 pub const P5_ALIAS_ROWS: [(SystemChannel, SpaceFactoryUrn); 2] = [
@@ -163,12 +177,21 @@ pub fn registered_p5_families() -> impl Iterator<Item = (SpaceFactoryUrn, System
         .filter(|(family, _)| is_wired(*family))
 }
 
+/// The registered families of P6: the rows of [`P6_FAMILY_ROWS`] whose family is wired, in row
+/// order.
+pub fn registered_p6_families() -> impl Iterator<Item = (SpaceFactoryUrn, SystemChannel)> {
+    P6_FAMILY_ROWS
+        .into_iter()
+        .filter(|(family, _)| is_wired(*family))
+}
+
 /// Every registered family with its factory system channel: the families of P4, then the
-/// registered families of P5.
+/// registered families of P5, then the registered families of P6.
 pub fn registered_families() -> impl Iterator<Item = (SpaceFactoryUrn, SystemChannel)> {
     REGISTERED_FAMILIES
         .into_iter()
         .chain(registered_p5_families())
+        .chain(registered_p6_families())
 }
 
 /// The registered aliases: the rows of [`P5_ALIAS_ROWS`] whose family is registered, in row
@@ -205,22 +228,27 @@ mod tests {
 
     use super::*;
     use crate::rust::interpreter::reified::system_channels::{
-        is_factory_op, op_of, P5_SYSTEM_CHANNELS,
+        is_factory_op, op_of, P5_SYSTEM_CHANNELS, P6_SYSTEM_CHANNELS,
     };
     use crate::rust::interpreter::spaces::factory::defaults::constructor_schema;
 
-    /// The row of `family` in the tables of P4 and P5, registered or not.
+    /// The row of `family` in the tables of P4, P5 and P6, registered or not.
     fn row_of(family: SpaceFactoryUrn) -> Option<SystemChannel> {
         REGISTERED_FAMILIES
             .iter()
             .chain(P5_FAMILY_ROWS.iter())
+            .chain(P6_FAMILY_ROWS.iter())
             .find(|(candidate, _)| *candidate == family)
             .map(|(_, channel)| *channel)
     }
 
     #[test]
     fn space_urn_factory_registered_families_match_their_system_channels() {
-        for (family, channel) in REGISTERED_FAMILIES.into_iter().chain(P5_FAMILY_ROWS) {
+        for (family, channel) in REGISTERED_FAMILIES
+            .into_iter()
+            .chain(P5_FAMILY_ROWS)
+            .chain(P6_FAMILY_ROWS)
+        {
             assert_eq!(channel.urn, family.to_string());
             assert_eq!(Some(channel.op), family.family_index());
             assert_eq!(channel.arity, 2);
@@ -251,6 +279,12 @@ mod tests {
             P5_SYSTEM_CHANNELS[..P5_FAMILY_ROWS.len()],
             "the rows follow the order of the system channels"
         );
+        assert_eq!(
+            P6_FAMILY_ROWS.map(|(_, channel)| channel),
+            P6_SYSTEM_CHANNELS,
+            "the rows of P6 follow the order of their system channels"
+        );
+        assert!(P6_FAMILY_ROWS.iter().all(|(family, _)| is_wired(*family)));
         let families: Vec<SpaceFactoryUrn> =
             registered_families().map(|(family, _)| family).collect();
         let distinct: std::collections::BTreeSet<SpaceFactoryUrn> =

@@ -3749,7 +3749,7 @@
       ]
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). It extends campaign and restates the edits and the new files of d47, as d47 restates p5. Step 1 (the generic prerequisites) edits only campaign files. Step 2 (the exact numeric core) adds the module line pub mod tensor; to interpreter/mod.rs and the new files of the numeric core and of its formal legs.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). It extends campaign and restates the edits and the new files of d47, as d47 restates p5. Step 1 (the generic prerequisites) edits only campaign files. Step 2 (the exact numeric core) adds the module line pub mod tensor; to interpreter/mod.rs and the new files of the numeric core and of its formal legs. Step 3 (design steps 3 and 4) adds the new files of the VectorDB driver, of its suite and of its mutation harness.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -4755,6 +4755,7 @@
         "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
         "rholang/src/rust/interpreter/spaces/errors.rs",
         "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
         "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
@@ -4826,6 +4827,7 @@
         "rholang/tests/reified_syntax_corpus.rs",
         "rholang/tests/reified_syntax_identifiers.rs",
         "rholang/tests/reified_syntax_normalize.rs",
+        "rholang/tests/reified_vectordb.rs",
         "rholang/tests/support/agent.rs",
         "rholang/tests/support/legacy.rs",
         "rholang/tests/support/mod.rs",
@@ -4964,6 +4966,7 @@
         "scripts/verify-reified/tests/test_closure.py",
         "scripts/verify-reified/tests/test_doc_lint.py",
         "scripts/verify-reified/tlc-expect-violation.sh",
+        "scripts/verify-reified/vectordb-mutants.py",
         "test-vectors/head-file-digests-4d67b5ccc.json",
         "test-vectors/head-file-digests-6f7a80da3.json",
         "test-vectors/legacy-golden-corpus-v1.json",

@@ -56,16 +56,19 @@ pub fn native_agent() -> Arc<dyn SpaceAgent> { Arc::new(FamilyAgent) }
 /// The definitions of the Reified system processes of `runtime`. The four processes of P4 come
 /// first, in their P4 order: the factory of `hashmap:queue`, `getSpaceAgent`, `assertEqual` and
 /// the handle process. Then come the factory of each registered family of P5, in family-index
-/// order, and the factory of each registered alias (`urn::registered_p5_families`,
-/// `urn::registered_aliases`). An alias has the channel, the arity, the body ref and the
+/// order, the factory of each registered alias (`urn::registered_p5_families`,
+/// `urn::registered_aliases`), and the factory of each registered family of P6
+/// (`urn::registered_p6_families`). An alias has the channel, the arity, the body ref and the
 /// handler of its family, so the second install of its channel changes nothing: the install
 /// map and the dispatch table are keyed by the channel and by the body ref.
 pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     let agent = native_agent();
     let families: Vec<_> = urn::registered_p5_families().collect();
     let aliases: Vec<_> = urn::registered_aliases().collect();
-    let mut definitions =
-        Vec::with_capacity(P4_SYSTEM_CHANNELS.len() + families.len() + aliases.len());
+    let p6_families: Vec<_> = urn::registered_p6_families().collect();
+    let mut definitions = Vec::with_capacity(
+        P4_SYSTEM_CHANNELS.len() + families.len() + aliases.len() + p6_families.len(),
+    );
     let factory = |family, channel| {
         definition(
             channel,
@@ -98,6 +101,9 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
         definitions.push(factory(family, channel));
     }
     for (channel, family) in aliases {
+        definitions.push(factory(family, channel));
+    }
+    for (family, channel) in p6_families {
         definitions.push(factory(family, channel));
     }
     definitions
@@ -498,7 +504,9 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::reified::factory::handle_capability;
     use crate::rust::interpreter::reified::runtime::{native_replay, unavailable};
-    use crate::rust::interpreter::reified::system_channels::P5_SYSTEM_CHANNELS;
+    use crate::rust::interpreter::reified::system_channels::{
+        P5_SYSTEM_CHANNELS, P6_SYSTEM_CHANNELS,
+    };
     use crate::rust::interpreter::spaces::namespace::{self, NameTail, GET_SPACE_AGENT};
 
     fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
@@ -518,14 +526,22 @@ mod tests {
         let runtime = unavailable();
         let defined = definitions(&runtime);
         // The four processes of P4 first, then the registered families of P5 in family-index
-        // order, then the registered aliases.
+        // order, then the registered aliases, then the registered families of P6.
         let p5: Vec<SystemChannel> = urn::registered_p5_families()
             .map(|(_, channel)| channel)
             .chain(urn::registered_aliases().map(|(channel, _)| channel))
             .collect();
+        let p6: Vec<SystemChannel> = urn::registered_p6_families()
+            .map(|(_, channel)| channel)
+            .collect();
+        assert_eq!(
+            p6, P6_SYSTEM_CHANNELS,
+            "both VectorDB families are registered"
+        );
         let expected: Vec<SystemChannel> = P4_SYSTEM_CHANNELS
             .iter()
             .chain(p5.iter())
+            .chain(p6.iter())
             .copied()
             .collect();
         assert_eq!(defined.len(), expected.len());

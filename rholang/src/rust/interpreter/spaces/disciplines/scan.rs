@@ -163,13 +163,13 @@ fn continuation_with(
 }
 
 /// The template of the retire pattern. A reserved copy of it covers its allocations.
-static RETIRE_PATTERN: LazyLock<BindPattern> = LazyLock::new(retire_pattern);
+pub(crate) static RETIRE_PATTERN: LazyLock<BindPattern> = LazyLock::new(retire_pattern);
 
 /// The template of a retire continuation: its body without the bytes of the source hash, no
 /// random state bytes and no cost authority. The reserved copy of the template, the reserved
 /// buffer of the hash bytes, the reserved random bytes and the reserved copy of the authority
 /// cover the allocations of a retire continuation.
-static RETIRE_CONTINUATION: LazyLock<TaggedContinuation> =
+pub(crate) static RETIRE_CONTINUATION: LazyLock<TaggedContinuation> =
     LazyLock::new(|| continuation_with(Vec::new(), Vec::new(), None));
 
 /// The produce plan of a scan discipline: OFFER-SCAN of the datum of `op` with the order `ord`,
@@ -379,11 +379,12 @@ struct FoundRecord {
 }
 
 /// A member of the class that a receive fire binds: the copy of the record, the values that it
-/// binds, and its index in the staged view.
-struct Member {
-    record: ParDatum,
-    matched: ListParWithRandom,
-    view_index: i32,
+/// binds, and its index in the staged view. The VectorDB discipline fires the members of a list
+/// with it (P6).
+pub(crate) struct Member {
+    pub(crate) record: ParDatum,
+    pub(crate) matched: ListParWithRandom,
+    pub(crate) view_index: i32,
 }
 
 /// The class of the datum of an offer, and what its retire continuations need: the key, the
@@ -677,7 +678,7 @@ fn fire_class(
 
 /// The candidate of a stored member on `channel`: the record moves into the candidate, with the
 /// values that it binds and its index in the staged view.
-fn stored_candidate(channel: Par, member: Member) -> ParCandidate {
+pub(crate) fn stored_candidate(channel: Par, member: Member) -> ParCandidate {
     let Member {
         record: Datum { a, persist, source },
         matched,
@@ -892,7 +893,11 @@ pub(crate) fn same_class(
 /// The index in the staged view of `channel` of the first record whose source hash is `hash`.
 /// Each comparison of two hashes is reserved first. Two records with one source hash are
 /// byte-identical, so either one is the member.
-fn located(cx: &mut Cx<'_, '_>, channel: &Par, hash: &Blake2b256Hash) -> Result<usize, SpaceError> {
+pub(crate) fn located(
+    cx: &mut Cx<'_, '_>,
+    channel: &Par,
+    hash: &Blake2b256Hash,
+) -> Result<usize, SpaceError> {
     let meter = cx.meter();
     let records = cx.data_on(channel)?;
     for (index, stored) in records.iter().enumerate() {
@@ -934,7 +939,7 @@ fn waiter_at<'v>(cx: &'v mut Cx<'_, '_>, index: usize) -> Result<&'v ParWaiter, 
 }
 
 /// The index `index` of the staged view as the index of a candidate.
-fn view_index(index: usize) -> Result<i32, SpaceError> {
+pub(crate) fn view_index(index: usize) -> Result<i32, SpaceError> {
     i32::try_from(index).map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))
 }
 

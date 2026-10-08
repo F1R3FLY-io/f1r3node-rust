@@ -10,17 +10,18 @@
 //! the family agent wires. They combine the disciplines `bag`, `queue`, `stack`, `set`, `cell`
 //! and `priorityqueue` with the stores `hashmap`, `array` and `vector`. Wave W2 added the rows
 //! `hashmap:{bag,queue,stack,cell}`, `array:queue` and `vector:queue`, and wave W3 adds the set and
-//! priority-queue rows and the other Array and Vector rows.
+//! priority-queue rows and the other Array and Vector rows. P6 adds the rows `hashmap:vectordb`
+//! and `vector:vectordb`. A receive without a query reads the records of a VectorDB collection in
+//! their canonical order, so a literal pattern selects the records as on a bag.
 //!
 //! **Joins (P5c, decision 29).** A join of two names of one space runs in the join engine. A join
 //! whose first bind is a pattern for 42 never receives 43 either, in both orders, on a queue, a
-//! bag and a set. The records and the join waiter stay, and no COMM touches either collection. A
-//! join for 42 on two fresh names receives 42.
+//! bag, a set and a VectorDB collection. The records and the join waiter stay, and no COMM
+//! touches either collection. A join for 42 on two fresh names receives 42.
 //!
 //! **Unsupported pairs.** These families reject before any space exists:
 //!
 //! * The six HashSet families (P7, F1), which take only the `seq` qualifier.
-//! * The VectorDB families `hashmap:vectordb` and `vector:vectordb` (P6).
 //! * The pairs that the URN grammar refuses: `pathmap:vectordb`, `array:vectordb` and
 //!   `hashset:vectordb`.
 //!
@@ -92,9 +93,14 @@ impl Row {
     }
 
     /// True when every operation of the discipline bumps a counter, so the entries of a
-    /// collection have the orders of their operations. Bag and set records and waiters have the
-    /// order 0.
-    fn counted(self) -> bool { !matches!(self.inner, SpaceInner::Bag | SpaceInner::Set) }
+    /// collection have the orders of their operations. Bag, set and VectorDB records and waiters
+    /// have the order 0.
+    fn counted(self) -> bool {
+        !matches!(
+            self.inner,
+            SpaceInner::Bag | SpaceInner::Set | SpaceInner::VectorDb
+        )
+    }
 }
 
 /// The constructor arguments of a family without params.
@@ -103,8 +109,12 @@ const DEFAULT: &str = r#""default""#;
 /// The constructor arguments of a fixed Array space of four index names.
 const SIZED: &str = r#""default"; size=4"#;
 
-/// The rows: the six of wave W2, then the twelve of wave W3.
-const ROWS: [Row; 18] = [
+/// The constructor arguments of a VectorDB space of four records with two dimensions and the
+/// default metric.
+const SIMILAR: &str = r#""default"; capacity=4, dimensions=2"#;
+
+/// The rows: the six of wave W2, then the twelve of wave W3, then the two of P6.
+const ROWS: [Row; 20] = [
     Row {
         outer: SpaceOuter::HashMap,
         inner: SpaceInner::Bag,
@@ -194,6 +204,16 @@ const ROWS: [Row; 18] = [
         outer: SpaceOuter::Vector,
         inner: SpaceInner::PriorityQueue,
         constructor: DEFAULT,
+    },
+    Row {
+        outer: SpaceOuter::HashMap,
+        inner: SpaceInner::VectorDb,
+        constructor: SIMILAR,
+    },
+    Row {
+        outer: SpaceOuter::Vector,
+        inner: SpaceInner::VectorDb,
+        constructor: SIMILAR,
     },
 ];
 
@@ -446,6 +466,20 @@ async fn pattern_enforcement_vector_priorityqueue() {
     check_row(row(SpaceOuter::Vector, SpaceInner::PriorityQueue)).await;
 }
 
+/// `hashmap:vectordb`: a pattern for 42 never receives 43, in both orders, with receives without
+/// a query. The record 43 is not a vector, so it has no embedding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_hashmap_vectordb() {
+    check_row(row(SpaceOuter::HashMap, SpaceInner::VectorDb)).await;
+}
+
+/// `vector:vectordb`: a pattern for 42 never receives 43 on its index names, in both orders, with
+/// receives without a query.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_vector_vectordb() {
+    check_row(row(SpaceOuter::Vector, SpaceInner::VectorDb)).await;
+}
+
 // ─── The join rows ───────────────────────────────────────────────────────────────────────────
 
 /// The number of COMMs of `log` whose consume names one of the channels `channels`.
@@ -551,15 +585,20 @@ async fn pattern_enforcement_hashmap_set_join() {
     check_join_row(row(SpaceOuter::HashMap, SpaceInner::Set)).await;
 }
 
+/// `hashmap:vectordb`: a join whose first bind is a pattern for 42 never receives 43. The binds
+/// have no query, so each position reads its records in their canonical order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_hashmap_vectordb_join() {
+    check_join_row(row(SpaceOuter::HashMap, SpaceInner::VectorDb)).await;
+}
+
 // ─── The unsupported pairs ───────────────────────────────────────────────────────────────────
 
-/// The unsupported families of this phase: the HashSet families (P7) and the VectorDB families
-/// (P6). Their URNs parse, but no factory is registered.
+/// The unsupported families of this phase: the HashSet families (P7). Their URNs parse, but no
+/// factory is registered.
 fn unsupported_families() -> Vec<SpaceFactoryUrn> {
     SpaceFactoryUrn::all()
-        .filter(|family| {
-            family.outer == SpaceOuter::HashSet || family.inner == SpaceInner::VectorDb
-        })
+        .filter(|family| family.outer == SpaceOuter::HashSet)
         .collect()
 }
 
@@ -595,8 +634,8 @@ fn unavailable(outer: SpaceOuter, inner: SpaceInner) -> SpaceError {
     }
 }
 
-/// The HashSet families, VectorDB and the pairs that the URN grammar refuses reject before any
-/// space exists, at every layer:
+/// The HashSet families and the pairs that the URN grammar refuses reject before any space
+/// exists, at every layer:
 ///
 /// * The URN parser refuses the pairs of [`REFUSED_PAIRS`] with `UnsupportedPair`.
 /// * No unsupported family has a registered factory, a dispatch arm, a send schema or a
@@ -608,11 +647,7 @@ fn unavailable(outer: SpaceOuter, inner: SpaceInner) -> SpaceError {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pattern_enforcement_unsupported_pairs_reject() {
     let unsupported = unsupported_families();
-    assert_eq!(
-        unsupported.len(),
-        8,
-        "six HashSet families and two VectorDB families"
-    );
+    assert_eq!(unsupported.len(), 6, "six HashSet families");
     for (outer, inner) in REFUSED_PAIRS {
         let urn = format!("rho:space:{}:{}", outer.as_str(), inner.as_str());
         assert_eq!(

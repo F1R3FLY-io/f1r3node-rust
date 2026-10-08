@@ -67,7 +67,7 @@ Figure 1 shows the creation of a space and one handle call, from the send of the
 
 ## 2. System processes
 
-P4 installs four system processes (`reified/system_processes.rs:63-104`).
+P4 installs four system processes (`reified/system_processes.rs:64-110`).
 Each one listens on an [op channel](glossary.md#op-channel) $`[\mathtt{0xE0}, \mathit{op}]`$ and has the body reference $`200 + \mathit{op}`$.
 The URN map binds each URN to the write bundle of its op channel. So a program can call each process, but it cannot receive on its channel.
 
@@ -80,7 +80,7 @@ The URN map binds each URN to the write bundle of its op channel. So a program c
 | `rho:assert:assertEqual` | `[0xE0, 0x22]` | 3 | 234 | `assertEqual!(ret, a, b)` | A Boolean |
 | `rho:reified:internal:handleOp` | `[0xE0, 0x30]` | 2 | 248 | `(this, message)`, from the handle continuation of a space | The reply of the method, or a typed reply |
 
-*Table 2a. The factories of P5 (`reified/system_channels.rs:323-349`).*
+*Table 2a. The factories of P5 (`reified/system_channels.rs:338-364`).*
 
 | URN | Op channel | Arity | Body reference | Constructor params |
 |---|---|---|---|---|
@@ -124,7 +124,7 @@ The constructor must be the canonical sequence $`[q?]\,[\mathrm{FREE}?]\,[\mathr
 
 ### 3.2 The gates
 
-The factory checks the constructor with seven gates, in the order of Table 3 (`spaces/factory/constructor.rs:60-112`).
+The factory checks the constructor with seven gates, in the order of Table 3 (`spaces/factory/constructor.rs:68-122`).
 The first gate that fails aborts the deploy with its code, and the later gates do not run.
 
 *Table 3. The gates of a factory call.*
@@ -301,7 +301,7 @@ The reply is one datum, the tuple of three elements that `typed_error` builds (`
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:188-200`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:251-263`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|
@@ -351,7 +351,7 @@ A typed reply never changes a space: a `produce` call with a typed reply stores 
 
 ## 8. getSpaceAgent
 
-The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:164-200`).
+The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:170-206`).
 The process classifies `s` with the five rules of `classify_space_ref` (`reified/scope.rs:106-129`):
 
 1. The empty `Par` gives the typed reply `EmptySpaceRef`.
@@ -370,7 +370,7 @@ Like the factories and `assertEqual`, the process applies no name rule to `ret`.
 ## 9. assertEqual
 
 The call `assertEqual!(ret, a, b)` has the arity 3 ([decision 33](decision-register.md#decision-33)).
-It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:239-253`).
+It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:245-259`).
 The sort is the one of `ParSortMatcher`, so the order of parallel processes, of map entries, and of set elements does not count.
 The order of list elements and of tuple elements counts.
 

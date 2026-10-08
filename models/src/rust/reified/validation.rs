@@ -10,7 +10,7 @@ use std::fmt;
 
 use super::encoding::{is_identifier, sole_expr, ReifiedEncodeError};
 use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::{GBigRational, Par};
+use crate::rhoapi::{GBigRational, GFixedPoint, Par};
 
 /// The words that the parser does not accept as a param key: `Bool ByteArray Int Nil String
 /// Uri true false` and the 18 other keywords of grammar `02cef80` that are not
@@ -60,8 +60,11 @@ pub const K_KEY: &str = "k";
 pub const RESULTS_KEY: &str = "results";
 /// The only value of `results`.
 pub const RESULTS_ALL: &str = "all";
-/// The key of the similarity threshold: a Float or a BigRat in [0, 1].
+/// The key of the similarity threshold: a Float, a BigRat or a FixedPoint in [0, 1].
 pub const THRESHOLD_KEY: &str = "threshold";
+/// The key of the distance bound of a VectorDB query (P6). A query takes a `threshold` or a
+/// `radius`, not both (decision 56).
+pub const RADIUS_KEY: &str = "radius";
 /// The key of the similarity metric: a word of `METRIC_VOCABULARY`.
 pub const METRIC_KEY: &str = "metric";
 /// The similarity metrics of the VectorDB spaces.
@@ -118,6 +121,8 @@ pub enum ReifiedSyntaxError {
     PositionalQueryParam,
     #[error("a query takes `k` or `results`, not both")]
     KAndResults,
+    #[error("a query takes `threshold` or `radius`, not both")]
+    ConflictingParams,
     #[error("PARAMS needs a positional or a named param")]
     EmptyParams,
     #[error("a query needs a payload element or a named param")]
@@ -161,14 +166,18 @@ impl From<ReifiedEncodeError> for ReifiedSyntaxError {
 }
 
 /// Checks the value of a named param with a fixed range. `priority` is an Int >= 0, `k` is an
-/// Int >= 1, `results` is `"all"`, `threshold` is a Float or a BigRat in [0, 1], and `metric`
-/// is a word of `METRIC_VOCABULARY`. Every other key has no range at this layer.
+/// Int >= 1, `results` is `"all"`, `threshold` is a Float, a BigRat or a FixedPoint in [0, 1]
+/// (decision 56), and `metric` is a word of `METRIC_VOCABULARY`. Every other key has no range
+/// at this layer.
 pub fn validate_param_value(key: &str, value: &Par) -> Result<(), ReifiedSyntaxError> {
     let (in_range, expected) = match key {
         PRIORITY_KEY => (sole_int(value).is_some_and(|int| int >= 0), "an Int >= 0"),
         K_KEY => (sole_int(value).is_some_and(|int| int >= 1), "an Int >= 1"),
         RESULTS_KEY => (sole_str(value) == Some(RESULTS_ALL), "the string \"all\""),
-        THRESHOLD_KEY => (in_unit_interval(value), "a Float or a BigRat in [0, 1]"),
+        THRESHOLD_KEY => (
+            in_unit_interval(value),
+            "a Float, a BigRat or a FixedPoint in [0, 1]",
+        ),
         METRIC_KEY => (
             sole_str(value).is_some_and(|metric| METRIC_VOCABULARY.contains(&metric)),
             "one of cosine, dot, euclidean, manhattan, hamming, jaccard",
@@ -205,8 +214,48 @@ fn in_unit_interval(value: &Par) -> bool {
             numerator,
             denominator,
         })) => rational_in_unit_interval(numerator, denominator),
+        Some(ExprInstance::GFixedPoint(GFixedPoint { unscaled, scale })) => {
+            fixed_point_in_unit_interval(unscaled, *scale)
+        }
         _ => false,
     }
+}
+
+/// True when `unscaled / 10^scale` lies in [0, 1], that is `0 <= unscaled <= 10^scale`. The
+/// unscaled value is a big-endian two's complement integer of `n` magnitude bytes, so it is
+/// below `256^n`. Since `log10 256 < 2.409`, a scale with `1000 scale >= 2409 n` has
+/// `10^scale >= 256^n`, and the value is in range without a power. A smaller scale has a power
+/// of at most `n + 1` bytes, which the check computes exactly.
+fn fixed_point_in_unit_interval(unscaled: &[u8], scale: u32) -> bool {
+    let Some(magnitude) = non_negative_magnitude(unscaled) else {
+        return false;
+    };
+    // A length of at most 2^64 times 2409 stays far below 2^128.
+    match u128::try_from(magnitude.len()) {
+        Ok(length) if u128::from(scale) * 1000 >= length * 2409 => true,
+        Ok(_) | Err(_) => {
+            let power = power_of_ten_magnitude(scale);
+            (magnitude.len(), magnitude) <= (power.len(), power.as_slice())
+        }
+    }
+}
+
+/// The big-endian magnitude of `10^scale`, without leading zero bytes.
+fn power_of_ten_magnitude(scale: u32) -> Vec<u8> {
+    let mut little_endian = vec![1u8];
+    for _ in 0..scale {
+        let mut carry = 0u16;
+        for byte in little_endian.iter_mut() {
+            let product = u16::from(*byte) * 10 + carry;
+            *byte = product.to_le_bytes()[0];
+            carry = product >> 8;
+        }
+        if carry > 0 {
+            little_endian.push(carry.to_le_bytes()[0]);
+        }
+    }
+    little_endian.reverse();
+    little_endian
 }
 
 /// True when `numerator / denominator` lies in [0, 1]. Both are big-endian two's complement

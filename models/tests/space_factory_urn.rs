@@ -409,7 +409,7 @@ fn space_urn_factory_rejects_invalid_constructors() {
     flagged.connective_used = true;
     for element in [compound, flagged] {
         assert_eq!(
-            SpaceFactoryConstructor::parse_elements(&[element.clone()]),
+            SpaceFactoryConstructor::parse_elements(std::slice::from_ref(&element)),
             Err(SpaceFactoryConstructorError::NonCanonical),
             "{element:?}"
         );

@@ -8,7 +8,8 @@
 //! available.
 //!
 //! P5 gives a constructor schema to the 24 families of the HashMap, PathMap, Array and Vector
-//! stores whose inner collection is a bag, a queue, a stack, a set, a cell or a priority queue:
+//! stores whose inner collection is a bag, a queue, a stack, a set, a cell or a priority queue.
+//! P6 adds the two VectorDB families (design v3 4.2):
 //!
 //! | Families                                         | Params                         | Required |
 //! |--------------------------------------------------|--------------------------------|----------|
@@ -16,14 +17,22 @@
 //! | `hashmap`, `pathmap` and `vector`: `priorityqueue` | `priorities`                 | none     |
 //! | `array`: bag, queue, stack, set, cell            | `cyclic`, `size`               | `size`   |
 //! | `array`: `priorityqueue`                         | `cyclic`, `priorities`, `size` | `size`   |
+//! | `hashmap` and `vector`: `vectordb`               | `capacity`, `dimensions`, `metric`, `mirror` | `capacity`, `dimensions` |
 //!
 //! Each param has one value rule ([`ParamRule`]):
 //!
 //! * `size` is a `GInt` in `[1, i64::MAX]` (F7). An Array space needs it. Its storage is lazy.
 //! * `cyclic` is a `GBool` (F7). An Array space without it is fixed, as with `cyclic = false`.
 //! * `priorities` is a `GInt` of at least 1 (I-10). Without it, the priority levels have no bound.
+//! * `capacity` is a `GInt` in `[1, MAX_CAPACITY]`: the most records of each collection of a
+//!   VectorDB space (P6).
+//! * `dimensions` is a `GInt` in `[1, MAX_DIMENSIONS]`: the length of every vector of a VectorDB
+//!   space (P6).
+//! * `metric` is a `GString`, one of the six metrics. A VectorDB space without it uses `cosine`.
+//! * `mirror` is the `GString` `"chroma"`: the space keeps a ChromaDB search backend (P6,
+//!   decision 58). Without it the space has no mirror.
 //!
-//! The VectorDB families (P6) and the HashSet families (P7) have no schema yet.
+//! The PathMap and Array VectorDB families and the HashSet families (P7) have no schema.
 //!
 //! The suggestion for an unknown name is the candidate with the least Levenshtein distance,
 //! when that distance is at most [`SUGGESTION_DISTANCE`]. A tie goes to the bytewise least
@@ -34,6 +43,7 @@ use models::rhoapi::Par;
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
+use crate::rust::interpreter::tensor::exact::Metric;
 
 /// The greatest edit distance of a suggestion.
 pub const SUGGESTION_DISTANCE: usize = 2;
@@ -46,6 +56,27 @@ pub const CYCLIC_PARAM: &str = "cyclic";
 
 /// The name of the param that bounds the priority levels of a priority queue space (I-10).
 pub const PRIORITIES_PARAM: &str = "priorities";
+
+/// The name of the param that bounds the records of each collection of a VectorDB space (P6).
+pub const CAPACITY_PARAM: &str = "capacity";
+
+/// The name of the param that gives the length of every vector of a VectorDB space (P6).
+pub const DIMENSIONS_PARAM: &str = "dimensions";
+
+/// The name of the param that gives the default metric of a VectorDB space (P6).
+pub const METRIC_PARAM: &str = "metric";
+
+/// The name of the param that gives the search backend of a VectorDB space (P6, decision 58).
+pub const MIRROR_PARAM: &str = "mirror";
+
+/// The one value of `mirror`: the ChromaDB search backend.
+pub const MIRROR_CHROMA: &str = "chroma";
+
+/// The greatest `capacity` of a VectorDB space (design v3 4.2).
+pub const MAX_CAPACITY: i64 = 1_000_000;
+
+/// The greatest `dimensions` of a VectorDB space (design v3 4.2).
+pub const MAX_DIMENSIONS: i64 = 4096;
 
 /// The constructor schema of a family without params.
 const NO_PARAMS: &[&str] = &[];
@@ -61,6 +92,12 @@ const ARRAY_PRIORITY_QUEUE_PARAMS: &[&str] = &[CYCLIC_PARAM, PRIORITIES_PARAM, S
 
 /// The params that every Array factory requires.
 const ARRAY_REQUIRED: &[&str] = &[SIZE_PARAM];
+
+/// The constructor schema of a VectorDB family, in bytewise order.
+const VECTORDB_PARAMS: &[&str] = &[CAPACITY_PARAM, DIMENSIONS_PARAM, METRIC_PARAM, MIRROR_PARAM];
+
+/// The params that every VectorDB factory requires.
+const VECTORDB_REQUIRED: &[&str] = &[CAPACITY_PARAM, DIMENSIONS_PARAM];
 
 /// The one table of the constructor schemas: the named params of the factory of `family` in
 /// bytewise order, and the params that it requires. [`constructor_schema`] and
@@ -90,10 +127,10 @@ fn schema(family: SpaceFactoryUrn) -> Option<(&'static [&'static str], &'static 
         (SpaceOuter::Array, SpaceInner::PriorityQueue) => {
             Some((ARRAY_PRIORITY_QUEUE_PARAMS, ARRAY_REQUIRED))
         }
-        (
-            SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::Vector,
-            SpaceInner::VectorDb,
-        )
+        (SpaceOuter::HashMap | SpaceOuter::Vector, SpaceInner::VectorDb) => {
+            Some((VECTORDB_PARAMS, VECTORDB_REQUIRED))
+        }
+        (SpaceOuter::PathMap | SpaceOuter::Array, SpaceInner::VectorDb)
         | (SpaceOuter::HashSet, _) => None,
     }
 }
@@ -104,8 +141,9 @@ pub fn constructor_schema(family: SpaceFactoryUrn) -> Option<&'static [&'static 
     schema(family).map(|(params, _)| params)
 }
 
-/// The named params that the factory of `family` requires: `size` for an Array family (F7). A
-/// family without a schema requires none.
+/// The named params that the factory of `family` requires: `size` for an Array family (F7), and
+/// `capacity` and `dimensions` for a VectorDB family (P6). A family without a schema requires
+/// none.
 pub fn required_params(family: SpaceFactoryUrn) -> &'static [&'static str] {
     schema(family).map_or(NO_PARAMS, |(_, required)| required)
 }
@@ -119,6 +157,14 @@ pub enum ParamRule {
     Cyclic,
     /// `priorities`: a `GInt` of at least 1 (I-10).
     Priorities,
+    /// `capacity`: a `GInt` in `[1, MAX_CAPACITY]` (P6).
+    Capacity,
+    /// `dimensions`: a `GInt` in `[1, MAX_DIMENSIONS]` (P6).
+    Dimensions,
+    /// `metric`: a `GString` that names one of the six metrics (P6).
+    Metric,
+    /// `mirror`: the `GString` `"chroma"` (P6, decision 58).
+    Mirror,
 }
 
 impl ParamRule {
@@ -128,6 +174,10 @@ impl ParamRule {
             SIZE_PARAM => Some(ParamRule::Size),
             CYCLIC_PARAM => Some(ParamRule::Cyclic),
             PRIORITIES_PARAM => Some(ParamRule::Priorities),
+            CAPACITY_PARAM => Some(ParamRule::Capacity),
+            DIMENSIONS_PARAM => Some(ParamRule::Dimensions),
+            METRIC_PARAM => Some(ParamRule::Metric),
+            MIRROR_PARAM => Some(ParamRule::Mirror),
             _ => None,
         }
     }
@@ -145,7 +195,35 @@ impl ParamRule {
             (ParamRule::Cyclic, Some(ExprInstance::GBool(flag)), false) => {
                 Some(expr_par(ExprInstance::GBool(*flag)))
             }
-            (ParamRule::Size | ParamRule::Priorities | ParamRule::Cyclic, _, _) => None,
+            (ParamRule::Capacity, Some(ExprInstance::GInt(count @ 1..=MAX_CAPACITY)), false) => {
+                Some(expr_par(ExprInstance::GInt(*count)))
+            }
+            (
+                ParamRule::Dimensions,
+                Some(ExprInstance::GInt(count @ 1..=MAX_DIMENSIONS)),
+                false,
+            ) => Some(expr_par(ExprInstance::GInt(*count))),
+            (ParamRule::Metric, Some(ExprInstance::GString(name)), false)
+                if Metric::parse(name).is_some() =>
+            {
+                Some(expr_par(ExprInstance::GString(name.clone())))
+            }
+            (ParamRule::Mirror, Some(ExprInstance::GString(name)), false)
+                if name == MIRROR_CHROMA =>
+            {
+                Some(expr_par(ExprInstance::GString(name.clone())))
+            }
+            (
+                ParamRule::Size
+                | ParamRule::Priorities
+                | ParamRule::Cyclic
+                | ParamRule::Capacity
+                | ParamRule::Dimensions
+                | ParamRule::Metric
+                | ParamRule::Mirror,
+                _,
+                _,
+            ) => None,
         }
     }
 }
@@ -218,22 +296,27 @@ mod tests {
     use crate::rust::interpreter::spaces::factory::urn::{is_wired, registered_channel};
     use crate::rust::interpreter::spaces::families::send_params;
 
-    /// The families that P5 gives a constructor schema: HashMap, PathMap, Array and Vector with
-    /// the inner collections bag to priority queue.
-    fn has_p5_schema(family: SpaceFactoryUrn) -> bool {
-        matches!(
-            family.outer,
-            SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::Vector
-        ) && family.inner != SpaceInner::VectorDb
+    /// The families with a constructor schema: HashMap, PathMap, Array and Vector with the inner
+    /// collections bag to priority queue (P5), and HashMap and Vector with the VectorDB (P6).
+    fn has_schema(family: SpaceFactoryUrn) -> bool {
+        match family.inner {
+            SpaceInner::VectorDb => {
+                matches!(family.outer, SpaceOuter::HashMap | SpaceOuter::Vector)
+            }
+            _ => matches!(
+                family.outer,
+                SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::Vector
+            ),
+        }
     }
 
     #[test]
-    fn space_factory_schemas_cover_the_p5_families() {
+    fn space_factory_schemas_cover_the_wired_families() {
         let mut covered = 0;
         for family in SpaceFactoryUrn::all() {
             assert_eq!(
                 constructor_schema(family).is_some(),
-                has_p5_schema(family),
+                has_schema(family),
                 "{family}"
             );
             assert_eq!(send_params(family).is_some(), is_wired(family), "{family}");
@@ -264,6 +347,12 @@ mod tests {
                     (SpaceOuter::Array, SpaceInner::PriorityQueue) => {
                         (&["cyclic", "priorities", "size"], &["size"])
                     }
+                    (_, SpaceInner::VectorDb) => {
+                        (&["capacity", "dimensions", "metric", "mirror"], &[
+                            "capacity",
+                            "dimensions",
+                        ])
+                    }
                     (SpaceOuter::Array, _) => (&["cyclic", "size"], &["size"]),
                     (_, SpaceInner::PriorityQueue) => (&["priorities"], &[]),
                     _ => (&[], &[]),
@@ -271,7 +360,7 @@ mod tests {
             assert_eq!(params, expected_params, "{family}");
             assert_eq!(required, expected_required, "{family}");
         }
-        assert_eq!(covered, 24);
+        assert_eq!(covered, 26);
         assert_eq!(
             constructor_schema(SpaceFactoryUrn::HASHMAP_QUEUE),
             Some(&[][..])
@@ -290,9 +379,65 @@ mod tests {
         ] {
             assert_eq!(ParamRule::of(key), Some(rule));
         }
-        for key in ["Size", "sizes", "priority", "capacity", ""] {
+        for (key, rule) in [
+            ("capacity", ParamRule::Capacity),
+            ("dimensions", ParamRule::Dimensions),
+            ("metric", ParamRule::Metric),
+            ("mirror", ParamRule::Mirror),
+        ] {
+            assert_eq!(ParamRule::of(key), Some(rule));
+        }
+        for key in [
+            "Size",
+            "sizes",
+            "priority",
+            "capacities",
+            "dimension",
+            "Metric",
+            "embedding",
+            "",
+        ] {
             assert_eq!(ParamRule::of(key), None, "{key}");
         }
+        for (rule, max) in [
+            (ParamRule::Capacity, MAX_CAPACITY),
+            (ParamRule::Dimensions, MAX_DIMENSIONS),
+        ] {
+            for value in [1, 2, max - 1, max] {
+                assert_eq!(
+                    rule.canonical(&int(value)),
+                    Some(int(value)),
+                    "{rule:?} {value}"
+                );
+            }
+            for value in [0, -1, max + 1, i64::MAX, i64::MIN] {
+                assert_eq!(rule.canonical(&int(value)), None, "{rule:?} {value}");
+            }
+            assert_eq!(rule.canonical(&flag(true)), None);
+        }
+        let text = |value: &str| new_gstring_par(value.to_string(), Vec::new(), false);
+        for name in [
+            "cosine",
+            "dot",
+            "euclidean",
+            "manhattan",
+            "hamming",
+            "jaccard",
+        ] {
+            assert_eq!(ParamRule::Metric.canonical(&text(name)), Some(text(name)));
+        }
+        for name in ["Cosine", "l2", "chroma", ""] {
+            assert_eq!(ParamRule::Metric.canonical(&text(name)), None, "{name}");
+        }
+        assert_eq!(
+            ParamRule::Mirror.canonical(&text("chroma")),
+            Some(text("chroma"))
+        );
+        for name in ["Chroma", "chromadb", "cosine", ""] {
+            assert_eq!(ParamRule::Mirror.canonical(&text(name)), None, "{name}");
+        }
+        assert_eq!(ParamRule::Metric.canonical(&int(1)), None);
+        assert_eq!(ParamRule::Mirror.canonical(&flag(true)), None);
         for rule in [ParamRule::Size, ParamRule::Priorities] {
             for value in [1, 2, 1_000, i64::MAX] {
                 assert_eq!(rule.canonical(&int(value)), Some(int(value)), "{value}");

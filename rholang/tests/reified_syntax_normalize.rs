@@ -777,7 +777,19 @@ fn normalize_receive_query_rejects_invalid_values() {
     );
     assert_eq!(
         compile_error(r#"for (y <- @"x" ~ (1; threshold=1.5)) { Nil }"#),
-        out_of_range("threshold", "a Float or a BigRat in [0, 1]")
+        out_of_range("threshold", "a Float, a BigRat or a FixedPoint in [0, 1]")
+    );
+    // A fixed-point threshold (decision 56) lies in [0, 1] as the other forms do.
+    assert!(contains_marker(&compile(
+        r#"for (y <- @"x" ~ (1; threshold=0.85p2)) { Nil }"#
+    )));
+    assert_eq!(
+        compile_error(r#"for (y <- @"x" ~ (1; threshold=1.5p1)) { Nil }"#),
+        out_of_range("threshold", "a Float, a BigRat or a FixedPoint in [0, 1]")
+    );
+    assert_eq!(
+        compile_error(r#"for (y <- @"x" ~ (1; threshold=0.5, radius=2)) { Nil }"#),
+        syntax_error(ReifiedSyntaxError::ConflictingParams)
     );
     assert_eq!(
         compile_error(r#"for (y <- @"x" ~ (1; metric="cos")) { Nil }"#),

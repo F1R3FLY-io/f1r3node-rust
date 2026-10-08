@@ -349,6 +349,36 @@ where
     canonical_view_order(data, meter)
 }
 
+/// [`canonical_data_order`] of the stored records `data` and one record `extra`
+/// that is not stored: the indices of their union in the canonical order of
+/// DR-75, where `extra` has the index `data.len()`. A VectorDB offer ranks its
+/// datum among the stored records with it, so the list of a list-mode waiter
+/// that the datum completes has the order of the records once the datum is
+/// stored (P6, design v3 4.5). The work is reserved on `meter` as for
+/// [`canonical_data_order`].
+pub fn canonical_data_order_with<A>(
+    data: &[Datum<A>],
+    extra: &Datum<A>,
+    meter: &dyn SourceMeter,
+) -> Result<Vec<usize>, RSpaceError>
+where
+    A: Clone + Serialize + CloneBacking,
+{
+    let length = data
+        .len()
+        .checked_add(1)
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    let mut views = space_order_buffer(length, meter)?;
+    views.extend(data.iter().map(Cow::Borrowed));
+    views.push(Cow::Borrowed(extra));
+    let ordered = candidate_order::canonical_order(views, &SpaceOrder(meter))?;
+    let mut indices = space_order_buffer(ordered.len(), meter)?;
+    for (_, index) in ordered {
+        indices.push(usize::try_from(index).map_err(|_| RSpaceError::HostWorkRejected)?);
+    }
+    Ok(indices)
+}
+
 /// [`canonical_data_order`] for the waiting continuations of one collection:
 /// by the hash of the source consume of each continuation, then by its
 /// digest, then by its index.

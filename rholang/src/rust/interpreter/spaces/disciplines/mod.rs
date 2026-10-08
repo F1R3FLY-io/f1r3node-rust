@@ -7,3 +7,4 @@ pub mod queue;
 pub mod scan;
 pub mod set;
 pub mod stack;
+pub mod vectordb;

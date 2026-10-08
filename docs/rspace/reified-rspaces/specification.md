@@ -162,22 +162,22 @@ A program that uses no Reified syntax and holds no space name must route every c
 A family pairs one outer store with one inner collection, for example `hashmap:queue`.
 Its factory creates the spaces of the family, and its agent runs their operations.
 
-**Rule FA-1: registration.** A family is registered exactly when it has a factory row and the family dispatch has its arm (`rholang/src/rust/interpreter/spaces/factory/urn.rs:156`, `rholang/src/rust/interpreter/spaces/factory/urn.rs:168-172`).
+**Rule FA-1: registration.** A family is registered exactly when it has a factory row and the family dispatch has its arm (`rholang/src/rust/interpreter/spaces/factory/urn.rs:170`, `rholang/src/rust/interpreter/spaces/factory/urn.rs:190-195`).
 A registered family with the index $`i`$ binds its URN to `bundle+{[0xE0, i]}`, and it installs its factory with the body reference $`200 + i`$.
 An unregistered family has no URN binding, so a program that names it fails before any space work.
 
-**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:427-436`).
-The dispatch tries the arms in a fixed order: `hashmap:queue` first, then ascending family index, and the PathMap families last (`rholang/src/rust/interpreter/spaces/families.rs:206-231`).
+**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:452-461`).
+The dispatch tries the arms in a fixed order: `hashmap:queue`, ascending family index, the PathMap families, then the VectorDB families (`rholang/src/rust/interpreter/spaces/families.rs:221-248`).
 Each arm that it tries reserves one comparison of the names, so a queue operation keeps the host work of P4.
-The PathMap arms come last, so the dispatch of each family that was wired before them reserves the comparisons that it reserved before.
+New arms come after the old ones, so the dispatch of an earlier family reserves the comparisons that it reserved before.
 A config that names no wired family fails with `FamilyUnavailable`.
 
-**Rule FA-3: aliases.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:289-293`).
-The FIPS alias `rho:space:PathMapSpace` names the channel of `pathmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:297-301`).
+**Rule FA-3: aliases.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:303-307`).
+The FIPS alias `rho:space:PathMapSpace` names the channel of `pathmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:311-315`).
 An alias is registered exactly when its family is registered, and both URNs bind the same capability.
 `getSpaceAgent` replies that capability for every space of the family ([decision 33](decision-register.md#decision-33)).
 
-**Rule FA-4: constructor schemas.** Table 1a lists the named params that the factory of each family accepts and requires (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:68-99`).
+**Rule FA-4: constructor schemas.** Table 1a lists the named params that the factory of each family accepts and requires (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:105-136`).
 
 *Table 1a. The constructor schemas of the P5 families.*
 
@@ -192,9 +192,9 @@ The VectorDB and HashSet families have no schema yet.
 
 **Rule FA-5: param values.** `size` is a `GInt` in $`[1, 2^{63}-1]`$, and `cyclic` is a `GBool` (F7).
 `priorities` is a `GInt` of at least 1 ([decision I-10](decision-register.md#i-10)).
-The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:115-122`).
+The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:153-168`).
 
-**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:60-112`):
+**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:68-122`):
 
 1. the schema (`FamilyUnavailable`)
 2. the parse (`BadConstructorArgument`)
@@ -205,7 +205,7 @@ The bit sets of a value do not count, and a value with the connective flag fails
 7. missing required keys (`MissingParam`)
 8. values in bytewise key order (`InvalidParam`)
 
-**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:146-160`).
+**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:191-205`).
 The readers apply the defaults: an Array space without `cyclic` is fixed, and a priority queue without `priorities` has no bound on its levels.
 
 ## 2. Outer stores
@@ -633,7 +633,7 @@ $`\mathrm{taken}(o, R, j)`$ is 1 for a fire that binds a non-persistent record $
 
 **Rule BG-5: peeks.** A peek fire removes a non-persistent record, as the host COMM does ([decision 45](decision-register.md#decision-45), Rule E).
 The same operation sends the record again: the record is offered to the waiters first, and it is stored when no waiter takes it.
-The second send has the identity of the record and registers the cost authority of the record (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:721-753`).
+The second send has the identity of the record and registers the cost authority of the record (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:722-754`).
 
 **Rule BG-6: peek waiters.** A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
 
@@ -648,7 +648,7 @@ A divergent pair or the cap re-issues the element in flight, and every read and 
 A cell collection holds at most one record and at most one waiting continuation (F15).
 The family `hashmap:cell` runs `CellDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/cell.rs:53-88`) on the head driver of the engine.
 
-**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:937-954`).
+**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:941-958`).
 The job drops the transaction, so the failed operation logs no event, bumps no counter, and makes no legacy charge.
 
 **Rule CL-2: both sides meet.** A fresh send always meets the waiting continuation of the cell, and a fresh receive always meets the record of the cell.
@@ -684,7 +684,7 @@ The settle fires the top pair. It lifts a stored record that is not persistent w
 **Rule SK-4: peeks in a settle.** A record that a peek waiter did not spend stays in flight, and it lands at its order when the settle ends (Rule E).
 
 **Rule SK-5: fire count.** One transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21)).
-The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1490-1503`).
+The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1494-1507`).
 A plan whose transaction is full after the settle before it stages nothing, and its operation re-issues.
 
 **Rule SK-6: re-issues.** At the cap or at a divergent pair, the settle before the plan re-issues the operation, which it has not inserted yet.
@@ -717,19 +717,19 @@ The view of the records has one representative for each class: its first member 
 The receive checks its guard once, on that record, and a refusal parks it ([decision 37](decision-register.md#decision-37)).
 
 **Rule ST-5: class fire.** A receive that does not peek fires one consume over $`[D; n]`$ on every stored member of the class, the representative first (F3, F20).
-The fire dispatches only the result of the representative, and it removes every member that is not persistent (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:588-676`).
+The fire dispatches only the result of the representative, and it removes every member that is not persistent (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:589-677`).
 
 **Rule ST-6: send and retire.** A send fires the first waiter in canonical order whose pattern binds the datum and whose guard admits it.
 After each fire of a waiter that does not peek, the send retires the non-persistent stored members of the class of its datum.
-Each retire is a single-channel COMM of a `K_retire` continuation, in canonical order (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:785-870`).
+Each retire is a single-channel COMM of a `K_retire` continuation, in canonical order (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:786-871`).
 A retire is never dispatched, and it is not a fire round of the transaction.
 
 **Rule ST-7: peeks.** A peek binds only the representative, on $`[D]`$, and its fire removes a representative that is not persistent.
 The same operation sends the representative again (Rule E, [decision 45](decision-register.md#decision-45)), and a peek retires nothing.
-When the second send fires a waiter that does not peek, that fire retires the class (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:700-780`).
+When the second send fires a waiter that does not peek, that fire retires the class (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:701-781`).
 
 **Rule ST-8: membership.** The driver compares the metered hashes of two keys first, and it compares the full keys only when the hashes are equal (DR-90).
-So a hash collision never joins two classes (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:875-890`).
+So a hash collision never joins two classes (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:876-891`).
 
 **Rule ST-9: no counter.** A set has no counter, no params, no query and no capacity.
 Two waiters are equal only when their bytes are equal (F14). Every order is 0, so a re-issued element keeps its identity ([decision 43](decision-register.md#decision-43)).
@@ -738,7 +738,7 @@ Without a counter, the merges of a set follow the merge checks of its records.
 Writes to one set merge, and the merged view is the view of each serial order (F25).
 Two branches that each retire one stored member of a set race in merge check 1 on the produce of that member (F24).
 
-**Rule ST-10: keys under a budget.** A metered job stores only a record whose key exists under its metering (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:411-421`).
+**Rule ST-10: keys under a budget.** A metered job stores only a record whose key exists under its metering (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:412-422`).
 The metered sorter rejects a term deeper than its depth limit with `HostWorkRejected`, so the send of such a payload fails before it stages anything.
 Without a budget the host sorter keys every payload, so a job without a budget stores every record.
 A record that such a job stored can lack a key under a later budget.

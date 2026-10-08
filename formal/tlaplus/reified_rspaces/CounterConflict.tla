@@ -91,7 +91,7 @@
 (*   the allocator        spaces/allocator.rs (creation_records,           *)
 (*                        allocate), spaces/generic.rs (run_allocate,      *)
 (*                        AllocCx::take, AllocCx::put)                     *)
-(*   the plans            spaces/generic.rs:1511-1578, 1587-1671,          *)
+(*   the plans            spaces/generic.rs:1515-1582, 1591-1675,          *)
 (*                        1705-1809 (offer_head, receive_head, run_with)   *)
 (*   the peek COMM        rs/merger/event_log_index.rs:253-272 (a COMM     *)
 (*                        with peeks files its produces under              *)

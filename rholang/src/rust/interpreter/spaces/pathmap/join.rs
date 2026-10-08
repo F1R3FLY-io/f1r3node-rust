@@ -732,6 +732,10 @@ struct SourceState {
     changed: bool,
 }
 
+/// The error of a PathMap source whose discipline has the similarity window: no PathMap space
+/// has a VectorDB collection (P6, design v3 4.2), so the source fails closed.
+const NO_VECTORDB: &str = "a PathMap space has no VectorDB collection";
+
 /// The store seam of a PathMap space with the discipline `D` (joins plan section 9).
 pub(crate) struct PrefixSource<'a, D> {
     discipline: &'a D,
@@ -828,6 +832,9 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         op: &SpaceOp,
         meter: &ScanMeter,
     ) -> Result<Self, SpaceError> {
+        if D::JOIN_WINDOW == JoinWindow::Similarity {
+            return Err(SpaceError::Inconsistent(NO_VECTORDB));
+        }
         let space = scope.space;
         let token = PathMapOuter::token_metered(space, meter)?;
         let root = PathMapOuter::index_metered(space, &[], meter)?;
@@ -863,6 +870,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     /// The lane of the slot `slot` in this discipline.
     fn lane_of(&self, slot: &JoinSlot) -> Option<Lane> {
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => None,
             JoinWindow::Lanes => Some(Lane::of_slot(slot.policy.level())),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
         }
@@ -1066,6 +1074,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         meter: &ScanMeter,
     ) -> Result<Claim, SpaceError> {
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Classes => match self.discipline.join_class_key(&payload.pars, meter)? {
                 Some(key) => {
                     let hash = metered_hash(&key, meter)?;
@@ -1283,6 +1292,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
             None => Vec::new(),
         };
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Scan | JoinWindow::Classes => {
                 if path.is_some() {
                     for record in cx.canonical_data_order(&data)? {
@@ -1793,6 +1803,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     ) -> Result<Vec<WaiterRef>, SpaceError> {
         let meter = cx.meter();
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Head => {
                 let seats = self.seats(cx, scope, coll)?;
                 match self.head_seat(&seats.seats, None, meter)? {
@@ -2145,6 +2156,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         meter: &ScanMeter,
     ) -> Result<(i64, Option<Level>), SpaceError> {
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Lanes => {
                 let (ord, slot) = record::pq_datum_slots_metered(record, meter)?;
                 Ok((ord, Some(Level::of_slot(slot))))
@@ -2161,6 +2173,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         meter: &ScanMeter,
     ) -> Result<ListParWithRandom, SpaceError> {
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Lanes => Ok(record::unwrap_pq_datum_metered(record, meter)?.datum),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
                 Ok(record::unwrap_datum_metered(record, meter)?.datum)
@@ -2177,6 +2190,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         match width {
             1 => {
                 let slot = match D::JOIN_WINDOW {
+                    JoinWindow::Similarity => return Err(SpaceError::Inconsistent(NO_VECTORDB)),
                     JoinWindow::Lanes => {
                         let (ord, priority) =
                             record::pq_continuation_slots_metered(&waiter.continuation, meter)?;
@@ -2199,6 +2213,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
             _ => {
                 let slots = record::join_continuation_slots_metered(&waiter.continuation, meter)?;
                 let lanes_fit = match D::JOIN_WINDOW {
+                    JoinWindow::Similarity => return Err(SpaceError::Inconsistent(NO_VECTORDB)),
                     JoinWindow::Lanes => true,
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
                         slots.iter().all(|slot| slot.policy == WaiterPolicy::None)
@@ -2337,6 +2352,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
     ) -> Result<Vec<WaiterRef>, SpaceError> {
         let meter = cx.meter();
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Head => {
                 let seats = self.seats(cx, scope, coll)?;
                 match self.head_seat(&seats.seats, None, meter)? {
@@ -2380,11 +2396,13 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
     ) -> Result<bool, SpaceError> {
         let meter = cx.meter();
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Scan | JoinWindow::Classes => Ok(true),
             JoinWindow::Head | JoinWindow::Lanes => {
                 let seats = self.seats(cx, scope, coll)?;
                 for lane in self.lanes_on(slots, colls, coll, meter)? {
                     let filter = match D::JOIN_WINDOW {
+                        JoinWindow::Similarity => None,
                         JoinWindow::Lanes => lane,
                         JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
                     };
@@ -2416,11 +2434,13 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
     ) -> Result<bool, SpaceError> {
         let meter = cx.meter();
         match D::JOIN_WINDOW {
+            JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Scan | JoinWindow::Classes => Ok(true),
             JoinWindow::Head | JoinWindow::Lanes => {
                 let seats = self.seats(cx, scope, coll)?;
                 for lane in self.lanes_on(slots, colls, coll, meter)? {
                     let filter = match D::JOIN_WINDOW {
+                        JoinWindow::Similarity => None,
                         JoinWindow::Lanes => lane,
                         JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
                     };

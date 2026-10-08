@@ -84,7 +84,7 @@ Figure F1 shows the three runs side by side.
 ### 4.1 Play
 
 Staging makes no host call.
-The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:3357-3401`).
+The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:3387-3431`).
 For each operation, play makes its charges first and logs its events only after the observer accepts them (`rspace++/src/rspace/rspace/space_play.rs:143-149` and `183-193`).
 When a charge of operation $`k`$ rejects, the commit stops at operation $`k`$.
 The operations before $`k`$ stay applied and logged (D6), and operation $`k`$ leaves no event.
@@ -175,13 +175,13 @@ The fix changes only two substrate files. Casper, the host, and the P4 agents do
 
 | Part | Change | Code |
 |---|---|---|
-| `TxnCore::verify` | It returns `Option<COMM>` and never fails: the recorded COMM of a paired fire, or `None` in play and for an unpaired fire. | `rspace++/src/rspace/space_store_handle.rs:2287-2315` |
-| `TxnCore::stage_produce`, `TxnCore::stage_consume` | The two calls of `verify` no longer pass an error on, and only a paired fire adds its COMM to `paired`. | `rspace++/src/rspace/space_store_handle.rs:2479`, `2490-2492`, `2669`, and `1957-1959` |
-| `StagedFire`, `StagedConsumeFire` | The field `recorded` keeps the result of `verify`. | `rspace++/src/rspace/space_store_handle.rs:2036-2038` and `2067-2069` |
+| `TxnCore::verify` | It returns `Option<COMM>` and never fails: the recorded COMM of a paired fire, or `None` in play and for an unpaired fire. | `rspace++/src/rspace/space_store_handle.rs:2317-2345` |
+| `TxnCore::stage_produce`, `TxnCore::stage_consume` | The two calls of `verify` no longer pass an error on, and only a paired fire adds its COMM to `paired`. | `rspace++/src/rspace/space_store_handle.rs:2509`, `2520-2522`, `2699`, and `1957-1959` |
+| `StagedFire`, `StagedConsumeFire` | The field `recorded` keeps the result of `verify`. | `rspace++/src/rspace/space_store_handle.rs:2066-2068` and `2097-2099` |
 | `ReplayBackend::produce_fire` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:254-263` |
 | `ReplayBackend::produce_observed` | A failed fire rolls the counter step back, also for an unpaired fire. | `rspace++/src/rspace/replay_rspace/space_replay.rs:209-211` |
 | `ReplayBackend::consume_observed` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:406-415` |
-| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:107-111` and `3357-3364` |
+| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:107-111` and `3387-3394` |
 
 ### 6.4 The proofs and the models
 

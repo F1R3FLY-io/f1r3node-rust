@@ -282,6 +282,20 @@ pub const VECTOR_PRIORITY_QUEUE_FACTORY: SystemChannel = SystemChannel {
     arity: 2,
 };
 
+/// The factory of the family `hashmap:vectordb`: family index 6, `(ret, ctor)` (P6).
+pub const HASHMAP_VECTORDB_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashmap:vectordb",
+    op: 0x06,
+    arity: 2,
+};
+
+/// The factory of the family `vector:vectordb`: family index 25, `(ret, ctor)` (P6).
+pub const VECTOR_VECTORDB_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:vector:vectordb",
+    op: 0x19,
+    arity: 2,
+};
+
 /// The FIPS alias `rho:space:HashMapBagSpace` of the family `hashmap:bag` (FIPS:296 and
 /// 788-791, P5a). It names the factory channel of `hashmap:bag`, so the urn map binds the alias
 /// to the capability of that family, and `getSpaceAgent` replies the same `Par` (plan decision
@@ -317,9 +331,10 @@ pub const PATHMAP_SPACE_ALIAS: SystemChannel = SystemChannel {
 /// | `rho:space:PathMapSpace`          | `[E0, 07]`        | 2     | 207        | P5e       |
 ///
 /// The inner collections of a PathMap, an Array or a Vector store are bag, queue, stack, set,
-/// cell and priority queue, in this order. The VectorDB families (6 and 25) arrive in P6, and the
-/// HashSet families (26 to 31) in P7. A process of this list is installed only when the family
-/// dispatch wires its family (`spaces::factory::urn::registered_families`).
+/// cell and priority queue, in this order. The VectorDB families (6 and 25) are in
+/// [`P6_SYSTEM_CHANNELS`], and the HashSet families (26 to 31) arrive in P7. A process of this
+/// list is installed only when the family dispatch wires its family
+/// (`spaces::factory::urn::registered_families`).
 pub const P5_SYSTEM_CHANNELS: [SystemChannel; 25] = [
     HASHMAP_BAG_FACTORY,
     HASHMAP_STACK_FACTORY,
@@ -347,6 +362,19 @@ pub const P5_SYSTEM_CHANNELS: [SystemChannel; 25] = [
     HASHMAP_BAG_SPACE_ALIAS,
     PATHMAP_SPACE_ALIAS,
 ];
+
+/// The system processes that P6 adds after the processes of P5: the factories of the two
+/// VectorDB families in family-index order (design v3 4.2).
+///
+/// | URN                          | Channel    | Arity | BodyRef |
+/// |------------------------------|------------|-------|---------|
+/// | `rho:space:hashmap:vectordb` | `[E0, 06]` | 2     | 206     |
+/// | `rho:space:vector:vectordb`  | `[E0, 19]` | 2     | 225     |
+///
+/// They come after the processes of P4 and P5, so the definitions of P4 and P5 keep their
+/// places. A process of this list is installed only when the family dispatch wires its family.
+pub const P6_SYSTEM_CHANNELS: [SystemChannel; 2] =
+    [HASHMAP_VECTORDB_FACTORY, VECTOR_VECTORDB_FACTORY];
 
 #[cfg(test)]
 mod tests {
@@ -457,6 +485,46 @@ mod tests {
             assert_eq!(alias.body_ref(), family.body_ref());
             assert_eq!(alias.urn, urn);
         }
+    }
+
+    #[test]
+    fn p6_system_channels_have_the_table_values() {
+        let expected = [
+            ("rho:space:hashmap:vectordb", 0x06, 2, 206),
+            ("rho:space:vector:vectordb", 0x19, 2, 225),
+        ];
+        assert_eq!(P6_SYSTEM_CHANNELS.len(), expected.len());
+        for (channel, (urn, op, arity, body)) in P6_SYSTEM_CHANNELS.iter().zip(expected) {
+            assert_eq!(
+                (channel.urn, channel.op, channel.arity, channel.body_ref()),
+                (urn, op, arity, body)
+            );
+            assert_eq!(op_of(&channel.channel()), Some(op));
+            assert!(is_factory_op(channel.op), "{}", channel.urn);
+            assert!(is_call_op(channel.op), "{}", channel.urn);
+        }
+        let urns: BTreeSet<&str> = P4_SYSTEM_CHANNELS
+            .iter()
+            .chain(P5_SYSTEM_CHANNELS.iter())
+            .chain(P6_SYSTEM_CHANNELS.iter())
+            .map(|channel| channel.urn)
+            .collect();
+        assert_eq!(
+            urns.len(),
+            P4_SYSTEM_CHANNELS.len() + P5_SYSTEM_CHANNELS.len() + P6_SYSTEM_CHANNELS.len(),
+            "every URN names one process"
+        );
+        let earlier: BTreeSet<u8> = P4_SYSTEM_CHANNELS
+            .iter()
+            .chain(P5_SYSTEM_CHANNELS.iter())
+            .map(|channel| channel.op)
+            .collect();
+        assert!(
+            P6_SYSTEM_CHANNELS
+                .iter()
+                .all(|channel| !earlier.contains(&channel.op)),
+            "a VectorDB factory has an op of its own"
+        );
     }
 
     #[test]

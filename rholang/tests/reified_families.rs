@@ -13,6 +13,11 @@
 // `registered_families_complete` (F26), `aliases_bind_family_capability` (F27),
 // `constructor_params_validated` (F28), `priorities_validated` (I-10) and
 // `array_size_validated` (F7). Each one compares the code with an independent oracle.
+//
+// P6 registers the VectorDB families `hashmap:vectordb` and `vector:vectordb` after the rows and
+// aliases of P5 (design v3 4.2). Their factories require `capacity` and `dimensions`, and take
+// the optional `metric` and `mirror`. Gate 9 then refuses a `mirror` whose metric ChromaDB does
+// not index. The oracles of this file restate these rules.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -39,20 +44,21 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::runtime::unavailable;
 use rholang::rust::interpreter::reified::system_channels::{
-    SystemChannel, P4_SYSTEM_CHANNELS, P5_SYSTEM_CHANNELS,
+    SystemChannel, P4_SYSTEM_CHANNELS, P5_SYSTEM_CHANNELS, P6_SYSTEM_CHANNELS,
 };
 use rholang::rust::interpreter::reified::system_processes::definitions;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::factory::constructor::{family_of, FactoryConstructor};
 use rholang::rust::interpreter::spaces::factory::defaults::{
-    constructor_schema, required_params, suggestion, ParamRule, CYCLIC_PARAM, PRIORITIES_PARAM,
-    SIZE_PARAM, SUGGESTION_DISTANCE,
+    constructor_schema, required_params, suggestion, ParamRule, CAPACITY_PARAM, CYCLIC_PARAM,
+    DIMENSIONS_PARAM, METRIC_PARAM, MIRROR_CHROMA, MIRROR_PARAM, PRIORITIES_PARAM, SIZE_PARAM,
+    SUGGESTION_DISTANCE,
 };
 use rholang::rust::interpreter::spaces::factory::urn::{
     factory_capability, factory_channel, is_wired, registered_aliases, registered_channel,
-    registered_families, registered_p5_families, P5_ALIAS_ROWS, P5_FAMILY_ROWS,
-    REGISTERED_FAMILIES,
+    registered_families, registered_p5_families, registered_p6_families, P5_ALIAS_ROWS,
+    P5_FAMILY_ROWS, P6_FAMILY_ROWS, REGISTERED_FAMILIES,
 };
 use rholang::rust::interpreter::spaces::families::{query_params, send_params, Family};
 use rholang::rust::interpreter::spaces::namespace::{NativeSpace, SID_LEN};
@@ -103,11 +109,12 @@ fn family(outer: SpaceOuter, inner: SpaceInner) -> SpaceFactoryUrn {
     SpaceFactoryUrn { outer, inner }
 }
 
-/// The row of `family` in the tables of P4 and P5, registered or not.
+/// The row of `family` in the tables of P4, P5 and P6, registered or not.
 fn row_of(family: SpaceFactoryUrn) -> Option<SystemChannel> {
     REGISTERED_FAMILIES
         .iter()
         .chain(P5_FAMILY_ROWS.iter())
+        .chain(P6_FAMILY_ROWS.iter())
         .find(|(candidate, _)| *candidate == family)
         .map(|(_, channel)| *channel)
 }
@@ -139,6 +146,24 @@ fn rholang_ctor(named: &BTreeMap<String, Par>) -> String {
                 .join(", ")
         ),
     }
+}
+
+/// The Rholang arguments of [`rholang_ctor`] for `named`, with the source `source` as the value
+/// of the param `key`. The source can be a computed value, which the normalizer does not check.
+fn rholang_ctor_with(named: &BTreeMap<String, Par>, key: &str, source: &str) -> String {
+    let mut sources: BTreeMap<&str, String> = named
+        .iter()
+        .map(|(name, value)| (name.as_str(), rholang_value(value)))
+        .collect();
+    sources.insert(key, source.to_string());
+    format!(
+        "\"default\"; {}",
+        sources
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// The required params of `family`, each with the value 4.
@@ -175,7 +200,7 @@ async fn stored_config(session: &Session, space: NativeSpace) -> SpaceConfig {
     SpaceConfig::from_par(map).expect("the config map decodes")
 }
 
-/// The families of P5 that have a constructor schema.
+/// The families of P5 and P6 that have a constructor schema.
 fn schema_families() -> Vec<SpaceFactoryUrn> {
     SpaceFactoryUrn::all()
         .filter(|family| constructor_schema(*family).is_some())
@@ -183,6 +208,20 @@ fn schema_families() -> Vec<SpaceFactoryUrn> {
 }
 
 // ─── Oracles ─────────────────────────────────────────────────────────────────────────────────
+
+/// The names of the six metrics of a VectorDB space (design v3 4.2).
+const METRICS: [&str; 6] = [
+    "cosine",
+    "dot",
+    "euclidean",
+    "manhattan",
+    "hamming",
+    "jaccard",
+];
+
+/// The metrics that a ChromaDB mirror indexes (gate 9, design v3 4.2). A VectorDB space without
+/// a `metric` param uses `cosine`.
+const MIRRORED_METRICS: [&str; 3] = ["cosine", "dot", "euclidean"];
 
 /// The Levenshtein distance of `word` and `candidate`, by the full table.
 fn levenshtein(word: &str, candidate: &str) -> usize {
@@ -215,9 +254,9 @@ fn expected_suggestion(word: &str, schema: &[&str]) -> Option<String> {
         .map(|(_, candidate)| candidate.to_string())
 }
 
-/// The canonical value of the param `key` by the rules of F7 and I-10, or `None` when the rule
-/// refuses `value`. A value is one ground expression with no connective flag. Its bit sets do
-/// not count.
+/// The canonical value of the param `key` by the rules of F7, I-10 and design v3 4.2 (P6), or
+/// `None` when the rule refuses `value`. A value is one ground expression with no connective flag.
+/// Its bit sets do not count.
 fn expected_value(key: &str, value: &Par) -> Option<Par> {
     let ground = value.sends.is_empty()
         && value.receives.is_empty()
@@ -240,21 +279,34 @@ fn expected_value(key: &str, value: &Par) -> Option<Par> {
             (*number >= 1).then(|| int(*number))
         }
         (true, "cyclic", Some(ExprInstance::GBool(value))) => Some(flag(*value)),
+        (true, "capacity", Some(ExprInstance::GInt(number))) => {
+            (1..=1_000_000).contains(number).then(|| int(*number))
+        }
+        (true, "dimensions", Some(ExprInstance::GInt(number))) => {
+            (1..=4096).contains(number).then(|| int(*number))
+        }
+        (true, "metric", Some(ExprInstance::GString(name))) => {
+            METRICS.contains(&name.as_str()).then(|| string(name))
+        }
+        (true, "mirror", Some(ExprInstance::GString(name))) => {
+            (name == "chroma").then(|| string(name))
+        }
         _ => None,
     }
 }
 
-/// The outcome of the gates 5 to 8 by the design: positional params, then the unknown keys in
+/// The outcome of the gates 5 to 9 by the design: positional params, then the unknown keys in
 /// bytewise order with the suggestion of [`expected_suggestion`], then the missing required
-/// keys, then the values in bytewise key order.
+/// keys in bytewise order, then the values in bytewise key order, then the metric of a mirror.
 fn expected_params(
     family: SpaceFactoryUrn,
     positional: &[Par],
     named: &BTreeMap<String, Par>,
 ) -> Result<BTreeMap<String, Par>, SpaceError> {
     let schema = constructor_schema(family).expect("the oracle runs on a family with a schema");
-    let required: &[&str] = match family.outer {
-        SpaceOuter::Array => &["size"],
+    let required: &[&str] = match (family.outer, family.inner) {
+        (SpaceOuter::Array, _) => &["size"],
+        (_, SpaceInner::VectorDb) => &["capacity", "dimensions"],
         _ => &[],
     };
     if !positional.is_empty() {
@@ -284,7 +336,17 @@ fn expected_params(
             None => return Err(SpaceError::InvalidParam { key: key.clone() }),
         }
     }
-    Ok(canonical)
+    let metric = canonical
+        .get("metric")
+        .cloned()
+        .unwrap_or_else(|| string("cosine"));
+    let mirrored = MIRRORED_METRICS.iter().any(|name| string(name) == metric);
+    match canonical.contains_key("mirror") && !mirrored {
+        true => Err(SpaceError::InvalidParam {
+            key: "mirror".to_string(),
+        }),
+        false => Ok(canonical),
+    }
 }
 
 // ─── Strategies ──────────────────────────────────────────────────────────────────────────────
@@ -295,13 +357,16 @@ fn arb_any_family() -> BoxedStrategy<SpaceFactoryUrn> {
 
 fn arb_schema_family() -> BoxedStrategy<SpaceFactoryUrn> { select(schema_families()).boxed() }
 
-/// A param key: a schema key, a near miss, another send or query key, or a random identifier.
+/// A param key: a schema key of P5 or P6, a near miss, another send or query key, or a random
+/// identifier.
 fn arb_key() -> BoxedStrategy<String> {
     prop_oneof![
         4 => select(vec![SIZE_PARAM, CYCLIC_PARAM, PRIORITIES_PARAM]).prop_map(String::from),
+        3 => select(vec![CAPACITY_PARAM, DIMENSIONS_PARAM, METRIC_PARAM, MIRROR_PARAM])
+            .prop_map(String::from),
         2 => select(vec![
             "siz", "sise", "sizes", "cycli", "cylic", "prioritie", "prioritis", "priority",
-            "capacity", "k", "levels",
+            "capacit", "dimension", "metri", "mirro", "k", "levels",
         ])
         .prop_map(String::from),
         1 => "[a-z][a-z_]{0,9}".prop_filter("a param key", |key| is_param_key(key)),
@@ -309,14 +374,24 @@ fn arb_key() -> BoxedStrategy<String> {
     .boxed()
 }
 
-/// A param value: an integer near the bounds, a flag, a string, `Nil`, a value with a stale
-/// connective flag, a value with stray bits, or two expressions.
+/// A param value: an integer near the bounds, a flag, a string, a metric or mirror name or a near
+/// miss of one, `Nil`, a value with a stale connective flag, a value with stray bits, or two
+/// expressions.
 fn arb_value() -> BoxedStrategy<Par> {
     prop_oneof![
         4 => (-3i64..7).prop_map(int),
-        1 => select(vec![i64::MIN, -1, 0, 1, i64::MAX]).prop_map(int),
+        1 => select(vec![i64::MIN, -1, 0, 1, 4096, 4097, 1_000_000, 1_000_001, i64::MAX])
+            .prop_map(int),
         2 => any::<bool>().prop_map(flag),
         1 => "[a-z0-9]{0,3}".prop_map(|text| string(&text)),
+        2 => select(
+            METRICS
+                .iter()
+                .copied()
+                .chain(["chroma", "Chroma", "Cosine", "l2"])
+                .collect::<Vec<_>>()
+        )
+        .prop_map(string),
         1 => Just(Par::default()),
         1 => (-3i64..7).prop_map(|number| Par {
             connective_used: true,
@@ -377,12 +452,14 @@ async fn space_factory_families_registered() {
         }
     }
     // The definitions: the four of P4, then the registered families of P5 in family-index
-    // order, then the registered aliases.
+    // order, then the registered aliases, then the registered families of P6 in family-index
+    // order.
     let expected: Vec<(String, i64)> = P4_SYSTEM_CHANNELS
         .iter()
         .copied()
         .chain(registered_p5_families().map(|(_, channel)| channel))
         .chain(registered_aliases().map(|(channel, _)| channel))
+        .chain(registered_p6_families().map(|(_, channel)| channel))
         .map(|channel| (channel.urn.to_string(), channel.body_ref()))
         .collect();
     let defined: Vec<(String, i64)> = definitions(&unavailable())
@@ -396,6 +473,13 @@ async fn space_factory_families_registered() {
     assert!(
         indices.windows(2).all(|pair| pair[0] < pair[1]),
         "the P5 rows are in family-index order"
+    );
+    let indices: Vec<u8> = registered_p6_families()
+        .map(|(_, channel)| channel.op)
+        .collect();
+    assert!(
+        indices.windows(2).all(|pair| pair[0] < pair[1]),
+        "the P6 rows are in family-index order"
     );
     // A runtime binds each registered family to its capability and installs one factory
     // continuation on its channel. An unregistered family has neither.
@@ -441,12 +525,15 @@ async fn space_factory_families_registered() {
         }
     }
     println!(
-        "registered P5 families: {:?}; registered aliases: {:?}",
+        "registered P5 families: {:?}; registered aliases: {:?}; registered P6 families: {:?}",
         registered_p5_families()
             .map(|(family, _)| family.to_string())
             .collect::<Vec<_>>(),
         registered_aliases()
             .map(|(channel, _)| channel.urn)
+            .collect::<Vec<_>>(),
+        registered_p6_families()
+            .map(|(family, _)| family.to_string())
             .collect::<Vec<_>>()
     );
 }
@@ -639,8 +726,8 @@ async fn space_factory_alias_install_idempotent() {
 }
 
 /// The family agent dispatches by the config: each wired family names its own agent, and a
-/// space that a registered HashMap factory creates runs a send and a receive through the agent
-/// of its family.
+/// space that a registered HashMap factory creates with its required params runs a send and a
+/// receive through the agent of its family.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_family_dispatch_by_config() {
     let meter = ScanMeter::new(None);
@@ -664,8 +751,9 @@ async fn space_family_dispatch_by_config() {
     {
         let out = format!("rrs-p5-dispatch-{index}");
         let source = format!(
-            "new factory(`{family}`) in {{ for (space <- factory!?(\"default\")) {{ \
-             for (a <- space!?(\"gensym\")) {{ a!(7) | for (@x <- a) {{ @\"{out}\"!(x) }} }} }} }}"
+            "new factory(`{family}`) in {{ for (space <- factory!?({})) {{ \
+             for (a <- space!?(\"gensym\")) {{ a!(7) | for (@x <- a) {{ @\"{out}\"!(x) }} }} }} }}",
+            rholang_ctor(&minimal_params(family))
         );
         session
             .run(&source, &format!("rrs-p5-dispatch {family}"))
@@ -775,8 +863,8 @@ async fn space_factory_kwargs_unknown_param_with_suggestion() {
     }
 }
 
-/// An Array factory without `size` fails with `MissingParam` (F7), after the unknown keys and
-/// before the values.
+/// An Array factory without `size` (F7) and a VectorDB factory without `capacity` or
+/// `dimensions` (P6) fail with `MissingParam`, after the unknown keys and before the values.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_factory_kwargs_missing_param() {
     let arrays: Vec<SpaceFactoryUrn> = schema_families()
@@ -811,9 +899,51 @@ async fn space_factory_kwargs_missing_param() {
             "{family}: an unknown key comes first"
         );
     }
+    let vectordbs: Vec<SpaceFactoryUrn> = schema_families()
+        .into_iter()
+        .filter(|family| family.inner == SpaceInner::VectorDb)
+        .collect();
+    assert_eq!(vectordbs.len(), 2);
+    let missing = |key: &str| -> Result<FactoryConstructor, SpaceError> {
+        Err(SpaceError::MissingParam {
+            key: key.to_string(),
+        })
+    };
+    for family in &vectordbs {
+        for (pairs, key) in [
+            (named(&[]), CAPACITY_PARAM),
+            (named(&[("dimensions", int(2))]), CAPACITY_PARAM),
+            (
+                named(&[("dimensions", int(0)), ("metric", string("l2"))]),
+                CAPACITY_PARAM,
+            ),
+            (named(&[("capacity", int(5))]), DIMENSIONS_PARAM),
+            (
+                named(&[("capacity", int(0)), ("mirror", string(MIRROR_CHROMA))]),
+                DIMENSIONS_PARAM,
+            ),
+        ] {
+            assert_eq!(
+                FactoryConstructor::validate(*family, &ctor(&[], &pairs)),
+                missing(key),
+                "{family}: {pairs:?}"
+            );
+        }
+        assert_eq!(
+            FactoryConstructor::validate(*family, &list(Vec::new())),
+            missing(CAPACITY_PARAM)
+        );
+        assert!(
+            matches!(
+                FactoryConstructor::validate(*family, &ctor(&[], &named(&[("capacit", int(4))]))),
+                Err(SpaceError::UnknownParam { .. })
+            ),
+            "{family}: an unknown key comes first"
+        );
+    }
     for family in schema_families()
         .into_iter()
-        .filter(|family| family.outer != SpaceOuter::Array)
+        .filter(|family| family.outer != SpaceOuter::Array && family.inner != SpaceInner::VectorDb)
     {
         assert!(required_params(family).is_empty(), "{family}");
         assert!(
@@ -836,19 +966,76 @@ async fn space_factory_kwargs_missing_param() {
             )
             .await;
     }
+    for (family, _) in
+        registered_families().filter(|(family, _)| family.inner == SpaceInner::VectorDb)
+    {
+        for arguments in [
+            r#""default""#,
+            r#""default"; capacity=5"#,
+            r#""default"; dimensions=2, metric="dot""#,
+        ] {
+            session
+                .fail_with(
+                    &format!(
+                        "new factory(`{family}`) in {{ for (q <- factory!?({arguments})) {{ Nil }} }}"
+                    ),
+                    &format!("rrs-p5-missing {family} {arguments}"),
+                    &Injections::new(),
+                    &["MissingParam"],
+                )
+                .await;
+        }
+    }
 }
 
-/// A value that its rule refuses fails with `InvalidParam`: `size` and `priorities` take a
-/// `GInt` of at least 1, and `cyclic` takes a `GBool` (F7, I-10).
+/// A value that its rule refuses fails with `InvalidParam`. `size` and `priorities` take a
+/// `GInt` of at least 1, and `cyclic` takes a `GBool` (F7, I-10). `capacity` and `dimensions`
+/// take a `GInt` within their bounds, `metric` takes a metric name, and `mirror` takes `"chroma"`
+/// (P6). Gate 9 then refuses a mirror whose metric ChromaDB does not index.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_factory_kwargs_invalid_param() {
     let bad_numbers = [int(0), int(-1), int(i64::MIN), flag(true), string("4")];
     let bad_flags = [int(0), int(1), string("true"), Par::default()];
+    let bad_capacities = [
+        int(0),
+        int(-1),
+        int(1_000_001),
+        int(i64::MAX),
+        flag(true),
+        string("4"),
+    ];
+    let bad_dimensions = [
+        int(0),
+        int(-1),
+        int(4097),
+        int(i64::MAX),
+        flag(true),
+        string("4"),
+    ];
+    let bad_metrics = [
+        string("l2"),
+        string("Cosine"),
+        string(""),
+        int(1),
+        Par::default(),
+    ];
+    let bad_mirrors = [
+        string("Chroma"),
+        string("qdrant"),
+        string("cosine"),
+        int(1),
+        flag(true),
+        Par::default(),
+    ];
     for family in schema_families() {
         let schema = constructor_schema(family).expect("a schema");
         for key in schema {
             let bad: &[Par] = match *key {
                 CYCLIC_PARAM => &bad_flags,
+                CAPACITY_PARAM => &bad_capacities,
+                DIMENSIONS_PARAM => &bad_dimensions,
+                METRIC_PARAM => &bad_metrics,
+                MIRROR_PARAM => &bad_mirrors,
                 _ => &bad_numbers,
             };
             for value in bad {
@@ -864,21 +1051,48 @@ async fn space_factory_kwargs_invalid_param() {
             }
         }
     }
+    // Gate 9: a mirror needs a metric that ChromaDB indexes, and `cosine` is the default metric.
+    for family in schema_families()
+        .into_iter()
+        .filter(|family| family.inner == SpaceInner::VectorDb)
+    {
+        for metric in METRICS.iter().map(|name| Some(*name)).chain([None]) {
+            let mut pairs = minimal_params(family);
+            if let Some(metric) = metric {
+                pairs.insert(METRIC_PARAM.to_string(), string(metric));
+            }
+            pairs.insert(MIRROR_PARAM.to_string(), string(MIRROR_CHROMA));
+            let validated = FactoryConstructor::validate(family, &ctor(&[], &pairs))
+                .map(|validated| validated.params);
+            match MIRRORED_METRICS.contains(&metric.unwrap_or("cosine")) {
+                true => assert_eq!(validated, Ok(pairs), "{family}: {metric:?}"),
+                false => assert_eq!(
+                    validated,
+                    Err(SpaceError::InvalidParam {
+                        key: MIRROR_PARAM.to_string(),
+                    }),
+                    "{family}: {metric:?}"
+                ),
+            }
+        }
+    }
     let mut session = Session::new().await;
     for (family, _) in registered_families() {
         let schema = constructor_schema(family).expect("a registered family has a schema");
         for key in schema {
+            // The normalizer refuses a literal metric that is not a metric name, so the bad
+            // metric is a computed value, which reaches the rule of the factory.
             let value = match *key {
-                CYCLIC_PARAM => int(1),
-                _ => int(0),
+                CYCLIC_PARAM => "1",
+                METRIC_PARAM => r#""l" ++ "2""#,
+                MIRROR_PARAM => r#""qdrant""#,
+                _ => "0",
             };
-            let mut pairs = minimal_params(family);
-            pairs.insert((*key).to_string(), value);
             session
                 .fail_with(
                     &format!(
                         "new factory(`{family}`) in {{ for (q <- factory!?({})) {{ Nil }} }}",
-                        rholang_ctor(&pairs)
+                        rholang_ctor_with(&minimal_params(family), key, value)
                     ),
                     &format!("rrs-p5-invalid {family} {key}"),
                     &Injections::new(),
@@ -887,10 +1101,29 @@ async fn space_factory_kwargs_invalid_param() {
                 .await;
         }
     }
+    for (family, _) in
+        registered_families().filter(|(family, _)| family.inner == SpaceInner::VectorDb)
+    {
+        let mut pairs = minimal_params(family);
+        pairs.insert(METRIC_PARAM.to_string(), string("hamming"));
+        pairs.insert(MIRROR_PARAM.to_string(), string(MIRROR_CHROMA));
+        session
+            .fail_with(
+                &format!(
+                    "new factory(`{family}`) in {{ for (q <- factory!?({})) {{ Nil }} }}",
+                    rholang_ctor(&pairs)
+                ),
+                &format!("rrs-p5-invalid {family} gate 9"),
+                &Injections::new(),
+                &["InvalidParam"],
+            )
+            .await;
+    }
 }
 
 /// The config of a new space holds the named params in their canonical form, and an absent
-/// optional param stays absent: a fixed Array space, or priority levels without a bound.
+/// optional param stays absent: a fixed Array space, priority levels without a bound, or a
+/// VectorDB space with the default metric and without a mirror.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_factory_kwargs_are_stored_canonical() {
     for family in schema_families() {
@@ -905,6 +1138,20 @@ async fn space_factory_kwargs_are_stored_canonical() {
                         ..flag(true)
                     },
                     flag(true),
+                ),
+                METRIC_PARAM => (
+                    Par {
+                        locally_free: vec![0b0000_0010],
+                        ..string("dot")
+                    },
+                    string("dot"),
+                ),
+                MIRROR_PARAM => (
+                    Par {
+                        locally_free: vec![0b0000_1000],
+                        ..string(MIRROR_CHROMA)
+                    },
+                    string(MIRROR_CHROMA),
                 ),
                 _ => (
                     Par {
@@ -923,8 +1170,12 @@ async fn space_factory_kwargs_are_stored_canonical() {
         let minimal = FactoryConstructor::validate(family, &ctor(&[], &minimal_params(family)))
             .unwrap_or_else(|error| panic!("{family}: {error:?}"));
         assert_eq!(minimal.params, minimal_params(family), "{family}");
-        assert!(!minimal.params.contains_key(CYCLIC_PARAM));
-        assert!(!minimal.params.contains_key(PRIORITIES_PARAM));
+        for optional in [CYCLIC_PARAM, PRIORITIES_PARAM, METRIC_PARAM, MIRROR_PARAM] {
+            assert!(
+                !minimal.params.contains_key(optional),
+                "{family}: {optional}"
+            );
+        }
     }
     let mut session = Session::new().await;
     for (index, (family, _)) in registered_families().enumerate() {
@@ -934,6 +1185,8 @@ async fn space_factory_kwargs_are_stored_canonical() {
             .map(|key| {
                 let value = match *key {
                     CYCLIC_PARAM => flag(true),
+                    METRIC_PARAM => string("euclidean"),
+                    MIRROR_PARAM => string(MIRROR_CHROMA),
                     _ => int(5),
                 };
                 ((*key).to_string(), value)
@@ -964,8 +1217,8 @@ async fn space_factory_kwargs_are_stored_canonical() {
 /// `registered_families_complete` (F26): a family is registered exactly when it has a row and
 /// its dispatch arm. A registered family has the op of its index, the body ref `200 + op`, its
 /// URN, a constructor schema and a send schema. The definitions are the four of P4, the
-/// registered P5 rows in row order and the registered aliases, and nothing else: each factory
-/// definition names a registered family by its op.
+/// registered P5 rows in row order, the registered aliases and the registered P6 rows in row
+/// order, and nothing else: each factory definition names a registered family by its op.
 #[test]
 fn prop_registered_families_complete() {
     let defined: Vec<(String, i64)> = definitions(&unavailable())
@@ -998,6 +1251,14 @@ fn prop_registered_families_complete() {
                 .filter(|channel| {
                     registered_p5_families().any(|(_, registered)| registered == **channel)
                         || registered_aliases().any(|(registered, _)| registered == **channel)
+                })
+                .map(|channel| (channel.urn.to_string(), channel.body_ref())),
+        );
+        expected.extend(
+            P6_SYSTEM_CHANNELS
+                .iter()
+                .filter(|channel| {
+                    registered_p6_families().any(|(_, registered)| registered == **channel)
                 })
                 .map(|channel| (channel.urn.to_string(), channel.body_ref())),
         );
@@ -1234,7 +1495,9 @@ fn prop_array_size_validated() {
 }
 
 /// The factory of a registered family creates a space whose config names the family and holds
-/// the canonical params of the constructor, for random valid params of the schema.
+/// the canonical params of the constructor, for random valid params of the schema. A VectorDB
+/// constructor takes `capacity` and `dimensions`, any metric, and a mirror only with a metric
+/// that ChromaDB indexes.
 #[test]
 fn prop_factory_config_names_its_family() {
     let families: Vec<SpaceFactoryUrn> = registered_families().map(|(family, _)| family).collect();
@@ -1246,22 +1509,26 @@ fn prop_factory_config_names_its_family() {
             any::<bool>(),
             proptest::option::of(any::<bool>()),
             proptest::option::of(1i64..5),
+            1i64..5,
+            proptest::option::of(select(METRICS.to_vec())),
+            any::<bool>(),
         ),
-        |(family, size, label, cyclic, priorities)| {
+        |(family, size, label, cyclic, priorities, dimensions, metric, mirror)| {
             let schema = constructor_schema(family).expect("a registered family has a schema");
+            let mirrored = mirror && MIRRORED_METRICS.contains(&metric.unwrap_or("cosine"));
             let mut pairs = BTreeMap::new();
             for key in schema {
-                match (*key, cyclic, priorities) {
-                    (SIZE_PARAM, _, _) => {
-                        pairs.insert(SIZE_PARAM.to_string(), int(size));
-                    }
-                    (CYCLIC_PARAM, Some(cyclic), _) => {
-                        pairs.insert(CYCLIC_PARAM.to_string(), flag(cyclic));
-                    }
-                    (PRIORITIES_PARAM, _, Some(priorities)) => {
-                        pairs.insert(PRIORITIES_PARAM.to_string(), int(priorities));
-                    }
-                    _ => {}
+                let value = match *key {
+                    SIZE_PARAM | CAPACITY_PARAM => Some(int(size)),
+                    DIMENSIONS_PARAM => Some(int(dimensions)),
+                    CYCLIC_PARAM => cyclic.map(flag),
+                    PRIORITIES_PARAM => priorities.map(int),
+                    METRIC_PARAM => metric.map(string),
+                    MIRROR_PARAM => mirrored.then(|| string(MIRROR_CHROMA)),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    pairs.insert((*key).to_string(), value);
                 }
             }
             tokio_runtime().block_on(async {

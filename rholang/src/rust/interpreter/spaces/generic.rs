@@ -258,6 +258,10 @@ pub enum JoinWindow {
     /// One representative for each class, the first member of the class in the canonical order:
     /// the set (F5). A bind claims its whole class.
     Classes,
+    /// For each bind, the records that its query makes eligible, in its selection order: the
+    /// VectorDB (P6, design v3 4.6). A bind without a query sees every record in the canonical
+    /// order of DR-75, as a bag bind does.
+    Similarity,
 }
 
 /// The bound of one side of a collection (F15, P6): the most entries of the side, and the error

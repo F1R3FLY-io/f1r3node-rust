@@ -3292,24 +3292,24 @@ Qed.
 
    Traceability: Rocq definition → Rust code (Phase 2)
    store_datum        land of the prefix source (STORE-MARKERS,
-                      pathmap/join.rs:2764-2803) with datum_markers
+                      pathmap/join.rs:2784-2823) with datum_markers
                       (delivery.rs:494-508)
    deliver_remove, take_marker
                       before_fire and retire_spent (pathmap/join.rs:
-                      2808-2865, 2870-2903) with retire_datum
-                      (RETIRE-PLAN, pathmap/join.rs:1919-1952)
-   put_marker         restore_marker (pathmap/join.rs:1828-1847) with
+                      2828-2885, 2890-2923) with retire_datum
+                      (RETIRE-PLAN, pathmap/join.rs:1930-1963)
+   put_marker         restore_marker (pathmap/join.rs:1839-1858) with
                       datum_marker (delivery.rs:515-534)
-   spend_after_peek   spent_element (pathmap/join.rs:2028-2049)
+   spend_after_peek   spent_element (pathmap/join.rs:2039-2060)
    send_prefixes, offer_list
                       offer_order of the prefix source (pathmap/join.rs:
-                      2297-2327), the most specific prefix first
+                      2312-2342), the most specific prefix first
    window, fireable   window and path_window of the prefix source
-                      (pathmap/join.rs:2221-2281, 1266-1385): for each path
+                      (pathmap/join.rs:2236-2296, 1275-1395): for each path
                       p under q in path-key order, the window of the
                       discipline on D(p), without the datums in flight
    bump               touch and finish of the prefix source
-                      (pathmap/join.rs:2101-2117, 2721-2742)
+                      (pathmap/join.rs:2112-2128, 2741-2762)
 
    Abstraction (Phase 2)
    - A marker carries the cost authority of the record of its datum

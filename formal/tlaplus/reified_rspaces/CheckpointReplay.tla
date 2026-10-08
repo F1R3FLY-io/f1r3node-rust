@@ -132,7 +132,7 @@
 (*   peek removal (Rule E)  rs/rspace/ops_consume.rs:192-202               *)
 (*                          (store_persistent_data removes every           *)
 (*                          non-persistent candidate, peeks included)      *)
-(*   re-store (Rule E)      spaces/generic.rs:1053-1068 (Cx::restore and    *)
+(*   re-store (Rule E)      spaces/generic.rs:1057-1072 (Cx::restore and    *)
 (*                          Cx::restore_on), 1265-1274 (restore_peeked),   *)
 (*                          1180-1262 (receive_head)                       *)
 (*   produce_peeks          reduce.rs:981-1016, called at 780, 809, 934    *)

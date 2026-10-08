@@ -71,87 +71,87 @@
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code (rholang/src/rust/interpreter)
    ─────────────────────────────────────────────────────────────────────────
-   shape, window, win,        spaces/join.rs:1592-1685 (KeyedSource::window:
+   shape, window, win,        spaces/join.rs:1625-1720 (KeyedSource::window:
    win_in, wsel               the first m entries, the first m of each
                               level, every record, with the element in
                               flight placed, and the claims of a set) and
                               720-847 (the trait JoinSource)
-   lane_of, sees, visible     spaces/join.rs:4157-4165 (visible) and
+   lane_of, sees, visible     spaces/join.rs:4779-4787 (visible) and
                               spaces/disciplines/priority_queue.rs
                               (receive_lane, send_level, Lane::sees)
-   lanes_on, lane_queue,      spaces/join.rs:1784-1818 and 1820-1880
+   lanes_on, lane_queue,      spaces/join.rs:1823-1860 and 1862-1925
    at_head, heads_ok,         (KeyedSource::at_head, at_head_incoming) and
    park_view                  2284-2303 (Engine::all_at_head)
-   gle, gpairs, gorder        spaces/join.rs:460-484 (group_order, FR-1')
+   gle, gpairs, gorder        spaces/join.rs:470-494 (group_order, FR-1')
    restore, in_bind_order     spaces/record.rs:1936 (restore_bind_order) and
-                              spaces/join.rs:3007-3032 (admits: the values
+                              spaces/join.rs:3128-3153 (admits: the values
                               in the bind order of the slots)
-   guard_ok                   spaces/join.rs:3007-3032 (admits: the guard
+   guard_ok                   spaces/join.rs:3128-3153 (admits: the guard
                               once, admits_all)
-   tag, claimed, try_cands,   spaces/join.rs:2907-3003 (Engine::search: the
+   tag, claimed, try_cands,   spaces/join.rs:3011-3124 (Engine::search: the
    fill, slots_cons, greedy,  first unclaimed entry of the window that the
    receive_decision           lane sees and the pattern binds, with no
                               backtracking), 1392-1411 (KeyedSource::claim)
                               and 3516-3535 (is_claimed)
-   forced, slots_prod,        spaces/join.rs:3037-3121 (search_produce: the
+   forced, slots_prod,        spaces/join.rs:3158-3270 (search_produce: the
    incoming_positions,        heads, x in its window, the positions of the
    in_win, x_in_win,          collection of x in group order) and the
    search_at, search_produce  Scan and Classes arm of 1298-1390 (x at the
                               end of the window)
-   staged, apply, jst, stage  spaces/join.rs:2380-2408 (Engine: bumps,
+   staged, apply, jst, stage  spaces/join.rs:2434-2464 (Engine: bumps,
                               dirty, work, own and stop) and the stagings
                               of Cx in spaces/generic.rs
-   cascades                   spaces/join.rs:2465-2470 (Engine::cascades)
-   touch, touch_all,          spaces/join.rs:2479-2508 and 2511-2523 (TOUCH)
+   cascades                   spaces/join.rs:2527-2532 (Engine::cascades)
+   touch, touch_all,          spaces/join.rs:2541-2570 and 2573-2585 (TOUCH)
    touch_scope                and 1181-1198 (KeyedSource::touch)
-   store                      spaces/join.rs:3284-3304 (store)
-   is_inc, sends_at,          spaces/join.rs:3191-3232 (second_sends: the
+   store                      spaces/join.rs:3565-3585 (store)
+   is_inc, sends_at,          spaces/join.rs:3472-3513 (second_sends: the
    np_results,                element in flight whether or not it is
    push_second_sends          persistent, and the removed records that are
                               not persistent) and 2606-2611 (push_work)
-   retire_positions,          spaces/join.rs:2129-2163 and 2168-2181
+   retire_positions,          spaces/join.rs:2174-2208 and 2213-2226
    class_members,             (retire_classes, class_claims) and
-   retire_class,              spaces/disciplines/scan.rs:810 (retire_class_on)
+   retire_class,              spaces/disciplines/scan.rs:811 (retire_class_on)
    retire_set_binds
    fire_tail                  the tails of offer, receive and
                               lift_and_reoffer (second sends or retires)
    after_fire, cap            reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP,
                               FireRounds::after_fire), called by offer,
                               receive and lift_and_reoffer
-   fire_dirty                 spaces/join.rs:2526 and 812-818 (mark_dirty
+   fire_dirty                 spaces/join.rs:2588 and 822-828 (mark_dirty
                               and mark, on the collections of the group)
-   offer_cands, fires_with,   spaces/join.rs:3310-3450 (offer), 1413-1445
+   offer_cands, fires_with,   spaces/join.rs:3591-3748 (offer), 1413-1445
    offer_pick, offer1, offer  (KeyedSource::offer_order) and 1618-1697
                               (union_order)
-   class_pers, rcv_stays      spaces/join.rs:3455-3517 (class_candidates:
+   class_pers, rcv_stays      spaces/join.rs:3813-3875 (class_candidates:
                               the class stays when one member is
                               persistent) and 2977 (the step of a
                               single-bind fire)
-   receive_sel, receive1,     spaces/join.rs:3524-3712, 3717-3733 and
+   receive_sel, receive1,     spaces/join.rs:3882-4075, 4191-4207 and
    receive, park              3088-3115 (receive, after_receive, park)
-   first_np, reoffer_pos,     spaces/join.rs:3832-3932 and 3941-3993
+   first_np, reoffer_pos,     spaces/join.rs:4454-4554 and 4563-4615
    lift_ops, lift_reoffer     (lift_and_reoffer, lift)
-   fireable, heads_of,        spaces/join.rs:3771-3793 (next_fire) and
+   fireable, heads_of,        spaces/join.rs:4245-4281 (next_fire) and
    find_fire, next_fire_in,   1447-1487 (KeyedSource::cascade_order, with
    next_fire                  union_order for a set)
-   resend_elem, resend,       spaces/join.rs:3796-3825 (drain_and_cascade)
+   resend_elem, resend,       spaces/join.rs:4318-4350 (drain_and_cascade)
    dstep, drain               and 2674-2703 (incoming_of: the own
                               introduction of the record)
-   op, own_of, ords_of,       spaces/join.rs:2630-2668 (carried_ords) and
+   op, own_of, ords_of,       spaces/join.rs:2692-2730 (carried_ords) and
    prod_ord, carried_ord,     3445-3499 (resume)
    carried_ords, reissue_op
-   pending_work, resume_of,   spaces/join.rs:3998-4060 (commit: the own
+   pending_work, resume_of,   spaces/join.rs:4620-4682 (commit: the own
    owes, commit               entries of the work, owed, the seeds),
                               3411-3440 (settle_fields), 3445-3499 (resume)
                               and spaces/agent.rs:218-261 (PendingProduce,
                               CascadeState, SettleOp)
    phase_count, plan_at_cap   the one count of Cx::rounds for the
-                              transaction, and spaces/join.rs:2592 (the
+                              transaction, and spaces/join.rs:2654 (the
                               plan opens below the cap)
-   init, plan, pending_of,    spaces/join.rs:2539-2626 (Engine::run: the
+   init, plan, pending_of,    spaces/join.rs:2601-2688 (Engine::run: the
    run_join                   settle job at 1968, the settle before the
                               plan at 1988) and 598-627 (run_join)
-   partners, close_step,      spaces/join.rs:367-400 (classify), 462-584
+   partners, close_step,      spaces/join.rs:370-403 (classify), 462-584
    close_iter, universe,      (join_scope: the closure) and 183-226
    closure, join_scope,       (JoinScope, covers)
    covers, locked_ok, prepare

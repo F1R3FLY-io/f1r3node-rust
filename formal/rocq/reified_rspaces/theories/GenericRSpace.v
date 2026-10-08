@@ -63,14 +63,14 @@
    rec, wtr, state          the staged view of one collection: the records
                             and the waiting continuations of D(sid,k)
                             (Cx::data, Cx::waiters, spaces/generic.rs:
-                            740-749)
+                            744-753)
    elem                     the element of a produce: the record, its
                             persistence and the introduction that its
                             staged operations register (ProduceOp,
                             spaces/agent.rs; Introduction, spaces/record.rs:
                             2115-2159)
    staged, apply            the staging primitives of Cx and their effect
-                            on the view (spaces/generic.rs:978-1249):
+                            on the view (spaces/generic.rs:982-1253):
                             store_on (SStore), park_on (SPark),
                             fire_offer_on (SFireOffer), fire_receive_group
                             (SFireRecv), retire (SRetire). A fire removes
@@ -82,9 +82,9 @@
                             record at the front (rspace/hot_store.rs)
    data_order, waiter_order Cx::canonical_data_order and
                             Cx::canonical_waiter_order
-                            (spaces/generic.rs:763-778; DR-75 of decision
+                            (spaces/generic.rs:767-782; DR-75 of decision
                             41, rspace++/src/rspace/space_store_handle.rs:
-                            332-364). The model takes any permutation
+                            332-350 and 382-394). It takes any permutation
    after_fire, cap          FireRounds::after_fire and FIRE_ROUND_CAP
                             (reified/costs.rs:41-44, 302-334)
    first_admitting,         OFFER-SCAN (A.7, decision 37); Match.v proves
@@ -106,13 +106,13 @@
                             authority (design report of decision 45, A.1,
                             A.2, C.4)
    cell_offer_loop,         offer_head and receive_head of S1
-     cell_receive_loop      (spaces/generic.rs:1505-1578, 1580-1671) with
-                            Cx::check_capacity (spaces/generic.rs:932-954)
+     cell_receive_loop      (spaces/generic.rs:1509-1582, 1584-1675) with
+                            Cx::check_capacity (spaces/generic.rs:936-958)
                             and the plain restore of Discipline::restore
-                            (spaces/generic.rs:408-421, 1048-1068). The cell
+                            (spaces/generic.rs:412-425, 1052-1072). The cell
                             reaches the head on every operation
                             (reaches_head = true, precedes = true)
-   operation_ord            operation_ord (spaces/generic.rs:1696-1730):
+   operation_ord            operation_ord (spaces/generic.rs:1700-1734):
                             with no counter every order is 0
    scan_round, scan_reissue the record of a round of a scan produce
                             (record::wrap_datum_metered with the order of
