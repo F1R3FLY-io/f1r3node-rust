@@ -16,21 +16,20 @@
 //! reproduces the example's contract, (3) reference this test from
 //! the example's docstring under "Companion regression".
 //!
-//! **Triage port status (slices 5.86 + 5.89)**: 12 of 15 examples
-//! run and pass individually against triage's current state.  3 tests
-//! are `#[ignore]`-gated with specific un-ignore conditions:
+//! **Triage port status (slices 5.86 + 5.89 + 5.91)**: 14 of 15
+//! examples run.  1 test is `#[ignore]`-gated:
 //!   * `fileio_lockrange_wait_true_admit_after_release` — depends on
 //!     the `deterministic_reduction::park_external_during` wiring
 //!     (G-01 harness, deferred).
-//!   * `fileio_chown_on_consensus_cap` and
-//!     `fileio_cross_fs_membrane_invisible_to_bob` — fail with
-//!     `has_finished=false` on triage; the exact gap (likely a
-//!     Consensus-mode flow or missing membrane plumbing) requires
-//!     further investigation.
 //!
 //! Slice 5.89 un-ignored `fileio_rows_readlinesinto` and
 //! `fileio_static_line_copy` by porting the Rholang reducer's
 //! `validUtf8PrefixLen` and `decodeUtf8` ByteArray methods.
+//!
+//! Slice 5.91 un-ignored `fileio_chown_on_consensus_cap` and
+//! `fileio_cross_fs_membrane_invisible_to_bob` by wiring Consensus
+//! File staging into the RhoSpec harness (mirrors fileio's
+//! `project_bundle_per_validator`).
 //!
 //! **Flake note**: each running test uses a distinct `fs_bundle`, so
 //! `GenesisBuilder`'s cache misses on every test, and running the
@@ -65,14 +64,11 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// this test pins it against genesis + RhoSpec so a refactor of
 /// either the bundle-plumbing path or the `File.chown` write-mode
 /// gate is caught in CI.
-// TODO(fileio-triage): diagnose why this test does not reach its
-// assertion on triage.  Setup prints "Setup successful" and the
-// outer openFile+chown composition appears correct, but the inner
-// assert never fires (has_finished=false).  Candidate causes:
-// Consensus-mode fs_open flow mismatch, or File agent constructor
-// not firing on the fileCtor channel.  Un-ignore after a targeted
-// repro + fix.
-#[ignore = "triage: test does not reach assertion (has_finished=false) — likely a Consensus-mode fs_open flow gap not yet ported from fileio"]
+// Un-ignored by slice 5.91: the RhoSpec harness now stages
+// Consensus File entries into a per-test subdir with the logical
+// name on disk (mirrors fileio's `project_bundle_per_validator`),
+// so `/@bundle` resolves to a staging dir containing `consensus-cap`
+// and `safe_descend_verified` finds the file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fileio_chown_on_consensus_cap() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -866,14 +862,8 @@ in {{
 /// The regression asserts (7): Bob's independent cap continues to
 /// work after Alice's revocation, proving membrane invisibility
 /// across independent fresh-mints.
-// TODO(fileio-triage): diagnose this test's has_finished=false
-// failure on triage.  The cross-Fs membrane example wires an
-// alternate Fs instance for Bob and a forwarder membrane; the
-// inner forwarder's acknowledgement arm never fires.  Candidate
-// causes: alternate-Fs minting path not fully wired, or a
-// LineStream/decodeUtf8 reducer-method dependency inside the
-// membrane body.  Un-ignore after a targeted repro + fix.
-#[ignore = "triage: test does not reach assertion (has_finished=false) — the cross-Fs membrane example depends on infrastructure (likely LineStream/decodeUtf8 or alt-Fs minting) not yet in triage"]
+// Un-ignored by slice 5.91: same Consensus File staging fix as
+// `fileio_chown_on_consensus_cap`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fileio_cross_fs_membrane_invisible_to_bob() {
     let dir = tempfile::tempdir().expect("tempdir");
