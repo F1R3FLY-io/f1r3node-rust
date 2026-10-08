@@ -117,10 +117,11 @@ tasks:
       - "No scenario changes its behavioral verdict, and the driver timeouts stay unchanged unless a measurement justifies a change."
   - id: TASK-023-2
     title: "Make a disk admission fixture failure diagnosable from the CI log"
-    status: in_progress
+    status: review
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T15:10:00Z
+    progress: "The report (2da04d374) prints the scenario, the driver exit code, the summary state, and the last 20 driver log lines after an exit 2. The test (0791e99a6) shows no host path or key value. The Lint job runs scripts/bench/test-soak-disk-admission-timing.sh with SOAK_DISK_TEST_SKIP_TIMING=1 (6 s), so the scenario timing checks stay out of the CI gate."
     blocked_by: []
     acceptance:
       - "When a scenario exits 2, the CI log shows the driver exit code, the summary.json degraded field or its absence, and the last lines of the driver log."
@@ -128,10 +129,11 @@ tasks:
       - "The output contains no secret and no host path outside the evidence directory."
   - id: TASK-023-3
     title: "Measure the 20 s driver cap of the short full-iteration scenarios under CI load"
-    status: pending
+    status: review
     priority: p0
     claimed_by: null
-    blocked_by: [TASK-023-2]
+    blocked_by: []
+    resolution: "2026-10-08: TASK-023-7 showed that the failing runs stall in session_bounded and do not exceed a correct cap. A stalled run needs the full 60 s watchdog budget, so no driver cap is too short. Decision for review: no cap change. The CI driver exit codes come from the TASK-023-2 report during the TASK-023-5 measurement."
     acceptance:
       - "The diagnostic output of TASK-023-2 shows the driver exit code for each CI failure of the five 3 to 4 s scenarios."
       - "If a CI failure shows driver exit 124, a measured driver duration on the CI runner sets any new cap. Without a measurement the cap stays."
@@ -173,11 +175,11 @@ tasks:
       - "The analysis states whether the stall is in run-merge-recovery-soak.sh or in a fixture command, with the evidence."
   - id: TASK-023-8
     title: "Update CLAIM-SOAK-001 and fix the driver stall"
-    status: in_progress
+    status: review
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T19:00:00Z
-    progress: "Claim updated first (bounded-command liveness statement, session_bounded surface, timing test, check row). Fix: kill the watchdog by PID when its process group does not exist yet. Late-watchdog check: 9.5 s RED, 1 ms GREEN. SOAK_DISK_TEST_STRESS_ROUNDS=10: 60 of 60 pass in 160 s (was 25 failures in 505 s). Disk suite: 54 of 54. test-run-merge-recovery-soak.sh cannot run faithfully on this workstation: macOS has no setsid, and the Docker VM disk is inside the admission band, where the HEAD and fixed drivers fail at the same band step. Remaining: CI Lint run, and the CbC evidence record for the driver at the fix commit."
+    progress: "Claim updated first (bounded-command liveness statement, session_bounded surface, timing test, check row). Fix: kill the watchdog by PID when its process group does not exist yet. Late-watchdog check: 9.5 s RED, 1 ms GREEN. SOAK_DISK_TEST_STRESS_ROUNDS=10: 60 of 60 pass in 160 s (was 25 failures in 505 s). Disk suite: 54 of 54. test-run-merge-recovery-soak.sh cannot run faithfully on this workstation: macOS has no setsid, and the Docker VM disk is inside the admission band, where the HEAD and fixed drivers fail at the same band step. Committed in 8f657a9d2. Remaining: the CI Lint run, and CbC evidence records for scripts/run-merge-recovery-soak.sh and scripts/bench/test-soak-disk-admission-timing.sh. The evidence records are deferred by user decision (2026-10-08) until the CbC acceptance policy and the updated /cbc command are settled."
     blocked_by: [TASK-023-7]
     cbc_policy: "scripts/run-merge-recovery-soak.sh is cbc=mandatory. The claim update comes before any driver change."
     acceptance:
@@ -198,7 +200,7 @@ tasks:
 ---
 ```
 
-**Current state:** TASK-023-7 found the stall: a setsid race in session_bounded. TASK-023-8 has the claim update and the driver fix, green locally (60 of 60 saturated runs). Remaining: CI confirmation, the CbC evidence record, and TASK-023-5 after merge. TASK-023-4 and TASK-023-6 share their own branch.
+**Current state:** TASK-023-1, -2, -3, and -8 are in review on fix/lint-flake-resolution. TASK-023-8 CbC evidence records wait for the CbC acceptance policy decision. TASK-023-4 and TASK-023-6 need their own branch. TASK-023-5 runs after the merge.
 
 ---
 

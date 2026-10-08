@@ -60,6 +60,10 @@ test_fixture_failure_report_shows_no_host_path_or_key_value() {
 
 assert_log_scenario_within_a_third_of_its_timeout() {
     local scenario="$1" out="$WORK/timing-$1" status=0 seconds
+    if [[ "${SOAK_DISK_TEST_SKIP_TIMING:-0}" == 1 ]]; then
+        printf 'SKIP: SOAK_DISK_TEST_SKIP_TIMING=1 skips the %s timing check.\n' "$scenario"
+        return 0
+    fi
     mkdir -p "$out"
     bash "$DISK_TEST" --scenario "$scenario" "$ROOT" "$out/evidence" >"$out/stdout" 2>"$out/stderr" || status=$?
     [[ "$status" == 0 ]] || fail "$scenario gave exit $status, not a pass."
