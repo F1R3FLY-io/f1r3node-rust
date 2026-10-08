@@ -1018,50 +1018,7 @@ impl WebApi for WebApiImpl {
         let _ = validate_and_decode_pubkey(&pubkey)?;
         let snapshot = self.get_delegations(block_hash).await?;
 
-        let mut active_delegations = snapshot
-            .delegations
-            .get(&pubkey)
-            .into_iter()
-            .flat_map(|validator_map| validator_map.iter())
-            .map(|(validator_public_key, amount)| DelegationEntry {
-                validator_public_key: validator_public_key.clone(),
-                amount: *amount,
-            })
-            .collect::<Vec<_>>();
-        active_delegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
-
-        let mut pending_undelegations = snapshot
-            .pending_undelegations
-            .get(&pubkey)
-            .into_iter()
-            .flat_map(|validator_map| validator_map.iter())
-            .map(|(validator_public_key, pending)| PendingUndelegationEntry {
-                validator_public_key: validator_public_key.clone(),
-                amount: pending.amount,
-                unlock_block: pending.unlock_block,
-            })
-            .collect::<Vec<_>>();
-        pending_undelegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
-
-        let total_active_delegated = active_delegations.iter().map(|entry| entry.amount).sum();
-        let total_pending_undelegation =
-            pending_undelegations.iter().map(|entry| entry.amount).sum();
-        let claimable_rewards = snapshot
-            .delegator_rewards
-            .get(&pubkey)
-            .copied()
-            .unwrap_or_default();
-
-        Ok(DelegatorStateResponse {
-            public_key: pubkey,
-            active_delegations,
-            pending_undelegations,
-            claimable_rewards,
-            total_active_delegated,
-            total_pending_undelegation,
-            block_number: snapshot.block_number,
-            block_hash: snapshot.block_hash,
-        })
+        Ok(delegator_state_from_snapshot(pubkey, snapshot))
     }
 
     async fn get_epoch(&self, block_hash: Option<String>) -> Result<EpochResponse> {
@@ -1974,6 +1931,55 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
         eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
     })?;
     Ok(bytes)
+}
+
+fn delegator_state_from_snapshot(
+    pubkey: String,
+    snapshot: DelegationsResponse,
+) -> DelegatorStateResponse {
+    let mut active_delegations = snapshot
+        .delegations
+        .get(&pubkey)
+        .into_iter()
+        .flat_map(|validator_map| validator_map.iter())
+        .map(|(validator_public_key, amount)| DelegationEntry {
+            validator_public_key: validator_public_key.clone(),
+            amount: *amount,
+        })
+        .collect::<Vec<_>>();
+    active_delegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+    let mut pending_undelegations = snapshot
+        .pending_undelegations
+        .get(&pubkey)
+        .into_iter()
+        .flat_map(|validator_map| validator_map.iter())
+        .map(|(validator_public_key, pending)| PendingUndelegationEntry {
+            validator_public_key: validator_public_key.clone(),
+            amount: pending.amount,
+            unlock_block: pending.unlock_block,
+        })
+        .collect::<Vec<_>>();
+    pending_undelegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+    let total_active_delegated = active_delegations.iter().map(|entry| entry.amount).sum();
+    let total_pending_undelegation = pending_undelegations.iter().map(|entry| entry.amount).sum();
+    let claimable_rewards = snapshot
+        .delegator_rewards
+        .get(&pubkey)
+        .copied()
+        .unwrap_or_default();
+
+    DelegatorStateResponse {
+        public_key: pubkey,
+        active_delegations,
+        pending_undelegations,
+        claimable_rewards,
+        total_active_delegated,
+        total_pending_undelegation,
+        block_number: snapshot.block_number,
+        block_hash: snapshot.block_hash,
+    }
 }
 
 // Conversion functions
@@ -3398,6 +3404,79 @@ mod tests {
         let (_sk, pk) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
         let valid = validate_and_decode_pubkey(&hex::encode(&pk.bytes)).unwrap();
         assert_eq!(valid, pk.bytes.to_vec());
+    }
+
+    #[test]
+    fn test_delegator_state_from_snapshot_sorts_and_totals() {
+        let secp = crypto::rust::signatures::secp256k1::Secp256k1;
+        let (_sk0, delegator_pk) = secp.new_key_pair();
+        let (_sk1, validator_a_pk) = secp.new_key_pair();
+        let (_sk2, validator_b_pk) = secp.new_key_pair();
+        let delegator = hex::encode(&delegator_pk.bytes);
+        let validator_a = hex::encode(&validator_a_pk.bytes);
+        let validator_b = hex::encode(&validator_b_pk.bytes);
+        validate_and_decode_pubkey(&delegator).unwrap();
+
+        let snapshot = DelegationsResponse {
+            delegations: HashMap::from([(
+                delegator.clone(),
+                HashMap::from([(validator_b.clone(), 7), (validator_a.clone(), 5)]),
+            )]),
+            delegated_totals: HashMap::from([(validator_a.clone(), 5), (validator_b.clone(), 7)]),
+            delegator_rewards: HashMap::from([(delegator.clone(), 11)]),
+            pending_undelegations: HashMap::from([(
+                delegator.clone(),
+                HashMap::from([
+                    (validator_b.clone(), PendingUndelegationInfo {
+                        amount: 3,
+                        unlock_block: 99,
+                    }),
+                    (validator_a.clone(), PendingUndelegationInfo {
+                        amount: 2,
+                        unlock_block: 88,
+                    }),
+                ]),
+            )]),
+            block_number: 42,
+            block_hash: "block-hash".to_string(),
+        };
+
+        let state = delegator_state_from_snapshot(delegator.clone(), snapshot);
+        let mut expected_active_delegations = vec![
+            DelegationEntry {
+                validator_public_key: validator_a.clone(),
+                amount: 5,
+            },
+            DelegationEntry {
+                validator_public_key: validator_b.clone(),
+                amount: 7,
+            },
+        ];
+        expected_active_delegations
+            .sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+        let mut expected_pending_undelegations = vec![
+            PendingUndelegationEntry {
+                validator_public_key: validator_a,
+                amount: 2,
+                unlock_block: 88,
+            },
+            PendingUndelegationEntry {
+                validator_public_key: validator_b,
+                amount: 3,
+                unlock_block: 99,
+            },
+        ];
+        expected_pending_undelegations
+            .sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+        assert_eq!(state.public_key, delegator);
+        assert_eq!(state.active_delegations, expected_active_delegations);
+        assert_eq!(state.pending_undelegations, expected_pending_undelegations);
+        assert_eq!(state.claimable_rewards, 11);
+        assert_eq!(state.total_active_delegated, 12);
+        assert_eq!(state.total_pending_undelegation, 5);
+        assert_eq!(state.block_number, 42);
+        assert_eq!(state.block_hash, "block-hash");
     }
 
     fn sample_deploy_data() -> DeployData {
