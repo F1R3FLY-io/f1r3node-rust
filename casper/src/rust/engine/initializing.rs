@@ -1638,31 +1638,18 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             )
             .await;
 
-        // Phase 7b-2: build the WAL payload-fetch context.  Mirror
-        // of the construction in `casper_launch` (slice 5.124):
-        // fresh retriever + sync driver, payload lookup from the
-        // shared `RuntimeManager.payload_store` slot with a safe
-        // in-memory fallback for test harnesses.  `tick_stop` is
-        // `None` here — tick-loop spawn lands in a follow-up slice
-        // that threads `ConnectionsCell` through this function.
-        let wal_payload_ctx = {
-            use crate::rust::engine::running::WalPayloadContext;
-            use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
-            use crate::rust::engine::wal_payload_server::{InMemoryPayloadStore, PayloadLookup};
-            use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
-            let retriever = Arc::new(WalPayloadRetriever::new());
-            let sync_driver = Arc::new(WalPayloadSyncDriver::new(Arc::clone(&retriever)));
-            let lookup: Arc<dyn PayloadLookup> =
-                match self.runtime_manager.payload_store.read().await.as_ref() {
-                    Some(b) => b.lookup.clone(),
-                    None => Arc::new(InMemoryPayloadStore::new()),
-                };
-            Some(WalPayloadContext {
-                sync_driver,
-                payload_lookup: lookup,
-                tick_stop: None,
-            })
-        };
+        // Phase 7b-2: build the WAL payload-fetch context from
+        // the shared `RuntimeManager.payload_store` slot.  See
+        // [`WalPayloadContext::from_runtime_manager`] for the
+        // production vs. test-harness fallback discipline.
+        // `tick_stop` is `None` here — the spawn site that has
+        // `ConnectionsCell` in hand will later set it.
+        let wal_payload_ctx = Some(
+            crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
+                &self.runtime_manager,
+            )
+            .await,
+        );
 
         transition_to_running(
             self.block_processing_queue_tx.clone(),

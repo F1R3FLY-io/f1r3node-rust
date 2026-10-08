@@ -443,40 +443,18 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             )
             .await;
 
-        // Phase 7b-2: build the WAL payload-fetch context.  The
-        // payload lookup is derived from the shared
-        // `RuntimeManager.payload_store` bundle, which the boot
-        // pipeline populates with a `DirectoryPayloadStore`
-        // pointing at `<data-dir>/wal_payload_store/`.  Leader-side
-        // writes and joiner-side reads hit the same on-disk dir.
-        //
-        // Falls back to an empty in-memory store if the runtime
-        // manager slot is `None` (test harnesses that skip the
-        // boot pipeline).  The empty store just returns
-        // `UnknownPayload` on every request, which is safe.
-        let wal_payload_ctx = {
-            use crate::rust::engine::running::WalPayloadContext;
-            use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
-            use crate::rust::engine::wal_payload_server::{InMemoryPayloadStore, PayloadLookup};
-            use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
-            let retriever = Arc::new(WalPayloadRetriever::new());
-            let sync_driver = Arc::new(WalPayloadSyncDriver::new(Arc::clone(&retriever)));
-            let lookup: Arc<dyn PayloadLookup> =
-                match self.runtime_manager.payload_store.read().await.as_ref() {
-                    Some(b) => b.lookup.clone(),
-                    None => Arc::new(InMemoryPayloadStore::new()),
-                };
-            Some(WalPayloadContext {
-                sync_driver,
-                payload_lookup: lookup,
-                // Tick-stop handle is installed later by the slice
-                // that wires `wal_payload_sync::spawn_periodic_tick`
-                // (requires threading `recovery_context` /
-                // `ConnectionsCell` through `transition_to_running`).
-                // `None` here means "no live tick loop yet".
-                tick_stop: None,
-            })
-        };
+        // Phase 7b-2: build the WAL payload-fetch context from
+        // the shared `RuntimeManager.payload_store` slot.  See
+        // [`WalPayloadContext::from_runtime_manager`] for the
+        // production vs. test-harness fallback discipline.
+        // `tick_stop` is `None` here — the spawn site that has
+        // `ConnectionsCell` in hand will later set it.
+        let wal_payload_ctx = Some(
+            crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
+                &self.runtime_manager,
+            )
+            .await,
+        );
 
         // Scala equivalent: Engine.transitionToRunning[F](...)
         transition_to_running(

@@ -81,6 +81,54 @@ pub struct WalPayloadContext {
     pub tick_stop: Option<crate::rust::engine::wal_payload_sync::WalPayloadTickStop>,
 }
 
+impl WalPayloadContext {
+    /// Boot-pipeline convenience constructor: build a
+    /// `WalPayloadContext` for a node identified by its
+    /// [`RuntimeManager`](crate::rust::util::rholang::runtime_manager::RuntimeManager).
+    ///
+    /// Allocates a fresh
+    /// [`WalPayloadRetriever`](crate::rust::engine::wal_payload_retriever::WalPayloadRetriever)
+    /// and
+    /// [`WalPayloadSyncDriver`](crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver),
+    /// reads the shared
+    /// [`RuntimeManager.payload_store`](crate::rust::util::rholang::runtime_manager::RuntimeManager::payload_store)
+    /// slot for the serving-side
+    /// [`PayloadLookup`](crate::rust::engine::wal_payload_server::PayloadLookup),
+    /// and sets `tick_stop: None` (the tick loop is spawned later
+    /// by the transition code that has `ConnectionsCell` in hand).
+    ///
+    /// # Fallback for an unpopulated `payload_store` slot
+    ///
+    /// Production boots populate `payload_store` with a
+    /// `DirectoryPayloadStore` pointing at
+    /// `<data-dir>/wal_payload_store/`.  Test harnesses that
+    /// skip that pipeline leave the slot `None`; this constructor
+    /// then falls back to an empty
+    /// [`InMemoryPayloadStore`](crate::rust::engine::wal_payload_server::InMemoryPayloadStore),
+    /// which answers `UnknownPayload` for every request.  Safe-
+    /// inert: a joiner asking this node won't get served, but
+    /// the dispatch path won't crash.
+    pub async fn from_runtime_manager(
+        runtime_manager: &crate::rust::util::rholang::runtime_manager::RuntimeManager,
+    ) -> Self {
+        use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
+        use crate::rust::engine::wal_payload_server::{InMemoryPayloadStore, PayloadLookup};
+        use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
+        let retriever = Arc::new(WalPayloadRetriever::new());
+        let sync_driver = Arc::new(WalPayloadSyncDriver::new(Arc::clone(&retriever)));
+        let payload_lookup: Arc<dyn PayloadLookup> =
+            match runtime_manager.payload_store.read().await.as_ref() {
+                Some(b) => b.lookup.clone(),
+                None => Arc::new(InMemoryPayloadStore::new()),
+            };
+        Self {
+            sync_driver,
+            payload_lookup,
+            tick_stop: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasperMessageStatus {
     BlockIsInDag,
