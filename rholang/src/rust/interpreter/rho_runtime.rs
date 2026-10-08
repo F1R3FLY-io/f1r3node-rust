@@ -286,6 +286,25 @@ pub struct RhoRuntimeImpl {
     /// touches only one table doesn't accidentally pop the other's
     /// mark.  Streaming-backing slice Step 4 (2026-08-25).
     dir_fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
+    /// Stack of consensus-WAL length marks captured at soft-
+    /// checkpoint time.  On revert we pop the innermost mark and
+    /// `fs_handles.wal.truncate_to(mark)`, discarding any WAL
+    /// entries appended during the failed deploy.  Prevents
+    /// divergence where a leader's reverted-but-journaled write
+    /// would be replayed by followers.  H-29-1 review fix; nested-
+    /// stack semantics from the H4/M1 round-2 fix.
+    wal_snapshot_stack: Arc<std::sync::Mutex<Vec<super::io::wal::WalMark>>>,
+    /// Slice 30b (H-30b-2 round-2 fix): optional snapshot writer,
+    /// configured at boot from `storage.consensus-fs-snapshot-
+    /// {cadence,dir}`.  `None` inside the RwLock when the operator
+    /// has no consensus-static provisioning.  Public so test
+    /// harnesses can inspect it directly; writers go through
+    /// [`set_fs_snapshot_writer`] which acquires the write guard.
+    ///
+    /// `play_deploys_for_state` reads via `.read().await` on every
+    /// call; many runtimes can read concurrently.  Only boot-time
+    /// set is a writer.
+    pub fs_snapshot_writer: Arc<tokio::sync::RwLock<Option<super::io::snapshot::SnapshotWriter>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -308,7 +327,24 @@ impl RhoRuntimeImpl {
             fs_handles,
             fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
             dir_fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            wal_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Boot-time setter for the optional consensus-WAL snapshot
+    /// writer.  `None` disables snapshot persistence (default).
+    /// `Some(writer)` enables cadence-based snapshot writes to the
+    /// writer's configured directory via `writer.maybe_write(block,
+    /// &entries)`.
+    ///
+    /// Acquires the write guard synchronously; callers hold the
+    /// guard only across the single `*guard = writer` assignment.
+    pub async fn set_fs_snapshot_writer(
+        &self,
+        writer: Option<super::io::snapshot::SnapshotWriter>,
+    ) {
+        *self.fs_snapshot_writer.write().await = writer;
     }
 
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
@@ -422,6 +458,14 @@ impl RhoRuntime for RhoRuntimeImpl {
             let mut stack = self.dir_fs_snapshot_stack.lock().unwrap();
             stack.push(self.fs_handles.dir_handles.snapshot_next_fd());
         }
+        // H-29-1 review fix: snapshot the consensus WAL length
+        // alongside the fd counters so revert can truncate the WAL
+        // back to this mark too.  Keeps leader/follower WAL byte-
+        // identity even across reverted deploys.
+        {
+            let mut stack = self.wal_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.wal.snapshot_mark());
+        }
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_SOFT_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -478,6 +522,12 @@ impl RhoRuntime for RhoRuntimeImpl {
         if let Some(s) = dir_snap {
             self.fs_handles.dir_handles.truncate_to(s).await;
         }
+        // H-29-1: pop the WAL mark and truncate.  Same unbalanced-no-op
+        // posture as the fd stacks.
+        let wal_snap = { self.wal_snapshot_stack.lock().unwrap().pop() };
+        if let Some(mark) = wal_snap {
+            self.fs_handles.wal.truncate_to(mark);
+        }
         self.reducer
             .space
             .revert_to_soft_checkpoint(soft_checkpoint)
@@ -527,13 +577,22 @@ impl RhoRuntime for RhoRuntimeImpl {
         self.fs_handles
             .dir_handles
             .seed_next_fd_from_state_hash(&root.bytes());
+        // H-29-F2 review fix (defense in depth): clear the consensus
+        // WAL on reset.  All correctness paths drain the WAL per-
+        // deploy via `Wal::take_deploy_entries`; this clear guarantees
+        // that if a caller resets to a state root without first
+        // draining, the follower observes an empty WAL — no ghost
+        // entries from an earlier block leak into the next.
+        self.fs_handles.wal.clear();
         // M6 round-2 fix: also clear stashed checkpoint marks so a
         // subsequent revert doesn't pop a stale mark (which would
-        // truncate the fd table to a pre-reset watermark).  A reset
-        // semantically means "start fresh at this state root"; leaving
-        // a mark stashed is inconsistent with that.
+        // truncate the fd table to a pre-reset watermark or the WAL
+        // to a length below the cleared zero).  A reset semantically
+        // means "start fresh at this state root"; leaving a mark
+        // stashed is inconsistent with that.
         self.fs_snapshot_stack.lock().unwrap().clear();
         self.dir_fs_snapshot_stack.lock().unwrap().clear();
+        self.wal_snapshot_stack.lock().unwrap().clear();
         Ok(())
     }
 
