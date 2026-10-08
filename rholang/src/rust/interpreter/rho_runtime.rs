@@ -294,6 +294,17 @@ pub struct RhoRuntimeImpl {
     /// would be replayed by followers.  H-29-1 review fix; nested-
     /// stack semantics from the H4/M1 round-2 fix.
     wal_snapshot_stack: Arc<std::sync::Mutex<Vec<super::io::wal::WalMark>>>,
+    /// Slice 30b (H-30b-2 round-2 fix): optional snapshot writer,
+    /// configured at boot from `storage.consensus-fs-snapshot-
+    /// {cadence,dir}`.  `None` inside the RwLock when the operator
+    /// has no consensus-static provisioning.  Public so test
+    /// harnesses can inspect it directly; writers go through
+    /// [`set_fs_snapshot_writer`] which acquires the write guard.
+    ///
+    /// `play_deploys_for_state` reads via `.read().await` on every
+    /// call; many runtimes can read concurrently.  Only boot-time
+    /// set is a writer.
+    pub fs_snapshot_writer: Arc<tokio::sync::RwLock<Option<super::io::snapshot::SnapshotWriter>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -317,7 +328,23 @@ impl RhoRuntimeImpl {
             fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
             dir_fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
             wal_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Boot-time setter for the optional consensus-WAL snapshot
+    /// writer.  `None` disables snapshot persistence (default).
+    /// `Some(writer)` enables cadence-based snapshot writes to the
+    /// writer's configured directory via `writer.maybe_write(block,
+    /// &entries)`.
+    ///
+    /// Acquires the write guard synchronously; callers hold the
+    /// guard only across the single `*guard = writer` assignment.
+    pub async fn set_fs_snapshot_writer(
+        &self,
+        writer: Option<super::io::snapshot::SnapshotWriter>,
+    ) {
+        *self.fs_snapshot_writer.write().await = writer;
     }
 
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }

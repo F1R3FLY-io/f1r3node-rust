@@ -731,7 +731,6 @@ mod tests {
     /// → `write_snapshot` (encode + Blake2b256 + atomic rename) →
     /// on-disk content-addressed file → `read_snapshot_bytes`
     /// (hash-verified read).
-    #[ignore = "triage: `RhoRuntimeImpl::set_fs_snapshot_writer` not yet ported — un-ignore when the snapshot-writer accessor lands"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn wal_to_snapshot_end_to_end_round_trip() {
         use rholang::rust::interpreter::io::snapshot::{
@@ -750,10 +749,7 @@ mod tests {
             signer_sk: None,
             payload_dir: None,
         };
-        // Triage: `set_fs_snapshot_writer` accessor not yet ported.
-        // Test is `#[ignore]`-gated at the attribute level.
-        // runtime.set_fs_snapshot_writer(Some(writer.clone())).await;
-        let _ = &writer; // suppress unused warning until un-ignored
+        runtime.set_fs_snapshot_writer(Some(writer.clone())).await;
 
         // Run a Consensus write.
         let term = format!(
@@ -807,7 +803,6 @@ mod tests {
     /// H-30-COV-3: cadence miss → NO snapshot file created, even when
     /// entries are present.  Pins the guard against silent
     /// over-writing (would exhaust disk on a busy validator).
-    #[ignore = "triage: `RhoRuntimeImpl::set_fs_snapshot_writer` not yet ported — un-ignore when the snapshot-writer accessor lands"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn wal_snapshot_not_written_on_cadence_miss() {
         use rholang::rust::interpreter::io::snapshot::SnapshotWriter;
@@ -871,7 +866,6 @@ mod tests {
     /// hits — the number of persisted `*.wal` files never exceeds
     /// `retain`.  Direct pin against a regression that forgot the
     /// `prune_snapshot_dir` call in `maybe_write`.
-    #[ignore = "triage: `RhoRuntimeImpl::set_fs_snapshot_writer` not yet ported — un-ignore when the snapshot-writer accessor lands"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn wal_snapshot_retention_bound_holds_across_writes() {
         use rholang::rust::interpreter::io::snapshot::SnapshotWriter;
