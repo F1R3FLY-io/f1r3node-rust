@@ -71,6 +71,100 @@ mr_status:
 
 ---
 
+### EPIC-023: Disk Admission Test Flake and the Lint Job Scope
+
+```yaml
+---
+epic_id: EPIC-023
+title: "Disk Admission Test Flake and the Lint Job Scope"
+status: in_progress
+priority: p1
+user_story: null
+issues: []
+blocked_by: []
+created_at: 2026-10-08
+updated_at: 2026-10-08
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-08T14:00:00Z
+branch: fix/lint-flake-resolution
+pr_base_branch: dev
+origin: "On 2026-10-08 the dev merge queue returned PRs #665, #670, and #671 with a Lint failure in the step Verify isolated disk admission and emergency scenarios. The user asked if the failure is a flake, and then asked why a static analysis job can fail on a timeout."
+execution_contract:
+  base_branch: dev
+  scope: "Remove the timing flake of scripts/bench/test-soak-disk-admission.sh and make its fixture failures diagnosable from the CI log. Then reorganize the CI jobs by purpose and relabel each job and step so that its name states what it runs."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent. Branch creation belongs to the user."
+  language_policy: "Bash only for new scripts (repository rule)."
+evidence:
+  rate: "From 2026-10-03 to 2026-10-08 the step failed in 6 of 119 Lint runs (about 5%) and passed in 113. Four failures came before the FileIO Wave 5 merges, so the FileIO changes did not cause it."
+  signature: "Each failure is a different scenario with the same result: The fixture did not complete the required driver path (exit 2), so the scenario gave no behavioral verdict. The six scenarios are cleanup-sufficient, log-within-budget, log-sudo-fallback, log-budget-disabled, log-probe-vanished, and benchmark-disabled. Each one runs a full iteration. No refusal scenario failed."
+  reproduction: "Local runs on 2026-10-08 (12 CPUs): all 48 runs of the six scenarios passed without load. With all host CPUs saturated, log-probe-vanished failed once in 4 runs with driver exit 124: the 50 s driver timeout killed it at 52 s. It needs about 28 s without load, which leaves less than 2x margin. The other five scenarios need 3 to 4 s against a 20 s driver cap, even under the local load."
+  failing_log: "The killed driver log ends at The boundary workload fixture completed., so the scenario waits and does not compute."
+  lint_scope: "The Lint job of ci.yml has 32 steps. Only cargo fmt, clippy, the workflow invariants, and the supply-chain controls are static checks. The other steps run behavioral tests of the CI and soak scripts. The disk admission step builds an image and the soak harness and runs the real soak driver in about 60 containers under wall-clock timeouts. PR #668 adds five more script tests to this job."
+tasks:
+  - id: TASK-023-1
+    title: "Remove the wait that keeps log-probe-vanished near its driver timeout"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "The analysis names the wait in the log-probe-vanished path (fixture or driver) that takes most of its 28 s, with the evidence."
+      - "After the fix, the scenario takes less than one quarter of its driver timeout without load."
+      - "The saturated-CPU reproduction loop gives 0 fixture failures of the six scenarios in at least 10 rounds."
+      - "No scenario changes its behavioral verdict, and the driver timeouts stay unchanged unless a measurement justifies a change."
+  - id: TASK-023-2
+    title: "Make a disk admission fixture failure diagnosable from the CI log"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "When a scenario exits 2, the CI log shows the driver exit code, the summary.json degraded field or its absence, and the last lines of the driver log."
+      - "A test proves the diagnostic output for a forced fixture failure."
+      - "The output contains no secret and no host path outside the evidence directory."
+  - id: TASK-023-3
+    title: "Measure the 20 s driver cap of the short full-iteration scenarios under CI load"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-023-2]
+    acceptance:
+      - "The diagnostic output of TASK-023-2 shows the driver exit code for each CI failure of the five 3 to 4 s scenarios."
+      - "If a CI failure shows driver exit 124, a measured driver duration on the CI runner sets any new cap. Without a measurement the cap stays."
+  - id: TASK-023-4
+    title: "Reorganize the CI jobs by purpose"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    branch_note: "Separate branch, because the change moves jobs that the merge queue and the branch rulesets require."
+    acceptance:
+      - "An inventory lists every job and step of ci.yml and _integration-pipeline.yml with what it runs: static check, unit test, script behavioral test, Docker soak harness test, build, integration test, or gate. The inventory is recorded in docs/ci.md."
+      - "Each job holds one purpose. Lint keeps only static checks: cargo fmt, clippy, the workflow invariants, and the supply-chain controls."
+      - "The script behavioral tests run in their own job. The Docker soak harness tests (fail-closed driver, disk admission) run in a separate job."
+      - "The required checks of the dev and master rulesets and the CI aggregators name the new jobs. A merge group with the change passes the queue."
+      - "check-workflow-invariants.sh passes, and the change does not increase the total CI time by more than the measured cost of one extra job setup."
+  - id: TASK-023-6
+    title: "Relabel the CI jobs and steps so that each name states what it runs"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-023-4]
+    branch_note: "Same branch as TASK-023-4, so that the rulesets change once."
+    acceptance:
+      - "No job or step name describes a different kind of work than it runs. For example, no behavioral test runs under a name that says lint or check."
+      - "Each name tells a reader which category failed when it is red: static check, unit test, script test, soak harness test, build, or integration test."
+      - "The required-check names in the rulesets, the aggregator jobs that match job names (for example the per-arch integration aggregators), and docs/ci.md use the new names."
+      - "docs/ci.md maps each old name to its new name, so that old PR checks and run links stay readable."
+  - id: TASK-023-5
+    title: "Measure the disk admission failure rate after the fix"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-023-1]
+    acceptance:
+      - "Over at least 100 CI runs after the merge, the disk admission step has 0 fixture failures, or each failure has a diagnosed cause."
+---
+```
+
+**Current state:** Created on 2026-10-08 on fix/lint-flake-resolution. TASK-023-1 and TASK-023-2 are next on this branch. TASK-023-4 and TASK-023-6 share their own branch.
+
+---
+
 ### EPIC-021: Issue #24 Replay Throughput Root Cause Under the CbC Harness
 
 ```yaml
