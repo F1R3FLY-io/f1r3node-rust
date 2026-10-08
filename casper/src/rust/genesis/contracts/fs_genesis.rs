@@ -620,10 +620,17 @@ const _: () = assert!(
 );
 
 /// URN prefix shared between the runtime's `fs_native_def` registrations
-/// and this module's composed FsGenesis source.  A future Phase 1 hotfix
-/// bumping to `1.0.1` must edit HERE only, and both the runtime
-/// (`rho_runtime.rs`) and the composed source rebuild from this constant.
-pub const FS_NATIVE_URN_PREFIX: &str = "rho:io:fs:native:1.0.0/";
+/// and this module's composed FsGenesis source.  Re-exported from
+/// `rholang::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED` —
+/// single source of truth across the two crates.  A future Phase 1
+/// hotfix bumping to `1.0.1` edits the rholang-side constant only;
+/// both the runtime (`rho_runtime::fs_handlers_to_definitions`) and
+/// the composed FsGenesis source rebuild from the re-export.  The
+/// cross-crate equality is still pinned at test time by
+/// `casper::tests::genesis::contracts::fs_genesis_spec::
+/// fs_native_urn_versioned_prefix_matches_rholang` as defense-in-
+/// depth against an accidental shadowing re-definition here.
+pub use rholang::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED as FS_NATIVE_URN_PREFIX;
 
 /// Native URN suffixes that this module binds into the FsGenesis
 /// new-scope.  Combined with `FS_NATIVE_URN_PREFIX` to form the full
@@ -1349,9 +1356,9 @@ mod tests {
     /// truth for which native URNs the composed FsGenesis source
     /// binds into the top-level `new` scope.  A new native URN
     /// requires updating this list AND the composed source's `new`
-    /// clause (yet to land, slice 5.14+); the drift tests will
-    /// enforce correspondence once compose_fs_genesis_source
-    /// lands.  This pin asserts the current content.
+    /// clause (slice 5.15 landed `compose_fs_genesis_source`); the
+    /// bidirectional drift tests (slice 5.19) enforce the
+    /// correspondence.  This pin asserts the current content.
     #[test]
     fn fs_native_urn_suffixes_pinned() {
         // Current migration-complete set: 27 suffixes (fs_remove_dir
@@ -1390,8 +1397,9 @@ mod tests {
             FS_NATIVE_URN_SUFFIXES, expected,
             "FS_NATIVE_URN_SUFFIXES drifted — a native URN was added \
              or removed.  Update this pin AND the composed FsGenesis \
-             `new` clause (yet to land) + the arity golden table + \
-             the all_fs_native_suffixes_are_rejected list in \
+             `new` clause (slice 5.15's compose_fs_genesis_source) + \
+             the arity golden table + the \
+             all_fs_native_suffixes_are_rejected list in \
              rholang/tests/fs_native_urn_filter_spec.rs."
         );
     }

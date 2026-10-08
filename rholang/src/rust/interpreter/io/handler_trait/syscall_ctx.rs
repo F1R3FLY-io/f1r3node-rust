@@ -1,7 +1,7 @@
 // Borrowed view of the per-call context that every fs_* handler
-// touches.  Threaded into `FsHandler::dispatch` (yet to land,
-// slice 4.6) and into every per-step hook (`pre_syscall`,
-// `on_replay_side_effect`, `journal`, `resolve_replay_cmode`).
+// touches.  Threaded into `FsHandler::dispatch` (slice 4.6) and
+// into every per-step hook (`pre_syscall`, `on_replay_side_effect`,
+// `journal`, `resolve_replay_cmode`).
 //
 // # Field sharing shape
 //
@@ -64,9 +64,10 @@ pub struct SyscallCtx<'a> {
 impl<'a> SyscallCtx<'a> {
     /// Construct a context from the individual field refs.  Named
     /// `new` for grep-ability at the dispatcher's construction site
-    /// (yet to land, slice 4.6 / 4.7); when `FsProcesses` is ported,
-    /// a convenience `from_fs_processes(fs, ack)` constructor can be
-    /// layered on top without touching this signature.
+    /// (slices 4.6 / 4.7).  A convenience
+    /// [`SyscallCtx::from_fs_processes`](super::fs_processes)
+    /// constructor is layered on top (slice 4.9's `FsProcesses`
+    /// port) without touching this signature.
     pub fn new(
         dispatcher: &'a RhoDispatch,
         space: &'a RhoISpace,
@@ -87,7 +88,7 @@ impl<'a> SyscallCtx<'a> {
 
     /// Read the per-runtime "current deploy scope" cell — the same
     /// value `FileHandleTable::current_deploy_scope` returns.  Used
-    /// by lock-acquire handlers (yet to land, slice 4.9) to tag
+    /// by lock-acquire handlers (slices 4.34-4.37) to tag
     /// `LockRegistry` entries for deploy-end sweep.  Sentinel
     /// `[0; 32]` = no deploy in flight (test / genesis path).
     pub fn current_deploy_scope(&self) -> DeployScope { self.handles.current_deploy_scope() }
