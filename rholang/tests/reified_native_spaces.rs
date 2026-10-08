@@ -13,6 +13,7 @@
 //! | `space_native_denial_replay` | Out of phlo at each budget attempt of the largest space transaction, play and native replay agree. A bisection on the phlo limit finds the limit at which play first denies each attempt. |
 //! | `space_native_scope_reset_after_restore` | After a restore, a second evaluation of the native replay environment reproduces play: the bound space store resets its scope (W2). |
 //! | `space_native_forged_predecessor_fails_closed` | The journal check rejects a forged predecessor. A forged predecessor with a matching forged footprint passes the check, and the space row fails closed when it authenticates its footprint, with no hang. |
+//! | `space_native_forged_footprints_never_hang` | Every forgery that makes a later host row wait for a staged space row ends: the space row fails closed and closes the epoch, so the waiting host operation wakes and fails, and the certification rejects the journal. Without the closure, 64 of 109 such forgeries hung (the probe of step 4). |
 //!
 //! The unit tests of the native backend (`native_session/space.rs`) and of the scheduler
 //! (`reified/schedule.rs`) cover the other rows of section 6.
@@ -730,5 +731,86 @@ async fn space_native_forged_predecessor_fails_closed() {
     assert!(
         certification.complete.is_err(),
         "the forged row stays incomplete"
+    );
+}
+
+/// The predecessors of each row as `check_dependencies` derives them: the last earlier row that
+/// touches each channel of its footprint.
+fn derive_predecessors(rows: &mut [NativeOperationRecord]) {
+    let mut last: HashMap<Arc<[u8]>, usize> = HashMap::with_capacity(rows.len());
+    for (index, row) in rows.iter_mut().enumerate() {
+        let mut expected: Vec<usize> = row
+            .footprint
+            .iter()
+            .filter_map(|channel| last.get(channel).copied())
+            .collect();
+        expected.sort_unstable();
+        expected.dedup();
+        row.predecessors = expected.into();
+        for channel in row.footprint.iter() {
+            last.insert(Arc::clone(channel), index);
+        }
+    }
+}
+
+/// Decision 47: a forged journal never hangs native replay through a space row. For each staged
+/// space row and each later host row, the forgery adds a channel of the host row to the journal
+/// footprint of the space row, and the predecessors follow from the forged footprints, so the
+/// forgery passes the journal check. The host row then waits for the space row. The space row
+/// fails closed at its footprint check, and its failure closes the epoch, so the waiting host
+/// operation wakes and fails. Every forgery ends within the timeout and is rejected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_native_forged_footprints_never_hang() {
+    let term = space_program("rho:space:hashmap:queue", "\"default\"", RESTORE_BODY);
+    let played = native_play(&term, AMPLE_LIMIT).await;
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
+    let (recording, journal) = committed_evidence(&played);
+    let rows: Vec<NativeOperationRecord> = journal.to_vec();
+    let mut forgeries = 0;
+    for target in 0..rows.len() {
+        if !is_space_row(&recording, &rows[target]) {
+            continue;
+        }
+        for host in (target + 1)..rows.len() {
+            if is_space_row(&recording, &rows[host]) {
+                continue;
+            }
+            let Some(channel) = rows[host]
+                .footprint
+                .iter()
+                .find(|channel| !rows[target].footprint.contains(channel))
+                .map(Arc::clone)
+            else {
+                continue;
+            };
+            let mut forged = rows.clone();
+            let mut footprint = forged[target].footprint.to_vec();
+            footprint.push(channel);
+            footprint.sort();
+            forged[target].footprint = footprint.into();
+            derive_predecessors(&mut forged);
+            let environment = replay_environment(&played, AMPLE_LIMIT, &recording, forged.into())
+                .await
+                .expect("a footprint-consistent forgery passes the journal check");
+            let certification =
+                tokio::time::timeout(Duration::from_secs(60), finish(environment, &term))
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("native replay hangs: space row {target}, host row {host}")
+                    });
+            assert!(
+                rejected(&certification),
+                "the certification rejects the forgery: space row {target}, host row {host}"
+            );
+            forgeries += 1;
+        }
+    }
+    assert!(
+        forgeries >= 20,
+        "the sweep covers the forgeries of the program ({forgeries})"
     );
 }

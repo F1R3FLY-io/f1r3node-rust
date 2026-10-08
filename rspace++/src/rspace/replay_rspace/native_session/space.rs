@@ -28,6 +28,7 @@ use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -259,6 +260,7 @@ where
             owner: Arc::clone(&self.owner),
             session: self.session,
             authority: Arc::clone(&self.authority),
+            denied: AtomicBool::new(false),
         };
         Ok(Box::new(HostTxn::new(
             SpaceMode::NativeReplay,
@@ -327,6 +329,9 @@ where
     owner: Arc<O>,
     session: fn(&O) -> &NativeReplaySession<C, P, A, K, E>,
     authority: AuthorityResolver<C, P, A, K, E>,
+    // Set when the current operation published a recorded denial, so its row
+    // is complete and its failure keeps the epoch open.
+    denied: AtomicBool,
 }
 
 impl<O, C, P, A, K, E> TxnBackend<C, P, A, K> for NativeBackend<O, C, P, A, K, E>
@@ -407,14 +412,23 @@ where
             .gate
             .try_read()
             .map_err(|_| mismatch("the session is at a boundary"))?;
-        match operation {
+        let result = match operation {
             StagedOperation::Produce(produce) => {
                 self.apply_produce(store, produce, before_observe, reads, events)
             }
             StagedOperation::Consume(consume) => {
                 self.apply_consume(store, consume, before_observe, reads, events)
             }
+        };
+        // A failed operation leaves its journal row incomplete, and an operation
+        // that waits for the row would wait forever. So the failure closes the
+        // epoch: every waiting operation wakes and fails (Closed), and the
+        // certification fails closed. A recorded denial publishes its row first,
+        // and play goes on after it, so it keeps the epoch open.
+        if result.is_err() && !self.denied.swap(false, Ordering::AcqRel) {
+            session.epoch.invalidate();
         }
+        result
     }
 }
 
@@ -494,6 +508,7 @@ where
         });
         completion.publish();
         publication.complete();
+        self.denied.store(true, Ordering::Release);
         Err(SpaceTxnError::Host(RSpaceError::OutOfPhlogistons))
     }
 
@@ -1314,6 +1329,7 @@ mod tests {
         assert_eq!(error, mismatch("the staged COMM differs from the recorded candidate"));
         assert!(!script.log().contains(&"observe_comm".to_owned()));
         assert!(!script.log().contains(&"publish".to_owned()));
+        assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
         let state = session.space.get_store().snapshot();
         assert_eq!(state.continuations_flat().get(&vec![s("b")]).map(Vec::len), Some(1));
     }
@@ -1333,6 +1349,7 @@ mod tests {
         txn.produce(store_op("a", "x")).expect("stage x");
         let error = txn.commit().await.expect_err("a misfit outcome fails");
         assert_eq!(error, mismatch("the recorded outcome does not fit the staged produce"));
+        assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
         assert!(
             !script
                 .log()
@@ -1389,6 +1406,10 @@ mod tests {
                 .collect::<Vec<_>>()),
             Some(vec![s("x")])
         );
+        assert!(
+            !script.log().contains(&"invalidate".to_owned()),
+            "a recorded denial keeps the epoch open"
+        );
     }
 
     // R5 for a COMM: a recorded COMM denial is published after the granted
@@ -1424,7 +1445,8 @@ mod tests {
     }
 
     // P1: a row that is not ready fails the operation closed. The backend holds
-    // stripes, so it never waits, and the test ends.
+    // stripes, so it never waits, and the test ends. The failure closes the
+    // epoch.
     #[tokio::test]
     async fn native_space_replay_fails_closed_on_a_row_that_is_not_ready() {
         let script = Script::default();
@@ -1438,7 +1460,9 @@ mod tests {
         txn.produce(store_op("a", "x")).expect("stage x");
         let error = txn.commit().await.expect_err("an unready row fails");
         assert_eq!(error, mismatch("the journal row of the operation is not ready"));
-        assert_eq!(script.log(), vec!["begin produce"]);
+        // The failure closes the epoch, so an operation that waits for the row
+        // wakes and fails.
+        assert_eq!(script.log(), vec!["begin produce", "invalidate"]);
         // The metered view load caches the empty history value of `a`. No record is
         // stored.
         assert!(
@@ -1808,6 +1832,7 @@ mod tests {
         assert_eq!(error, mismatch("the staged COMM differs from the recorded candidate"));
         assert!(!script.log().contains(&"observe_comm".to_owned()));
         assert!(!script.log().contains(&"publish".to_owned()));
+        assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
         let state = session.space.get_store().snapshot();
         assert_eq!(state.data_flat().get(&s("a")).map(Vec::len), Some(2));
     }
