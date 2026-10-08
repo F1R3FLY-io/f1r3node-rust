@@ -64,6 +64,13 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// this test pins it against genesis + RhoSpec so a refactor of
 /// either the bundle-plumbing path or the `File.chown` write-mode
 /// gate is caught in CI.
+// TODO(fileio-triage): diagnose why this test does not reach its
+// assertion on triage.  Setup prints "Setup successful" and the
+// outer openFile+chown composition appears correct, but the inner
+// assert never fires (has_finished=false).  Candidate causes:
+// Consensus-mode fs_open flow mismatch, or File agent constructor
+// not firing on the fileCtor channel.  Un-ignore after a targeted
+// repro + fix.
 #[ignore = "triage: test does not reach assertion (has_finished=false) — likely a Consensus-mode fs_open flow gap not yet ported from fileio"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fileio_chown_on_consensus_cap() {
@@ -859,6 +866,13 @@ in {{
 /// The regression asserts (7): Bob's independent cap continues to
 /// work after Alice's revocation, proving membrane invisibility
 /// across independent fresh-mints.
+// TODO(fileio-triage): diagnose this test's has_finished=false
+// failure on triage.  The cross-Fs membrane example wires an
+// alternate Fs instance for Bob and a forwarder membrane; the
+// inner forwarder's acknowledgement arm never fires.  Candidate
+// causes: alternate-Fs minting path not fully wired, or a
+// LineStream/decodeUtf8 reducer-method dependency inside the
+// membrane body.  Un-ignore after a targeted repro + fix.
 #[ignore = "triage: test does not reach assertion (has_finished=false) — the cross-Fs membrane example depends on infrastructure (likely LineStream/decodeUtf8 or alt-Fs minting) not yet in triage"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fileio_cross_fs_membrane_invisible_to_bob() {
