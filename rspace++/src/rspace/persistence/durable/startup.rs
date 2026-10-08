@@ -10,6 +10,7 @@ use std::fmt::{Display, Formatter};
 
 use super::index::{CanonicalIndexStreamV1, ObjectIndexPrefixVerifierV1};
 use super::io::{DurableDirectoryV1, DurableFileV1, DurableIoError, DurableWriterLeaseV1};
+use super::reclaim::ReclamationCatalogRelationV1;
 use super::recovery::{
     CatalogPackProviderV1, CatalogVerifiedRecoveryV1, RecoveryError, ScannedPackChainV1,
     scan_catalog_authorized_pack_chain, stage_catalog_verified_data_in_source_order,
@@ -21,8 +22,8 @@ use super::{
 };
 use crate::rspace::persistence::wal::TerminalCommitViewV1;
 use crate::rspace::persistence::{
-    CatalogAuthorityTokenV1, GenerationLeaseKeyV1, LogPackAddress, LogPackDecodeLimits, PackId,
-    PackTerminalIdentityV1, SemanticProfileId, StateVersionV1, StoreId,
+    CatalogAuthorityTokenV1, LogPackAddress, LogPackDecodeLimits, PackId, PackTerminalIdentityV1,
+    SemanticProfileId, StateVersionV1, StoreId,
 };
 
 #[cfg(test)]
@@ -283,17 +284,26 @@ pub(crate) fn recover_physical_from_lease_v1(
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
 ) -> Result<IndexBoundPhysicalRecoveryV1, DurableStartupErrorV1> {
-    if let Some(candidate) = lease.read_reclamation_candidate()? {
-        let authority = read_catalog_token(lease.directory())?;
-        if candidate.successor() != GenerationLeaseKeyV1::from_catalog(authority.slot()) {
-            // A pre-CAS crash leaves the old catalog authoritative. Remove
-            // only this validated stale intent; never infer data deletion
-            // from a filename or a partially written record.
-            lease.remove_reclamation_candidate()?;
+    let candidate = lease.read_reclamation_candidate()?;
+    let reader = lease.directory().try_clone_reader()?;
+    let recovered = recover_index_bound_v1(&reader, lease, limits, wal_limits)?;
+    if let Some(candidate) = candidate {
+        let selected = recovered.catalog_authority().slot();
+        match candidate.relation_to_catalog(selected) {
+            ReclamationCatalogRelationV1::PreCas => {
+                lease.remove_reclamation_candidate()?;
+            }
+            ReclamationCatalogRelationV1::SelectedSuccessor => {
+                lease.reclaim_reclamation_candidate(candidate, selected)?;
+            }
+            ReclamationCatalogRelationV1::Unrelated => {
+                return Err(DurableStartupErrorV1::Io(DurableIoError::CatalogAuthorityChanged {
+                    path: lease.directory().path().to_path_buf(),
+                }));
+            }
         }
     }
-    let reader = lease.directory().try_clone_reader()?;
-    recover_index_bound_v1(&reader, lease, limits, wal_limits)
+    Ok(recovered)
 }
 
 struct DirectoryPackProviderV1<'directory>(&'directory DurableDirectoryV1);

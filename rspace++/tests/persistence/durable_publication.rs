@@ -1862,6 +1862,161 @@ fn checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open() {
     );
 }
 
+#[test]
+fn pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint() {
+    use crate::rspace::persistence::{
+        DagTransactionLimits, GenerationLeaseKeyV1, MutationBatchViewV1,
+    };
+
+    let scratch = test_scratch::acquire("rspace-gc-pending-reclaim-advance-");
+    install_checkpoint_image(
+        scratch.path(),
+        &checkpoint_image_from_source(checkpoint_source_fixture()),
+    );
+    let writer = admit(scratch.path());
+    let old_key = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    let old_pack = scratch.path().join(pack_file_name(PackId::GENESIS));
+    let old_index = scratch
+        .path()
+        .join(index_file_name(IndexGenerationV1::FIRST));
+    let registry = writer.generation_leases();
+    let pin = registry.acquire(old_key).unwrap();
+    let selected = publish(writer).unwrap();
+    let selected_key = GenerationLeaseKeyV1::from_catalog(selected.catalog());
+    let sidecar = scratch.path().join("reclaim.v1");
+    let saved_intent = fs::read(&sidecar).unwrap();
+
+    let mutation = data_batch(selected.catalog().state(), "reclaim-epoch-advance");
+    let sealed = selected
+        .seal_transaction(
+            MutationBatchViewV1::parse(&mutation).unwrap(),
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    let prepared = selected
+        .prepare_transaction(
+            &sealed,
+            selected.catalog().commit_sequence().successor().unwrap(),
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap();
+    let advanced = selected
+        .publish_incremental_transaction_v1(
+            &prepared,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    let advanced_catalog = advanced.catalog();
+    let advanced_key = GenerationLeaseKeyV1::from_catalog(advanced_catalog);
+    assert!(advanced_key.epoch() > selected_key.epoch());
+    assert_eq!(advanced_key.first_live_pack(), selected_key.first_live_pack());
+    assert_eq!(advanced_key.active_pack(), selected_key.active_pack());
+    assert_eq!(advanced_key.index_generation(), selected_key.index_generation());
+    assert_eq!(fs::read(&sidecar).unwrap(), saved_intent);
+    drop(advanced);
+
+    let reopened = admit(scratch.path());
+    assert_eq!(reopened.catalog(), advanced_catalog);
+    assert_eq!(fs::read(&sidecar).unwrap(), saved_intent);
+    assert!(old_pack.exists());
+    assert!(old_index.exists());
+    let before_catalog = fs::read(scratch.path().join("catalog.v1")).unwrap();
+    let second = publication_error(publish(reopened));
+    assert!(matches!(
+        second,
+        GenerationCheckpointPublicationErrorV1::Io(DurableIoError::ReclamationPending { .. })
+    ));
+    assert_eq!(fs::read(scratch.path().join("catalog.v1")).unwrap(), before_catalog);
+    assert_eq!(fs::read(&sidecar).unwrap(), saved_intent);
+    assert!(old_pack.exists());
+    assert!(old_index.exists());
+
+    drop(pin);
+    let retry = admit(scratch.path());
+    assert_eq!(retry.catalog(), advanced_catalog);
+    assert!(!old_pack.exists());
+    assert!(!old_index.exists());
+    assert!(!sidecar.exists());
+    let next = publish(retry).unwrap();
+    assert!(next.catalog().pack().active_pack() > advanced_catalog.pack().active_pack());
+}
+
+#[test]
+fn pending_reclamation_retries_partial_deletion_after_restart() {
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let scratch = test_scratch::acquire("rspace-gc-pending-reclaim-partial-");
+    install_checkpoint_store(scratch.path());
+    let writer = admit(scratch.path());
+    let registry = writer.generation_leases();
+    let pin = registry
+        .acquire(GenerationLeaseKeyV1::from_catalog(writer.catalog()))
+        .unwrap();
+    drop(publish(writer).unwrap());
+    let old_pack = scratch.path().join(pack_file_name(PackId::GENESIS));
+    let old_index = scratch
+        .path()
+        .join(index_file_name(IndexGenerationV1::FIRST));
+    let sidecar = scratch.path().join("reclaim.v1");
+    assert!(sidecar.exists());
+    drop(pin);
+    fs::remove_file(&old_pack).unwrap();
+
+    admit(scratch.path());
+    assert!(!old_pack.exists());
+    assert!(!old_index.exists());
+    assert!(!sidecar.exists());
+}
+
+#[test]
+fn pending_reclamation_waits_for_selected_successor_verification() {
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let scratch = test_scratch::acquire("rspace-gc-pending-reclaim-verify-");
+    install_checkpoint_store(scratch.path());
+    let writer = admit(scratch.path());
+    let registry = writer.generation_leases();
+    let pin = registry
+        .acquire(GenerationLeaseKeyV1::from_catalog(writer.catalog()))
+        .unwrap();
+    let selected = publish(writer).unwrap();
+    let selected_pack = scratch
+        .path()
+        .join(pack_file_name(PackId::new(selected.catalog().pack().active_pack()).unwrap()));
+    let valid_bytes = fs::read(&selected_pack).unwrap();
+    let mut damaged = valid_bytes.clone();
+    damaged[PACK_HEADER_LEN_V1 as usize + 8] ^= 0x80;
+    drop(selected);
+    drop(pin);
+    rewrite_and_sync(&selected_pack, &damaged);
+
+    let old_pack = scratch.path().join(pack_file_name(PackId::GENESIS));
+    let old_index = scratch
+        .path()
+        .join(index_file_name(IndexGenerationV1::FIRST));
+    let sidecar = scratch.path().join("reclaim.v1");
+    let error = match DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .recover_writer_v1(limits(), LogPackDecodeLimits::UNBOUNDED)
+    {
+        Err(error) => error,
+        Ok(_) => panic!("damaged selected successor was recovered"),
+    };
+    assert!(matches!(error, DurableStartupErrorV1::Recovery(_)));
+    assert!(old_pack.exists());
+    assert!(old_index.exists());
+    assert!(sidecar.exists());
+
+    rewrite_and_sync(&selected_pack, &valid_bytes);
+    admit(scratch.path());
+    assert!(!old_pack.exists());
+    assert!(!old_index.exists());
+    assert!(!sidecar.exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn retired_pack_frontier_survives_all_handle_drop_until_process_exit() {

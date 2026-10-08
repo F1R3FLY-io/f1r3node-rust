@@ -4,7 +4,9 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use super::reclaim::{RECLAMATION_RECORD_LEN_V1, ReclamationCandidateV1};
+use super::reclaim::{
+    RECLAMATION_RECORD_LEN_V1, ReclamationCandidateV1, ReclamationCatalogRelationV1,
+};
 use super::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogSlotV1,
     INDEX_HEADER_LEN_V1, IndexGenerationV1, PACK_HEADER_LEN_V1,
@@ -223,6 +225,9 @@ pub(crate) enum DurableIoError {
     CatalogAuthorityChanged {
         path: PathBuf,
     },
+    ReclamationPending {
+        path: PathBuf,
+    },
     SuccessorOverflow {
         path: PathBuf,
         artifact: &'static str,
@@ -392,6 +397,11 @@ impl Display for DurableIoError {
             Self::CatalogAuthorityChanged { path } => write!(
                 formatter,
                 "durable catalog {} changed before successor orphan cleanup",
+                path.display()
+            ),
+            Self::ReclamationPending { path } => write!(
+                formatter,
+                "durable reclamation {} still waits for an old-generation reader",
                 path.display()
             ),
             Self::SuccessorOverflow {
@@ -1113,11 +1123,6 @@ impl DurableWriterLeaseV1 {
         candidate: ReclamationCandidateV1,
     ) -> Result<(), DurableIoError> {
         let name = RECLAMATION_CANDIDATE_FILE_NAME_V1;
-        match self.remove_child(name) {
-            Ok(()) => {}
-            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
         let mut file = DurableWritableFileV1 {
             file: self.directory.create_new(name)?,
             _lease: PhantomData,
@@ -1167,6 +1172,35 @@ impl DurableWriterLeaseV1 {
         self.sync_directory()
     }
 
+    pub(crate) fn resolve_reclamation_before_checkpoint(
+        &mut self,
+        selected: CatalogSlotV1,
+    ) -> Result<(), DurableIoError> {
+        let Some(candidate) = self.read_reclamation_candidate()? else {
+            return Ok(());
+        };
+        match candidate.relation_to_catalog(selected) {
+            ReclamationCatalogRelationV1::PreCas => self.remove_reclamation_candidate(),
+            ReclamationCatalogRelationV1::SelectedSuccessor => {
+                if self
+                    .reclaim_reclamation_candidate(candidate, selected)?
+                    .deferred_for_reader
+                {
+                    Err(DurableIoError::ReclamationPending {
+                        path: self.directory.path.join(RECLAMATION_CANDIDATE_FILE_NAME_V1),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            ReclamationCatalogRelationV1::Unrelated => {
+                Err(DurableIoError::CatalogAuthorityChanged {
+                    path: self.directory.path.clone(),
+                })
+            }
+        }
+    }
+
     /// Reclaim exactly the superseded generation named by an authenticated
     /// candidate. The catalog image must already have selected the candidate's
     /// successor; active leases on the old generation defer deletion without
@@ -1176,8 +1210,8 @@ impl DurableWriterLeaseV1 {
         candidate: ReclamationCandidateV1,
         selected_successor: CatalogSlotV1,
     ) -> Result<ReclamationOutcomeV1, DurableIoError> {
-        if candidate.successor() !=
-            crate::rspace::persistence::GenerationLeaseKeyV1::from_catalog(selected_successor)
+        if candidate.relation_to_catalog(selected_successor) !=
+            ReclamationCatalogRelationV1::SelectedSuccessor
         {
             return Err(DurableIoError::CatalogAuthorityChanged {
                 path: self.directory.path.clone(),
@@ -1240,6 +1274,7 @@ impl DurableWriterLeaseV1 {
             }
             Err(error) => return Err(error),
         };
+        self.sync_directory()?;
         self.remove_reclamation_candidate()?;
         Ok(ReclamationOutcomeV1 {
             deleted_packs,

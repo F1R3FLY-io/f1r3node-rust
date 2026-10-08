@@ -780,6 +780,8 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
         });
     }
 
+    lease.resolve_reclamation_before_checkpoint(current)?;
+
     let prepare_durable = write_and_sync_prepare(lease, pack_header, prepare_address, &prepared)?;
     let index_durable = write_and_sync_index(lease, &index_plan, prepare_durable)?;
     let commit_durable = append_and_sync_commit(lease, current, commit_address, index_durable)?;
