@@ -14,11 +14,21 @@ fail() {
     exit 1
 }
 
+FORCED="$WORK/forced-timeout"
+
+run_forced_timeout() {
+    [[ ! -e "$FORCED/status" ]] || return 0
+    local status=0
+    mkdir -p "$FORCED"
+    SOAK_DISK_TEST_DRIVER_TIMEOUT=1 bash "$DISK_TEST" --scenario log-within-budget "$ROOT" "$FORCED/evidence" \
+        >"$FORCED/stdout" 2>"$FORCED/stderr" || status=$?
+    printf '%s\n' "$status" >"$FORCED/status"
+}
+
 test_fixture_failure_reports_the_driver_state() {
-    local out="$WORK/forced-timeout" status=0
-    mkdir -p "$out"
-    SOAK_DISK_TEST_DRIVER_TIMEOUT=1 bash "$DISK_TEST" --scenario log-within-budget "$ROOT" "$out/evidence" \
-        >"$out/stdout" 2>"$out/stderr" || status=$?
+    local out="$FORCED" status
+    run_forced_timeout
+    status="$(<"$out/status")"
     [[ "$status" == 2 ]] || fail "A forced driver timeout gave exit $status, not the fixture failure exit 2."
     grep -Fxq 'Fixture failure: log-within-budget' "$out/stderr" ||
         fail "The fixture failure report does not name the scenario."
@@ -33,4 +43,18 @@ test_fixture_failure_reports_the_driver_state() {
     printf 'PASS: A fixture failure reports the scenario, the driver exit code, the summary state, and the driver log.\n'
 }
 
+test_fixture_failure_report_shows_no_host_path_or_key_value() {
+    local report
+    run_forced_timeout
+    report="$(sed -n '/^Fixture failure: /,$p' "$FORCED/stderr")"
+    [[ -n "$report" ]] || fail "The forced driver timeout produced no fixture failure report."
+    [[ "$report" != *"$ROOT"* ]] || fail "The fixture failure report shows the host source directory."
+    [[ "$report" != *"$HOME"* ]] || fail "The fixture failure report shows the host home directory."
+    [[ "$report" != *"$FORCED"* ]] || fail "The fixture failure report shows a host evidence path."
+    [[ "$report" != *fixture-not-used* && "$report" != *DEPLOYER_KEY* && "$report" != *PRIVATE_KEY* ]] ||
+        fail "The fixture failure report shows a key value."
+    printf 'PASS: The fixture failure report shows no host path and no key value.\n'
+}
+
 test_fixture_failure_reports_the_driver_state
+test_fixture_failure_report_shows_no_host_path_or_key_value
