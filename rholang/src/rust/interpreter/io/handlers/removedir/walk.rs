@@ -1,8 +1,6 @@
 // Recursive-walk syscall primitives for `fs_remove_dir`.
 //
-// All items are `#[allow(dead_code)]`-permitted until the
-// handler-side slice lands and makes them reachable.  These
-// functions carry heavy `unsafe { libc::* }` syscall blocks;
+// These functions carry heavy `unsafe { libc::* }` syscall blocks;
 // every unsafe scope has an inline SAFETY comment stating the
 // caller-side precondition and the FFI post-condition.
 //
@@ -27,8 +25,6 @@
 //     io_error))` on partial failure where `n_before_error` is
 //     the count of entries successfully removed before the error
 //     terminated the walk.
-
-#![allow(dead_code)]
 
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;

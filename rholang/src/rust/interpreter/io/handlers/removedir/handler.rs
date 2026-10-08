@@ -43,8 +43,6 @@
 // through its own registry at boot while leader/follower append
 // byte-identical bytes.
 
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 use models::rhoapi::{ListParWithRandom, Par};

@@ -1,10 +1,5 @@
 // DD-RemoveDirReplyShape reply builders for `fs_remove_dir`.
 //
-// All items are `#[allow(dead_code)]`-permitted until the
-// handler-side slice lands and makes them reachable.  Tests
-// cover the shape-building logic in the meantime.
-#![allow(dead_code)]
-
 // The unified removeDir reply shape (2026-09-03) carries an
 // `nDeleted` count at position 1 (success) or position 3
 // (failure).  Four reply shapes exist across the recursive /
@@ -147,7 +142,6 @@ pub(super) fn err_with_manifest(
 /// `WalOutcome::Failure { code }` slot.  Consumed by the handler
 /// path when it needs the numeric FSERR code without a string
 /// round-trip.
-#[allow(dead_code)]
 pub(super) fn io_err_code_u32(e: &std::io::Error) -> u32 { fserr_to_code(io_err_code(e).as_str()) }
 
 // --- Reply-reading helpers (inverse of the builders above) ----
@@ -245,7 +239,9 @@ pub(super) fn fs_remove_dir_supplement_count_from_previous(
 /// and future consumers can extract it without re-walking.  The
 /// R5(b) follower reads its own manifest via
 /// `collect_recursive_manifest` rather than consuming the
-/// leader's, so this parser has no production caller today.
+/// leader's, so this parser has no production caller today —
+/// only in-file tests exercise it.
+#[allow(dead_code)]
 pub(super) fn extract_removedir_manifest(previous: &[Par]) -> Vec<(PathBuf, RemoveKind)> {
     let head = match previous.first() {
         Some(h) => h,

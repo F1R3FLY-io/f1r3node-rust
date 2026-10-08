@@ -45,8 +45,6 @@
 //   AFTER inspecting the returned reply via
 //   `extract_removedir_n_deleted` (slice 5.139).
 
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 use models::rhoapi::Par;
