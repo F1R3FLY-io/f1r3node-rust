@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::future::Future;
+use std::pin::Pin;
 
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
@@ -70,6 +71,13 @@ pub enum ConsensusError {
     TaskFailed { task: String, reason: String },
     #[error("Consensus shutdown deadline expired")]
     ShutdownTimeout,
+    #[error("Consensus cleanup deadline expired")]
+    CleanupTimeout,
+    #[error("{primary}; cleanup also failed: {cleanup}")]
+    ShutdownFailed {
+        primary: Box<ConsensusError>,
+        cleanup: Box<ConsensusError>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -195,11 +203,13 @@ impl RuntimeControl {
     pub fn is_cancelled(&self) -> bool { *self.shutdown.borrow() }
 }
 
+pub type CleanupTask = Pin<Box<dyn Future<Output = Result<(), ConsensusError>> + Send + 'static>>;
+
 pub struct AdapterContext {
     pub commands: mpsc::Receiver<ConsensusCommand>,
     pub packets: mpsc::Receiver<PacketRequest>,
     pub control: RuntimeControl,
-    pub drain_timeout: Duration,
+    pub cleanup: oneshot::Sender<CleanupTask>,
 }
 
 #[async_trait::async_trait]

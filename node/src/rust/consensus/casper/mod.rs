@@ -4,6 +4,7 @@ mod application;
 pub mod api_compat;
 pub(crate) mod assembly;
 mod manifest;
+mod shutdown;
 pub mod instances;
 
 use std::future::Future;
@@ -27,7 +28,7 @@ use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
 use consensus_api::{AdapterContext, ConsensusAdapter, ConsensusCommand, ConsensusError, ObjectId};
-use consensus_runtime::TaskGroup;
+use consensus_runtime::TaskScope;
 use futures::future::BoxFuture;
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::Message;
@@ -146,21 +147,35 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
             manifest,
             block_store,
             dag,
-            mut store_manager,
+            store_manager,
         } = *self;
         let _scope_guard = NativeScopeGuard {
             tasks: native_tasks.clone(),
             ready: ready.clone(),
         };
         let observer = observer.map(|observer| observer.spawn());
+        let tasks = Arc::new(TaskScope::default());
+        let workers = Arc::new(TaskScope::default());
+        let packet_requests = Arc::new(TaskScope::default());
+        let command_requests = Arc::new(TaskScope::default());
+        context
+            .cleanup
+            .send(Box::pin(shutdown::cleanup(
+                [
+                    tasks.clone(),
+                    packet_requests.clone(),
+                    command_requests.clone(),
+                    native_tasks.clone(),
+                    workers.clone(),
+                ],
+                observer,
+                store_manager,
+            )))
+            .map_err(|_| native_error("Runtime stopped before Casper registered cleanup"))?;
         tokio::select! {
             result = launch.launch() => result.map_err(native_error)?,
             _ = context.control.cancelled() => return Ok(()),
         }
-        let mut tasks = TaskGroup::default();
-        let mut workers = TaskGroup::default();
-        let mut packet_requests = TaskGroup::default();
-        let mut command_requests = TaskGroup::default();
         let (stop_workers, worker_shutdown) = watch::channel(false);
         for (name, task) in background {
             tasks.spawn(name, async move { task.await.map_err(native_error) });
@@ -339,29 +354,19 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
         context.packets.close();
         while context.commands.try_recv().is_ok() {}
         while context.packets.try_recv().is_ok() {}
-        let drain = async {
-            tasks.shutdown().await;
-            while !packet_requests.is_empty() {
-                packet_requests.join_next().await?;
-            }
-            while !command_requests.is_empty() {
-                command_requests.join_next().await?;
-            }
-            native_tasks.shutdown().await;
-            stop_workers.send_replace(true);
-            while !workers.is_empty() {
-                workers.join_next().await?;
-            }
-            if let Some(observer) = observer {
-                observer.stop().await;
-            }
-            store_manager.shutdown().await.map_err(native_error)?;
-            Ok::<(), ConsensusError>(())
-        };
-        let drained = tokio::time::timeout(context.drain_timeout, drain)
-            .await
-            .map_err(|_| ConsensusError::ShutdownTimeout)
-            .and_then(|result| result);
-        result.and(drained)
+        result?;
+        tasks.shutdown().await;
+        while !packet_requests.is_empty() {
+            packet_requests.join_next().await?;
+        }
+        while !command_requests.is_empty() {
+            command_requests.join_next().await?;
+        }
+        native_tasks.shutdown().await;
+        stop_workers.send_replace(true);
+        while !workers.is_empty() {
+            workers.join_next().await?;
+        }
+        Ok(())
     }
 }

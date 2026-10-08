@@ -21,6 +21,7 @@ fn builder(capabilities: Capabilities) -> RuntimeBuilder {
             max_payload_bytes: 8,
             request_timeout: Duration::from_millis(100),
             drain_timeout: Duration::from_millis(100),
+            cleanup_timeout: Duration::from_millis(100),
         },
     )
     .unwrap()

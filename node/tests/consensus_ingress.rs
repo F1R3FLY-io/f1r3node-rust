@@ -46,6 +46,7 @@ async fn ingress_preserves_native_bytes_and_uses_runtime_admission() {
             max_payload_bytes: 4,
             request_timeout: Duration::from_secs(1),
             drain_timeout: Duration::from_secs(1),
+            cleanup_timeout: Duration::from_secs(1),
         },
     )
     .unwrap();

@@ -59,6 +59,26 @@ For `Submit` and `Propose`, `DeadlineExceeded` therefore means **outcome unknown
 Check the operation result before retrying a write. The shared interface does not provide request deduplication or guarantee safe write retries.
 `Finalized` is a read and can be retried, but a later response can report newer finality.
 
+## Shutdown and cleanup
+
+The supervisor owns two separate timeout budgets. `drain_timeout` allows active work to finish. `cleanup_timeout` allows resource cleanup after execution stops.
+Both default to 30 seconds. A requested shutdown can therefore use up to 60 seconds across these phases.
+These are cooperative asynchronous timeouts. They cannot interrupt blocking code that does not yield.
+
+An adapter with asynchronous cleanup must send an owned `CleanupTask` through `AdapterContext.cleanup` before its first startup wait.
+The cleanup task must retain the resources and task handles needed after the execution future is dropped.
+Adapters without asynchronous resources can drop the registration sender without sending a task.
+
+The supervisor drops the execution future before it starts registered cleanup.
+Cleanup runs after normal completion, execution failure, startup failure, panic, or drain timeout. The cleanup budget starts when cleanup begins.
+Casper registers cleanup before launch. Its cleanup aborts and joins managed task scopes, stops the observer, and then calls the store manager shutdown.
+Task scopes retain their join handles if a graceful shutdown wait is canceled, so cleanup can still join those tasks.
+
+A drain timeout reports `ShutdownTimeout`. A cleanup timeout reports `CleanupTimeout`.
+If execution and cleanup both fail, `ShutdownFailed` preserves both errors. Any failure produces `Phase::Failed`, rather than a clean stopped status.
+If cleanup itself times out before tasks stop, explicit storage shutdown might not run. The runtime reports this failure and drops the remaining cleanup resources.
+Use `ConsensusRuntime::shutdown().await` for managed shutdown. Dropping the runtime still aborts the supervisor and does not await asynchronous cleanup.
+
 ## Build selection
 
 The node enables the `cbc-casper` Cargo feature by default. The configuration selector remains `consensus.protocol = "cbc-casper"`.

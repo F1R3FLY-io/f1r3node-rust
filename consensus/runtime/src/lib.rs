@@ -3,7 +3,7 @@ use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
 use consensus_api::{
-    AdapterContext, Capabilities, ConsensusAdapter, ConsensusCommand, ConsensusError,
+    AdapterContext, Capabilities, CleanupTask, ConsensusAdapter, ConsensusCommand, ConsensusError,
     ConsensusStatus, NetworkPacket, ObjectId, PacketRequest, Phase, ProtocolDescriptor,
     RuntimeControl,
 };
@@ -19,6 +19,7 @@ pub struct RuntimeConfig {
     pub max_payload_bytes: usize,
     pub request_timeout: Duration,
     pub drain_timeout: Duration,
+    pub cleanup_timeout: Duration,
 }
 
 impl Default for RuntimeConfig {
@@ -29,6 +30,7 @@ impl Default for RuntimeConfig {
             max_payload_bytes: 16 * 1024 * 1024,
             request_timeout: Duration::from_secs(300),
             drain_timeout: Duration::from_secs(30),
+            cleanup_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -184,6 +186,7 @@ pub struct RuntimeBuilder {
     handle: ConsensusHandle,
     context: AdapterContext,
     status: watch::Sender<ConsensusStatus>,
+    cleanup: oneshot::Receiver<CleanupTask>,
 }
 
 impl RuntimeBuilder {
@@ -196,6 +199,7 @@ impl RuntimeBuilder {
             || config.max_payload_bytes == 0
             || config.request_timeout.is_zero()
             || config.drain_timeout.is_zero()
+            || config.cleanup_timeout.is_zero()
         {
             return Err(ConsensusError::InvalidInput(
                 "runtime limits must be positive".into(),
@@ -209,11 +213,12 @@ impl RuntimeBuilder {
             error: None,
         });
         let (shutdown, shutdown_rx) = watch::channel(false);
+        let (cleanup_tx, cleanup) = oneshot::channel();
         let context = AdapterContext {
             commands: command_rx,
             packets: packet_rx,
             control: RuntimeControl::new(status.clone(), shutdown_rx),
-            drain_timeout: config.drain_timeout,
+            cleanup: cleanup_tx,
         };
         Ok(Self {
             handle: ConsensusHandle {
@@ -225,6 +230,7 @@ impl RuntimeBuilder {
             },
             context,
             status,
+            cleanup,
         })
     }
 
@@ -251,25 +257,52 @@ impl PreparedConsensus {
             handle,
             context,
             status,
+            mut cleanup,
         } = self.builder;
         let mut shutdown = handle.shutdown.subscribe();
         let shutdown_state = handle.shutdown.subscribe();
         let drain_timeout = handle.config.drain_timeout;
+        let cleanup_timeout = handle.config.cleanup_timeout;
         status.send_modify(|status| status.phase = Phase::Bootstrapping);
         let terminal_status = status.clone();
         let supervisor = tokio::spawn(async move {
-            let work = AssertUnwindSafe(self.adapter.run(context)).catch_unwind();
-            tokio::pin!(work);
-            let result = tokio::select! {
-                result = &mut work => flatten_result(result, *shutdown_state.borrow()),
-                _ = async { let _ = shutdown.wait_for(|stopping| *stopping).await; } => {
-                    status.send_modify(|status| status.phase = Phase::Draining);
-                    match tokio::time::timeout(drain_timeout, &mut work).await {
-                        Ok(result) => flatten_result(result, true),
-                        Err(_) => Err(ConsensusError::ShutdownTimeout),
+            let result = {
+                let work = AssertUnwindSafe(self.adapter.run(context)).catch_unwind();
+                tokio::pin!(work);
+                tokio::select! {
+                    result = &mut work => flatten_result(result, *shutdown_state.borrow()),
+                    _ = async { let _ = shutdown.wait_for(|stopping| *stopping).await; } => {
+                        status.send_modify(|status| status.phase = Phase::Draining);
+                        match tokio::time::timeout(drain_timeout, &mut work).await {
+                            Ok(result) => flatten_result(result, true),
+                            Err(_) => Err(ConsensusError::ShutdownTimeout),
+                        }
                     }
                 }
             };
+            status.send_modify(|status| status.phase = Phase::Draining);
+            let cleaned = match cleanup.try_recv() {
+                Ok(task) => match tokio::time::timeout(
+                    cleanup_timeout,
+                    AssertUnwindSafe(task).catch_unwind(),
+                )
+                .await
+                {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(ConsensusError::TaskFailed {
+                        task: "cleanup".into(),
+                        reason: "panicked".into(),
+                    }),
+                    Err(_) => Err(ConsensusError::CleanupTimeout),
+                },
+                Err(oneshot::error::TryRecvError::Closed) => Ok(()),
+                Err(oneshot::error::TryRecvError::Empty) => Err(ConsensusError::TaskFailed {
+                    task: "cleanup registration".into(),
+                    reason: "adapter retained the registration sender after execution stopped"
+                        .into(),
+                }),
+            };
+            let result = combine_shutdown_results(result, cleaned);
             status.send_modify(|status| {
                 status.phase = if result.is_ok() {
                     Phase::Stopped
@@ -304,6 +337,20 @@ fn flatten_result(
             task: "adapter".into(),
             reason: "panicked".into(),
         }),
+    }
+}
+
+fn combine_shutdown_results(
+    primary: Result<(), ConsensusError>,
+    cleanup: Result<(), ConsensusError>,
+) -> Result<(), ConsensusError> {
+    match (primary, cleanup) {
+        (Err(primary), Err(cleanup)) => Err(ConsensusError::ShutdownFailed {
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        }),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
 }
 
@@ -411,6 +458,16 @@ impl Default for TaskScope {
 }
 
 impl TaskScope {
+    pub fn is_empty(&self) -> bool { self.len() == 0 }
+
+    pub fn len(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tasks
+            .len()
+    }
+
     pub fn spawn(
         &self,
         name: impl Into<String>,
@@ -445,12 +502,18 @@ impl TaskScope {
     }
 
     pub async fn shutdown(&self) {
-        let mut tasks = {
+        self.abort();
+        futures::future::poll_fn(|cx| {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.closed = true;
-            std::mem::take(&mut state.tasks)
-        };
-        tasks.shutdown().await;
+            loop {
+                match state.tasks.poll_join_next(cx) {
+                    std::task::Poll::Ready(Some(_)) => {}
+                    std::task::Poll::Ready(None) => return std::task::Poll::Ready(()),
+                    std::task::Poll::Pending => return std::task::Poll::Pending,
+                }
+            }
+        })
+        .await;
     }
 
     pub fn abort(&self) {
