@@ -417,7 +417,17 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
     log-container-hard) truncate -s 900M /case/clog/json.log && sleep 25 ;;
     log-node-soft) printf '%s\n' 3145728000 >/case/node-log-bytes && sleep 25 ;;
     log-probe-missing-active) sleep 25 ;;
-    log-probe-vanished) sleep 25 ;;
+    log-probe-vanished)
+        for _ in $(seq 1 500); do
+            [[ ! -d /case/evidence/vanish-closed ]] || break
+            sleep 0.05
+        done
+        probes="$(grep -c LogPath /case/evidence/docker-commands.txt || true)"
+        for _ in $(seq 1 100); do
+            (($(grep -c LogPath /case/evidence/docker-commands.txt || true) <= probes)) || break
+            sleep 0.05
+        done
+        ;;
     log-rotated-unreadable) truncate -s 1M /case/clog/json.log.1 && sleep 25 ;;
     log-descriptor-exhaustion)
         (

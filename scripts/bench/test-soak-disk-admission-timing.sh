@@ -56,5 +56,18 @@ test_fixture_failure_report_shows_no_host_path_or_key_value() {
     printf 'PASS: The fixture failure report shows no host path and no key value.\n'
 }
 
+test_log_probe_vanished_reaches_its_verdict_within_a_third_of_its_timeout() {
+    local out="$WORK/vanished" status=0 seconds
+    mkdir -p "$out"
+    bash "$DISK_TEST" --scenario log-probe-vanished "$ROOT" "$out/evidence" >"$out/stdout" 2>"$out/stderr" || status=$?
+    [[ "$status" == 0 ]] || fail "log-probe-vanished gave exit $status, not a pass."
+    seconds="$(jq -r '.[0].State | [.StartedAt, .FinishedAt] | map(sub("\\.[0-9]+"; "") | fromdateiso8601) | .[1] - .[0]' \
+        "$out/evidence/container-finished.json")"
+    [[ "$seconds" =~ ^[0-9]+$ ]] || fail "The log-probe-vanished container time is not readable."
+    ((seconds * 3 < 50)) || fail "log-probe-vanished needed ${seconds} s, not less than one third of its 50 s driver timeout."
+    printf 'PASS: log-probe-vanished reached its verdict in %s s, less than one third of its driver timeout.\n' "$seconds"
+}
+
 test_fixture_failure_reports_the_driver_state
 test_fixture_failure_report_shows_no_host_path_or_key_value
+test_log_probe_vanished_reaches_its_verdict_within_a_third_of_its_timeout

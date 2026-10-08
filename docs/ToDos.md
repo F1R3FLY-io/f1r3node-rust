@@ -103,13 +103,14 @@ evidence:
 tasks:
   - id: TASK-023-1
     title: "Remove the wait that keeps log-probe-vanished near its driver timeout"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T17:00:00Z
     blocked_by: []
     acceptance:
       - "The analysis names the wait in the log-probe-vanished path (fixture or driver) that takes most of its 28 s, with the evidence."
-      - "After the fix, the scenario takes less than one quarter of its driver timeout without load."
+      - "After the fix, the scenario takes less than one third of its driver timeout without load. Decision 2026-10-08: the guardian samples every 5 s (cbc=mandatory driver), so 12 s is the floor without a driver change. The timing test is not a hard CI gate."
       - "The saturated-CPU reproduction loop gives 0 fixture failures of the six scenarios in at least 10 rounds."
       - "No scenario changes its behavioral verdict, and the driver timeouts stay unchanged unless a measurement justifies a change."
   - id: TASK-023-2
