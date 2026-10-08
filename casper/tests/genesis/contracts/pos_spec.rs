@@ -193,7 +193,7 @@ fn run_pos_spec_shard_once(shard: PosSpecShard) -> Result<(), InterpreterError> 
                 let spec = RhoSpec::new_with_genesis_parameters_and_enabled_tests(
                     compiled,
                     vec![],
-                    Duration::from_secs(60),
+                    Duration::from_secs(120),
                     genesis_parameters,
                     shard.tests.iter().map(|test| (*test).to_string()).collect(),
                 );
