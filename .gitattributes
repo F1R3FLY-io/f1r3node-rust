@@ -112,6 +112,7 @@ rspace++/src/rspace/history/root_repository.rs cbc=mandatory cbc-weight=medium
 rspace++/src/rspace/history/history.rs cbc=mandatory cbc-weight=medium
 scripts/run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high
 scripts/bench/test-run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high
+scripts/bench/test-soak-disk-admission-timing.sh cbc=mandatory cbc-weight=high
 scripts/bench/write-soak-summary.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high
 .github/workflows/merge-recovery-soak.yml cbc=mandatory cbc-weight=high
