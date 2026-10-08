@@ -333,6 +333,121 @@ impl RootIdentityRegistry {
         }
     }
 
+    /// Consensus-fs Shape A: given a WAL entry's `path` (the
+    /// `canonicalize_lexical(&root, &rel)` joined form the leader
+    /// recorded), find the longest registered logical prefix, strip
+    /// it, and rejoin the remainder to that registration's on-disk
+    /// root.  Falls through to the entry-path unchanged when no
+    /// registered logical prefix matches — preserves pre-Shape-A
+    /// behavior for legacy callers whose WAL entries carry absolute
+    /// on-disk paths.
+    ///
+    /// # Longest-prefix discipline
+    ///
+    /// A single bundle may register both `/@bundle` (for flat File
+    /// entries) and `/@bundle/cfg` (for a nested File / Dir).  A
+    /// WAL entry with path `/@bundle/cfg/theme` MUST resolve against
+    /// `/@bundle/cfg` (the specific registration), not `/@bundle`
+    /// (the broader one) — else the applier would write to
+    /// `<broad_on_disk>/cfg/theme` instead of `<nested_on_disk>/theme`.
+    /// `Path::starts_with` is component-based, so a `/@bundle`
+    /// registration does NOT falsely match `/@bundle-other`.
+    ///
+    /// # Applier semantics
+    ///
+    /// This is what the (future) `apply_wal_slice_after_fetch`
+    /// should call for every entry.path (and Rename/CopyFile
+    /// extra_path) before handing to the syscall step.
+    pub fn resolve_wal_entry_path(&self, entry_path: &Path) -> PathBuf {
+        let backing = self.current_backing();
+        let guard = poison_abort(backing.read(), "RootIdentityRegistry.inner");
+        let mut best: Option<(&PathBuf, &Root)> = None;
+        for (logical, root) in guard.entries.iter() {
+            if entry_path.starts_with(logical) {
+                let is_better = match best {
+                    None => true,
+                    Some((cur_logical, _)) => {
+                        logical.components().count() > cur_logical.components().count()
+                    }
+                };
+                if is_better {
+                    best = Some((logical, root));
+                }
+            }
+        }
+        match best {
+            Some((logical, root)) => {
+                let rel = entry_path
+                    .strip_prefix(logical)
+                    .expect("starts_with matched above; strip_prefix must succeed");
+                root.path().join(rel)
+            }
+            None => entry_path.to_path_buf(),
+        }
+    }
+
+    /// Consensus-fs Shape A / S-1 hardening: same longest-prefix
+    /// logic as [`resolve_wal_entry_path`](Self::resolve_wal_entry_path),
+    /// but returns the decomposed `(on_disk_root, rel_from_root,
+    /// expected_root_id)` triple the TOCTOU-safe applier hands to
+    /// `safe_descend_verified` / `*at` syscalls.  Falls through to
+    /// `(entry_path.parent(), entry_path.file_name(), None)` for
+    /// unregistered legacy paths — preserves pre-Shape-A behavior
+    /// for callers whose WAL entries carry absolute on-disk paths
+    /// that were never registered.
+    ///
+    /// # Fall-through split rationale
+    ///
+    /// Unregistered legacy paths carry no identity (`None`) and
+    /// lose the H-5 rename-and-recreate defense — matching pre-S-1
+    /// behavior, since the pre-S-1 applier's `std::fs::*` calls
+    /// had no defense at all.  The parent/basename split still
+    /// closes the deeper-component TOCTOU by handing safe_descend
+    /// a single-component rel.  Callers that need identity
+    /// verification MUST register the logical root at boot via
+    /// [`register`](Self::register).
+    pub fn resolve_wal_entry_root_rel(
+        &self,
+        entry_path: &Path,
+    ) -> (PathBuf, PathBuf, Option<(u64, u64)>) {
+        let backing = self.current_backing();
+        let guard = poison_abort(backing.read(), "RootIdentityRegistry.inner");
+        let mut best: Option<(&PathBuf, &Root)> = None;
+        for (logical, root) in guard.entries.iter() {
+            if entry_path.starts_with(logical) {
+                let is_better = match best {
+                    None => true,
+                    Some((cur_logical, _)) => {
+                        logical.components().count() > cur_logical.components().count()
+                    }
+                };
+                if is_better {
+                    best = Some((logical, root));
+                }
+            }
+        }
+        match best {
+            Some((logical, root)) => {
+                let rel = entry_path
+                    .strip_prefix(logical)
+                    .expect("starts_with matched above; strip_prefix must succeed")
+                    .to_path_buf();
+                (root.path().to_path_buf(), rel, Some(root.identity()))
+            }
+            None => {
+                let parent = entry_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("/"));
+                let rel = entry_path
+                    .file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_default();
+                (parent, rel, None)
+            }
+        }
+    }
+
     /// Count of registered roots.  Diagnostics only.
     pub fn len(&self) -> usize {
         let backing = self.current_backing();
@@ -829,6 +944,125 @@ mod tests {
             )
             .expect("test-permissive must allow fall-through");
         assert_eq!(on_disk, logical);
+        assert!(id.is_none());
+    }
+
+    // --- resolve_wal_entry_path / resolve_wal_entry_root_rel -----
+
+    /// Shortest-registered + nested-registered combo pins the
+    /// longest-prefix discipline: a path with the deeper logical
+    /// prefix MUST resolve against the deeper registration.
+    #[test]
+    fn resolve_wal_entry_path_prefers_longest_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let broad_dir = tmp.path().join("broad");
+        let nested_dir = tmp.path().join("nested");
+        fs::create_dir(&broad_dir).unwrap();
+        fs::create_dir(&nested_dir).unwrap();
+        let broad = Root::capture(&broad_dir).unwrap();
+        let nested = Root::capture(&nested_dir).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register(PathBuf::from("/@bundle"), broad);
+        reg.register(PathBuf::from("/@bundle/cfg"), nested.clone());
+        let out = reg.resolve_wal_entry_path(Path::new("/@bundle/cfg/theme"));
+        // LOAD-BEARING: must rewrite via the nested registration's
+        // on-disk root, NOT the broad one.  Otherwise the applier
+        // would write to <broad_on_disk>/cfg/theme instead of
+        // <nested_on_disk>/theme.
+        assert_eq!(out, nested.path().join("theme"));
+    }
+
+    #[test]
+    fn resolve_wal_entry_path_unregistered_falls_through() {
+        let reg = RootIdentityRegistry::new();
+        let entry = Path::new("/legacy/absolute/path");
+        assert_eq!(reg.resolve_wal_entry_path(entry), entry);
+    }
+
+    #[test]
+    fn resolve_wal_entry_path_component_based_matching_rejects_prefix_collision() {
+        // LOAD-BEARING: `starts_with` is component-based, so
+        // registering `/@bundle` must NOT match `/@bundle-other`.
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register(PathBuf::from("/@bundle"), root.clone());
+        let collide = Path::new("/@bundle-other/file");
+        assert_eq!(
+            reg.resolve_wal_entry_path(collide),
+            collide,
+            "/@bundle-other must NOT match /@bundle registration"
+        );
+    }
+
+    #[test]
+    fn resolve_wal_entry_path_exact_root_match_rejoins_empty_rel() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+        let reg = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/exact");
+        reg.register(logical.clone(), root.clone());
+        // The exact-root case: entry_path == logical → strip to
+        // empty → join(empty) == root path.
+        assert_eq!(reg.resolve_wal_entry_path(&logical), root.path());
+    }
+
+    #[test]
+    fn resolve_wal_entry_root_rel_decomposes_registered_entry() {
+        let tmp = TempDir::new().unwrap();
+        let nested_dir = tmp.path().join("nested");
+        fs::create_dir(&nested_dir).unwrap();
+        let nested = Root::capture(&nested_dir).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register(PathBuf::from("/@bundle/cfg"), nested.clone());
+        let (on_disk_root, rel, id) =
+            reg.resolve_wal_entry_root_rel(Path::new("/@bundle/cfg/sub/theme"));
+        assert_eq!(on_disk_root, nested.path());
+        assert_eq!(rel, PathBuf::from("sub/theme"));
+        assert_eq!(id, Some(nested.identity()));
+    }
+
+    #[test]
+    fn resolve_wal_entry_root_rel_unregistered_splits_parent_basename() {
+        // LOAD-BEARING: for an unregistered absolute path, the
+        // decomposition returns (parent, basename, None) so the
+        // applier can still hand `safe_descend` a single-component
+        // rel.  Lose the identity check (None), keep the deeper-
+        // component TOCTOU closure.
+        let reg = RootIdentityRegistry::new();
+        let (root, rel, id) = reg.resolve_wal_entry_root_rel(Path::new("/legacy/dir/file.bin"));
+        assert_eq!(root, PathBuf::from("/legacy/dir"));
+        assert_eq!(rel, PathBuf::from("file.bin"));
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn resolve_wal_entry_root_rel_prefers_longest_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let broad_dir = tmp.path().join("broad");
+        let nested_dir = tmp.path().join("nested");
+        fs::create_dir(&broad_dir).unwrap();
+        fs::create_dir(&nested_dir).unwrap();
+        let broad = Root::capture(&broad_dir).unwrap();
+        let nested = Root::capture(&nested_dir).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register(PathBuf::from("/@bundle"), broad);
+        reg.register(PathBuf::from("/@bundle/cfg"), nested.clone());
+        let (on_disk_root, rel, id) =
+            reg.resolve_wal_entry_root_rel(Path::new("/@bundle/cfg/sub/theme"));
+        assert_eq!(on_disk_root, nested.path());
+        assert_eq!(rel, PathBuf::from("sub/theme"));
+        assert_eq!(id, Some(nested.identity()));
+    }
+
+    #[test]
+    fn resolve_wal_entry_root_rel_root_only_path_returns_empty_basename() {
+        // Degenerate: entry = `/` → parent = None → fall back to `/`,
+        // file_name = None → empty rel.  Must not panic.
+        let reg = RootIdentityRegistry::new();
+        let (root, rel, id) = reg.resolve_wal_entry_root_rel(Path::new("/"));
+        assert_eq!(root, PathBuf::from("/"));
+        assert_eq!(rel, PathBuf::new());
         assert!(id.is_none());
     }
 }
