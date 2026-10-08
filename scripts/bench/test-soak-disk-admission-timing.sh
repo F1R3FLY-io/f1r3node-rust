@@ -7,7 +7,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DISK_TEST="$ROOT/scripts/bench/test-soak-disk-admission.sh"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+STRESS_BURNER=""
+trap '[[ -z "$STRESS_BURNER" ]] || docker rm -f "$STRESS_BURNER" >/dev/null 2>&1
+    rm -rf "$WORK"' EXIT
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -56,18 +58,71 @@ test_fixture_failure_report_shows_no_host_path_or_key_value() {
     printf 'PASS: The fixture failure report shows no host path and no key value.\n'
 }
 
-test_log_probe_vanished_reaches_its_verdict_within_a_third_of_its_timeout() {
-    local out="$WORK/vanished" status=0 seconds
+assert_log_scenario_within_a_third_of_its_timeout() {
+    local scenario="$1" out="$WORK/timing-$1" status=0 seconds
     mkdir -p "$out"
-    bash "$DISK_TEST" --scenario log-probe-vanished "$ROOT" "$out/evidence" >"$out/stdout" 2>"$out/stderr" || status=$?
-    [[ "$status" == 0 ]] || fail "log-probe-vanished gave exit $status, not a pass."
+    bash "$DISK_TEST" --scenario "$scenario" "$ROOT" "$out/evidence" >"$out/stdout" 2>"$out/stderr" || status=$?
+    [[ "$status" == 0 ]] || fail "$scenario gave exit $status, not a pass."
     seconds="$(jq -r '.[0].State | [.StartedAt, .FinishedAt] | map(sub("\\.[0-9]+"; "") | fromdateiso8601) | .[1] - .[0]' \
         "$out/evidence/container-finished.json")"
-    [[ "$seconds" =~ ^[0-9]+$ ]] || fail "The log-probe-vanished container time is not readable."
-    ((seconds * 3 < 50)) || fail "log-probe-vanished needed ${seconds} s, not less than one third of its 50 s driver timeout."
-    printf 'PASS: log-probe-vanished reached its verdict in %s s, less than one third of its driver timeout.\n' "$seconds"
+    [[ "$seconds" =~ ^[0-9]+$ ]] || fail "The $scenario container time is not readable."
+    ((seconds * 3 < 50)) || fail "$scenario needed ${seconds} s, not less than one third of its 50 s driver timeout."
+    printf 'PASS: %s reached its verdict in %s s, less than one third of its driver timeout.\n' "$scenario" "$seconds"
+}
+
+test_log_probe_vanished_reaches_its_verdict_within_a_third_of_its_timeout() {
+    assert_log_scenario_within_a_third_of_its_timeout log-probe-vanished
+}
+
+test_log_within_budget_and_sudo_fallback_finish_within_a_third_of_their_timeout() {
+    assert_log_scenario_within_a_third_of_its_timeout log-within-budget
+    assert_log_scenario_within_a_third_of_its_timeout log-sudo-fallback
+}
+
+test_full_iteration_scenarios_survive_cpu_saturation() {
+    local rounds="${SOAK_DISK_TEST_STRESS_ROUNDS:-0}" out="$WORK/stress" image harness cpus burner_cpus round scenario
+    local -a scenarios=(cleanup-sufficient log-within-budget log-sudo-fallback log-budget-disabled log-probe-vanished benchmark-disabled)
+    local -a broken=()
+    if [[ "$rounds" == 0 ]]; then
+        printf 'SKIP: Set SOAK_DISK_TEST_STRESS_ROUNDS to run the CPU saturation rounds.\n'
+        return 0
+    fi
+    [[ "$rounds" =~ ^[1-9][0-9]*$ ]] || fail "SOAK_DISK_TEST_STRESS_ROUNDS must be a positive integer."
+    mkdir -p "$out"
+    bash "$DISK_TEST" --scenario cleanup-sufficient "$ROOT" "$out/prime" >"$out/prime.log" 2>&1 ||
+        fail "The priming scenario did not pass."
+    image="$(<"$out/prime/image-id.txt")"
+    harness="$(awk '{print $2}' "$out/prime/harness.sha256")"
+    cpus="$(docker info --format '{{.NCPU}}')"
+    burner_cpus=1
+    ((cpus <= 2)) || burner_cpus=$((cpus - 2))
+    STRESS_BURNER="$(docker run -d --rm --network none --cpus "$burner_cpus" --entrypoint bash "$image" \
+        -c "for _ in \$(seq 1 $((burner_cpus * 2))); do while :; do :; done & done; wait")"
+    for round in $(seq 1 "$rounds"); do
+        for scenario in "${scenarios[@]}"; do
+            (
+                status=0
+                SOAK_DISK_TEST_IMAGE="$image" SOAK_DISK_TEST_HARNESS_BIN="$harness" \
+                    bash "$DISK_TEST" --scenario "$scenario" "$ROOT" "$out/$round-$scenario" \
+                    >"$out/$round-$scenario.log" 2>&1 || status=$?
+                printf '%s\n' "$status" >"$out/$round-$scenario.status"
+            ) &
+        done
+        wait
+    done
+    docker rm -f "$STRESS_BURNER" >/dev/null 2>&1 || true
+    STRESS_BURNER=""
+    for round in $(seq 1 "$rounds"); do
+        for scenario in "${scenarios[@]}"; do
+            [[ "$(<"$out/$round-$scenario.status")" == 0 ]] || broken+=("$round-$scenario")
+        done
+    done
+    ((${#broken[@]} == 0)) || fail "Under CPU saturation these runs gave no pass: ${broken[*]}."
+    printf 'PASS: %s rounds of the %s full-iteration scenarios passed under CPU saturation.\n' "$rounds" "${#scenarios[@]}"
 }
 
 test_fixture_failure_reports_the_driver_state
 test_fixture_failure_report_shows_no_host_path_or_key_value
 test_log_probe_vanished_reaches_its_verdict_within_a_third_of_its_timeout
+test_log_within_budget_and_sudo_fallback_finish_within_a_third_of_their_timeout
+test_full_iteration_scenarios_survive_cpu_saturation
