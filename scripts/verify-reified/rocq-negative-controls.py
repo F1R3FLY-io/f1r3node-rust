@@ -773,10 +773,18 @@ CONTROLS = (
      "  match o with HashMap => 0 | PathMap => 7 | Array => 13 | Vector => 19 | HashSet => 26 end.",
      "  match o with HashMap => 0 | PathMap => 6 | Array => 13 | Vector => 19 | HashSet => 26 end.",
      ("supported_in_all", "from_family_index_of", "family_index_bijective")),
-    ("sf-vector-not-a-call-op", "SpaceFactory",
-     "vector takes no calls, so `!!` on it does not abort",
-     "Definition vector_op : nat := 35.",
-     "Definition vector_op : nat := 34.",
+    # Replaced by sf-ann-not-a-call-op (P6 step 7): is_call_op now ends at ann_op (0x25), so a
+    # change of vector_op no longer changes the range of the call ops, and this mutant would
+    # survive.
+    # ("sf-vector-not-a-call-op", "SpaceFactory",
+    #  "vector takes no calls, so `!!` on it does not abort",
+    #  "Definition vector_op : nat := 35.",
+    #  "Definition vector_op : nat := 34.",
+    #  ("persistent_op_call_aborts",)),
+    ("sf-ann-not-a-call-op", "SpaceFactory",
+     "ann takes no calls, so `!!` on it does not abort",
+     "Definition ann_op : nat := 37.",
+     "Definition ann_op : nat := 36.",
      ("persistent_op_call_aborts",)),
     ("sf-recreate-allowed", "SpaceFactory",
      "a creation over an existing config record stages a second space",

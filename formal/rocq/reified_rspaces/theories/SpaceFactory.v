@@ -54,10 +54,10 @@
                             qualifier_of)
    derive_space_id          rholang/src/rust/interpreter/spaces/types/id.rs:
                             13-22, rholang/src/rust/interpreter/spaces/
-                            namespace.rs:397-422, 426-428 (RandomPurpose and
+                            namespace.rs:403-428, 432-434 (RandomPurpose and
                             derive)
    check_persistent_send    rholang/src/rust/interpreter/reified/
-                            system_channels.rs:101, 105, 110-122
+                            system_channels.rs:103, 107, 112-124
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
                             2595-2713
 
@@ -685,11 +685,13 @@ Inductive send_check : Type := SendOk | PersistentFactoryCall | PersistentOpCall
 
 Definition native_engine_factory : nat := 32.
 Definition vector_op : nat := 35.
+Definition embed_op : nat := 36.
+Definition ann_op : nat := 37.
 Definition handle_op : nat := 48.
 Definition sink_op : nat := 50.
 
 Definition is_factory_op (op : nat) : bool := op <=? native_engine_factory.
-Definition is_call_op (op : nat) : bool := (op <=? vector_op) || ((handle_op <=? op) && (op <=? sink_op)).
+Definition is_call_op (op : nat) : bool := (op <=? ann_op) || ((handle_op <=? op) && (op <=? sink_op)).
 
 Definition check_persistent_send (c : chan_id) (persistent : bool) : send_check :=
   if negb persistent then SendOk else
@@ -701,17 +703,18 @@ Definition check_persistent_send (c : chan_id) (persistent : bool) : send_check 
   end.
 
 (* Headline 7. A persistent send aborts on every op that takes calls
-   ([E0, 00..23] and [E0, 30..32]: the factories, the engine factory,
-   getSpaceAgent, assertEqual, vector, HANDLE_OP, the matcher and the sink)
-   and on every handle, before the call runs, so no call repeats. Markers
+   ([E0, 00..25] and [E0, 30..32]: the factories, the engine factory,
+   getSpaceAgent, assertEqual, vector, embed, ann, HANDLE_OP, the matcher and
+   the sink) and on every handle, before the call runs, so no call repeats.
+   Markers
    (0xD0..0xD4) and the agent tag (0xFF) take no calls, and a send that is
    not persistent never aborts here. *)
 Theorem persistent_op_call_aborts :
   (forall c, check_persistent_send c false = SendOk) /\
   (forall op, op <= 32 -> check_persistent_send (IdOp op) true = PersistentFactoryCall) /\
-  (forall op, (33 <= op <= 35 \/ 48 <= op <= 50) -> check_persistent_send (IdOp op) true = PersistentOpCall) /\
+  (forall op, (33 <= op <= 37 \/ 48 <= op <= 50) -> check_persistent_send (IdOp op) true = PersistentOpCall) /\
   check_persistent_send IdHandle true = PersistentHandleCall /\
-  (forall op, (36 <= op <= 47 \/ 51 <= op) -> check_persistent_send (IdOp op) true = SendOk) /\
+  (forall op, (38 <= op <= 47 \/ 51 <= op) -> check_persistent_send (IdOp op) true = SendOk) /\
   (forall op, is_call_op op = true -> check_persistent_send (IdOp op) true <> SendOk) /\
   (forall m, In m [208; 209; 210; 211; 212; 255] -> check_persistent_send (IdOp m) true = SendOk).
 Proof.
@@ -720,18 +723,18 @@ Proof.
   { intros op H. cbn. unfold is_factory_op, native_engine_factory.
     replace (op <=? 32) with true by (symmetry; apply Nat.leb_le; exact H). reflexivity. }
   split.
-  { intros op H. cbn. unfold is_factory_op, is_call_op, native_engine_factory, vector_op, handle_op, sink_op.
+  { intros op H. cbn. unfold is_factory_op, is_call_op, native_engine_factory, ann_op, handle_op, sink_op.
     replace (op <=? 32) with false by (symmetry; apply Nat.leb_gt; lia).
     destruct H as [H | H].
-    - replace (op <=? 35) with true by (symmetry; apply Nat.leb_le; lia). reflexivity.
-    - replace (op <=? 35) with false by (symmetry; apply Nat.leb_gt; lia).
+    - replace (op <=? 37) with true by (symmetry; apply Nat.leb_le; lia). reflexivity.
+    - replace (op <=? 37) with false by (symmetry; apply Nat.leb_gt; lia).
       replace (48 <=? op) with true by (symmetry; apply Nat.leb_le; lia).
       replace (op <=? 50) with true by (symmetry; apply Nat.leb_le; lia). reflexivity. }
   split; [reflexivity |].
   split.
-  { intros op H. cbn. unfold is_factory_op, is_call_op, native_engine_factory, vector_op, handle_op, sink_op.
+  { intros op H. cbn. unfold is_factory_op, is_call_op, native_engine_factory, ann_op, handle_op, sink_op.
     replace (op <=? 32) with false by (symmetry; apply Nat.leb_gt; lia).
-    replace (op <=? 35) with false by (symmetry; apply Nat.leb_gt; lia).
+    replace (op <=? 37) with false by (symmetry; apply Nat.leb_gt; lia).
     destruct H as [H | H].
     - replace (48 <=? op) with false by (symmetry; apply Nat.leb_gt; lia). reflexivity.
     - replace (op <=? 50) with false by (symmetry; apply Nat.leb_gt; lia).
@@ -849,20 +852,20 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    sys_channel, body_ref    rholang/src/rust/interpreter/reified/
-                            system_channels.rs:30, 34-38, 42
+                            system_channels.rs:32, 36-40, 44
    p4_rows, p4_others       rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:35-36 (REGISTERED_FAMILIES),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:49-53, 56-60, 63-67, 70-74,
-                            77-82 (P4_SYSTEM_CHANNELS)
+                            system_channels.rs:51-55, 58-62, 65-69, 72-76,
+                            79-84 (P4_SYSTEM_CHANNELS)
    p5_rows                  rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:47-140 (P5_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:125-283 (the factories)
+                            system_channels.rs:127-285 (the factories)
    alias_rows               rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:158-167 (P5_ALIAS_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:303-307, 338-364
+                            system_channels.rs:305-309, 340-366
    schema_of, required_of   rholang/src/rust/interpreter/spaces/factory/
                             defaults.rs:105-136, 140-142, 147-149
    wired                    families::Family::of_urn, through
@@ -872,11 +875,11 @@ Print Assumptions space_already_exists_is_deterministic_abort.
                             rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:174-178, 190-195, 199-203, 206-210
    definitions, binds       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:74-125 (definitions),
+                            reified/system_processes.rs:94-150 (definitions),
                             rholang/src/rust/
-                            interpreter/system_processes.rs:491-499 (to_urn_map)
+                            interpreter/system_processes.rs:495-503 (to_urn_map)
    get_space_agent_of       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:187-223 (get_space_agent),
+                            reified/system_processes.rs:221-257 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:208-226 (family_of), urn.rs:221-223
                             (factory_capability)

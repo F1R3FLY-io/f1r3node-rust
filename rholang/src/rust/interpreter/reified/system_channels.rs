@@ -9,6 +9,8 @@
 //! | `rho:reified:internal:handleOp` | `[E0, 30]`  | 2     | 248     | P4         |
 //! | the other families              | `[E0, 00..1F]` | 2  | 200 + op | P5 and P6 |
 //! | `rho:lang:vector`               | `[E0, 23]`  | 2     | 235     | P6         |
+//! | `rho:vectordb:embed`            | `[E0, 24]`  | 2     | 236     | P6         |
+//! | `rho:vectordb:ann`              | `[E0, 25]`  | 5     | 237     | P6         |
 //! | the matcher and the sink        | `[E0, 31]`, `[E0, 32]` | — | 249, 250 | P8 |
 //!
 //! The body ref of an op is `200 + op`. HEAD uses the body refs 0 to 36 and 101 to 108, and
@@ -18,8 +20,8 @@ use models::rhoapi::Par;
 
 use super::errors::ReifiedReduceError;
 use crate::rust::interpreter::spaces::namespace::{
-    self, NativeSpace, ReifiedId, ASSERT_EQUAL, GET_SPACE_AGENT, HANDLE_OP, NATIVE_ENGINE_FACTORY,
-    SINK_OP, VECTOR,
+    self, NativeSpace, ReifiedId, ANN, ASSERT_EQUAL, EMBED, GET_SPACE_AGENT, HANDLE_OP,
+    NATIVE_ENGINE_FACTORY, SINK_OP, VECTOR,
 };
 use crate::rust::interpreter::system_processes::{Arity, BodyRef};
 
@@ -100,9 +102,9 @@ pub fn handle_of(channel: &Par) -> Option<NativeSpace> {
 /// True for a factory op: the families `0x00..=0x1F` and the reserved engine factory `0x20`.
 pub const fn is_factory_op(op: u8) -> bool { op <= NATIVE_ENGINE_FACTORY }
 
-/// True for an op that takes calls: `0x00..=0x23` and `0x30..=0x32`. Markers and the agent tag
+/// True for an op that takes calls: `0x00..=0x25` and `0x30..=0x32`. Markers and the agent tag
 /// take no calls.
-pub const fn is_call_op(op: u8) -> bool { op <= VECTOR || (HANDLE_OP <= op && op <= SINK_OP) }
+pub const fn is_call_op(op: u8) -> bool { op <= ANN || (HANDLE_OP <= op && op <= SINK_OP) }
 
 /// A persistent send (`!!`) aborts on every op that takes calls and on every handle (A21).
 /// The runtime never cancels the re-produce of a persistent send, so a call could repeat
@@ -385,13 +387,38 @@ pub const VECTOR_PROCESS: SystemChannel = SystemChannel {
     arity: 2,
 };
 
+/// `embed!(ret, text)` or `embed!(ret, [text…])` (P6 step 7, decision 57): a recorded process.
+/// Play embeds the texts with the embedder of the node, and replay produces the recorded reply.
+pub const EMBED_PROCESS: SystemChannel = SystemChannel {
+    urn: "rho:vectordb:embed",
+    op: EMBED,
+    arity: 2,
+};
+
+/// The body ref of `rho:vectordb:embed`, in `non_deterministic_ops()`.
+pub const EMBED_BODY_REF: BodyRef = body_ref(EMBED);
+
+/// The body ref of `rho:vectordb:ann`, in `non_deterministic_ops()`.
+pub const ANN_BODY_REF: BodyRef = body_ref(ANN);
+
+/// `ann!(ret, space, channel, query, options)` (P6 step 7, decision 57): a recorded process.
+/// Play asks the mirror of a VectorDB space for advisory ids, and replay produces the recorded
+/// reply.
+pub const ANN_PROCESS: SystemChannel = SystemChannel {
+    urn: "rho:vectordb:ann",
+    op: ANN,
+    arity: 5,
+};
+
 /// The system processes of P6 that are not factories, after the VectorDB factories, so every
 /// earlier definition keeps its place.
 ///
-/// | URN               | Channel    | Arity | BodyRef |
-/// |-------------------|------------|-------|---------|
-/// | `rho:lang:vector` | `[E0, 23]` | 2     | 235     |
-pub const P6_PROCESSES: [SystemChannel; 1] = [VECTOR_PROCESS];
+/// | URN                  | Channel    | Arity | BodyRef |
+/// |----------------------|------------|-------|---------|
+/// | `rho:lang:vector`    | `[E0, 23]` | 2     | 235     |
+/// | `rho:vectordb:embed` | `[E0, 24]` | 2     | 236     |
+/// | `rho:vectordb:ann`   | `[E0, 25]` | 5     | 237     |
+pub const P6_PROCESSES: [SystemChannel; 3] = [VECTOR_PROCESS, EMBED_PROCESS, ANN_PROCESS];
 
 /// True for an op whose call the reducer packs into `[ret, [x…]]` (I-18): every factory, and
 /// `rho:lang:vector`.
@@ -550,7 +577,11 @@ mod tests {
 
     #[test]
     fn p6_processes_have_the_table_values() {
-        let expected = [("rho:lang:vector", 0x23, 2, 235)];
+        let expected = [
+            ("rho:lang:vector", 0x23, 2, 235),
+            ("rho:vectordb:embed", 0x24, 2, 236),
+            ("rho:vectordb:ann", 0x25, 5, 237),
+        ];
         assert_eq!(P6_PROCESSES.len(), expected.len());
         for (channel, (urn, op, arity, body)) in P6_PROCESSES.iter().zip(expected) {
             assert_eq!(
@@ -560,7 +591,7 @@ mod tests {
             assert_eq!(op_of(&channel.channel()), Some(op));
             assert!(!is_factory_op(channel.op), "{}", channel.urn);
             assert!(is_call_op(channel.op), "{}", channel.urn);
-            assert!(packs_arguments(channel.op), "{}", channel.urn);
+            assert_eq!(packs_arguments(channel.op), op == VECTOR, "{}", channel.urn);
         }
         let earlier: BTreeSet<u8> = P4_SYSTEM_CHANNELS
             .iter()
@@ -641,9 +672,8 @@ mod tests {
                 0x00..=FACTORY_LAST | NATIVE_ENGINE_FACTORY => {
                     Err(ReifiedReduceError::PersistentFactoryCall)
                 }
-                GET_SPACE_AGENT | ASSERT_EQUAL | VECTOR | HANDLE_OP | MATCHER_OP | SINK_OP => {
-                    Err(ReifiedReduceError::PersistentOpCall)
-                }
+                GET_SPACE_AGENT | ASSERT_EQUAL | VECTOR | EMBED | ANN | HANDLE_OP | MATCHER_OP
+                | SINK_OP => Err(ReifiedReduceError::PersistentOpCall),
                 _ => Ok(()),
             };
             assert_eq!(

@@ -1423,7 +1423,7 @@
       "property_files": []
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin. Step 6 adds rho:lang:vector: add, scale, dot, norm and distance, exact in the widest kind of the inputs, the replies [true, value] and [false, code, detail], the packing of a call into [ret, [op, x…]] and the metering of the process.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin. Step 6 adds rho:lang:vector: add, scale, dot, norm and distance, exact in the widest kind of the inputs, the replies [true, value] and [false, code, detail], the packing of a call into [ret, [op, x…]] and the metering of the process. Step 7a adds the recorded processes rho:vectordb:embed and rho:vectordb:ann with their replies [true, ...] and [false, code, detail], the node-local services with the unavailable defaults and the feature-gated SBERT and ChromaDB backends, the checks of an ann call in play and in replay, and the mirror entry of the config reply.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1445,7 +1445,10 @@
         "models/src/rust/reified/query_spec.rs",
         "rspace++/src/rspace/space_store_handle.rs",
         "rholang/src/rust/interpreter/tensor/ops.rs",
-        "rholang/src/rust/interpreter/reified/reducer_hooks.rs"
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs",
+        "rholang/src/rust/interpreter/spaces/namespace.rs"
       ],
       "entry_points": [
         {
@@ -1634,7 +1637,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
-          "pattern": "pub const P6_PROCESSES: [SystemChannel; 1] = [VECTOR_PROCESS];"
+          "pattern": "pub const P6_PROCESSES: [SystemChannel; 3] = [VECTOR_PROCESS, EMBED_PROCESS, ANN_PROCESS];"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
@@ -1643,6 +1646,86 @@
         {
           "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
           "pattern": "async fn vector("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub enum ServiceReplyCode {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub trait Embedder: Send + Sync {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub trait MirrorBackend: Send + Sync {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub fn install(services: VectorDbServices) -> Option<Arc<VectorDbServices>> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub fn current() -> Arc<VectorDbServices> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub fn collection_name(sid: &[u8; SID_LEN]) -> String {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub fn channel_digest(key: &CollectionKey) -> String {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub fn node_services() -> VectorDbServices {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub struct SbertEmbedder {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "pattern": "pub struct ChromaMirror {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+          "pattern": "async fn embed("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+          "pattern": "async fn ann("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+          "pattern": "async fn ann_request("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+          "pattern": "async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Par {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const EMBED_PROCESS: SystemChannel = SystemChannel {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const ANN_PROCESS: SystemChannel = SystemChannel {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+          "pattern": "pub const EMBED: u8 = 0x24;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+          "pattern": "pub const ANN: u8 = 0x25;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/handle.rs",
+          "pattern": "fn config_reply("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/handle.rs",
+          "pattern": "pub const MIRROR_ENTRY: &str = \"mirror\";"
         }
       ],
       "tests": [
@@ -1653,7 +1736,11 @@
         "rholang/tests/reified_vectordb.rs",
         "rholang/tests/support/props.rs",
         "rholang/src/rust/interpreter/tensor/ops.rs",
-        "rholang/tests/reified_vector_ops.rs"
+        "rholang/tests/reified_vector_ops.rs",
+        "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs",
+        "rholang/tests/reified_vectordb_chroma.rs",
+        "rholang/tests/support/backends.rs"
       ],
       "property_files": [
         "rholang/src/rust/interpreter/tensor/exact.rs",

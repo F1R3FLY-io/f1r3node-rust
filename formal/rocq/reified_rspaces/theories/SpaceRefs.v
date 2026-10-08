@@ -34,23 +34,23 @@
    ─────────────────────────────────────────────────────────────────────────
    kind_of_byte, decode_reified_id
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            312-342, 299-307 (decode_reified_id and
+                            318-348, 305-313 (decode_reified_id and
                             name_tail, copied from Namespace.v, which
                             proves their properties)
    space_scoped_id, handle_channel, name_id, op_channel
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            223-230, 249, 270-275, 278
+                            229-236, 255, 276-281, 284
    is_empty                 rholang/src/rust/interpreter/reified/scope.rs:68-95
    sole_unforgeable, sole_gprivate_id, reified_id_of
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            346-376, 379-386, 389-391
+                            352-382, 385-392, 395-397
    single_bundle            models/src/rust/rholang/implicits.rs:65-81
    sole_expr                rholang/src/rust/interpreter/reified/route.rs:52-87
    is_agent_tagged          rholang/src/rust/interpreter/reified/route.rs:89-99
    classify_channel         rholang/src/rust/interpreter/reified/route.rs:
                             101-136
    key_of                   rholang/src/rust/interpreter/spaces/namespace.rs:
-                            180-183, 200-206 (CollectionKey::of_channel and
+                            186-189, 206-212 (CollectionKey::of_channel and
                             canonical_inner_channel_bytes)
    route                    rholang/src/rust/interpreter/reified/route.rs:
                             149-169, 174-176 (R1 to R5, and route_channel)
@@ -69,15 +69,15 @@
                             rholang/src/rust/interpreter/dispatch.rs:62-71
                             (a fired body runs on the root reducer)
    handle_of                rholang/src/rust/interpreter/reified/
-                            system_channels.rs:93-98
+                            system_channels.rs:95-100
    parse_message            rholang/src/rust/interpreter/reified/handle.rs:
-                            138-167, 181-190, 588-624, 626-631, 633-638,
-                            640-649, 658-663 (ParsedMessage::parse,
+                            139-168, 182-191, 626-662, 664-669, 671-676,
+                            678-687, 696-701 (ParsedMessage::parse,
                             is_reply_name and the sole readers)
    method_of, arity         rholang/src/rust/interpreter/reified/handle.rs:
-                            91-100, 103-109
+                            92-101, 104-110
    call, run                rholang/src/rust/interpreter/reified/handle.rs:
-                            220-275, 277-330
+                            221-276, 278-333
    ensure_available, space_entry
                             rholang/src/rust/interpreter/reified/runtime.rs
                             (ReifiedRuntime::host, ensure_available, and

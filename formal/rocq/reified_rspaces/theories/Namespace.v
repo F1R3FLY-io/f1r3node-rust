@@ -38,28 +38,28 @@
                             (REIFIED_TAG = 0xE0)
    sid_len, ephemeral_bit   spaces/namespace.rs:35 (SID_LEN), 50
                             (EPHEMERAL_BIT)
-   kind, kind_letter        spaces/namespace.rs:82-96 (enum Kind, the
+   kind, kind_letter        spaces/namespace.rs:88-102 (enum Kind, the
                             discriminant is the uppercase letter)
-   has_ephemeral_form       spaces/namespace.rs:115
-   kind_byte                spaces/namespace.rs:119-125 (Kind::byte)
+   has_ephemeral_form       spaces/namespace.rs:121
+   kind_byte                spaces/namespace.rs:125-131 (Kind::byte)
    letter_kind, kind_of_byte
-                            spaces/namespace.rs:128-148 (Kind::from_byte:
+                            spaces/namespace.rs:134-154 (Kind::from_byte:
                             byte & !EPHEMERAL_BIT, then the bit 0x20)
-   durability, native_space spaces/namespace.rs:154-157, 161-164
-   name_tail, tail_bytes    spaces/namespace.rs:168-171 (NameTail)
-   scoped_kind_byte         spaces/namespace.rs:216-221 (fn kind_byte)
-   space_scoped_id          spaces/namespace.rs:223-230
+   durability, native_space spaces/namespace.rs:160-163, 167-170
+   name_tail, tail_bytes    spaces/namespace.rs:174-177 (NameTail)
+   scoped_kind_byte         spaces/namespace.rs:222-227 (fn kind_byte)
+   space_scoped_id          spaces/namespace.rs:229-236
    config_channel, space_counter, collection_counter, data_channel,
-   handle_channel, name_id  spaces/namespace.rs:233, 236, 239-241, 244-246,
-                            249 and 270-275 (the constructors)
-   op_channel               spaces/namespace.rs:278
-   op ids                   spaces/namespace.rs:53-77 (FACTORY_LAST to
+   handle_channel, name_id  spaces/namespace.rs:239, 242, 245-247, 250-252,
+                            255 and 276-281 (the constructors)
+   op_channel               spaces/namespace.rs:284
+   op ids                   spaces/namespace.rs:53-83 (FACTORY_LAST to
                             AGENT_TAG), models/src/rust/reified/encoding.rs:
                             34-45 (Marker 0xD0 to 0xD4)
-   reified_id               spaces/namespace.rs:282-297 (ReifiedId)
-   decode_name_tail         spaces/namespace.rs:299-307 (fn name_tail)
-   decode_reified_id        spaces/namespace.rs:312-342
-   canon, key_of            spaces/namespace.rs:200-206, 180-191
+   reified_id               spaces/namespace.rs:288-303 (ReifiedId)
+   decode_name_tail         spaces/namespace.rs:305-313 (fn name_tail)
+   decode_reified_id        spaces/namespace.rs:318-348
+   canon, key_of            spaces/namespace.rs:206-212, 186-197
                             (canonical_inner_channel_bytes, then
                             CollectionKey::of_channel and from_bytes)
    byte names               rholang/src/rust/interpreter/system_processes.rs:
@@ -930,6 +930,8 @@ Definition native_engine_factory : nat := 32.
 Definition get_space_agent : nat := 33.
 Definition assert_equal : nat := 34.
 Definition vector_op : nat := 35.
+Definition embed_op : nat := 36.
+Definition ann_op : nat := 37.
 Definition handle_op : nat := 48.
 Definition matcher_op : nat := 49.
 Definition sink_op : nat := 50.
@@ -937,11 +939,12 @@ Definition marker_ops : list nat := [208; 209; 210; 211; 212].
 Definition agent_tag : nat := 255.
 
 (* Every op index that the plan names: the 32 factories, the engine
-   factory, getSpaceAgent, assertEqual, vector, the three internal ops, the
-   five syntax markers and AGENT_TAG. *)
+   factory, getSpaceAgent, assertEqual, vector, embed, ann, the three
+   internal ops, the five syntax markers and AGENT_TAG. *)
 Definition named_ops : list nat :=
   factory_ops ++ [native_engine_factory; get_space_agent; assert_equal; vector_op;
-                  handle_op; matcher_op; sink_op] ++ marker_ops ++ [agent_tag].
+                  embed_op; ann_op; handle_op; matcher_op; sink_op] ++ marker_ops ++
+  [agent_tag].
 
 Fixpoint nodupb (l : list nat) : bool :=
   match l with
@@ -966,7 +969,7 @@ Qed.
 Theorem op_ids_pairwise_distinct :
   NoDup named_ops /\
   Forall (fun op => op < 256) named_ops /\
-  length named_ops = 45 /\
+  length named_ops = 47 /\
   (forall a b, op_channel a = op_channel b -> a = b) /\
   (forall op x, reified_id_ok x -> id_durability x <> None ->
      op_channel op <> encode_reified_id x) /\
@@ -977,8 +980,8 @@ Proof.
   - apply Forall_forall. intros op Hin.
     unfold named_ops, factory_ops, marker_ops in Hin.
     repeat rewrite in_app_iff in Hin. rewrite in_seq in Hin. simpl in Hin.
-    unfold native_engine_factory, get_space_agent, assert_equal, vector_op, handle_op,
-      matcher_op, sink_op, agent_tag in Hin. lia.
+    unfold native_engine_factory, get_space_agent, assert_equal, vector_op, embed_op,
+      ann_op, handle_op, matcher_op, sink_op, agent_tag in Hin. lia.
   - reflexivity.
   - intros a b H. injection H as H. exact H.
   - intros op x Hok Hd Heq.

@@ -67,11 +67,11 @@ Figure 1 shows the creation of a space and one handle call, from the send of the
 
 ## 2. System processes
 
-P4 installs four system processes (`reified/system_processes.rs:74-125`).
+P4 installs four system processes (`reified/system_processes.rs:94-150`).
 Each one listens on an [op channel](glossary.md#op-channel) $`[\mathtt{0xE0}, \mathit{op}]`$ and has the body reference $`200 + \mathit{op}`$.
 The URN map binds each URN to the write bundle of its op channel. So a program can call each process, but it cannot receive on its channel.
 
-*Table 2. The system processes of P4 (`reified/system_channels.rs:49-82`).*
+*Table 2. The system processes of P4 (`reified/system_channels.rs:51-84`).*
 
 | URN | Op channel | Arity | Body reference | Call | Reply |
 |---|---|---|---|---|---|
@@ -80,7 +80,7 @@ The URN map binds each URN to the write bundle of its op channel. So a program c
 | `rho:assert:assertEqual` | `[0xE0, 0x22]` | 3 | 234 | `assertEqual!(ret, a, b)` | A Boolean |
 | `rho:reified:internal:handleOp` | `[0xE0, 0x30]` | 2 | 248 | `(this, message)`, from the handle continuation of a space | The reply of the method, or a typed reply |
 
-*Table 2a. The factories of P5 (`reified/system_channels.rs:338-364`).*
+*Table 2a. The factories of P5 (`reified/system_channels.rs:340-366`).*
 
 | URN | Op channel | Arity | Body reference | Constructor params |
 |---|---|---|---|---|
@@ -191,7 +191,7 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 
 ### 4.3 The steps of a call
 
-`HANDLE_OP` processes a call `(this, message)` in this order (`reified/handle.rs:220-368`):
+`HANDLE_OP` processes a call `(this, message)` in this order (`reified/handle.rs:221-371`):
 
 1. When `this` is not a bare handle id, the process drops the call.
 2. The process reads the config record in a read-only space intent, which commits nothing. A missing record aborts with `DanglingHandle`, also when the message is malformed.
@@ -212,7 +212,7 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 - The second element is not exactly one string.
 - The first element is not a reply name, by the name rule below.
 
-**The name rule.** A value is a reply name when it is exactly one unforgeable name, or exactly one bundle with the write flag (`reified/handle.rs:181-190`).
+**The name rule.** A value is a reply name when it is exactly one unforgeable name, or exactly one bundle with the write flag (`reified/handle.rs:182-191`).
 A typed reply goes only to a reply name, so the process never sends a reply on a forged channel.
 A dropped message changes no space, but the COMMs of the forwarder and of `HANDLE_OP` stay in the log with their charges.
 
@@ -242,7 +242,7 @@ The arity counts the arguments after `ret` and the method name.
 | `produce` | `h!(ret, "produce", ch, msg)` | 2 | `persistent`: a Boolean, `false` when absent, and the send params of the discipline | `Nil`, after the operation | One produce on the collection of `ch` |
 | `consume` | `h!(ret, "consume", pairs, arrow, body)` | 3 | None | None in P4: a typed reply or an abort | None |
 
-**`gensym`.** The method runs one allocation job with the random state and the cost authority of the call (`reified/handle.rs:341-368`).
+**`gensym`.** The method runs one allocation job with the random state and the cost authority of the call (`reified/handle.rs:344-371`).
 An Array or a Vector space gives its next index name $`N(\mathit{sid} \Vert \mathrm{u64\_be}(i))`$ ([specification AL-2](specification.md#24-the-allocator-of-array-and-vector-spaces)).
 Every other store answers `Baseline`, and the method gives the random-tail name of the store.
 
@@ -254,7 +254,7 @@ The name routes to the space by itself (rule R3), so a send or a receive on it r
 For example, `config.get("outer")` gives `"hashmap"`, and `config.get("theory")` gives `Nil`.
 
 **`produce`.** The method removes `persistent` and passes the other named params to the agent of the space, which checks their values before the bump.
-The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:399-441`).
+The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:402-444`).
 The key of `ch` names the collection by rule HM-1 of the specification, also when `ch` is a name of another space.
 The record gets the elements of the list `msg` as its payload, and the random state and the cost authority of the call.
 
@@ -270,7 +270,7 @@ A dispatch ends the participant that makes it, so the reply cannot follow the fi
 So the reply and the fired bodies are parallel processes, as in the equivalent Rholang program.
 
 **`consume`.** The method accepts only the matchers of user agents, which P8 adds ([decision 34](decision-register.md#decision-34), item A9).
-It checks the arrow, the pairs, the body, and the matchers, in this order (`reified/handle.rs:445-484`).
+It checks the arrow, the pairs, the body, and the matchers, in this order (`reified/handle.rs:448-487`).
 A call that passes every check aborts with `AgentSpacesUnavailable` until P8.
 
 ## 6. Replies
@@ -288,7 +288,7 @@ For this reason, the code builds each reply value in canonical form, with the bi
 
 A typed reply is the reply of a call with a protocol error ([decision 34](decision-register.md#decision-34), item A23).
 The call does not abort, and the deploy continues.
-The reply is one datum, the tuple of three elements that `typed_error` builds (`reified/handle.rs:193-203`):
+The reply is one datum, the tuple of three elements that `typed_error` builds (`reified/handle.rs:194-204`):
 
 ```text
 ("rho:space:error", code, detail)
@@ -324,7 +324,7 @@ The values of the detail keys have these meanings:
 - `"param"` is the unknown key exactly as the call gave it.
 - `"index"` is the position of the first foreign matcher in `pairs`, from 0.
 
-*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:399-484`).*
+*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:402-487`).*
 
 | `"argument"` | Method | Trigger |
 |---|---|---|
@@ -351,7 +351,7 @@ A typed reply never changes a space: a `produce` call with a typed reply stores 
 
 ## 8. getSpaceAgent
 
-The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:187-223`).
+The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:221-257`).
 The process classifies `s` with the five rules of `classify_space_ref` (`reified/scope.rs:106-129`):
 
 1. The empty `Par` gives the typed reply `EmptySpaceRef`.
@@ -370,7 +370,7 @@ Like the factories and `assertEqual`, the process applies no name rule to `ret`.
 ## 9. assertEqual
 
 The call `assertEqual!(ret, a, b)` has the arity 3 ([decision 33](decision-register.md#decision-33)).
-It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:262-276`).
+It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:296-310`).
 The sort is the one of `ParSortMatcher`, so the order of parallel processes, of map entries, and of set elements does not count.
 The order of list elements and of tuple elements counts.
 

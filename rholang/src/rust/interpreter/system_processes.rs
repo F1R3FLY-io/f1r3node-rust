@@ -331,6 +331,8 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_MODELS,
         BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
+        crate::rust::interpreter::reified::system_channels::EMBED_BODY_REF,
+        crate::rust::interpreter::reified::system_channels::ANN_BODY_REF,
     ])
 }
 

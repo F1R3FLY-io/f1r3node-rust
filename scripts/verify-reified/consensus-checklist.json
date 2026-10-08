@@ -919,7 +919,19 @@
             "rholang/src/rust/interpreter/system_processes.rs"
           ],
           "step": "footprint",
-          "proves": "byte_name, FixedChannels and BodyRefs match HEAD."
+          "proves": "byte_name, FixedChannels and BodyRefs match HEAD.",
+          "until": "d47"
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "approved_edits",
+          "paths": [
+            "rholang/src/rust/interpreter/system_processes.rs"
+          ],
+          "step": "footprint",
+          "proves": "byte_name, FixedChannels and BodyRefs match HEAD. From P6, the file may hold the approved lines of design v3 4.9: the body refs 236 and 237 of rho:vectordb:embed and rho:vectordb:ann join non_deterministic_ops().",
+          "from": "p6"
         }
       ]
     },

@@ -172,8 +172,8 @@ Each arm that it tries reserves one comparison of the names, so a queue operatio
 New arms come after the old ones, so the dispatch of an earlier family reserves the comparisons that it reserved before.
 A config that names no wired family fails with `FamilyUnavailable`.
 
-**Rule FA-3: aliases.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:303-307`).
-The FIPS alias `rho:space:PathMapSpace` names the channel of `pathmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:311-315`).
+**Rule FA-3: aliases.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:305-309`).
+The FIPS alias `rho:space:PathMapSpace` names the channel of `pathmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:313-317`).
 An alias is registered exactly when its family is registered, and both URNs bind the same capability.
 `getSpaceAgent` replies that capability for every space of the family ([decision 33](decision-register.md#decision-33)).
 
@@ -224,7 +224,7 @@ Here $`\mathrm{sort}`$ is the normal form of `ParSortMatcher`, which is also the
 The encoding never uses Protocol Buffers, because the field `locally_free` would split one channel into two keys.
 
 **Rule HM-2: equal channels.** Two channels that are equal as `Par` values must have one key, so they name one collection.
-The theorem `canon_respects_par_eq` (`Namespace.v:1035`) proves this rule for the key function of the model.
+The theorem `canon_respects_par_eq` (`Namespace.v:1038`) proves this rule for the key function of the model.
 
 **Rule HM-3: order of lists.** The sorted form keeps the order of the elements of a list and of a tuple.
 So `@[1, 2]` and `@[2, 1]` name two collections, as they name two channels of the host.
@@ -974,15 +974,15 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 
 | Rule | Formal evidence | Tests |
 |---|---|---|
-| SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:650`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:794`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
+| SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:650`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:797`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
 | SM-2 | `counter_and_config_roundtrip` (`RecordEnvelope.v:1075`), the TLA+ invariant `HandleUnique` (U5) | `prop_counter_and_config_records_roundtrip`, `space_meta_channels_config_record` |
 | SM-3 | The TLA+ invariant `DanglingIsDeterministicError` (U6) | `reified_handle_dangling_aborts`, `space_queue_dangling_name_aborts` |
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:727`), `space_and_collection_counters_distinct` (`Namespace.v:784`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
 | SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
 | SM-10 | `route_rules` (`SpaceRefs.v:660`), `space_name_route_ignores_ctx` (`SpaceRefs.v:681`), `ordinary_channels_route_default` (`SpaceRefs.v:746`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
-| HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1035`) | `prop_canonical_inner_bytes_respects_par_eq` |
-| HM-4 | `name_id_routes_to_sid` (`Namespace.v:995`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
+| HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1038`) | `prop_canonical_inner_bytes_respects_par_eq` |
+| HM-4 | `name_id_routes_to_sid` (`Namespace.v:998`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
 | OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:927`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
 | OC-4 | None | `space_counter_rejects_corrupt_counters` |
@@ -998,12 +998,12 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:372`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
 | QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay` |
 | QF-3 | The TLA+ invariant `HandleCallsMergeLikeContracts` (U8) | `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks`, `reified_handle_cross_block_merge_no_conflict` |
-| FA-1 | `registered_families_complete` (`SpaceFactory.v:1212`) | `prop_registered_families_complete`, `space_factory_families_registered` |
+| FA-1 | `registered_families_complete` (`SpaceFactory.v:1215`) | `prop_registered_families_complete`, `space_factory_families_registered` |
 | FA-2 | `space_match_is_injected_match` (`Match.v:615`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
-| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1276`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
-| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1621`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
-| FA-5 | `priorities_validated` (`SpaceFactory.v:1752`), `array_size_validated` (`SpaceFactory.v:1851`) | `prop_priorities_validated`, `prop_array_size_validated` |
-| FA-7 | `array_size_validated` (`SpaceFactory.v:1851`) | `space_factory_kwargs_are_stored_canonical` |
+| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1279`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
+| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1624`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
+| FA-5 | `priorities_validated` (`SpaceFactory.v:1755`), `array_size_validated` (`SpaceFactory.v:1854`) | `prop_priorities_validated`, `prop_array_size_validated` |
+| FA-7 | `array_size_validated` (`SpaceFactory.v:1854`) | `space_factory_kwargs_are_stored_canonical` |
 | AR-1, AR-3, VE-1, VE-3 | `fixed_array_allocates_at_most_size` (`OuterStorage.v:313`), `vector_index_is_counter` (`VectorStore.v:184`) | `prop_fixed_array_allocates_at_most_size`, `prop_vector_index_is_counter` |
 | AR-2, VE-2 | `hashmap_get_put_other` (`HashMapStore.v:213`), `hashmap_iteration_permutation_invariant` (`HashMapStore.v:168`) | `prop_hashmap_get_put_other`, `prop_hashmap_iteration_permutation_invariant` |
 | AR-4, VE-4, AL-2 | `fixed_array_indices_sequential` (`OuterStorage.v:345`), `cyclic_array_index_mod_size` (`OuterStorage.v:376`), `vector_gensym_monotonic` (`VectorStore.v:219`) | `prop_fixed_array_indices_sequential`, `prop_cyclic_array_index_mod_size`, `prop_vector_gensym_monotonic` |

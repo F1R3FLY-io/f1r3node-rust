@@ -7,6 +7,8 @@
 //! | `rho:assert:assertEqual`        | `assertEqual!(ret, a, b)` (decision 33)   |
 //! | `rho:reified:internal:handleOp` | the handle process (`handle.rs`, A6)      |
 //! | `rho:lang:vector`               | `vec!(ret, op, x…)` (P6 step 6)           |
+//! | `rho:vectordb:embed`            | `embed!(ret, text)` (P6 step 7, recorded) |
+//! | `rho:vectordb:ann`              | `ann!(ret, space, channel, query, options)` (P6 step 7, recorded) |
 //!
 //! `create_rho_env` calls [`register`] with the runtime of the host store, before
 //! `setup_maps_and_refs` binds the URNs. `dispatch_table_creator` drains the vector, so a
@@ -24,13 +26,24 @@
 //! arguments after `ret` (I-18). `tensor::ops` computes the value with the host-work budget of
 //! the deploy, and the process replies `[true, value]` or `[false, code, detail]` on `ret`
 //! (decision 57). A host-work rejection fails the deploy.
+//!
+//! `embed` and `ann` are recorded processes (decision 57): the dispatcher records the reply of a
+//! call on its produce event (`non_deterministic_ops`), and replay produces the recorded reply.
+//! In play they ask the services of the node (`vectordb_services`). Every failure is a reply
+//! `[false, code, detail]`, so it is recorded too. The checks of an `ann` call read only
+//! consensus state, so play and replay both make them and reserve the same host work. Both
+//! processes run in legacy and in native execution, and native replay produces the recorded
+//! replies as legacy replay does.
 
 use std::sync::Arc;
 
-use models::rhoapi::{CostAuthority, Par};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{CostAuthority, EList, Par};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
+use models::rust::space_factory_urn::SpaceInner;
 use models::rust::utils::new_gbool_par;
+use prost::Message;
 
 use super::costs::ScanMeter;
 use super::factory::{ContractArgs, FactoryProcess};
@@ -38,23 +51,31 @@ use super::handle::{typed_error, HandleProcess};
 use super::runtime::ReifiedRuntime;
 use super::scope::{classify_space_ref, SpaceRef};
 use super::system_channels::{
-    SystemChannel, ASSERT_EQUAL_PROCESS, GET_SPACE_AGENT_PROCESS, HANDLE_OP_PROCESS,
-    P4_SYSTEM_CHANNELS, P6_PROCESSES, VECTOR_PROCESS,
+    SystemChannel, ANN_PROCESS, ASSERT_EQUAL_PROCESS, EMBED_PROCESS, GET_SPACE_AGENT_PROCESS,
+    HANDLE_OP_PROCESS, P4_SYSTEM_CHANNELS, P6_PROCESSES, VECTOR_PROCESS,
 };
-use crate::rust::interpreter::contract_call::ContractCall;
+use super::vectordb_services::{
+    self, channel_digest, collection_name, f32_list, failed_reply, list_par, ok_reply,
+    EmbedFailure, Neighbour, ServiceReplyCode, VectorDbServices,
+};
+use crate::rust::interpreter::contract_call::{ContractCall, Producer};
 use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
     submit_space, SpaceRequest,
 };
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::spaces::agent::SpaceAgent;
+use crate::rust::interpreter::spaces::disciplines::vectordb::{vdb_config, ID_LEN};
 use crate::rust::interpreter::spaces::errors::{SpaceError, SpaceReplyCode};
 use crate::rust::interpreter::spaces::factory::constructor::family_of;
+use crate::rust::interpreter::spaces::factory::defaults::MIRROR_PARAM;
 use crate::rust::interpreter::spaces::factory::urn::{self, factory_capability};
 use crate::rust::interpreter::spaces::families::FamilyAgent;
-use crate::rust::interpreter::spaces::namespace::NativeSpace;
-use crate::rust::interpreter::spaces::types::config::SpaceConfig;
+use crate::rust::interpreter::spaces::namespace::{CollectionKey, NativeSpace};
+use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
+use crate::rust::interpreter::spaces::types::config::{map_entries, SpaceConfig};
 use crate::rust::interpreter::system_processes::{Definition, ProcessContext};
+use crate::rust::interpreter::tensor::num::{self, NumError};
 use crate::rust::interpreter::tensor::ops::{self, OpFailure};
 
 /// The native agent of every wired family: the family agent (P5 design v3, A.3.4). It reads the
@@ -121,6 +142,11 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
         definitions.push(factory(family, channel));
     }
     definitions.push(definition(VECTOR_PROCESS, ReifiedProcess::Vector));
+    definitions.push(definition(EMBED_PROCESS, ReifiedProcess::Embed));
+    definitions.push(definition(ANN_PROCESS, ReifiedProcess::Ann {
+        runtime: Arc::clone(runtime),
+        agent: Arc::clone(&agent),
+    }));
     definitions
 }
 
@@ -139,6 +165,11 @@ enum ReifiedProcess {
     AssertEqual,
     Handle(HandleProcess),
     Vector,
+    Embed,
+    Ann {
+        runtime: Arc<ReifiedRuntime>,
+        agent: Arc<dyn SpaceAgent>,
+    },
 }
 
 impl ReifiedProcess {
@@ -155,6 +186,10 @@ impl ReifiedProcess {
             ReifiedProcess::AssertEqual => assert_equal(contract, contract_args).await,
             ReifiedProcess::Handle(handle) => handle.call(contract, contract_args).await,
             ReifiedProcess::Vector => vector(contract, contract_args).await,
+            ReifiedProcess::Embed => embed(contract, contract_args).await,
+            ReifiedProcess::Ann { runtime, agent } => {
+                ann(runtime, agent, contract, contract_args).await
+            }
         }
     }
 }
@@ -302,6 +337,318 @@ async fn vector(
     let reply = vec![reply];
     produce(&reply, ret).await?;
     Ok(reply)
+}
+
+/// `embed!(ret, text)` or `embed!(ret, [text…])` (P6 step 7, decision 57). Play embeds the
+/// texts with the embedder of the node and replies `[true, vector, model]` for one text or
+/// `[true, [vector…], model]` for a list, with each vector a list of `GFloat32`, or
+/// `[false, code, detail]`. Replay produces the recorded reply.
+async fn embed(
+    contract: &ContractCall,
+    contract_args: ContractArgs,
+) -> Result<Vec<Par>, InterpreterError> {
+    let Some((produce, is_replay, previous_output, args)) = contract.unapply(contract_args) else {
+        return Err(illegal_argument_error(EMBED_PROCESS.urn));
+    };
+    let [ret, input] = args.as_slice() else {
+        return Err(illegal_argument_error(EMBED_PROCESS.urn));
+    };
+    if is_replay {
+        produce(&previous_output, ret).await?;
+        return Ok(previous_output);
+    }
+    let output = vec![embed_reply(input).await];
+    produce_recorded(produce, output, ret).await
+}
+
+/// The texts of the argument of `embed`: one text, or a non-empty list of texts. The flag is
+/// true for one text.
+fn texts_of(input: &Par) -> Option<(Vec<String>, bool)> {
+    match (sole_expr(input), input.connective_used) {
+        (Some(ExprInstance::GString(text)), false) => Some((vec![text.clone()], true)),
+        (
+            Some(ExprInstance::EListBody(EList {
+                ps,
+                remainder: None,
+                ..
+            })),
+            false,
+        ) if !ps.is_empty() => ps
+            .iter()
+            .map(|par| match (sole_expr(par), par.connective_used) {
+                (Some(ExprInstance::GString(text)), false) => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Option<Vec<String>>>()
+            .map(|texts| (texts, false)),
+        _ => None,
+    }
+}
+
+/// The reply of `embed` to `input`. The node-local quota bounds the work of the model.
+async fn embed_reply(input: &Par) -> Par {
+    let Some((texts, single)) = texts_of(input) else {
+        return failed_reply(ServiceReplyCode::BadArgument);
+    };
+    let bytes: usize = texts.iter().map(String::len).sum();
+    if texts.len() > vectordb_services::MAX_TEXTS || bytes > vectordb_services::MAX_TEXT_BYTES {
+        return failed_reply(ServiceReplyCode::EmbeddingRateLimited);
+    }
+    let services = vectordb_services::current();
+    match embed_texts(&services, &texts).await {
+        Ok(vectors) => {
+            let value = match (single, vectors.as_slice()) {
+                (true, [vector]) => f32_list(vector),
+                _ => list_par(vectors.iter().map(|vector| f32_list(vector)).collect()),
+            };
+            let model = expr_par(ExprInstance::GString(services.embedder.model().to_string()));
+            ok_reply(vec![value, model])
+        }
+        Err(code) => failed_reply(code),
+    }
+}
+
+/// The vectors of `texts` from the embedder of the node: one finite vector for each text.
+async fn embed_texts(
+    services: &VectorDbServices,
+    texts: &[String],
+) -> Result<Vec<Vec<f32>>, ServiceReplyCode> {
+    match services.embedder.embed(texts).await {
+        Ok(vectors) if vectors.len() != texts.len() => Err(ServiceReplyCode::EmbeddingUnavailable),
+        Ok(vectors) if vectors.iter().flatten().any(|value| !value.is_finite()) => {
+            Err(ServiceReplyCode::NonFiniteEmbedding)
+        }
+        Ok(vectors) => Ok(vectors),
+        Err(EmbedFailure::Unavailable) => Err(ServiceReplyCode::EmbeddingUnavailable),
+        Err(EmbedFailure::NonFinite) => Err(ServiceReplyCode::NonFiniteEmbedding),
+    }
+}
+
+/// `ann!(ret, space, channel, query, options)` (P6 step 7, decision 57). Play asks the mirror of
+/// the VectorDB space `space` for the `k` records of `channel` that are nearest to `query`, and
+/// replies `[true, ids, distances, watermark]` or `[false, code, detail]`. The ids are hints: only
+/// the exact query param `ids=` turns them into a decision (decision 58). Replay produces the
+/// recorded reply.
+///
+/// The checks of the call read consensus state only, so play and replay both make them: the
+/// config read and the decode of a numeric query reserve host work on the budget of the deploy,
+/// and both modes must reserve the same amounts. Only the answers of the services are recorded.
+async fn ann(
+    runtime: &Arc<ReifiedRuntime>,
+    agent: &Arc<dyn SpaceAgent>,
+    contract: &ContractCall,
+    contract_args: ContractArgs,
+) -> Result<Vec<Par>, InterpreterError> {
+    let authority = match contract_args.0.as_slice() {
+        [call] => call.cost_authority.clone(),
+        _ => return Err(illegal_argument_error(ANN_PROCESS.urn)),
+    };
+    let Some((produce, is_replay, previous_output, args)) = contract.unapply(contract_args) else {
+        return Err(illegal_argument_error(ANN_PROCESS.urn));
+    };
+    let [ret, space, channel, query, options] = args.as_slice() else {
+        return Err(illegal_argument_error(ANN_PROCESS.urn));
+    };
+    let request = ann_request(runtime, agent, authority, space, channel, query, options).await?;
+    if is_replay {
+        produce(&previous_output, ret).await?;
+        return Ok(previous_output);
+    }
+    let reply = match request {
+        Ok(request) => ann_answer(&vectordb_services::current(), request).await,
+        Err(code) => failed_reply(code),
+    };
+    produce_recorded(produce, vec![reply], ret).await
+}
+
+/// A call of `ann` whose arguments pass every check of consensus state.
+struct AnnRequest {
+    /// The mirror collection of the space.
+    collection: String,
+    /// The channel digest of the collection key of `channel`.
+    channel: String,
+    /// The query.
+    query: AnnQuery,
+    /// The dimensions of the space.
+    dimensions: usize,
+    /// The number of neighbours, in `[1, capacity]`.
+    k: usize,
+}
+
+/// The query of an `ann` call.
+enum AnnQuery {
+    /// A numeric vector of the dimensions of the space, each element rounded to `f64` and then
+    /// to `f32`.
+    Vector(Vec<f32>),
+    /// A text that the embedder of the node embeds.
+    Text(String),
+}
+
+/// The checks of an `ann` call, in this order: the space is a native VectorDB space
+/// (`NotAVectorDbSpace`) with a mirror (`MirrorDisabled`), the query is a text or a numeric
+/// vector of the dimensions of the space (`DimensionMismatch`, `BadArgument`), and the options
+/// are a map of `k` (`InvalidOption`). A failure of the config job fails the deploy, as for
+/// `getSpaceAgent`, and so does a host-work rejection.
+async fn ann_request(
+    runtime: &Arc<ReifiedRuntime>,
+    agent: &Arc<dyn SpaceAgent>,
+    authority: Option<CostAuthority>,
+    space: &Par,
+    channel: &Par,
+    query: &Par,
+    options: &Par,
+) -> Result<Result<AnnRequest, ServiceReplyCode>, InterpreterError> {
+    let native = match classify_space_ref(space) {
+        Ok(SpaceRef::Native(native)) => native,
+        Ok(SpaceRef::Agent(_)) | Err(_) => return Ok(Err(ServiceReplyCode::NotAVectorDbSpace)),
+    };
+    let config_map = match read_config(runtime, agent, native, authority).await? {
+        Ok(config_map) => config_map,
+        Err(SpaceError::DanglingHandle) => return Ok(Err(ServiceReplyCode::NotAVectorDbSpace)),
+        Err(error) => return Err(error.into()),
+    };
+    let config = SpaceConfig::from_par(&config_map).map_err(SpaceError::from)?;
+    if family_of(&config)?.inner != SpaceInner::VectorDb {
+        return Ok(Err(ServiceReplyCode::NotAVectorDbSpace));
+    }
+    if !config.params.contains_key(MIRROR_PARAM) {
+        return Ok(Err(ServiceReplyCode::MirrorDisabled));
+    }
+    let meter = ScanMeter::new(
+        deterministic_reduction::current().and_then(|context| context.host_work_budget()),
+    );
+    let cfg = vdb_config(&config, &meter)?;
+    let query = match query_of(query, cfg.dimensions, &meter)? {
+        Ok(query) => query,
+        Err(code) => return Ok(Err(code)),
+    };
+    let Some(k) = option_k(options, cfg.capacity) else {
+        return Ok(Err(ServiceReplyCode::InvalidOption));
+    };
+    Ok(Ok(AnnRequest {
+        collection: collection_name(&native.sid),
+        channel: channel_digest(&CollectionKey::of_channel(channel)?),
+        query,
+        dimensions: cfg.dimensions,
+        k,
+    }))
+}
+
+/// The query of an `ann` call: a text, or a numeric vector of `dimensions` elements whose
+/// values are finite as `f32` values. A host-work rejection fails the deploy.
+fn query_of(
+    query: &Par,
+    dimensions: usize,
+    meter: &ScanMeter,
+) -> Result<Result<AnnQuery, ServiceReplyCode>, InterpreterError> {
+    if let (Some(ExprInstance::GString(text)), false) = (sole_expr(query), query.connective_used) {
+        return Ok(Ok(AnnQuery::Text(text.clone())));
+    }
+    let vector = match num::vector_of(query, Some(dimensions), meter) {
+        Ok(vector) => vector,
+        Err(NumError::HostWork(error)) => return Err(error.into()),
+        Err(NumError::DimensionMismatch { .. }) => {
+            return Ok(Err(ServiceReplyCode::DimensionMismatch))
+        }
+        Err(_) => return Ok(Err(ServiceReplyCode::BadArgument)),
+    };
+    let values = match vector.rationals(meter) {
+        Ok(values) => values,
+        Err(NumError::HostWork(error)) => return Err(error.into()),
+        Err(_) => return Ok(Err(ServiceReplyCode::BadArgument)),
+    };
+    let mut elements = Vec::with_capacity(values.len());
+    for value in values.iter() {
+        match num::round_to_f64(value, meter).map(|value| value as f32) {
+            Ok(element) if element.is_finite() => elements.push(element),
+            Ok(_) => return Ok(Err(ServiceReplyCode::BadArgument)),
+            Err(NumError::HostWork(error)) => return Err(error.into()),
+            Err(_) => return Ok(Err(ServiceReplyCode::BadArgument)),
+        }
+    }
+    Ok(Ok(AnnQuery::Vector(elements)))
+}
+
+/// The `k` of the options of `ann`: a map with the one key `k`, an `Int` in `[1, capacity]`.
+fn option_k(options: &Par, capacity: usize) -> Option<usize> {
+    let entries = map_entries(options)?;
+    let k = match (entries.len(), entries.get("k")) {
+        (1, Some(k)) => *k,
+        _ => return None,
+    };
+    match (sole_expr(k), k.connective_used) {
+        (Some(ExprInstance::GInt(k)), false) => usize::try_from(*k)
+            .ok()
+            .filter(|k| (1..=capacity).contains(k)),
+        _ => None,
+    }
+}
+
+/// The answer of the services to a checked `ann` call: the embedder embeds a text query, and the
+/// mirror answers the `k` neighbours and the watermark of the collection. A failure replies its
+/// code, and the reply drops an id that is not 32 bytes long, because it cannot name a record.
+async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Par {
+    let vector = match request.query {
+        AnnQuery::Vector(vector) => vector,
+        AnnQuery::Text(text) => match embed_texts(services, std::slice::from_ref(&text)).await {
+            Ok(vectors) => match <[Vec<f32>; 1]>::try_from(vectors) {
+                Ok([vector]) if vector.len() == request.dimensions => vector,
+                Ok(_) => return failed_reply(ServiceReplyCode::DimensionMismatch),
+                Err(_) => return failed_reply(ServiceReplyCode::EmbeddingUnavailable),
+            },
+            Err(code) => return failed_reply(code),
+        },
+    };
+    let neighbours = match services
+        .mirror
+        .query(&request.collection, &request.channel, &vector, request.k)
+        .await
+    {
+        Ok(neighbours) => neighbours,
+        Err(_) => return failed_reply(ServiceReplyCode::MirrorUnavailable),
+    };
+    let watermark = match services.mirror.watermark(&request.collection).await {
+        Ok(watermark) => watermark,
+        Err(_) => return failed_reply(ServiceReplyCode::MirrorUnavailable),
+    };
+    let neighbours: Vec<Neighbour> = neighbours
+        .into_iter()
+        .filter(|neighbour| neighbour.id.len() == ID_LEN)
+        .take(request.k)
+        .collect();
+    let ids = list_par(
+        neighbours
+            .iter()
+            .map(|neighbour| expr_par(ExprInstance::GByteArray(neighbour.id.clone())))
+            .collect(),
+    );
+    let distances = list_par(
+        neighbours
+            .iter()
+            .map(|neighbour| expr_par(ExprInstance::GFloat32(neighbour.distance.to_bits())))
+            .collect(),
+    );
+    let watermark = expr_par(ExprInstance::GInt(
+        i64::try_from(watermark).unwrap_or(i64::MAX),
+    ));
+    ok_reply(vec![ids, distances, watermark])
+}
+
+/// Produces the recorded or computed `output` of a recorded process on `ret`. A failure of the
+/// produce keeps the output, so the dispatcher records it on the failed produce event, as for the
+/// other recorded processes.
+async fn produce_recorded(
+    produce: Producer,
+    output: Vec<Par>,
+    ret: &Par,
+) -> Result<Vec<Par>, InterpreterError> {
+    match produce(&output, ret).await {
+        Ok(_) => Ok(output),
+        Err(error) => Err(InterpreterError::ProduceFailureWithOutput {
+            cause: Box::new(error),
+            output_not_produced: output.iter().map(|par| par.encode_to_vec()).collect(),
+        }),
+    }
 }
 
 #[cfg(test)]

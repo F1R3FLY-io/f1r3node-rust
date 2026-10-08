@@ -205,6 +205,16 @@ pub fn funding() -> Sig { funding_sig_compound(&[&1u64.to_be_bytes()]) }
 /// The system processes are installed in the hot store only, as the native replay environment
 /// installs them again.
 async fn fresh_runtime() -> (RhoRuntimeImpl, RhoHistoryRepository) {
+    let (runtime, space) = fresh_space_runtime().await;
+    (runtime, space.get_history_repository())
+}
+
+/// The play space of a native runtime. A clone shares the history handle of the space, so it
+/// gives the repository of the latest checkpoint.
+type PlaySpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+
+/// A fresh runtime over the empty state, and a clone of its play space.
+async fn fresh_space_runtime() -> (RhoRuntimeImpl, PlaySpace) {
     let mut stores = InMemoryStoreManager::new();
     let (space, _) =
         RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
@@ -213,9 +223,8 @@ async fn fresh_runtime() -> (RhoRuntimeImpl, RhoHistoryRepository) {
         )
         .expect("an in-memory play and replay space");
     space.create_checkpoint().await.expect("the empty root");
-    let history = space.get_history_repository();
     let runtime = create_rho_runtime(
-        space,
+        space.clone(),
         Arc::new(default_mergeable_tags()),
         false,
         &mut Vec::new(),
@@ -223,30 +232,43 @@ async fn fresh_runtime() -> (RhoRuntimeImpl, RhoHistoryRepository) {
     )
     .await
     .expect("a play runtime");
-    (runtime, history)
+    (runtime, space)
 }
 
 /// The values on [`OUT`], one Debug form for each datum, sorted.
 async fn outputs_of(runtime: &RhoRuntimeImpl) -> Vec<String> {
-    let channel = new_gstring_par(OUT.to_string(), Vec::new(), false);
-    let mut outputs: Vec<String> = runtime
-        .get_data(&channel)
+    let mut outputs: Vec<String> = out_values_of(runtime)
         .await
-        .into_iter()
-        .map(|datum| format!("{:?}", datum.a.pars))
+        .iter()
+        .map(|pars| format!("{pars:?}"))
         .collect();
     outputs.sort_unstable();
     outputs
 }
 
+/// The pars of each datum on [`OUT`], in the order of their Debug forms.
+async fn out_values_of(runtime: &RhoRuntimeImpl) -> Vec<Vec<Par>> {
+    let channel = new_gstring_par(OUT.to_string(), Vec::new(), false);
+    let mut values: Vec<Vec<Par>> = runtime
+        .get_data(&channel)
+        .await
+        .into_iter()
+        .map(|datum| datum.a.pars)
+        .collect();
+    values.sort_by_cached_key(|pars| format!("{pars:?}"));
+    values
+}
+
 /// The play of one deploy: its result, its event log, the history of its pre-state, its
-/// post-state root and its outputs.
+/// post-state root, its outputs as Debug forms and as pars, and its random state.
 pub struct Played {
     pub result: EvaluateResult,
     pub log: Vec<Event>,
     pub history: RhoHistoryRepository,
     pub root: Blake2b256Hash,
     pub outputs: Vec<String>,
+    pub out: Vec<Vec<Par>>,
+    pub random: Blake2b512Random,
 }
 
 /// Plays `term` as a native deploy whose phlo limit is `limit`, on a fresh runtime.
@@ -259,8 +281,27 @@ pub async fn native_play(term: &str, limit: u64) -> Played {
 pub async fn native_play_with(term: &str, limit: u64, host: HostWorkBudget) -> Played {
     let (mut runtime, history) = fresh_runtime().await;
     runtime.cost.set_deploy_signature_funded(DEPLOY, funding());
+    play_on(&mut runtime, history, term, limit, host, random()).await
+}
+
+/// Plays `term` as a native deploy with the random state `random` on `runtime`, from its current
+/// root, and checkpoints the post-state into `history`.
+async fn play_on(
+    runtime: &mut RhoRuntimeImpl,
+    history: RhoHistoryRepository,
+    term: &str,
+    limit: u64,
+    host: HostWorkBudget,
+    random: Blake2b512Random,
+) -> Played {
     let result = runtime
-        .evaluate_with_native_phlo(term, HashMap::new(), random(), None, config(limit, host))
+        .evaluate_with_native_phlo(
+            term,
+            HashMap::new(),
+            random.clone(),
+            None,
+            config(limit, host),
+        )
         .await
         .expect("native play evaluates");
     let log = runtime
@@ -269,7 +310,8 @@ pub async fn native_play_with(term: &str, limit: u64, host: HostWorkBudget) -> P
         .log
         .into_iter()
         .collect();
-    let outputs = outputs_of(&runtime).await;
+    let outputs = outputs_of(runtime).await;
+    let out = out_values_of(runtime).await;
     let root = runtime.create_checkpoint().await.root;
     Played {
         result,
@@ -277,6 +319,51 @@ pub async fn native_play_with(term: &str, limit: u64, host: HostWorkBudget) -> P
         history,
         root,
         outputs,
+        out,
+        random,
+    }
+}
+
+/// A native runtime that plays deploys one after another, as consecutive blocks do. Each deploy
+/// starts from the checkpoint root of the deploy before it, with the random state of its label,
+/// and its play certifies from that root.
+pub struct NativeChain {
+    runtime: RhoRuntimeImpl,
+    space: PlaySpace,
+}
+
+impl NativeChain {
+    /// A chain over the empty state.
+    pub async fn new() -> Self {
+        let (runtime, space) = fresh_space_runtime().await;
+        runtime.cost.set_deploy_signature_funded(DEPLOY, funding());
+        Self { runtime, space }
+    }
+
+    /// Plays `term` with the random state of `label` and the phlo limit `limit`. The play
+    /// keeps the history repository of the latest checkpoint, the pre-state of the deploy.
+    pub async fn play(&mut self, term: &str, label: &str, limit: u64) -> Played {
+        let random = Blake2b512Random::create_from_bytes(label.as_bytes());
+        let history = self.space.get_history_repository();
+        play_on(&mut self.runtime, history, term, limit, host_work(), random).await
+    }
+
+    /// The pars of each datum on the string channel `channel`.
+    pub async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
+        self.runtime
+            .get_data(&new_gstring_par(channel.to_string(), Vec::new(), false))
+            .await
+            .into_iter()
+            .map(|datum| datum.a.pars)
+            .collect()
+    }
+
+    /// The data on `channel`.
+    pub async fn data(
+        &self,
+        channel: &Par,
+    ) -> Vec<rspace_plus_plus::rspace::internal::Datum<ListParWithRandom>> {
+        self.runtime.get_data(channel).await
     }
 }
 
@@ -384,9 +471,19 @@ pub struct Certification {
 }
 
 /// Evaluates `term` in `environment` and finishes the certification.
-pub async fn finish(mut environment: NativeReplayEnvironment, term: &str) -> Certification {
+pub async fn finish(environment: NativeReplayEnvironment, term: &str) -> Certification {
+    finish_with(environment, term, random()).await
+}
+
+/// Evaluates `term` in `environment` with the random state `random` of its play, and finishes
+/// the certification.
+pub async fn finish_with(
+    mut environment: NativeReplayEnvironment,
+    term: &str,
+    random: Blake2b512Random,
+) -> Certification {
     let parsed = Compiler::source_to_adt(term).expect("the program parses");
-    let evaluation = environment.evaluate(parsed, random()).await;
+    let evaluation = environment.evaluate(parsed, random).await;
     let complete = environment
         .check_complete()
         .await
@@ -424,7 +521,7 @@ pub async fn certify_with(
     let environment = replay_environment_with(played, limit, &recording, journal, host)
         .await
         .expect("the committed evidence checks");
-    finish(environment, term).await
+    finish_with(environment, term, played.random.clone()).await
 }
 
 /// Checks that `certification` reproduces `played`: the errors of play, a complete journal, the

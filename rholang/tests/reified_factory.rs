@@ -405,10 +405,15 @@ const P6_PINNED: [(&str, u8, i32, i64); 2] = [
     ("rho:space:vector:vectordb", 0x19, 2, 225),
 ];
 
-/// The system processes of P6 that are not factories (P6 step 6), as `(urn, op, arity, body
-/// ref)`, after the VectorDB families: `rho:lang:vector`, whose calls the reducer packs into
-/// `[ret, [op, x…]]` (I-18).
-const P6_PROCESS_PINS: [(&str, u8, i32, i64); 1] = [("rho:lang:vector", 0x23, 2, 235)];
+/// The system processes of P6 that are not factories (P6 steps 6 and 7), as `(urn, op, arity,
+/// body ref)`, after the VectorDB families: `rho:lang:vector`, whose calls the reducer packs into
+/// `[ret, [op, x…]]` (I-18), and the recorded processes `rho:vectordb:embed` and
+/// `rho:vectordb:ann` (decision 57).
+const P6_PROCESS_PINS: [(&str, u8, i32, i64); 3] = [
+    ("rho:lang:vector", 0x23, 2, 235),
+    ("rho:vectordb:embed", 0x24, 2, 236),
+    ("rho:vectordb:ann", 0x25, 5, 237),
+];
 
 /// The system channels of the registered families of P6, in the order of the definitions.
 fn registered_p6_channels() -> Vec<SystemChannel> {

@@ -715,10 +715,10 @@ Proof.
   - exact marker_of_id_marker_id.
 Qed.
 
-(* The other [0xE0, idx] ids of the plan: 0x00 to 0x23 (factories,
-   getSpaceAgent, assertEqual, vector), 0x30 to 0x32 (internal ops) and 0xFF
-   (AGENT_TAG). *)
-Definition reserved_system_indices : list nat := seq 0 36 ++ [48; 49; 50] ++ [255].
+(* The other [0xE0, idx] ids of the plan: 0x00 to 0x25 (factories,
+   getSpaceAgent, assertEqual, vector, embed, ann), 0x30 to 0x32 (internal
+   ops) and 0xFF (AGENT_TAG). *)
+Definition reserved_system_indices : list nat := seq 0 38 ++ [48; 49; 50] ++ [255].
 
 (* Headline 5. No marker id equals another [0xE0, idx] id. No marker id
    equals a 1-byte name, a 32-byte new id or an id of 34 bytes or more

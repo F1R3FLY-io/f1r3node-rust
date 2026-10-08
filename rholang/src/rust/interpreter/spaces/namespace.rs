@@ -64,6 +64,12 @@ pub const ASSERT_EQUAL: u8 = 0x22;
 /// The op of `rho:lang:vector` (P6).
 pub const VECTOR: u8 = 0x23;
 
+/// The op of `rho:vectordb:embed`, a recorded process (P6, decision 57).
+pub const EMBED: u8 = 0x24;
+
+/// The op of `rho:vectordb:ann`, a recorded process (P6, decision 57).
+pub const ANN: u8 = 0x25;
+
 /// The op of the internal handle process.
 pub const HANDLE_OP: u8 = 0x30;
 

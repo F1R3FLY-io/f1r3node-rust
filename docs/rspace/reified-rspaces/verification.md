@@ -22,7 +22,11 @@ The [decision register](decision-register.md) is normative, and the [design](des
 12. [Phase P5: the other disciplines and outer stores](#12-phase-p5-the-other-disciplines-and-outer-stores)
 13. [Decision 47: spaces in native execution](#13-decision-47-spaces-in-native-execution)
 14. [Phase P6, step 2: the exact numeric core](#14-phase-p6-step-2-the-exact-numeric-core)
-15. [References](#references)
+15. [Phase P6, steps 3 and 4: the VectorDB driver and its join-engine paths](#15-phase-p6-steps-3-and-4-the-vectordb-driver-and-its-join-engine-paths)
+16. [Phase P6, step 5: native certification of the VectorDB shapes](#16-phase-p6-step-5-native-certification-of-the-vectordb-shapes)
+17. [Phase P6, step 6: `rho:lang:vector`](#17-phase-p6-step-6-rholangvector)
+18. [Phase P6, step 7a: the recorded processes `embed` and `ann`](#18-phase-p6-step-7a-the-recorded-processes-embed-and-ann)
+19. [References](#references)
 
 ## 1. Purpose and scope
 
@@ -1427,11 +1431,11 @@ Namespace.v models the ids under the namespace tag `0xE0` and the collection key
 | Q4 | `ephemeral_durable_disjoint` (`Namespace.v:862`) | No ephemeral id equals a durable id. | `prop_ephemeral_durable_disjoint` |
 | Q5 | `reified_ids_disjoint_from_new_ids` (`Namespace.v:895`) | No Reified id equals the 32-byte id of a name that `new` makes. | `prop_reified_ids_disjoint_from_new_ids` |
 | Q6 | `reified_ids_disjoint_from_byte_names_and_mettail` (`Namespace.v:910`) | No Reified id equals a 1-byte system name or a MeTTaTron id. | `prop_reified_ids_disjoint_from_byte_names_and_mettail` |
-| Q7 | `op_ids_pairwise_distinct` (`Namespace.v:966`) | The op ids of the factories, the system processes, and the markers are pairwise distinct. | `prop_op_ids_pairwise_distinct` |
+| Q7 | `op_ids_pairwise_distinct` (`Namespace.v:969`) | The op ids of the factories, the system processes, and the markers are pairwise distinct. | `prop_op_ids_pairwise_distinct` |
 | Q8 | `decode_encode_reified_id` (`Namespace.v:633`) | The decoder inverts every constructor, and it accepts only their images. | `prop_decode_reified_id_roundtrip_and_sound` |
 | Q9 | `space_and_collection_counters_distinct` (`Namespace.v:784`) | The space counter differs from every collection counter. | `prop_space_and_collection_counters_distinct` |
-| Q10 | `name_id_routes_to_sid` (`Namespace.v:995`) | A name id decodes to its space. | `prop_name_id_routes_to_sid` |
-| Q11 | `canon_respects_par_eq` (`Namespace.v:1035`) | Channels that are equal as `Par` values have one collection key. | `prop_canonical_inner_bytes_respects_par_eq` |
+| Q10 | `name_id_routes_to_sid` (`Namespace.v:998`) | A name id decodes to its space. | `prop_name_id_routes_to_sid` |
+| Q11 | `canon_respects_par_eq` (`Namespace.v:1038`) | Channels that are equal as `Par` values have one collection key. | `prop_canonical_inner_bytes_respects_par_eq` |
 
 #### 11.3.3 Headlines of RecordEnvelope.v
 
@@ -1521,8 +1525,8 @@ SpaceFactory.v models the families, the constructor, the derivation of the space
 | Q51 | `constructor_parse_canonical` (`SpaceFactory.v:496`) | Every canonical constructor parses back from its elements. | `prop_constructor_parse_canonical`, `prop_qualifier_parse_roundtrip` |
 | Q52 | `constructor_parse_sound` (`SpaceFactory.v:520`) | The parser accepts only the canonical sequence of a qualifier, a theory, and params. The statement has no premise on the `locally_free` bits, because the parser rejects a qualifier element with bits as `NonCanonical`. | `prop_constructor_parse_sound` |
 | Q53 | `sid_derivation_deterministic` (`SpaceFactory.v:650`) | The space id is the 32-byte draw of the random state of the call. | `prop_sid_derivation_deterministic` |
-| Q54 | `persistent_op_call_aborts` (`SpaceFactory.v:709`) | A persistent send to an op that takes calls, or to a handle, aborts before the call. | `prop_persistent_op_call_aborts` |
-| Q55 | `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:794`) | A creation over an existing config record aborts in play and in replay alike, and a commit applies all three operations or none. | `prop_space_already_exists_is_deterministic_abort`, `prop_prepare_commit_atomic` |
+| Q54 | `persistent_op_call_aborts` (`SpaceFactory.v:712`) | A persistent send to an op that takes calls, or to a handle, aborts before the call. | `prop_persistent_op_call_aborts` |
+| Q55 | `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:797`) | A creation over an existing config record aborts in play and in replay alike, and a commit applies all three operations or none. | `prop_space_already_exists_is_deterministic_abort`, `prop_prepare_commit_atomic` |
 
 #### 11.3.8 Encoding.v and the refresh of I-20
 
@@ -1687,7 +1691,7 @@ The run of its Option P passed all 75 mutants, after the 11 pristine modules com
 | `sr-any-reply-name` | SpaceRefs.v | The handle replies on a value that is not a reply name. | `parse_message_ret` |
 | `sf-hashset-takes-default` | SpaceFactory.v | The HashSet store takes every qualifier. | `qualifier_matrix` |
 | `sf-family-index-collision` | SpaceFactory.v | The PathMap families start at the index 6, so two families share an index. | `from_family_index_of` |
-| `sf-vector-not-a-call-op` | SpaceFactory.v | The op `vector` takes no calls, so a persistent send to it does not abort. | `persistent_op_call_aborts` |
+| `sf-ann-not-a-call-op` | SpaceFactory.v | The op `ann` takes no calls, so a persistent send to it does not abort. P6 step 7 replaced `sf-vector-not-a-call-op`, because the call ops now end at `ann`. | `persistent_op_call_aborts` |
 | `sf-recreate-allowed` | SpaceFactory.v | A creation over an existing config record stages a second space. | `space_already_exists_is_deterministic_abort` |
 | `sf-theory-before-qualifier` | SpaceFactory.v | The encoder puts the theory before the qualifier. | `constructor_parse_canonical` |
 | `sf-qualifier-bits-unchecked` | SpaceFactory.v | `qualifier_of` does not check the `locally_free` bits, so a qualifier element with bits parses. | `constructor_parse_sound` |
@@ -1733,7 +1737,7 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 | `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1724` | Q57 |
 | `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1774` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:193` | Q55 |
-| `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:636` | Q54 |
+| `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:667` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
 | `agent_tagged_names_route_to_the_agent` | `reified/route.rs:312` | Q42 |
 | `space_names_route_intrinsically` | `reified/route.rs:269` | Q43 |
@@ -2560,11 +2564,11 @@ The 17 Rocq negative controls fail inside their expected lemmas. One control cha
 
 | Headline | Location | Property test |
 |---|---|---|
-| `registered_families_complete` | `SpaceFactory.v:1212` | `prop_registered_families_complete`, `prop_factory_config_names_its_family` |
-| `aliases_bind_family_capability` | `SpaceFactory.v:1276` | `prop_aliases_bind_family_capability`, `prop_factory_config_names_its_family` |
-| `constructor_params_validated` | `SpaceFactory.v:1621` | `prop_constructor_params_validated` |
-| `priorities_validated` | `SpaceFactory.v:1752` | `prop_priorities_validated` |
-| `array_size_validated` | `SpaceFactory.v:1851` | `prop_array_size_validated` |
+| `registered_families_complete` | `SpaceFactory.v:1215` | `prop_registered_families_complete`, `prop_factory_config_names_its_family` |
+| `aliases_bind_family_capability` | `SpaceFactory.v:1279` | `prop_aliases_bind_family_capability`, `prop_factory_config_names_its_family` |
+| `constructor_params_validated` | `SpaceFactory.v:1624` | `prop_constructor_params_validated` |
+| `priorities_validated` | `SpaceFactory.v:1755` | `prop_priorities_validated` |
+| `array_size_validated` | `SpaceFactory.v:1854` | `prop_array_size_validated` |
 
 `rholang/tests/reified_families.rs` holds 10 tests and 6 properties, and the factory modules hold 27 unit tests.
 Every check of the suite runs for each registered family, so a new arm extends the suite with no edit.
@@ -3724,6 +3728,206 @@ To run the checks of step 6, do these steps from the repository root:
 1. Run `cargo test -p rholang --lib --test reified_vector_ops -- vector_ops`.
 2. Run `python3 scripts/verify-reified/vector-ops-mutants.py`, which must report `FAIL=0`.
 3. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+
+## 18. Phase P6, step 7a: the recorded processes `embed` and `ann`
+
+Step 7a of the P6 design adds two system processes of the VectorDB family (design v3 4.9, [decision 57](decision-register.md#decision-57)).
+`rho:vectordb:embed` is on the channel `[0xE0, 0x24]`, with the body reference 236 and the arity 2.
+`rho:vectordb:ann` is on the channel `[0xE0, 0x25]`, with the body reference 237 and the arity 5.
+Both are recorded processes: the dispatcher records the reply of a call on its produce event (`non_deterministic_ops()`).
+Replay produces the recorded reply.
+
+Both run in native execution, and native replay produces the recorded replies (plan decision 68).
+The campaign targets only the latest execution model, so every test of this step runs native play and native replay certification (plan decision 69).
+The `config` reply of a mirrored space also names its mirror.
+
+### 18.1 Calls and replies
+
+A program calls `embed!?(text)` or `embed!?([text…])`.
+The reply is `[true, vector, model]` for one text, or `[true, [vector…], model]` for a list.
+Each vector is a list of `GFloat32` values, the exact output of the model, and `model` names the model.
+
+A program calls `ann!?(space, channel, query, options)`.
+The mirror of the VectorDB space `space` answers the `k` records of the collection of `channel` that are nearest to `query`.
+The reply is `[true, ids, distances, watermark]`.
+`ids` is a list of 32-byte `GByteArray` values, the record ids that the exact query param `ids=` takes.
+`distances` is a list of `GFloat32` values, nearest first, and `watermark` is an `Int`.
+The ids are hints: only `ids=` turns them into a decision, and the order of the exact engine decides ([decision 58](decision-register.md#decision-58)).
+
+A failure replies `[false, code, detail]`, with a fixed detail that never repeats an argument.
+A call with params aborts with `ParamsUnsupported` (I-8), and a persistent call aborts with `PersistentOpCall` (A21), because `is_call_op` now covers `0x00` to `0x25`.
+
+*Table 110. The reply codes of `embed` and `ann` (`reified/vectordb_services.rs`).*
+
+| Code | Process | When |
+|---|---|---|
+| `BadArgument` | both | The argument of `embed` is not a text or a non-empty list of texts. The query of `ann` is not a text or a numeric vector whose elements are finite as `f32` values. |
+| `EmbeddingUnavailable` | both | The node has no model, the model fails, or the model gives another number of vectors than texts. |
+| `EmbeddingRateLimited` | `embed` | The call holds more than 64 texts or more than 64 KiB of text. |
+| `NonFiniteEmbedding` | both | The model gives a NaN or an infinity. |
+| `NotAVectorDbSpace` | `ann` | The space is not a native VectorDB space: a user agent, a dangling handle or another family. |
+| `MirrorDisabled` | `ann` | The VectorDB space has no `mirror`. |
+| `MirrorUnavailable` | `ann` | The node has no mirror, or the mirror does not answer. |
+| `DimensionMismatch` | `ann` | The query vector, or the embedding of a text query, has other dimensions than the space. |
+| `InvalidOption` | `ann` | The options are not a map with the one key `k`, an `Int` in $`[1, \mathit{capacity}]`$. |
+
+The quota of `embed` is local to the node, because the CPU time of the model has no price.
+It refuses a larger call before the model runs, and the refusal is recorded like any other reply.
+
+### 18.2 The services of a node
+
+The processes ask two services of the node (`reified/vectordb_services.rs`).
+The embedder turns texts into vectors, and the mirror answers advisory nearest-neighbour queries.
+The services live in one registry of the node process: `install` sets them, and `current` reads them when a process runs.
+They are not consensus state: a play output is recorded, and replay never asks a service.
+
+*Table 111. The services of a node.*
+
+| Build | Embedder | Mirror |
+|---|---|---|
+| without the `chromadb` feature | unavailable: `EmbeddingUnavailable` | unavailable: `MirrorUnavailable` |
+| with the `chromadb` feature (`node_services`) | `SbertEmbedder`: the SBERT model `all-MiniLM-L6-v2` of 384 dimensions, loaded on its first call and run on a blocking thread | `ChromaMirror`: the ChromaDB server of `CHROMA_ENDPOINT`, `CHROMA_TENANT` and `CHROMA_DATABASE`, one database for each node |
+
+The names of the mirror are pure functions of consensus values:
+
+- The collection of a space is `rrs-` and the lowercase hex of the first 16 bytes of its space id (`collection_name`).
+- The channel digest of a collection key is the lowercase hex of $`\mathrm{Blake2b256}`$ of its canonical inner channel bytes (`channel_digest`).
+  These bytes also name the data channel $`D(\mathit{sid}, \mathit{key})`$.
+- A mirror record carries its channel digest in the metadata key `channel`, and its id is the lowercase hex of the 32-byte record id.
+- A collection carries its watermark in the metadata key `watermark`.
+
+`ann` asks the mirror only for the records of its channel.
+A collection that the server does not hold yet answers no neighbours and the watermark 0.
+A neighbour whose id is not 32 bytes long cannot name a record, so the reply drops it.
+
+The `config` reply of a space with a mirror holds one more entry, `"mirror"`.
+Its value is the map `{"backend": b, "collection": "rrs-…"}`, where `b` is the value of the factory param `mirror`.
+The stored config record does not change.
+
+### 18.3 Recording and replay
+
+The dispatcher records the whole reply of a call on its produce event, and replay hands the process the recorded output (`interpreter/dispatch.rs:75-91`).
+Every failure is a reply, so it is recorded too.
+An error of a recorded process would mark its produce failed, and replay could not reproduce it (`interpreter/reduce.rs:704-706`).
+
+`embed` reads no consensus state.
+In play it checks the shape of its argument and the quota, and then asks the embedder.
+In replay it produces the recorded reply at once.
+
+`ann` reads consensus state before it asks a service (plan decision 67).
+Play and replay both make its checks, in this order:
+
+1. The space is a native VectorDB space, else `NotAVectorDbSpace`.
+   A read-only space job reads its config record, as `getSpaceAgent` does.
+2. The config has the param `mirror`, else `MirrorDisabled`.
+3. The query is a text, or a numeric vector of the dimensions of the space, else `DimensionMismatch` or `BadArgument`.
+4. The options are a map of `k`, an `Int` in $`[1, \mathit{capacity}]`$, else `InvalidOption`.
+
+The config read is a journaled operation of native execution, and the reads reserve host work on the budget of the deploy.
+So play and replay must both make the checks.
+Replay then produces the recorded reply and never asks a service.
+Only play asks the services: it embeds a text query, and it asks the mirror for the neighbours and the watermark.
+
+Design v3 had replay return the recorded output first.
+With that rule, native replay of an `ann` call fails with "native replay has incomplete operations", because the journal of play holds the config read.
+A budgeted evaluation outside native execution showed the host-work side: play reserved 1,815,346 `VerificationBytes` more than replay for one call.
+
+In native execution at the v6 limits, one `ann` call reserves about 3.6 M `VerificationBytes` in play and about 16.6 M in native replay.
+The factory call, the `gensym` and the evidence of a deploy add about 7.9 M in play and about 68 M in native replay.
+So one deploy holds about a dozen `ann` calls before native replay exceeds the limit of 268,435,456, while play stays far below it.
+This play and replay asymmetry belongs to the cost-accounting owner (measurement M-47-1).
+
+A failure of the config job is not a reply: it fails the deploy, as for `getSpaceAgent`, and so does a host-work rejection.
+When a deploy runs out of phlo, the produce of the reply fails.
+The deploy then fails with `ProduceFailureWithOutput`, and the event log marks the produce of the call failed, as for the other recorded processes.
+
+Native replay cannot yet certify such a play.
+It refuses to dispatch a call whose recorded produce is marked failed (`interpreter/reduce.rs:704-706`), so the journaled reply attempt of play stays unconsumed.
+The record-and-replay mechanism of external service calls, which the cost-accounting owner implements, covers this case (plan decision 68, task 10904).
+When it merges, `embed` and `ann` move to it, and the out-of-phlo test certifies the rejection by native replay.
+
+### 18.4 The Rocq models
+
+The two ops extend the op table and the range of the ops that take calls, so three models follow the code:
+
+- `SpaceFactory.v` defines `embed_op = 36` and `ann_op = 37`, and `is_call_op` ends at `ann_op`.
+  Headline 7, `persistent_op_call_aborts`, now states `PersistentOpCall` for the ops 33 to 37 and `SendOk` for the ops 38 to 47.
+- `Encoding.v` lists the indices `0x00` to `0x25` in `reserved_system_indices`, so `markers_disjoint_reserved` covers the two new ids.
+- `Namespace.v` adds the two ops to `named_ops`, so headline 7 of that module, `op_ids_pairwise_distinct`, states 47 distinct op indices.
+  The property `prop_op_ids_pairwise_distinct` of `rholang/tests/reified_p4_props.rs` checks the same 47 ops of the code.
+- The Rocq mutant `sf-ann-not-a-call-op` replaces `sf-vector-not-a-call-op` in Table 39.
+  A change of `vector_op` no longer changes the range of the call ops, so the old mutant would survive.
+
+The Rocq gate passes with `PASS=109 FAIL=0 SKIP=0`, 266 closed headlines and 367 negative checks.
+The new mutant fails inside `persistent_op_call_aborts`, as expected.
+
+### 18.5 Tests
+
+*Table 112. The tests of step 7a.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `vectordb_services_names_are_pure_functions_of_consensus_values` | `reified/vectordb_services.rs` | The collection name reads the first 16 bytes of the space id, and the channel digest is the hex of $`\mathrm{Blake2b256}`$ of the key. |
+| `vectordb_services_default_to_unavailable` | the same | The unavailable services refuse every call. |
+| `p6_processes_have_the_table_values` | `reified/system_channels.rs` | The three processes of P6: channel, arity and body reference, and only `vector` packs its arguments. |
+| `persistent_sends_abort_on_every_call_op_and_every_handle` | the same | `!!` aborts on `0x24` and `0x25` with `PersistentOpCall`. |
+| `space_handle_methods_config_reports_the_mirror` | `reified/handle.rs` | The `config` reply of a mirrored space keeps the stored entries and adds the mirror, and the record does not change. |
+| `vectordb_embed_replies_and_codes` | `rholang/tests/reified_vectordb_chroma.rs` | One text, a list, the boundaries of the quota (64 texts and 64 KiB pass), each reply code, that only checked calls reach the model, and native replay of each reply. |
+| `vectordb_embed_replay_equal` | the same | Native replay with another embedder produces the replies of play and calls no embedder. |
+| `vectordb_embed_out_of_phlo_rejects_output` | the same | One phlo below the usage of a call, the reply does not appear, the call is marked failed, and two plays agree. |
+| `vectordb_ann_replies_and_codes` | the same | A numeric query, a text query, every reply code, the collection and the channel digest that the mirror receives, the drop of a malformed id, and native replay of each reply, in three deploys. |
+| `vectordb_ann_replay_equal` | the same | Native replay with another mirror reproduces the advisory answers and a recorded outage, and asks no mirror and no embedder. |
+| `vectordb_ann_ids_feed_the_exact_query` | the same | Across two deploys, the advisory ids, with a stale id among them, restrict an exact list query, and the exact order decides, not the order of the mirror. |
+| `vectordb_embed_and_ann_reject_params_and_persistent_sends` | the same | Params abort with `ParamsUnsupported`, and `!!` with `PersistentOpCall`, before any service call. |
+| `vectordb_config_reports_the_mirror` | the same | A program reads the mirror entry of a mirrored space, and an unmirrored space has none. Native replay certifies the deploy. |
+
+Each certification has a time limit of 120 seconds.
+A native replay that hangs then fails its test instead of blocking the suite.
+Native replay hangs when a recorded process replies differently than in play, a liveness defect that belongs to the cost-accounting owner (F-47-4).
+The test support plays a chain of native deploys on one runtime (`NativeChain`).
+Each deploy certifies from the checkpoint root of the deploy before it.
+
+The registration suites learn the two processes: `P6_PROCESS_PINS` of `rholang/tests/reified_factory.rs` pins their rows, and `rholang/tests/reified_families.rs` reads `P6_PROCESSES`.
+The tests install a mock embedder and a fake mirror (`rholang/tests/support/backends.rs`).
+A test holds the lock of the services from its start to its end.
+So the tests of one binary never share a backend.
+The backends of the `chromadb` feature compile with `cargo check -p rholang --features chromadb`.
+The sandbox runs only the fake backends.
+
+### 18.6 Negative controls
+
+The harness `scripts/verify-reified/vectordb-services-mutants.py` applies each mutant and restores the source files after it.
+It runs the suite and the unit tests of the services and of the `config` reply.
+A systemd time limit bounds each run, and a run that reaches it counts as a hang.
+
+*Table 113. The mutation controls of step 7a.*
+
+| Mutant | What it changes | Tests that fail |
+|---|---|---|
+| `embed-not-recorded` | `embed` leaves `non_deterministic_ops()`. | 3: native replay fails, and the produce of an out-of-phlo call is not marked failed |
+| `ann-not-recorded` | `ann` leaves `non_deterministic_ops()`. | 3 |
+| `embed-replay-recomputes` | Replay asks the embedder again. | 2 |
+| `ann-replay-recomputes` | Replay asks the mirror again. | 3 |
+| `ann-checks-only-in-play` | Replay returns first, as design v3 had it. | 3: native replay has incomplete operations |
+| `quota-dropped` | `embed` has no quota. | 1 |
+| `non-finite-accepted` | A NaN element is a reply value. | 1 |
+| `mirror-check-dropped` | A space without a mirror is asked anyway. | 1 |
+| `k-unbounded` | `k` is not bounded by the capacity. | 1 |
+| `channel-digest-of-the-space` | The mirror receives the digest of the space, not of the channel. | 1 |
+| `malformed-id-kept` | The reply keeps an id that is not 32 bytes long. | 1 |
+| `config-entry-dropped` | The `config` reply has no mirror entry. | 2: the unit test and the native test |
+
+All 12 mutants fail tests, and the harness restores the files.
+No mutant hangs, because each certification of the suite has its own time limit.
+
+### 18.7 Running the step-7a checks
+
+To run the checks of step 7a, do these steps from the repository root:
+
+1. Run `cargo test -p rholang --lib --test reified_vectordb_chroma -- vectordb_ space_handle_methods_config`.
+2. Run `python3 scripts/verify-reified/vectordb-services-mutants.py`, which must report `FAIL=0`.
+3. Run `scripts/check-reified-rspaces-proofs.sh`, which must report `FAIL=0`.
+4. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
 
 ## References
 

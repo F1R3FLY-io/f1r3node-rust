@@ -16,3 +16,4 @@ pub mod runtime;
 pub mod scope;
 pub mod system_channels;
 pub mod system_processes;
+pub mod vectordb_services;

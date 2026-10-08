@@ -53,6 +53,7 @@ use super::errors::ReifiedReduceError;
 use super::factory::ContractArgs;
 use super::runtime::ReifiedRuntime;
 use super::system_channels::{handle_of, HANDLE_OP_PROCESS};
+use super::vectordb_services::collection_name;
 use crate::rust::interpreter::contract_call::ContractCall;
 use crate::rust::interpreter::dispatch::{DispatchType, RhoDispatch};
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
@@ -60,12 +61,12 @@ use crate::rust::interpreter::reduce::ReducerCore;
 use crate::rust::interpreter::spaces::agent::{AllocOp, ProduceOp, SpaceAgent, SpaceOp};
 use crate::rust::interpreter::spaces::errors::{SpaceError, SpaceReplyCode, SPACE_ERROR_REPLY_TAG};
 use crate::rust::interpreter::spaces::factory::constructor::family_of;
-use crate::rust::interpreter::spaces::factory::defaults::suggestion;
+use crate::rust::interpreter::spaces::factory::defaults::{suggestion, MIRROR_PARAM};
 use crate::rust::interpreter::spaces::families::send_params;
 use crate::rust::interpreter::spaces::namespace::{
     self, CollectionKey, NameTail, NativeSpace, ReifiedId,
 };
-use crate::rust::interpreter::spaces::types::config::SpaceConfig;
+use crate::rust::interpreter::spaces::types::config::{map_entries, SpaceConfig};
 
 /// The methods of a handle, in bytewise order.
 pub const HANDLE_METHODS: [&str; 5] = ["config", "consume", "gensym", "produce", "qualifier"];
@@ -323,7 +324,9 @@ impl HandleProcess {
             HandleMethod::Qualifier => {
                 Ok(MethodEffect::Reply(string_par(config.qualifier.as_str())))
             }
-            HandleMethod::Config => Ok(MethodEffect::Reply(config_map.clone())),
+            HandleMethod::Config => {
+                config_reply(space, config_map, config).map(MethodEffect::Reply)
+            }
             HandleMethod::Produce => produce_method(space, call, &method, &args, named),
             HandleMethod::Consume => consume_method(&method, &args).map(MethodEffect::Reply),
         }
@@ -490,6 +493,41 @@ fn reducer(dispatcher: &RhoDispatch) -> Result<Arc<ReducerCore>, InterpreterErro
         .get()
         .and_then(Weak::upgrade)
         .ok_or_else(|| InterpreterError::BugFoundError("Reducer not initialized".to_string()))
+}
+
+/// The key of the derived entry of the `config` reply of a space with a mirror.
+pub const MIRROR_ENTRY: &str = "mirror";
+
+/// The reply of `config` (P6 step 7, design v3 4.9): the stored config map, and for a space with
+/// a mirror one more entry `"mirror"`, the map `{"backend": b, "collection": "rrs-…"}`, where `b`
+/// is the value of the factory param `mirror` and the collection is [`collection_name`] of the
+/// space. The stored config record does not change.
+fn config_reply(
+    space: NativeSpace,
+    config_map: &Par,
+    config: &SpaceConfig,
+) -> Result<Par, InterpreterError> {
+    let Some(backend) = config.params.get(MIRROR_PARAM) else {
+        return Ok(config_map.clone());
+    };
+    let entries = map_entries(config_map).ok_or(SpaceError::Inconsistent(
+        "the config record is not a map with string keys",
+    ))?;
+    let mirror = map_par(vec![
+        (string_par("backend"), backend.clone()),
+        (
+            string_par("collection"),
+            string_par(&collection_name(&space.sid)),
+        ),
+    ]);
+    let mut pairs = Vec::with_capacity(entries.len() + 1);
+    pairs.extend(
+        entries
+            .into_iter()
+            .map(|(key, value)| (string_par(key), value.clone())),
+    );
+    pairs.push((string_par(MIRROR_ENTRY), mirror));
+    Ok(map_par(pairs))
 }
 
 fn method_error(code: SpaceReplyCode, method: &str, detail: Vec<(&str, Par)>) -> Par {
@@ -1272,6 +1310,63 @@ mod tests {
                 .to_par();
         assert_eq!(reply, vec![expected]);
         assert_eq!(fixture.data(&reply_name(1)).await, vec![reply]);
+    }
+
+    #[tokio::test]
+    async fn space_handle_methods_config_reports_the_mirror() {
+        let fixture = Fixture::new().await;
+        let urn = SpaceFactoryUrn::parse("rho:space:hashmap:vectordb").expect("the VectorDB URN");
+        let constructor = list(vec![params(vec![
+            SendParam::Named("capacity".to_string(), int(4)),
+            SendParam::Named("dimensions".to_string(), int(2)),
+            SendParam::Named("mirror".to_string(), string("chroma")),
+        ])]);
+        FactoryProcess::new(
+            urn,
+            Arc::clone(&fixture.runtime),
+            Arc::clone(&fixture.agent),
+        )
+        .call(
+            &fixture.contract,
+            call(vec![reply_name(0xFF), constructor.clone()], b"mirror"),
+        )
+        .await
+        .expect("the factory creates the space");
+        let space = space_of(b"mirror");
+        let config_channel = namespace::gprivate(namespace::config_channel(space));
+        let record = fixture.data(&config_channel).await;
+        assert_eq!(record.len(), 1, "the space has one config record");
+        let reply = reply_of(&fixture, space, vec![reply_name(1), string("config")], b"c")
+            .await
+            .expect("config replies");
+        let stored = FactoryConstructor::validate(urn, &constructor)
+            .expect("the constructor is valid")
+            .config(space)
+            .to_par();
+        let [reply] = reply.as_slice() else {
+            panic!("config replies one value");
+        };
+        let entries = map_entries(reply).expect("the reply is a map with string keys");
+        let stored_entries = map_entries(&stored).expect("the record is a map with string keys");
+        assert_eq!(entries.len(), stored_entries.len() + 1);
+        for (key, value) in &stored_entries {
+            assert_eq!(
+                entries.get(key),
+                Some(value),
+                "the reply keeps the entry {key}"
+            );
+        }
+        let mirror = map_entries(entries.get(MIRROR_ENTRY).expect("the mirror entry"))
+            .expect("the mirror entry is a map with string keys");
+        assert_eq!(mirror.len(), 2);
+        assert_eq!(mirror.get("backend"), Some(&&string("chroma")));
+        let collection = format!("rrs-{}", hex::encode(&space.sid[..16]));
+        assert_eq!(mirror.get("collection"), Some(&&string(&collection)));
+        assert_eq!(
+            fixture.data(&config_channel).await,
+            record,
+            "the stored config record does not change"
+        );
     }
 
     #[tokio::test]

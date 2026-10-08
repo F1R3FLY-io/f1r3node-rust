@@ -107,8 +107,8 @@ use rholang::rust::interpreter::spaces::generic::{
 use rholang::rust::interpreter::spaces::namespace::{
     self, canonical_inner_channel_bytes, decode_reified_id, gprivate, reified_id_of,
     sole_gprivate_id, CollectionKey, Durability, Kind, NameTail, NativeSpace, RandomPurpose,
-    ReifiedId, SpaceId, AGENT_TAG, ASSERT_EQUAL, EPHEMERAL_BIT, FACTORY_LAST, GET_SPACE_AGENT,
-    HANDLE_OP, MATCHER_OP, NATIVE_ENGINE_FACTORY, REIFIED_TAG, SID_LEN, SINK_OP,
+    ReifiedId, SpaceId, AGENT_TAG, ANN, ASSERT_EQUAL, EMBED, EPHEMERAL_BIT, FACTORY_LAST,
+    GET_SPACE_AGENT, HANDLE_OP, MATCHER_OP, NATIVE_ENGINE_FACTORY, REIFIED_TAG, SID_LEN, SINK_OP,
     SPACE_ID_PREFIX_LEN, VECTOR,
 };
 use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
@@ -510,6 +510,8 @@ fn named_ops() -> Vec<u8> {
         GET_SPACE_AGENT,
         ASSERT_EQUAL,
         VECTOR,
+        EMBED,
+        ANN,
         HANDLE_OP,
         MATCHER_OP,
         SINK_OP,
@@ -781,8 +783,8 @@ fn prop_op_ids_pairwise_distinct() {
         (any::<u8>(), any::<u8>(), arb_id_spec()),
         |(first, second, spec)| {
             let named = named_ops();
-            prop_assert_eq!(named.len(), 45);
-            prop_assert_eq!(named.iter().collect::<BTreeSet<_>>().len(), 45);
+            prop_assert_eq!(named.len(), 47);
+            prop_assert_eq!(named.iter().collect::<BTreeSet<_>>().len(), 47);
             prop_assert_eq!(
                 namespace::op_channel(first) == namespace::op_channel(second),
                 first == second

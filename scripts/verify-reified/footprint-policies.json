@@ -3749,7 +3749,7 @@
       ]
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). It extends campaign and restates the edits and the new files of d47, as d47 restates p5. Step 1 (the generic prerequisites) edits only campaign files. Step 2 (the exact numeric core) adds the module line pub mod tensor; to interpreter/mod.rs and the new files of the numeric core and of its formal legs. Step 3 (design steps 3 and 4) adds the new files of the VectorDB driver, of its suite and of its mutation harness. Step 6 adds the new files of the operations of rho:lang:vector, of their suite and of their mutation harness.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). It extends campaign and restates the edits and the new files of d47, as d47 restates p5. Step 1 (the generic prerequisites) edits only campaign files. Step 2 (the exact numeric core) adds the module line pub mod tensor; to interpreter/mod.rs and the new files of the numeric core and of its formal legs. Step 3 (design steps 3 and 4) adds the new files of the VectorDB driver, of its suite and of its mutation harness. Step 6 adds the new files of the operations of rho:lang:vector, of their suite and of their mutation harness. Step 7a adds the approved edit of interpreter/system_processes.rs (the body refs of rho:vectordb:embed and rho:vectordb:ann join non_deterministic_ops()) and the new files of the services, of their suite, of its test backends and of its mutation harness.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -4498,6 +4498,13 @@
               ]
             ]
           ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/system_processes.rs",
+          "added_lines": [
+            "        crate::rust::interpreter::reified::system_channels::EMBED_BODY_REF,",
+            "        crate::rust::interpreter::reified::system_channels::ANN_BODY_REF,"
+          ]
         }
       ],
       "allowed_new_files": [
@@ -4744,6 +4751,7 @@
         "rholang/src/rust/interpreter/reified/scope.rs",
         "rholang/src/rust/interpreter/reified/system_channels.rs",
         "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "rholang/src/rust/interpreter/reified/vectordb_services.rs",
         "rholang/src/rust/interpreter/spaces/agent.rs",
         "rholang/src/rust/interpreter/spaces/allocator.rs",
         "rholang/src/rust/interpreter/spaces/counter.rs",
@@ -4830,7 +4838,9 @@
         "rholang/tests/reified_syntax_normalize.rs",
         "rholang/tests/reified_vector_ops.rs",
         "rholang/tests/reified_vectordb.rs",
+        "rholang/tests/reified_vectordb_chroma.rs",
         "rholang/tests/support/agent.rs",
+        "rholang/tests/support/backends.rs",
         "rholang/tests/support/legacy.rs",
         "rholang/tests/support/mod.rs",
         "rholang/tests/support/native.rs",
@@ -4970,6 +4980,7 @@
         "scripts/verify-reified/tlc-expect-violation.sh",
         "scripts/verify-reified/vector-ops-mutants.py",
         "scripts/verify-reified/vectordb-mutants.py",
+        "scripts/verify-reified/vectordb-services-mutants.py",
         "test-vectors/head-file-digests-4d67b5ccc.json",
         "test-vectors/head-file-digests-6f7a80da3.json",
         "test-vectors/legacy-golden-corpus-v1.json",

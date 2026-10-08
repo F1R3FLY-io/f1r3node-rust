@@ -1518,7 +1518,7 @@ One space operation takes this path:
 
 Every Reified name is a `GPrivate` whose id starts with the [namespace tag](glossary.md#namespace-tag) `0xE0` ([decision 7](decision-register.md#decision-7)).
 A program cannot write a `GPrivate` id, so only the Reified machinery makes these names.
-Table N2.1 lists the ids that P4 constructs in `spaces/namespace.rs:223-278`.
+Table N2.1 lists the ids that P4 constructs in `spaces/namespace.rs:229-284`.
 Here ‖ is byte concatenation, `sid` is the 32-byte [space id](glossary.md#space-id), and `k` is the [collection key](glossary.md#collection-key).
 [Figure 02](diagrams/02-namespace-bytes.svg) shows every id layout of the namespace.
 
@@ -1534,7 +1534,7 @@ Here ‖ is byte concatenation, `sid` is the 32-byte [space id](glossary.md#spac
 | `E0‖H‖sid` | 34 | `handle_channel` | the channel `this`, $`H(\mathit{sid})`$ |
 | `E0‖N‖sid‖tail` | 66 or 42 | `name_id` | a [space name](glossary.md#space-name) |
 
-The decoder `decode_reified_id` (`spaces/namespace.rs:312-342`) is total, and it accepts only the image of a constructor:
+The decoder `decode_reified_id` (`spaces/namespace.rs:318-348`) is total, and it accepts only the image of a constructor:
 
 - An id without the tag, or with fewer than 2 bytes, is not a Reified id.
 - An id of exactly 2 bytes is an op.
@@ -1560,7 +1560,7 @@ pub fn canonical_inner_channel_bytes(channel: &Par) -> Result<Vec<u8>, SpaceErro
 ```
 
 The Protocol Buffers bytes of a `Par` hold its field `locally_free`, so two channels that are equal as `Par` values could have two prost keys.
-The bincode bytes have one key for both, and the headline `canon_respects_par_eq` (`Namespace.v:1035`) states this property.
+The bincode bytes have one key for both, and the headline `canon_respects_par_eq` (`Namespace.v:1038`) states this property.
 
 **Random purposes.** The machinery derives each random state that it needs from the random state $`r`$ of a call or of an operation, by two splits:
 
@@ -1568,7 +1568,7 @@ The bincode bytes have one key for both, and the headline `canon_respects_par_eq
 r_{\mathit{purpose}} = \mathrm{split}_{\mathit{purpose}}\bigl(\mathrm{split}_{\mathtt{0xE0}}(r)\bigr)
 ```
 
-*Table N2.2. The random purposes of `RandomPurpose` (`spaces/namespace.rs:397-422`).*
+*Table N2.2. The random purposes of `RandomPurpose` (`spaces/namespace.rs:403-428`).*
 
 | Purpose | Byte | Use |
 |---|---|---|
@@ -1755,7 +1755,7 @@ The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConfli
 ### N4. GenericSpace and the queue discipline
 
 `GenericSpace<S, D>` (`spaces/generic.rs:533-536`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
-The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:63`).
+The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:83`).
 The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:288-298`, `447-538`).
 Two traits separate the parts of a family:
 
@@ -2369,7 +2369,7 @@ Its pattern `[...@args]` binds the whole call as one list, and its body `[0xE0, 
 It has no guard and no cost authority, so each call is paid by its caller.
 It is a single-channel receive, so it adds no pre-state join, and handle calls merge like contract calls (consensus checklist item 18, [decision I-16](decision-register.md#i-16)).
 
-**`HANDLE_OP`.** The internal operation `HANDLE_OP` on the op channel $`[\mathtt{0xE0}, \mathtt{0x30}]`$ runs each call (`reified/handle.rs:220-368`).
+**`HANDLE_OP`.** The internal operation `HANDLE_OP` on the op channel $`[\mathtt{0xE0}, \mathtt{0x30}]`$ runs each call (`reified/handle.rs:221-371`).
 
 ```text
 HANDLE-OP(this, message):                      ▷ reified/handle.rs, HandleProcess::call and run
@@ -2418,9 +2418,9 @@ pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), Reif
 }
 ```
 
-The factory ops are `0x00` to `0x20`, and the other ops that take calls are `0x21` to `0x23` and `0x30` to `0x32` (`reified/system_channels.rs:101`, `105`).
+The factory ops are `0x00` to `0x20`, and the other ops that take calls are `0x21` to `0x25` and `0x30` to `0x32` (`reified/system_channels.rs:103`, `107`).
 
-**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:187-223`).
+**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:221-257`).
 For a native space, it reads the config record in a read-only space intent. It then replies with the capability of the factory of the family ([decision 9.4](decision-register.md#decision-9-4)).
 That capability equals the value that the URN of the factory binds, so the FIPS check `getSpaceAgent(space_1) == HMB` holds.
 `assertEqual!(ret, a, b)` replies `true` when the sorted values of `a` and `b` are equal, and `false` otherwise ([decision 33](decision-register.md#decision-33)).
@@ -2634,7 +2634,7 @@ The PathMap arms come last, so the dispatch of each family that was wired before
 The registration reads the family dispatch (`spaces/factory/urn.rs:170`).
 A factory row is registered exactly when its family has an arm.
 So no manual step can register a family without an agent or forget a wired family.
-`definitions` installs the four P4 processes, then the factory of each registered P5 family in family-index order, then the factory of each registered alias (`reified/system_processes.rs:74-125`).
+`definitions` installs the four P4 processes, then the factory of each registered P5 family in family-index order, then the factory of each registered alias (`reified/system_processes.rs:94-150`).
 An alias has the channel, the arity, the body reference and the handler of its family. So the second install of a shared channel changes nothing.
 
 ```text
