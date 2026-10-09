@@ -444,15 +444,13 @@ impl FixedChannels {
     /// (see `handler_trait::fs_handler` module docstring, "trait-
     /// exempt handler (fs_remove_dir)").  Four divergence reply
     /// shapes that don't fit the `FsHandler` trait; the handler
-    /// implementation lands at a future Wave 4 handler slice with a
-    /// dedicated dispatcher.  The URN + fixed channel are registered
-    /// NOW so FsGenesis composition (slice 5.36) can `new fsRemoveDir(
-    /// `rho:io:fs:native:1.0.0/removeDir`)` without tripping
-    /// `eval_new`'s "No value set for URN" check.  No producer
-    /// listens on the fixed channel at genesis-time; the Dir.rho
-    /// contract's `fsRemoveDir!(...)` sends inside the removeDir
-    /// method only fire when a user-held Dir cap invokes removeDir,
-    /// which hasn't been exercised at genesis composition.
+    /// is `FsProcesses::fs_remove_dir` (ported in slices 5.136-5.141)
+    /// with a dedicated dispatcher registration (slice 5.142).
+    /// The URN + fixed channel were registered at slice 5.43 so
+    /// FsGenesis composition (slice 5.36) could
+    /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)`
+    /// without tripping `eval_new`'s "No value set for URN" check,
+    /// even before the real handler landed.
     pub fn fs_remove_dir() -> Par { byte_name(58) }
 }
 
@@ -587,9 +585,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/removeDir` body-ref — trait-exempt
     /// handler.  Registered for URN resolution at genesis composition
-    /// time (slice 5.43); the real dispatcher wiring lands at a
-    /// future Wave 4 handler slice.  See `FixedChannels::
-    /// fs_remove_dir` above.
+    /// time (slice 5.43); real dispatcher wiring landed in slice
+    /// 5.142 (URN swap from stub to `FsProcesses::fs_remove_dir`).
+    /// See `FixedChannels::fs_remove_dir` above.
     pub const FS_REMOVE_DIR: i64 = 58;
 }
 
@@ -926,41 +924,6 @@ impl SystemProcesses {
 
         let str = self.pretty_printer.build_string_from_message(arg);
         self.print_std_out(&str)
-    }
-
-    /// Trait-exempt `fs_remove_dir` stub.  The real handler
-    /// (DD-RemoveDirReplyShape with its 4 divergence shapes) lands at
-    /// a future Wave 4 handler slice; until then this stub replies
-    /// `[false, "FSERR_UNSUPPORTED", "fs_remove_dir handler not yet
-    /// implemented"]` on the ack channel so a user-held Dir cap that
-    /// invokes `removeDir` at state-execution gets a well-formed
-    /// error reply instead of (a) hanging on the ack channel because
-    /// the dispatcher has no entry for body_ref 58, or (b) tripping a
-    /// deploy-level `BugFoundError`.  Dir.rho's `_ => return!(reply)`
-    /// default arm forwards the 3-element shape verbatim, so the
-    /// caller observes a uniform-failure reply shape.
-    ///
-    /// Arity 5 matches Dir.rho's call site: `fsRemoveDir!(canonRoot,
-    /// rel, recursive, cmode, *retCh)`.  Only `ack` (`retCh`) is read
-    /// here — the four leading args are discarded because the stub
-    /// does no I/O.  See `BodyRefs::FS_REMOVE_DIR` and
-    /// `FixedChannels::fs_remove_dir` for the dispatch wiring + slice
-    /// 5.43 for the urn_map/proc_defs registration.
-    pub async fn fs_remove_dir_stub(
-        &self,
-        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
-    ) -> Result<Vec<Par>, InterpreterError> {
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
-            return Err(illegal_argument_error("fs_remove_dir_stub"));
-        };
-        let [_root_canon, _rel, _recursive, _cmode, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_remove_dir_stub"));
-        };
-        let reply = fs_remove_dir_stub_reply();
-        let output = vec![reply];
-        let ret = output.clone();
-        produce(&output, ack).await?;
-        Ok(ret)
     }
 
     pub async fn std_out_ack(
@@ -2545,161 +2508,6 @@ impl RhoTestAssertion {
                 unexpected, actual, ..
             } => actual != unexpected,
         }
-    }
-}
-
-/// Canonical error code string returned by
-/// [`SystemProcesses::fs_remove_dir_stub`] as the second element of
-/// its reply list.  Kept as a `pub const` so the shape pin in tests
-/// can anchor on it without re-typing the literal.  Matches the
-/// FSERR taxonomy canonical form (see
-/// `rholang::interpreter::io::errors::FSERR_UNSUPPORTED`).
-pub const FS_REMOVE_DIR_STUB_CODE: &str = "FSERR_UNSUPPORTED";
-
-/// Canonical message string returned by
-/// [`SystemProcesses::fs_remove_dir_stub`] as the third element of
-/// its reply list.
-pub const FS_REMOVE_DIR_STUB_MSG: &str = "fs_remove_dir handler not yet implemented";
-
-/// Build the uniform-failure Par returned by the trait-exempt
-/// `fs_remove_dir` stub (slice 5.44).  Shape:
-///
-/// ```text
-/// [false, "FSERR_UNSUPPORTED", "fs_remove_dir handler not yet implemented"]
-/// ```
-///
-/// Factored out of [`SystemProcesses::fs_remove_dir_stub`] so a
-/// shape-pin test can inspect the resulting Par structure without
-/// constructing a full `SystemProcesses` + `ContractCall` fixture.
-/// Caller sends it on the ack channel; Dir.rho's `_ => return!(reply)`
-/// default arm forwards it verbatim to the final caller.
-pub fn fs_remove_dir_stub_reply() -> Par {
-    use models::rust::utils::{new_elist_par, new_gstring_par};
-    new_elist_par(
-        vec![
-            new_gbool_par(false, Vec::new(), false),
-            new_gstring_par(FS_REMOVE_DIR_STUB_CODE.to_string(), Vec::new(), false),
-            new_gstring_par(FS_REMOVE_DIR_STUB_MSG.to_string(), Vec::new(), false),
-        ],
-        Vec::new(),
-        false,
-        None,
-        Vec::new(),
-        false,
-    )
-}
-
-#[cfg(test)]
-mod fs_remove_dir_stub_tests {
-    use super::*;
-
-    /// Reply-shape pin for the trait-exempt `fs_remove_dir` stub
-    /// handler (slice 5.44).  The real DD-RemoveDirReplyShape handler
-    /// has four divergence shapes; the stub returns the uniform-
-    /// failure 3-element shape `[false, code, msg]` which Dir.rho's
-    /// `_ => return!(reply)` default arm forwards verbatim to the
-    /// caller.
-    ///
-    /// Walks the produced `Par` structure field-by-field to pin:
-    ///   * EList body with exactly 3 elements.
-    ///   * Element 0: GBool(false).
-    ///   * Element 1: GString(FS_REMOVE_DIR_STUB_CODE) = "FSERR_UNSUPPORTED".
-    ///   * Element 2: GString(FS_REMOVE_DIR_STUB_MSG).
-    ///
-    /// A regression that flips `false → true` (misleading the caller
-    /// into treating the stub as success) or changes the code to a
-    /// different FSERR_* trips at test time.
-    #[test]
-    fn fs_remove_dir_stub_reply_shape_pinned() {
-        use models::rhoapi::expr::ExprInstance;
-
-        let par = fs_remove_dir_stub_reply();
-        assert_eq!(
-            par.exprs.len(),
-            1,
-            "reply Par must carry exactly one Expr (the EList); got {}",
-            par.exprs.len()
-        );
-        let Some(ExprInstance::EListBody(elist)) = &par.exprs[0].expr_instance else {
-            panic!(
-                "reply Par's Expr must be an EList body; got {:?}",
-                par.exprs[0].expr_instance
-            );
-        };
-        assert_eq!(
-            elist.ps.len(),
-            3,
-            "reply EList must have exactly 3 elements (bool, code, msg); got {}",
-            elist.ps.len()
-        );
-
-        let Some(ExprInstance::GBool(b)) = elist.ps[0]
-            .exprs
-            .first()
-            .and_then(|e| e.expr_instance.as_ref())
-        else {
-            panic!(
-                "reply[0] must be GBool; got {:?}",
-                elist.ps[0]
-                    .exprs
-                    .first()
-                    .and_then(|e| e.expr_instance.as_ref())
-            );
-        };
-        assert!(
-            !*b,
-            "reply[0] (success flag) must be false; a true value \
-             would mislead Dir.rho's caller into treating the stub \
-             as a successful remove"
-        );
-
-        let Some(ExprInstance::GString(s)) = elist.ps[1]
-            .exprs
-            .first()
-            .and_then(|e| e.expr_instance.as_ref())
-        else {
-            panic!(
-                "reply[1] (error code) must be GString; got {:?}",
-                elist.ps[1]
-                    .exprs
-                    .first()
-                    .and_then(|e| e.expr_instance.as_ref())
-            );
-        };
-        assert_eq!(
-            s, FS_REMOVE_DIR_STUB_CODE,
-            "reply[1] must be the canonical FSERR_UNSUPPORTED code"
-        );
-
-        let Some(ExprInstance::GString(s)) = elist.ps[2]
-            .exprs
-            .first()
-            .and_then(|e| e.expr_instance.as_ref())
-        else {
-            panic!(
-                "reply[2] (message) must be GString; got {:?}",
-                elist.ps[2]
-                    .exprs
-                    .first()
-                    .and_then(|e| e.expr_instance.as_ref())
-            );
-        };
-        assert_eq!(
-            s, FS_REMOVE_DIR_STUB_MSG,
-            "reply[2] must match the canonical stub message"
-        );
-    }
-
-    /// Byte-anchor on the canonical constants.  A rename of either
-    /// constant without updating Dir.rho's expectations would trip
-    /// here first.
-    #[test]
-    fn fs_remove_dir_stub_constants_pinned() {
-        assert_eq!(FS_REMOVE_DIR_STUB_CODE, "FSERR_UNSUPPORTED");
-        assert_eq!(
-            FS_REMOVE_DIR_STUB_MSG,
-            "fs_remove_dir handler not yet implemented"
-        );
     }
 }
 

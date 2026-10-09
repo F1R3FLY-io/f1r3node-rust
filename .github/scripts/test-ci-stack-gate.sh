@@ -156,7 +156,7 @@ WORKFLOW_RUNS='{"workflow_runs": [
 ]}'
 jobs_json() {
   jq -n --arg amd64 "$1" --arg arm64 "$2" '{jobs: [
-    {name: "Heavy Pipeline / Integration Tests (amd64-docker)", conclusion: "success"},
+    {name: "Integration Pipeline / Integration Tests (amd64-docker)", conclusion: "success"},
     {name: "Integration Tests (amd64)", conclusion: (if $amd64 == "" then null else $amd64 end)},
     {name: "Integration Tests (arm64)", conclusion: (if $arm64 == "" then null else $arm64 end)}
   ]}'

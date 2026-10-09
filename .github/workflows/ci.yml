@@ -54,7 +54,7 @@ jobs:
   # Resolve version + branch env vars once for downstream jobs.
   # Skip release-bump commits on branch pushes — the tag push handles publish.
   build_base:
-    name: Build Base
+    name: Resolve Target
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -323,8 +323,9 @@ jobs:
             exit 1
           fi
 
-  lint:
-    name: Lint
+  # Static analysis and repository policy checks. No behavioral test runs here.
+  static_checks:
+    name: Static Checks
     needs: build_base
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -338,19 +339,16 @@ jobs:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
           persist-credentials: false
 
-      # Deliberately the first step and deliberately in this job. `Lint` is a
-      # required status check on devProtect and masterProtect, so a violation
-      # blocks the merge; a guard living in a job that is merely a `needs:`
-      # ancestor can surface as `skipped`, which required-check evaluation may
-      # treat as satisfied. Placed ahead of the toolchain install so a breach of
-      # the credential model fails in seconds rather than after a Rust build.
+      # Deliberately the first step and deliberately in this job. Static Checks
+      # is a required status check, so a violation blocks the merge; a guard in
+      # a job that is merely a `needs:` ancestor can surface as `skipped`, which
+      # required-check evaluation may treat as satisfied. Until the rulesets
+      # name Static Checks, the temporary `Lint` job carries this result. Placed
+      # ahead of the toolchain install so a breach of the credential model fails
+      # in seconds rather than after a Rust build.
       - name: Verify workflow security invariants
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
-
-      - name: Verify commit trailer check
-        shell: bash -euo pipefail {0}
-        run: .github/scripts/test-check-commit-trailers.sh
 
       # Every commit author and Co-authored-by trailer in the pull request must
       # be ratified: an email that already authored a commit in the base
@@ -397,6 +395,50 @@ jobs:
           .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}" \
             --ratified-from "$BASE_SHA" --exempt-authors "$exempt" --denied "$denied"
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: nightly-2026-02-09
+          components: rustfmt, clippy
+
+      - name: Verify supply-chain controls
+        run: cargo test --locked -p supply-chain
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+
+      - name: Install system dependencies
+        run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
+        run: cargo clippy --locked --workspace --all-targets
+
+  # Behavioral tests of the CI, release, and soak scripts. They need no Rust build.
+  script_tests:
+    name: Script Tests
+    needs: build_base
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Verify commit trailer check
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-check-commit-trailers.sh
+
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-pre-push-hook.sh
@@ -416,6 +458,26 @@ jobs:
       - name: Verify system-integration repin helper
         shell: bash -euo pipefail {0}
         run: scripts/test-repin-system-integration.sh
+
+      - name: Verify ephemeral runner run tagging
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ephemeral-run-tagging.sh
+
+      - name: Verify CI runner reclaim
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ci-runner-reclaim.sh
+
+      - name: Verify OCI runner reaper Function
+        shell: bash -euo pipefail {0}
+        run: bash oci/runner-reaper/test-handler.sh
+
+      - name: Verify OCI spend alert Function
+        shell: bash -euo pipefail {0}
+        run: bash oci/spend-alert/test-handler.sh
+
+      - name: Verify OCI Function deploy scripts
+        shell: bash -euo pipefail {0}
+        run: bash scripts/oci/test-fn-deploy.sh
 
       - name: Verify release evidence
         shell: bash -euo pipefail {0}
@@ -476,14 +538,26 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-restore-soak-dashboard-run.sh
 
+  # Tests that build the casper-soak harness and run the real soak driver,
+  # including the Docker-isolated disk admission scenarios.
+  soak_harness_tests:
+    name: Soak Harness Tests
+    needs: build_base
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-          components: rustfmt, clippy
-
-      - name: Verify supply-chain controls
-        run: cargo test --locked -p supply-chain
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -510,13 +584,28 @@ jobs:
           SOAK_DISK_TEST_SKIP_TIMING: "1"
         run: bash scripts/bench/test-soak-disk-admission-timing.sh
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
+  # Temporary: devProtect and masterProtect require a check named `Lint`. This
+  # job reports the combined result of the three jobs above until the rulesets
+  # name them directly (TASK-023-4, step 2). It runs no check of its own.
+  lint:
+    name: Lint
+    needs: [static_checks, script_tests, soak_harness_tests]
+    if: >-
+      always() && !(needs.static_checks.result == 'skipped'
+      && needs.script_tests.result == 'skipped'
+      && needs.soak_harness_tests.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require Static Checks, Script Tests, and Soak Harness Tests
         env:
-          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --locked --workspace --all-targets
+          STATIC_CHECKS: ${{ needs.static_checks.result }}
+          SCRIPT_TESTS: ${{ needs.script_tests.result }}
+          SOAK_HARNESS_TESTS: ${{ needs.soak_harness_tests.result }}
+        run: |
+          echo "Static Checks: $STATIC_CHECKS; Script Tests: $SCRIPT_TESTS; Soak Harness Tests: $SOAK_HARNESS_TESTS"
+          [ "$STATIC_CHECKS" = success ] && [ "$SCRIPT_TESTS" = success ] && [ "$SOAK_HARNESS_TESTS" = success ]
 
   deny:
     name: cargo-deny
@@ -601,7 +690,7 @@ jobs:
 
   test:
     name: Test (${{ matrix.crate }})
-    needs: [build_base, lint]
+    needs: [build_base, static_checks]
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.crate == 'node' && 60 || 30 }}
     strategy:
@@ -697,9 +786,9 @@ jobs:
   # heavy pipeline (shared daily instance quota).
   test_casper:
     name: Test (casper ${{ matrix.partition }}/2)
-    needs: [build_base, lint]
+    needs: [build_base, static_checks]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -771,7 +860,7 @@ jobs:
   # variable and the CODECOV_TOKEN secret.
   coverage:
     name: Coverage (${{ matrix.crate }})
-    needs: [build_base, lint]
+    needs: [build_base, static_checks]
     if: >-
       github.event_name == 'pull_request'
       && needs.build_base.result == 'success'
@@ -917,9 +1006,9 @@ jobs:
   # per-arch integration aggregators below. `needs` on a matrix job resolves
   # to success only when every shard succeeds.
   test_casper_gate:
-    name: Test (casper)
+    name: Test Gate (casper)
     needs: [test_casper, coverage_summary]
-    # Skip (rather than fail) when the shards never ran — e.g. lint failed —
+    # Skip (rather than fail) when the shards never ran — e.g. Static Checks failed —
     # matching how the former single `Test (casper)` leg reported.
     if: always() && needs.test_casper.result != 'skipped'
     runs-on: ubuntu-latest
@@ -940,11 +1029,11 @@ jobs:
           fi
           echo "Casper shards and required pull-request coverage succeeded"
 
-  # Heavy pipeline (native Docker build -> ephemeral OCI runner launch ->
+  # Integration pipeline (native Docker build -> ephemeral OCI runner launch ->
   # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.
   pipeline:
-    name: Heavy Pipeline
-    needs: [build_base, lint]
+    name: Integration Pipeline
+    needs: [build_base, static_checks, script_tests, soak_harness_tests]
     # A newer branch or PR head replaces obsolete heavy work. Version tags use
     # separate groups and run to completion. OCI launch remains globally locked.
     # A merge group is never cancelled: the queue reads a cancelled required
@@ -966,15 +1055,16 @@ jobs:
       checkout_ref: ${{ needs.build_base.outputs.TARGET_SHA }}
     secrets: inherit
 
-  # Per-arch aggregators. The branch ruleset requires status checks named
-  # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
+  # Per-arch aggregators. Until step 2 of TASK-023-4 the branch ruleset requires
+  # the names `Integration Tests (amd64)` / `(arm64)`, which the temporary jobs
+  # below carry. These collapse the reusable
   # pipeline's per-arch matrix jobs into one ruleset gate per arch. They use
   # `contains(...)` (not `startswith`) because reusable-workflow job names are
-  # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
+  # prefixed with the caller job name ("Integration Pipeline / Integration Tests (...)").
   # Each gate checks only its two architecture slots. A failure in another
   # architecture does not change this gate's result.
   integration_tests_amd64:
-    name: Integration Tests (amd64)
+    name: Integration Gate (amd64)
     needs: pipeline
     if: always() && needs.pipeline.result != 'skipped'
     runs-on: ubuntu-latest
@@ -1006,7 +1096,7 @@ jobs:
           echo "All amd64 integration test slots succeeded"
 
   integration_tests_arm64:
-    name: Integration Tests (arm64)
+    name: Integration Gate (arm64)
     needs: pipeline
     if: always() && needs.pipeline.result != 'skipped'
     runs-on: ubuntu-latest
@@ -1036,6 +1126,55 @@ jobs:
             exit 1
           fi
           echo "All arm64 integration test slots succeeded"
+
+  # Temporary: the rulesets and earlier-run readers (the heavy reuse gate in
+  # build_base, release-train.sh) use the names below. Each job reports the
+  # result of the renamed gate it needs and runs no check of its own. Step 2 of
+  # TASK-023-4 points the rulesets and readers at the new names and removes them.
+  test_casper_legacy_name:
+    name: Test (casper)
+    needs: test_casper_gate
+    if: always() && needs.test_casper_gate.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require Test Gate (casper)
+        env:
+          GATE: ${{ needs.test_casper_gate.result }}
+        run: |
+          echo "Test Gate (casper): $GATE"
+          [ "$GATE" = success ]
+
+  integration_tests_amd64_legacy_name:
+    name: Integration Tests (amd64)
+    needs: integration_tests_amd64
+    if: always() && needs.integration_tests_amd64.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require Integration Gate (amd64)
+        env:
+          GATE: ${{ needs.integration_tests_amd64.result }}
+        run: |
+          echo "Integration Gate (amd64): $GATE"
+          [ "$GATE" = success ]
+
+  integration_tests_arm64_legacy_name:
+    name: Integration Tests (arm64)
+    needs: integration_tests_arm64
+    if: always() && needs.integration_tests_arm64.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require Integration Gate (arm64)
+        env:
+          GATE: ${{ needs.integration_tests_arm64.result }}
+        run: |
+          echo "Integration Gate (arm64): $GATE"
+          [ "$GATE" = success ]
 
   # A failed merge group ejects its pull requests, and GitHub records that only as
   # a timeline event on each one. A comment names the author and carries the run
@@ -1099,7 +1238,9 @@ jobs:
       cancel-in-progress: false
     needs:
       - build_base
-      - lint
+      - static_checks
+      - script_tests
+      - soak_harness_tests
       - deny
       - markdown_link_check
       - test
@@ -1367,7 +1508,9 @@ jobs:
     permissions:
       contents: write
     needs:
-      - lint
+      - static_checks
+      - script_tests
+      - soak_harness_tests
       - deny
       - markdown_link_check
       - test
