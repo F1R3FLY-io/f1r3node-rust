@@ -77,6 +77,16 @@ impl NativeReplayEpoch for SessionEpoch {
 
     fn invalidate(&self) { self.replay.invalidate(); }
 
+    /// Added by DR-113: a replayed denial takes the class of the bound
+    /// source, as the play denial does.
+    fn denial(&self) -> RSpaceError {
+        RSpaceError::from(
+            crate::rust::interpreter::accounting::native_runtime::exhaustion_error(
+                self.replay.bound_source(),
+            ),
+        )
+    }
+
     fn begin_boundary(&self) -> Result<Self::Boundary, RSpaceError> {
         self.replay.begin_boundary().map_err(error)
     }

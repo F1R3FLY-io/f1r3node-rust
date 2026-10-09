@@ -131,4 +131,7 @@ pub trait NativeReplayEpoch: Send + Sync {
     fn reserve_work(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError>;
     fn reserve_comparison(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError>;
     fn invalidate(&self);
+    /// Added by DR-113: the error of a published denial. The epoch names it,
+    /// because the class of an exhaustion depends on the bound source.
+    fn denial(&self) -> RSpaceError;
 }

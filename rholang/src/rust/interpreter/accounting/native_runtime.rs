@@ -6,8 +6,8 @@ use rspace_plus_plus::rspace::operation_context;
 use super::byte_accounting::{ByteCharge, BYTE_COST_SCHEDULE_V1};
 use super::byte_receipts::ByteObservation;
 use super::native_phlo_rules::{
-    NativeBudgetTraceLimits, NativePhloExecutionContract, NativePhloExecutionError,
-    NativePhloReservation, PreparedNativePhloCharge,
+    NativeBoundSource, NativeBudgetTraceLimits, NativePhloExecutionContract,
+    NativePhloExecutionError, NativePhloReservation, PreparedNativePhloCharge,
 };
 use super::{AuthorityRuntimeState, BillableKind, RuntimeBudget, Token};
 use crate::rust::interpreter::errors::InterpreterError;
@@ -234,7 +234,7 @@ impl RuntimeBudget {
                     return Err(if host_work.is_rejected() {
                         InterpreterError::HostWorkRejected
                     } else {
-                        native_error(error)
+                        native_error(error, preparer.bound_source())
                     })
                 }
             };
@@ -286,12 +286,30 @@ impl RuntimeBudget {
     }
 }
 
-fn native_error(error: NativePhloExecutionError) -> InterpreterError {
+// Changed by DR-113: exhaustion takes the class of the bound source.
+// fn native_error(error: NativePhloExecutionError) -> InterpreterError {
+//     match error {
+//         NativePhloExecutionError::BoundExceeded | NativePhloExecutionError::Overflow => {
+//             InterpreterError::OutOfPhlogistonsError
+//         }
+//         other => InterpreterError::ReduceError(other.to_string()),
+//     }
+// }
+fn native_error(error: NativePhloExecutionError, source: NativeBoundSource) -> InterpreterError {
     match error {
         NativePhloExecutionError::BoundExceeded | NativePhloExecutionError::Overflow => {
-            InterpreterError::OutOfPhlogistonsError
+            exhaustion_error(source)
         }
         other => InterpreterError::ReduceError(other.to_string()),
+    }
+}
+
+/// Added by DR-113: the error of an exhausted bound. A signed limit gives a
+/// classified user failure, and a certified bound gives a certificate failure.
+pub(crate) fn exhaustion_error(source: NativeBoundSource) -> InterpreterError {
+    match source {
+        NativeBoundSource::SignedLimit => InterpreterError::SignedLimitExhausted,
+        NativeBoundSource::Certificate => InterpreterError::OutOfPhlogistonsError,
     }
 }
 

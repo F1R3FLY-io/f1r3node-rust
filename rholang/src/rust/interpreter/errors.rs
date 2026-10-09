@@ -19,6 +19,9 @@ pub enum InterpreterError {
     UnexpectedBundleContent(String),
     UnrecognizedNormalizerError(String),
     OutOfPhlogistonsError,
+    /// Added by DR-113: a native charge exceeds the signed phlo limit. It is a
+    /// classified user failure.
+    SignedLimitExhausted,
     HostWorkRejected,
     UserAbortError,
     TopLevelWildcardsNotAllowedError(String),
@@ -155,6 +158,10 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::OutOfPhlogistonsError => {
                 write!(f, "Computation ran out of phlogistons.")
+            }
+
+            InterpreterError::SignedLimitExhausted => {
+                write!(f, "Computation exhausted its signed phlo limit.")
             }
 
             InterpreterError::HostWorkRejected => {
@@ -354,6 +361,7 @@ impl From<RSpaceError> for InterpreterError {
     fn from(err: RSpaceError) -> InterpreterError {
         match err {
             RSpaceError::OutOfPhlogistons => InterpreterError::OutOfPhlogistonsError,
+            RSpaceError::SignedLimitExhausted => InterpreterError::SignedLimitExhausted,
             RSpaceError::HostWorkRejected => InterpreterError::HostWorkRejected,
             other => InterpreterError::RSpaceError(other),
         }
@@ -368,6 +376,7 @@ impl From<InterpreterError> for RSpaceError {
     fn from(error: InterpreterError) -> Self {
         match error {
             InterpreterError::OutOfPhlogistonsError => Self::OutOfPhlogistons,
+            InterpreterError::SignedLimitExhausted => Self::SignedLimitExhausted,
             InterpreterError::HostWorkRejected => Self::HostWorkRejected,
             InterpreterError::RSpaceError(error) => error,
             other => Self::InterpreterError(other.to_string()),

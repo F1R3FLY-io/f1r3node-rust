@@ -6,7 +6,10 @@ use models::rust::host_work::HostWorkDimension;
 use prost::Message;
 use thiserror::Error;
 
-use super::{NativePhloExecutionContract, NativePhloExecutionError, NativePhloRegionLimits};
+use super::{
+    NativeBoundSource, NativePhloExecutionContract, NativePhloExecutionError,
+    NativePhloRegionLimits,
+};
 use crate::rust::interpreter::accounting::authority::{
     reserve_authority_signature_tree, AuthorityByteEventKind,
 };
@@ -102,6 +105,9 @@ pub struct CheckedNativeBudgetTrace {
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
 pub(in crate::rust::interpreter::accounting) struct CheckedNativeBudgetEvidence {
+    /// Added by DR-113: the bound source of the contract that checked the
+    /// evidence. Replay classifies a denial with it, as play does.
+    bound_source: NativeBoundSource,
     rows: Arc<[NativeBudgetAttempt]>,
     ordered: Vec<usize>,
     charges: Vec<Option<u64>>,
@@ -207,6 +213,7 @@ impl NativePhloExecutionContract<'_> {
             comparison_bytes.push(observation_comparison_bytes(&row.observation, budget)?);
         }
         Ok(CheckedNativeBudgetEvidence {
+            bound_source: self.policy.bound_source,
             rows,
             ordered,
             charges,
@@ -274,6 +281,11 @@ impl CheckedNativeBudgetTrace {
 
 impl CheckedNativeBudgetEvidence {
     pub(in crate::rust::interpreter::accounting) fn total(&self) -> u64 { self.total }
+
+    /// Added by DR-113.
+    pub(in crate::rust::interpreter::accounting) fn bound_source(&self) -> NativeBoundSource {
+        self.bound_source
+    }
 
     pub(in crate::rust::interpreter::accounting) fn authenticate(
         &self,

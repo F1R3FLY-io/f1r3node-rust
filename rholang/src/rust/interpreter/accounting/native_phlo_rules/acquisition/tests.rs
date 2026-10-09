@@ -210,8 +210,15 @@ fn check_case(
     assert_eq!(checked.prepaid_usage(), 0);
     assert_eq!(checked.fresh_usage(), expected);
     let contract =
+        // Changed by DR-113: the contract names the source of its bound.
+        // crate::rust::interpreter::accounting::native_phlo_rules::NativePhloExecutionContract::new(
+        //     controls, &binding,
+        // )
+        // .unwrap();
         crate::rust::interpreter::accounting::native_phlo_rules::NativePhloExecutionContract::new(
-            controls, &binding,
+            controls,
+            &binding,
+            crate::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate,
         )
         .unwrap();
     let mut reservation = contract.reservation();

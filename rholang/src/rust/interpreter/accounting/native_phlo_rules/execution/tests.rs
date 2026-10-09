@@ -56,7 +56,12 @@ fn with_contract<R>(
         bound,
     )
     .unwrap();
-    test(NativePhloExecutionContract::new(controls, &binding).unwrap())
+    // Changed by DR-113: the contract names the source of its bound.
+    // test(NativePhloExecutionContract::new(controls, &binding).unwrap())
+    test(
+        NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+            .unwrap(),
+    )
 }
 
 fn row(owners: usize, regions: usize, comm: bool, raw: [u64; 3]) -> Arc<ByteObservation> {

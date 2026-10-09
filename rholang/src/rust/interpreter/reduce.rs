@@ -1213,6 +1213,18 @@ impl ReducerCore {
                 Err(InterpreterError::OutOfPhlogistonsError)
             }
 
+            // Added by DR-113: exhaustion of the signed limit also stops the
+            // whole evaluation. It collapses after the non-user exhaustion, so
+            // a mixed failure still reports the non-user error. The full list
+            // is recorded above for the classification.
+            err_list
+                if err_list
+                    .iter()
+                    .any(|error| matches!(error, InterpreterError::SignedLimitExhausted)) =>
+            {
+                Err(InterpreterError::SignedLimitExhausted)
+            }
+
             // Rethrow single error
             [ex] => Err(ex.clone()),
 

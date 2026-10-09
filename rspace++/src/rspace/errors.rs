@@ -5,6 +5,8 @@ use shared::rust::store::key_value_store::KvStoreError;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RSpaceError {
     OutOfPhlogistons,
+    /// Added by DR-113: a native charge exceeds the signed phlo limit.
+    SignedLimitExhausted,
     HostWorkRejected,
     InterpreterError(String),
     HistoryError(HistoryError),
@@ -27,6 +29,7 @@ impl std::fmt::Display for RSpaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             RSpaceError::OutOfPhlogistons => write!(f, "Out of phlogistons"),
+            RSpaceError::SignedLimitExhausted => write!(f, "Signed phlo limit exhausted"),
             RSpaceError::HostWorkRejected => write!(f, "Host work budget rejected evaluation."),
             RSpaceError::InterpreterError(err) => write!(f, "Interpreter Error: {}", err),
             RSpaceError::HistoryError(err) => write!(f, "History Error: {}", err),

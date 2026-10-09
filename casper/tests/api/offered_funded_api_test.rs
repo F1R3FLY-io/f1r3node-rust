@@ -2045,3 +2045,65 @@ async fn a_rejected_failed_offered_copy_removes_the_buffered_entry() {
     ));
     assert!(buffered_envelope_ids(&nodes[0]).is_empty());
 }
+
+/// DR-113: a deploy that exhausts its signed phlo limit is a classified user
+/// failure. The block publishes it as failed, the payer pays the granted work
+/// and the fee, and every validator accepts the block with the same receipt.
+/// Before DR-113 the exhaustion was a certificate failure, and the proposer
+/// rejected the offer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn signed_limit_exhaustion_is_published_as_a_charged_user_failure() {
+    const ENDLESS_LOOP: &str = "new loop in { contract loop(@n) = { loop!(n + 1) } | loop!(0) }";
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    let limit = 20_000;
+    let offer = crate::helper::offered_deploy::owner_offer_limited(
+        &payer,
+        1,
+        ENDLESS_LOOP.to_string(),
+        0,
+        "root".to_string(),
+        limit,
+    );
+    let (block, id) = offered_block(&mut nodes, 0, offer).await;
+    assert!(
+        block.body.deploys[0].is_failed(),
+        "the exhausted deploy is published as failed"
+    );
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ),
+            "every validator accepts the block"
+        );
+    }
+    let receipts = futures::future::join_all(
+        nodes
+            .iter()
+            .map(|node| BlockAPI::find_offered_settlement_receipt(&node.engine_cell, &id)),
+    )
+    .await
+    .into_iter()
+    .map(|receipt| receipt.unwrap().expect("every node holds the receipt"))
+    .collect::<Vec<_>>();
+    assert!(receipts.windows(2).all(|pair| pair[0] == pair[1]));
+    let receipt = &receipts[0];
+    assert_eq!(receipt.phlo_limit, limit);
+    assert!(receipt.phlo_used > 0 && receipt.phlo_used <= receipt.phlo_limit);
+    assert_eq!(receipt.retained_phlo, 0);
+    assert!(receipt.rev_spent > 0 && receipt.rev_spent <= receipt.rev_ceiling);
+    let balance = vault_balance(&nodes, &block.body.state.post_state_hash, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the payer pays the granted work and the fee"
+    );
+}

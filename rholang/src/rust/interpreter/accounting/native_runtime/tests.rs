@@ -44,11 +44,33 @@ pub(super) fn native_schedule(weights: [u64; 4], price: u64) -> PhloScheduleV1<'
     }
 }
 
+// Changed by DR-113: the fixtures keep a certified bound, so their exhaustion
+// stays a certificate failure. The DR-113 tests name the signed limit.
 pub(super) fn with_priced_contract<T>(
     limit: u64,
     weights: [u64; 4],
     price: u64,
     action: impl FnOnce(NativePhloExecutionContract<'_>) -> T,
+) -> T {
+    with_priced_contract_from(
+        limit,
+        limit,
+        weights,
+        price,
+        NativeBoundSource::Certificate,
+        |contract| action(contract.expect("a certified bound up to the limit is admissible")),
+    )
+}
+
+/// Added by DR-113: a contract with an explicit resource bound and bound
+/// source. The action receives the result of the guarded constructor.
+pub(super) fn with_priced_contract_from<T>(
+    limit: u64,
+    bound: u64,
+    weights: [u64; 4],
+    price: u64,
+    source: NativeBoundSource,
+    action: impl FnOnce(Result<NativePhloExecutionContract<'_>, NativePhloExecutionError>) -> T,
 ) -> T {
     let descriptor = native_schedule(weights, price);
     let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS).unwrap();
@@ -66,11 +88,13 @@ pub(super) fn with_priced_contract<T>(
             permitted_schedules: &schedules,
         },
         selected,
-        limit,
+        bound,
     )
     .unwrap();
-    let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
-    action(contract)
+    // Changed by DR-113: the contract names the source of its bound.
+    // let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
+    // action(contract)
+    action(NativePhloExecutionContract::new(controls, &binding, source))
 }
 
 pub(super) fn config(limit: u64, weights: [u64; 4]) -> NativeRuntimeConfig {
@@ -78,7 +102,19 @@ pub(super) fn config(limit: u64, weights: [u64; 4]) -> NativeRuntimeConfig {
 }
 
 pub(super) fn priced_config(limit: u64, weights: [u64; 4], price: u64) -> NativeRuntimeConfig {
-    with_priced_contract(limit, weights, price, |contract| {
+    priced_config_from(limit, weights, price, NativeBoundSource::Certificate)
+}
+
+/// Added by DR-113: a runtime configuration whose bound is the limit, with the
+/// given bound source.
+pub(super) fn priced_config_from(
+    limit: u64,
+    weights: [u64; 4],
+    price: u64,
+    source: NativeBoundSource,
+) -> NativeRuntimeConfig {
+    with_priced_contract_from(limit, limit, weights, price, source, |contract| {
+        let contract = contract.expect("a bound equal to the limit fits every source");
         NativeRuntimeConfig::new(
             contract,
             NativeBudgetTraceLimits {
@@ -768,3 +804,90 @@ mod history_decode_tests;
 
 #[path = "tests/store_keys.rs"]
 mod store_key_tests;
+
+/// DR-113: a native charge past a signed limit is the classified user failure
+/// `SignedLimitExhausted`, and its charge is retained. The same charge past a
+/// certified bound stays the certificate failure `OutOfPhlogistonsError`.
+#[test]
+fn signed_limit_exhaustion_is_a_classified_user_failure() {
+    use crate::rust::interpreter::accounting::economic_failure::classify_errors;
+    use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
+    for (source, class) in [
+        (NativeBoundSource::SignedLimit, PhloFailure::User),
+        (NativeBoundSource::Certificate, PhloFailure::Certificate),
+    ] {
+        let budget = RuntimeBudget::new(Cost::create(1, "native test"));
+        budget
+            .reset_for_native_execution(priced_config_from(u64::MAX, [0, 0, 1, 0], 0, source))
+            .unwrap();
+        let scope = budget.enter_comm_accounting_scope();
+        let auth = authority(1);
+        reserve(&budget, &auth, 0, 0, u64::MAX).unwrap();
+        let error = reserve(&budget, &auth, 1, 2, 1).expect_err("the charge exceeds the bound");
+        match source {
+            NativeBoundSource::SignedLimit => {
+                assert!(matches!(error, InterpreterError::SignedLimitExhausted))
+            }
+            NativeBoundSource::Certificate => {
+                assert!(matches!(error, InterpreterError::OutOfPhlogistonsError))
+            }
+        }
+        let summary = classify_errors(std::slice::from_ref(&error), None).unwrap();
+        assert!(summary.contains(class));
+        assert_eq!(
+            summary.permits_retained_charge(),
+            class == PhloFailure::User
+        );
+        assert_eq!(budget.native_phlo_usage(), Some(u64::MAX));
+        drop(scope);
+    }
+}
+
+/// DR-113: a signed-limit contract requires its bound to equal the signed
+/// limit. A certified bound below the limit stays admissible.
+#[test]
+fn a_signed_limit_bound_is_the_signed_limit() {
+    with_priced_contract_from(
+        10,
+        9,
+        [1; 4],
+        0,
+        NativeBoundSource::SignedLimit,
+        |contract| {
+            assert!(matches!(
+                contract,
+                Err(NativePhloExecutionError::BoundSourceMismatch)
+            ));
+        },
+    );
+    with_priced_contract_from(
+        10,
+        9,
+        [1; 4],
+        0,
+        NativeBoundSource::Certificate,
+        |contract| {
+            assert_eq!(
+                contract
+                    .expect("a certified bound below the limit is admissible")
+                    .bound_source(),
+                NativeBoundSource::Certificate
+            );
+        },
+    );
+    with_priced_contract_from(
+        10,
+        10,
+        [1; 4],
+        0,
+        NativeBoundSource::SignedLimit,
+        |contract| {
+            assert_eq!(
+                contract
+                    .expect("the signed limit is admissible")
+                    .bound_source(),
+                NativeBoundSource::SignedLimit
+            );
+        },
+    );
+}

@@ -79,6 +79,13 @@ pub struct CheckedNativeOperationJournal {
 
 impl CheckedNativeOperationJournal {
     pub fn total(&self) -> u64 { self.budget.total() }
+
+    /// Added by DR-113: the bound source of the checked budget evidence.
+    pub fn bound_source(
+        &self,
+    ) -> crate::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource {
+        self.budget.bound_source()
+    }
     pub fn operation_count(&self) -> usize { self.operations.len() }
     pub fn attempt_count(&self) -> usize { self.recording.attempts.len() }
     pub fn retry_count(&self) -> usize { self.recording.retries.len() }

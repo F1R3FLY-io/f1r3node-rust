@@ -246,7 +246,9 @@ impl CheckedDirectWalletPolicy<'_, OfferedFundedDeploy> {
             .obligations
             .execution()
             .controls();
-        let contract = adopted.bind_execution_contract(controls, schedule)?;
+        // DR-113: this family path has no caller. It keeps the measured family
+        // bound, unbilled as before.
+        let contract = adopted.bind_execution_contract(controls, schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate)?;
         Ok(NativeRuntimeConfig::new(contract, limits, budget))
     }
 }
@@ -323,9 +325,10 @@ impl RuntimeManager {
             prepared.phlo_limit,
         )
         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        // DR-113: the bound of an offer is its signed limit.
         let contract = selected
             .adopted()
-            .bind_execution_contract(checked.controls(), &schedule)?;
+            .bind_execution_contract(checked.controls(), &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
         let host_work = context.host_work.clone();
         let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work);
         let mut runtime = RuntimeOps::new(

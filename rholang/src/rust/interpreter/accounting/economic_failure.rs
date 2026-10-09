@@ -117,6 +117,11 @@ pub fn classify_errors(
             OutOfPhlogistonsError | RSpaceError(SpaceError::OutOfPhlogistons) => {
                 (Some(PhloFailure::Certificate), None)
             }
+            // Added by DR-113: exhaustion of the signed limit is a classified
+            // user failure (DR-64).
+            SignedLimitExhausted | RSpaceError(SpaceError::SignedLimitExhausted) => {
+                (Some(PhloFailure::User), None)
+            }
             RSpaceError(_)
             | BugFoundError(_)
             | UndefinedRequiredProtobufFieldError(_)

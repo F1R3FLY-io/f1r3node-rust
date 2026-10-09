@@ -166,6 +166,8 @@ impl NativeReplayEpoch for Epoch {
 
     fn invalidate(&self) { self.state.lock().unwrap().3 = true; }
 
+    fn denial(&self) -> RSpaceError { RSpaceError::OutOfPhlogistons }
+
     fn begin_boundary(&self) -> Result<Boundary, RSpaceError> {
         let mut state = self.state.lock().unwrap();
         if state.2 || state.3 {

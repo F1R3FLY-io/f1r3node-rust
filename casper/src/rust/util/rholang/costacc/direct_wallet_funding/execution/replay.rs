@@ -178,7 +178,8 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         )
         .map_err(invalid)?;
         let controls = offered_controls.controls();
-        adopted.bind_execution_contract(controls, &schedule)?;
+        // DR-113: the bound of an offer is its signed limit.
+        adopted.bind_execution_contract(controls, &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
         let measured = adopted
             .native_rules()
             .measure(
@@ -1422,7 +1423,8 @@ impl RuntimeManager {
             prepared.phlo_limit,
         )
         .map_err(invalid)?;
-        let contract = adopted.bind_execution_contract(checked.controls(), schedule)?;
+        // DR-113: the bound of an offer is its signed limit.
+        let contract = adopted.bind_execution_contract(checked.controls(), schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
         let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work.clone());
         let (recording, operations) =
             decode_committed_runtime_recording(&evidence, recording_limits, &host)?;
@@ -1438,8 +1440,9 @@ impl RuntimeManager {
             &host,
         )?;
         let identity = prepared.envelope_identity;
+        // DR-113: replay classifies a denial with the source that play uses.
         let trace = adopted
-            .bind_execution_contract(checked.controls(), schedule)?
+            .bind_execution_contract(checked.controls(), schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?
             .check_operation_journal(
                 identity,
                 &recording,
@@ -1622,8 +1625,10 @@ impl RuntimeManager {
             .execution()
             .controls();
         let identity = envelope.identity().as_bytes().try_into().map_err(invalid)?;
+        // DR-113: this family path has no caller. It keeps the measured family
+        // bound, unbilled as before.
         let trace = adopted
-            .bind_execution_contract(controls, schedule)?
+            .bind_execution_contract(controls, schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate)?
             .check_operation_journal(
                 identity,
                 input.recording,

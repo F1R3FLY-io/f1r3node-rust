@@ -557,8 +557,10 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
             .obligations
             .execution()
             .controls();
+        // DR-113: this family path has no caller. It keeps the measured family
+        // bound, unbilled as before.
         self.adopted
-            .bind_execution_contract(controls, input.schedule)?;
+            .bind_execution_contract(controls, input.schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate)?;
         let measured = self
             .adopted
             .native_rules()

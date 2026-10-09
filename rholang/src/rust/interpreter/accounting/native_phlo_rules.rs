@@ -12,10 +12,10 @@ pub use acquisition::{
 };
 pub(super) use execution::{observation_comparison_bytes, CheckedNativeBudgetEvidence};
 pub use execution::{
-    CheckedNativeBudgetTrace, NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
-    NativeBudgetReplayDecision, NativeBudgetTraceError, NativeBudgetTraceLimits,
-    NativePhloChargePreparer, NativePhloExecutionContract, NativePhloExecutionError,
-    NativePhloReservation, PreparedNativePhloCharge,
+    CheckedNativeBudgetTrace, NativeAttemptStage, NativeBoundSource, NativeBudgetAttempt,
+    NativeBudgetOccurrence, NativeBudgetReplayDecision, NativeBudgetTraceError,
+    NativeBudgetTraceLimits, NativePhloChargePreparer, NativePhloExecutionContract,
+    NativePhloExecutionError, NativePhloReservation, PreparedNativePhloCharge,
 };
 pub use measurements::{
     NativePhloLocatedDemand, NativePhloLocatedDemands, NativePhloMeasurement,

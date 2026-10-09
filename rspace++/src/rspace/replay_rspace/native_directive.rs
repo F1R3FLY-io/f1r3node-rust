@@ -140,6 +140,9 @@ fn compare_comm(
 fn require_grant(result: Result<(), RSpaceError>) -> Result<(), RSpaceError> {
     result.map_err(|error| match error {
         RSpaceError::OutOfPhlogistons => mismatch(),
+        // Added by DR-113: a signed-limit denial where the record holds a
+        // grant is also a replay mismatch.
+        RSpaceError::SignedLimitExhausted => mismatch(),
         other => other,
     })
 }

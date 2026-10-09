@@ -87,6 +87,25 @@ pub fn owner_offer(
     valid_after_block_number: i64,
     shard_id: String,
 ) -> models::casper::DeployDataProto {
+    owner_offer_limited(
+        owner,
+        time_stamp,
+        term,
+        valid_after_block_number,
+        shard_id,
+        OFFER_PHLO_LIMIT,
+    )
+}
+
+/// Added by DR-113: an owner-direct offer with the given signed phlo limit.
+pub fn owner_offer_limited(
+    owner: &(PrivateKey, PublicKey),
+    time_stamp: i64,
+    term: String,
+    valid_after_block_number: i64,
+    shard_id: String,
+    phlo_limit: u64,
+) -> models::casper::DeployDataProto {
     let (owner_secret, owner_public) = owner;
     let limits = offered_funded_v6_limits().envelope.payload;
     let signature = CostSignature {
@@ -131,7 +150,7 @@ pub fn owner_offer(
     let funding = PhloFundingIntentV2 {
         base: PhloFundingIntentV1 {
             controls: PhloControlsV1 {
-                limit: OFFER_PHLO_LIMIT,
+                limit: phlo_limit,
                 price_ceiling: 2,
                 required_owner_ceilings: vec![2],
                 permitted_schedules: vec![schedule.clone()],
@@ -165,7 +184,7 @@ pub fn owner_offer(
     let payload = OfferedFundedDeploy::new(
         body,
         funding,
-        i64::try_from(OFFER_PHLO_LIMIT).expect("the offer phlo limit fits an i64"),
+        i64::try_from(phlo_limit).expect("the offer phlo limit fits an i64"),
         2,
         limits,
     )

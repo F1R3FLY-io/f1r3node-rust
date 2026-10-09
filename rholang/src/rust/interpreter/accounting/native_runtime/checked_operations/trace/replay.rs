@@ -346,6 +346,13 @@ impl CheckedNativeOperationTrace {
 }
 
 impl NativeOperationReplay {
+    /// Added by DR-113: the bound source of the replayed journal.
+    pub fn bound_source(
+        &self,
+    ) -> crate::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource {
+        self.inner.trace.journal().bound_source()
+    }
+
     fn bind_runtime(mut self, budget: RuntimeBudget) -> Result<Self, NativeReplayError> {
         let binding =
             ReplayAuthorityBinding::new(budget, self.inner.trace.journal.recording.session)?;

@@ -49,6 +49,20 @@ pub enum NativePhloExecutionError {
     Overflow,
     #[error("native execution exceeds the approved resource bound")]
     BoundExceeded,
+    /// Added by DR-113: a signed-limit bound differs from the signed limit.
+    #[error("a signed-limit resource bound must equal the signed phlo limit")]
+    BoundSourceMismatch,
+}
+
+/// Added by DR-113: the source of the scalar resource bound of a native
+/// execution contract. Exhaustion of the signed limit is a classified user
+/// failure. Exhaustion of a certified bound is a certificate failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeBoundSource {
+    /// The bound is the signed phlo limit of the offer.
+    SignedLimit,
+    /// The bound is a certified bound on the demand of the offer.
+    Certificate,
 }
 
 #[derive(Debug)]
@@ -62,6 +76,8 @@ struct NativePhloExecutionPolicy {
     rules: NativePhloRules,
     weights: Vec<u64>,
     bound: u64,
+    /// Added by DR-113.
+    bound_source: NativeBoundSource,
 }
 
 #[derive(Clone, Debug)]
@@ -83,12 +99,26 @@ pub struct NativePhloChargePreparer {
 }
 
 impl<'a> NativePhloExecutionContract<'a> {
+    // Changed by DR-113: the contract names the source of its bound.
+    // pub fn new(
+    //     controls: CheckedPhloControls<'a>,
+    //     binding: &PhloScheduleBinding<'_>,
+    // ) -> Result<Self, NativePhloExecutionError> {
     pub fn new(
         controls: CheckedPhloControls<'a>,
         binding: &PhloScheduleBinding<'_>,
+        bound_source: NativeBoundSource,
     ) -> Result<Self, NativePhloExecutionError> {
         if controls.schedule() != binding.schedule() {
             return Err(NativePhloExecutionError::ControlsMismatch);
+        }
+        // Added by DR-113: a signed-limit bound is the signed limit itself.
+        // A certified bound is at most the limit, as `check_controls`
+        // already requires.
+        if bound_source == NativeBoundSource::SignedLimit
+            && controls.resource_bound() != controls.terms().limit
+        {
+            return Err(NativePhloExecutionError::BoundSourceMismatch);
         }
         let rules = NativePhloRules::resolve(binding.descriptor())?;
         let mut weights = Vec::new();
@@ -102,11 +132,15 @@ impl<'a> NativePhloExecutionContract<'a> {
                 rules,
                 weights,
                 bound: controls.resource_bound(),
+                bound_source,
             }),
         })
     }
 
     pub fn controls(&self) -> CheckedPhloControls<'a> { self.controls }
+
+    /// Added by DR-113.
+    pub fn bound_source(&self) -> NativeBoundSource { self.policy.bound_source }
 
     pub fn reservation(self) -> NativePhloReservation {
         NativePhloReservation {
@@ -158,10 +192,24 @@ impl NativePhloExecutionPolicy {
             let units = authority_units(signature, budget)?;
             let measurement = demand.measurement();
             let weight = self.weights[measurement.class()];
-            usage = weight
-                .checked_mul(units)
-                .and_then(|amount| amount.checked_mul(measurement.quantity()))
-                .and_then(|amount| usage.checked_add(amount))
+            // Changed by DR-113: a zero factor gives an exact zero charge, so
+            // an overflow below means that the exact charge exceeds u64::MAX
+            // and therefore every bound.
+            // usage = weight
+            //     .checked_mul(units)
+            //     .and_then(|amount| amount.checked_mul(measurement.quantity()))
+            //     .and_then(|amount| usage.checked_add(amount))
+            //     .ok_or(NativePhloExecutionError::Overflow)?;
+            let amount = if weight == 0 || units == 0 || measurement.quantity() == 0 {
+                0
+            } else {
+                weight
+                    .checked_mul(units)
+                    .and_then(|amount| amount.checked_mul(measurement.quantity()))
+                    .ok_or(NativePhloExecutionError::Overflow)?
+            };
+            usage = usage
+                .checked_add(amount)
                 .ok_or(NativePhloExecutionError::Overflow)?;
         }
         Ok(PreparedNativePhloCharge {
@@ -179,6 +227,9 @@ impl PreparedNativePhloCharge {
 
 impl NativePhloReservation {
     pub fn used(&self) -> u64 { self.used }
+
+    /// Added by DR-113.
+    pub fn bound_source(&self) -> NativeBoundSource { self.policy.bound_source }
 
     pub fn preparer(&self) -> NativePhloChargePreparer {
         NativePhloChargePreparer {
@@ -207,6 +258,9 @@ impl NativePhloReservation {
 }
 
 impl NativePhloChargePreparer {
+    /// Added by DR-113.
+    pub fn bound_source(&self) -> NativeBoundSource { self.policy.bound_source }
+
     pub fn prepare(
         &self,
         observation: Arc<ByteObservation>,
@@ -252,6 +306,9 @@ fn authority_units(
         match current.value.as_ref() {
             Some(Value::Unit(true)) => {}
             Some(Value::Ground(_) | Value::Name(_) | Value::Quote(_)) => {
+                // DR-113: this overflow needs more than 2^64 signature
+                // leaves, and each leaf reserves one verification operation
+                // first, so the host-work budget rejects long before it.
                 units = units
                     .checked_add(1)
                     .ok_or(NativePhloExecutionError::Overflow)?;
@@ -260,11 +317,18 @@ fn authority_units(
                 reserve_work(
                     budget,
                     HostWorkDimension::SearchStateBytes,
+                    // Changed by DR-113: a sizing overflow is host work, never
+                    // a charge.
+                    // compound
+                    //     .elements
+                    //     .len()
+                    //     .checked_mul(size_of::<&CostSignature>())
+                    //     .ok_or(NativePhloExecutionError::Overflow)?,
                     compound
                         .elements
                         .len()
                         .checked_mul(size_of::<&CostSignature>())
-                        .ok_or(NativePhloExecutionError::Overflow)?,
+                        .ok_or(FundingSearchError::AllocationFailed)?,
                 )?;
                 pending
                     .try_reserve(compound.elements.len())

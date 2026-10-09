@@ -390,6 +390,12 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "out_of_phlogistons",
             ie.to_string(),
         ),
+        // Added by DR-113: exhaustion of the signed phlo limit.
+        SignedLimitExhausted => (
+            S::UNPROCESSABLE_ENTITY,
+            "signed_limit_exhausted",
+            ie.to_string(),
+        ),
         HostWorkRejected => (
             S::UNPROCESSABLE_ENTITY,
             "host_work_rejected",

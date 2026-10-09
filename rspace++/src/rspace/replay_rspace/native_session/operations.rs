@@ -102,7 +102,9 @@ where
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
         completion.publish();
         publication.complete();
-        Err(RSpaceError::OutOfPhlogistons)
+        // Changed by DR-113: the epoch names the error of its denial.
+        // Err(RSpaceError::OutOfPhlogistons)
+        Err(self.epoch.denial())
     }
 
     pub async fn consume(

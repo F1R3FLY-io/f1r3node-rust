@@ -803,7 +803,9 @@ impl NativeOfferedAttempt<'_, '_> {
         )
         .map_err(invalid)?;
         let controls = checked.controls();
-        self.adopted.bind_execution_contract(controls, &schedule)?;
+        // DR-113: the bound of an offer is its signed limit.
+        self.adopted
+            .bind_execution_contract(controls, &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
         let measured = self
             .adopted
             .native_rules()

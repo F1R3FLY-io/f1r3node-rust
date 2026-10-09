@@ -3976,6 +3976,10 @@ offer holds its exact demand. A dynamic offer holds up to the limit and gets
 the rest back. Validators recompute the same decision. DR-67 covers the stack
 safety of the newly reachable analyzer.
 
+**Amendment (DR-113, 2026-10-09).** DR-113 implements the exhaustion row:
+exhaustion of the signed limit is a classified user failure. No certified
+bound and no hold exist yet, so every live contract binds the signed limit.
+
 **Cross-refs.** P1 `def:funding-proof`, `thm:decidability`,
 `def:conservative-demand`, `sec:acceptance-protocol`. DR-65, DR-67, DR-68.
 Epic 8946 leaves `ofp-1-admission-inputs`, `ofp-2-bound-analyzer`, and
@@ -4435,6 +4439,9 @@ checks the root-bound status entry.
 
 **Amendment (DR-116, 2026-10-09).** The quarantine also removes the buffer
 entry of the candidate.
+
+**Amendment (DR-113, 2026-10-09).** Exhaustion of the signed limit is a
+classified user failure, so it no longer reaches the candidate rejection.
 
 **Cross-refs.** P1 `sec:deploy-boundaries`. DR-63, DR-65. Leaves
 `ofp-1-baseline-liveness` and `ofp-1-baseline-verify-quarantine`. Leaf
@@ -11703,6 +11710,102 @@ predicts.
 **Cross-refs.** DR-92, DR-94, DR-108, DR-109, DR-110, DR-111. Leaf
 `ofp-2-cap-d-e5-global-switch`. Bug
 `per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`.
+
+## DR-113 — Exhaustion of the signed limit is a classified user failure
+
+**Status.** Implemented 2026-10-09 for epic 8946. It implements the exhaustion
+row that DR-64 adopted. By user decision it follows DR-115 ("Fix R1 first") and
+comes before DR-114 ("DR-64, then the ban removal").
+
+**Context.**
+
+- DR-64 adopted this row: exhaustion of the signed limit in a capped part is a
+  classified user failure. An overrun of an exact part is a correctness failure
+  with no charge.
+- The native meter mapped every exhaustion to `OutOfPhlogistonsError`, a
+  certificate failure. The proposer then rejected the offer as a candidate with
+  a non-user failure. The deploy never reached a block, and nobody paid for the
+  granted work.
+- Until gap G1 lands, every live contract binds the signed limit as its bound.
+  So every native exhaustion today is exhaustion of the signed limit.
+
+**Decision.**
+
+1. A native execution contract names the source of its bound:
+   `NativeBoundSource::SignedLimit` or `NativeBoundSource::Certificate`.
+2. The guard requires a signed-limit bound to equal the signed limit
+   (`BoundSourceMismatch` otherwise). A certified bound is at most the limit,
+   as before.
+3. Exhaustion takes the class of the source. Under `SignedLimit`,
+   `BoundExceeded` and a charge `Overflow` give
+   `InterpreterError::SignedLimitExhausted`, a classified user failure. Under
+   `Certificate` they give `OutOfPhlogistonsError`, as before.
+4. Overflow follows the user decision of 2026-10-08 ("User failure"). After
+   the zero-factor short-circuit, an overflow of the product or of the running
+   sum means that the exact charge exceeds `u64::MAX`, and so every bound. A
+   sizing overflow in `authority_units` is host work
+   (`FundingSearchError::AllocationFailed`), never a charge.
+5. Replay classifies a denial as play does. `NativeReplayEpoch::denial` is a
+   required method, and `publish_denial` returns the denial of the epoch. The
+   checked budget evidence stores the bound source of the contract that checked
+   it. `require_grant` treats the new variant as a mismatch, as it treats
+   `OutOfPhlogistons`.
+6. Casper binds every live contract with `SignedLimit`: play, the producer
+   rebind, the replay rebind, the replay runtime configuration and the replay
+   evidence. The three family paths with no caller bind `Certificate` and keep
+   their behavior.
+7. The error collapse in `reduce.rs` puts the new variant after
+   `OutOfPhlogistonsError`. A mixed failure still reports the non-user error,
+   and the full error list still reaches the classification.
+8. The retained charge needs no code change. A classified user failure retains
+   the fresh work and the fee, $`\mathrm{fresh} \cdot \mathrm{price} + 1`$,
+   within the signed ceiling $`\mathrm{phloLimit} \cdot \mathrm{price} + 1`$.
+   A refund of an unused hold is vacuous until G1 adds holds.
+9. Legacy deploys, allocation denials, the legacy meter, the token budget and
+   host-work rejection keep their variants and classes.
+
+| Error source | Variant | Class | Effect |
+| --- | --- | --- | --- |
+| Native meter under `SignedLimit`: `BoundExceeded` or charge `Overflow` | `SignedLimitExhausted` | User (new) | Roll back, charge $`\mathrm{fresh} \cdot \mathrm{price} + 1`$, publish as failed |
+| Native meter under `Certificate`: `BoundExceeded` or charge `Overflow` | `OutOfPhlogistonsError` | Certificate (unchanged) | Reject, no charge |
+| Sizing overflow in `authority_units` | `ReduceError` | Unclassified | Reject, no charge |
+| Host-work limit | `HostWorkRejected` | Platform (unchanged) | Reject, no charge |
+
+**Interactions.**
+
+- DR-72: signed-limit exhaustion no longer reaches the candidate rejection, so
+  the proposer does not quarantine it.
+- DR-102: no role-dependent code changes. Every validator gives the same
+  receipt.
+- G1: an exact part will bind `Certificate`. The scalar bound may stay the
+  limit only under `SignedLimit`.
+
+**Verification.**
+
+- Failing first: on the code before this record,
+  `signed_limit_exhaustion_is_published_as_a_charged_user_failure` fails with
+  "the offer's block is not created". The recorded rejection is "native offered
+  execution has non-user failure".
+- With this record the test passes. The block publishes the deploy as failed,
+  and all three validators accept it with equal receipts. The receipt holds
+  $`0 < \mathrm{phloUsed} \le \mathrm{phloLimit}`$, and the payer pays exactly
+  its `rev_spent`.
+- `signed_limit_exhaustion_is_a_classified_user_failure` runs the same charge
+  under both sources. It checks the error, the class and the retained-charge
+  permission. `a_signed_limit_bound_is_the_signed_limit` checks the guard.
+- Rocq `SignedLimitExhaustion.v` uses the standard library only and no axiom.
+  It proves 16 theorems, four of them negative controls: charging every
+  exhaustion, never charging an exhaustion, one shared class, and a class
+  derived by comparing the bound with the limit. Each control breaks a
+  required property. The proof gate passes in cost-accounting mode: 274 modules
+  and 3105 closed assumption queries.
+- Suites: rholang and rspace++ pass 4103 of 4103. On casper, block-storage and
+  the node HTTP handlers, the committed caps pass 1934 of 1940 and the
+  provisional caps pass 1936 of 1940. All failures are the known ones of
+  DR-116.
+
+**Cross-refs.** DR-64, DR-72, DR-102, DR-114, DR-115.
+`cost-accounting-impl/economic-failure-policy-decisions.md`.
 
 ## DR-115 — A failed offered deploy keeps its committed settlement in the merge index
 

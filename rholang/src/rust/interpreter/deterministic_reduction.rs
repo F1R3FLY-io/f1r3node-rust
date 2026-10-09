@@ -1590,7 +1590,14 @@ mod tests {
             1,
         )
         .unwrap();
-        let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
+        // Changed by DR-113: the contract names the source of its bound.
+        // let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
+        let contract = NativePhloExecutionContract::new(
+            controls,
+            &binding,
+            crate::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate,
+        )
+        .unwrap();
         let config = NativeRuntimeConfig::new(
             contract,
             NativeBudgetTraceLimits {

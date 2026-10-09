@@ -183,10 +183,17 @@ impl AdoptedResourcePolicy {
         Ok(())
     }
 
+    // Changed by DR-113: the caller names the source of the bound.
+    // pub fn bind_execution_contract<'a>(
+    //     &self,
+    //     controls: CheckedPhloControls<'a>,
+    //     binding: &PhloScheduleBinding<'_>,
+    // ) -> Result<NativePhloExecutionContract<'a>, CasperError> {
     pub fn bind_execution_contract<'a>(
         &self,
         controls: CheckedPhloControls<'a>,
         binding: &PhloScheduleBinding<'_>,
+        bound_source: rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource,
     ) -> Result<NativePhloExecutionContract<'a>, CasperError> {
         self.check_controls(controls)?;
         let policy = self
@@ -199,7 +206,7 @@ impl AdoptedResourcePolicy {
         binding
             .bind_policy(required.policy())
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        NativePhloExecutionContract::new(controls, binding)
+        NativePhloExecutionContract::new(controls, binding, bound_source)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))
     }
 }

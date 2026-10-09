@@ -282,13 +282,17 @@ impl NativeRuntimeConfig {
             Some(charge) => self.reservation.reserve(charge),
             None => Err(NativePhloExecutionError::Overflow),
         };
+        // Added by DR-113: the class of an exhaustion follows the bound source.
+        let source = self.reservation.bound_source();
         if decision.as_ref().is_err_and(|error| {
             !matches!(
                 error,
                 NativePhloExecutionError::Overflow | NativePhloExecutionError::BoundExceeded
             )
         }) {
-            return decision.map_err(native_error);
+            // Changed by DR-113: exhaustion takes the class of the bound source.
+            // return decision.map_err(native_error);
+            return decision.map_err(|error| native_error(error, source));
         }
         self.recording.occurrences.commit(key);
         self.recording.attempts.push(RecordedAttempt {
@@ -306,7 +310,9 @@ impl NativeRuntimeConfig {
             decision.is_ok(),
         );
         prepared.ticket.published.set(true);
-        decision.map_err(native_error)
+        // Changed by DR-113: exhaustion takes the class of the bound source.
+        // decision.map_err(native_error)
+        decision.map_err(|error| native_error(error, source))
     }
 
     pub(super) fn record_retry(
