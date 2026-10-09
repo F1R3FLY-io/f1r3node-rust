@@ -2402,6 +2402,103 @@ mod frontier_determinism_tests {
         assert_eq!(committee_of(&floor).await, own_bonds_of(&floor));
     }
 
+    /// The TODO deleted from `get_corresponding_weight_map` justified the
+    /// main-parent read by claiming a newly bonded validator's latest message is
+    /// pinned to the block carrying its bonding deploy, so stake that never spoke
+    /// rode in behind that parent-linked map. This node does not seed the slot that
+    /// way: the sentinel is the GENESIS hash, and `participating_weight_map` drops a
+    /// genesis-slot validator that genesis neither sent nor bonded. Reading the
+    /// target's own bonds therefore admits the bond to the committee without
+    /// admitting un-testified stake to the certifying weight.
+    ///
+    /// The asserted quantity is `ft_witnessed`'s own denominator: it sums
+    /// `participating_weight_map` into `total_stake` before any agreement work
+    /// (`clique_oracle.rs`, `ft_witnessed_exact`). Pinning the participating total
+    /// pins what fault tolerance is computed over, without a full FT fixture.
+    #[tokio::test]
+    async fn a_bonded_joiner_that_has_not_spoken_stays_out_of_the_certifying_weight() {
+        let v = val();
+        let joiner = Bytes::from(vec![0x07u8; 65]);
+        let (floor, pre, plain, bonded) = (h(0), h(1), h(2), h(3));
+
+        let weighted = |hash: &Bytes, parents: Vec<Bytes>, num: i64, bonds: &[(&Bytes, i64)]| {
+            let mut meta = md(hash.clone(), parents, num, &v);
+            meta.weight_map = bonds
+                .iter()
+                .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .collect();
+            meta
+        };
+
+        // `floor` is the height-zero block, so it serves as the genesis the
+        // newly-bonded sentinel points at. The bond lands on one sibling only.
+        let dag = build_dag(vec![
+            weighted(&floor, vec![], 0, &[(&v, 100)]),
+            weighted(&pre, vec![floor.clone()], 1, &[(&v, 100)]),
+            weighted(&plain, vec![pre.clone()], 2, &[(&v, 100)]),
+            weighted(&bonded, vec![pre.clone()], 2, &[(&v, 100), (&joiner, 400)]),
+        ]);
+
+        let bonded_committee = CliqueOracle::get_corresponding_weight_map(&bonded, &dag)
+            .await
+            .expect("committee");
+        assert_eq!(
+            bonded_committee.get(&joiner),
+            Some(&400),
+            "the bond belongs to the target's own committee"
+        );
+
+        // Bonded, never heard from: the slot carries the genesis hash.
+        let mut unheard: BTreeMap<Bytes, Bytes> = BTreeMap::new();
+        unheard.insert(v.clone(), bonded.clone());
+        unheard.insert(joiner.clone(), floor.clone());
+
+        let participating =
+            CliqueOracle::participating_weight_map(bonded_committee.clone(), &dag, &unheard)
+                .expect("participating");
+        assert!(
+            !participating.contains_key(&joiner),
+            "a genesis-slot validator that genesis neither sent nor bonded must not \
+             participate; counting it would let stake that never testified into the \
+             threshold the oracle measures against"
+        );
+        assert_eq!(
+            participating.values().sum::<i64>(),
+            100,
+            "the certifying weight is the stake that has actually spoken"
+        );
+
+        // The sibling without the bond is judged over the same participating stake,
+        // so the bond does not hand one branch of the fork a larger electorate
+        // before the joiner speaks.
+        let plain_committee = CliqueOracle::get_corresponding_weight_map(&plain, &dag)
+            .await
+            .expect("committee");
+        assert!(!plain_committee.contains_key(&joiner));
+        let plain_participating =
+            CliqueOracle::participating_weight_map(plain_committee, &dag, &unheard)
+                .expect("participating");
+        assert_eq!(
+            plain_participating.values().sum::<i64>(),
+            participating.values().sum::<i64>(),
+            "both siblings certify over the same participating stake until the \
+             joiner produces a message"
+        );
+
+        // Once the joiner has produced a message its slot leaves genesis and the
+        // stake counts.
+        let mut heard = unheard.clone();
+        heard.insert(joiner.clone(), bonded.clone());
+        let after = CliqueOracle::participating_weight_map(bonded_committee, &dag, &heard)
+            .expect("participating");
+        assert_eq!(after.get(&joiner), Some(&400));
+        assert_eq!(
+            after.values().sum::<i64>(),
+            500,
+            "the joiner's stake joins the certifying weight once it has spoken"
+        );
+    }
+
     /// A multi-parent block with no recorded base has an underivable state
     /// lineage — the meet walk refuses rather than guesses.
     #[test]

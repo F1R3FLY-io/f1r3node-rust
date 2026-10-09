@@ -136,12 +136,22 @@ impl CliqueOracle {
     }
 
     /// The committee that certifies `target_msg`: the bonds the target carries.
-    /// `Validate::bonds_cache_from_floor` checks that field against
-    /// `floor_committee` on the target's floor, on both the propose and the
-    /// replay side, so it is a pure function of that floor and identical for
-    /// siblings sharing one. The main parent's bonds are not: a block whose floor
-    /// has advanced past a bonding deploy carries an electorate its parent does
-    /// not, and each side of a fork would certify under its own.
+    /// `floor::floor_committee` on the target's floor is the single source for
+    /// that field on both sides — the proposer PACKAGES it (`block_creator`) and
+    /// the validator CHECKS it (`Validate::bonds_cache_from_floor`) — so it is a
+    /// pure function of that floor and identical for siblings sharing one. The
+    /// main parent's bonds are not: a block whose floor has advanced past a
+    /// bonding deploy carries an electorate its parent does not, and each side of
+    /// a fork would certify under its own.
+    ///
+    /// Genesis and no-parent blocks read their own weight map, matching the
+    /// previous fallback behaviour.
+    ///
+    /// A validator bonded but not yet heard from does not inflate the result:
+    /// its latest-message slot is seeded with the genesis hash, and
+    /// `participating_weight_map` drops a genesis-slot validator that genesis
+    /// neither sent nor bonded. Its stake joins the committee once it has
+    /// actually produced a message.
     pub async fn get_corresponding_weight_map(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
