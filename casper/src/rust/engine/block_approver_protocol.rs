@@ -238,6 +238,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         );
 
         // Expected blessed contracts
+        //
+        // TODO(fs-bundle-threading): slice 5.67 threads
+        // `fs_bundle` + `consensus_fs_snapshot_cadence` through
+        // `default_blessed_terms`.  This caller passes empty + None
+        // for both, which matches the MVP posture.  A future slice
+        // should accept these as function args so a validator can
+        // verify a candidate with a non-empty bundle; without that
+        // thread-through, validators cannot approve genesis blocks
+        // whose leader included a non-empty bundle.  Blocking only
+        // when ceremony operators configure non-empty bundles —
+        // the MVP (empty bundle) path is fine today.
         let genesis_blessed_contracts =
             crate::rust::genesis::genesis::Genesis::default_blessed_terms(
                 &pos_params,
@@ -247,6 +258,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 native_token_name,
                 native_token_symbol,
                 native_token_decimals,
+                &[],
+                None,
             );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;

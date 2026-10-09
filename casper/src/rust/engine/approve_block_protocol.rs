@@ -201,6 +201,8 @@ impl ApproveBlockProtocolFactory {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            fs_bundle: Vec::new(),
+            consensus_fs_snapshot_cadence: None,
         };
 
         let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
