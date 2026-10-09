@@ -281,7 +281,14 @@ env:
   # 2026-09-15: 7018213 -> b3d14b2 (system-integration MAIN — the #142 merge
   #   commit; the branch pin's content, now immutable on main). Verified:
   #   descends from 7018213 (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+  # 2026-10-08: e3c4e14 -> f106a34 (system-integration MAIN — the #148 merge
+  #   commit): raises OBSERVER_MEMORY_CEILING_MB 1500 -> 1800 to accommodate
+  #   the FsGenesis blessed-term addition (f1r3node-rust slice 5.36, PR #660)
+  #   that bumped observer steady-state RSS during exploratory-overload
+  #   bursts. Backed by 12 failing CI-run samples: min 1508 / max 1646 /
+  #   mean 1576 / stdev 46 MB; new ceiling sits 3.3σ above observed max.
+  #   Verified: descends from e3c4e14 (merge-base --is-ancestor).
+  SYSTEM_INTEGRATION_REF: f106a341c7fd9fb9a82c1f18669fa5a9d708e21c
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
