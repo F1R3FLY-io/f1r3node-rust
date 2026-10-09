@@ -251,32 +251,97 @@ pub(crate) async fn run_queued_finalizer(
     // Backstop only: floor-of-view rides the persisted floor/frontier
     // caches, so a cycle exceeding this is a stall to surface, not pace.
     let finalizer_blocking_timeout = std::time::Duration::from_secs(15);
+    drive_finalizer_runs(finalizer_blocking_timeout, &finalizer_task_queued, || {
+        compute_last_finalized_block(ctx.clone())
+    })
+    .await;
+    tracing::info!(target: "f1r3fly.casper", "finalizer-run-finished");
+}
+
+/// The queued-run loop of `run_queued_finalizer`, generic over the compute
+/// step so its cycle accounting is testable without a casper instance.
+pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
+    timeout: std::time::Duration,
+    finalizer_task_queued: &AtomicBool,
+    mut compute: F,
+) where
+    E: std::fmt::Debug,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, FINALIZER_RUN_FAILURES_METRIC, FINALIZER_RUN_RERUNS_METRIC,
+        FINALIZER_RUN_TIMEOUTS_METRIC, FINALIZER_RUN_TIME_METRIC,
+    };
     loop {
-        match tokio::time::timeout(
-            finalizer_blocking_timeout,
-            compute_last_finalized_block(ctx.clone()),
-        )
-        .await
-        {
+        let cycle_started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(timeout, compute()).await;
+        metrics::histogram!(FINALIZER_RUN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(cycle_started.elapsed().as_secs_f64());
+        match outcome {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => {
+                metrics::counter!(FINALIZER_RUN_FAILURES_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .increment(1);
                 tracing::warn!("finalizer-run failed: {:?}", err);
             }
             Err(_) => {
+                metrics::counter!(FINALIZER_RUN_TIMEOUTS_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .increment(1);
                 tracing::warn!(
                     "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking propose",
-                    finalizer_blocking_timeout
+                    timeout
                 );
             }
         }
 
         if finalizer_task_queued.swap(false, Ordering::SeqCst) {
+            metrics::counter!(FINALIZER_RUN_RERUNS_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .increment(1);
             tracing::debug!("finalizer-run-queued; continuing finalizer loop");
             continue;
         }
-
-        tracing::info!(target: "f1r3fly.casper", "finalizer-run-finished");
         return;
+    }
+}
+
+/// An LFB computation requested through the API. It runs outside the
+/// single-flight guard, so it can overlap a background finalizer run. The
+/// in-progress flag is read once and never written here.
+pub(crate) async fn observe_api_lfb<T, E, Fut>(
+    finalizer_task_in_progress: &AtomicBool,
+    computation: Fut,
+) -> Result<T, E>
+where
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, FINALIZER_API_LFB_CALLS_METRIC, FINALIZER_API_LFB_OVERLAPS_METRIC,
+        FINALIZER_API_LFB_TIME_METRIC,
+    };
+    metrics::counter!(FINALIZER_API_LFB_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .increment(1);
+    if finalizer_task_in_progress.load(Ordering::SeqCst) {
+        metrics::counter!(FINALIZER_API_LFB_OVERLAPS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+    }
+    let started = std::time::Instant::now();
+    let result = computation.await;
+    metrics::histogram!(FINALIZER_API_LFB_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(started.elapsed().as_secs_f64());
+    result
+}
+
+/// A finalization trigger arrived while a run is in progress: queue one
+/// follow-up run. Repeated triggers coalesce into that one rerun.
+pub(crate) fn note_finalizer_busy(finalizer_task_queued: &AtomicBool) {
+    metrics::counter!(
+        crate::rust::metrics_constants::FINALIZER_RUN_QUEUED_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+    if !finalizer_task_queued.swap(true, Ordering::SeqCst) {
+        tracing::debug!("Finalizer already running; queued follow-up finalization run");
     }
 }
 
@@ -604,9 +669,7 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            if !this.finalizer_task_queued.swap(true, Ordering::SeqCst) {
-                tracing::debug!("Finalizer already running; queued follow-up finalization run");
-            }
+            note_finalizer_busy(&this.finalizer_task_queued);
             return Ok(());
         }
 
@@ -727,5 +790,137 @@ mod divergence_monitor_tests {
             monitor.on_containment_hold(&lfb(7), 500 + round as i64);
         }
         assert!(monitor.diverged(), "a fresh streak must escalate again");
+    }
+}
+
+#[cfg(test)]
+mod finalizer_run_metric_tests {
+    use std::time::Duration;
+
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+
+    use super::*;
+    use crate::rust::metrics_constants::{
+        FINALIZER_API_LFB_CALLS_METRIC, FINALIZER_API_LFB_OVERLAPS_METRIC,
+        FINALIZER_API_LFB_TIME_METRIC, FINALIZER_RUN_FAILURES_METRIC, FINALIZER_RUN_QUEUED_METRIC,
+        FINALIZER_RUN_RERUNS_METRIC, FINALIZER_RUN_TIMEOUTS_METRIC, FINALIZER_RUN_TIME_METRIC,
+    };
+
+    /// One snapshot per test: the debugging recorder drains histogram
+    /// samples on every snapshot, so a second snapshot would see none.
+    struct Recorded(std::collections::HashMap<String, (u64, usize)>);
+
+    impl Recorded {
+        fn take(snapshotter: &Snapshotter) -> Self {
+            let mut values = std::collections::HashMap::new();
+            for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+                let entry = values.entry(key.key().name().to_owned()).or_insert((0, 0));
+                match value {
+                    DebugValue::Counter(c) => entry.0 += c,
+                    DebugValue::Histogram(s) => entry.1 += s.len(),
+                    _ => {}
+                }
+            }
+            Recorded(values)
+        }
+
+        fn counter(&self, name: &str) -> u64 { self.0.get(name).map_or(0, |v| v.0) }
+
+        fn samples(&self, name: &str) -> usize { self.0.get(name).map_or(0, |v| v.1) }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn each_cycle_records_its_duration_and_outcome() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let queued = AtomicBool::new(false);
+        let mut cycle = 0u32;
+        drive_finalizer_runs(Duration::from_millis(50), &queued, || {
+            cycle += 1;
+            let this_cycle = cycle;
+            if this_cycle <= 2 {
+                queued.store(true, Ordering::SeqCst);
+            }
+            async move {
+                match this_cycle {
+                    1 => Err::<(), &str>("floor unavailable"),
+                    2 => {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                }
+            }
+        })
+        .await;
+
+        let recorded = Recorded::take(&snapshotter);
+        assert_eq!(cycle, 3, "a trigger during cycles 1 and 2 gives two reruns");
+        assert_eq!(recorded.samples(FINALIZER_RUN_TIME_METRIC), 3);
+        assert_eq!(recorded.counter(FINALIZER_RUN_FAILURES_METRIC), 1);
+        assert_eq!(recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC), 1);
+        assert_eq!(recorded.counter(FINALIZER_RUN_RERUNS_METRIC), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_run_with_no_queued_trigger_makes_one_cycle_and_no_rerun() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let queued = AtomicBool::new(false);
+        drive_finalizer_runs(Duration::from_millis(50), &queued, || async {
+            Ok::<(), &str>(())
+        })
+        .await;
+
+        let recorded = Recorded::take(&snapshotter);
+        assert_eq!(recorded.samples(FINALIZER_RUN_TIME_METRIC), 1);
+        assert_eq!(recorded.counter(FINALIZER_RUN_RERUNS_METRIC), 0);
+        assert_eq!(recorded.counter(FINALIZER_RUN_FAILURES_METRIC), 0);
+        assert_eq!(recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC), 0);
+    }
+
+    #[test]
+    fn every_trigger_during_a_run_is_counted_but_queues_one_rerun() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let queued = AtomicBool::new(false);
+        note_finalizer_busy(&queued);
+        note_finalizer_busy(&queued);
+        note_finalizer_busy(&queued);
+
+        let recorded = Recorded::take(&snapshotter);
+        assert!(queued.load(Ordering::SeqCst));
+        assert_eq!(recorded.counter(FINALIZER_RUN_QUEUED_METRIC), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn api_lfb_counts_each_call_and_the_calls_that_overlap_a_run() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let in_progress = AtomicBool::new(false);
+        let idle: Result<u32, &str> = observe_api_lfb(&in_progress, async { Ok(7) }).await;
+        in_progress.store(true, Ordering::SeqCst);
+        let busy: Result<u32, &str> =
+            observe_api_lfb(&in_progress, async { Err("no floor") }).await;
+
+        let recorded = Recorded::take(&snapshotter);
+        assert_eq!(idle, Ok(7), "the API result passes through unchanged");
+        assert_eq!(
+            busy,
+            Err("no floor"),
+            "an API error passes through unchanged"
+        );
+        assert!(in_progress.load(Ordering::SeqCst), "the flag is only read");
+        assert_eq!(recorded.counter(FINALIZER_API_LFB_CALLS_METRIC), 2);
+        assert_eq!(recorded.counter(FINALIZER_API_LFB_OVERLAPS_METRIC), 1);
+        assert_eq!(recorded.samples(FINALIZER_API_LFB_TIME_METRIC), 2);
     }
 }

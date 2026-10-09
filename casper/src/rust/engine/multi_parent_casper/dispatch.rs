@@ -217,8 +217,11 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
     }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
-        super::finalization_runner::compute_last_finalized_block(
-            super::finalization_runner::build_finalization_context(self),
+        super::finalization_runner::observe_api_lfb(
+            &self.finalizer_task_in_progress,
+            super::finalization_runner::compute_last_finalized_block(
+                super::finalization_runner::build_finalization_context(self),
+            ),
         )
         .await
     }
