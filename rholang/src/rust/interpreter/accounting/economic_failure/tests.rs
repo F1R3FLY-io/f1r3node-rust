@@ -66,6 +66,7 @@ fn typed_variants_define_charge_class_without_message_heuristics() {
         InterpreterError::IfConditionTypeError {
             actual_type: text.clone(),
         },
+        InterpreterError::SystemProcessShapeError(text.clone()),
     ];
     let platform = vec![
         InterpreterError::BugFoundError(text.clone()),

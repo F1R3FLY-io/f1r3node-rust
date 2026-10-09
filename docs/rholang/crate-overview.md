@@ -206,6 +206,18 @@ Err(InterpreterError::NonDeterministicProcessFailure {
 
 During replay, `DispatchType::FailedNonDeterministicCall` triggers `Produce::with_error()` to mark the produce event as failed, ensuring the replay matches the original execution trace.
 
+### Native Funded Execution (DR-114)
+
+The pattern above is the legacy path. In native funded execution (protocol 6) the dispatcher sends the external-service and print processes to a native driver in `system_processes.rs`:
+
+- The driver records twelve processes (`is_native_recorded_op`): dev's eight nondeterministic processes and four more Chroma processes. Play calls a service once and records the reply on the triggering produce. Replay delivers the record and never calls a service.
+- A failure is a paid `[false, code, message]` reply with the code `EXT_BAD_ARG`, `EXT_FAILED` or `EXT_OUTPUT_TOO_LARGE`. It is never a `NonDeterministicProcessFailure`.
+- A success must fit the record room of the deploy. Otherwise the reply is `EXT_OUTPUT_TOO_LARGE`.
+- `stdout` and `stderr` prepay their formatting and print in play only. Their acknowledged forms reply `Nil` in play and in replay.
+- A persistent send to a recorded process, and an `IllegalArgumentError` of any system process, become `SystemProcessShapeError`, a classified user failure.
+
+`DR-114` in `docs/casper/theory/cost-accounting-decision-records.md` gives the design, the evidence rules and the verification.
+
 ## Dispatch
 
 **`RholangAndScalaDispatcher`** routes continuations:

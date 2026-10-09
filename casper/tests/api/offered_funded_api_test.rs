@@ -2107,3 +2107,159 @@ async fn signed_limit_exhaustion_is_published_as_a_charged_user_failure() {
         "the payer pays the granted work and the fee"
     );
 }
+
+/// DR-114: every node accepts `block`, and every node holds the same
+/// settlement receipt for `id`. Returns that receipt.
+async fn accepted_everywhere_with_one_receipt(
+    nodes: &mut [TestNode],
+    block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    id: &[u8],
+) -> casper::rust::api::block_api::OfferedSettlementReceipt {
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ),
+            "every validator accepts the block"
+        );
+    }
+    let id = id.to_vec();
+    let receipts = futures::future::join_all(
+        nodes
+            .iter()
+            .map(|node| BlockAPI::find_offered_settlement_receipt(&node.engine_cell, &id)),
+    )
+    .await
+    .into_iter()
+    .map(|receipt| receipt.unwrap().expect("every node holds the receipt"))
+    .collect::<Vec<_>>();
+    assert!(receipts.windows(2).all(|pair| pair[0] == pair[1]));
+    receipts
+        .into_iter()
+        .next()
+        .expect("a node holds the receipt")
+}
+
+/// DR-114: an offered deploy asks an external service. The proposer records
+/// the reply in the block, and every validator replays the block from the
+/// record. A validator's own service answers differently, so a replay that
+/// asked it would reject the block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offered_deploy_records_an_external_reply_and_validators_replay_it() {
+    use rholang::rust::interpreter::openai_service::{OpenAIMockConfig, OpenAIService};
+    use rholang::rust::interpreter::rho_type::RhoString;
+    const ASK: &str = r#"new gpt4(`rho:ai:gpt4`), ack in {
+        gpt4!("hello", *ack) | for (@answer <- ack) { @"answer"!(answer) }
+    }"#;
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    *nodes[0]
+        .runtime_manager
+        .external_services
+        .openai
+        .lock()
+        .await = OpenAIService::Mock(OpenAIMockConfig::single_completion("recorded answer"));
+    let payer = genesis.genesis_vaults[2].clone();
+    let (block, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, ASK.to_string()),
+    )
+    .await;
+    let deploy = block.body.deploys[0]
+        .as_offered()
+        .expect("the block holds an offered deploy");
+    assert!(!deploy.is_failed(), "the call succeeds");
+    let records = deploy
+        .deploy_log()
+        .iter()
+        .filter_map(|event| match event {
+            models::rust::casper::protocol::casper_message::Event::Produce(produce)
+                if !produce.output_value.is_empty() =>
+            {
+                Some(produce.output_value.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [record] = records.as_slice() else {
+        panic!("the block records one reply, found {}", records.len());
+    };
+    let reply = record
+        .iter()
+        .map(|bytes| models::rhoapi::Par::decode(bytes.as_ref()).expect("a record holds pars"))
+        .collect::<Vec<_>>();
+    assert_eq!(reply, vec![RhoString::create_par(
+        "recorded answer".to_owned()
+    )]);
+    let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+    assert!(receipt.phlo_used > 0 && receipt.phlo_used <= receipt.phlo_limit);
+    assert!(receipt.rev_spent > 0 && receipt.rev_spent <= receipt.rev_ceiling);
+    let answer = models::rust::utils::new_gstring_par("answer".to_string(), Vec::new(), false);
+    for node in nodes.iter().skip(1) {
+        assert_eq!(
+            node.runtime_manager
+                .get_data(block.body.state.post_state_hash.clone(), &answer)
+                .await
+                .unwrap(),
+            vec![RhoString::create_par("recorded answer".to_owned())],
+            "the post-state of each validator holds the recorded reply"
+        );
+    }
+}
+
+/// DR-114 (§4.1 option A): a malformed call of a system process depends only
+/// on the deploy's term. The block publishes it as a failed deploy, the payer
+/// pays the granted work and the fee, and every validator accepts the block.
+/// The datum that the deploy produced before the call is rolled back. Before
+/// DR-114 the error was not a user failure, and the proposer rejected the
+/// offer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_malformed_system_call_is_published_as_a_charged_user_failure() {
+    const MALFORMED: &str = r#"new hash(`rho:crypto:sha256Hash`), ack, done in {
+        @"rolled back"!(1) | done!(0) | for (_ <- done) { hash!(42, *ack) }
+    }"#;
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    let (block, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, MALFORMED.to_string()),
+    )
+    .await;
+    assert!(
+        block.body.deploys[0].is_failed(),
+        "the malformed call is published as failed"
+    );
+    let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+    assert!(receipt.phlo_used > 0 && receipt.phlo_used <= receipt.phlo_limit);
+    assert_eq!(receipt.retained_phlo, 0);
+    assert!(receipt.rev_spent > 0 && receipt.rev_spent <= receipt.rev_ceiling);
+    let balance = vault_balance(&nodes, &block.body.state.post_state_hash, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the payer pays the granted work and the fee"
+    );
+    let rolled_back =
+        models::rust::utils::new_gstring_par("rolled back".to_string(), Vec::new(), false);
+    for node in nodes.iter() {
+        assert!(
+            node.runtime_manager
+                .get_data(block.body.state.post_state_hash.clone(), &rolled_back)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the failed deploy leaves no datum"
+        );
+    }
+}

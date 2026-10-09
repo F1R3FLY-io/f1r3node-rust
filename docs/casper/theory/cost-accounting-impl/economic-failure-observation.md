@@ -23,10 +23,12 @@ The match covers every `InterpreterError` variant, so a new variant requires an 
 
 | Class | Typed cases | Economic meaning |
 | --- | --- | --- |
-| User | Explicit abort, undefined method or operator, argument-count mismatch, operand-type mismatch, and invalid condition type | May retain an otherwise authorized charge. |
-| Platform | Storage failures, host-work rejection, internal defects, missing required protobuf fields, decoding failures, external-service failures, and nondeterministic replay failures | Prevent economic publication. |
+| User | Explicit abort, undefined method or operator, argument-count mismatch, operand-type mismatch, invalid condition type, exhaustion of the signed limit (DR-113), and a malformed system-process call in native funded execution (DR-114) | May retain an otherwise authorized charge. |
+| Platform | Storage failures, host-work rejection, internal defects, missing required protobuf fields, decoding failures, external-service failures in legacy execution, and nondeterministic replay failures | Prevent economic publication. |
 | Certificate | Interpreter or RSpace phlogiston exhaustion | Prevent economic publication under the certified sufficient-funding contract. |
 | Unclassified | Mixed-purpose errors such as `ReduceError`, parser errors, substitution failures, and remaining explicitly matched variants | Prevent economic publication until a more precise typed contract exists. |
+
+In native funded execution an external-service failure is not an error. It is a paid `[false, code, message]` reply that play records and replay delivers (DR-114).
 
 Phlogiston exhaustion alone does not establish a certificate defect in legacy execution or a preacceptance trial.
 The certificate interpretation requires accepted execution under a certified sufficient bound.

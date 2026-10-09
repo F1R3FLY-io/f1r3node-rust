@@ -69,7 +69,9 @@ impl ExecutionBackend for NativeExecution {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<ProduceResult, RSpaceError> {
-        self.session
+        // Changed by DR-114: the result is checked before it is returned.
+        let result = self
+            .session
             .inner
             .produce_with_authority(channel, data, persistent, |source| {
                 self.budget
@@ -79,7 +81,24 @@ impl ExecutionBackend for NativeExecution {
                     )
                     .map_err(Into::into)
             })
-            .await
+            .await?;
+        // Added by DR-114 (E2): a returned produce may carry a record only when
+        // it fires a non-persistent call of a recorded process. Otherwise a
+        // block could hand a forged record to the user's code.
+        if let Some((continuation, _, produce)) = result.as_ref() {
+            let recorded_call = !persistent
+                && matches!(
+                    continuation.continuation.tagged_cont.as_ref(),
+                    Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(body_ref))
+                        if crate::rust::interpreter::system_processes::is_native_recorded_op(*body_ref)
+                );
+            if !produce.output_value.is_empty() && !recorded_call {
+                return Err(RSpaceError::InterpreterError(
+                    "native replay found a recorded output on an unrecorded call".to_string(),
+                ));
+            }
+        }
+        Ok(result)
     }
 
     async fn get_joins(&self, channel: Par) -> Result<Vec<Vec<Par>>, RSpaceError> {

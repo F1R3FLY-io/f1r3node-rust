@@ -165,8 +165,40 @@ pub(super) fn journal_limits() -> NativeOperationJournalLimits {
     }
 }
 
+// Changed by DR-114: native funded execution runs stdout instead of banning it.
+// The replacement is `native_funded_runtime_runs_stdout_and_charges_the_call`.
+// #[tokio::test]
+// async fn native_funded_runtime_rejects_external_output_before_dispatch() {
+//     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+//     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+//
+//     use crate::rust::interpreter::test_utils::resources::create_runtimes;
+//
+//     let mut manager = InMemoryStoreManager::new();
+//     let stores = manager.r_space_stores().await.unwrap();
+//     let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+//     runtime
+//         .cost
+//         .set_deploy_signature_funded(b"native-external-guard", Sig::Ground(vec![9]));
+//     let result = runtime
+//         .evaluate_with_native_phlo(
+//             r#"new out(`rho:io:stdout`) in { out!("must not print") }"#,
+//             HashMap::new(),
+//             Blake2b512Random::create_from_bytes(b"native-external-guard"),
+//             None,
+//             config(1_000_000, [0; 4]),
+//         )
+//         .await;
+//     let error = match result {
+//         Ok(evaluation) => format!("{:?}", evaluation.errors),
+//         Err(error) => error.to_string(),
+//     };
+//     assert!(error.contains("native funded execution forbids external service calls"));
+// }
+
+/// DR-114: native funded execution prints in play and charges the call.
 #[tokio::test]
-async fn native_funded_runtime_rejects_external_output_before_dispatch() {
+async fn native_funded_runtime_runs_stdout_and_charges_the_call() {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -177,21 +209,19 @@ async fn native_funded_runtime_rejects_external_output_before_dispatch() {
     let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
     runtime
         .cost
-        .set_deploy_signature_funded(b"native-external-guard", Sig::Ground(vec![9]));
-    let result = runtime
+        .set_deploy_signature_funded(b"native-external-print", Sig::Ground(vec![9]));
+    let evaluation = runtime
         .evaluate_with_native_phlo(
-            r#"new out(`rho:io:stdout`) in { out!("must not print") }"#,
+            r#"new out(`rho:io:stdout`) in { out!("printed in play") }"#,
             HashMap::new(),
-            Blake2b512Random::create_from_bytes(b"native-external-guard"),
+            Blake2b512Random::create_from_bytes(b"native-external-print"),
             None,
-            config(1_000_000, [0; 4]),
+            config(1_000_000, [1; 4]),
         )
-        .await;
-    let error = match result {
-        Ok(evaluation) => format!("{:?}", evaluation.errors),
-        Err(error) => error.to_string(),
-    };
-    assert!(error.contains("native funded execution forbids external service calls"));
+        .await
+        .expect("the native evaluation runs");
+    assert!(evaluation.errors.is_empty(), "{:?}", evaluation.errors);
+    assert!(evaluation.native_phlo_usage.is_some_and(|usage| usage > 0));
 }
 
 pub(super) fn authority(owners: usize) -> CostAuthority {

@@ -215,6 +215,73 @@ fn same_producer(a: &Produce, b: &Produce) -> bool {
     a.hash == b.hash && a.channel_hash == b.channel_hash && a.persistent == b.persistent
 }
 
+/// Added by DR-114 (E1): the record rules of native evidence for one slot. A
+/// produce copy is never failed, and it is deterministic exactly when it
+/// carries no record. A record may sit only on the introduction produce of a
+/// matched produce slot and on the COMM copy of that produce, and the two
+/// copies must be equal. Every other produce copy carries no record. The
+/// `times_repeated` keys follow through `comm_copies`.
+fn record_placement(
+    events: &[Event],
+    host: &HostWorkBudget,
+) -> Result<(), NativeOperationTraceError> {
+    let introduction = match events.first() {
+        Some(Event::IoEvent(IOEvent::Produce(produce))) => Some(produce),
+        _ => None,
+    };
+    let comm = match events.get(1) {
+        Some(Event::Comm(comm)) => Some(comm),
+        _ => None,
+    };
+    let selected = match (introduction, comm) {
+        (Some(introduction), Some(comm)) => comm
+            .produces
+            .iter()
+            .find(|copy| same_producer(introduction, copy)),
+        _ => None,
+    };
+    let copies = introduction
+        .into_iter()
+        .chain(comm.into_iter().flat_map(|comm| comm.produces.iter()));
+    for produce in copies {
+        work(host, HostWorkDimension::VerificationOperations, 1)?;
+        let may_record = selected.is_some()
+            && (introduction.is_some_and(|introduction| std::ptr::eq(introduction, produce))
+                || selected.is_some_and(|selected| std::ptr::eq(selected, produce)));
+        if produce.failed
+            || produce.is_deterministic != produce.output_value.is_empty()
+            || (!may_record && !produce.output_value.is_empty())
+        {
+            return Err(NativeOperationTraceError::Telemetry);
+        }
+    }
+    if let (Some(introduction), Some(selected)) = (introduction, selected) {
+        work(
+            host,
+            HostWorkDimension::VerificationOperations,
+            introduction
+                .output_value
+                .len()
+                .checked_add(selected.output_value.len())
+                .and_then(|count| count.checked_add(1))
+                .ok_or(NativeOperationTraceError::Limit)?,
+        )?;
+        for item in introduction
+            .output_value
+            .iter()
+            .chain(selected.output_value.iter())
+        {
+            work(host, HostWorkDimension::VerificationBytes, item.len())?;
+        }
+        if introduction.is_deterministic != selected.is_deterministic
+            || introduction.output_value != selected.output_value
+        {
+            return Err(NativeOperationTraceError::Telemetry);
+        }
+    }
+    Ok(())
+}
+
 fn comm_copies(comm: &COMM, host: &HostWorkBudget) -> Result<(), NativeOperationTraceError> {
     let entries = comm
         .produces
@@ -508,6 +575,8 @@ impl CheckedNativeOperationJournal {
                 }
                 comm_copies(comm, host)?;
             }
+            // Added by DR-114 (E1).
+            record_placement(events, host)?;
             cursor = end;
         }
         Ok(CheckedNativeOperationTrace {

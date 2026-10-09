@@ -223,8 +223,36 @@ fn trace_rejects_logical_source_mutations_ignored_by_hash_equality() {
     }
 }
 
+// Changed by DR-114 (E1): native evidence no longer accepts a record outside a
+// selected trigger or a failed produce copy. The replacements are
+// `bind_trace_rejects_records_outside_a_selected_trigger` and
+// `bind_trace_requires_equal_record_copies`.
+// #[test]
+// fn introduction_owns_telemetry_even_when_trigger_is_not_selected() {
+//     let (recording, mut rows, _) = trace_fixture();
+//     let comm = Arc::make_mut(&mut Arc::make_mut(&mut rows)[1].comm.as_mut().unwrap().source);
+//     comm.produces = Arc::from([produce(9)]);
+//     comm.repetitions = Arc::from([(produce(9), 0)]);
+//     let mut log = events(&rows);
+//     let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[1] else {
+//         panic!()
+//     };
+//     intro.output_value = vec![b"slot result".to_vec()];
+//     intro.failed = true;
+//     let trace = bind(&recording, rows, log).unwrap();
+//     let IOEvent::Produce(intro) = trace.introduction(1).unwrap() else {
+//         panic!()
+//     };
+//     assert!(intro.failed);
+//     assert!(intro.is_deterministic);
+//     assert_eq!(intro.output_value, [b"slot result".to_vec()]);
+//     assert_ne!(intro.hash, trace.comm(1).unwrap().produces[0].hash);
+// }
+
+/// DR-114 (E1): native evidence rejects a record outside a selected trigger, a
+/// failed produce copy and a deterministic copy that carries a record.
 #[test]
-fn introduction_owns_telemetry_even_when_trigger_is_not_selected() {
+fn bind_trace_rejects_records_outside_a_selected_trigger() {
     let (recording, mut rows, _) = trace_fixture();
     let comm = Arc::make_mut(&mut Arc::make_mut(&mut rows)[1].comm.as_mut().unwrap().source);
     comm.produces = Arc::from([produce(9)]);
@@ -234,26 +262,78 @@ fn introduction_owns_telemetry_even_when_trigger_is_not_selected() {
         panic!()
     };
     intro.output_value = vec![b"slot result".to_vec()];
-    intro.failed = true;
-    let trace = bind(&recording, rows, log).unwrap();
-    let IOEvent::Produce(intro) = trace.introduction(1).unwrap() else {
+    intro.is_deterministic = false;
+    assert!(matches!(
+        bind(&recording, rows, log),
+        Err(NativeOperationTraceError::Telemetry)
+    ));
+
+    let (recording, rows, mut log) = trace_fixture();
+    let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[1] else {
         panic!()
     };
-    assert!(intro.failed);
-    assert!(intro.is_deterministic);
-    assert_eq!(intro.output_value, [b"slot result".to_vec()]);
-    assert_ne!(intro.hash, trace.comm(1).unwrap().produces[0].hash);
+    intro.failed = true;
+    assert!(matches!(
+        bind(&recording, rows, log),
+        Err(NativeOperationTraceError::Telemetry)
+    ));
+
+    let (recording, rows, mut log) = trace_fixture();
+    let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[1] else {
+        panic!()
+    };
+    intro.output_value = vec![vec![7]];
+    assert!(matches!(
+        bind(&recording, rows, log),
+        Err(NativeOperationTraceError::Telemetry)
+    ));
+}
+
+/// DR-114 (E1): the record of a selected trigger is the same in its
+/// introduction, its COMM copy and its repetition key.
+#[test]
+fn bind_trace_requires_equal_record_copies() {
+    let record = vec![b"reply".to_vec()];
+    let with_record = |produce: &mut Produce| {
+        produce.output_value = record.clone();
+        produce.is_deterministic = false;
+    };
+    let (recording, rows, mut log) = trace_fixture();
+    let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[1] else {
+        panic!()
+    };
+    with_record(intro);
+    let Event::Comm(comm) = &mut log[2] else {
+        panic!()
+    };
+    with_record(&mut comm.produces[0]);
+    let (mut key, count) = comm.times_repeated.pop_first().unwrap();
+    with_record(&mut key);
+    comm.times_repeated.insert(key, count);
+    assert!(bind(&recording, rows.clone(), log.clone()).is_ok());
+
+    let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[1] else {
+        panic!()
+    };
+    intro.output_value = vec![b"other".to_vec()];
+    assert!(matches!(
+        bind(&recording, rows, log),
+        Err(NativeOperationTraceError::Telemetry)
+    ));
 }
 
 #[test]
 fn trace_preserves_event_local_metadata_but_rejects_incoherent_comm_copies() {
     for mutation in 0..3 {
         let (recording, rows, mut log) = trace_fixture();
-        let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[1] else {
-            panic!()
-        };
-        intro.output_value = vec![vec![1], vec![]];
-        intro.failed = true;
+        // Changed by DR-114 (E1): an introduction that differs from its COMM
+        // copy, or a failed copy, is no longer accepted. The test keeps the
+        // COMM-copy mutations, with the clean fixture as the positive control.
+        // let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[1] else {
+        //     panic!()
+        // };
+        // intro.output_value = vec![vec![1], vec![]];
+        // intro.failed = true;
         assert!(bind(&recording, rows.clone(), log.clone()).is_ok());
         let Event::Comm(comm) = &mut log[2] else {
             panic!()
@@ -348,22 +428,26 @@ fn identical_comms_keep_separate_occurrence_slots_and_introduction_results() {
             fresh_before: 3,
         },
     ]);
-    let mut log = events(&rows);
-    for (index, result) in [(1, 10), (3, 20)] {
-        let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[index] else {
-            panic!()
-        };
-        intro.output_value = vec![vec![result]];
-    }
+    // Changed by DR-114 (E1): a record must equal the COMM copy of its trigger,
+    // and identical COMMs hold identical copies, so the two slots can no longer
+    // carry different introduction records. The slots stay separate.
+    // let mut log = events(&rows);
+    // for (index, result) in [(1, 10), (3, 20)] {
+    //     let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[index] else {
+    //         panic!()
+    //     };
+    //     intro.output_value = vec![vec![result]];
+    // }
+    let log = events(&rows);
     let trace = bind(&recording, rows, log).unwrap();
     assert_eq!(trace.comm(1), trace.comm(2));
     assert_ne!(trace.journal_index(1), trace.journal_index(2));
-    for (slot, result) in [(1, 10), (2, 20)] {
-        let IOEvent::Produce(intro) = trace.introduction(slot).unwrap() else {
-            panic!()
-        };
-        assert_eq!(intro.output_value, [vec![result]]);
-    }
+    // for (slot, result) in [(1, 10), (2, 20)] {
+    //     let IOEvent::Produce(intro) = trace.introduction(slot).unwrap() else {
+    //         panic!()
+    //     };
+    //     assert_eq!(intro.output_value, [vec![result]]);
+    // }
 }
 
 #[test]

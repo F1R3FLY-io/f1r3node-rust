@@ -674,6 +674,16 @@ impl RuntimeBudget {
         }
     }
 
+    /// Added by DR-114: the number of recorded RSpace operations, which bounds
+    /// the event log that a recorded reply's produce update scans.
+    pub(crate) fn native_operation_count(&self) -> Option<usize> {
+        let state = self.authority_state.lock().expect("authority state");
+        state
+            .native
+            .as_ref()
+            .map(|native| native.operations.rows.len())
+    }
+
     pub fn native_operation_recording(
         &self,
     ) -> Result<Option<Arc<[NativeOperationRecord]>>, InterpreterError> {

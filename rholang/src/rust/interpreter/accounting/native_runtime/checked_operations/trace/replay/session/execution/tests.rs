@@ -28,6 +28,8 @@ use crate::rust::interpreter::rho_runtime::{create_native_replay_env, create_rho
 use crate::rust::interpreter::system_processes::Definition;
 
 mod funding;
+// Added by DR-114: recorded external-service calls in native execution.
+mod recorded_calls;
 use funding::FundingFixture;
 
 fn extra_processes() -> Vec<Definition> {

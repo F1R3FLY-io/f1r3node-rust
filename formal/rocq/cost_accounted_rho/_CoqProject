@@ -504,6 +504,7 @@ theories/PayloadSortPersistence.v
 theories/SettlementMergeVisibility.v
 theories/FailedSettlementMergeIndex.v
 theories/SignedLimitExhaustion.v
+theories/RecordedExternalReplay.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v
 theories/OrderedStackMaterialization.v

@@ -1,0 +1,103 @@
+' DR-114: native funded execution records and replays external-service replies.
+' Play on the proposer calls the service once and records the reply on the
+' triggering produce. Every replay (the proposer's self-certification and each
+' validator) checks the record placement and delivers the record. No replay
+' calls a service.
+'
+' Source of truth for DR-114 in cost-accounting-decision-records.md.
+'
+' Colours (palette.iuml, one concept = one colour):
+'   deployer                 : surface (salmon)
+'   reducer / dispatch       : process (lavender)
+'   recorded-call driver     : control (amber)
+'   external service         : delta (orange)
+'   native meter             : gate (teal)
+'   block / evidence         : pool (green)
+'   replay checks            : capability (indigo)
+' Arrows: charge = debit red, record / delivery = credit green,
+'         rejection = debit red dashed, plain flow = neutral.
+'
+' Render:  ./render.sh native-external-record-replay-sequence.puml
+
+@startuml native-external-record-replay-sequence
+!include palette.iuml
+!theme plain
+$ca_base_skin()
+
+skinparam sequence {
+  ArrowColor              $ca_neutral
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  GroupBorderColor        #333333
+  GroupHeaderFontColor    #222222
+  DividerBackgroundColor  $ca_note_grey
+}
+
+autonumber
+
+actor       "Deployer"                                as D   $ca_surface
+participant "Native play\nreducer and dispatch"       as P   $ca_process
+participant "Recorded-call driver\nnative_recorded_call" as C $ca_control
+participant "External service\n(GPT-4, Ollama, gRPC, Chroma)" as S $ca_delta
+participant "Native meter\nRuntimeBudget"             as M   $ca_gate
+database    "Block\ndeploy log and evidence"          as B   $ca_pool
+participant "Replay checks\nE1, E2, completeness"     as V   $ca_capability
+participant "Native replay\nreducer and driver"       as R   $ca_process
+
+== Play on the proposer ==
+D -> P : offered deploy with  gpt4!(prompt, *ack)
+P -[$ca_debit]> M : charge the call: produce introduction and the COMM
+alt persistent send  gpt4!!(...)  (P2)
+  P -[$ca_debit]> M : SystemProcessShapeError, a charged user failure\nbefore any service call
+else linear send
+  P -> C : dispatch the recorded call
+  C -> C : unapply; take the request and the ack
+  alt the request has the wrong content
+    C -> C : reply = [false, "EXT_BAD_ARG", "gpt4: invalid argument"]\nno service call
+  else well-formed request
+    C -[$ca_debit]> M : reserve the record scan (host work)
+    C -> S : one call
+    S --> C : answer, or a failure
+    alt the answer fits the record room
+      C -[$ca_debit]> M : take room: encoded length + 64 for each item
+      C -> C : reply = the answer (dev's bare value)
+    else the room is full
+      C -> C : reply = [false, "EXT_OUTPUT_TOO_LARGE", ...]
+    else the service failed or is disabled
+      C -> C : reply = [false, "EXT_FAILED", ...]
+    end
+  end
+  C -[$ca_debit]> M : produce the reply on the ack:\nreply introduction and its COMM are charged
+  alt the signed limit denies the reply (G-A)
+    C -[$ca_credit]> P : keep the record on the trigger,\nthen raise SignedLimitExhausted (DR-113)
+  else granted
+    C -[$ca_credit]> P : Ok(reply)
+  end
+  P -[$ca_credit]> P : update_produce marks the trigger produce:\noutput_value = reply, is_deterministic = false
+end
+P -[$ca_credit]> B : deploy log: the record on the introduction\nand on the COMM copy; native evidence
+
+== Replay: proposer self-certification and every validator ==
+B -> V : bind_trace
+V -> V : E1: a record sits only on the trigger of a matched slot,\nits copies are equal, and no copy is failed
+alt E1 fails
+  V -[$ca_debit]-> B : reject the evidence (Telemetry)
+end
+V -> R : evaluate the term with ExternalServices::noop()
+R -> R : replay produce on the gpt4 channel
+R -> V : E2: a returned produce with a record must fire\na linear call of a recorded process
+alt E2 fails
+  V -[$ca_debit]-> B : reject: recorded output on an unrecorded call
+end
+R -[$ca_credit]> R : reply = the record; the service is never called
+R -[$ca_debit]> M : produce the reply on the ack: the same charges as play
+R -> V : exact compare of the produce update with the record
+V -> V : check_complete: every record is used once
+V -[$ca_credit]> B : equal phlo, receipts and post-state root
+
+note over S
+  Effects outside the checkpoint (gRPC messages, Chroma writes,
+  audio files, printed lines) are never undone. A deploy can be
+  played more than once, so the bound is one call per play.
+end note
+@enduml

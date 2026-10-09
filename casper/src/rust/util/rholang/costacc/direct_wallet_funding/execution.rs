@@ -204,6 +204,21 @@ pub use producer::{
 mod family_selection;
 pub(crate) use family_selection::select_rooted_native_family;
 
+/// Added by DR-114: the bytes of external-service replies that one offered
+/// play may record. The replay telemetry and the clone-byte check of the
+/// deploy log count a record three times, and the replay evidence counts it
+/// twice, so the room is the smallest share of those existing caps. It adds
+/// no policy parameter, and a room that does not fit is zero (fail closed).
+fn native_record_room() -> u64 {
+    let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
+    let replay =
+        crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_replay_limits();
+    let room = (replay.trace.telemetry_bytes / 3)
+        .min(protocol.deploy_log_bytes / 3)
+        .min(protocol.evidence.total_bytes / 2);
+    u64::try_from(room).unwrap_or(0)
+}
+
 fn check_execution_identity(authorized: &[u8], requested: &[u8]) -> Result<(), CasperError> {
     if authorized != requested {
         return Err(CasperError::RuntimeError(
@@ -330,9 +345,17 @@ impl RuntimeManager {
             .adopted()
             .bind_execution_contract(checked.controls(), &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
         let host_work = context.host_work.clone();
-        let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work);
+        // Changed by DR-114: play records external-service replies within a
+        // room, and the play runtime calls the node's services.
+        // let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work);
+        // let mut runtime = RuntimeOps::new(
+        //     self.spawn_offered_runtime(offered_grant_issue_call_limits(), host_work.clone())
+        //         .await?,
+        // );
+        let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work)
+            .with_record_room(native_record_room());
         let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(offered_grant_issue_call_limits(), host_work.clone())
+            self.spawn_offered_play_runtime(offered_grant_issue_call_limits(), host_work.clone())
                 .await?,
         );
         let block_data = context.block_data.clone();
@@ -514,5 +537,20 @@ mod tests {
                 root == requested_root && identity == requested_identity,
             );
         }
+    }
+
+    /// DR-114: the record room fits every copy of the records in each carrier
+    /// (Rocq `RecordedExternalReplay.charge_covers_record`).
+    #[test]
+    fn native_record_room_fits_every_record_copy() {
+        let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
+        let replay =
+            crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_replay_limits(
+            );
+        let room = usize::try_from(native_record_room()).expect("the room fits a usize");
+        assert!(room > 0);
+        assert!(3 * room <= replay.trace.telemetry_bytes);
+        assert!(3 * room <= protocol.deploy_log_bytes);
+        assert!(2 * room <= protocol.evidence.total_bytes);
     }
 }

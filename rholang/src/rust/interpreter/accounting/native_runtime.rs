@@ -54,6 +54,12 @@ pub struct NativeRuntimeConfig {
     generation: Arc<()>,
     recording: NativeBudgetRecorder,
     operations: operations::NativeOperationRecorder,
+    /// Added by DR-114: the bytes of external-service replies that play may
+    /// record. The default is 0, so a configuration without a room records
+    /// no successful reply (fail closed).
+    record_room: u64,
+    /// Added by DR-114: the reply bytes recorded so far.
+    record_used: u64,
 }
 
 impl NativeRuntimeConfig {
@@ -73,7 +79,15 @@ impl NativeRuntimeConfig {
             generation: Arc::new(()),
             recording: NativeBudgetRecorder::default(),
             operations: operations::NativeOperationRecorder::default(),
+            record_room: 0,
+            record_used: 0,
         }
+    }
+
+    /// Added by DR-114: the room for recorded external-service replies.
+    pub fn with_record_room(mut self, room: u64) -> Self {
+        self.record_room = room;
+        self
     }
 }
 
@@ -84,6 +98,74 @@ impl RuntimeBudget {
             .expect("authority state")
             .native
             .is_some()
+    }
+
+    /// Added by DR-114: takes `bytes` of the record room for one recorded
+    /// reply in play. Replay and an exhausted room take nothing.
+    pub(crate) fn take_native_record_room(&self, bytes: u64) -> bool {
+        let mut state = self.authority_state.lock().expect("authority state");
+        let Some(native) = state.native.as_mut().filter(|native| !native.replay_bound) else {
+            return false;
+        };
+        match native.record_used.checked_add(bytes) {
+            Some(used) if used <= native.record_room => {
+                native.record_used = used;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Added by DR-114: prepays the formatting of a printed message in play.
+    /// One inspection gives the scanned bytes S and the nesting depth D. The
+    /// pretty printer then writes at most 2·S·(D+1) bytes of indented text and
+    /// compares at most (D+1) times as many. Replay formats nothing.
+    pub(crate) fn reserve_native_print(
+        &self,
+        message: &models::rhoapi::Par,
+    ) -> Result<(), InterpreterError> {
+        let host = self.native_host_work().ok_or_else(|| {
+            InterpreterError::BugFoundError("native print has no host-work budget".to_string())
+        })?;
+        let walk = clone_backing::inspect_blocks_depth(message, &host)?;
+        let levels = walk
+            .depth
+            .checked_add(1)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let written = walk
+            .scanned
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_mul(levels))
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let compared = written
+            .checked_mul(levels)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        work(&host, HostWorkDimension::SearchStateBytes, written)?;
+        work(&host, HostWorkDimension::VerificationBytes, compared)
+    }
+
+    /// Added by DR-114: prepays the event-log scan that records a reply on its
+    /// produce in play. The log holds at most four entries per recorded
+    /// operation, plus the current one.
+    pub(crate) fn reserve_native_record_scan(&self) -> Result<(), InterpreterError> {
+        let host = self.native_host_work().ok_or_else(|| {
+            InterpreterError::BugFoundError("native record has no host-work budget".to_string())
+        })?;
+        let operations = self.native_operation_count().ok_or_else(|| {
+            InterpreterError::BugFoundError("native record has no operation recorder".to_string())
+        })?;
+        let entries = operations
+            .checked_mul(4)
+            .and_then(|entries| entries.checked_add(4))
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        work(&host, HostWorkDimension::VerificationOperations, entries)?;
+        work(
+            &host,
+            HostWorkDimension::VerificationBytes,
+            entries
+                .checked_mul(32)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+        )
     }
 
     pub(crate) fn native_host_work(&self) -> Option<HostWorkBudget> {

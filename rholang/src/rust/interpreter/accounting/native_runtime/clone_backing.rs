@@ -100,6 +100,15 @@ pub(crate) fn inspect_blocks<T: CloneBacking>(
 ) -> Result<(), InterpreterError> {
     backing::inspect_blocks(value, &meter(host)).map_err(|_| InterpreterError::HostWorkRejected)
 }
+/// Added by DR-114: a block-mode inspection that also returns the scanned
+/// bytes and the nesting depth of `value`.
+pub(crate) fn inspect_blocks_depth<T: CloneBacking>(
+    value: &T,
+    host: &HostWorkBudget,
+) -> Result<backing::BlockWalk, InterpreterError> {
+    backing::inspect_blocks_depth(value, &meter(host))
+        .map_err(|_| InterpreterError::HostWorkRejected)
+}
 pub(crate) fn reserve_blocks<T: CloneBacking>(
     value: &T,
     host: &HostWorkBudget,

@@ -631,6 +631,24 @@ impl ReducerCore {
                         Ok(dispatch_type)
                     }
 
+                    // Added by DR-114 (gap G-A): in native funded execution a
+                    // recorded reply whose produce failed keeps its record, so
+                    // replay produces the same reply and meets the same denial.
+                    // The cause is raised as is, so a signed-limit exhaustion
+                    // stays a charged user failure (DR-113).
+                    DispatchType::FailedNonDeterministicCall(
+                        InterpreterError::ProduceFailureWithOutput {
+                            cause,
+                            output_not_produced,
+                        },
+                    ) if self.metering.budget().native_execution_active() => {
+                        let recorded = produce_event
+                            .clone()
+                            .mark_as_non_deterministic(output_not_produced);
+                        self.space.update_produce(&produce_event, recorded).await?;
+                        Err(*cause)
+                    }
+
                     DispatchType::FailedNonDeterministicCall(error) => {
                         // Mark the produce as failed for replay safety
                         let failed_produce = produce_event.with_error();
@@ -771,6 +789,22 @@ impl ReducerCore {
         match res {
             Some((continuation, data_list, peek)) => {
                 if persistent {
+                    // Added by DR-114 (P2): a recorded external-service call is
+                    // one linear request with one reply. A persistent send to
+                    // one would call the service again on every iteration, and
+                    // no iteration records its reply.
+                    if let Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(
+                        body_ref,
+                    )) = continuation.tagged_cont.as_ref()
+                    {
+                        if super::system_processes::is_native_recorded_op(*body_ref)
+                            && self.metering.budget().native_execution_active()
+                        {
+                            return Err(InterpreterError::SystemProcessShapeError(
+                                "a persistent send to a recorded system process".to_string(),
+                            ));
+                        }
+                    }
                     // dispatchAndRun
                     let self_clone1 = self.with_metering_child(0);
                     let self_clone2 = self.with_metering_child(1);

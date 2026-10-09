@@ -383,6 +383,8 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
 
         // Bad arguments to a system process (e.g. rho:io:stdout) — client error
         IllegalArgumentError(_) => (S::BAD_REQUEST, "illegal_argument", ie.to_string()),
+        // Added by DR-114: the same client error. Only its charge class differs.
+        SystemProcessShapeError(_) => (S::BAD_REQUEST, "illegal_argument", ie.to_string()),
 
         // === 422 Unprocessable Entity — term valid, execution failed ===
         OutOfPhlogistonsError => (
@@ -925,6 +927,17 @@ mod tests {
         fn interpreter_illegal_argument_is_bad_request() {
             let (status, kind) = classify(CasperError::InterpreterError(
                 InterpreterError::IllegalArgumentError("bad arg".to_string()),
+            ));
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(kind, "illegal_argument");
+        }
+
+        /// DR-114: a malformed system-process call in native funded execution
+        /// is the same client error. Only its charge class differs.
+        #[test]
+        fn interpreter_system_process_shape_error_is_bad_request() {
+            let (status, kind) = classify(CasperError::InterpreterError(
+                InterpreterError::SystemProcessShapeError("bad call".to_string()),
             ));
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert_eq!(kind, "illegal_argument");

@@ -4443,6 +4443,10 @@ entry of the candidate.
 **Amendment (DR-113, 2026-10-09).** Exhaustion of the signed limit is a
 classified user failure, so it no longer reaches the candidate rejection.
 
+**Amendment (DR-114, 2026-10-09).** An external-service call and a malformed
+system-process call no longer reach the candidate rejection. The call is
+recorded and replayed, and a shape error is a classified user failure.
+
 **Cross-refs.** P1 `sec:deploy-boundaries`. DR-63, DR-65. Leaves
 `ofp-1-baseline-liveness` and `ofp-1-baseline-verify-quarantine`. Leaf
 `ofp-3-rejection-status` exposes the status entry through the API.
@@ -11806,6 +11810,335 @@ comes before DR-114 ("DR-64, then the ban removal").
 
 **Cross-refs.** DR-64, DR-72, DR-102, DR-114, DR-115.
 `cost-accounting-impl/economic-failure-policy-decisions.md`.
+
+## DR-114 — Native funded execution records and replays external-service replies
+
+**Status.** Implemented 2026-10-09 for epic 8946 (pgmcp item 10904). By user
+decision it follows DR-115 ("Fix R1 first") and DR-113 ("DR-64, then the ban
+removal").
+
+**Terms.**
+
+- P1 is `cost-accounted-rho.tex`, and PM is
+  `prediction_markets_cost_accounted_rho_20260629.tex`. Both are at
+  publications revision `0bf7817`.
+- A *recorded process* is one of the twelve processes in
+  `is_native_recorded_op`. They are GPT-4, DALL-E 3, text-to-audio, three
+  Ollama processes, gRPC tell and five Chroma processes.
+- A *record* is the reply that play stores in `Produce.output_value` of the
+  produce that triggers a recorded call.
+- The *record room* is the number of reply bytes that one deploy may record.
+
+**Context.**
+
+- Two bans stopped every protocol-6 user deploy from using 16 system
+  processes:
+  1. `Definition::to_dispatch_table` returned
+     `ReduceError("native funded execution forbids external service calls")`
+     for the twelve recorded processes and for stdout, stderr and their
+     acknowledged forms. Commit `068d51c65` added the list with no decision
+     record. Its only written basis was
+     `offered-funded-production-integration-proposal.md:92`.
+  2. `spawn_offered_runtime` gave offered play `ExternalServices::noop()`.
+     GPT-4 then recorded an empty answer as a success, and gRPC and Chroma
+     faked success.
+- The ban error was unclassified. The producer rejected the candidate unpaid,
+  and DR-72 quarantined it. The proposer did the work for free.
+- 68 tracked Rholang files use `rho:io:stdout`. UC-CA-064, UC-CA-112,
+  UC-CA-118, TM-CA-026 and TM-CA-055 require replay evidence, not a ban.
+- No publication forbids a service call. PM:354-389 ("Why replicated
+  determinism is the wrong target") prescribes the design:
+  - A replaying validator must not dial the service. It must see the value
+    that the proposer saw.
+  - For a nondeterministic service the invariant is a non-repudiable
+    commitment: the proposer signs the block that carries the interaction.
+- P1:1295-1315 ("Cross-party service invocation") makes the client pay for
+  the call. P1:1636-1664 runs system contracts under the free signature
+  $`s_0`$.
+- The File I/O FIPS specifies oracle mode. The node that runs the deploy owns
+  the effect, and a native primitive echoes the captured output on replay.
+- The implementation map found three gaps in design v2:
+  - G-A. A reply that the signed limit denied (DR-113) left no record. Replay
+    then produced an empty reply and failed closed, so the deploy was unpaid.
+  - G-B. A persistent send to a recorded process never recorded. The
+    persistent branch drops the dispatch result, so play called the service
+    once for each iteration until exhaustion.
+  - G-C. The record placement check changes three pinned trace tests.
+- The map also corrected design v2 on the reply closure of `ContractCall`
+  (W6):
+  - The closure dispatches through a table with no entries, so it cannot run
+    a system process.
+  - A user holds only a write-only bundle of a system channel, and only
+    `eval_send` removes a bundle.
+  - Thus no reply fires a recorded process, and the closure needs no record.
+
+**User decisions.**
+
+| ID | Verbatim answer | Effect |
+| --- | --- | --- |
+| U1 | "Unban stdout/stderr + recorded outputs" | No process stays banned. |
+| U2 | "Regardless, we cannot have that list!" and "we cannot, however, ban them!" | The list and the no-op services of offered play go. |
+| U3 | "it'll likely have to be a record-and-replay design ... you can get two different responses from the same request parameters" | Play calls a service once and records the reply. Replay returns the record and never calls. |
+| U4 | "Or we can retrofit the legacy behavior into the cost-accounting model for them if their intended behavior cannot be deduced" | A case that the sources do not decide keeps dev's behavior inside the cost model. |
+| U5 | "It should be the same as with the File I/O API, right? I imagine it is just the proposer, but please verify." | Verified: oracle mode. Chroma `get_meta` and the three Chroma writes are recorded and run in play only. |
+| U6 | "Model it like the File I/O API. If that API does not model the necessary behavior, then go with your recommendation." | File I/O does not model exhaustion, so DR-113 came first. |
+| U7 | "Print in play only (Recommended)" | stdout and stderr format and print in play only. |
+| U8 | "Replies, success unchanged (Recommended)" | A failure is a paid `[false, code, message]` reply. A success keeps dev's bare value. This is the explicit approval that the failure policy requires. |
+| U9 | "DR-64, then the ban removal (Recommended)" and "Fix R1 first (Recommended)" | DR-115, then DR-113, then this record. |
+| U10 | "Charged user failure (Recommended)" | A system-process shape error is a classified user failure (option A). |
+
+U10 answered a question about a wrong arity or call shape of an
+external-service call. The map then found that a wrong-arity send never
+fires: each install binds exactly its arity, and the matcher rejects a length
+mismatch (W8). So the typed variant takes effect in two places:
+
+- an argument error of any system process in native funded execution, for
+  example `sha256Hash!(42, *ack)`;
+- a persistent send to a recorded process (P2), because a recorded call is
+  one linear request with one reply.
+
+Both places follow from the approved variant. Both are flagged to the user.
+
+**Decision.**
+
+1. The forbidden list and its branch stay as comments with the reason. In
+   native funded execution the dispatcher sends the 16 processes to a native
+   driver. The legacy path runs dev's handlers, `non_deterministic_ops()` and
+   dev's failure marking unchanged.
+2. Offered play gets the services of the node
+   (`RuntimeManager::spawn_offered_play_runtime`). Every replay keeps
+   `ExternalServices::noop()`, so no replay can call a service.
+3. The 16 processes take these paths:
+
+   | Process | Class | Native play | Native replay |
+   | --- | --- | --- | --- |
+   | `stdout`, `stderr` | deterministic, no reply | prepay the formatting, format, print | no format, no print |
+   | `stdoutAck`, `stderrAck` | deterministic, `Nil` reply | as above, then `Nil` on the ack | `Nil` on the ack |
+   | GPT-4, DALL-E 3, text-to-audio, Ollama chat, generate and models, Chroma query | recorded (dev's set) | one call, the room check, the record, the reply | the record on the ack, no call |
+   | gRPC tell | recorded, no ack | one call, the record (`[Nil]` or a failure) | the record, no call |
+   | Chroma `get_meta`, create, upsert, delete | recorded (native only, U5) | one call, the record, the reply | the record on the ack, no call |
+
+4. A failure is a reply, never an abort (U8). The reply is
+   `[false, code, message]`, built by `io::response::err`:
+
+   | Failure | Code | Message |
+   | --- | --- | --- |
+   | An argument with the wrong content in a well-formed call | `EXT_BAD_ARG` | `"<process>: invalid argument"` |
+   | A service error or a disabled Ollama service | `EXT_FAILED` | `"<process>: external service failed"` |
+   | A success that does not fit the record room | `EXT_OUTPUT_TOO_LARGE` | `"<process>: external output exceeds the record room"` |
+
+   The message is fixed text. It never carries the provider's text, because
+   a provider error can echo a masked key. Disabled OpenAI, gRPC and Chroma
+   services keep dev's empty successes (U4). A disabled Ollama service fails,
+   so it gives `EXT_FAILED`.
+5. The record room bounds the bytes that a service controls. Let $`T`$ be
+   the replay telemetry limit, $`L`$ the deploy-log byte limit and $`E`$ the
+   evidence byte limit. Casper's `native_record_room` sets
+
+   ```math
+   \mathrm{room} = \min\left(\left\lfloor \frac{T}{3} \right\rfloor,\ \left\lfloor \frac{L}{3} \right\rfloor,\ \left\lfloor \frac{E}{2} \right\rfloor\right) = \min(2796202,\ 2796202,\ 2097152) = 2097152 \text{ bytes.}
+   ```
+
+   - The trace telemetry counts three copies of a record: the introduction,
+     the COMM copy and the repetition key.
+   - The offered deploy log counts two copies in its byte check and three in
+     its clone-byte check.
+   - The replay evidence counts two copies with 64 bytes for each item.
+   - A success reply $`(p_1, \ldots, p_k)`$ takes
+     $`\sum_{j=1}^{k} (|p_j| + 64)`$ bytes of room, where $`|p|`$ is the
+     encoded length. Replay takes no room.
+   - The room adds no policy parameter, and its default is zero, so a
+     configuration without a room records no success (fail closed).
+   - A failure reply takes no room. Its size is small and fixed, and the meter
+     charges it as a reply produce. The general deploy-log limits bound its
+     count, as they bound any other datum.
+6. The evidence rules check every record:
+   - E1 (`record_placement`, in `bind_trace`): a produce copy is never
+     failed. A copy is deterministic exactly when it carries no record. A
+     record sits only on the introduction of a matched produce slot and on
+     the COMM copy that the slot selected. The two copies are equal. A
+     violation is `Telemetry`.
+   - E2 (`NativeExecution::produce`, in native replay): a returned produce
+     may carry a record only when it fires a linear call of a recorded
+     process. Otherwise replay fails with "native replay found a recorded
+     output on an unrecorded call". E2 stops a block from handing a forged
+     record to the user's code.
+   - The replay session already compares every produce update exactly, and
+     `check_complete` rejects a record that replay did not use.
+7. G-A: when the signed limit denies a reply, the driver returns
+   `ProduceFailureWithOutput` with the encoded reply. The reducer keeps the
+   record on the trigger and raises the cause. Replay produces the same reply
+   and meets the same denial, so the deploy is a charged user failure
+   (DR-113).
+8. P2: a persistent send to a recorded process raises
+   `SystemProcessShapeError` before any service call.
+9. Option A (U10): in native funded execution the dispatcher maps an
+   `IllegalArgumentError` of any system process to
+   `SystemProcessShapeError`. The classification puts it in the user class,
+   and the node HTTP handler maps it to 400 `illegal_argument`.
+
+**Algorithm.** One recorded call, in the literate form of
+`SystemProcesses::native_recorded_call`. First the driver reads the process
+signature and splits the call. Then it takes one of two branches. Replay
+delivers the record. Play calls the service once and turns every outcome into
+one reply. Last, the driver produces the reply on the ack.
+
+```text
+procedure NATIVE-RECORDED-CALL(process, arguments, budget)
+  (name, arity, acknowledged) ← SIGNATURE(process)
+  (produce, replaying, record, values) ← UNAPPLY(arguments)
+  if |values| ≠ arity then
+    raise IllegalArgumentError(name)        ▹ the dispatcher maps it to SystemProcessShapeError
+  (request, ack) ← SPLIT(values, acknowledged)
+  if replaying then
+    if record = [] then raise BugFound("native replay of <name> has no recorded output")
+    reply ← record                          ▹ the service is never called
+  else
+    RESERVE-RECORD-SCAN(budget)             ▹ host work for update_produce
+    case SERVICE-CALL(process, request) of
+      Reply(r):    if TAKE-ROOM(budget, Σ (|p| + 64) over r)
+                   then reply ← r
+                   else reply ← FAILURE(name, EXT_OUTPUT_TOO_LARGE)
+      BadArgument: reply ← FAILURE(name, EXT_BAD_ARG)
+      Failed:      reply ← FAILURE(name, EXT_FAILED)
+  if acknowledged then
+    if PRODUCE(reply, ack) fails with cause then
+      raise ProduceFailureWithOutput(cause, ENCODE(reply))   ▹ G-A keeps the record
+  return reply                              ▹ the dispatcher records it on the trigger
+```
+
+The dispatcher writes the returned reply into the trigger produce with
+`update_produce`. That call replaces the introduction, the COMM copy and the
+repetition key together, so E1 sees equal copies.
+
+**Charging.**
+
+- The deploy pays the call COMM, the call datum introduction, the reply
+  introduction and the reply COMM, as for any user COMM. The handler, the
+  service work and the formatting carry no phlo, because system processes run
+  under $`s_0`$.
+- Phlo agrees by construction. `comm_charge` reads only the matched data and
+  the channel count. The reply introduction reads the ack channel and the
+  reply datum. Neither reads `output_value`.
+- Host work in play, with $`S`$ the scanned bytes of the message, $`D`$ its
+  block depth and $`n`$ the native operations so far:
+
+  | Reservation | Dimension | Units |
+  | --- | --- | --- |
+  | Print formatting (`reserve_native_print`) | SearchStateBytes | $`2S(D+1)`$ |
+  | Print formatting (`reserve_native_print`) | VerificationBytes | $`2S(D+1)^2`$ |
+  | Record scan (`reserve_native_record_scan`) | VerificationOperations | $`4n + 4`$ |
+  | Record scan (`reserve_native_record_scan`) | VerificationBytes | $`32(4n + 4)`$ |
+
+**Effects outside the checkpoint.**
+
+- No replay calls a service. This holds in oracle mode, which U5 selects.
+- One dispatched call COMM causes at most one service call in one play. A
+  deploy can run in play more than once: after a failed proposal attempt,
+  after an orphaned block or on another proposer. Thus the bound is one call
+  per play.
+- Nothing external is undone on rejection or orphaning: gRPC messages,
+  Chroma writes, audio files and printed lines stay. The rollback rows of the
+  failure policy cover tuplespace state only.
+- Only a record in a finalized block is a consensus fact. The proposer is
+  accountable for it (PM:377-389).
+- The remaining unpaid path is a host-work rejection after calls. It is a
+  platform failure, as the failure policy requires.
+
+**Interactions.**
+
+- DR-64 and DR-113: a reply that the signed limit denies is a charged user
+  failure (G-A).
+- DR-72: these calls no longer reach the candidate rejection.
+- DR-100: replay charges stay independent of the schedule. A room race in
+  play is a recorded outcome, and replay never recomputes it.
+- DR-102: no code depends on the role. Every validator gives the same
+  receipt.
+
+**Scope and activation.**
+
+- The legacy path is byte-identical. The Casper change is one function, the
+  play spawn in `execution.rs` and the room function.
+- E1 and E2 make native evidence stricter. Protocol 6 is unreleased, so the
+  change needs a fresh protocol-6 genesis and no migration.
+- Every node of a network needs the same `chromadb` feature build, because an
+  unknown process is a `BugFoundError`.
+
+**Residual risks.**
+
+- The phlo price does not cover a provider's money cost.
+- OpenAI has no timeout, so a provider that hangs stalls proposals.
+- Prompts and replies are public in the block.
+- The formatting bound is conservative. A deep print can meet
+  `HostWorkRejected` and go unpaid.
+- This record reports these dev defects and does not fix them:
+  - Legacy persistent sends never record.
+  - Legacy Chroma `get_meta` and the Chroma writes run in replay.
+  - `openai_service.rs` can panic on `choices[0]`.
+  - Reply buffering has no bound.
+  - The temporary dispatcher has an empty table.
+
+**Verification.**
+
+- Failing first: on the code before this record, the end-to-end tests
+  `offered_deploy_records_an_external_reply_and_validators_replay_it` and
+  `a_malformed_system_call_is_published_as_a_charged_user_failure` fail with
+  "the offer's block is not created". The recorded rejection is "native
+  offered execution has non-user failure".
+- With this record both tests pass:
+  - Node 0 asks a mocked GPT-4. The trigger produce in the block log carries
+    the reply. The three validators replay the block with no-op services and
+    give equal receipts. The post-state of each validator holds the recorded
+    reply.
+  - The malformed call is published as failed. The payer pays exactly its
+    `rev_spent`. The datum that the deploy produced first is rolled back.
+- `recorded_calls.rs` plays and replays each case with different services:
+  - A GPT-4 reply and a gRPC tell replay from the record. Only play reaches
+    the gRPC client.
+  - The three failure replies and a disabled Ollama service replay.
+  - A reply past the signed limit keeps its record (G-A).
+  - A persistent send (P2) and a malformed system call (option A) are
+    charged user failures.
+  - Replay rejects a forged record on a COMM of the user's contract (E2).
+  - Replay rejects a recorded call whose record is removed from every copy.
+  - Prints carry no record, and the recorded set holds dev's set.
+- The property test `parallel_recorded_calls_replay_call_by_call` (64 cases)
+  runs one to four parallel calls under a generated room. Each call gets one
+  reply, and the successes fill the room exactly. Replay gives each call the
+  reply that play gave it.
+- `native_record_room_fits_every_record_copy` checks the Casper room against
+  the copy counts of the three carriers.
+- The E1 tests reject a record outside a selected trigger, a failed copy and
+  unequal copies. `native_funded_runtime_runs_stdout_and_charges_the_call`
+  replaces the pin of the ban.
+- Mutation controls on the committed-caps tree. Each mutation fails exactly
+  its tests, and the other tests pass:
+
+  | Mutation | Failing tests | Observed cause |
+  | --- | --- | --- |
+  | E2 and P2 off | the forged-record test and the P2 test | replay accepts the forged record (`Ok(())`), and the persistent send leaves the native recording incomplete |
+  | G-A off | the signed-limit test | the trace does not bind (`Telemetry`) |
+  | Replay calls the service | both replay tests, the failure-reply test and the signed-limit test | replay diverges from play |
+
+- Rocq `RecordedExternalReplay.v` uses the standard library only and no
+  axiom. It proves 14 theorems. Six of them are negative controls: a live
+  replay, a first-in-first-out replay and admission without the room check.
+  The other three controls are an abort on a failed service, a replay
+  without the placement check and a shared call identity. Each control breaks
+  a required property. The proof gate passes in cost-accounting mode with 275
+  modules and 3119 closed assumption queries.
+- Suites: rholang and rspace++ pass 4113 of 4113. The property test and the
+  missing-record test came after that run. A focused run of 35 tests on the
+  final tree, which includes every DR-114 test, passes. On casper, block-storage and the node HTTP
+  handlers, the provisional caps pass 1939 of 1943 and the committed caps
+  pass 1938 of 1944. All failures are the known ones of DR-116.
+
+![The DR-114 record-and-replay sequence. Native play on the proposer charges the call, runs the recorded-call driver, calls the external service once and records the reply on the trigger produce. A persistent send, an argument error, a full room, a service failure and a denied reply each take their own branch. Replay checks the record placement (E1) and the recorded call (E2). It delivers the record with no-op services and compares the charges, the receipts and the post-state root.](diagrams/native-external-record-replay-sequence.svg)
+
+**Cross-refs.** DR-64, DR-72, DR-100, DR-102, DR-113.
+`cost-accounting-impl/economic-failure-policy-decisions.md`,
+`cost-accounting-impl/offered-funded-production-integration-proposal.md`,
+`cost-accounting-impl/economic-failure-observation.md`.
 
 ## DR-115 — A failed offered deploy keeps its committed settlement in the merge index
 

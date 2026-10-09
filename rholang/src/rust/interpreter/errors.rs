@@ -100,6 +100,11 @@ pub enum InterpreterError {
     OllamaError(String),
     ChromaDBError(String),
     IllegalArgumentError(String),
+    /// Added by DR-114 (§4.1 option A): native funded execution received a
+    /// malformed system-process call: a wrong argument, or a persistent send
+    /// to a recorded process. It depends only on the user's term, so it is a
+    /// classified user failure.
+    SystemProcessShapeError(String),
     IoError(String),
     /// Raised when a non-deterministic process (OpenAI, Ollama, gRPC) fails during execution.
     /// Contains the underlying cause and the empty output that would have been produced.
@@ -260,6 +265,10 @@ impl fmt::Display for InterpreterError {
             InterpreterError::ChromaDBError(msg) => write!(f, "ChromaDB error: {}", msg),
 
             InterpreterError::IllegalArgumentError(msg) => write!(f, "Illegal argument: {}", msg),
+
+            InterpreterError::SystemProcessShapeError(msg) => {
+                write!(f, "Illegal system process call: {}", msg)
+            }
 
             InterpreterError::IoError(msg) => write!(f, "IO error: {}", msg),
 
@@ -545,6 +554,10 @@ mod tests {
             (
                 InterpreterError::IllegalArgumentError("i".to_string()),
                 "Illegal argument: i".to_string(),
+            ),
+            (
+                InterpreterError::SystemProcessShapeError("s".to_string()),
+                "Illegal system process call: s".to_string(),
             ),
             (
                 InterpreterError::IoError("i".to_string()),

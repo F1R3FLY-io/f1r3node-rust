@@ -113,7 +113,10 @@ pub fn classify_errors(
             | MethodArgumentNumberMismatch { .. }
             | OperatorNotDefined { .. }
             | OperatorExpectedError { .. }
-            | IfConditionTypeError { .. } => (Some(PhloFailure::User), None),
+            | IfConditionTypeError { .. }
+            // Added by DR-114 (§4.1 option A): a malformed system-process call
+            // in native funded execution depends only on the user's term.
+            | SystemProcessShapeError(_) => (Some(PhloFailure::User), None),
             OutOfPhlogistonsError | RSpaceError(SpaceError::OutOfPhlogistons) => {
                 (Some(PhloFailure::Certificate), None)
             }

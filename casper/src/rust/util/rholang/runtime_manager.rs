@@ -734,6 +734,21 @@ impl RuntimeManager {
         .await
     }
 
+    /// Added by DR-114: the offered play runtime calls the node's external
+    /// services once per recorded call. Every replay keeps the noop services,
+    /// because replay produces the record and never calls a service.
+    pub async fn spawn_offered_play_runtime(
+        &self,
+        limits: GrantIssueCallLimits,
+        budget: HostWorkBudget,
+    ) -> Result<RhoRuntimeImpl, CasperError> {
+        self.spawn_runtime_with(
+            vec![grant_issue_definition(limits, budget)],
+            self.external_services.clone(),
+        )
+        .await
+    }
+
     async fn spawn_runtime_with(
         &self,
         mut definitions: Vec<Definition>,
