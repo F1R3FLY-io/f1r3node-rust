@@ -116,6 +116,10 @@ vps-bench-latency host="" duration="60" rate="2":
 repin-system-integration sha:
     scripts/repin-system-integration.sh {{sha}}
 
+# Open a dev to master promotion PR from a temporary promote/* branch
+promote:
+    bash .github/scripts/open-promotion-pr.sh
+
 # =================================================================
 # HELP
 # =================================================================

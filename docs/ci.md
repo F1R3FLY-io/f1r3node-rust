@@ -20,6 +20,7 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | Job id | Check name | Category | Needs |
 | --- | --- | --- | --- |
 | `build_base` | Resolve Target | Setup | none |
+| `promotion_source` | Promotion Source | Static check | none |
 | `commit_policy` | Commit Policy | Static check | `build_base` |
 | `static_checks` | Static Checks | Static check | `build_base` |
 | `script_tests` | Script Tests | Script test | `build_base` |
@@ -53,7 +54,7 @@ The job verifies the commit identities of pull request commits (pull requests on
 
 ### Script Tests
 
-The job runs 20 script tests:
+The job runs 21 script tests:
 
 - Commit trailer check
 - Pre-push hook
@@ -63,6 +64,7 @@ The job runs 20 script tests:
 - System-integration repin helper
 - Release evidence
 - Release gates
+- Promotion pull request opener
 - Release promotion
 - Release gate evidence
 - Deployment train validator
@@ -118,6 +120,12 @@ The `devProtect` ruleset requires these checks:
 - Test (*crate*) for each crate, and Test (casper 1/2) and Test (casper 2/2)
 - Integration Gate (amd64) and Integration Gate (arm64)
 
-The `masterProtect` ruleset requires Commit Policy, Static Checks, Script Tests, Soak Harness Tests, cargo-deny, Test (*crate*) for each crate, and Test Gate (casper).
+The `masterProtect` ruleset requires Promotion Source, Commit Policy, Static Checks, Script Tests, Soak Harness Tests, cargo-deny, Test (*crate*) for each crate, and Test Gate (casper).
 
 The heavy reuse gate in the `build_base` target step and `release-train.sh validate-ci-evidence` read Integration Gate (amd64) and (arm64). A pull request run from before TASK-023-4 has only the old names. A merge group therefore cannot reuse the heavy result of such a run, and it runs the Integration Pipeline again.
+
+## Promotion from dev to master
+
+Run `just promote` to open the promotion pull request. The command runs `.github/scripts/open-promotion-pr.sh`. It creates a temporary `promote/<UTC timestamp>` branch at the `origin/dev` commit and opens the pull request to `master` with your `gh` login.
+
+Do not open a promotion with head `dev`. The repository deletes the head branch of a merged pull request. GitHub then retargets every open pull request based on that branch to the base of the merged pull request. Two promotions from `dev` moved every open `dev` pull request to `master` (2026-10-04 and 2026-10-09). The `Promotion Source` check rejects a pull request from `dev` to `master`.

@@ -195,7 +195,8 @@ Both settings take effect at the next session start.
 - Turn off the co-author attribution setting in your Claude Code `settings.json`.
 
 ### Branch Strategy
-- `master` is the default branch and release line. Maintainers promote `dev` to `master`.
+- `master` is the default branch and release line. Maintainers promote `dev` to `master` with `just promote`.
+- `just promote` opens the promotion from a temporary `promote/*` branch. Do not open a promotion with head `dev`. GitHub deletes the head branch of a merged pull request and retargets every pull request based on it to `master`. The `Promotion Source` check rejects a pull request from `dev` to `master`.
 - `dev` is the integration branch. Feature and fix pull requests target this branch.
 - Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
 - `hotfix/` branches from and target `master`, then `master` is merged back into `dev`

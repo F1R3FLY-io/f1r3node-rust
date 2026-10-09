@@ -323,6 +323,29 @@ jobs:
             exit 1
           fi
 
+  # A promotion pull request into master must not use dev as its head branch.
+  # The repository deletes the head branch of a merged pull request, and GitHub
+  # then retargets every open pull request based on that branch to master. Two
+  # promotions from dev did that to every open dev pull request (2026-10-04 and
+  # 2026-10-09). `just promote` opens the promotion from a promote/* branch.
+  promotion_source:
+    name: Promotion Source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Reject a pull request from dev to master
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ] && [ "$BASE_REF" = master ] && [ "$HEAD_REF" = dev ]; then
+            echo "::error::Do not open a promotion with head dev. Run 'just promote' to open it from a promote/* branch."
+            exit 1
+          fi
+          echo "Promotion source accepted: event=$EVENT_NAME base=${BASE_REF:-none} head=${HEAD_REF:-none}"
+
   # Commit identity policy for pull requests. This job reads the pull request
   # head SHA, so it has no cache step: a cache step in the same job is the
   # pattern of the CodeQL cache-poisoning rule (alerts #93 to #110).
@@ -482,6 +505,10 @@ jobs:
       - name: Verify release gates
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-gates.sh
+
+      - name: Verify promotion pull request opener
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-open-promotion-pr.sh
 
       - name: Verify release promotion
         shell: bash -euo pipefail {0}
