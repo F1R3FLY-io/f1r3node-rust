@@ -324,6 +324,14 @@ where
         self.replay_rspace.get_data(channel).await
     }
 
+    async fn get_data_at(
+        &self,
+        checkpoint: &SoftCheckpoint<C, P, A, K>,
+        channel: &C,
+    ) -> Vec<Datum<A>> {
+        self.replay_rspace.get_data_at(checkpoint, channel).await
+    }
+
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.replay_rspace.get_waiting_continuations(channels).await
     }
