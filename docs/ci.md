@@ -20,6 +20,7 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | Job id | Check name | Category | Needs |
 | --- | --- | --- | --- |
 | `build_base` | Resolve Target | Setup | none |
+| `commit_policy` | Commit Policy | Static check | `build_base` |
 | `static_checks` | Static Checks | Static check | `build_base` |
 | `script_tests` | Script Tests | Script test | `build_base` |
 | `soak_harness_tests` | Soak Harness Tests | Soak harness test | `build_base` |
@@ -42,10 +43,13 @@ The Integration Pipeline waits for all three of Static Checks, Script Tests, and
 ### Static Checks
 
 1. Verify workflow security invariants (first, before the toolchain install)
-2. Verify commit identities in pull request commits (pull requests only)
-3. Verify supply-chain controls
-4. Check formatting
-5. Run clippy
+2. Verify supply-chain controls
+3. Check formatting
+4. Run clippy
+
+### Commit Policy
+
+The job verifies the commit identities of pull request commits (pull requests only). It reads the pull request head SHA, so it has no cache step. A cache step in the same job is the pattern that the CodeQL rule `actions/cache-poisoning/poisonable-step` reports. The step fetches commit objects only and runs no code from the pull request.
 
 ### Script Tests
 
@@ -98,7 +102,7 @@ The job runs 20 script tests:
 | Old name | New name | Change |
 | --- | --- | --- |
 | Build Base | Resolve Target | The job builds nothing. It resolves the target commit and the run decisions. |
-| Lint | Static Checks, Script Tests, Soak Harness Tests | The job ran static checks, 20 script tests, and the soak harness tests. |
+| Lint | Commit Policy, Static Checks, Script Tests, Soak Harness Tests | The job ran the commit identity check, static checks, 20 script tests, and the soak harness tests. |
 | Test (casper) | Test Gate (casper) | The job is a gate over the casper shards and the coverage summary. |
 | Heavy Pipeline / *job* | Integration Pipeline / *job* | The caller job is the integration pipeline. |
 | Integration Tests (amd64), (arm64) | Integration Gate (amd64), (arm64) | The jobs are gates over the integration test slots. |
@@ -109,11 +113,11 @@ Check names on pull requests and runs from before the change keep the old names.
 
 The `devProtect` ruleset requires these checks:
 
-- Static Checks, Script Tests, and Soak Harness Tests
+- Commit Policy, Static Checks, Script Tests, and Soak Harness Tests
 - cargo-deny
 - Test (*crate*) for each crate, and Test (casper 1/2) and Test (casper 2/2)
 - Integration Gate (amd64) and Integration Gate (arm64)
 
-The `masterProtect` ruleset requires Static Checks, Script Tests, Soak Harness Tests, cargo-deny, Test (*crate*) for each crate, and Test Gate (casper).
+The `masterProtect` ruleset requires Commit Policy, Static Checks, Script Tests, Soak Harness Tests, cargo-deny, Test (*crate*) for each crate, and Test Gate (casper).
 
 The heavy reuse gate in the `build_base` target step and `release-train.sh validate-ci-evidence` read Integration Gate (amd64) and (arm64). A pull request run from before TASK-023-4 has only the old names. A merge group therefore cannot reuse the heavy result of such a run, and it runs the Integration Pipeline again.

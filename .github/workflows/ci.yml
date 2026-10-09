@@ -323,12 +323,14 @@ jobs:
             exit 1
           fi
 
-  # Static analysis and repository policy checks. No behavioral test runs here.
-  static_checks:
-    name: Static Checks
+  # Commit identity policy for pull requests. This job reads the pull request
+  # head SHA, so it has no cache step: a cache step in the same job is the
+  # pattern of the CodeQL cache-poisoning rule (alerts #93 to #110).
+  commit_policy:
+    name: Commit Policy
     needs: build_base
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
@@ -338,16 +340,6 @@ jobs:
         with:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
           persist-credentials: false
-
-      # Deliberately the first step and deliberately in this job. Static Checks
-      # is a required status check, so a violation blocks the merge; a guard in
-      # a job that is merely a `needs:` ancestor can surface as `skipped`, which
-      # required-check evaluation may treat as satisfied. Placed ahead of the
-      # toolchain install so a breach of the credential model fails in seconds
-      # rather than after a Rust build.
-      - name: Verify workflow security invariants
-        shell: bash -euo pipefail {0}
-        run: bash .github/scripts/check-workflow-invariants.sh
 
       # Every commit author and Co-authored-by trailer in the pull request must
       # be ratified: an email that already authored a commit in the base
@@ -393,6 +385,31 @@ jobs:
             cp .github/denied-identities.txt "$denied"
           .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}" \
             --ratified-from "$BASE_SHA" --exempt-authors "$exempt" --denied "$denied"
+
+  # Static analysis and repository policy checks. No behavioral test runs here.
+  static_checks:
+    name: Static Checks
+    needs: build_base
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      # Deliberately the first step and deliberately in this job. Static Checks
+      # is a required status check, so a violation blocks the merge; a guard in
+      # a job that is merely a `needs:` ancestor can surface as `skipped`, which
+      # required-check evaluation may treat as satisfied. Placed ahead of the
+      # toolchain install so a breach of the credential model fails in seconds
+      # rather than after a Rust build.
+      - name: Verify workflow security invariants
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/check-workflow-invariants.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -1132,6 +1149,7 @@ jobs:
       cancel-in-progress: false
     needs:
       - build_base
+      - commit_policy
       - static_checks
       - script_tests
       - soak_harness_tests
@@ -1402,6 +1420,7 @@ jobs:
     permissions:
       contents: write
     needs:
+      - commit_policy
       - static_checks
       - script_tests
       - soak_harness_tests
