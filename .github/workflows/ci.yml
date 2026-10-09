@@ -504,6 +504,12 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash scripts/bench/test-soak-disk-admission.sh
 
+      - name: Verify the disk admission failure report and bounded-command liveness
+        shell: bash -euo pipefail {0}
+        env:
+          SOAK_DISK_TEST_SKIP_TIMING: "1"
+        run: bash scripts/bench/test-soak-disk-admission-timing.sh
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
