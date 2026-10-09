@@ -1,0 +1,107 @@
+' Today's execute-then-merge pipeline on a protocol-6 (v6) shard, at
+' feature/cost-accounted-rho 17e07307f (dev 93e38575e merged). Each step
+' carries the file:line of the code that performs it.
+'
+' The diagram marks the two places where run-to-completion lives (the block
+' play and the validator replay before acceptance) and the two places where
+' the merge runs (the proposer before play, and every validator before replay).
+'
+' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §3.
+' Palette: user and envelope = supply blue · proposer = control amber ·
+'   merge = surface salmon · execution and replay = pool green ·
+'   validation and finality = capability indigo ·
+'   run-to-completion and merge hot spots = red note
+' The legend also defines every name and abbreviation that the labels use,
+' so the diagram reads on its own.
+' Render:  ./render.sh consensus-proposal-today-pipeline.puml
+'          (or: plantuml -tsvg docs/casper/theory/diagrams/consensus-proposal-today-pipeline.puml)
+
+@startuml consensus-proposal-today-pipeline
+!include palette.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor              $ca_neutral
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  DividerBackgroundColor  $ca_note_grey
+  GroupBorderColor        #666666
+}
+skinparam maxMessageSize 260
+title Today: execute-then-merge on a v6 shard (HEAD 17e07307f)
+
+autonumber
+
+actor       "User\n(signer)"                                    as U  $ca_supply
+participant "Proposer\nblock_creator.rs"                        as P  $ca_control
+participant "Merge\ninterpreter_util.rs\ndag_merger.rs\nconflict_set_merger.rs" as M $ca_surface
+participant "Play runtime\nrholang/runtime.rs"                  as R  $ca_pool
+participant "Validator\nvalidation_dispatcher.rs\ninterpreter_util.rs" as V $ca_capability
+participant "Replay\nruntime_manager.rs"                        as RP $ca_pool
+participant "Finalizer\nfinalization_runner.rs\nclique_oracle.rs" as F $ca_capability
+
+== Proposal ==
+U -[$ca_instantiate]> P : signed offered envelope\nbody, funding_intent, phloLimit, phloPrice\n(offered.rs:11-21)
+P -> P : select at most one offer,\nthe rest become alternates\n(block_creator.rs:1847-1916)
+P -> M : compute_parents_post_state\n(interpreter_util.rs:930-940)
+M -> M : read the event-log index of every\nparent, find conflicts, choose survivors\nafter execution (conflict_set_merger.rs:864-974)
+M --> P : merged pre-state, rejected records,\napplied-from-scope, merge base
+note over P, M $ca_note_red
+  **Merge before execution.** The proposer cannot run
+  a deploy until it has merged the parents' post-states.
+end note
+P -> R : compute_state_envelopes\n(runtime.rs:340-669)
+R -> R : execute the single envelope\n(runtime.rs:480-493), then fund\nand settle it (runtime.rs:519-539)
+R -> R : producer self-replay of the same envelope\n(runtime.rs:574-582)
+R -> R : system deploys, CloseBlock\n(runtime.rs:620-629)
+note right of R $ca_note_red
+  **Run-to-completion.** A v6 block holds one envelope
+  (runtime.rs:359). A second envelope is an error
+  (runtime.rs:641-650). The legacy loop plays each
+  deploy to termination (runtime.rs:732-753).
+end note
+R --> P : post-state root, processed deploy
+P -[$ca_instantiate]> V : broadcast the signed block
+
+== Validation by every validator ==
+V -> V : block summary and offered-only check\n(validation_dispatcher.rs:99-130)
+V -> M : recompute the merge from the block's parents\n(interpreter_util.rs:423-433)
+M --> V : computed pre-state, records, state facts
+V -> V : compare pre-state, rejected records and\nstate facts (interpreter_util.rs:461-532)
+V -> RP : replay_block (interpreter_util.rs:538-545)
+RP -> RP : wait for the one-permit ReplayLock\n(runtime_manager.rs:211-218, 1264-1267)
+RP -> RP : replay the envelope and system deploys\nto termination
+RP --> V : replayed post-state equals the block's?
+note over V, RP $ca_note_red
+  **Acceptance waits for execution.** A validator accepts
+  a block only after it has recomputed the merge and
+  replayed the block (interpreter_util.rs:400-555).
+end note
+V -> V : eager merge index when the shard\nallows more than one parent\n(validation_dispatcher.rs:340-375)
+V -> F : add the valid block to the DAG
+
+== Finality ==
+F -> F : every finalization_rate blocks, derive the floor\nof the live view and adopt it as LFB\n(finalization_runner.rs:493-560, 662-701)
+F -> F : weight map from the main parent's bonds,\nwhich execution wrote into the block\n(clique_oracle.rs:202-220)
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| user and signed envelope |
+  |<$ca_control>| proposer |
+  |<$ca_surface>| post-hoc merge analysis |
+  |<$ca_pool>| execution and replay |
+  |<$ca_capability>| validation, DAG and finality (Casper core) |
+  |<$ca_note_red>| run-to-completion and merge hot spots |
+
+  |= name |= meaning |
+  | HEAD 17e07307f | the commit of feature/cost-accounted-rho that this diagram shows |
+  | v6 shard | a shard of protocol version 6: cost accounting, offered envelopes only |
+  | offered envelope | a signed user deploy: body, funding intent, phlo limit, phlo price |
+  | CloseBlock | the system deploy that closes each block |
+  | ReplayLock | a semaphore with one permit: a node replays one block at a time |
+  | DAG | the directed acyclic graph of blocks |
+  | LFB | the last finalized block |
+  | floor | the highest ancestor that the clique oracle certifies as finalized |
+  | file.rs:a-b | lines a to b of a source file at HEAD |
+endlegend
+
+@enduml

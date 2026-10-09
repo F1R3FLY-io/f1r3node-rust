@@ -1,0 +1,118 @@
+' Phased plan from today's execute-then-merge pipeline to order-then-execute
+' on cost-accounted (v6) shards. Each phase lists its content, its size, its
+' verification, and the expectations (E1-E4) and paper items (i)-(iv) it meets.
+' Arrows are prerequisites. Legacy shards keep dev's path in every phase.
+'
+' The phases are Phase 0, Phase 1, Phase 1b, Phase 2 and Phase 3. "P1" names
+' only the paper, never a phase.
+' Sizes are relative estimates (S < M < L < XL). Only Phase 0 (1-2 weeks) and
+'   Phase 3 (4-9 engineer-months) carry a duration estimate.
+' The legend also defines every name and abbreviation that the labels use,
+' so the diagram reads on its own.
+' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §10.
+' Palette: evidence = supply blue · acceptance core = gate teal ·
+'   interim merge = surface salmon · parallel executor = pool green ·
+'   order-then-execute = capability indigo · decisions = control amber ·
+'   prerequisite fix = process lilac
+' Render:  ./render.sh consensus-proposal-phase-plan.puml
+
+@startuml consensus-proposal-phase-plan
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+skinparam ActivityBarColor #555555
+title Phased plan: Phase 0 to Phase 3 (status at HEAD 17e07307f)
+
+start
+fork
+  :**Phase 0, evidence** (S, 1-2 weeks)
+  M1 profiles of the HEAD tests and the offered test,
+  M2 three-validator v6 soak, M3 validation time by stage,
+  M4 executions per deploy, M5 share of envelopes
+  with disjoint funding footprints
+  ----
+  verify: preregistered experiments, A/A calibration
+  meets: evidence for or against E4 performance; <<$ca_supply>>
+fork again
+  :**Phase 1, acceptance core** (L) — designed
+  G1 DR-64 check before execution,
+  G2 several offers per block as an ordered batch executor,
+  G3 installer funding (DR-68)
+  ----
+  verify: SameBlockFundingGroups.tla with negative controls,
+  Rocq group lemmas, EndToEndAuthority.v extensions
+  meets, inside one block: (i) transaction boundaries,
+  the P1 gate, E2 user alternatives, (iv) merge via signatures; <<$ca_gate>>
+  :**Phase 1b, interim merge** (M-L) — designed
+  v6 merge rule (DR-120, fast path and ordered pass,
+  arbiter changes C1-C10), then the cost-cursor
+  lock fix (pgmcp bug 11004, DR-119)
+  ----
+  verify: V6MergeOrderedPass.v, V6MergeSerialization.tla,
+  FeeCursorBranchMerge.tla, each with negative controls
+  meets: E1 merge logic in part, bounded merges on v6; <<$ca_surface>>
+end fork
+:**Prerequisite fix:** settlement log-channel continuations
+are unmetered and unbounded today (SystemVault.rho:551-571,
+runtime.rs:1724-1736). Meter and bound them first.; <<$ca_process>>
+if (**Decisions D-0 to D-9** by the user, Greg
+and the Casper team. Does "keep accepting blocks"
+mean acceptance before execution?) then (no: D-1 option B)
+  :**Phase 2, parallel batch executor** (L)
+  independent members run at once, shared-purse
+  members run as one group, result equals the
+  sequential canonical execution
+  ----
+  verify: Rocq batch serializability,
+  ParallelBatchExecutor.tla, 256-seed property tests
+  meets, inside one block: (ii) concurrent acceptance,
+  (iii) throughput, (iv) merge via signatures.
+  E3 keep accepting blocks stays unmet.; <<$ca_pool>>
+else (yes: D-1 option A, recommended)
+  :**Phase 2, parallel batch executor** (L)
+  the same executor, later fed by the Phase 3 linearizer; <<$ca_pool>>
+  :**Phase 3, order-then-execute** (XL, 4-9 engineer-months)
+  a new epic owned with the Casper team: blocks carry
+  envelopes, structural validity, linearizer, executor
+  after finality, attested roots, epoch validator sets
+  ----
+  verify: OrderThenExecute.tla (three validators),
+  CanonicalLinearization.v, OrderedGateSoundness.v,
+  three-node tests, v6 soak
+  meets: E1, E2, E3, E4 on v6 shards,
+  retires the v6 merge rule on v6; <<$ca_capability>>
+endif
+stop
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| Phase 0, evidence |
+  |<$ca_gate>| Phase 1, acceptance core |
+  |<$ca_surface>| Phase 1b, interim merge rule for v6 |
+  |<$ca_process>| prerequisite fix |
+  |<$ca_control>| decision point |
+  |<$ca_pool>| Phase 2, parallel batch executor |
+  |<$ca_capability>| Phase 3, order-then-execute |
+
+  |= name |= meaning |
+  | E1 to E4 | Greg's expectations: E1 merge logic, E2 user alternatives, E3 keep accepting blocks, E4 performance |
+  | (i) to (iv) | items of the new model of P1: (i) transaction boundaries, (ii) concurrent acceptance, (iii) throughput, (iv) merge via signatures |
+  | P1, P1 gate | the paper "Cost-Accounted Rho Calculus" (L. G. Meredith, May 2026), and its acceptance gate: supply must cover demand before execution |
+  | G1, G2, G3 | gap labels of epic 8946 in pgmcp, the work tracker. Each box names the work. |
+  | M1 to M5 | the measurements of Phase 0. Each box names the measurement. |
+  | DR-n | decision record n. DR-119 and DR-120 are planned records. |
+  | C1 to C10 | the ten changes that an independent arbiter required of the v6 merge-rule design |
+  | pgmcp bug 11004 | the global cost-cursor lock bug |
+  | D-0 to D-9 | the open decisions of the proposal (§11) |
+  | D-1 option A, option B | A: order-then-execute with the parallel executor. B: the v6 merge rule with the parallel executor. |
+  | S, M, L, XL | relative sizes: small, medium, large, extra large |
+  | HEAD 17e07307f | the commit of feature/cost-accounted-rho at which this status holds |
+  | v6 | protocol version 6, with cost accounting |
+  | soak | a long load test of a network of validators |
+  | A/A calibration | two runs of the same build that measure the noise |
+endlegend
+
+@enduml

@@ -1,0 +1,87 @@
+' Conflict classes of two deployments under cost accounting.
+' P1 (publications cost-accounting/cost-accounted-rho.tex) splits every pair of
+' deployments into three classes. Different signatures draw from disjoint
+' pools and cannot conflict (P1:356-359). The same signature, or overlapping
+' compound signatures, compete for one pool and are serialized by the linear
+' proof (P1:360-363). Only interaction through shared data channels remains,
+' and the cost structure gives it a natural serialization order (P1:363-366).
+' The red notes show what the code does with each class today.
+'
+' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §2.4.
+' Palette: inputs = supply blue · decisions = control amber ·
+'   independent class = pool green · serialized class = gate teal ·
+'   shared-data class = process lilac · today's behaviour = red note ·
+'   scope limits of the paper = indigo note
+' The legend also defines every name and symbol that the labels use,
+' so the diagram reads on its own.
+' Render:  ./render.sh consensus-proposal-conflict-classes.puml
+
+@startuml consensus-proposal-conflict-classes
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+skinparam PartitionBackgroundColor #FAFAFA
+title Conflict classes of two deployments under cost accounting (P1:344-366)
+
+start
+:two deployments <latex>D_1</latex> and <latex>D_2</latex>,\neach with signed funding lanes\nand an execution footprint; <<$ca_supply>>
+floating note left $ca_note_red
+  **Today (HEAD 17e07307f):** every class goes
+  through post-hoc merge analysis after execution
+  (conflict_set_merger.rs:864-974).
+end note
+if (do <latex>D_1</latex> and <latex>D_2</latex> draw on a common purse?\n(same signature, or overlapping\ncompound signatures)) then (yes)
+  :**Class S: one pool, serialized by the linear proof**\nTwo proof obligations compete for the same\nlinear hypotheses. At most one can succeed\nwhen the pool cannot fund both (P1:348-351).; <<$ca_gate>>
+  note left $ca_note_red
+    **Today:** the global costCursorLock
+    (SystemVault.rho:52-56, 145-167) also puts
+    every pair of charged offered siblings into
+    a false class S conflict. This is the global
+    cost-cursor lock bug, pgmcp bug 11004.
+  end note
+  if (did they arrive in sequence or together?) then (in sequence)
+    :the first is accepted and its tokens are committed,\nthe second is rejected before any step if the\nremaining supply is short (P1:2245-2269); <<$ca_gate>>
+  else (together)
+    :one parallel composition: <latex>\Delta = \Delta_1 + \Delta_2</latex>,\nboth are rejected if <latex>\Sigma < \Delta</latex> (P1:2271-2287); <<$ca_gate>>
+    note left $ca_note_indigo
+      P1 states both arrival rules for one
+      validator: "arrive at a validator" (P1:2247),
+      "the validator treats them" (P1:2272-2273).
+      P1 does not define one arrival order
+      across a multi-validator DAG.
+    end note
+  endif
+else (no)
+  if (do they interact through a\nshared data channel?) then (yes)
+    :**Class D: shared-data residual**\nThe only case that needs attention.\nThe cost structure gives a natural\nserialization order (P1:363-366).; <<$ca_process>>
+  else (no)
+    :**Class I: independent**\nDisjoint token pools, no conflict.\nExecute in parallel and compose the results\nwithout merge analysis (P1:356-359).; <<$ca_pool>>
+  endif
+endif
+stop
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| input pair of deployments |
+  |<$ca_control>| classification question |
+  |<$ca_gate>| class S: serialized by the linear proof |
+  |<$ca_process>| class D: shared data channel, ordered |
+  |<$ca_pool>| class I: independent, composed without analysis |
+  |<$ca_note_red>| what the code does today |
+  |<$ca_note_indigo>| limit of the paper's scope |
+
+  |= name |= meaning |
+  | P1 | the paper "Cost-Accounted Rho Calculus" (L. G. Meredith, May 2026). P1:a-b cites its lines a to b. |
+  | <latex>D_1</latex>, <latex>D_2</latex> | two deployments, that is, two signed user deploys |
+  | <latex>\Delta_1</latex>, <latex>\Delta_2</latex>, <latex>\Delta</latex> | the demands of <latex>D_1</latex> and <latex>D_2</latex>, and their joint demand |
+  | <latex>\Sigma</latex> | the token supply of the common purse |
+  | class S, D, I | same purse, shared data channel, independent |
+  | HEAD 17e07307f | the commit of feature/cost-accounted-rho that the red notes describe |
+  | pgmcp bug 11004 | the global cost-cursor lock bug, in the pgmcp work tracker |
+  | DAG | the directed acyclic graph of blocks |
+endlegend
+
+@enduml

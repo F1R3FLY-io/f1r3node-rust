@@ -1,0 +1,117 @@
+' Casper change map for order-then-execute on cost-accounted (v6) shards.
+' Five groups, from left to right: the Casper core that stays unchanged,
+' shared code that gets a v6 branch, v6-only machinery, the cost-accounting
+' modules that are designed but not yet implemented, and dev's legacy path that legacy shards keep
+' byte for byte. Each element names its files. The risk of each change is in
+' brackets: [H] high, [M] medium, [L] low.
+'
+' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §8.
+' Palette: unchanged Casper core = capability indigo · shared code with a v6
+'   branch = control amber · v6-only machinery = pool green · cost-accounting
+'   modules = gate teal · v6 merge rule retired at Phase 3 = surface salmon ·
+'   legacy path kept for legacy shards = note grey
+' The legend also defines every name and abbreviation that the labels use,
+' so the diagram reads on its own.
+' Render:  ./render.sh consensus-proposal-change-map.puml
+
+@startuml consensus-proposal-change-map
+!include palette.iuml
+$ca_base_skin()
+skinparam componentStyle rectangle
+skinparam component {
+  BorderColor #333333
+}
+skinparam package {
+  BorderColor #444444
+}
+skinparam ArrowColor $ca_neutral
+skinparam nodesep 18
+skinparam ranksep 60
+left to right direction
+title Casper change map for order-then-execute on v6 shards
+
+package "1. Unchanged Casper core" as CORE $ca_pkg_indigo {
+  component "Signed blocks, justifications,\nsequence numbers\nCasperMessage.proto:290-302" as BLK $ca_capability
+  component "LMD-GHOST fork choice\nwith the invalid-message filter\nestimator.rs" as FC $ca_capability
+  component "Equivocation detection\nvalidation_dispatcher.rs:307-316" as EQ $ca_capability
+  component "Clique-oracle\ndecision rule\nclique_oracle.rs" as CO $ca_capability
+}
+
+package "2. Shared code that gets a v6 branch" as SHARED $ca_pkg_amber {
+  component "[H] Block body for v6:\nenvelopes, attested root\nCasperMessage.proto:554-575, 597-605" as BODY $ca_control
+  component "[H] Epoch validator set,\nequivocators weigh zero at once\nclique_oracle.rs:202-253\nblock_metadata.rs:141-162" as WEIGHT $ca_control
+  component "[H] Finality hook that\nfeeds the executor\nfinalization_runner.rs:351-560\nblock_dag_key_value_storage.rs:1574-1640" as HOOK $ca_control
+  component "[H] LFB containment by\nDAG ancestry on v6\nfloor.rs:615-638" as FLOOR $ca_control
+  component "[M] Deploy status, exploratory\nreads, state sync from\nattested roots (node API, LFS)" as API $ca_control
+}
+
+package "3. v6-only machinery" as V6 $ca_pkg_green {
+  component "[H] Proposal without execution\nblock_creator.rs\ninterpreter_util.rs:893-1030" as PROP $ca_pool
+  component "[H] Structural validation,\nno merge, no replay\nvalidation_dispatcher.rs:84-334\ninterpreter_util.rs:400-555" as VAL $ca_pool
+  component "[H] Linearizer:\nmain-chain epochs" as LIN $ca_pool
+  component "[H] Executor after finality\nwith the P1 gate\nruntime.rs, runtime_manager.rs" as EXE $ca_pool
+  component "[L] Parallel batch executor\nruntime.rs, runtime_manager.rs\ndeterministic_reduction.rs" as PAR $ca_pool
+  component "[M] Attestation check\nand slashing evidence" as ATT $ca_pool
+}
+
+package "4. Cost-accounting modules, designed, not yet implemented" as CA {
+  component "[L] G1 DR-64 check\nbefore execution\nruntime.rs:359-640\nexecution.rs:272" as G1 $ca_gate
+  component "[L] G2 ordered batch\nof offers\nblock_creator.rs:1847-1929\nruntime_manager.rs:1737-1741" as G2 $ca_gate
+  component "[L] G3 installer funding\nfamily_selection.rs:163-186" as G3 $ca_gate
+  component "[L] Cost-cursor lock fix\npgmcp bug 11004\nSystemVault.rho:52-167" as R11004 $ca_gate
+  component "[M] v6 merge rule DR-120\ninterpreter_util.rs, dag_merger.rs\nretired on v6 at Phase 3" as G9 $ca_surface
+}
+
+package "5. Legacy path, kept for legacy shards" as LEG $ca_note_grey {
+  component "compute_parents_post_state\nand the merger\ninterpreter_util.rs:1212\ndag_merger.rs:820\nconflict_set_merger.rs:864-974" as MERGE $ca_note_grey
+  component "Replay before\nacceptance\ninterpreter_util.rs:538-545" as REPLAY $ca_note_grey
+}
+
+' Order the groups from left to right.
+CORE -[hidden]-> SHARED
+SHARED -[hidden]-> V6
+V6 -[hidden]-> CA
+CA -[hidden]-> LEG
+
+BLK --> BODY : v6 blocks carry envelopes
+FC --> WEIGHT : reads weights
+CO --> WEIGHT : reads weights
+EQ --> WEIGHT : equivocators weigh zero
+HOOK --> LIN : newly finalized set
+BODY <-- PROP : filled by
+FLOOR <-- VAL : uses
+LIN --> EXE : canonical order
+EXE <-- PAR : same result as\nsequential order
+EXE --> ATT : executed roots
+BODY <-- ATT : attestation field
+API ..> ATT : reads attested roots
+EXE <-- G1 : the P1 gate
+EXE <-- G2 : batch API
+EXE <-- G3 : eligible sources
+PAR <-- R11004 : no global\nsettlement lock
+G9 ..> MERGE : v6 seam below\ndev's dispatcher
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_capability>| unchanged Casper core |
+  |<$ca_control>| shared code that gets a v6 branch |
+  |<$ca_pool>| new v6-only machinery |
+  |<$ca_gate>| cost-accounting modules, designed, not yet implemented |
+  |<$ca_surface>| v6 merge rule, retired on v6 at Phase 3 |
+  |<$ca_note_grey>| dev's legacy path, unchanged for legacy shards |
+  | [H] [M] [L] | risk of the change: high, medium, low |
+
+  |= name |= meaning |
+  | v6 | protocol version 6, with cost accounting |
+  | G1, G2, G3 | gap labels of epic 8946 in pgmcp, the work tracker. Each box names the work. |
+  | DR-64 | the decision record of the funding check before execution |
+  | DR-120 | the planned decision record of the v6 merge rule |
+  | pgmcp bug 11004 | the global cost-cursor lock bug |
+  | P1 gate | the acceptance gate of the paper P1, "Cost-Accounted Rho Calculus": supply must cover demand before execution |
+  | Phase 3 | the order-then-execute phase of the plan |
+  | LFB, LFS | the last finalized block, and last-finalized-state synchronization |
+  | API, DAG | application programming interface, and the directed acyclic graph of blocks |
+  | LMD-GHOST | latest-message-driven greedy heaviest-observed subtree fork choice |
+endlegend
+
+@enduml
