@@ -41,14 +41,17 @@
 // re-export is stale (constant was removed or renamed but the
 // alias stuck).
 //
-// # Why Wave 4 constants (`MAX_WRITE_BYTES`, `MAX_ENTRIES`) are
-//   absent
+// # Related consensus-observable byte caps
 //
-// Fileio's `consensus_constants.rs` re-exports two additional
-// constants from the yet-to-land `handlers` module.  Those will
-// land as Wave 4 adds the handlers surface; this slice ships
-// what dev has today.  Adding them later follows the three-step
-// recipe above.
+// Two additional caps consumed by Wave 4 handlers live in the
+// parent `io` module (not here): `MAX_WRITE_BYTES` and
+// `MAX_ENTRIES` (see `rholang::interpreter::io::MAX_WRITE_BYTES`
+// / `MAX_ENTRIES` in `io/mod.rs`).  They're kept there rather than
+// re-exported from this file because the parent module is the
+// single source of truth for byte caps consumed inside the handler
+// family files (fs_write, fs_write_at, fs_entries, etc.).  The
+// three-step recipe above still applies if a new handler-side
+// constant ever needs to live in this file.
 
 // WAL entry serialization constants.
 // Handle-table fd-entropy headroom cap (deploy-boundary rollback
@@ -68,7 +71,9 @@ pub use super::wal::{MAX_WAL_ENTRIES, WAL_OP_VARIANTS, WAL_OUTCOME_VARIANTS};
 // constants, mod.rs origin).
 pub use super::{CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR, FS_NONCE};
 // Byte gates + per-runtime caps (mod.rs origin).
-pub use super::{MAX_CHUNK_ITEMS, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
+pub use super::{
+    MAX_CHUNK_ITEMS, MAX_ENTRIES, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES, MAX_WRITE_BYTES,
+};
 
 #[cfg(test)]
 mod tests {
@@ -108,6 +113,8 @@ mod tests {
             "MAX_TRUNCATE_BYTES",
             "MAX_OPEN_FDS",
             "MAX_CHUNK_ITEMS",
+            "MAX_ENTRIES",
+            "MAX_WRITE_BYTES",
             // mod.rs (composition-time constants)
             "CMODE_ORACULAR_STR",
             "CMODE_CONSENSUS_STR",
@@ -162,6 +169,8 @@ mod tests {
         let _ = super::MAX_TRUNCATE_BYTES;
         let _ = super::MAX_OPEN_FDS;
         let _ = super::MAX_CHUNK_ITEMS;
+        let _ = super::MAX_ENTRIES;
+        let _ = super::MAX_WRITE_BYTES;
         let _ = super::CMODE_ORACULAR_STR;
         let _ = super::CMODE_CONSENSUS_STR;
         let _ = super::FS_NONCE;

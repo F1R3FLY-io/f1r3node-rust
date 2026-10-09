@@ -162,6 +162,24 @@ impl RhoReporterCasper {
         runtime.set_block_data(block_data.clone()).await;
         runtime.set_invalid_blocks(invalid_blocks).await;
 
+        // Reporting replay of the genesis block re-executes blessed
+        // deploys that bind FS native URNs (fs_generator composes the
+        // FsGenesis bundle via `new fsRead(`rho:io:fs:native:1.0.0/
+        // read`), ...`).  Those URNs are gated behind the reducer's
+        // `filter_fs_native_urns` flag (slice 5.32) which defaults to
+        // TRUE in every freshly-created reducer — including this
+        // reporting runtime.  Mirrors the play-side (slice 5.33) and
+        // state-replay (slice 5.35) toggles.  Non-genesis reporting
+        // keeps the default so user deploys that would reject under
+        // regular replay also reject here.
+        let _fs_filter_guard = if !with_cost_accounting {
+            Some(crate::rust::rholang::runtime::FsNativeFilterGuard::disable(
+                &runtime.runtime.reducer,
+            ))
+        } else {
+            None
+        };
+
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
             tracing::debug!(

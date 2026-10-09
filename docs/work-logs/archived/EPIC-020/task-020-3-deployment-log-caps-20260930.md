@@ -56,7 +56,7 @@ The script stores private rendered configurations below its output directory and
 The new node CLI tests establish the correct root-option position.
 They also preserve the `file` and development-only `both` options.
 
-The [logging documentation](../node/README.md#deployment-policy) defines one deployment sink and explains duplicate disk use.
+The [logging documentation](../../../node/README.md#deployment-policy) defines one deployment sink and explains duplicate disk use.
 It also documents the byte budgets and the limits of configured container caps.
 
 ## Verification
@@ -107,7 +107,7 @@ Remote `conf/rust.conf` still selects `sink = "both"` and identifies node files 
 An external owner must review the log-reader contract before choosing the single sink.
 Existing cap availability does not replace that correction or its merge evidence.
 
-The [external handoff](../handoffs/task-020-3-system-integration-20260930.md) records the required change and acceptance boundary.
+The [external handoff](../../../handoffs/task-020-3-system-integration-20260930.md) records the required change and acceptance boundary.
 No receiver has claimed the external work. No external source or pin has changed in this session.
 
 ## Evidence and limits
@@ -141,4 +141,4 @@ The raw records of the evidence package `task-020-3-20260930-01` were removed on
 
 ## Completion on 2026-09-30
 
-The external single-sink change merged into system-integration `dev`: PR #146, merge revision `ccd717195b35f75cef826f41d96b7028d8a874c0`, receiver `claude-session-fbb1f4d0`. The sink contract, the external verification, and the node checks at `7d64c9d03` are in the tracker entry and in the [hand-off document](../handoffs/task-020-3-system-integration-20260930.md). The task is complete. The `main` promotion revision is appended when it lands. TASK-020-4 stays open on `formal/soak-casper-consensus`.
+The external single-sink change merged into system-integration `dev`: PR #146, merge revision `ccd717195b35f75cef826f41d96b7028d8a874c0`, receiver `claude-session-fbb1f4d0`. The sink contract, the external verification, and the node checks at `7d64c9d03` are in the tracker entry and in the [hand-off document](../../../handoffs/task-020-3-system-integration-20260930.md). The task is complete. The `main` promotion revision is appended when it lands. TASK-020-4 stays open on `formal/soak-casper-consensus`.

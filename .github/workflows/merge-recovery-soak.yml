@@ -281,7 +281,14 @@ env:
   # 2026-09-15: 7018213 -> b3d14b2 (system-integration MAIN — the #142 merge
   #   commit; the branch pin's content, now immutable on main). Verified:
   #   descends from 7018213 (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+  # 2026-10-08: e3c4e14 -> f106a34 (system-integration MAIN — the #148 merge
+  #   commit): raises OBSERVER_MEMORY_CEILING_MB 1500 -> 1800 to accommodate
+  #   the FsGenesis blessed-term addition (f1r3node-rust slice 5.36, PR #660)
+  #   that bumped observer steady-state RSS during exploratory-overload
+  #   bursts. Backed by 12 failing CI-run samples: min 1508 / max 1646 /
+  #   mean 1576 / stdev 46 MB; new ceiling sits 3.3σ above observed max.
+  #   Verified: descends from e3c4e14 (merge-base --is-ancestor).
+  SYSTEM_INTEGRATION_REF: f106a341c7fd9fb9a82c1f18669fa5a9d708e21c
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -1292,9 +1299,10 @@ jobs:
             --retry-wait-time 5
             --timeout 45
             --accept 200..=299,403,429,503,504
-            --format json
             './**/*.md'
+          format: json
           output: /tmp/link-sweep.json
+          jobSummary: false
           fail: false
 
       - name: Summarize sweep result
@@ -1302,21 +1310,34 @@ jobs:
           SWEEP_EXIT: ${{ steps.sweep.outputs.exit_code }}
         shell: bash -euo pipefail {0}
         run: |
-          broken=0
+          broken=null
+          status=no_output
           if [ -s /tmp/link-sweep.json ]; then
-            broken="$(jq -r '[.fail_map[]? | length] | add // 0' /tmp/link-sweep.json)"
+            if broken="$(jq -r '[(.error_map // .fail_map // {})[] | length] | add // 0' /tmp/link-sweep.json 2>/tmp/link-sweep-jq.err)"; then
+              status=checked
+            else
+              broken=null
+              status=unreadable
+              echo "::warning::advisory docs link sweep output is not valid JSON: $(head -c 200 /tmp/link-sweep-jq.err); see the docs-link-sweep artifact (does not gate the soak)"
+            fi
           fi
           jq -n \
             --argjson broken "$broken" \
+            --arg status "$status" \
             --arg exit_code "${SWEEP_EXIT:-unknown}" \
-            '{broken: $broken, exit_code: $exit_code}' > /tmp/docs-link-sweep.json
-          if [ "$broken" -gt 0 ]; then
+            '{broken: $broken, status: $status, exit_code: $exit_code}' > /tmp/docs-link-sweep.json
+          if [ "$status" = checked ] && [ "$broken" -gt 0 ]; then
             echo "::warning::advisory docs link sweep found $broken broken external link(s); see the docs-link-sweep artifact (does not gate the soak)"
           fi
+          case "$status" in
+            checked) result="Broken external links: $broken." ;;
+            unreadable) result="Broken external links: unknown. The sweep output was not valid JSON." ;;
+            *) result="Broken external links: unknown. The sweep wrote no output." ;;
+          esac
           {
             echo "### Docs external link sweep (advisory)"
             echo
-            echo "Broken external links: $broken. This sweep never gates the soak."
+            echo "$result This sweep never gates the soak."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sweep artifact

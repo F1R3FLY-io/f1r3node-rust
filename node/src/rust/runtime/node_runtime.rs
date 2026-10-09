@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use casper::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::errors::CasperError;
 use comm::rust::peer_node::NodeIdentifier;
@@ -382,15 +383,9 @@ impl NodeRuntime {
             Arc<tokio::sync::RwLock<casper::rust::state::instances::ProposerState>>,
         >,
         block_processor: casper::rust::blocks::block_processor::BlockProcessor<T>,
-        block_processor_state: Arc<dashmap::DashSet<models::rust::block_hash::BlockHash>>,
-        block_processor_queue_tx: tokio::sync::mpsc::Sender<(
-            Arc<dyn casper::rust::casper::MultiParentCasper + Send + Sync>,
-            models::rust::casper::protocol::casper_message::BlockMessage,
-        )>,
-        block_processor_queue_rx: tokio::sync::mpsc::Receiver<(
-            Arc<dyn casper::rust::casper::MultiParentCasper + Send + Sync>,
-            models::rust::casper::protocol::casper_message::BlockMessage,
-        )>,
+        block_processor_state: Arc<InFlightBlocks>,
+        block_processor_queue_tx: tokio::sync::mpsc::Sender<BlockQueueItem>,
+        block_processor_queue_rx: tokio::sync::mpsc::Receiver<BlockQueueItem>,
         transport: comm::rust::transport::grpc_transport_client::GrpcTransportClient,
         rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
         rp_connections: comm::rust::rp::connect::ConnectionsCell,

@@ -1,0 +1,117 @@
+{
+ "acceptance": null,
+ "change": {
+  "task": "TASK-020-4 (mirror TASK-017-17)",
+  "design": "docs/casper/design/soak-log-budget-guardian.md",
+  "commit": "82fe22a0acf74034c87b66af5a9d8f0be0ef7207",
+  "origin": "The PR #622 multi-agent review of 2026-10-05 found two probe defects in the accepted driver 7ea92dac.",
+  "driver": [
+   "When docker inspect, the container log read, or docker exec fails for a container, the probe asks docker ps again with the owner label and the container ID. A container that stopped during the sample is skipped. Before, one failed probe for a stopped container was a breach that ended the soak at a normal shard stop.",
+   "When docker ps fails during that recheck, the container counts as running and the probe failure stands.",
+   "A rotated container log file that exists but cannot be read makes the probe unavailable. A rotated file that does not exist, or that disappears between the check and the read, is skipped. Before, an unreadable rotated file was skipped and the total was too small."
+  ],
+  "fixture": "Two new scenarios in scripts/bench/test-soak-disk-admission.sh: log-probe-vanished (the container stops between docker ps and docker inspect, so the run completes one iteration) and log-rotated-unreadable (a rotated log exists but cannot be read, so the guardian records a breach). The fixture now has 54 scenarios.",
+  "unchanged": "The budgets, the breach rule, the admission check, the 4-second probe deadline, the disk floor, the memory floor, the hygiene band, the emergency deadline, the stop path, and the summary contract are unchanged. Exited containers stay outside the probe by design."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+  "docs/claims/soak-disk-protection.md": "6fd5f24de61adef63bc88e37c5e04abcd34db28330180627e7ff9625309d64b0"
+ },
+ "claim_discharge": "pending",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "related_claims": {
+  "CLAIM-SOAK-001": "proposed-unratified. The node log caps stay recorded as enforced checks in docs/claims/soak-disk-protection.md."
+ },
+ "evidence_before_change": {
+  "scripts/run-merge-recovery-soak.sh": {
+   "path": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261004-01/report.json",
+   "sha256": "20eca5b86c1c399ddec8670c2675e470d644fb64b6c9e520c3d28675df3bbffa"
+  },
+  "scripts/bench/test-soak-disk-admission.sh": {
+   "path": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261004-01/report.json",
+   "sha256": "20eca5b86c1c399ddec8670c2675e470d644fb64b6c9e520c3d28675df3bbffa"
+  }
+ },
+ "source_digests_before_change": {
+  "scripts/bench/test-soak-disk-admission.sh": "1f1ee72479dad526f91badfb4a2091af69a4773b10a9601b4ba8b77e9ca4c7bb",
+  "scripts/run-merge-recovery-soak.sh": "7ea92dac03cb2b69d9dd88abcbf9f8b83dcea6a36fa403409bcba9127feb8d74"
+ },
+ "source_digests": {
+  "scripts/bench/test-soak-disk-admission.sh": "beb5576761f8ad614f9aa6f5d2d2e16514fe3e0b98a38241eb860a26f02b8123",
+  "scripts/run-merge-recovery-soak.sh": "4bc134545eea9a2f355ea3e018d8024400d8691ca22047402a20b7bc16e6008a"
+ },
+ "verification": {
+  "fixture_local": {
+   "command": "bash scripts/bench/test-soak-disk-admission.sh --scenario <name> for each log-* scenario",
+   "environment": "Disposable unprivileged container, no network, no Docker socket, with the casper-soak harness binary built from the same tree",
+   "exit": 0,
+   "scenarios_passed": 12,
+   "scope": "The 12 log scenarios only. The 42 disk scenarios run with both log budgets at 0, so the changed code does not run in them. The hosted run covers all 54 scenarios."
+  },
+  "regression_controls": {
+   "description": "The two new scenarios with the driver at 514eb3026, the driver before this change",
+   "behavioral_failures": [
+    "log-probe-vanished",
+    "log-rotated-unreadable"
+   ],
+   "passed": 0
+  },
+  "claims_audit_local": {
+   "command": "check-casper-claims",
+   "exit": 0
+  },
+  "casper_soak_tests_local": {
+   "command": "cargo test --locked -p casper-soak --test models --test claims --test interruption",
+   "exit": 0
+  },
+  "not_run_locally": "The driver suite (scripts/bench/test-run-merge-recovery-soak.sh) and the harness models (scripts/ci/check-casper-soak-models.sh). The hosted runs below cover both."
+ },
+ "hosted": {
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tested_sha": "82fe22a0acf74034c87b66af5a9d8f0be0ef7207",
+  "note": "The tested SHA is the change commit. Its parent 514eb3026 merges dev at b5cbb51d1.",
+  "full_suite": {
+   "run_id": 37339963097,
+   "conclusion": "success",
+   "job_summary": "43 jobs passed and 3 were skipped with ci-heavy, including the Heavy Pipeline integration matrix for amd64 and arm64.",
+   "steps": {
+    "Verify soak fail-closed driver": "success",
+    "Verify isolated disk admission and emergency scenarios": "success"
+   }
+  },
+  "claims_and_bindings": {
+   "run_id": 37339962372,
+   "conclusion": "success",
+   "jobs": [
+    "Casper driver binding fixtures",
+    "Formal verification gate",
+    "Node observation binding tests"
+   ]
+  }
+ },
+ "soak_observation": {
+  "run_id": 37343966570,
+  "target_sha": "0a0713663351398aefb444a05e86bfa292936844",
+  "note": "The target is the PR #620 stack. Its driver and fixture bytes equal the source digests of this package.",
+  "observed_at": "2026-10-05T20:50Z",
+  "workload_started_at": "2026-10-05T19:25Z",
+  "log_guardian": "Both log budgets at their defaults. No log guardian breach and no log probe unavailable record during the preflight and the first 8 test_load sessions.",
+  "status": "in progress. This record is interim and does not discharge the claim."
+ },
+ "expected_gate_state": "check-casper-claims passes because docs/claims/casper-soak-harness.md has status pending. The two ledger records keep the digests of the acceptance package casper-soak-log-budget-guardian-acceptance-20261004-01 until the maintainer accepts this package.",
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-node-log-budgets",
+ "soak": "pending",
+ "status": "change-verified-pending-acceptance",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-05",
+ "waiver": null
+}

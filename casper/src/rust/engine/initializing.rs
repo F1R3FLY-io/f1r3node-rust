@@ -17,7 +17,6 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -36,6 +35,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use crate::rust::block_status::ValidBlock;
+use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
@@ -83,9 +83,8 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Block processing queue - matches Scala's blockProcessingQueue: Queue[F, (Casper[F], BlockMessage)]
     // Using trait object to support different MultiParentCasper implementations
-    block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: Arc<InFlightBlocks>,
     casper_shard_conf: CasperShardConf,
     validator_id: Option<ValidatorIdentity>,
     the_init: Arc<
@@ -265,11 +264,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+        blocks_in_processing: Arc<InFlightBlocks>,
         casper_shard_conf: CasperShardConf,
         validator_id: Option<ValidatorIdentity>,
         the_init: Arc<
@@ -1629,6 +1625,106 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
 
+        // The spawn_periodic_tick calls below need `Arc<T>`; the
+        // `Initializing` struct stores `T` directly (same shape as
+        // `transition_to_running`'s existing transport-layer
+        // conversion a few lines down).  Build the Arc once and
+        // reuse for both tick spawns.
+        let transport_for_ticks = Arc::new(self.transport_layer.clone());
+
+        // Phase 7b-1: build the snapshot chunk-fetch context if
+        // this node has an `fs_snapshot_writer`.  The joiner-side
+        // path through `Initializing` is where snapshot sync is
+        // actually consequential — this is the engine that
+        // observes a new finalized horizon and needs to fetch
+        // snapshot chunks for state reconstruction.  Returns
+        // `None` on observer / unconfigured deployments.  When
+        // `Some`, spawn the periodic tick loop that drives
+        // outbound snapshot-chunk requests.  The `JoinHandle` is
+        // intentionally dropped — the task lives for the engine's
+        // lifetime.
+        let snapshot_chunk_ctx = {
+            let ctx = crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                &self.runtime_manager,
+            )
+            .await;
+            if let Some(ref ctx) = ctx {
+                let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
+                    Arc::clone(&ctx.sync_driver),
+                    Arc::clone(&transport_for_ticks),
+                    self.rp_conf_ask.clone(),
+                    self.connections_cell.clone(),
+                );
+            }
+            ctx
+        };
+
+        // Phase 7b-2: build the WAL payload-fetch context from
+        // the shared `RuntimeManager.payload_store` slot.  Spawn
+        // the periodic tick loop and attach its stop handle to
+        // the context.  See
+        // [`WalPayloadContext::from_runtime_manager`] for the
+        // production vs. test-harness fallback discipline.
+        let wal_payload_ctx = {
+            let mut ctx = crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
+                &self.runtime_manager,
+            )
+            .await;
+            let tick = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
+                Arc::clone(&ctx.sync_driver),
+                Arc::clone(&transport_for_ticks),
+                self.rp_conf_ask.clone(),
+                self.connections_cell.clone(),
+            );
+            ctx.tick_stop = Some(tick.stop);
+            // JoinHandle intentionally dropped: the task either
+            // lives for the process lifetime or exits cleanly when
+            // `tick_stop.stop()` fires.
+            drop(tick.join_handle);
+            Some(ctx)
+        };
+
+        // Phase 7b-2 boot wire-in: install a completion sink on
+        // the snapshot chunk driver + spawn the subscriber that
+        // decodes each completed snapshot and drives the WAL
+        // payload fetch + applier (slice 5.130).  Mirror of the
+        // wire-in at `casper_launch`.  Joiner-side significance:
+        // `Initializing` is where snapshot sync is actually
+        // consequential (new finalized horizon → fetch chunks),
+        // so this is the engine the apply subscriber matters
+        // most on.
+        if let (Some(snap_ctx), Some(wal_ctx)) =
+            (snapshot_chunk_ctx.as_ref(), wal_payload_ctx.as_ref())
+        {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
+            >();
+            snap_ctx.sync_driver.install_completion_sink(tx);
+            // Share the manager's `RootIdentityRegistry` into the
+            // subscriber via `.clone()` — the two-layer indirection
+            // means Clone shares the outer slot, so any post-spawn
+            // `register(logical, root)` on the manager is visible
+            // through this handle.  Empty today pending node::setup
+            // wiring; empty falls through to pre-Shape-A behavior.
+            // `allowed_roots` reads the shared
+            // `RuntimeManager.consensus_static_roots` slot (slice
+            // 5.134) — same empty-today / populated-at-boot
+            // discipline.
+            let registry = self.runtime_manager.root_registry.clone();
+            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
+            let _subscriber_handle =
+                crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
+                    rx,
+                    Arc::clone(&wal_ctx.sync_driver),
+                    snap_ctx.snapshot_dir.clone(),
+                    registry,
+                    allowed_roots,
+                    Some(Arc::clone(&wal_ctx.payload_lookup)),
+                );
+            // JoinHandle intentionally dropped — subscriber exits
+            // naturally when the completion-sink sender is dropped.
+        }
+
         transition_to_running(
             self.block_processing_queue_tx.clone(),
             self.blocks_in_processing.clone(),
@@ -1639,6 +1735,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            snapshot_chunk_ctx,
+            wal_payload_ctx,
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),
