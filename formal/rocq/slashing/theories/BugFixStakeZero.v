@@ -42,7 +42,7 @@ Theorem t_9_5_slash_preserves_invariant :
 Proof.
   intros ps v Hinv. simpl.
   unfold slash.
-  destruct (Nat.eq_dec (bm_lookup (ps_allBonds ps) v) 0) as [E | NE]; simpl.
+  destruct (Nat.eq_dec (slash_exposure ps v) 0) as [E | NE]; simpl.
   - assumption.
   - intros v' Hin.
     simpl in Hin |- *.
