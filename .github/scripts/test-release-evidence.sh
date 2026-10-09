@@ -88,7 +88,7 @@ jq -e '
 	and .source_sha == $source_sha
 	and .ci.run_id == 123456789
 	and .ci.run_attempt == 2
-	and (.ci.required_jobs | length) == 25
+	and (.ci.required_jobs | length) == 27
 	and .images.publication_state == "not_published"
 	and .images.docker_hub == null
 	and .images.ocir_index_digest == null
@@ -107,7 +107,7 @@ cp "$OUTPUT" "$TMP/tampered-evidence.json"
 jq '.source_sha = "bad"' "$OUTPUT" >"$TMP/tampered-evidence.json"
 expect_failure 'invalid evidence SHA' "$TOOL" validate "$TMP/tampered-evidence.json"
 cp "$TMP/jobs.json" "$TMP/failed-jobs.json"
-jq '(.jobs[] | select(.name == "Lint") | .conclusion) = "failure"' "$TMP/jobs.json" >"$TMP/failed-jobs.json"
+jq '(.jobs[] | select(.name == "Static Checks") | .conclusion) = "failure"' "$TMP/jobs.json" >"$TMP/failed-jobs.json"
 expect_failure 'failed required job' "$TOOL" generate "$SOURCE" "$REPOSITORY" "$TMP/run.json" "$TMP/failed-jobs.json" "$TMP/artifacts.json" "$ARTIFACTS" "$TMP/failed.json"
 cp "$TMP/artifacts.json" "$TMP/wrong-run-artifacts.json"
 jq '(.artifacts[0].workflow_run.id) = 999' "$TMP/artifacts.json" >"$TMP/wrong-run-artifacts.json"
