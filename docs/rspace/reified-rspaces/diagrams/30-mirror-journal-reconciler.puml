@@ -1,0 +1,122 @@
+' ============================================================================
+' 30 The ChromaDB mirror: journal, publication, writer and reconciler.
+'
+' Source of Figure N16.2 in ../design.md (section N16). The figure restates
+' MirrorCapture::writes and MirrorJournal of
+' rholang/src/rust/interpreter/spaces/mirror.rs, run_op,
+' begin_evaluation_scope and settle_mirror_journal of
+' rholang/src/rust/interpreter/reified/runtime.rs, MirrorWriter and apply of
+' rholang/src/rust/interpreter/reified/vectordb_services.rs, and start, run,
+' reconcile, prepare_dirty, remark, repair and channel_repair of
+' rholang/src/rust/interpreter/reified/mirror_reconciler.rs (design v3
+' section 4.9, decisions 58, 61 and 66). It adds no new fact.
+'
+' Reading order:
+'   1. After each commit of a VectorDB transaction, the capture computes the
+'      net writes of the transaction, and the journal of the evaluation
+'      keeps the last write of each record.
+'   2. The final result of the evaluation settles the journal (M1): a result
+'      without errors publishes it, and any other result drops it.
+'   3. One writer task applies the batches in order. A batch that the queue
+'      refuses or that fails after its attempts marks its collection dirty.
+'   4. The reconciler repairs the registered channels of each stale or dirty
+'      collection to the newest finalized block, and then sets the
+'      watermark. Consensus never reads the mirror.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 30-mirror-journal-reconciler.puml   Check: ./render.sh --check
+
+@startuml 30-mirror-journal-reconciler
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The ChromaDB mirror of a VectorDB space (decisions 58 and 66)
+
+start
+partition "CAPTURE: after each commit of a VectorDB transaction" {
+  :the receipt of the committed transaction
+  (only for a space with mirror="chroma"); <<$rrs_substrate>>
+  :NET WRITES: the first and the last event of each record id
+  stored and stays: an upsert, when the record has an embedding
+  removed, not persistent: a delete
+  stored and removed, or removed and stored again (Rule E): nothing; <<$rrs_agent>>
+  :JOURNAL of the evaluation: the last write of each id wins
+  no meter, no error path, no await; <<$rrs_agent>>
+}
+partition "SETTLE (M1): the final result of the evaluation" {
+  if (the result has no errors?\n(interpreter.rs, and the native path of rho_runtime.rs)) then (yes)
+    :take the journal: one batch for each collection; <<$rrs_agent>>
+    if (the bounded queue takes the batch?\n(try_send, 1,024 batches)) then (yes)
+      :the deploy goes on at once; <<$rrs_effect>>
+    else (no)
+      :mark the collection dirty
+      the deploy never waits; <<$rrs_reject>>
+    endif
+  else (no)
+    :drop the journal; <<$rrs_reject>>
+  endif
+  note right
+    The start of each root evaluation also drops
+    a journal that no result settled, so an
+    exploratory evaluation never publishes.
+  end note
+}
+partition "WRITER TASK: one batch at a time, in publication order" {
+  :APPLY: make the collection (its distance follows the metric)
+  register its channels, then upsert, then delete; <<$rrs_service>>
+  if (an attempt of three succeeds?\n(pauses of 100 ms, then 200 ms)) then (yes)
+    :the mirror holds the writes; <<$rrs_effect>>
+  else (no)
+    :mark the collection dirty, with its channels
+    a part of the batch can stay applied; <<$rrs_reject>>
+  endif
+}
+partition "RECONCILER: a pass for the newest finalized block" {
+  :BlockFinalised: the post-state root of the block
+  a newer block replaces one that no pass took yet; <<$rrs_host>>
+  :take the dirty marks of the writer, and PREPARE each one:
+  make the collection and register its channels; <<$rrs_service>>
+  if (the mirror lists its collections?) then (no)
+    :mark the dirty collections dirty again
+    the pass ends; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  while (a collection of the mirror is left?) is (yes)
+    if (its PREPARE failed?) then (yes)
+      :it fails this pass and stays dirty; <<$rrs_reject>>
+    elseif (its watermark is at the block, and it is not dirty?) then (yes)
+      :skip it: it is current; <<$rrs_service>>
+    else (no)
+      :REPAIR each registered channel at the finalized state:
+      delete the orphans, add the missing records; <<$rrs_service>>
+      if (every call of the repair succeeds?) then (yes)
+        :set the watermark to the larger of
+        the block and the old watermark; <<$rrs_effect>>
+      else (no)
+        :keep the watermark
+        mark a dirty collection dirty again; <<$rrs_reject>>
+      endif
+    endif
+  endwhile (no)
+}
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_substrate>  | the committed transaction (consensus state) |
+|<$rrs_host>       | the finalized state of the node |
+|<$rrs_agent>      | the capture and the journal of an evaluation |
+|<$rrs_service>    | the node services outside consensus: the writer and the reconciler |
+|<$rrs_reject>     | a dropped journal, a dirty mark, or a kept watermark |
+|<$rrs_effect>     | a completed step |
+endlegend
+@enduml

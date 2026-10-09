@@ -437,6 +437,69 @@ new models(`rho:ollama:models`) in {
 }
 ```
 
+## Reified RSpaces: vectors and the VectorDB services
+
+The VectorDB family of [Reified RSpaces](../rspace/reified-rspaces/README.md) adds three system processes.
+Each one takes the reply channel first and replies `[true, …]`, or `[false, code, detail]` with a fixed detail text.
+So `!?` and `try … catch` read a reply.
+A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call `!!` aborts it with `PersistentOpCall`.
+The [Reified RSpaces specification](../rspace/reified-rspaces/specification.md#9-system-processes-of-the-vectordb-family) states the rules.
+
+### `rho:lang:vector` (call `vec!(ret, op, x…)`)
+
+Exact vector arithmetic. The operation `op` is `"add"`, `"scale"`, `"dot"`, `"norm"` or `"distance"`.
+
+```rho
+new vec(`rho:lang:vector`), stdout(`rho:io:stdout`) in {
+  for (@r <- vec!?("dot", [1, 2], [3, 4])) {
+    stdout!(r)   // [true, 11]
+  }
+}
+```
+
+`add`, `scale` and `dot` compute exactly and reply in the widest kind of their inputs.
+Integers give an integer, a big rational or a fixed point gives a big rational, and a float gives an `f64`.
+The `f64` is one rounding of the exact value, so `dot` rounds its exact sum once.
+`norm` and `distance` reply the correctly rounded `f64` of the root of an exact square.
+The failure codes are `UnknownMethod`, `BadArgument`, `NotAVector`, `NotANumber`, `NonFiniteValue`, `MalformedNumber`, `DimensionMismatch` and `ValueOutOfRange`.
+
+### `rho:vectordb:embed` (arity 2)
+
+Embeds one text, or a list of at most 64 texts with at most 64 KiB of text, with the embedding model of the node.
+
+```rho
+new embed(`rho:vectordb:embed`), stdout(`rho:io:stdout`) in {
+  for (@r <- embed!?("a short text")) {
+    stdout!(r)   // [true, vector, "all-MiniLM-L6-v2"], or [false, code, detail]
+  }
+}
+```
+
+A vector is a list of 384 `Float32` values.
+The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
+The process is recorded: the node records each reply, and replay produces the recorded reply without a call to the model.
+
+### `rho:vectordb:ann` (arity 5)
+
+Asks the ChromaDB mirror of the node for the records of a channel of a VectorDB space that are nearest to a query.
+The arguments are the reply channel, the space, the channel, the query (a vector or a text) and the options `{"k": k}`.
+
+```rho
+new ann(`rho:vectordb:ann`), stdout(`rho:io:stdout`) in {
+  for (@space <<- @"my-space") { for (@name <<- @"my-name") {
+    for (@r <- ann!?(space, name, [1, 0], {"k": 3})) {
+      stdout!(r)   // [true, ids, distances, watermark], or [false, code, detail]
+    }
+  } }
+}
+```
+
+The ids are hints for the query param `ids` of a receive, and the exact engine of the space decides.
+The failure codes are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.
+A text query can also fail with the codes of `embed`.
+Like `embed`, the process is recorded. Replay also makes the checks of the call against consensus state, as play does.
+See [ChromaDB Integration](chromadb.md#chromadb-as-the-search-backend-of-reified-vectordb-spaces) for the mirror.
+
 ## Channel Summary
 
 | URI | Arity | Category | Deterministic |
@@ -469,3 +532,6 @@ new models(`rho:ollama:models`) in {
 | `rho:ollama:chat` | 3 | AI | No |
 | `rho:ollama:generate` | 3 | AI | No |
 | `rho:ollama:models` | 1 | AI | No |
+| `rho:lang:vector` | varies | Reified | Yes |
+| `rho:vectordb:embed` | 2 | Reified | Recorded |
+| `rho:vectordb:ann` | 5 | Reified | Recorded |

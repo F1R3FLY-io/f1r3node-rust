@@ -24,11 +24,12 @@ use std::path::{Component, Path, PathBuf};
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{ETuple, Expr, New, Par, Receive, ReceiveBind};
-use models::rust::reified::builders::{push_process_expr, use_block};
+use models::rust::reified::builders::{push_process_expr, query_spec, send_params, use_block};
 use models::rust::reified::encoding::{
     decode_free_value, decode_process_tuple, decode_query_source, marker_of, split_trailing_params,
     FreeTheory, Marker, NewSpace, QuerySpec, ReifiedConstruct, SendParams, UseBlock,
 };
+use models::rust::reified::params::SendParam;
 use models::rust::rholang::implicits::concatenate_pars;
 use models::rust::utils::new_freevar_par;
 use proptest::collection::vec;
@@ -54,7 +55,7 @@ const PROVENANCE: [(&str, &str); 3] = [
     ("parser_revision", "RRS_CAPTURE_PARSER_REVISION"),
     ("capture_command", "RRS_CAPTURE_COMMAND"),
 ];
-const ENTRY_COUNT: usize = 40;
+const ENTRY_COUNT: usize = 44;
 const PROPERTY_SEED: u64 = 0x0E0D_2026_1005_0302;
 
 fn property_config() -> ProptestConfig {
@@ -143,6 +144,26 @@ fn query_model(channel: Par, payload: Vec<Par>, named: Vec<(&str, Par)>) -> Reif
     })
 }
 
+/// The named params `named` as send params of the builders.
+fn named_params(named: Vec<(&str, Par)>) -> Vec<SendParam> {
+    named
+        .into_iter()
+        .map(|(key, value)| SendParam::Named(key.to_owned(), value))
+        .collect()
+}
+
+/// The trailing PARAMS element of a send with the named params `named`.
+fn params_element(named: Vec<(&str, Par)>) -> Par {
+    send_params(named_params(named))
+        .expect("the params of a row are valid")
+        .expect("a row with named params has a PARAMS element")
+}
+
+/// The bind source `channel ~ (payload…; named…)` of a receive query.
+fn query_source(channel: Par, payload: Vec<Par>, named: Vec<(&str, Par)>) -> Par {
+    query_spec(channel, payload, named_params(named)).expect("the query of a row is valid")
+}
+
 fn free_model(name: &str, args: Vec<Par>) -> ReifiedConstruct {
     ReifiedConstruct::Free(FreeTheory {
         name: name.to_owned(),
@@ -150,7 +171,7 @@ fn free_model(name: &str, args: Vec<Par>) -> ReifiedConstruct {
     })
 }
 
-/// The 36 corpus sources, in corpus order, each with the Reified constructs of its normalized
+/// The 44 corpus sources, in corpus order, each with the Reified constructs of its normalized
 /// Par. The model is written from the syntax contract, not from the normalizer.
 fn corpus_table() -> Vec<(&'static str, Vec<ReifiedConstruct>)> {
     let x_one = || send(gstring("x"), vec![gint(1)]);
@@ -342,6 +363,95 @@ fn corpus_table() -> Vec<(&'static str, Vec<ReifiedConstruct>)> {
         (
             r#"new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?(free Nat())) { Nil } }"#,
             vec![free_model("Nat", Vec::new())],
+        ),
+        // The P6 documentation rows: VectorDB spaces in chapter 21 and the ChromaDB mirror in
+        // docs/rholang/chromadb.md.
+        (
+            r#"new vdb(`rho:space:hashmap:vectordb`) in { for (space <- vdb!?("default"; capacity=8, dimensions=2)) { use space { @"docs"!([1, 0]) | @"docs"!([0, 1]) | for (@v <- @"docs" ~ ([1, 0])) { Nil } } } }"#,
+            vec![
+                params_model(Vec::new(), vec![
+                    ("capacity", gint(8)),
+                    ("dimensions", gint(2)),
+                ]),
+                use_model(
+                    bound_var(0),
+                    sorted(concatenate_pars(
+                        two_sends(
+                            send(gstring("docs"), vec![list(vec![gint(1), gint(0)])]),
+                            send(gstring("docs"), vec![list(vec![gint(0), gint(1)])]),
+                        ),
+                        receive_once(query_source(
+                            gstring("docs"),
+                            vec![list(vec![gint(1), gint(0)])],
+                            Vec::new(),
+                        )),
+                    )),
+                ),
+                query_model(
+                    gstring("docs"),
+                    vec![list(vec![gint(1), gint(0)])],
+                    Vec::new(),
+                ),
+            ],
+        ),
+        (
+            r#"new vdb(`rho:space:hashmap:vectordb`) in { for (space <- vdb!?("default"; capacity=8, dimensions=2, metric="euclidean")) { use space { @"docs"!("origin"; embedding=[0, 0]) | @"docs"!("far"; embedding=[3, 4]) | for (@top <- @"docs" ~ ([0, 0]; radius=5, k=2, scores=true)) { Nil } } } }"#,
+            vec![
+                params_model(Vec::new(), vec![
+                    ("capacity", gint(8)),
+                    ("dimensions", gint(2)),
+                    ("metric", gstring("euclidean")),
+                ]),
+                use_model(
+                    bound_var(0),
+                    sorted(concatenate_pars(
+                        two_sends(
+                            send(gstring("docs"), vec![
+                                gstring("origin"),
+                                params_element(vec![("embedding", list(vec![gint(0), gint(0)]))]),
+                            ]),
+                            send(gstring("docs"), vec![
+                                gstring("far"),
+                                params_element(vec![("embedding", list(vec![gint(3), gint(4)]))]),
+                            ]),
+                        ),
+                        receive_once(query_source(
+                            gstring("docs"),
+                            vec![list(vec![gint(0), gint(0)])],
+                            vec![("radius", gint(5)), ("k", gint(2)), ("scores", gbool(true))],
+                        )),
+                    )),
+                ),
+                params_model(Vec::new(), vec![(
+                    "embedding",
+                    list(vec![gint(0), gint(0)]),
+                )]),
+                params_model(Vec::new(), vec![(
+                    "embedding",
+                    list(vec![gint(3), gint(4)]),
+                )]),
+                query_model(gstring("docs"), vec![list(vec![gint(0), gint(0)])], vec![
+                    ("k", gint(2)),
+                    ("radius", gint(5)),
+                    ("scores", gbool(true)),
+                ]),
+            ],
+        ),
+        (
+            r#"new vdb(`rho:space:hashmap:vectordb`) in { for (m <- vdb!?("default"; capacity=4, dimensions=2, mirror="chroma")) { for (mn <- m!?("gensym")) { @"my-space"!(*m) | @"my-name"!(*mn) | mn!([1.0, 0.0]) | mn!([0.0, 1.0]) | mn!([1.0, 1.0]) } } }"#,
+            vec![params_model(Vec::new(), vec![
+                ("capacity", gint(4)),
+                ("dimensions", gint(2)),
+                ("mirror", gstring("chroma")),
+            ])],
+        ),
+        (
+            r#"new ann(`rho:vectordb:ann`) in { for (m <<- @"my-space") { for (mn <<- @"my-name") { for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) { match r { [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } } [false, code, _] => { @"result"!(code) } } } } } }"#,
+            vec![query_model(
+                bound_var(3),
+                vec![list(vec![gdouble(1.0), gdouble(0.0)])],
+                vec![("ids", bound_var(0)), ("k", gint(3))],
+            )],
         ),
     ]
 }
@@ -645,6 +755,19 @@ fn walk(par: &Par, slot: Slot, out: &mut Vec<ReifiedConstruct>) -> Result<(), St
     for new in &par.news {
         if let Some(body) = &new.p {
             walk(body, Slot::Process, out)?;
+        }
+    }
+    for matched in &par.matches {
+        if let Some(target) = &matched.target {
+            walk(target, Slot::Value, out)?;
+        }
+        for case in &matched.cases {
+            if let Some(pattern) = &case.pattern {
+                walk(pattern, Slot::Value, out)?;
+            }
+            if let Some(body) = &case.source {
+                walk(body, Slot::Process, out)?;
+            }
         }
     }
     Ok(())

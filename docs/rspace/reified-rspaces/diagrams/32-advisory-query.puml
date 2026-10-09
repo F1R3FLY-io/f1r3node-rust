@@ -1,0 +1,100 @@
+' ============================================================================
+' 32 The advisory query: rho:vectordb:ann, its checks, and the exact decision.
+'
+' Source of Figure N16.4 in ../design.md (section N16). The figure restates
+' ann, ann_request, query_of, option_k, ann_answer and produce_recorded of
+' rholang/src/rust/interpreter/reified/system_processes.rs, and the ids=
+' filter of eligible in
+' rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs (design v3
+' section 4.9, decisions 57, 58, 67 and 68). It adds no new fact.
+'
+' Reading order:
+'   1. Play and replay both make the checks of the call against consensus
+'      state (decision 67): the config read and the decode of a numeric
+'      query reserve host work in both modes.
+'   2. In play, the mirror of the node answers the ids of the nearest
+'      records and the watermark of the collection. The dispatcher records
+'      the reply.
+'   3. The ids are hints. A receive with the exact query param ids= turns
+'      them into a decision, and the exact order of the records decides.
+'   4. Replay makes the same checks and produces the recorded reply. It asks
+'      no embedder and no mirror.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 32-advisory-query.puml   Check: ./render.sh --check
+
+@startuml 32-advisory-query
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The advisory query: rho:vectordb:ann (decisions 57, 58 and 67)
+autonumber
+
+participant "Program\n(a deploy)" as PROG $rrs_host
+participant "rho:vectordb:ann\n[0xE0, 0x25]" as ANN $rrs_system
+participant "Config record\nC(sid) of the space" as CONFIG $rrs_storage
+participant "Embedder and mirror\nof the node" as SERVICES $rrs_service
+participant "Event log\n(the produce event of the reply)" as LOG $rrs_substrate
+participant "VectorDB space\n(the exact engine)" as SPACE $rrs_agent
+
+== Play on the proposer ==
+PROG -> ANN : ann!(ret, space, channel, query, {"k": 5})
+group the checks of decision 67: in play and in replay
+  ANN -> CONFIG : read the config (reserved on the budget of the deploy)
+  CONFIG --> ANN : the family, the params, the dimensions, the capacity
+  ANN -> ANN : a native VectorDB space? (else NotAVectorDbSpace)\nwith a mirror? (else MirrorDisabled)
+  ANN -> ANN : a text, or a numeric vector of the dimensions\nwith finite f32 values? (else DimensionMismatch or BadArgument)
+  ANN -> ANN : a map of the one key k, an Int in [1, capacity]?\n(else InvalidOption)
+end
+opt the query is a text
+  ANN -> SERVICES : embed the text
+  SERVICES --> ANN : one vector of the dimensions
+end
+ANN -> SERVICES : query(collection, channel digest, vector, k)
+SERVICES --> ANN : the ids and distances of at most k neighbours
+ANN -> SERVICES : watermark(collection)
+SERVICES --> ANN : the watermark: the finalized block\nof the last repair that finished
+ANN -> LOG : produce the reply on ret, recorded:\n[true, ids, distances, watermark]\nor [false, "MirrorUnavailable", ...]
+LOG --> PROG : the reply
+PROG -> SPACE : for (x <- docs ~ (q; ids=ids, k=1)) { ... }
+SPACE -> SPACE : eligible: only stored records whose id is in ids\na stale id names no record and selects nothing\nthe exact order decides among the others
+note right of SPACE
+  The ids are hints. Only the exact query
+  param ids= turns them into a decision,
+  so a stale mirror gives weaker advice
+  and never changes consensus state.
+end note
+
+== Replay on another node ==
+PROG -> ANN : the same call, in replay
+ANN -> CONFIG : the same checks, the same host work
+ANN -> LOG : produce the recorded reply on ret
+note over SERVICES
+  Replay asks no embedder
+  and no mirror.
+end note
+LOG --> PROG : the recorded reply
+PROG -> SPACE : the same exact query, the same decision
+
+legend bottom
+**Concept colors**
+|<$rrs_host>       | the program of the deploy |
+|<$rrs_system>     | the system process |
+|<$rrs_storage>    | the records of the space: its config |
+|<$rrs_service>    | the node services outside consensus |
+|<$rrs_substrate>  | the event log of the deploy |
+|<$rrs_agent>      | the space agent: the exact engine |
+endlegend
+@enduml

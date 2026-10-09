@@ -15,94 +15,104 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Native backend](#native-backend) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Native play](#native-play) | 2 |
-| [Admission verdict](#admission-verdict) | 2 | [Native replay](#native-replay) | 2 |
+| [Acceptance category](#acceptance-category) | 2 | [Namespace tag](#namespace-tag) | 2 |
+| [Accounting observer](#accounting-observer) | 1 | [Native backend](#native-backend) | 2 |
+| [Admission verdict](#admission-verdict) | 2 | [Native play](#native-play) | 2 |
+| [Advisory query](#advisory-query) | 2 | [Native replay](#native-replay) | 2 |
 | [Agent](#agent) | 1 | [Native space](#native-space) | 2 |
 | [Allocation job](#allocation-job) | 2 | [Negative control](#negative-control) | 2 |
-| [Allocator](#allocator) | 2 | [Op channel](#op-channel) | 2 |
-| [Binding](#binding) | 2 | [Operation order](#operation-order) | 2 |
-| [Block](#block) | 1 | [Outcome](#outcome) | 2 |
-| [Body channel](#body-channel) | 2 | [Outer store](#outer-store) | 2 |
-| [Bundle](#bundle) | 1 | [Pairing](#pairing) | 2 |
-| [Canonical form](#canonical-form) | 2 | [Par](#par) | 1 |
-| [Canonical group](#canonical-group) | 2 | [Param rule](#param-rule) | 2 |
-| [Canonical order](#canonical-order) | 2 | [Path](#path) | 2 |
-| [Capacity](#capacity) | 2 | [Path marker](#path-marker) | 2 |
-| [Cascade](#cascade) | 2 | [Pattern](#pattern) | 1 |
-| [Cell](#cell) | 2 | [Peek](#peek) | 1 |
-| [Channel](#channel) | 1 | [Persistent](#persistent) | 1 |
-| [Checkpoint](#checkpoint) | 1 | [pgmcp](#pgmcp) | 1 |
-| [Class fire](#class-fire) | 2 | [Phlo](#phlo) | 1 |
-| [Class key](#class-key) | 2 | [Play](#play) | 1 |
-| [Collection](#collection) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Collection counter](#collection-counter) | 2 | [Prefix source](#prefix-source) | 2 |
-| [Collection key](#collection-key) | 2 | [Process](#process) | 1 |
-| [COMM event](#comm-event) | 1 | [Produce counter](#produce-counter) | 2 |
-| [Config record](#config-record) | 2 | [Property-based test](#property-based-test) | 1 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Qualifier](#qualifier) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Random state](#random-state) | 1 |
-| [Constructor schema](#constructor-schema) | 2 | [Re-issue](#re-issue) | 2 |
-| [Continuation](#continuation) | 1 | [Re-offer](#re-offer) | 2 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Re-rooting](#re-rooting) | 2 |
-| [Crossed stacks](#crossed-stacks) | 2 | [Re-store](#re-store) | 2 |
-| [Datum](#datum) | 1 | [Receive](#receive) | 1 |
-| [Deploy](#deploy) | 1 | [Recognized position](#recognized-position) | 2 |
-| [Epoch closure](#epoch-closure) | 2 | [Record envelope](#record-envelope) | 2 |
+| [Allocator](#allocator) | 2 | [Net write](#net-write) | 2 |
+| [Binding](#binding) | 2 | [Op channel](#op-channel) | 2 |
+| [Block](#block) | 1 | [Operation order](#operation-order) | 2 |
+| [Body channel](#body-channel) | 2 | [Outcome](#outcome) | 2 |
+| [Bundle](#bundle) | 1 | [Outer store](#outer-store) | 2 |
+| [Canonical form](#canonical-form) | 2 | [Pairing](#pairing) | 2 |
+| [Canonical group](#canonical-group) | 2 | [Par](#par) | 1 |
+| [Canonical order](#canonical-order) | 2 | [Param rule](#param-rule) | 2 |
+| [Capacity](#capacity) | 2 | [Path](#path) | 2 |
+| [Cascade](#cascade) | 2 | [Path marker](#path-marker) | 2 |
+| [Cell](#cell) | 2 | [Pattern](#pattern) | 1 |
+| [Channel](#channel) | 1 | [Peek](#peek) | 1 |
+| [Checkpoint](#checkpoint) | 1 | [Persistent](#persistent) | 1 |
+| [Class fire](#class-fire) | 2 | [pgmcp](#pgmcp) | 1 |
+| [Class key](#class-key) | 2 | [Phlo](#phlo) | 1 |
+| [Collection](#collection) | 2 | [Play](#play) | 1 |
+| [Collection counter](#collection-counter) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [Collection key](#collection-key) | 2 | [Prefix source](#prefix-source) | 2 |
+| [COMM event](#comm-event) | 1 | [Process](#process) | 1 |
+| [Config record](#config-record) | 2 | [Produce counter](#produce-counter) | 2 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Property-based test](#property-based-test) | 1 |
+| [Conservative extension](#conservative-extension) | 2 | [Qualifier](#qualifier) | 2 |
+| [Constructor schema](#constructor-schema) | 2 | [Random state](#random-state) | 1 |
+| [Continuation](#continuation) | 1 | [Re-issue](#re-issue) | 2 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Re-offer](#re-offer) | 2 |
+| [Crossed stacks](#crossed-stacks) | 2 | [Re-rooting](#re-rooting) | 2 |
+| [Datum](#datum) | 1 | [Re-store](#re-store) | 2 |
+| [Deploy](#deploy) | 1 | [Receive](#receive) | 1 |
+| [Dirty collection](#dirty-collection) | 2 | [Recognized position](#recognized-position) | 2 |
+| [Dyadic number](#dyadic-number) | 2 | [Reconciler](#reconciler) | 2 |
+| [Eligible set](#eligible-set) | 2 | [Record envelope](#record-envelope) | 2 |
+| [Embedding](#embedding) | 2 | [Record id](#record-id) | 2 |
+| [Epoch closure](#epoch-closure) | 2 | [Recorded process](#recorded-process) | 2 |
 | [Evaluation scope](#evaluation-scope) | 2 | [Reduction participant](#reduction-participant) | 2 |
 | [Event log](#event-log) | 1 | [Registered family](#registered-family) | 2 |
 | [Exact cut](#exact-cut) | 2 | [Regression corpus](#regression-corpus) | 2 |
-| [F1r3lang](#f1r3lang) | 1 | [Reified RSpace](#reified-rspace) | 2 |
-| [Factory](#factory) | 2 | [Replay](#replay) | 1 |
-| [Factory capability](#factory-capability) | 2 | [Reporting](#reporting) | 1 |
-| [Factory row](#factory-row) | 2 | [Representative](#representative) | 2 |
-| [FIPS](#fips) | 1 | [Retention](#retention) | 2 |
-| [Fire count](#fire-count) | 2 | [Rholang](#rholang) | 1 |
-| [Fire round](#fire-round) | 2 | [Rocq](#rocq) | 1 |
+| [Exact value](#exact-value) | 2 | [Reified RSpace](#reified-rspace) | 2 |
+| [F1r3lang](#f1r3lang) | 1 | [Replay](#replay) | 1 |
+| [Factory](#factory) | 2 | [Reporting](#reporting) | 1 |
+| [Factory capability](#factory-capability) | 2 | [Representative](#representative) | 2 |
+| [Factory row](#factory-row) | 2 | [Retention](#retention) | 2 |
+| [FIPS](#fips) | 1 | [Rholang](#rholang) | 1 |
+| [Fire count](#fire-count) | 2 | [Rocq](#rocq) | 1 |
+| [Fire round](#fire-round) | 2 | [Rounding to nearest](#rounding-to-nearest) | 2 |
 | [First admitting waiter](#first-admitting-waiter) | 2 | [Routing class](#routing-class) | 2 |
 | [Footprint policy](#footprint-policy) | 2 | [RSpace](#rspace) | 1 |
 | [Frontend](#frontend) | 1 | [Scan discipline](#scan-discipline) | 2 |
 | [Gate](#gate) | 2 | [Scan driver](#scan-driver) | 2 |
 | [getSpaceAgent](#getspaceagent) | 2 | [Second send](#second-send) | 2 |
-| [Handle](#handle) | 2 | [Send](#send) | 1 |
-| [Handle capability](#handle-capability) | 2 | [Settle](#settle) | 2 |
-| [Head record](#head-record) | 2 | [Space](#space) | 2 |
-| [Head waiter](#head-waiter) | 2 | [Space agent](#space-agent) | 2 |
-| [Head-only matching](#head-only-matching) | 2 | [Space counter](#space-counter) | 2 |
-| [Headline](#headline) | 2 | [Space family](#space-family) | 2 |
-| [History trie](#history-trie) | 1 | [Space id](#space-id) | 2 |
-| [Host operation](#host-operation) | 2 | [Space intent](#space-intent) | 2 |
-| [Host work](#host-work) | 1 | [Space name](#space-name) | 2 |
-| [Hot store](#hot-store) | 1 | [Space reference](#space-reference) | 2 |
-| [Index channel](#index-channel) | 2 | [Space transaction](#space-transaction) | 2 |
-| [Index name](#index-name) | 2 | [Staged view](#staged-view) | 2 |
-| [Inductive invariant](#inductive-invariant) | 1 | [Storage channel](#storage-channel) | 2 |
-| [Inert](#inert) | 2 | [Store identity](#store-identity) | 2 |
-| [Inner collection](#inner-collection) | 2 | [Sub-order](#sub-order) | 2 |
-| [Internal operation](#internal-operation) | 2 | [Sweep](#sweep) | 2 |
-| [Invariant map](#invariant-map) | 2 | [System process](#system-process) | 1 |
-| [Join](#join) | 1 | [Tested prefix](#tested-prefix) | 2 |
-| [Join engine](#join-engine) | 2 | [Theory](#theory) | 2 |
-| [Join scope](#join-scope) | 2 | [Theory identity](#theory-identity) | 2 |
-| [Join slot](#join-slot) | 2 | [Ticket](#ticket) | 2 |
-| [Journal row](#journal-row) | 2 | [Times-repeated](#times-repeated) | 2 |
-| [KIND](#kind) | 2 | [TLA+](#tla) | 1 |
-| [Lane](#lane) | 2 | [Token](#token) | 2 |
-| [Legacy charge](#legacy-charge) | 2 | [Trigger event](#trigger-event) | 2 |
-| [Level](#level) | 2 | [Tuple space](#tuple-space) | 1 |
-| [LFS](#lfs) | 2 | [Typed reply](#typed-reply) | 2 |
-| [Lift](#lift) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [Handle](#handle) | 2 | [Selection order](#selection-order) | 2 |
+| [Handle capability](#handle-capability) | 2 | [Send](#send) | 1 |
+| [Head record](#head-record) | 2 | [Settle](#settle) | 2 |
+| [Head waiter](#head-waiter) | 2 | [Space](#space) | 2 |
+| [Head-only matching](#head-only-matching) | 2 | [Space agent](#space-agent) | 2 |
+| [Headline](#headline) | 2 | [Space counter](#space-counter) | 2 |
+| [History trie](#history-trie) | 1 | [Space family](#space-family) | 2 |
+| [Host operation](#host-operation) | 2 | [Space id](#space-id) | 2 |
+| [Host work](#host-work) | 1 | [Space intent](#space-intent) | 2 |
+| [Hot store](#hot-store) | 1 | [Space name](#space-name) | 2 |
+| [Index channel](#index-channel) | 2 | [Space reference](#space-reference) | 2 |
+| [Index name](#index-name) | 2 | [Space transaction](#space-transaction) | 2 |
+| [Inductive invariant](#inductive-invariant) | 1 | [Staged view](#staged-view) | 2 |
+| [Inert](#inert) | 2 | [Storage channel](#storage-channel) | 2 |
+| [Inner collection](#inner-collection) | 2 | [Store identity](#store-identity) | 2 |
+| [Internal operation](#internal-operation) | 2 | [Sub-order](#sub-order) | 2 |
+| [Invariant map](#invariant-map) | 2 | [Sweep](#sweep) | 2 |
+| [Join](#join) | 1 | [System process](#system-process) | 1 |
+| [Join engine](#join-engine) | 2 | [Tested prefix](#tested-prefix) | 2 |
+| [Join scope](#join-scope) | 2 | [Theory](#theory) | 2 |
+| [Join slot](#join-slot) | 2 | [Theory identity](#theory-identity) | 2 |
+| [Journal row](#journal-row) | 2 | [Ticket](#ticket) | 2 |
+| [KIND](#kind) | 2 | [Times-repeated](#times-repeated) | 2 |
+| [Lane](#lane) | 2 | [TLA+](#tla) | 1 |
+| [Legacy charge](#legacy-charge) | 2 | [Token](#token) | 2 |
+| [Level](#level) | 2 | [Trigger event](#trigger-event) | 2 |
+| [LFS](#lfs) | 2 | [Tuple space](#tuple-space) | 1 |
+| [Lift](#lift) | 2 | [Typed reply](#typed-reply) | 2 |
+| [List mode](#list-mode) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
 | [List order](#list-order) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
-| [Lock coverage](#lock-coverage) | 2 | [URN](#urn) | 1 |
-| [Lock stripe](#lock-stripe) | 1 | [Use context](#use-context) | 2 |
-| [Marker](#marker) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [LIST-CASCADE](#list-cascade) | 2 | [URN](#urn) | 1 |
+| [Lock coverage](#lock-coverage) | 2 | [Use context](#use-context) | 2 |
+| [Lock stripe](#lock-stripe) | 1 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Marker](#marker) | 2 | [VectorDB collection](#vectordb-collection) | 2 |
 | [Marker tuple](#marker-tuple) | 2 | [Vehicle](#vehicle) | 2 |
 | [Matcher](#matcher) | 2 | [Verification recipe](#verification-recipe) | 2 |
 | [Merge](#merge) | 1 | [Volatile channel](#volatile-channel) | 2 |
 | [Metered view read](#metered-view-read) | 2 | [Waiter](#waiter) | 2 |
-| [Model map](#model-map) | 2 | [Witness test](#witness-test) | 2 |
-| [Name](#name) | 1 | [Write skew](#write-skew) | 2 |
-| [Namespace tag](#namespace-tag) | 2 |  |  |
+| [Mirror](#mirror) | 2 | [Watermark](#watermark) | 2 |
+| [Mirror journal](#mirror-journal) | 2 | [Widest kind](#widest-kind) | 2 |
+| [Mirror writer](#mirror-writer) | 2 | [Witness test](#witness-test) | 2 |
+| [Model map](#model-map) | 2 | [Write skew](#write-skew) | 2 |
+| [Name](#name) | 1 |  |  |
 
 ## Part 1: background terms
 
@@ -1398,6 +1408,118 @@ It fires a staged COMM only against the candidate that its row records ([decisio
 The epoch closure marks a native replay session as failed, so every operation that waits for a row wakes and fails.
 The [native backend](#native-backend) closes the epoch when a staged operation fails, except after a published denial.
 Without the closure, an operation could wait forever for the row of a failed operation ([verification §13.7](verification.md#137-the-forged-journal-probe-and-the-epoch-closure)).
+
+### Exact value
+
+The exact value of a number is the rational number that it denotes, with no rounding.
+A float enters the numeric core of VectorDB spaces and of `rho:lang:vector` with its exact value.
+Every consensus decision of the core compares exact values ([decision 54](decision-register.md#decision-54)).
+
+### Dyadic number
+
+A dyadic number is a rational number of the form $`m \cdot 2^{e}`$ with integers $`m`$ and $`e`$.
+Every integer and every finite float is a dyadic number, so the numeric core sums such numbers as integers at one common exponent.
+
+### Rounding to nearest
+
+The rounding to nearest of an [exact value](#exact-value) $`x`$ is the `f64` value nearest to $`x`$, with ties to even, written $`\mathrm{RN}_{53}(x)`$.
+A delivered score and a float reply of `rho:lang:vector` are one rounding of an exact value, and never a rounding of a partial sum.
+
+### Widest kind
+
+The widest kind of the inputs of a call of `rho:lang:vector` is the kind of its widest input: integer, then rational, then float.
+The reply of `add`, `scale` and `dot` has that kind ([decision 66](decision-register.md#decision-66)).
+
+### VectorDB collection
+
+A VectorDB collection is a [collection](#collection) of the families `hashmap:vectordb` and `vector:vectordb`.
+Its records can carry a vector, and a receive selects records by a similarity query.
+It has no [collection counter](#collection-counter), so every record and every waiter has the order 0.
+
+### Embedding
+
+The embedding of a record of a [VectorDB collection](#vectordb-collection) is its vector.
+It is the send param `embedding`, or else the payload when the payload is one non-empty list of numbers.
+A record without an embedding is never selected by a query with a vector.
+
+### Selection order
+
+The selection order puts the better exact score first, and it keeps the [canonical order](#canonical-order) for equal scores.
+A higher similarity and a lower distance are better.
+A query without a vector keeps the canonical order.
+
+### Eligible set
+
+The eligible set of a query is the list of the records that the query can select, in the [selection order](#selection-order).
+A record is eligible when its id is among the ids of the query and its score is defined.
+Its score must also pass the threshold or the radius of the query.
+
+### List mode
+
+A receive is in list mode when its query has `k` or `results = "all"`.
+Its one bind binds the list of the first eligible records, and the receive fires in one COMM over all of them.
+A receive without these keys is in single mode, and it binds one record.
+
+### LIST-CASCADE
+
+LIST-CASCADE is the [cascade](#cascade) of a [VectorDB collection](#vectordb-collection).
+After each removal, it checks the parked waiters in [list mode](#list-mode) again.
+It fires the first one whose list is not empty, binds its pattern and passes its guard.
+So no parked waiter without a guard can fire when a transaction ends ([decision 66](decision-register.md#decision-66), LM-b).
+
+### Record id
+
+The record id of a record is the 32-byte hash of its source produce.
+It stays the same over a re-store of Rule E and over a re-issue, and it is the value that the query param `ids` takes.
+
+### Mirror
+
+The mirror of a [VectorDB collection](#vectordb-collection) is a copy of its records in the ChromaDB database of one node.
+A space has a mirror when its factory call names `mirror = "chroma"`.
+The mirror is local to the node and never enters a state root, so consensus never reads it ([decision 58](decision-register.md#decision-58)).
+
+### Net write
+
+The net write of a record in one transaction is the write that the [mirror](#mirror) needs: an upsert, a delete, or nothing.
+The first and the last event of the [record id](#record-id) in the transaction decide it.
+A peek that stores its record again writes nothing.
+
+### Mirror journal
+
+The mirror journal of an evaluation keeps the last [net write](#net-write) of each record of each collection.
+A final result with no errors publishes it to the writer of the node, and any other result drops it (M1, [decision 66](decision-register.md#decision-66)).
+
+### Dirty collection
+
+A dirty collection is a mirror collection that misses writes, because the writer of the node did not apply one of its batches.
+The next repair of the mirror on a finalized block includes it.
+
+### Mirror writer
+
+The mirror writer of a node applies the published batches of the [mirror journal](#mirror-journal) to the [mirror](#mirror), in publication order.
+A publication never waits. A batch that finds the queue full, or that fails after three attempts, makes its collection a [dirty collection](#dirty-collection).
+
+### Watermark
+
+The watermark of a mirror collection is the last finalized block whose state a repair applied to it.
+It never decreases, and `ann` reports it with its answer.
+
+### Reconciler
+
+The reconciler of a node repairs the [mirror](#mirror) to the finalized state.
+On each finalized block, it repairs each stale or [dirty collection](#dirty-collection).
+The repair sets each registered channel to the records of the finalized state, and then it sets the [watermark](#watermark).
+
+### Recorded process
+
+A recorded process is a system process whose reply the dispatcher records on the produce event of the reply.
+Replay produces the recorded reply and asks no service, so nodes with different services compute the same state.
+`rho:vectordb:embed` and `rho:vectordb:ann` are recorded processes ([decision 57](decision-register.md#decision-57)).
+
+### Advisory query
+
+An advisory query asks the [mirror](#mirror) for the ids of the records nearest to a query, through `rho:vectordb:ann`.
+Its answer is a hint: only the query param `ids` of a receive turns the ids into a decision, and the exact engine decides.
 
 ## References
 

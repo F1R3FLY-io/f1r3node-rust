@@ -21,6 +21,8 @@ Where this specification and the register differ, the register applies.
 - [6. Constructs that fail closed](#6-constructs-that-fail-closed)
 - [7. Conformance](#7-conformance)
 - [8. Native execution](#8-native-execution)
+- [9. System processes of the VectorDB family](#9-system-processes-of-the-vectordb-family)
+- [10. The ChromaDB mirror](#10-the-chromadb-mirror)
 - [References](#references)
 
 ## Scope of this version
@@ -40,8 +42,8 @@ Each new section must state the items that its extension point lists, so that a 
 | Phase | Section | Content |
 |---|---|---|
 | P5 | [2.2](#22-array) to [2.7](#27-outer-stores-of-later-phases) | The Array and Vector outer stores with their allocator, the PathMap paths, the [PathMap store](#26-the-pathmap-store), and the HashSet store of a later phase |
-| P5 | [3.2](#32-bag) to [3.9](#39-disciplines-of-later-phases) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and the [joins of one space](#38-joins) ([decision 29](decision-register.md#decision-29)) |
-| P6 | [3.9](#39-disciplines-of-later-phases) | The VectorDB discipline, its query, and its bounds |
+| P5 | [3.2](#32-bag) to [3.8](#38-joins) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and the [joins of one space](#38-joins) ([decision 29](decision-register.md#decision-29)) |
+| P6 | [3.9](#39-vectordb), [9](#9-system-processes-of-the-vectordb-family) and [10](#10-the-chromadb-mirror) | The VectorDB discipline, its query, and its bounds, the system processes of the family, and the ChromaDB mirror |
 | P7 | [4.2](#42-qualifiers-of-later-phases) and [5](#5-theories) | The `temp` and `seq` qualifiers, the sweep of their state, and the theories |
 | P8 | [6](#6-constructs-that-fail-closed) | Spaces that user agents implement |
 
@@ -916,16 +918,128 @@ The waiter W is the join `for (@x <- s & @1 <- s)` on one set collection `s`, an
 | 2 | V fires with the class of 1. | `a1` leaves and `a2` stays, so the class of 1 sits at the place of `a2`, after `b`. |
 | 3 | The cascade finds that W can fire now: its first position takes `b`, and its second position takes the class of 1. | The engine lifts `b` and offers it to W, so W fires with `x = 2`. `s` holds `a2`. |
 
-### 3.9 Disciplines of later phases
+### 3.9 VectorDB
 
-Wave W3 adds the PathMap delivery, and phase P6 adds the VectorDB discipline.
-The section of each discipline must state these items, which the trait `Discipline` of the design also names:
+A VectorDB collection holds records that can carry a vector, and a receive selects records by a similarity query.
+The FIPS puts the data into a vector DB, and a `for` consumes one vector within a distance bound of the query (`Reifying RSpaces.md:255-257`).
+The families `hashmap:vectordb` and `vector:vectordb` run `VectorDbDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:156-276`).
+A collection that a join reaches runs on the join engine instead ([section 3.8](#38-joins)).
+Section [N15 of the design](design.md#n15-phase-p6-the-vectordb-family) explains the code, and decisions 54, 56, 60 and 66 to 71 of the [register](decision-register.md) fix the behavior.
 
-- the head rule of each side, and whether an incoming entry reaches the head
-- whether the discipline uses the counters of rules OC-1 to OC-6
-- whether a receive can join a collection of the discipline with other channels
-- the named send params, the query, and their ranges
-- the rules QD-1 to QD-9 that the discipline keeps, and the rules that it replaces
+*Table 8. The items of the extension point for VectorDB.*
+
+| Item | VectorDB |
+|---|---|
+| The head rule of each side | No head. A receive selects by its query (rules VD-4 to VD-6), and a send offers itself to the parked waiters in the canonical order (rule VD-7). |
+| The counters of rules OC-1 to OC-6 | None. Every record and every waiter has the order 0 (rule VD-12). |
+| Joins | A bind in single mode joins other channels of the space. A bind in list mode fails with `ListModeInJoin` (rule VD-11). |
+| Named send params | `embedding` (rule VD-2) |
+| The query | A query vector and the keys `metric`, `threshold`, `radius`, `k`, `results`, `scores` and `ids` (rule VD-3) |
+| The rules QD-1 to QD-9 | QD-4 and QD-5 hold. Rules VD-4 to VD-7 replace QD-1 to QD-3 and QD-7, rules VD-2, VD-3 and VD-11 replace QD-8, rule VD-10 replaces QD-6, and QD-9 holds trivially with the order 0. |
+
+**Rule VD-1: factory params.** The factory takes `capacity` (required, an `Int` in $`[1, 1\,000\,000]`$) and `dimensions` (required, an `Int` in $`[1, 4\,096]`$).
+It also takes `metric` (default `cosine`), one of `cosine`, `dot`, `euclidean`, `manhattan`, `hamming` and `jaccard`, and `mirror`, which must be `"chroma"` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
+A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:158-189`).
+
+**Rule VD-2: records.** A send stores its payload with an optional vector (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657`).
+The vector is the param `embedding`, or else the payload itself when the payload is exactly one non-empty list of numbers ([decision 66](decision-register.md#decision-66)).
+A vector must have the dimensions of the space (`DimensionMismatch`), and its elements must be finite (`NonFiniteValue`).
+Any other payload has no vector, so no query with a vector selects it.
+The record keeps the vector in its envelope, and Rule E keeps the vector of a record that a peek stores again.
+
+**Rule VD-3: queries.** A receive bind with the query `~ (v; named)` reads the collection of its inner channel ([section 3.7](#37-receive-queries)).
+The checks run before any staging, in this order, so a query with several faults reports one code (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:404-511`):
+
+1. Without a query vector, the keys `ids`, `metric`, `radius`, `scores` and `threshold` fail with `QueryNeedsVector`. The keys `k` and `results` stay valid.
+2. `metric` must name one of the six metrics (`InvalidParam`). Without it, the metric of the space applies.
+3. The query vector must have the dimensions of the space, and its elements must be finite. A zero vector fails with `ZeroQueryVector` for `cosine`.
+4. `threshold` and `radius` exclude each other (`ConflictingParams`). `threshold` is a number in $`[0, 1]`$ for a similarity metric (`ThresholdNeedsSimilarity`), and `radius` is a number $`\ge 0`$ for a distance metric (`RadiusNeedsDistance`).
+5. `k` is an `Int` in $`[1, \mathit{capacity}]`$, `results` is the text `"all"`, and the two exclude each other.
+6. `scores` is a `Bool`, and `ids` is a list of 32-byte byte arrays.
+
+The similarity metrics are `cosine`, `dot` and `jaccard`, and the distance metrics are `euclidean`, `manhattan` and `hamming`.
+Only a linear bind with a simple source takes a query in source text ([syntax contract](syntax-contract.md)).
+So only the agent API can give a query to a peek or a persistent receive.
+A source program reads the canonical order with them.
+
+**Rule VD-4: the eligible records and their order.** For a query $`Q`$, the eligible set $`E`$ holds each record that passes three filters (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:881-952`):
+
+- With `ids`, the hash of the source produce of the record is one of the ids.
+- With a query vector, the score of the record is defined. So the record has a vector, a `cosine` record has a norm above 0, and a `hamming` or `jaccard` record is binary.
+- The score passes the bound `threshold` or `radius`.
+
+The records start in the canonical order of DR-75 ([decision 41](decision-register.md#decision-41)).
+With a query vector, a stable sort puts the better exact score first, and equal scores keep the canonical order (`rholang/src/rust/interpreter/tensor/exact.rs:478-521`).
+A higher similarity and a lower distance are better.
+Without a query vector, $`E`$ keeps the canonical order, so the receive is a list read of the records.
+Figure N15.2 of the design shows the selection.
+
+**Rule VD-5: single mode.** A receive without `k` and `results` takes the first record of $`E`$ whose payload its pattern binds (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1637-1689`).
+It checks its `where` guard once, on that record, and a refusal parks the receive ([decision 37](decision-register.md#decision-37)).
+The fire is one COMM over $`[D]`$. With `scores = true`, the receive binds `[score, value]`.
+Without a record, the receive parks, with its query in the policy slot of its envelope.
+
+**Rule VD-6: list mode.** A receive with `k` or `results = "all"` binds one value: the list of the first $`\min(k, |E|)`$ records of $`E`$, or of all of $`E`$ (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1068-1117`).
+Each element of the list is the payload value of a record, or `[score, value]` with `scores = true`.
+The payload value of a send with one datum is that datum.
+The payload value of a send with $`n`$ data is the list of the $`n`$ data.
+
+The receive fires when the list is not empty, its pattern binds the list, and its guard admits the list. The guard is checked once.
+The fire is one COMM over $`[D; m]`$ for the $`m`$ records of the list. Otherwise the receive parks on $`[D]`$ with its query (LM-b, [decision 66](decision-register.md#decision-66)).
+
+**Rule VD-7: sends.** A send offers its datum $`x`$ to the parked waiters in the canonical order (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1422-1471`):
+
+- A single-mode waiter takes $`x`$ when $`x`$ is eligible for its query, its pattern binds $`x`$, and its guard admits.
+- A list waiter $`W`$ takes $`x`$ when $`x`$ is in the list $`L(W, R + x)`$, its pattern binds that list, and its guard admits.
+- A waiter without a query takes $`x`$ as a bag waiter does.
+- A guard refusal moves the send to the next waiter ([decision 37](decision-register.md#decision-37)).
+
+The fire is one COMM over $`[D]`$ that binds $`x`$.
+When a list waiter does not peek, each other non-persistent member of its list leaves through a `K_retire` COMM in the same transaction (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1151-1194`).
+A send that no waiter takes is stored, below the capacity (rule VD-12).
+
+**Rule VD-8: fires and rounds.** Table 6 of rule QD-4 decides the survivors of each fire, and rule QD-5 decides the next step.
+One fire count runs through the transaction, its tail included ([decision 49](decision-register.md#decision-49)).
+A divergent pair re-issues the operation at the end of the transaction, after the tail. A stop at `FIRE_ROUND_CAP` carries the owed work in one settle job.
+A re-issued element keeps its record and its identity ([decision 43](decision-register.md#decision-43)).
+
+**Rule VD-9: peeks.** A peek fire removes each non-persistent record that it binds, as the host COMM does ([decision 45](decision-register.md#decision-45), Rule E).
+The same transaction sends each removed record again with its vector, the last owed record first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1773-1808`).
+A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
+
+**Rule VD-10: LIST-CASCADE.** After each removal, the tail checks the parked list waiters in the canonical order (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1860-1954`).
+It fires the first waiter whose list $`L(W, R)`$ is not empty, binds its pattern and passes its guard.
+The fire lifts the first member of the list with `K_lift`, when the member is not persistent, and offers it to the waiter.
+The tail repeats until no parked list waiter can fire, or until the fire count reaches `FIRE_ROUND_CAP`.
+
+So at the end of each transaction, no parked waiter without a guard can fire on the records (`vdb_no_pending_match`, S22 of `VectorDbDiscipline.v`).
+A waiter that its guard refused on a better record can still fire later on a worse one ([decision 37](decision-register.md#decision-37)).
+
+**Rule VD-11: joins.** A join of the space can name a VectorDB collection in single mode ([section 3.8](#38-joins)).
+Each bind sees its own eligible records in its own order, and the engine fires the join over one record of each bind (`JoinWindow::Similarity`).
+A removal never makes a single-mode join waiter without a guard fireable, so single-mode joins need no cascade.
+A bind in list mode fails the join with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:409-465`).
+Without a query, a VectorDB bind of a join reads the canonical order.
+
+**Rule VD-12: capacity and merges.** A VectorDB collection has no counter, so every record and every waiter has the order 0.
+A store fails with `CapacityExceeded` when the collection holds `capacity` records, before anything is staged (`rholang/src/rust/interpreter/spaces/generic.rs:946-963`).
+A store of Rule E never exceeds the capacity, because its COMM removed the record in the same transaction.
+
+Two concurrent branches that write one collection merge with no conflict, as on a host channel.
+So `capacity` is a soft bound ([decision 71](decision-register.md#decision-71)).
+A merge can exceed it by the stores of the merged branches.
+Every store then fails until removals bring the count below `capacity`.
+
+**Rule VD-13: delivered values.** Every decision of the discipline compares exact values ([decision 54](decision-register.md#decision-54)).
+A delivered score is the `f64` nearest to the exact value, with ties to even, written $`\mathrm{RN}_{53}`$ (`rholang/src/rust/interpreter/tensor/exact.rs:578-599`).
+`cosine` and `euclidean` deliver the correctly rounded square root of an exact value.
+A delivered value beyond the finite range of `f64` fails with `ValueOutOfRange`.
+Figure N15.1 of the design shows the number model.
+
+**Rule VD-14: work in native execution.** Every read, decode, comparison and copy of the discipline is reserved before it runs ([decision 42](decision-register.md#decision-42)).
+At the v6 limits of native execution, a natively certified deploy holds only a small VectorDB collection.
+In native play, 8 records and 8 list waiters use 0.54 of the limit of `VerificationBytes`, and 16 of each exceed it ([verification section 16](verification.md#16-phase-p6-step-5-native-certification-of-the-vectordb-shapes)).
+A program at the round cap needs about 19 times that limit in native replay.
 
 ## 4. Qualifiers
 
@@ -966,11 +1080,11 @@ Phase P8 replaces the code `AgentSpacesUnavailable` with the rules of spaces tha
 
 ## 7. Conformance
 
-Table 8 maps each rule to the formal evidence and to the tests that check it.
+Table 9 maps each rule to the formal evidence and to the tests that check it.
 The [verification dossier](verification.md#11-phase-p4-the-hashmapqueue-slice) gives the commands and the results.
 A Rocq theorem shows the file and the line of its statement, and a TLA+ invariant shows its id in the invariant map.
 
-*Table 8. The rules of this specification and their evidence.*
+*Table 9. The rules of this specification and their evidence.*
 
 | Rule | Formal evidence | Tests |
 |---|---|---|
@@ -1076,6 +1190,33 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play` |
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
 | NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
+| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2283`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
+| VD-2 | None | `space_vectordb_payload_is_the_vector_by_default`, `space_vectordb_peek_restores_records_with_their_embedding` |
+| VD-3 | None | `space_vectordb_errors_have_their_codes`, `space_vectordb_source_errors_have_their_codes`, `space_vectordb_fixed_point_and_rational_thresholds` |
+| VD-4 | `cosine_squared_form_iff` (`Similarity.v:412`), `cosine_order_squared_form` (`Similarity.v:471`), `euclidean_radius_squared_form` (`Similarity.v:545`), `binary_laws` (`Similarity.v:1042`), `selection_total_order` (`Similarity.v:1169`) | `prop_selection_order_is_a_strict_total_order`, `space_vectordb_bounds_select_the_eligible_records`, `space_vectordb_ids_keep_only_the_listed_records`, `space_vectordb_binary_metrics_read_binary_vectors_only`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order` |
+| VD-5 | `topk_deterministic` (`Similarity.v:1199`) | `prop_topk_is_deterministic`, `space_vectordb_single_mode_takes_the_best_record`, `space_vectordb_guard_refusal_parks_until_a_worse_record_passes` |
+| VD-6 | `list_selection_deterministic` (`Similarity.v:1278`) | `prop_vectordb_list_is_ordered_and_complete`, `space_vectordb_list_mode_delivers_one_list_in_selection_order` |
+| VD-7 | the TLA+ invariant `ListAtomic` (W2) | `prop_vectordb_list_fires_are_atomic`, `space_vectordb_ce1_list_waiter_fires_with_the_incoming_datum` |
+| VD-8 | `vdb_txn_bounded` (`VectorDbDiscipline.v:924`), the TLA+ invariant `CascadeTerminates` (W4) | `prop_vectordb_transactions_are_bounded`, `space_vectordb_list_cascade_carries_at_the_cap` |
+| VD-9 | `vdb_no_record_lost` (`VectorDbDiscipline.v:1082`), the TLA+ invariant `PeekConservation` (W3) | `prop_vectordb_records_are_conserved`, `space_vectordb_cascade_peek_restores_the_lifted_member` |
+| VD-10 | `vdb_no_pending_match` (`VectorDbDiscipline.v:662`), `vdb_list_needs_cascade` (`VectorDbDiscipline.v:1311`), the TLA+ invariant `QuiescentNoPendingMatch` (U1) | `prop_vectordb_no_pending_match`, `space_vectordb_ce2_removal_cascade_fires_the_list_waiter` |
+| VD-11 | `vdb_join_removal_exposes_nothing` (`VectorDbDiscipline.v:781`) | `prop_vectordb_driver_and_engine_agree`, `space_vectordb_join_binds_each_position_by_its_query`, `space_vectordb_list_mode_in_a_join_fails`, `space_vectordb_join_waiter_fires_on_an_eligible_send` |
+| VD-12 | `capped_writes_soft_bound` (`CounterConflict.v:2383`) | `prop_vectordb_capacity_soft_bound`, `space_collection_conflicts_vectordb_capacity_soft_bound`, `prop_vectordb_writes_commute`, `space_vectordb_capacity_bounds_records_not_waiters` |
+| VD-13 | `squared_forms_embed` (`Similarity.v:1000`), `root_midpoint_nearest` (`VectorOps.v:367`) | `prop_dyadic_and_rational_kernels_agree`, `space_vectordb_scores_are_the_correctly_rounded_exact_scores`, `tensor_square_roots_are_correctly_rounded` |
+| VD-14 | None | `space_native_vectordb_errors_reproduce`, `space_native_vectordb_cascade_carries_at_the_cap`, `space_native_vectordb_denial_replay`, `space_vectordb_reservation_cut_rejects_without_effect` |
+| SP-1 | None | `vector_ops_params_and_persistent_sends_abort`, `vectordb_embed_and_ann_reject_params_and_persistent_sends` |
+| SP-2 | `vector_replies_exact` (`VectorOps.v:264`), `root_midpoint_nearest` (`VectorOps.v:367`), `dot_laws` (`Similarity.v:658`), `distance_laws` (`Similarity.v:745`) | `prop_vector_ops_agree_with_an_exact_oracle`, `prop_vector_ops_float_inputs_give_floats`, `prop_vector_ops_roots_are_correctly_rounded`, `vector_ops_failures_reply_their_codes` |
+| SP-3 | None | `vectordb_embed_replies_and_codes` |
+| SP-4 | the TLA+ invariant `EqualHostWork` (W7) | `vectordb_ann_replies_and_codes`, `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| SP-5 | the TLA+ invariant `ConsensusIndependentOfMirror` (W5), the TLA+ invariant `AdvisoryRecorded` (W6) | `vectordb_embed_replay_equal`, `vectordb_ann_replay_equal`, `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| SP-6 | None | `vectordb_config_reports_the_mirror` |
+| MR-1 | the TLA+ invariant `NetWritesExact` (W9) | `prop_mirror_capture_net_writes_are_the_change`, `mirror_capture_net_writes_follow_the_first_and_the_last_event`, `mirror_rule_e_coalesces` |
+| MR-2 | the TLA+ invariant `PublishOnlyOnSuccess` (W8) | `prop_mirror_journal_keeps_the_last_write`, `mirror_exploratory_evaluation_publishes_nothing`, `mirror_journal_keeps_the_last_write_of_a_deploy` |
+| MR-3 | the TLA+ invariant `PublishOnlyOnSuccess` (W8) | `prop_mirror_tracks_the_published_deploys`, `mirror_journal_drops_failed_deploy`, `mirror_replay_publishes_its_own_journal` |
+| MR-4 | the TLA+ invariant `PublishNeverWaits` (W10) | `prop_mirror_writer_applies_the_accepted_batches`, `mirror_never_blocks_deploy` |
+| MR-5 | the TLA+ invariant `ReconciledEqualsFinalizedView` (W11), the TLA+ invariant `WatermarkHonest` (W12) | `prop_mirror_reconcile_repairs_the_finalized_view`, `prop_mirror_reconciler_watermarks_follow_finished_repairs`, `mirror_reconcile_removes_orphans`, `mirror_reconcile_repairs_a_dirty_collection` |
+| MR-6 | None | `mirror_restart_rescans_reports`, `mirror_reconciler_follows_the_finalized_blocks` |
+| MR-7 | None | `vectordb_services_default_to_unavailable` |
 
 No model states the rules OC-4, QD-8, AL-6, AL-8, PP-3, PP-4 and JN-1, because they are checks of limits, of input or of fail-closed rules.
 Their tests show each abort.
@@ -1111,6 +1252,113 @@ The failed operation has no effect, and the failure closes the epoch of the sess
 
 **Rule NE-5: scheduling.** The transactions of one space run in one conflict group, in operation order, by the per-space key of [I-11](decision-register.md#i-11).
 So every predecessor of a space row is complete when the row begins.
+
+## 9. System processes of the VectorDB family
+
+Three system processes serve the VectorDB family ([decision 57](decision-register.md#decision-57)).
+Table 10 names them, and section [N16 of the design](design.md#n16-phase-p6-the-chromadb-search-backend) explains their code.
+
+*Table 10. The system processes of the VectorDB family.*
+
+| URN | Channel | Body reference | Call |
+|---|---|---|---|
+| `rho:lang:vector` | `[0xE0, 0x23]` | 235 | `vec!(ret, op, x…)` |
+| `rho:vectordb:embed` | `[0xE0, 0x24]` | 236 | `embed!(ret, texts)` |
+| `rho:vectordb:ann` | `[0xE0, 0x25]` | 237 | `ann!(ret, space, channel, query, options)` |
+
+**Rule SP-1: calls and replies.** Each process takes the reply channel first, so `!?` applies.
+It replies `[true, value…]`, or `[false, code, detail]` with a fixed detail text, so `try … catch` reads the reply.
+A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call `!!` aborts it with `PersistentOpCall`.
+
+**Rule SP-2: the operations of `rho:lang:vector`.** The call `vec!?(op, x…)` names one of five operations (`rholang/src/rust/interpreter/tensor/ops.rs:234-272`):
+
+- `add(a, b)` and `scale(v, s)` reply a vector, and `dot(a, b)` replies a number.
+- `norm(v)` and `distance(a, b)` reply the `f64` nearest to the root of an exact square, with ties to even.
+
+`add`, `scale` and `dot` compute exactly, and they reply in the widest kind of their inputs ([decision 66](decision-register.md#decision-66)).
+When every input is an integer or a Boolean, the reply is a `GInt`, or a `GBigInt` when the value does not fit.
+When an input is a big rational or a fixed point and no input is a float, the reply is a `GBigRat`.
+When an input is a float, the reply is a `GDouble`, the one rounding of the exact value.
+So `dot` rounds its exact sum once, and never a partial sum ([decision 54](decision-register.md#decision-54), `vector_replies_exact`, S27 of `VectorOps.v`).
+The reply of `norm` and `distance` is correctly rounded (`root_midpoint_nearest`, S28 of `VectorOps.v`).
+
+The failure codes are `UnknownMethod`, `BadArgument`, `NotAVector`, `NotANumber`, `NonFiniteValue`, `MalformedNumber`, `DimensionMismatch` and `ValueOutOfRange`.
+The process reserves its work on the host-work budget of the deploy, and a rejection fails the deploy (`rholang/src/rust/interpreter/reified/system_processes.rs:316-340`).
+
+**Rule SP-3: `embed`.** The argument is one text, or a non-empty list of texts (`rholang/src/rust/interpreter/reified/system_processes.rs:366-409`).
+A call holds at most 64 texts and at most 64 KiB of text. Otherwise the reply is `EmbeddingRateLimited`.
+
+Play asks the embedder of the node, and it replies `[true, vector, model]` for one text or `[true, [vector…], model]` for a list.
+Each vector is a list of `GFloat32` values. The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
+
+**Rule SP-4: `ann`.** Play and replay both make the checks of the call against consensus state, in this order ([decision 67](decision-register.md#decision-67), `rholang/src/rust/interpreter/reified/system_processes.rs:492-535`):
+
+1. `space` is a native VectorDB space (`NotAVectorDbSpace`) with a mirror (`MirrorDisabled`).
+2. `query` is a text, or a numeric vector of the dimensions of the space whose elements are finite as `f32` values (`DimensionMismatch`, `BadArgument`).
+3. `options` is a map of the one key `k`, an `Int` in $`[1, \mathit{capacity}]`$ (`InvalidOption`).
+
+In play, the embedder of the node embeds a text query, and the mirror of the node answers the nearest records of `channel` (`rholang/src/rust/interpreter/reified/system_processes.rs:590-635`).
+The reply is `[true, ids, distances, watermark]`.
+It holds at most $`k`$ record ids as 32-byte byte arrays, their distances as `GFloat32` values, and the watermark as an `Int`.
+A mirror that does not answer gives the reply `MirrorUnavailable`.
+The ids are hints. Only the query param `ids=` of a receive turns them into a decision, and the exact order of rule VD-4 decides ([decision 58](decision-register.md#decision-58)).
+
+**Rule SP-5: recorded replies.** `embed` and `ann` are recorded processes: they are in `non_deterministic_ops()`, so the dispatcher records each reply on the produce event of the reply.
+A failure reply is recorded too.
+Replay produces the recorded reply and asks no embedder and no mirror, so two nodes with other services compute the same state.
+Both processes run in native execution ([decision 68](decision-register.md#decision-68)).
+
+**Rule SP-6: the `config` reply of a mirrored space.** The reply of `space!?("config")` holds one more entry for a space with a mirror (`rholang/src/rust/interpreter/reified/handle.rs:505-531`).
+The entry `"mirror"` is the map `{"backend": "chroma", "collection": c}`.
+Here `c` is `rrs-` and the lowercase hex of the first 16 bytes of the space id.
+The stored config record does not change, so the name of the collection is never consensus state.
+
+## 10. The ChromaDB mirror
+
+A VectorDB space with the factory param `mirror = "chroma"` has a mirror on each node ([decision 58](decision-register.md#decision-58)).
+The mirror is a copy of the records of the space in the ChromaDB database of the node.
+It is a hint index for `ann`: it never decides a COMM, and nothing in consensus reads it.
+Section [N16 of the design](design.md#n16-phase-p6-the-chromadb-search-backend) explains the code, and [`docs/rholang/chromadb.md`](../../rholang/chromadb.md) explains how to run a node with a mirror.
+
+**Rule MR-1: net writes.** After each commit of a transaction of a mirrored space, the node computes the net writes of the transaction (`rholang/src/rust/interpreter/spaces/mirror.rs:236-313`).
+The first and the last event of each record id decide:
+
+- A record that the transaction stores and keeps is an upsert, when the record has a vector whose elements are finite as `f32` values.
+- A non-persistent record that the transaction removes is a delete.
+- A record that the transaction stores and removes again, and a record that a peek removes and Rule E stores again, write nothing.
+
+A delete names every removed record, also a record without a vector. The mirror never holds such a record, so the delete has no effect.
+The computation has no meter, no error path and no wait, so it never changes the outcome, the events or the charges of a transaction.
+
+**Rule MR-2: the journal.** The journal of an evaluation keeps the last net write of each record id of each collection (`rholang/src/rust/interpreter/spaces/mirror.rs:408-457`).
+The start of each root evaluation drops a journal that no result settled (`rholang/src/rust/interpreter/reified/runtime.rs:95-108`).
+So an exploratory evaluation never publishes, and its writes never reach the next deploy.
+
+**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:205-210`, [decision 66](decision-register.md#decision-66)).
+The two settle points are `rholang/src/rust/interpreter/interpreter.rs:257` for play and `rholang/src/rust/interpreter/rho_runtime.rs:1808` for native replay.
+Native replay publishes to the mirror of the node that replays, so a validator keeps its mirror current from the blocks that it certifies.
+A node that plays and then certifies one deploy publishes its batch twice, and the upserts by id make the second publication change nothing.
+
+**Rule MR-4: the writer.** One task of the node applies the batches in publication order, from a bounded queue of 1,024 batches (`rholang/src/rust/interpreter/reified/vectordb_services.rs:455-499`).
+For each batch, it makes the collection, registers the channels of the batch, upserts the records and deletes the ids.
+A batch that fails is applied again from its start, with at most 3 attempts. The pauses between the attempts are 100 and 200 milliseconds.
+A publication never waits: a batch that finds the queue full, or that fails after its attempts, marks its collection dirty.
+
+**Rule MR-5: the reconciler.** On each finalized block, the reconciler of the node runs one pass for the newest finalized block that no pass took yet (`rholang/src/rust/interpreter/reified/mirror_reconciler.rs:139-212`).
+The pass makes each dirty collection and registers its channels first.
+It then repairs each collection whose watermark is below the block, or that is dirty.
+
+A repair sets each registered channel to the records of the finalized state: it deletes the orphans and adds the missing records.
+A repair that finishes sets the watermark to the larger of the block and the old watermark. A failed call keeps the watermark, and a dirty collection stays dirty.
+
+**Rule MR-6: the limits of the mirror.** The mirror reflects the finalized view of the registered channels, and `ann` reports the watermark of that view.
+The optimistic writes of later blocks leave the mirror at each pass, until those blocks are finalized.
+After an LFS bootstrap, the records of a channel that the node never journaled are absent until the channel changes.
+After a restart, the dirty marks of the writer are lost. A failed batch is repaired only when its channels were registered before the failure, or when they change again.
+
+**Rule MR-7: nodes without a mirror.** A node without the `chromadb` feature, or without a ChromaDB endpoint, has no writer, and it starts no reconciler (`rholang/src/rust/interpreter/reified/mirror_reconciler.rs:373-411`).
+Its publications drop their batches, and `ann` replies `MirrorUnavailable` in play.
+Each node of a shard has its own database (`CHROMA_DATABASE`), so a node never writes the mirror of another node ([decision 61](decision-register.md#decision-61)).
 
 ## References
 

@@ -168,3 +168,114 @@ new deleteEntries(`rho:chroma:collection:entries:delete`), stdout(`rho:io:stdout
   }
 }
 ```
+
+## ChromaDB as the search backend of Reified VectorDB spaces
+
+Phase P6 of Reified RSpaces adds the VectorDB spaces `rho:space:hashmap:vectordb` and `rho:space:vector:vectordb`.
+A VectorDB space can keep a copy of its records in ChromaDB, its mirror, and answer advisory queries from it.
+This section explains how the mirror works and how to run a node with it.
+The rules are in the [Reified RSpaces specification](../rspace/reified-rspaces/specification.md#10-the-chromadb-mirror), and the [design](../rspace/reified-rspaces/design.md#n16-phase-p6-the-chromadb-search-backend) explains the code.
+
+The mirror differs from the `rho:chroma:*` channels above in one main point: it never decides a consensus result.
+The exact engine of the space selects every record that a receive takes, and the mirror only gives hints.
+So a node with a stale mirror, or with no mirror, computes the same state as every other node.
+
+### The three layers
+
+A VectorDB space has three layers:
+
+1. The frontend: the factory, the sends with the param `embedding`, and the receives with similarity queries.
+2. RSpace: the store of the consensus records, with the state root, replay, merges and LFS.
+3. ChromaDB: an optional mirror of the records on each node, which answers the advisory query `rho:vectordb:ann`.
+
+A space has a mirror when its factory call names `mirror = "chroma"`.
+The space must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`.
+
+### Embeddings and advisory queries
+
+Two system processes connect a program to the services of a node.
+Each one takes the reply channel first and replies `[true, …]` or `[false, code, detail]`.
+A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call aborts it with `PersistentOpCall`.
+
+- `rho:vectordb:embed` embeds one text, or a list of at most 64 texts with at most 64 KiB of text. It replies `[true, vector, model]`, or `[true, [vector…], model]` for a list. The model of a node is `all-MiniLM-L6-v2`, with 384 dimensions.
+- `rho:vectordb:ann` takes a mirrored space, a channel of the space, a query and the options `{"k": k}`. It replies `[true, ids, distances, watermark]`: the ids of at most $`k`$ nearest records, their distances, and the last finalized block that the mirror reflects.
+
+The failure codes of `embed` are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
+The failure codes of `ann` are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.
+A text query of `ann` can also fail with the codes of the embedder.
+
+Both processes are recorded processes.
+The node records each reply, a failure reply included, and replay produces the recorded reply without a call to the embedder or the mirror.
+Before it produces the reply, replay makes the checks of `ann` against consensus state, as play does.
+Both processes run in native execution.
+
+An id of `ann` is the 32-byte hash of the source produce of a record.
+A program passes the ids to a receive with the query param `ids=`.
+The exact engine then keeps only the stored records whose id is among them.
+A stale id names no record, so it selects nothing.
+The exact order of the query decides among the other records, and not the order of the mirror.
+
+### Example
+
+The mirror receives the records of a deploy only after the deploy succeeds.
+So the example stores the records in one deploy, and it queries them in a later deploy.
+The first deploy makes a space with a mirror, takes a name of the space, and stores three vectors under it.
+
+```rholang
+new vdb(`rho:space:hashmap:vectordb`) in {
+  for (m <- vdb!?("default"; capacity=4, dimensions=2, mirror="chroma")) {
+    for (mn <- m!?("gensym")) {
+      @"my-space"!(*m) | @"my-name"!(*mn) |
+      mn!([1.0, 0.0]) | mn!([0.0, 1.0]) | mn!([1.0, 1.0])
+    }
+  }
+}
+```
+
+The second deploy asks the mirror for the three nearest records, and then it lets the exact engine select among them.
+
+```rholang
+new ann(`rho:vectordb:ann`) in {
+  for (m <<- @"my-space") { for (mn <<- @"my-name") {
+    for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) {
+      match r {
+        [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
+        [false, code, _]  => { @"result"!(code) }
+      }
+    }
+  } }
+}
+```
+
+The receive binds the list of the selected vectors, in the exact order of the query.
+
+### How the mirror stays current
+
+The mirror follows the finalized state of the space through four steps:
+
+1. **Journal.** After each committed transaction, the node computes its net writes. A new record that stays is an upsert, and a removed record is a delete. A peek writes nothing.
+2. **Publication.** A deploy whose final result has no errors publishes its journal to the writer of the node. A failed deploy publishes nothing.
+3. **Writer.** One task applies the batches in order, from a queue of 1,024 batches, with up to 3 attempts. A publication never waits: a full queue or a failed batch marks its collection dirty.
+4. **Reconciler.** On each finalized block, the reconciler repairs each collection that is dirty or older than the block. It sets each registered channel to the records of the finalized state, and then it sets the watermark of the collection.
+
+A node that replays a block publishes the deploys of the block to its own mirror.
+The mirror reflects the finalized blocks, and `ann` reports the watermark of that view.
+After an LFS bootstrap, the records of a channel that the node never journaled are absent until the channel changes.
+After a restart, the dirty marks of the writer are lost, so a failed batch is repaired when its channels change again.
+
+### Running a node with the mirror
+
+To run a node with the mirror, do these steps:
+
+1. Build the node with the `chromadb` feature of the rholang crate: `cargo build -p node --release --features rholang/chromadb`.
+2. Start a ChromaDB server of the pinned image: `docker compose -f docker/shard.yml --profile chromadb up`.
+3. Set `CHROMA_ENDPOINT` for each node. `docker/shard.yml` sets it to `http://chroma-db:8000`.
+4. Give each node its own `CHROMA_DATABASE`, so that no node writes the mirror of another node.
+
+The node makes its database on the first call.
+Each collection of a space is named `rrs-` and the lowercase hex of the first 16 bytes of the space id.
+The reply of `space!?("config")` reports it under the key `mirror`.
+A node without the feature, or without an endpoint, has no mirror: its publications drop, and `ann` replies `MirrorUnavailable`.
+
+The repository tests the backend against a real server with `bash scripts/verify-reified/chroma-live.sh`.
+The script starts a disposable server of the pinned image, and it gives each run a new database.

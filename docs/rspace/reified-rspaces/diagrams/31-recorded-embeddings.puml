@@ -1,0 +1,85 @@
+' ============================================================================
+' 31 Recorded embeddings: rho:vectordb:embed in play and in replay.
+'
+' Source of Figure N16.3 in ../design.md (section N16). The figure restates
+' embed, embed_reply, embed_texts and produce_recorded of
+' rholang/src/rust/interpreter/reified/system_processes.rs, the quota and
+' the reply codes of rholang/src/rust/interpreter/reified/vectordb_services.rs,
+' and the recorded processes of non_deterministic_ops() in
+' rholang/src/rust/interpreter/system_processes.rs (decisions 52, 57, 58 and
+' 68). It adds no new fact.
+'
+' Reading order:
+'   1. Play on the proposer: the process checks the shape and the quota of
+'      the texts, asks the embedder of the node, and replies.
+'   2. The dispatcher records the whole reply on the produce event of the
+'      reply, a failure reply included.
+'   3. The program sends a record with embedding=, so the vector is
+'      consensus state from then on.
+'   4. Replay on another node produces the recorded reply and asks no
+'      embedder, so the two nodes compute the same state.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 31-recorded-embeddings.puml   Check: ./render.sh --check
+
+@startuml 31-recorded-embeddings
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Recorded embeddings: rho:vectordb:embed (decisions 57 and 68)
+autonumber
+
+participant "Program\n(a deploy)" as PROG $rrs_host
+participant "rho:vectordb:embed\n[0xE0, 0x24]" as EMBED $rrs_system
+participant "Embedder of the node\n(all-MiniLM-L6-v2, 384)" as MODEL $rrs_service
+participant "Event log\n(the produce event of the reply)" as LOG $rrs_substrate
+participant "VectorDB space\n(consensus state)" as SPACE $rrs_storage
+
+== Play on the proposer ==
+PROG -> EMBED : embed!(ret, "a text")  or  embed!(ret, [text...])
+EMBED -> EMBED : check the shape: one text, or a list of texts\n(else the reply [false, "BadArgument", ...])
+EMBED -> EMBED : check the quota: at most 64 texts and 64 KiB\n(else the reply [false, "EmbeddingRateLimited", ...])
+EMBED -> MODEL : embed(texts)
+MODEL --> EMBED : one vector of f32 values for each text
+EMBED -> LOG : produce the reply on ret\n[true, vector, model], or [true, [vector...], model]
+note right of LOG
+  The dispatcher records the whole reply,
+  a reply [false, code, detail] included,
+  because the process is a recorded process
+  (non_deterministic_ops()).
+end note
+LOG --> PROG : the reply
+PROG -> SPACE : docs!(text; embedding=vector)
+SPACE -> SPACE : OFFER-VDB the record with its embedding:\nit fires a waiter, or the space stores it\n(consensus state from now on)
+
+== Replay on another node ==
+PROG -> EMBED : the same call, in replay
+EMBED -> LOG : produce the recorded reply on ret
+note over MODEL
+  Replay asks no embedder. Two nodes with
+  other models compute the same state.
+end note
+LOG --> PROG : the recorded reply
+PROG -> SPACE : the same send, with the same embedding
+
+legend bottom
+**Concept colors**
+|<$rrs_host>       | the program of the deploy |
+|<$rrs_system>     | the system process |
+|<$rrs_service>    | the node service outside consensus |
+|<$rrs_substrate>  | the event log of the deploy |
+|<$rrs_storage>    | the records of the space |
+endlegend
+@enduml

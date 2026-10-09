@@ -1,0 +1,100 @@
+' ============================================================================
+' 33 The number model of the VectorDB family and of rho:lang:vector.
+'
+' Source of Figure N15.1 in ../design.md (section N15). The figure restates
+' number_of, vector_of, round_to_f64 and sqrt_to_f64 of
+' rholang/src/rust/interpreter/tensor/num.rs, dot, distance2, manhattan,
+' better, within, rank and delivered of
+' rholang/src/rust/interpreter/tensor/exact.rs, and evaluate and number_par of
+' rholang/src/rust/interpreter/tensor/ops.rs (design v3 sections 4.1 and 4.7,
+' decisions 41, 42, 54 and 66). It adds no new fact.
+'
+' Reading order:
+'   1. INGRESS turns each number into its exact value: a dyadic number or a
+'      reduced rational. A float enters with its exact value.
+'   2. The kernels compute exactly, with no rounding of a partial sum.
+'   3. Every decision compares exact values: the bounds, the order of the
+'      scores, and the tie-break by the canonical rank.
+'   4. A delivered value is one rounding of an exact value to f64. A square
+'      root is rounded correctly.
+'   5. rho:lang:vector replies in the widest kind of its inputs.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 33-number-model.puml   Check: ./render.sh --check
+
+@startuml 33-number-model
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The number model of VectorDB spaces and rho:lang:vector (decision 54)
+
+start
+partition "INGRESS: the exact value of each number (num.rs)" {
+  :a numeric Par: one expression, no connective; <<$rrs_storage>>
+  split
+    :GInt, GBigInt, GBool
+    a dyadic number <latex>m \cdot 2^{0}</latex>; <<$rrs_agent>>
+  split again
+    :GDouble, GFloat32: the exact value of the float
+    a dyadic number <latex>m \cdot 2^{e}</latex>
+    NaN and the infinities: NonFiniteValue
+    the zero <latex>-0</latex> enters as <latex>0</latex>; <<$rrs_agent>>
+  split again
+    :GBigRat, GFixedPoint: the reduced rational <latex>n / d</latex>
+    dyadic when <latex>d</latex> is a power of two
+    a fixed-point scale above 4,096: ValueOutOfRange; <<$rrs_agent>>
+  end split
+  :a vector: dyadic when every element is dyadic, else rational
+  a wrong length: DimensionMismatch; <<$rrs_agent>>
+}
+partition "KERNELS: exact, with no rounding of a partial sum (exact.rs)" {
+  :dot, the squared euclidean distance, manhattan
+  dyadic vectors: one integer sum at one common exponent
+  rational vectors: a sum of reduced rationals; <<$rrs_agent>>
+  :hamming and jaccard on binary vectors only; <<$rrs_agent>>
+}
+partition "DECISIONS: exact comparisons" {
+  :cosine by squared forms, with the signs first
+  <latex>u^{2} \, \lVert e' \rVert^{2} \;\; \text{vs} \;\; v^{2} \, \lVert e \rVert^{2}</latex>
+  distances: the lower value is better; <<$rrs_agent>>
+  :threshold and radius: exact bounds
+  equal scores: the lower canonical rank first (decision 41); <<$rrs_agent>>
+}
+partition "DELIVERY: one rounding of an exact value" {
+  :<latex>\textcolor{white}{\mathrm{RN}_{53}(x)}</latex><color:white>: the nearest f64, ties to even</color>
+  <color:white>dot, manhattan, hamming and jaccard</color>; <<$rrs_effect>>
+  :<color:white>cosine and euclidean: </color><latex>\textcolor{white}{\mathrm{RN}_{53}(\sqrt{x})}</latex>
+  <color:white>an exact integer square root of a scaled numerator</color>
+  <color:white>the mantissa rounds by the square of the odd midpoint</color>; <<$rrs_effect>>
+  if (beyond the finite range of f64?) then (yes)
+    :ValueOutOfRange; <<$rrs_reject>>
+    stop
+  else (no)
+  endif
+}
+partition "rho:lang:vector: the widest kind of the inputs (ops.rs)" {
+  :add, scale, dot: the exact value in the widest kind
+  integers: GInt, or GBigInt when it does not fit
+  a rational or a fixed point: GBigRat
+  a float: GDouble, <latex>\mathrm{RN}_{53}</latex> of the exact value
+  norm, distance: GDouble, the correctly rounded root; <<$rrs_system>>
+}
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_storage>  | a number of a record, a query or a call |
+|<$rrs_agent>    | an exact step of the numeric core |
+|<$rrs_effect>   | a rounding to a delivered value |
+|<$rrs_reject>   | a failure |
+|<$rrs_system>   | the replies of the system process rho:lang:vector |
+endlegend
+@enduml

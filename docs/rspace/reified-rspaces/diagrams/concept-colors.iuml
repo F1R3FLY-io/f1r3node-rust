@@ -31,8 +31,13 @@
 ' Factory ids [0xE0, 0x00] to [0xE0, 0x1F].
 !$rrs_factory = $ca_pool
 
-' System ids [0xE0, 0x21] to [0xE0, 0x23].
+' System ids [0xE0, 0x21] to [0xE0, 0x25].
 !$rrs_system = $ca_gate
+
+' The node services outside consensus: the embedder, the ChromaDB mirror,
+' its writer and its reconciler. Their state is local to one node and never
+' enters a state root.
+!$rrs_service = $ca_note_red
 
 ' Syntax markers [0xE0, 0xD0] to [0xE0, 0xD4].
 !$rrs_syntax = $ca_surface

@@ -103,8 +103,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 53](#decision-53) | The tensor-logic fragment TL_V | 2026-10-07 | Moved to P12 by decision 65 |
 | [Decision 54](#decision-54) | The number model of tensor logic | 2026-10-07 | In force for P6 decisions. TL-only functions moved to P12 by decision 65 |
 | [Decision 55](#decision-55) | The tensor-logic syntax | 2026-10-07 | Superseded by decision 62 on 2026-10-07 |
-| [Decision 56](#decision-56) | The VectorDB vocabulary | 2026-10-07 | In force, amended by decision 62 |
-| [Decision 57](#decision-57) | The recorded processes `embed` and `ann` | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 56](#decision-56) | The VectorDB vocabulary | 2026-10-07 | In force, amended by decisions 62 and 66 |
+| [Decision 57](#decision-57) | The recorded processes `embed` and `ann` | 2026-10-07 | In force. Implemented in P6. Native clause superseded by decision 68 |
 | [Decision 58](#decision-58) | The ChromaDB mirror is a hint index | 2026-10-07 | In force. Implementation in P6 |
 | [Decision 59](#decision-59) | The test policy for live services | 2026-10-07 | In force. Implementation in P6 |
 | [Decision 60](#decision-60) | The VectorDB tie-break follows decision 41 | 2026-10-07 | In force. Implementation in P6 |
@@ -113,6 +113,12 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 63](#decision-63) | The TensorLogic GSLT has an index-notation core and familiar sugar | 2026-10-07 | In force. Implementation at P12 |
 | [Decision 64](#decision-64) | The TensorLogic surface is paper-first, functional and Rholang-flavored | 2026-10-07 | In force. Implementation at P12 |
 | [Decision 65](#decision-65) | The TensorLogic language waits for F1r3lang and does not block VectorDB | 2026-10-07 | In force |
+| [Decision 66](#decision-66) | The answers of the P6 design refresh | 2026-10-08 | In force. Native answer superseded by decision 68 |
+| [Decision 67](#decision-67) | The checks of an `ann` call run in play and in replay | 2026-10-08 | In force |
+| [Decision 68](#decision-68) | `embed` and `ann` leave the native ban | 2026-10-08 | In force |
+| [Decision 69](#decision-69) | Only the latest execution model | 2026-10-08 | In force |
+| [Decision 70](#decision-70) | Reified RSpaces only | 2026-10-08 | In force |
+| [Decision 71](#decision-71) | `capacity` is a soft bound under merges | 2026-10-08 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -1607,7 +1613,7 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force, amended by [decision 62](#decision-62): no `score` and no `tensors` |
+| Status | In force, amended by [decision 62](#decision-62): no `score` and no `tensors`, and by [decision 66](#decision-66): no `precision` in P6 |
 | Amends | The query-param table of the [syntax contract](syntax-contract.md) |
 | Related | [Decision 21](#decision-21), [decision 55](#decision-55) |
 
@@ -1626,7 +1632,7 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6 |
+| Status | In force. Implemented in P6. The clause "both fail in native execution" is superseded by [decision 68](#decision-68) on 2026-10-08 |
 | Amends | The op table of the namespace (two new ops) |
 | Related | [Decision 52](#decision-52), [decision 46](#decision-46) |
 
@@ -1833,6 +1839,184 @@ So tensor data reaches a term through the space: the agent binds reserved names,
 - Code with no syntax to reach it would be dead until P12.
 - The FIPS VectorDB requirement needs no tensor logic (`Reifying RSpaces.md:255-257`). The FIPS tensor-logic item is exploratory (`:259`), and the GSLT with FLT integration delivers it at P12.
 - A query param is a `Par` ([decision 21](#decision-21)), and an FLT term reflects to a `Par`. So the P12 key for an equation is an additive change.
+
+## User decisions 66 to 71
+
+Decisions 66 to 71 come from phase P6 after the design refresh of decision 65.
+The design record of decision 66 is design v3 (`.reified-rspaces-work/p6/design-v3.md`), with its arbitration.
+Decisions 67 to 71 come from the implementation steps of P6.
+Their main terms are these:
+
+- **List mode** is the mode of a receive with the query param `k` or `results = "all"`. Its one bind binds the list of the first eligible records.
+- **LIST-CASCADE** is the step that checks the parked list waiters again after a record leaves a collection, and fires the first one that can fire.
+- The **mirror** of a VectorDB space is a copy of its records in ChromaDB. It is local to one node and never enters a state root.
+- A **recorded process** is a system process whose reply the dispatcher records on the produce event of the reply, so replay produces the recorded reply.
+
+### <a id="decision-66"></a>Decision 66: The answers of the P6 design refresh
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-08 |
+| Status | In force. The native-execution answer is superseded by decision 68 on 2026-10-08. The reconciler sentence is corrected by decision 70 on 2026-10-08. |
+| Amends | [Decision 56](#decision-56) (`precision` leaves P6), [decision 58](#decision-58) (the publication point) |
+| Related | [Decision 37](#decision-37), [decision 45](#decision-45), [decision 49](#decision-49), [decision 50](#decision-50), [decision 57](#decision-57) |
+
+**Statement.**
+
+- **List mode parks and cascades (LM-b).**
+  - A receive in list mode that does not fire parks on `[D]`, with its query in the policy slot of its envelope.
+  - A later send that the list of the waiter takes fires the waiter over `[D]`, with the incoming datum.
+  - When the waiter does not peek, the other non-persistent members of the list leave through `K_retire` COMMs in the same transaction.
+  - After each removal, LIST-CASCADE checks the parked list waiters again, in the driver and in the join engine. It counts its fires with the fire count of [decision 49](#decision-49), and settle jobs carry the rest at the round cap.
+- **The payload is the vector by default.**
+  - A send without `embedding=` whose payload is one numeric vector uses that vector as its embedding.
+  - A numeric list of the wrong length fails with `DimensionMismatch`.
+  - Any other payload has no embedding, so no query with a vector selects it. `embedding=` overrides the payload.
+- **`precision` leaves P6.** Delivered values are `f64` values, the rounding to nearest of the exact value. `precision` returns with tensor logic in P12.
+- **`threshold` keeps its range.** The range is $`[0, 1]`$ for every similarity metric, `dot` included.
+- **M1: the mirror journal settles with the final result.**
+  - A deploy publishes its mirror journal only when its final evaluation result has no errors.
+  - The two settle points are the result of `interpreter.rs`, after the host-work check, and the native path of `rho_runtime.rs`.
+  - The `p6` footprint policy records these hot-file lines.
+- **The reconciler repairs the journaled channels.**
+  - The reconciler repairs the channels that the journal of the node touched. The collection metadata keeps them.
+  - It repairs them to the view of the last finalized block.
+  - After an LFS bootstrap, the mirror lacks the records that are older than the bootstrap, until they change again.
+- **`embed` and `ann` in native execution.** This answer kept the native ban of [decision 57](#decision-57), with a finding for the cost-accounting owner. [Decision 68](#decision-68) supersedes it.
+
+**User's words.**
+
+- "LM-b: park + cascade (Recommended)"
+- "Payload is the vector (Recommended)"
+- "Drop from P6 (Recommended)"
+- "M1: final result (Recommended)"
+- "Journaled channels (Recommended)"
+- "Keep + file finding (Recommended)"
+
+**Reason.**
+
+- The rules LM-a and LM-c leave a waiter without a guard that could fire, and no step fires it. The counterexamples CE-1 and CE-2 of the arbitration show this.
+- The rule LM-d never parks: a list receive with no list fails with a typed error, and list mode rejects `<=`. That rule changes the approved semantics of a receive.
+- The FIPS sends a vector to the space, and a `for` consumes one vector (`Reifying RSpaces.md:255-257`). The design ledger desugars the default embedding as the payload.
+- Without tensor logic, no value of the P6 vocabulary needs a declared precision.
+- M1 makes the rule of [decision 58](#decision-58) hold as written: a failed deploy publishes nothing.
+- The node knows the channels that its own journal touched, so a pass reads only those channels.
+
+### <a id="decision-67"></a>Decision 67: The checks of an `ann` call run in play and in replay
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-08 |
+| Status | In force |
+| Amends | Design v3 section 4.9 ("replay returns the recorded output first") and arbitration amendment A8 with its note G9 |
+| Related | [Decision 57](#decision-57), [decision 69](#decision-69) |
+
+**Statement.**
+
+- Play and replay both make the checks of an `ann` call against consensus state, in this order:
+  1. The space is a native VectorDB space (`NotAVectorDbSpace`), with a mirror (`MirrorDisabled`).
+  2. The query is a text, or a numeric vector of the dimensions of the space whose elements are finite as `f32` values (`DimensionMismatch`, `BadArgument`).
+  3. The options are a map of the one key `k`, an `Int` in $`[1, \mathit{capacity}]`$ (`InvalidOption`).
+- The config read and the decode of a numeric query reserve host work on the budget of the deploy, in both modes.
+- Only the answers of the services are recorded: the embedding of a text query, the neighbours, and the watermark. Replay never asks a service.
+- `embed` reads no consensus state, so it has no such checks.
+- In native execution, each check is a journaled native operation. A native replay that skips a check fails its certification with an incomplete journal. The native replay tests of the suite therefore cover this rule ([decision 69](#decision-69)).
+
+**User's words.** "Checks in both modes (Recommended)"
+
+**Reason.** Play read the config through a read-only space job, which reserves host work. Replay returned the recorded output first. So one call made play reserve 1,815,346 VerificationBytes, 11,909 VerificationOperations and 59,288 SearchStateBytes more than replay. That gap is a divergence of play and replay as soon as a deploy carries a budget.
+
+### <a id="decision-68"></a>Decision 68: `embed` and `ann` leave the native ban
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-08 |
+| Status | In force |
+| Amends | [Decision 57](#decision-57) (the clause "both fail in native execution"), the native answer of [decision 66](#decision-66) |
+| Related | [Decision 69](#decision-69) |
+
+**Statement.**
+
+- The body references 236 (`embed`) and 237 (`ann`) stay in `non_deterministic_ops()` and leave the `forbidden` list of `to_dispatch_table`.
+- Both processes run in native execution as recorded processes. The hot-file edit of `interpreter/system_processes.rs` is two lines.
+- The cost-accounting owner removes the whole `forbidden` list.
+- When the record-and-replay mechanism for external services reaches this branch, both processes move to it. The campaign does not implement that mechanism.
+
+**User's words.**
+
+- "I am having the responsible agent remove the forbidden list altogether, it was added by the implementing agent to cut corners and will cause some real problems"
+- "remove embed and ann from it as the list will be going away"
+- "External service calls will use a record-and-replay mechanism akin to the File I/O FIPS as their replay mechanism, that is being implemented by the responsible agent now."
+
+**Reason.** Native replay already reproduces a recorded reply. A ban would make the VectorDB backend unusable in the execution model that the campaign targets.
+
+### <a id="decision-69"></a>Decision 69: Only the latest execution model
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-08 |
+| Status | In force |
+| Amends | [Decision 45](#decision-45) (Option P becomes transitional), and the test parts of [decision 47](#decision-47), [decision 67](#decision-67) and [decision 68](#decision-68) that name legacy execution |
+| Related | Follow-up `rrs-fu-retire-legacy-model` (pgmcp 10934) |
+
+**Statement.**
+
+- All new and changed P6 code, tests and documents target only native funded execution (protocol v6), with native play and native replay certification.
+- The legacy-only parts of the campaign stay until the merge of the latest feature/cost-accounted-rho removes the legacy model from this tree. These parts are Option P of [decision 45](#decision-45), `LegacyCharges.v` and the legacy-mode suites. That merge removes them.
+
+**User's words.**
+
+- "I'm not a fan of supporting both a legacy and nouveau model of execution, the latest changes to feature/cost-accounted-rho enforce just the latest model"
+- "Latest model from now (Recommended)"
+
+**Reason.** Two execution models double the tests and the proofs of each behavior, and the platform retires the legacy model.
+
+### <a id="decision-70"></a>Decision 70: Reified RSpaces only
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-08 |
+| Status | In force |
+| Amends | The reconciler sentence of [decision 66](#decision-66), the N4 leaf of the tracker |
+| Related | [Decision 12](#decision-12), [decision 18](#decision-18) |
+
+**Statement.**
+
+- No design plans a Casper change that is not directly Reified work.
+- The campaign opens no question of finality, fork choice or the block lifecycle.
+- It uses Casper state only through read-only interfaces where an approved design needs it. For example, the reconciler reads the finalized state through `RuntimeManager`.
+- The campaign does not hunt, analyze, file or fix latent defects of other owners, unless they block the Reified work. The findings that it filed before stay as records.
+
+**User's words.**
+
+- "This does not seem directly related to Reified RSpaces, it is a Casper decision. I have emphasized before and I will do so again, stay in your own lane!"
+- "This is not a Casper refinement campaign, this is a Reified RSpaces campaign"
+- "This is also not a general purpose bug hunting safari"
+
+**Reason.** The scope of the campaign is the Reifying RSpaces FIPS. Other owners maintain Casper and the other subsystems.
+
+### <a id="decision-71"></a>Decision 71: `capacity` is a soft bound under merges
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-08 |
+| Status | In force |
+| Amends | none |
+| Related | [M-1](#m-1), [decision 40](#decision-40) |
+
+**Statement.**
+
+- A VectorDB collection has no counter, and a store checks `capacity` against the view of its own transaction.
+- A merge of concurrent branches can exceed `capacity` by at most the stores of the merged branches.
+- On such a merged state, every store fails with `CapacityExceeded` until removals bring the count below `capacity`.
+- Consensus stays deterministic, and the work of each scan stays metered ([decision 40](#decision-40)).
+
+**User's words.** "Soft bound, documented (Recommended)"
+
+**Reason.**
+
+- In native execution, with `capacity = 2` and one stored record, two concurrent branches that each add a record merge with no conflict. The merged collection holds 3 records.
+- An exact bound needs a counter bump on each store, and then all VectorDB writes into one collection serialize across branches. The plan keeps full merge concurrency for bag, set and VectorDB spaces.
 
 ## Minimal-footprint revision: M-1 to M-5
 

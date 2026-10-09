@@ -1,0 +1,140 @@
+' ============================================================================
+' 29 VectorDB list fires and LIST-CASCADE (LM-b, decision 66).
+'
+' Source of Figure N15.3 in ../design.md (section N15). The figure restates
+' offer_vdb, list_offer, retire_members, finish_tail, run_tail,
+' first_cascade_target and lift_and_reoffer of
+' rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs, and
+' FireRounds::after_fire of rholang/src/rust/interpreter/reified/costs.rs
+' (design v3 section 4.5, decisions 30, 43, 45, 49 and 66). It adds no new
+' fact.
+'
+' Reading order:
+'   1. OFFER-VDB offers the element in flight to the parked waiters in the
+'      canonical order. A list waiter fires only when the element is in its
+'      list. A fire without a peek retires the other members of the list.
+'   2. After each fire, the fire count decides: the element settles, a
+'      divergent pair or the round cap ends the offer, or the offer goes on.
+'   3. An element that no waiter takes is stored, below the capacity.
+'   4. FINISH-TAIL and TAIL offer the owed second sends first (Rule E), and
+'      then run LIST-CASCADE while a record that left can expose a parked
+'      list waiter. At the round cap, one settle job carries the owed work.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 29-vectordb-list-cascade.puml   Check: ./render.sh --check
+
+@startuml 29-vectordb-list-cascade
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title List fires and LIST-CASCADE of a VectorDB collection (LM-b)
+
+start
+partition "OFFER-VDB(x): the element of a send" {
+  repeat
+    if (a parked waiter W, in the canonical order,\ncan take x? (see the note)) then (no)
+      :CHECK-CAPACITY: CapacityExceeded when
+      the collection holds capacity records; <<$rrs_reject>>
+      :store x with its embedding: x settles; <<$rrs_storage>>
+      break
+    else (yes)
+    endif
+    note right
+      single mode: x is eligible for the query of W,
+      the pattern binds x, and the guard admits
+      list mode: x is in L(W, R + x), the pattern
+      binds that list, and the guard admits
+    end note
+    :fire W over [D] with x; <<$rrs_effect>>
+    if (W peeks?) then (no)
+      :retire each other non-persistent member
+      of the list: one K_retire COMM each; <<$rrs_storage>>
+    else (yes: a peek takes no datum)
+    endif
+    if (x is spent: not persistent, and W does not peek?) then (yes)
+      :x settles; <<$rrs_effect>>
+      break
+    elseif (W is persistent: a divergent pair?) then (yes)
+      :x stops: the operation re-issues
+      at the end (decision 43); <<$rrs_reject>>
+      break
+    elseif (the count is FIRE_ROUND_CAP?) then (yes)
+      :x stops at the round cap; <<$rrs_reject>>
+      break
+    else (no)
+    endif
+  repeat while (offer x to the next waiter)
+}
+partition "FINISH-TAIL" {
+  if (x stopped at the round cap?) then (yes)
+    if (a second send is owed, or a record left?) then (yes)
+      :stop: one settle job carries the owed
+      second sends and the resume of x; <<$rrs_reject>>
+      stop
+    else (no)
+      :the transaction ends; x re-issues; <<$rrs_reject>>
+      stop
+    endif
+  else (no: x settled, or a divergent pair)
+  endif
+}
+partition "TAIL (DRAIN-AND-CASCADE)" {
+  repeat
+    if (a second send is owed?) then (yes)
+      if (the count is FIRE_ROUND_CAP?) then (yes)
+        :owe it again and stop:
+        one settle job carries the owed work; <<$rrs_reject>>
+        stop
+      else (no)
+      endif
+      :pop the last owe and OFFER-VDB it
+      with its own identity (Rule E)
+      a stop there owes it again and stops; <<$rrs_agent>>
+    elseif (a record left the collection?) then (no)
+      :the tail ends; <<$rrs_effect>>
+      stop
+    else (yes)
+      :FIRST-CASCADE-TARGET: the first parked list
+      waiter W, in the canonical order, whose list
+      L(W, R) is not empty, binds, and passes the guard; <<$rrs_agent>>
+      if (such a waiter?) then (no)
+        :the tail ends; <<$rrs_effect>>
+        stop
+      else (yes)
+      endif
+      if (the count is FIRE_ROUND_CAP?) then (yes)
+        :stop: one settle job
+        carries the cascade; <<$rrs_reject>>
+        stop
+      else (no)
+      endif
+      :LIFT-AND-REOFFER: lift the first member v
+      with K_lift when v is not persistent,
+      and fire W with v; <<$rrs_storage>>
+      if (W peeks?) then (yes)
+        :owe v as a second send
+        when it was lifted (decision 30); <<$rrs_agent>>
+      else (no)
+        :retire the other non-persistent
+        members of the list; <<$rrs_storage>>
+      endif
+    endif
+  repeat while (next step of the tail)
+}
+
+legend bottom
+**Concept colors**
+|<$rrs_storage>  | the records of the collection: stores, retires and lifts |
+|<$rrs_agent>    | the steps of the driver |
+|<$rrs_reject>   | a capacity failure, a stop, or a re-issue |
+|<$rrs_effect>   | a fire, a settled element, or the end of the tail |
+endlegend
+@enduml

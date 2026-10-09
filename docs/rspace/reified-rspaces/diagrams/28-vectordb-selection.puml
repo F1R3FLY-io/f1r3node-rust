@@ -1,0 +1,98 @@
+' ============================================================================
+' 28 VectorDB selection: the eligible records of a query and their order.
+'
+' Source of Figure N15.2 in ../design.md (section N15). The figure restates
+' eligible and ranked of rholang/src/rust/interpreter/spaces/disciplines/
+' vectordb.rs, and score, within, better and rank of
+' rholang/src/rust/interpreter/tensor/exact.rs (design v3 section 4.4,
+' decisions 37, 41, 54 and 66). It adds no new fact.
+'
+' Reading order:
+'   1. The records of the collection, with the element in flight of an
+'      offer, start in the canonical order of DR-75 (decision 41).
+'   2. Each record passes three filters: the ids of the query, a defined
+'      score, and the bound (threshold or radius).
+'   3. A query with a vector ranks the eligible records by the exact score.
+'      Equal scores keep the canonical order.
+'   4. Single mode fires on the first record whose payload the pattern
+'      binds. List mode binds the first min(k, |E|) records as one list.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 28-vectordb-selection.puml   Check: ./render.sh --check
+
+@startuml 28-vectordb-selection
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The selection of a VectorDB query (design v3 4.4)
+
+start
+partition "ORDER: the canonical order first" {
+  :the records of the channel
+  and the element in flight of an offer; <<$rrs_storage>>
+  :sort by the hash of the source produce,
+  then by the full digest (DR-75, decision 41); <<$rrs_agent>>
+}
+partition "FILTER: each record in that order" {
+  while (a record is left?) is (yes)
+    if (the query names ids=, and the id of the record\nis not among them?) then (yes)
+      :skip it; <<$rrs_reject>>
+    elseif (the query has a vector q, and the score\nof the record is undefined?) then (yes)
+      :skip it: no embedding, a zero norm
+      for cosine, or a record that is not
+      binary for hamming and jaccard; <<$rrs_reject>>
+    elseif (the score fails the threshold or the radius?) then (yes)
+      :skip it; <<$rrs_reject>>
+    else (no)
+      :keep it in E with its exact score; <<$rrs_agent>>
+    endif
+  endwhile (no)
+}
+partition "RANK: only for a query with a vector" {
+  if (the query has a vector q?) then (yes)
+    :stable sort of E by the better exact score
+    cosine by squared forms, distances ascending
+    equal scores keep the canonical order; <<$rrs_agent>>
+  else (no)
+    :E keeps the canonical order
+    (a list read of the records); <<$rrs_agent>>
+  endif
+}
+partition "SELECT" {
+  if (list mode: k= or results="all"?) then (yes)
+    :L = the first min(k, |E|) records of E
+    the one bind binds the list of their values
+    [score, value] for each one with scores=true; <<$rrs_agent>>
+    if (L is not empty, the pattern binds L, and the guard admits?\n(the guard is checked once, decision 37)) then (yes)
+      :fire: one COMM over [D; m]; <<$rrs_effect>>
+    else (no)
+      :park with the query as the policy (LM-b); <<$rrs_storage>>
+    endif
+  else (no, single mode)
+    :the first record of E whose payload
+    the pattern binds; <<$rrs_agent>>
+    if (such a record, and the guard admits?\n(the guard is checked once, decision 37)) then (yes)
+      :fire: one COMM over [D]; <<$rrs_effect>>
+    else (no)
+      :park with the query as the policy; <<$rrs_storage>>
+    endif
+  endif
+}
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_storage>  | the records and the parked waiters of the collection |
+|<$rrs_agent>    | the steps of the selection |
+|<$rrs_reject>   | a record that the query does not select |
+|<$rrs_effect>   | a fire |
+endlegend
+@enduml

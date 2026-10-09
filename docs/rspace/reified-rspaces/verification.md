@@ -4836,6 +4836,47 @@ To run the checks of step 8d, do these steps from the repository root:
 6. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P6`.
 7. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json`.
 
+## 25. Phase P6, step 8e: the documents of the VectorDB family
+
+Step 8e writes the documents of phase P6 (design v3 section 7, tracker leaf `rrs-doc-vectordb-tensor-chroma`).
+Each document states what the code of steps 1 to 8d does, and the citations name its lines.
+
+*Table 137. The documents of step 8e.*
+
+| Document | Part | Content |
+|---|---|---|
+| [specification.md](specification.md) | [3.9](specification.md#39-vectordb), [9](specification.md#9-system-processes-of-the-vectordb-family) and [10](specification.md#10-the-chromadb-mirror) | The rules VD-1 to VD-14 of the VectorDB discipline, SP-1 to SP-6 of the system processes, and MR-1 to MR-7 of the mirror. Table 9 gives the evidence of each rule. |
+| [design.md](design.md) | [N15](design.md#n15-phase-p6-the-vectordb-family) and [N16](design.md#n16-phase-p6-the-chromadb-search-backend) | The number model, the records and the selection, the driver, the join engine, the factory, `rho:lang:vector`, native execution, the services of a node, the mirror path, and the recorded processes. |
+| [syntax-contract.md](syntax-contract.md) | Params and queries at run time | The factory params of the family, the send param `embedding`, and the checks of a query with their codes. |
+| [decision-register.md](decision-register.md) | Decisions 66 to 71 | The entries of the decisions of P6, and the amendments of decisions 56 and 57. |
+| [glossary.md](glossary.md) | Part 2 | 20 terms, from the exact value to the advisory query. |
+| [`../../rholang/21-reified-spaces.md`](../../rholang/21-reified-spaces.md) | VectorDB spaces | The language section on VectorDB spaces. Phase P10 completes the chapter. |
+| [`../../rholang/chromadb.md`](../../rholang/chromadb.md) and [`10-system-channels.md`](../../rholang/10-system-channels.md) | The search backend, the processes | The mirror, `embed` and `ann`, the example of an advisory query, and how to run a node with the mirror. |
+
+Six new diagrams show the selection (28), list fires and LIST-CASCADE (29), and the mirror (30).
+They also show recorded embeddings (31), the advisory query (32), and the number model (33).
+Each diagram restates the code that its header names, and the image text gives the whole figure.
+The node services outside consensus get the color alias `$rrs_service`, so that no two concepts share a color.
+
+The examples of chapter 21 and of `chromadb.md` are rows of the syntax corpus, as the documentation rows of P4.
+The model check of the corpus test now also visits the cases of a `match`.
+So the query in a case of the `ann` example has a model.
+
+The lint reports no violation over the campaign documents and chapter 21, and the render check reproduces each SVG byte for byte.
+The corpus test passes its four tests with 44 rows, and the first 40 rows keep their bytes.
+The three examples of chapter 10 hold no Reified syntax, so they are no corpus rows.
+Each of them parses with no error node in the tree-sitter grammar of the parser branch.
+The footprint policy `p6` approves the two edits outside the campaign directory as replaced blocks.
+They are the new section of `chromadb.md`, and the section and the three summary rows of chapter 10.
+
+### 25.1 Running the step-8e checks
+
+To run the checks of step 8e, do these steps from the repository root:
+
+1. Run `python3 scripts/verify-reified/doc_lint.py`, which must report no violation.
+2. Run `bash docs/rspace/reified-rspaces/diagrams/render.sh --check`.
+3. Run `cargo test -p rholang --test reified_syntax_corpus`.
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)

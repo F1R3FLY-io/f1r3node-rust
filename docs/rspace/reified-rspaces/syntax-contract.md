@@ -326,7 +326,7 @@ The run-time layer checks the evaluated value of any other expression.
 | `priority` | an `Int` at least 0 |
 | `k` | an `Int` at least 1 |
 | `results` | the string `"all"` |
-| `threshold` | a float or a `BigRat` in the closed interval from 0 to 1 |
+| `threshold` | a float, a `BigRat` or a fixed point in the closed interval from 0 to 1 |
 | `metric` | one of `cosine`, `dot`, `euclidean`, `manhattan`, `hamming`, and `jaccard` |
 
 Every other key has no range in the syntax layer.
@@ -402,7 +402,7 @@ The table gives the meaning of the params on each kind of channel.
 |---|---|---|
 | A factory | The constructor of the call holds them, and the gates of the factory check them against the schema of the family ([specification FA-4 to FA-7](specification.md#15-families)). | `PositionalParamsUnsupported` |
 | A handle | `HANDLE_OP` checks them against the method. The method `produce` takes `persistent`, and another key gives the typed reply `UnknownParam`. | `PositionalParamsUnsupported` |
-| A collection of a native space | The agent checks each key against the send schema of the discipline before the bump (`UnknownParam` with the closest key), and then each value (`InvalidParam`). The queue, the bag, the stack and the cell take no send param. | `PositionalParamsUnsupported`, at the hook |
+| A collection of a native space | The agent checks each key against the send schema of the discipline before the bump (`UnknownParam` with the closest key), and then each value (`InvalidParam`). The queue, the bag, the stack and the cell take no send param. A priority queue takes `priority`, and a VectorDB collection takes `embedding`. | `PositionalParamsUnsupported`, at the hook |
 | Every other channel | `ParamsUnsupported` | `ParamsUnsupported` |
 
 ```rholang
@@ -420,6 +420,42 @@ The factories of P5 take these constructor params ([specification FA-4 to FA-7](
 | `F!?(…; cyclic=b)` on an Array factory | an optional `GBool`, `false` when absent | `InvalidParam` |
 | `F!?(…; priorities=n)` on a priority queue factory | an optional `GInt` of at least 1, no bound when absent | `InvalidParam` |
 | any other key | not in the schema of the family | `UnknownParam` with the nearest key within two edits |
+
+The VectorDB factories of P6 take these constructor params ([specification VD-1](specification.md#39-vectordb)):
+
+| Construct | Rule | Failure |
+|---|---|---|
+| `F!?(…; capacity=n)` | a required `GInt` from 1 to 1,000,000: the most records of each collection | `MissingParam`, `InvalidParam` |
+| `F!?(…; dimensions=n)` | a required `GInt` from 1 to 4,096: the length of every vector of the space | `MissingParam`, `InvalidParam` |
+| `F!?(…; metric=m)` | an optional string, `cosine` when absent: `cosine`, `dot`, `euclidean`, `manhattan`, `hamming` or `jaccard` | `InvalidParam` |
+| `F!?(…; mirror="chroma")` | an optional string, exactly `"chroma"`. It needs the default qualifier and the metric `cosine`, `dot` or `euclidean` (gate 9). | `InvalidParam` |
+
+A send to a VectorDB collection takes the named param `embedding`, a list of numbers of the dimensions of the space.
+Without it, a payload that is one non-empty list of numbers is the vector of the record ([decision 66](decision-register.md#decision-66)).
+A vector of another length fails with `DimensionMismatch`, and an element that is not finite fails with `NonFiniteValue`.
+
+### Queries at run time
+
+A query on a VectorDB collection holds at most one payload element, the query vector, and the named params of the table below.
+The agent checks them before any staging, in the order of the table, so a query with several faults reports one code ([specification VD-3](specification.md#39-vectordb)).
+A query without a vector reads the records in the canonical order. It takes only `k` and `results`.
+
+| Key | Rule | Failure |
+|---|---|---|
+| `ids`, `metric`, `radius`, `scores`, `threshold` without a query vector | each key needs a query vector | `QueryNeedsVector` |
+| `metric` | one of the six metrics; the metric of the space when absent | `InvalidParam` |
+| the query vector | the dimensions of the space, finite elements; not a zero vector for `cosine` | `DimensionMismatch`, `NonFiniteValue`, `ZeroQueryVector` |
+| `threshold` and `radius` together | they exclude each other | `ConflictingParams` |
+| `threshold` | a number from 0 to 1, with a similarity metric: `cosine`, `dot` or `jaccard` | `InvalidParam`, `ThresholdNeedsSimilarity` |
+| `radius` | a number at least 0, with a distance metric: `euclidean`, `manhattan` or `hamming` | `InvalidParam`, `RadiusNeedsDistance` |
+| `k` | a `GInt` from 1 to the capacity of the space | `InvalidParam` |
+| `results` | the string `"all"`; it excludes `k` | `InvalidParam` |
+| `scores` | a `GBool` | `InvalidParam` |
+| `ids` | a list of 32-byte byte arrays | `InvalidParam` |
+
+A query with `k` or `results` is in list mode, and a join with a bind in list mode fails with `ListModeInJoin`.
+Only a linear bind with a simple source takes a query in source text.
+So a peek or a persistent receive of a source program has no query.
 
 ### Constructs that fail closed
 

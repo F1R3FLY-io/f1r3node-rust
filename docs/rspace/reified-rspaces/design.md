@@ -3496,6 +3496,312 @@ The suite `rholang/tests/reified_native_spaces.rs` runs these shapes through the
 Each budget attempt of native replay reserves about 1.2 MB of `VerificationBytes`, so the v6 limit bounds a certified deploy near 190 attempts.
 The [measurement M-47-1](findings/native-execution-cost-accounting.md#7-m-47-1-verification-bytes-of-native-replay) records this bound for the owner of cost accounting.
 
+### N15. Phase P6: the VectorDB family
+
+Phase P6 adds the families `hashmap:vectordb` and `vector:vectordb`.
+A record of such a space can carry a vector, and a receive selects records by a similarity query ([specification, section 3.9](specification.md#39-vectordb)).
+This section describes the exact numeric core, the records and the selection, the driver, the join engine, the factory, `rho:lang:vector` and native execution.
+Section [N16](#n16-phase-p6-the-chromadb-search-backend) describes the ChromaDB search backend.
+The [dossier](verification.md#14-phase-p6-step-2-the-exact-numeric-core) gives the proofs, the models, the tests and the measurements, from section 14 on.
+
+The design record is design v3 of the P6 refresh, which [decision 66](decision-register.md#decision-66) approves.
+Every consensus decision of the family compares exact numbers ([decision 54](decision-register.md#decision-54)).
+A float enters with its exact value, and a delivered value is one rounding of an exact value.
+
+#### N15.1 The number model
+
+The module `rholang/src/rust/interpreter/tensor/` holds the exact numeric core.
+It has no dependency on a linear-algebra crate, and it computes with big integers and reduced rationals.
+Figure N15.1 shows the path of a number from the input to a delivered value.
+
+*Table N15.1. The exact numeric core.*
+
+| Part | Code | Rule |
+|---|---|---|
+| Ingress | `number_of`, `tensor/num.rs:243-292` | `GInt`, `GBigInt` and `GBool` are dyadic numbers $`m \cdot 2^{0}`$. A `GDouble` or a `GFloat32` enters with the exact value of the float, also a dyadic number. A `GBigRat` or a `GFixedPoint` is a reduced rational, and it is dyadic when its denominator is a power of two. |
+| Vectors | `vector_of`, `tensor/num.rs:325-360` | A vector is dyadic when every element is dyadic, and rational otherwise. Its length must be the dimension of the space. |
+| Kernels | `dot`, `distance2` and `manhattan`, `tensor/exact.rs:265-348` | A dyadic kernel sums integers at one common exponent. A rational kernel sums reduced rationals. No partial sum is rounded. |
+| Scores | `score`, `tensor/exact.rs:429-462` | The score of a record keeps exact values: the dot product and the squared norm for `cosine`, the exact distance for `euclidean` (squared) and `manhattan`, and counts for `hamming` and `jaccard`. |
+| Order | `better`, `tensor/exact.rs:478-521` | Two scores compare exactly. `cosine` compares squared forms after the signs. |
+| Bounds | `within`, `tensor/exact.rs:525-574` | `threshold` and `radius` compare exactly with the score. |
+| Delivery | `delivered`, `tensor/exact.rs:578-599` | A delivered value is $`\mathrm{RN}_{53}`$ of an exact value: the `f64` nearest to it, with ties to even. |
+| Roots | `sqrt_to_f64`, `tensor/num.rs:484-511` | $`\mathrm{RN}_{53}(\sqrt{x})`$ from an exact integer square root of a scaled numerator, with no loop. |
+
+The cosine order needs no square root.
+For a query $`q`$ and two records $`e`$ and $`e'`$, let $`u = q \cdot e`$ and $`v = q \cdot e'`$.
+When $`u`$ and $`v`$ have one sign, the order of the cosines is the order of these exact products, reversed for negative signs:
+
+```math
+\frac{u}{\lVert q \rVert \, \lVert e \rVert} \;\le\; \frac{v}{\lVert q \rVert \, \lVert e' \rVert}
+\quad\Longleftrightarrow\quad
+u^{2} \, \lVert e' \rVert^{2} \;\le\; v^{2} \, \lVert e \rVert^{2} \qquad (u, v \ge 0)
+```
+
+The Rocq theorem `cosine_order_squared_form` of `Similarity.v` proves this form.
+A delivered cosine is the one rounding of the exact root, with the sign of $`u`$:
+
+```math
+\cos(q, e) \;=\; \operatorname{sign}(u) \, \sqrt{\frac{u^{2}}{\lVert q \rVert^{2} \, \lVert e \rVert^{2}}}
+```
+
+Every decode, ingress, kernel step, comparison, sort step, list construction and copy reserves its work on the space meter before it runs ([decision 42](decision-register.md#decision-42)).
+The reservations live in `tensor/costs.rs`, so a host-work rejection is a deterministic outcome in play and in replay.
+
+![Activity diagram of the number model. INGRESS turns a numeric Par with one expression and no connective into its exact value: GInt, GBigInt and GBool are dyadic numbers m times 2 to the 0; GDouble and GFloat32 enter with the exact value of the float as a dyadic number m times 2 to the e, NaN and the infinities fail with NonFiniteValue, and the zero -0 enters as 0; GBigRat and GFixedPoint are reduced rationals n over d, dyadic when d is a power of two, and a fixed-point scale above 4,096 fails with ValueOutOfRange. A vector is dyadic when every element is dyadic, else rational, and a wrong length fails with DimensionMismatch. KERNELS compute dot, the squared euclidean distance and manhattan exactly: dyadic vectors sum integers at one common exponent, rational vectors sum reduced rationals, and hamming and jaccard apply to binary vectors only. DECISIONS compare exact values: cosine by squared forms with the signs first, u squared times the squared norm of e prime against v squared times the squared norm of e; a lower distance is better; threshold and radius are exact bounds; equal scores keep the lower canonical rank. DELIVERY rounds once: RN 53 of x, the nearest f64 with ties to even, for dot, manhattan, hamming and jaccard; RN 53 of the square root of x for cosine and euclidean, from an exact integer square root of a scaled numerator, with the mantissa rounded by the square of the odd midpoint; a value beyond the finite range of f64 fails with ValueOutOfRange. rho:lang:vector replies add, scale and dot in the widest kind of the inputs: GInt or GBigInt for integers, GBigRat for a rational or a fixed point, GDouble with one rounding for a float; norm and distance reply a GDouble with the correctly rounded root.](diagrams/33-number-model.svg)
+
+*Figure N15.1. Source: [diagrams/33-number-model.puml](diagrams/33-number-model.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+#### N15.2 Records, queries and the selection
+
+A datum of a VectorDB space keeps envelope version 1 and fills its embedding slot (`rholang/src/rust/interpreter/spaces/record.rs:1548-1555`).
+The record is `[tag_D, 0, Nil, embedding]` followed by the payload, where the embedding is the vector of the record or `Nil`.
+The order slot holds 0, because the family has no counter, and the priority slot holds `Nil`.
+
+A parked waiter keeps the canonical map of its query in its policy slot.
+The map holds the query vector under `q` and one entry for each named param.
+For a VectorDB waiter, the decoder of the policy accepts only `Nil` or a non-empty map of the keys of `VDB_QUERY_KEYS`.
+The map must equal its own re-encoding.
+
+`vdb_record` builds the record of a send (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657`).
+The vector is the param `embedding`, or the payload when the payload is one non-empty list of numbers, or none.
+`parse_query` checks a query in a fixed order, so a query with several faults reports one code (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:404-511`).
+
+The selection is a function of the records, the query and the canonical order.
+Figure N15.2 shows it, and the reference algorithm follows it.
+
+```text
+SELECT(Q, records, flight):                       ▷ vectordb.rs, eligible and ranked
+    order ← CANONICAL(records + flight)           ▷ DR-75: source hash, then digest
+    E ← []
+    for each record r in order:
+        if Q.ids ≠ ⊥ and id(r) ∉ Q.ids: continue  ▷ id(r) = the hash of the source produce
+        if Q.q ≠ ⊥:
+            s ← SCORE(Q, vector(r))               ▷ ⊥: no vector, zero cosine norm, not binary
+            if s = ⊥ or not WITHIN(s, Q.bound): continue
+        append (r, s) to E
+    if Q.q ≠ ⊥: STABLE-SORT E by BETTER on s      ▷ equal scores keep the canonical order
+    return E
+
+RECEIVE-SELECTION(W, E):                          ▷ receive_selection and list_selection
+    if W is in list mode:
+        L ← the first min(k, |E|) records of E, or all of E for results = "all"
+        if L ≠ [] and W binds VALUES(L) and the guard of W admits: fire over [D; |L|]
+        else: park W with its query               ▷ LM-b
+    else:
+        r ← the first record of E whose payload W binds
+        if r ≠ ⊥ and the guard admits r: fire over [D]   ▷ the guard is checked once
+        else: park W with its query
+```
+
+![Activity diagram of the selection of a VectorDB query. ORDER: the records of the channel and the element in flight of an offer are sorted by the hash of the source produce, then by the full digest, the order of DR-75 of decision 41. FILTER: for each record in that order, a record whose id is not among the ids of the query is skipped; with a query vector, a record whose score is undefined is skipped, because it has no embedding, a zero norm for cosine, or a record that is not binary for hamming and jaccard; a record whose score fails the threshold or the radius is skipped; every other record is kept in E with its exact score. RANK: a query with a vector stably sorts E by the better exact score, with cosine by squared forms and distances ascending, and equal scores keep the canonical order; without a vector, E keeps the canonical order and the receive is a list read of the records. SELECT: in list mode with k or results all, L is the first min of k and the size of E records of E, and the one bind binds the list of their values, a pair of score and value for each one with scores true; when L is not empty, the pattern binds L and the guard admits, which is checked once by decision 37, the receive fires in one COMM over D repeated m times, and otherwise it parks with the query as the policy under LM-b. In single mode, the first record of E whose payload the pattern binds fires in one COMM over D when the guard admits it, checked once, and otherwise the receive parks with the query as the policy.](diagrams/28-vectordb-selection.svg)
+
+*Figure N15.2. Source: [diagrams/28-vectordb-selection.puml](diagrams/28-vectordb-selection.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+#### N15.3 The driver
+
+`VectorDbDiscipline` runs its own driver (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:156-276`).
+The family has no head, so the head methods of the trait `Discipline` keep the queue answers, and only the head driver would ask them.
+A receive runs RECEIVE-VDB, a send runs OFFER-VDB, and both end with the tail of the transaction.
+One fire count runs through the transaction, the tail included ([decision 49](decision-register.md#decision-49)).
+
+```text
+RECEIVE-VDB(W):                                   ▷ vectordb.rs, receive_plan
+    E ← SELECT(W.query, records, ⊥)
+    fire or park W by RECEIVE-SELECTION(W, E)
+    if the fire peeks: owe each removed non-persistent record   ▷ Rule E, the last owe first
+    FINISH-TAIL
+
+OFFER-VDB(x):                                     ▷ vectordb.rs, offer_vdb
+    for each parked waiter W in canonical order, from the first untested one:
+        if W takes x (single: eligible and binds; list: x ∈ L(W, R + x) and binds; plain: binds)
+           and the guard of W admits:
+            fire W over [D] with x
+            if W does not peek: K_retire each other non-persistent member of its list
+            step ← AFTER-FIRE(spent: x not persistent and W does not peek, stays: W persistent)
+            Done → x settles; DivergentPair or RoundCap → x stops; Continue → next waiter
+    no waiter took x: CHECK-CAPACITY; store x with its vector
+
+TAIL:                                             ▷ vectordb.rs, run_tail
+    loop:
+        if a record is owed:
+            if fired = FIRE_ROUND_CAP: owe it again; stop with a settle job
+            OFFER-VDB(the last owed record)       ▷ a stop owes it again and stops
+        else if no record left the collection: return
+        else:
+            W ← the first parked list waiter whose L(W, R) is not empty, binds, and passes
+            if W = ⊥: return
+            if fired = FIRE_ROUND_CAP: stop with a settle job
+            LIFT-AND-REOFFER(W)                   ▷ K_lift the first member v, fire W with v
+```
+
+FINISH-TAIL runs the tail after a fire that settled the element and after a divergent pair (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1754-1768`).
+After a stop at the round cap, it stops at once only when a record is owed or a record left the collection.
+`conclude` then re-issues one settle job with the owed records, or the operation when its element is still in flight ([decision 43](decision-register.md#decision-43)).
+A settle job of a VectorDB collection runs in the join engine, which offers the owed records first and then always cascades.
+
+LIST-CASCADE closes the gap of the counterexamples CE-1 and CE-2 of the arbitration.
+In CE-1, a list waiter parks on an empty collection, and a later send makes its list complete.
+In CE-2, a removal moves a parked list waiter onto a list that its pattern binds.
+Each removal therefore makes the tail look for a parked list waiter that can fire.
+The fire lifts one member of the list and offers it to the waiter.
+The theorem `vdb_no_pending_match` (S22) proves that no parked waiter without a guard can fire when a transaction ends.
+
+![Activity diagram of list fires and LIST-CASCADE of a VectorDB collection. OFFER-VDB of the element x of a send checks the parked waiters in canonical order: a single-mode waiter W takes x when x is eligible for its query, its pattern binds x and its guard admits; a list waiter takes x when x is in the list L of W over R plus x, its pattern binds that list and its guard admits. When no waiter takes x, CHECK-CAPACITY fails with CapacityExceeded on a full collection, and otherwise x is stored with its embedding and settles. A fire binds x over D; a waiter that does not peek retires each other non-persistent member of its list with one K_retire COMM each, and a peek takes no datum. Then x settles when it is spent, that is not persistent with a waiter that does not peek; x stops when W is persistent, a divergent pair, and the operation re-issues at the end by decision 43; x stops at the round cap; otherwise x is offered to the next waiter. FINISH-TAIL: when x stopped at the round cap, the transaction stops with one settle job that carries the owed second sends and the resume of x when a second send is owed or a record left, and otherwise the transaction ends and x re-issues. TAIL, the drain and cascade: an owed second send is owed again with a stop at the round cap, and otherwise the last owe is popped and offered by OFFER-VDB with its own identity under Rule E, where a stop owes it again; when no record left the collection, the tail ends; otherwise FIRST-CASCADE-TARGET finds the first parked list waiter in canonical order whose list over R is not empty, binds and passes the guard; with no such waiter the tail ends; at the round cap a settle job carries the cascade; otherwise LIFT-AND-REOFFER lifts the first member v with K_lift when v is not persistent and fires W with v, and a peek waiter owes v as a second send when it was lifted by decision 30, while a waiter that does not peek retires the other non-persistent members of the list.](diagrams/29-vectordb-list-cascade.svg)
+
+*Figure N15.3. Source: [diagrams/29-vectordb-list-cascade.puml](diagrams/29-vectordb-list-cascade.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+#### N15.4 The join engine
+
+A VectorDB collection that a join reaches runs on the join engine ([N12](#n12-wave-w3-of-p5-joins-of-one-space)).
+The discipline names the window shape `JoinWindow::Similarity`, so each bind of a join sees its own eligible records in its own order.
+`Engine::similarity_bind` searches them for a single-mode bind, and a bind without a query reads the canonical order (`rholang/src/rust/interpreter/spaces/join.rs:3277-3345`).
+A receive with one bind on a joined collection takes the list paths of the engine in list mode.
+
+A multi-bind join with a bind in list mode fails with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:409-465`).
+A removal never makes a single-mode join waiter without a guard fireable, because eligibility is a property of each record.
+So single-mode joins need no cascade, and the theorem `vdb_join_removal_exposes_nothing` (S21) proves it.
+The engine runs LIST-CASCADE for its list waiters, and a settle job of a VectorDB collection always cascades.
+
+#### N15.5 The factory, the config and merges
+
+The factory rows of both families take `capacity`, `dimensions`, `metric` and `mirror` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
+Gate 9 of `FactoryConstructor::validate` refuses `mirror` unless the qualifier is the default one and the metric is `cosine`, `dot` or `euclidean` (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:158-189`).
+`vdb_config` reads the params of each operation from the config record, with each read reserved first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:293-307`).
+
+The family has no counter (`USES_COUNTER = false`), so two branches that write one collection merge with no conflict ([M-1](decision-register.md#m-1)).
+`check_capacity` compares the records of the view of the transaction with `capacity` before each store (`rholang/src/rust/interpreter/spaces/generic.rs:946-963`).
+A merge can therefore exceed `capacity`, and every store then fails until removals bring the count below it ([decision 71](decision-register.md#decision-71)).
+The test `space_collection_conflicts_vectordb_capacity_soft_bound` pins the soft bound, and `capped_writes_soft_bound` of `CounterConflict.v` proves it.
+
+#### N15.6 `rho:lang:vector`
+
+`rho:lang:vector` computes `add`, `scale`, `dot`, `norm` and `distance` with the same core (`rholang/src/rust/interpreter/tensor/ops.rs:234-272`).
+`vector_operand` reads the widest kind of the elements of each vector, and `number_par` encodes an exact value in a kind (`rholang/src/rust/interpreter/tensor/ops.rs:401-428`).
+The kind of a reply is the widest kind of the inputs: an integer, a rational, or a float ([decision 66](decision-register.md#decision-66)).
+For the float kind, the reply is one rounding of the exact value, so `dot` rounds its exact sum once.
+`VectorOps.v` proves this rule (`vector_replies_exact`, S27) and the midpoint test of the roots of `norm` and `distance` (`root_midpoint_nearest`, S28).
+
+#### N15.7 Native execution
+
+Every VectorDB plan stages only through the transaction context `Cx`, and it reserves each step on the meter of the context.
+So native play and native replay reserve the same amounts and replay the same journal rows ([decision 47](decision-register.md#decision-47)).
+The certification suite plays and replays every shape of the family at the v6 limits ([dossier, section 16](verification.md#16-phase-p6-step-5-native-certification-of-the-vectordb-shapes)).
+At these limits a natively certified deploy holds only a small collection.
+In play, 8 records and 8 list waiters use 0.54 of the limit of `VerificationBytes`.
+The growth is quadratic in the size of the collection, because each operation loads all records or all waiters of its collection.
+
+### N16. Phase P6: the ChromaDB search backend
+
+ChromaDB is the search backend of a VectorDB space, and never a space of its own ([decision 52](decision-register.md#decision-52)).
+A VectorDB space has three layers.
+The frontend is the factory, the sends with `embedding=` and the receives with queries.
+RSpace is the store of the consensus records, with the state root, replay, merges and LFS.
+ChromaDB holds an optional mirror of the records of each node, and it answers advisory queries.
+
+An answer of ChromaDB reaches consensus only as a recorded output of `ann`, and the exact engine checks it through the query param `ids=`.
+So consensus never reads the mirror, and a stale or missing mirror can only give weaker advice ([decision 58](decision-register.md#decision-58)).
+This section describes the services of a node, the mirror path, the recorded processes and the node setup.
+The [specification](specification.md#10-the-chromadb-mirror) states the rules, and [`docs/rholang/chromadb.md`](../../rholang/chromadb.md) explains how to run a node with a mirror.
+
+#### N16.1 The services of a node
+
+`VectorDbServices` holds the embedder, the mirror backend and the writer of a node (`rholang/src/rust/interpreter/reified/vectordb_services.rs:547-553`).
+The node installs its services once, and every process and every job reads them through `current`.
+Without an install, `current` gives the unavailable services: an embedder and a mirror that refuse every call, and no writer.
+
+*Table N16.1. The services and their backends.*
+
+| Part | Code | Rule |
+|---|---|---|
+| `Embedder` | `vectordb_services.rs:190-196` | One finite vector for each text, or a failure. |
+| `MirrorBackend` | `vectordb_services.rs:209-267` | The calls of the mirror: query, watermark, collections, registration, upsert, delete, ids and metadata. |
+| `node_services` | `vectordb_services.rs:698-708` | With the `chromadb` feature: the SBERT embedder, and the ChromaDB mirror of the environment of the node with a writer. Without the feature: the unavailable services. |
+| `SbertEmbedder`, `ChromaMirror` | `vectordb_services.rs:721-1182` | The model `all-MiniLM-L6-v2` with 384 dimensions, and the REST client of the pinned server. |
+| `MirrorWriter` | `vectordb_services.rs:455-499` | One task, a bounded queue of 1,024 batches, 3 attempts, and dirty marks. |
+
+The processes and the writer never see a backend type, only the two traits.
+So the tests run fake backends in the sandbox, and the live leg runs the real backends against a disposable server (`scripts/verify-reified/chroma-live.sh`).
+
+#### N16.2 The mirror path
+
+The mirror path has five steps, and Figure N16.2 shows them.
+Each step runs outside the consensus transition: no step charges phlo, logs an event or fails a deploy.
+
+```text
+CAPTURE(receipt):                                 ▷ spaces/mirror.rs, MirrorCapture::writes
+    for each record id in the receipt, by its first and its last event:
+        (store, store)   → upsert, when the record has a vector finite as f32
+        (remove, remove) → delete
+        (store, remove), (remove, store) → nothing   ▷ a record that comes and goes, and Rule E
+    the journal of the evaluation keeps the last write of each id
+
+SETTLE(result):                                   ▷ reified/runtime.rs, settle_mirror_journal
+    batches ← take the journal: one batch for each collection
+    if result is Ok and has no errors: PUBLISH(batches)     ▷ M1
+    the start of the next root evaluation clears a journal that no result settled
+
+PUBLISH(batches):                                 ▷ vectordb_services.rs, MirrorWriter::publish
+    for each batch: try_send to the queue; a full queue marks the collection dirty
+
+APPLY(batch):                                     ▷ the task of the writer, in queue order
+    up to 3 attempts: make the collection, register its channels, upsert, delete
+    a batch that still fails marks the collection dirty
+
+PASS(block L, root R):                            ▷ reified/mirror_reconciler.rs, reconcile
+    take the dirty marks; make each dirty collection and register its channels
+    for each collection c: if watermark(c) < L or c is dirty:
+        for each registered channel: delete the orphans, add the missing records of R
+        on success: watermark(c) ← max(watermark(c), L); on failure: keep it, mark c again
+```
+
+A deploy can make several transactions on one collection.
+The journal keeps the last write of each record over all of them.
+So a record that one transaction stores and a later one removes leaves a delete.
+That delete names an id that the mirror never received, and ChromaDB accepts it with no effect.
+
+![Activity diagram of the ChromaDB mirror of a VectorDB space. CAPTURE runs after each commit of a VectorDB transaction, only for a space with mirror chroma: the net writes take the first and the last event of each record id, so a record that is stored and stays is an upsert when it has an embedding, a non-persistent removed record is a delete, and a record that is stored and removed, or removed and stored again by Rule E, writes nothing; the journal of the evaluation keeps the last write of each id, with no meter, no error path and no await. SETTLE, M1: when the final result has no errors, at the settle points of interpreter.rs and of the native path of rho_runtime.rs, the journal becomes one batch for each collection, and the bounded queue of 1,024 batches takes it with try_send, so the deploy goes on at once, or the collection is marked dirty and the deploy never waits; any other result drops the journal, and the start of each root evaluation also drops a journal that no result settled, so an exploratory evaluation never publishes. WRITER TASK: one batch at a time in publication order, APPLY makes the collection with the distance of the metric, registers its channels, upserts and deletes; when an attempt of three succeeds, with pauses of 100 ms and 200 ms, the mirror holds the writes, and otherwise the collection is marked dirty with its channels and a part of the batch can stay applied. RECONCILER: BlockFinalised gives the post-state root of the block, and a newer block replaces one that no pass took yet; the pass takes the dirty marks and prepares each one by making the collection and registering its channels; when the mirror does not list its collections, the dirty collections are marked dirty again and the pass ends; for each collection, a failed PREPARE fails the pass for it and it stays dirty, a collection at the watermark of the block that is not dirty is skipped as current, and any other collection is repaired: each registered channel is set to the finalized state, orphans deleted and missing records added; when every call of the repair succeeds, the watermark becomes the larger of the block and the old watermark, and otherwise the watermark is kept and a dirty collection is marked dirty again.](diagrams/30-mirror-journal-reconciler.svg)
+
+*Figure N16.2. Source: [diagrams/30-mirror-journal-reconciler.puml](diagrams/30-mirror-journal-reconciler.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+#### N16.3 Recorded embeddings
+
+`rho:vectordb:embed` turns texts into vectors with the embedder of the node (`rholang/src/rust/interpreter/reified/system_processes.rs:346-362`).
+The model can differ between nodes, so the vector of a text is never a function of consensus state.
+The dispatcher therefore records the whole reply of each call on the produce event of the reply, a failure reply included.
+Replay produces the recorded reply and asks no embedder, and Figure N16.3 shows both runs.
+A program then sends the vector with `embedding=`, and from then on the vector is consensus state.
+
+![Sequence diagram of rho:vectordb:embed in play and in replay. In play on the proposer, the program calls embed with the reply channel and a text or a list of texts; the process checks the shape, one text or a list of texts, else the reply BadArgument, and the quota of at most 64 texts and 64 KiB, else the reply EmbeddingRateLimited; it asks the embedder of the node, all-MiniLM-L6-v2 with 384 dimensions, for the texts, and the embedder returns one vector of f32 values for each text; the process produces the reply true, vector, model or true, list of vectors, model on the reply channel, and the dispatcher records the whole reply, a failure reply included, because the process is a recorded process of non_deterministic_ops. The program receives the reply and sends docs with the text and embedding equal to the vector, and OFFER-VDB offers the record with its embedding, so it fires a waiter or the space stores it, consensus state from now on. In replay on another node, the same call produces the recorded reply on the reply channel; replay asks no embedder, so two nodes with other models compute the same state; the program receives the recorded reply and makes the same send with the same embedding.](diagrams/31-recorded-embeddings.svg)
+
+*Figure N16.3. Source: [diagrams/31-recorded-embeddings.puml](diagrams/31-recorded-embeddings.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+#### N16.4 The advisory query
+
+`rho:vectordb:ann` asks the mirror of the node for the records of a channel that are nearest to a query (`rholang/src/rust/interpreter/reified/system_processes.rs:436-462`).
+Its checks read consensus state, so play and replay both make them ([decision 67](decision-register.md#decision-67)).
+In native execution each check is a journaled operation, and a replay that skipped one would fail its certification with an incomplete journal.
+Only the answers of the services are recorded: the embedding of a text query, the neighbours and the watermark.
+
+The ids of the reply are hints.
+A program passes them to a receive with `ids=`, and the exact engine keeps only the stored records whose source hash is among them.
+A stale id names no record, so it selects nothing, and the exact order decides among the other records.
+Figure N16.4 shows a call in play and in replay.
+
+![Sequence diagram of rho:vectordb:ann in play and in replay. In play on the proposer, the program calls ann with the reply channel, the space, the channel, the query and the options map with k equal to 5. The checks of decision 67 run in play and in replay: the process reads the config record of the space, reserved on the budget of the deploy, and gets the family, the params, the dimensions and the capacity; it checks a native VectorDB space, else NotAVectorDbSpace, with a mirror, else MirrorDisabled; a text or a numeric vector of the dimensions with finite f32 values, else DimensionMismatch or BadArgument; and a map of the one key k, an Int from 1 to the capacity, else InvalidOption. When the query is a text, the embedder and mirror of the node embed the text into one vector of the dimensions. The process asks the mirror for the collection, the channel digest, the vector and k, and gets the ids and distances of at most k neighbours; it asks the watermark of the collection and gets the finalized block of the last repair that finished. It produces the recorded reply true, ids, distances, watermark, or false MirrorUnavailable, on the reply channel. The program receives the reply and runs a receive on docs with the query vector, ids equal to the ids and k equal to 1; the exact engine of the VectorDB space keeps only the stored records whose id is in ids, a stale id names no record and selects nothing, and the exact order decides among the others. The ids are hints: only the exact query param ids turns them into a decision, so a stale mirror gives weaker advice and never changes consensus state. In replay on another node, the same call makes the same checks with the same host work and produces the recorded reply; replay asks no embedder and no mirror, and the program makes the same exact query with the same decision.](diagrams/32-advisory-query.svg)
+
+*Figure N16.4. Source: [diagrams/32-advisory-query.puml](diagrams/32-advisory-query.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+#### N16.5 The node and the docker environment
+
+The node starts the reconciler with one spawn call in `setup.rs` ([decision 61](decision-register.md#decision-61), `node/src/rust/runtime/setup.rs:685-723`).
+The call passes two read-only closures.
+One maps a block hash to the post-state root of the block, and one gives a runtime at a root.
+The reconciler starts only when the installed services have a writer, so a node without the `chromadb` feature starts no task.
+
+`docker/shard.yml` pins the server image by its digest, under the Compose profile `chromadb`.
+Each node gets the endpoint `CHROMA_ENDPOINT` and a database of its own, `CHROMA_DATABASE`, so no node writes the mirror of another node.
+A node built without the `chromadb` feature ignores these entries.
+
 ## References
 
 <a id="ref-bbg95"></a>[BBG95] H. Berenson, P. Bernstein, J. Gray, J. Melton, E. O'Neil, and P. O'Neil, "A critique of ANSI SQL isolation levels," in *Proceedings of the 1995 ACM SIGMOD International Conference on Management of Data*, ACM, 1995, pp. 1–10. [doi:10.1145/223784.223785](https://doi.org/10.1145/223784.223785)
