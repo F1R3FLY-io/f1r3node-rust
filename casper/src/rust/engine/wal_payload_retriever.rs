@@ -339,6 +339,31 @@ impl WalPayloadRetriever {
             state.retry_count += 1;
         }
     }
+
+    /// Drop pending payloads whose first-request timestamp is older
+    /// than [`STALE_EVICTION_MS`].  Called periodically by the tick
+    /// driver.  Returns how many were evicted (for metrics).
+    ///
+    /// # Retention predicate
+    ///
+    /// An entry is retained iff ANY of:
+    ///   * `state.bytes.is_some()` — already resolved; don't evict
+    ///     verified bytes just because they've been sitting around.
+    ///   * `state.initial_request_ms == 0` — never requested yet
+    ///     (just enqueued); the clock hasn't started.
+    ///   * `now - initial_request_ms < STALE_EVICTION_MS` — within
+    ///     the age budget.
+    pub async fn evict_stale(&self) -> usize {
+        let now = now_ms();
+        let mut g = self.payloads.write().await;
+        let before = g.len();
+        g.retain(|_, state| {
+            state.bytes.is_some()
+                || state.initial_request_ms == 0
+                || now.saturating_sub(state.initial_request_ms) < STALE_EVICTION_MS
+        });
+        before - g.len()
+    }
 }
 
 fn now_ms() -> u64 {
@@ -539,6 +564,76 @@ mod tests {
                 "release build must return false on hash/bytes mismatch"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn evict_stale_drops_old_pending_entries() {
+        // LOAD-BEARING: a payload that's been requested but
+        // unresolved for longer than STALE_EVICTION_MS gets dropped.
+        let retriever = WalPayloadRetriever::new();
+        let fresh = [0xA1; 32];
+        let stale = [0xA2; 32];
+        retriever.enqueue(fresh).await;
+        retriever.enqueue(stale).await;
+        // Simulate "sent long ago": set initial_request_ms past
+        // the eviction window on `stale`; set a recent timestamp
+        // on `fresh`.
+        {
+            let mut g = retriever.payloads.write().await;
+            g.get_mut(&fresh).unwrap().initial_request_ms = now_ms();
+            g.get_mut(&stale).unwrap().initial_request_ms =
+                now_ms().saturating_sub(STALE_EVICTION_MS + 1);
+        }
+        let evicted = retriever.evict_stale().await;
+        assert_eq!(evicted, 1);
+        let g = retriever.payloads.read().await;
+        assert!(g.contains_key(&fresh));
+        assert!(!g.contains_key(&stale));
+    }
+
+    #[tokio::test]
+    async fn evict_stale_retains_resolved_entries_regardless_of_age() {
+        // A resolved entry (bytes is Some) must NEVER be evicted
+        // for age — the applier may still need the bytes.
+        let retriever = WalPayloadRetriever::new();
+        let bytes = b"resolved".to_vec();
+        let h = {
+            let out = Blake2b256::hash(bytes.clone());
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&out);
+            buf
+        };
+        assert!(retriever.mark_resolved(h, bytes).await);
+        {
+            let mut g = retriever.payloads.write().await;
+            // Even with ancient initial_request_ms, mark_resolved
+            // populated `bytes` so retention wins.
+            g.get_mut(&h).unwrap().initial_request_ms =
+                now_ms().saturating_sub(STALE_EVICTION_MS * 10);
+        }
+        let evicted = retriever.evict_stale().await;
+        assert_eq!(evicted, 0, "resolved entry must be retained");
+        assert!(retriever.payloads.read().await.contains_key(&h));
+    }
+
+    #[tokio::test]
+    async fn evict_stale_retains_never_requested_entries() {
+        // An entry with initial_request_ms == 0 (just enqueued,
+        // never requested) must NEVER be evicted — the clock
+        // hasn't started.
+        let retriever = WalPayloadRetriever::new();
+        let h = [0xA3; 32];
+        retriever.enqueue(h).await;
+        // Default initial_request_ms is 0.
+        let evicted = retriever.evict_stale().await;
+        assert_eq!(evicted, 0);
+        assert!(retriever.payloads.read().await.contains_key(&h));
+    }
+
+    #[tokio::test]
+    async fn evict_stale_is_no_op_on_empty_retriever() {
+        let retriever = WalPayloadRetriever::new();
+        assert_eq!(retriever.evict_stale().await, 0);
     }
 
     #[tokio::test]
