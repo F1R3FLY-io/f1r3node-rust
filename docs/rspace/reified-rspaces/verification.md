@@ -3500,12 +3500,13 @@ The harness `scripts/verify-reified/vectordb-mutants.py` applies each mutant in 
 |---|---|---|
 | `driver-no-list-cascade` | The driver never searches the list cascade. | 6, both properties included |
 | `engine-no-list-cascade` | The engine never finds a list waiter for its cascade. | 5, both properties included |
-| `no-member-retire` | A list fire retires no other member. | 2 |
+| `no-member-retire` | A list fire retires no other member. | 3, `prop_vectordb_list_fires_are_atomic` included |
 | `selection-reversed` | The selection order is reversed. | 16 |
 | `driver-rule-e-dropped` | A peek of the driver sends no record again. | 8, `prop_vectordb_records_are_conserved` included |
 | `engine-bind-ignores-query` | A similarity bind of the engine reads the canonical order. | 3 |
 
-The counts are those of the run of step 8b, with its two new properties and its witness test (section [22.3](#223-negative-controls)).
+The counts are those of the run of step 8c, with the properties and the witness test of steps 8b and 8c.
+Sections [22.3](#223-negative-controls) and [23.4](#234-the-property-of-atomic-list-fires) describe them.
 
 The first run of the harness refuted one hypothesis: the random programs did not reach the list cascade.
 Only the example tests failed under the two cascade mutants.
@@ -4526,6 +4527,99 @@ Table 100 gives the counts of the six older mutants in the same run.
 To run the checks of step 8b, do these steps from the repository root:
 
 1. Run `bash scripts/check-reified-rspaces-proofs.sh`, which must report `FAIL=0`.
+2. Run `cargo test -p rholang --test reified_vectordb`.
+3. Run `python3 scripts/verify-reified/vectordb-mutants.py`, which must report `FAIL=0`.
+4. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P6`.
+5. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json`.
+
+## 23. Phase P6, step 8c: the TLA+ model of the VectorDB discipline
+
+Step 8c adds `VectorDb.tla`, a TLA+ model of one VectorDB collection.
+TLC explores every schedule of a few operations, with the settle jobs and the re-issues at the round cap.
+The Rocq model of step 8b ends a transaction at its first stop, so these continuations are new in this model.
+Five Unsafe controls show that each invariant depends on its rule, and a new property tests atomic list fires in Rust.
+
+### 23.1 The model
+
+Each step of the model is one space transaction: a fresh send, a fresh receive, a re-issued operation, or a settle job.
+No other transaction runs inside it, so the step computes the whole transaction, as in `JoinCascade.tla`.
+The payload img scores above doc for every query.
+The query all makes every record eligible, and the query img makes only the img records eligible, as a bound does.
+The selection order is the better score first, then the lower id, as the DR-75 tie-break.
+A plain receive reads every record in id order, the canonical order.
+
+The plans follow the driver.
+RECEIVE-VDB fires a receive on its selection or parks it, and a peek owes its removed members as second sends.
+OFFER-VDB offers an element to the first parked waiter that it fires, and a list fire without a peek retires the other members.
+The tail offers the owed second sends first and then runs LIST-CASCADE.
+One fire count runs through the transaction, and `AfterFire` is `FireRounds::after_fire`.
+
+A review of the first draft against the code found three differences, and the model now follows the code in each case:
+
+1. When the element of the operation stops at a divergent pair, the tail still runs in the same transaction (`finish_tail`). Only a stop at the round cap with work owed stops the transaction at once.
+2. The owed second sends form a stack: the last owe runs first, and one fire owes its members in delivery order (`Tail::owe_all`).
+3. A settle job of the driver runs in the join engine (`classify`). It offers its pending second sends first and then always runs the cascade (`Engine::run`, joins plan section 4.10).
+
+*Table 128. The invariants of `VectorDb.tla`.*
+
+| Id | Invariant | Statement | Rocq | Property |
+|---|---|---|---|---|
+| W1 | `QuiescentNoPendingMatch` | With no job outstanding, no parked waiter can fire on the records (LM-b). | S22 | `prop_vectordb_no_pending_match` |
+| W2 | `ListAtomic` | A list fire without a peek spends each member of its list that is not persistent, in the transaction of the fire. | none | `prop_vectordb_list_fires_are_atomic` |
+| W3 | `PeekConservation` | Every record that was stored is stored, spent by a fire of a waiter that does not peek, or pending in a settle job (Rule E). | S25 | `prop_vectordb_records_are_conserved` |
+| W4 | `CascadeTerminates` | Each step of each tail lowers $`2\,(c - f) + o`$ or stops the transaction, and no transaction runs out of its fuel. | S24 | `prop_vectordb_transactions_are_bounded` |
+
+A transaction that runs out of its fuel commits nothing in the model.
+It only records the failed check of W4, so no other invariant sees a partial transaction.
+
+### 23.2 Configurations
+
+*Table 129. The safe configurations of `VectorDb.tla`.*
+
+| Configuration | What it covers | Distinct states | Depth |
+|---|---|---|---|
+| `MC_VectorDb_List` | Single and list waiters of the query all, with peeks and persistent sends. Five operations reach CE-1 and CE-2. | 64,597 | 8 |
+| `MC_VectorDb_Persist` | Persistent receives and sends at $`c = 1`$: divergent pairs, re-issues and settle jobs. | 17,193 | 9 |
+| `MC_VectorDb_Plain` | Plain receives and list waiters of the queries all and img, with the list lengths all, 1 and 3. | 1,677,464 | 8 |
+
+A safe run passes only if it reaches the states that it claims to cover.
+So temporary invariants that deny each state checked the persist configuration, and TLC violated each one within four steps.
+The states are an outstanding settle job, an outstanding re-issued operation, and a settle job with a resume operation.
+Two pending second sends, and a persistent waiter parked next to records, are states of the check too.
+
+### 23.3 Negative controls
+
+*Table 130. The Unsafe controls of `VectorDb.tla`.*
+
+| Control | Rule it reverts | Refutes | Shortest trace |
+|---|---|---|---|
+| `VdbNoCascadeUnsafe` | The tail runs no LIST-CASCADE. | W1 | CE-2: 5 transactions |
+| `VdbParkOnlyWhileEmptyUnsafe` | LM-a: a list waiter parks only while no record is eligible. | W1 | CE-1: 3 transactions |
+| `VdbNoRetireUnsafe` | A list fire without a peek retires no other member. | W2 | 3 transactions |
+| `VdbDropOwedUnsafe` | A peek fire owes no second sends. | W3 | 2 transactions |
+| `VdbUncountedCascadeUnsafe` | A cascade fire does not count toward the fires. | W4 | 5 transactions |
+
+Each control refutes exactly its invariant, and the complement run without that invariant finds no violation.
+Design v3 names the first three controls.
+The last two give W3 and W4 a control each, so that no invariant of the model is vacuous.
+
+### 23.4 The property of atomic list fires
+
+The first run of the step-8b harness showed a gap: only the example tests CE-1 and CE-2 killed the mutant `no-member-retire`.
+`prop_vectordb_list_fires_are_atomic` now tests W2 on generated programs.
+It gives each send a distinct payload, so the values that a list fire binds name the members of its list.
+After each operation, a member of a list fire of a waiter that does not peek may stay stored only when it is persistent.
+Each program also runs as a drain whose list waiters keep their peek flags, so cascade fires without a peek occur.
+The property fails under `no-member-retire`, together with the two example tests.
+
+The final run of `vectordb-mutants.py` with this property kills all nine Rust mutants and restores the source files.
+Table 100 gives the counts of that run.
+
+### 23.5 Running the step-8c checks
+
+To run the checks of step 8c, do these steps from the repository root:
+
+1. Run `bash scripts/check-reified-rspaces-tla-invariants.sh`, which must report `FAIL=0`.
 2. Run `cargo test -p rholang --test reified_vectordb`.
 3. Run `python3 scripts/verify-reified/vectordb-mutants.py`, which must report `FAIL=0`.
 4. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P6`.

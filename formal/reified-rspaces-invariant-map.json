@@ -7040,14 +7040,14 @@
       ]
     },
     "P6": {
-      "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break), the VectorDB discipline of one collection (VectorDbDiscipline.v S21-S25) and the replay of its transactions (S26, the H23 theorem of EventCorrelation.v).",
-      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1 and 4.3 to 4.6, and 5. witness_tests lists the deterministic tests, the reference vectors of the Sage leg included.",
+      "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break), the VectorDB discipline of one collection (VectorDbDiscipline.v S21-S25) the replay of its transactions (S26, the H23 theorem of EventCorrelation.v), and its TLA+ model VectorDb.tla (W1-W4: no pending match, atomic list fires, conservation of peeked records, the measure of the tail).",
+      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1 and 4.3 to 4.6, and 5 (Rocq and TLA+). witness_tests lists the deterministic tests, the reference vectors of the Sage leg included.",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/tensor/exact.rs",
         "rholang/tests/reified_vectordb.rs"
       ],
-      "expected_properties": 22,
+      "expected_properties": 23,
       "formal": {
         "S1": {
           "kind": "rocq",
@@ -7288,6 +7288,42 @@
           "tests": [
             "prop_vectordb_replay_equal"
           ]
+        },
+        "W1": {
+          "kind": "tla",
+          "name": "QuiescentNoPendingMatch",
+          "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+          "statement": "With no re-issued operation and no settle job outstanding, no parked waiter can fire on the records, for every schedule of the bounded configurations, with settle jobs and re-issues at the round cap (LM-b).",
+          "tests": [
+            "prop_vectordb_no_pending_match"
+          ]
+        },
+        "W2": {
+          "kind": "tla",
+          "name": "ListAtomic",
+          "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+          "statement": "A list fire of a waiter that does not peek spends each member of its list that is not persistent, in the transaction of the fire (K_retire and K_lift).",
+          "tests": [
+            "prop_vectordb_list_fires_are_atomic"
+          ]
+        },
+        "W3": {
+          "kind": "tla",
+          "name": "PeekConservation",
+          "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+          "statement": "Every record that was stored is stored, spent by a fire of a waiter that does not peek, or pending in an outstanding settle job (Rule E, decisions 30 and 45).",
+          "tests": [
+            "prop_vectordb_records_are_conserved"
+          ]
+        },
+        "W4": {
+          "kind": "tla",
+          "name": "CascadeTerminates",
+          "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+          "statement": "Each step of each tail lowers the measure 2 * (Cap - fired) + |owed| or stops the transaction, and no transaction runs out of its fuel (decision 49, I-21).",
+          "tests": [
+            "prop_vectordb_transactions_are_bounded"
+          ]
         }
       },
       "properties": [
@@ -7442,7 +7478,8 @@
           "file": "rholang/tests/reified_vectordb.rs",
           "covers": [
             "S22",
-            "S23"
+            "S23",
+            "W1"
           ]
         },
         {
@@ -7466,7 +7503,8 @@
           "test": "prop_vectordb_transactions_are_bounded",
           "file": "rholang/tests/reified_vectordb.rs",
           "covers": [
-            "S24"
+            "S24",
+            "W4"
           ]
         },
         {
@@ -7474,7 +7512,16 @@
           "test": "prop_vectordb_records_are_conserved",
           "file": "rholang/tests/reified_vectordb.rs",
           "covers": [
-            "S25"
+            "S25",
+            "W3"
+          ]
+        },
+        {
+          "number": 23,
+          "test": "prop_vectordb_list_fires_are_atomic",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "covers": [
+            "W2"
           ]
         }
       ],
@@ -7563,7 +7610,9 @@
           "file": "rholang/tests/reified_vectordb.rs",
           "rule": "decision 66 (CE-1)",
           "covers": [
-            "S22"
+            "S22",
+            "W1",
+            "W2"
           ]
         },
         {
@@ -7572,7 +7621,9 @@
           "rule": "decision 66 (CE-2)",
           "covers": [
             "S22",
-            "S23"
+            "S23",
+            "W1",
+            "W2"
           ]
         },
         {
@@ -7581,7 +7632,9 @@
           "rule": "decision 49 (the cascade carries at the round cap)",
           "covers": [
             "S22",
-            "S24"
+            "S24",
+            "W1",
+            "W4"
           ]
         },
         {
@@ -7590,7 +7643,9 @@
           "rule": "decisions 45 and 49 (the restores carry at the round cap)",
           "covers": [
             "S24",
-            "S25"
+            "S25",
+            "W3",
+            "W4"
           ]
         },
         {
@@ -7598,7 +7653,8 @@
           "file": "rholang/tests/reified_vectordb.rs",
           "rule": "decision 45 (Rule E)",
           "covers": [
-            "S25"
+            "S25",
+            "W3"
           ]
         },
         {
@@ -7606,7 +7662,8 @@
           "file": "rholang/tests/reified_vectordb.rs",
           "rule": "decisions 30 and 45 (a cascade fire of a peek sends its lifted member again)",
           "covers": [
-            "S25"
+            "S25",
+            "W3"
           ]
         },
         {

@@ -1,7 +1,7 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P6",
-  "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v, and the VectorDB discipline of one collection (the driver of disciplines/vectordb.rs and the similarity paths of the join engine) and its Rocq model VectorDbDiscipline.v.",
+  "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v, and the VectorDB discipline of one collection (the driver of disciplines/vectordb.rs and the similarity paths of the join engine) and its Rocq model VectorDbDiscipline.v, and its TLA+ model VectorDb.tla.",
   "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.3 to 4.6 and 5. The headline ids are the ids of the P6 phase of formal/reified-rspaces-invariant-map.json.",
   "code_base": "The items are in the P6 step 2 and step 8b commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
@@ -11,7 +11,9 @@
       "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
       "formal/rocq/reified_rspaces/theories/EventCorrelation.v"
     ],
-    "tla": []
+    "tla": [
+      "formal/tlaplus/reified_rspaces/VectorDb.tla"
+    ]
   },
   "headlines": {
     "S1": {
@@ -169,6 +171,30 @@
       "name": "replay_reproduces_play_run",
       "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
       "statement": "Replay stages the operations of play, pairs each recorded COMM once, and reproduces the run of play: its observer calls, its effects and its status (H23, decision 36). The VectorDB plans stage through the substrate, so their transactions replay this way."
+    },
+    "W1": {
+      "kind": "tla",
+      "name": "QuiescentNoPendingMatch",
+      "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+      "statement": "With no re-issued operation and no settle job outstanding, no parked waiter can fire on the records, for every schedule of the bounded configurations, with settle jobs and re-issues at the round cap (LM-b)."
+    },
+    "W2": {
+      "kind": "tla",
+      "name": "ListAtomic",
+      "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+      "statement": "A list fire of a waiter that does not peek spends each member of its list that is not persistent, in the transaction of the fire (K_retire and K_lift)."
+    },
+    "W3": {
+      "kind": "tla",
+      "name": "PeekConservation",
+      "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+      "statement": "Every record that was stored is stored, spent by a fire of a waiter that does not peek, or pending in an outstanding settle job (Rule E, decisions 30 and 45)."
+    },
+    "W4": {
+      "kind": "tla",
+      "name": "CascadeTerminates",
+      "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+      "statement": "Each step of each tail lowers the measure 2 * (Cap - fired) + |owed| or stops the transaction, and no transaction runs out of its fuel (decision 49, I-21)."
     }
   },
   "items": [
@@ -518,9 +544,12 @@
       "rocq": [
         "rec"
       ],
-      "tla": [],
+      "tla": [
+        "Rec"
+      ],
       "covers": [
-        "S25"
+        "S25",
+        "W3"
       ]
     },
     {
@@ -534,10 +563,14 @@
       "rocq": [
         "elist"
       ],
-      "tla": [],
+      "tla": [
+        "Eligible",
+        "Order"
+      ],
       "covers": [
         "S21",
-        "S22"
+        "S22",
+        "W1"
       ]
     },
     {
@@ -552,10 +585,15 @@
         "sel",
         "fires"
       ],
-      "tla": [],
+      "tla": [
+        "ListOf",
+        "BindsL"
+      ],
       "covers": [
         "S22",
-        "S23"
+        "S23",
+        "W1",
+        "W2"
       ]
     },
     {
@@ -570,9 +608,12 @@
         "osel",
         "ofires"
       ],
-      "tla": [],
+      "tla": [
+        "OFires"
+      ],
       "covers": [
-        "S22"
+        "S22",
+        "W1"
       ]
     },
     {
@@ -586,9 +627,13 @@
       "rocq": [
         "retired"
       ],
-      "tla": [],
+      "tla": [
+        "Offer",
+        "Lift"
+      ],
       "covers": [
-        "S25"
+        "S25",
+        "W2"
       ]
     },
     {
@@ -604,12 +649,18 @@
         "run_offer",
         "first_offer"
       ],
-      "tla": [],
+      "tla": [
+        "Offer"
+      ],
       "covers": [
         "S22",
         "S24",
         "S25",
-        "S26"
+        "S26",
+        "W1",
+        "W2",
+        "W3",
+        "W4"
       ]
     },
     {
@@ -624,9 +675,12 @@
         "first_offer",
         "ofires"
       ],
-      "tla": [],
+      "tla": [
+        "OFires"
+      ],
       "covers": [
-        "S22"
+        "S22",
+        "W1"
       ]
     },
     {
@@ -641,12 +695,17 @@
         "receive",
         "run_receive"
       ],
-      "tla": [],
+      "tla": [
+        "Recv"
+      ],
       "covers": [
         "S22",
         "S24",
         "S25",
-        "S26"
+        "S26",
+        "W1",
+        "W3",
+        "W4"
       ]
     },
     {
@@ -661,9 +720,13 @@
         "sel",
         "fires"
       ],
-      "tla": [],
+      "tla": [
+        "Sel",
+        "FiresOn"
+      ],
       "covers": [
-        "S22"
+        "S22",
+        "W1"
       ]
     },
     {
@@ -678,11 +741,17 @@
         "tail",
         "tail_fuel"
       ],
-      "tla": [],
+      "tla": [
+        "RunTail",
+        "Measure"
+      ],
       "covers": [
         "S22",
         "S24",
-        "S25"
+        "S25",
+        "W1",
+        "W3",
+        "W4"
       ]
     },
     {
@@ -697,10 +766,13 @@
         "first_cascade",
         "is_list"
       ],
-      "tla": [],
+      "tla": [
+        "RunTail"
+      ],
       "covers": [
         "S22",
-        "S23"
+        "S23",
+        "W1"
       ]
     },
     {
@@ -714,11 +786,16 @@
       "rocq": [
         "tail"
       ],
-      "tla": [],
+      "tla": [
+        "Lift"
+      ],
       "covers": [
         "S22",
         "S24",
-        "S25"
+        "S25",
+        "W2",
+        "W3",
+        "W4"
       ]
     },
     {
@@ -733,9 +810,12 @@
       "rocq": [
         "after_fire"
       ],
-      "tla": [],
+      "tla": [
+        "AfterFire"
+      ],
       "covers": [
-        "S24"
+        "S24",
+        "W4"
       ]
     },
     {
@@ -788,6 +868,92 @@
       "tla": [],
       "covers": [
         "S21"
+      ]
+    },
+    {
+      "item": "finish_tail",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "finish_tail",
+      "line": 1754,
+      "role": "The tail of a plan: an element of the operation that stopped at the round cap stops the transaction when work is owed, and otherwise only re-issues; after a divergent pair, or when the element settled, the tail runs.",
+      "rocq": [],
+      "tla": [
+        "RunOp"
+      ],
+      "covers": [
+        "W1",
+        "W4"
+      ]
+    },
+    {
+      "item": "conclude",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "conclude",
+      "line": 1814,
+      "role": "The re-issue at the end of a plan: one settle job with the pending second sends and the resume operation, or the re-issue of the operation alone.",
+      "rocq": [],
+      "tla": [
+        "NewJobs"
+      ],
+      "covers": [
+        "W3"
+      ]
+    },
+    {
+      "item": "classify",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/join.rs",
+      "kind": "fn",
+      "name": "classify",
+      "line": 370,
+      "role": "A settle job with a cascade state always runs in the join engine.",
+      "rocq": [],
+      "tla": [
+        "RunSettle"
+      ],
+      "covers": [
+        "W1",
+        "W3"
+      ]
+    },
+    {
+      "item": "Engine::commit",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/join.rs",
+      "scope": "Engine",
+      "kind": "fn",
+      "name": "commit",
+      "line": 4620,
+      "role": "COMMIT of the engine: a stop with owed work re-issues one settle job with the pending sends and the resume operation, and otherwise the resume operation.",
+      "rocq": [],
+      "tla": [
+        "NewJobs"
+      ],
+      "covers": [
+        "W3"
+      ]
+    },
+    {
+      "item": "Engine::drain_and_cascade",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/join.rs",
+      "scope": "Engine",
+      "kind": "fn",
+      "name": "drain_and_cascade",
+      "line": 4318,
+      "role": "DRAIN-AND-CASCADE of a settle job: the pending second sends first, then the cascade, with the round cap checked before each fire.",
+      "rocq": [],
+      "tla": [
+        "RunSettle",
+        "RunTail"
+      ],
+      "covers": [
+        "W1",
+        "W4"
       ]
     }
   ]

@@ -38,6 +38,10 @@
 # accepts the journal of play, and only it, with the outcome of play; and
 # the scheduling of space intents: NoBlockedReadiness with the key
 # [2]||sid, and NoDeadlock with a failed space row that closes the epoch).
+# P6 step 8c: VectorDb.tla (the VectorDB discipline of one collection: no
+# pending match at a quiescent state under LM-b, atomic list fires, Rule E
+# conservation of peeked records, and the measure of the tail, with the
+# settle jobs and re-issues at the round cap).
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -125,6 +129,9 @@ SAFE_CONFIGS=(
   "NativeReplay MC_NativeReplay_Outcome.cfg"
   "NativeReplay MC_NativeReplay_Schedule.cfg"
   "NativeReplay MC_NativeReplay_Schedule_NativeKey.cfg"
+  "VectorDb MC_VectorDb_List.cfg"
+  "VectorDb MC_VectorDb_Persist.cfg"
+  "VectorDb MC_VectorDb_Plain.cfg"
 )
 # <module> <config> <the one invariant that it must refute>
 UNSAFE_CONFIGS=(
@@ -183,6 +190,11 @@ UNSAFE_CONFIGS=(
   "NativeReplay NoSpaceKeyUnsafe.cfg NoBlockedReadiness"
   "NativeReplay WaitUnderLocksUnsafe.cfg NoDeadlock"
   "NativeReplay NoInvalidateUnsafe.cfg NoDeadlock"
+  "VectorDb VdbNoCascadeUnsafe.cfg QuiescentNoPendingMatch"
+  "VectorDb VdbParkOnlyWhileEmptyUnsafe.cfg QuiescentNoPendingMatch"
+  "VectorDb VdbNoRetireUnsafe.cfg ListAtomic"
+  "VectorDb VdbDropOwedUnsafe.cfg PeekConservation"
+  "VectorDb VdbUncountedCascadeUnsafe.cfg CascadeTerminates"
 )
 # <name>|<module>|<config>|<length>|<expected outcome>|<marker in the violated formula>
 APALACHE_CHECKS=(
@@ -233,7 +245,7 @@ if [[ ! "$APALACHE_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue, PathMapPrefix, JoinCascade)"
+echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue, PathMapPrefix, JoinCascade, NativeReplay, VectorDb)"
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 tools_ok=true

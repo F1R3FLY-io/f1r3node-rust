@@ -2427,13 +2427,18 @@ fn with_peeks(program: &[VdbOp], select: fn(&Mode) -> bool) -> Vec<VdbOp> {
         .collect()
 }
 
-/// A drain of `program`: every send is not persistent, every list waiter peeks, and one plain
-/// receive without a peek for each operation follows the program. A plain receive takes the
-/// first record in canonical order. So a parked list waiter whose list is too long fires in a
-/// cascade when two eligible records remain, and the cascade lifts the first member of its list.
-fn drained(program: &[VdbOp]) -> Vec<VdbOp> {
+/// A drain of `program`: every send is not persistent, every list waiter peeks when
+/// `list_peeks` holds, and one plain receive without a peek for each operation follows the
+/// program. A plain receive takes the first record in canonical order. So a parked list waiter
+/// whose list is too long fires in a cascade when two eligible records remain, and the cascade
+/// lifts the first member of its list.
+fn drained(program: &[VdbOp], list_peeks: bool) -> Vec<VdbOp> {
     let mut ops = Vec::with_capacity(2 * program.len());
-    for op in with_peeks(program, |mode| matches!(mode, Mode::List { .. })) {
+    let select: fn(&Mode) -> bool = match list_peeks {
+        true => |mode| matches!(mode, Mode::List { .. }),
+        false => |_| false,
+    };
+    for op in with_peeks(program, select) {
         ops.push(match op {
             VdbOp::Send { values, salt, .. } => VdbOp::Send {
                 values,
@@ -2462,7 +2467,7 @@ fn drained(program: &[VdbOp]) -> Vec<VdbOp> {
 #[test]
 fn prop_vectordb_records_are_conserved() {
     check(pure_config(), arb_program(), |program| {
-        let drain = drained(&program);
+        let drain = drained(&program, true);
         let peeks = with_peeks(&program, |_| true);
         tokio_runtime().block_on(async {
             for (program, peeks_only) in [(&program, false), (&drain, false), (&peeks, true)] {
@@ -2496,6 +2501,115 @@ fn prop_vectordb_records_are_conserved() {
                                     return Err(failure(format!(
                                         "{context}: the record {record:?} ({hash:?}) left, and \
                                          the last COMM that names it peeks or does not exist"
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
+    });
+}
+
+/// `program` with a distinct payload for each send: the send of index `i` stores the vector
+/// `[a, b + 10 (i + 1)]` of its values `[a, b]`, and each doc becomes such a send. So the
+/// payload of a record names it, and the values that a list fire binds name its members.
+fn with_distinct_payloads(program: &[VdbOp]) -> Vec<VdbOp> {
+    program
+        .iter()
+        .enumerate()
+        .map(|(index, op)| {
+            let offset = 10 * (i64::try_from(index).expect("a small program") + 1);
+            match op {
+                VdbOp::Send {
+                    values: [a, b],
+                    persistent,
+                    salt,
+                } => VdbOp::Send {
+                    values: [*a, b + offset],
+                    persistent: *persistent,
+                    salt: *salt,
+                },
+                VdbOp::Doc {
+                    values: [a, b],
+                    salt,
+                    ..
+                } => VdbOp::Send {
+                    values: [*a, b + offset],
+                    persistent: false,
+                    salt: *salt,
+                },
+                receive => receive.clone(),
+            }
+        })
+        .collect()
+}
+
+/// The members of the list that a fire of a list waiter with the pattern `pattern` binds: the
+/// two values of `[a, b]`, or the elements of the list that a variable binds.
+fn list_members(pattern: Pat, bound: &[Par]) -> Vec<Par> {
+    match pattern {
+        Pat::Pair => bound.to_vec(),
+        Pat::Any => bound
+            .iter()
+            .flat_map(|list| match list.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::EListBody(members)),
+                }] => members.ps.clone(),
+                _ => panic!("a list fire binds a list: {list:?}"),
+            })
+            .collect(),
+        Pat::Tag => Vec::new(),
+    }
+}
+
+/// A list fire without a peek spends each member of its list that is not persistent, in the
+/// transaction of the fire (VectorDb.tla, ListAtomic). Each send of a program has a distinct
+/// payload, so the values that a fire binds name the members of its list. After each operation,
+/// a member of a list fire of a waiter that does not peek is stored only when it is persistent.
+/// Each program also runs as a drain whose list waiters keep their peek flags, so the cascade
+/// fires list waiters that do not peek and retires their members.
+#[test]
+fn prop_vectordb_list_fires_are_atomic() {
+    check(pure_config(), arb_program(), |program| {
+        let generated = with_distinct_payloads(&program);
+        let drain = with_distinct_payloads(&drained(&program, false));
+        tokio_runtime().block_on(async {
+            for program in [&generated, &drain] {
+                for engine in [false, true] {
+                    let rig = match engine {
+                        false => Rig::new(COSINE).await,
+                        true => Rig::joined(COSINE).await,
+                    };
+                    for (index, op) in program.iter().enumerate() {
+                        let Ok(chain) = rig.run_chain(space_op(op, index)).await else {
+                            continue;
+                        };
+                        let after = rig.records().await;
+                        for (name, bound) in chain.iter().flat_map(fired) {
+                            let waiter = name
+                                .strip_prefix('w')
+                                .and_then(|index| index.parse::<usize>().ok())
+                                .and_then(|index| program.get(index));
+                            let Some(VdbOp::Receive {
+                                mode: Mode::List { .. },
+                                pattern,
+                                peek: false,
+                                ..
+                            }) = waiter
+                            else {
+                                continue;
+                            };
+                            for member in list_members(*pattern, &bound) {
+                                let stored = after
+                                    .iter()
+                                    .find(|(payload, _, _)| payload.as_slice() == [member.clone()]);
+                                if let Some((_, _, false)) = stored {
+                                    return Err(failure(format!(
+                                        "op {index} (engine {engine}): the member {member:?} of \
+                                         the list of {name} is still stored"
                                     )));
                                 }
                             }
