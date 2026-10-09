@@ -3,7 +3,8 @@
 //! A call `F!(ret, ctor)` on the factory channel of a family creates a new space:
 //!
 //! 1. The random state `r` and the cost authority `α` are those of the call datum.
-//! 2. `FactoryConstructor::validate` checks the constructor list `ctor`.
+//! 2. `FactoryConstructor::validate_in` checks the constructor list `ctor` in the execution
+//!    model of the deploy: legacy execution refuses `seq` (P7, QT-5).
 //! 3. The space id is `sid = r.split_byte(0xE0).split_byte(0x01).next()` (I-19,
 //!    `types::id::derive_space_id`).
 //! 4. `ReifiedRuntime::create_space` runs one `Intent::Space` job whose footprint holds
@@ -90,7 +91,10 @@ impl FactoryProcess {
         let [ret, ctor] = args.as_slice() else {
             return Err(illegal());
         };
-        let constructor = FactoryConstructor::validate(self.family, ctor)?;
+        // Changed by P7 step 2 (design v3 QT-5): gate 3 needs the execution model of the deploy.
+        // let constructor = FactoryConstructor::validate(self.family, ctor)?;
+        let constructor =
+            FactoryConstructor::validate_in(self.family, ctor, self.runtime.execution()?)?;
         let space = NativeSpace {
             sid: derive_space_id(&random),
             durability: constructor.durability(),

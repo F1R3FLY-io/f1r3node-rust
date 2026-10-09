@@ -64,6 +64,8 @@
                             CollectionKey::of_channel and from_bytes)
    byte names               rholang/src/rust/interpreter/system_processes.rs:
                             89-93 (byte_name: a 1-byte id)
+   is_seq_name              rholang/src/rust/interpreter/reified/seq.rs:333-363
+                            (check_unforgeable, P7 SQ-1 and SQ-2)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -103,6 +105,9 @@
     9. space_and_collection_counters_distinct
    10. name_id_routes_to_sid        a name id decodes to its space
    11. canon_respects_par_eq        the key depends on the sorted shape only
+   12. seq_name_iff                 a name is a seq name exactly when its
+                                    space is a live ephemeral space that
+                                    is not exempt (P7, SQ-1)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. The file
    imports only the Rocq standard library.
@@ -1114,6 +1119,74 @@ Example example_decoder_rejects_bad_name_tail :
   decode_reified_id (224 :: 78 :: example_sid ++ [1; 2; 3]) = None.
 Proof. reflexivity. Qed.
 
+(* ── 12a. Headline 12: seq names (P7, SQ-1) ──────────────────────────── *)
+
+(* reified/seq.rs check_unforgeable: an id is a seq name of the seq spaces
+   live (other than the space exempt) when it decodes to a name of an
+   ephemeral space whose sid is in live and is not exempt. *)
+Definition sid_eqb (a b : bytes) : bool := if list_eq_dec Nat.eq_dec a b then true else false.
+
+Definition is_seq_name (live : list bytes) (exempt : option bytes) (id : bytes) : bool :=
+  match decode_reified_id id with
+  | Some (RName s _) =>
+      durability_eqb (sp_dur s) Ephemeral && existsb (sid_eqb (sp_sid s)) live &&
+      negb (match exempt with Some e => sid_eqb (sp_sid s) e | None => false end)
+  | _ => false
+  end.
+
+Lemma sid_eqb_true : forall a b, sid_eqb a b = true <-> a = b.
+Proof.
+  intros a b. unfold sid_eqb. destruct (list_eq_dec Nat.eq_dec a b); split; intros H;
+    solve [assumption | reflexivity | discriminate H | contradiction].
+Qed.
+
+Lemma durability_eqb_true : forall a b, durability_eqb a b = true <-> a = b.
+Proof. intros [] []; cbn; split; intros H; solve [reflexivity | discriminate H]. Qed.
+
+(* Headline 12 (SQ-1). The name of a space is a seq name exactly when the
+   space is ephemeral, its sid is live and it is not exempt. Every seq name
+   decodes to a name of a live ephemeral space. The handle of a space and
+   every name of a durable space are never seq names. *)
+Theorem seq_name_iff :
+  (forall live exempt s t, space_ok s -> tail_ok t ->
+     is_seq_name live exempt (name_id s t) = true <->
+       (sp_dur s = Ephemeral /\ In (sp_sid s) live /\ exempt <> Some (sp_sid s))) /\
+  (forall live exempt id, is_seq_name live exempt id = true ->
+     exists s t, decode_reified_id id = Some (RName s t) /\
+       sp_dur s = Ephemeral /\ In (sp_sid s) live) /\
+  (forall live exempt s, space_ok s -> is_seq_name live exempt (handle_channel s) = false) /\
+  (forall live exempt s t, space_ok s -> tail_ok t -> sp_dur s = Durable ->
+     is_seq_name live exempt (name_id s t) = false).
+Proof.
+  assert (Hname : forall s t, space_ok s -> tail_ok t ->
+            decode_reified_id (name_id s t) = Some (RName s t))
+    by (intros s t Hs Ht; exact (decode_encode_ok (RName s t) (conj Hs Ht))).
+  split; [| split; [| split]].
+  - intros live exempt s t Hs Ht. unfold is_seq_name. rewrite (Hname s t Hs Ht).
+    rewrite !andb_true_iff, negb_true_iff, durability_eqb_true, existsb_exists.
+    split.
+    + intros [[Hd [x [Hx Hex]]] He]. apply sid_eqb_true in Hex. subst x.
+      split; [exact Hd | split; [exact Hx |]].
+      intros Heq. rewrite Heq in He. rewrite (proj2 (sid_eqb_true _ _) eq_refl) in He.
+      discriminate He.
+    + intros [Hd [Hx He]]. split; [split; [exact Hd |] |].
+      * exists (sp_sid s). split; [exact Hx | apply sid_eqb_true; reflexivity].
+      * destruct exempt as [e |]; [| reflexivity].
+        destruct (sid_eqb (sp_sid s) e) eqn:E; [| reflexivity].
+        apply sid_eqb_true in E. subst e. contradiction He. reflexivity.
+  - intros live exempt id H. unfold is_seq_name in H.
+    destruct (decode_reified_id id) as [x |] eqn:Hdec; [| discriminate H].
+    destruct x; try discriminate H.
+    rewrite !andb_true_iff, durability_eqb_true, existsb_exists in H.
+    destruct H as [[Hd [x [Hx Hex]]] _]. apply sid_eqb_true in Hex. subst x.
+    exists n, n0. split; [reflexivity | split; assumption].
+  - intros live exempt s Hs. unfold is_seq_name.
+    pose proof (decode_encode_ok (RHandle s) Hs) as Hh. cbn [encode_reified_id] in Hh.
+    rewrite Hh. reflexivity.
+  - intros live exempt s t Hs Ht Hd. unfold is_seq_name. rewrite (Hname s t Hs Ht), Hd.
+    reflexivity.
+Qed.
+
 (* ── 13. Assumption audit ──────────────────────────────────────────────── *)
 
 Print Assumptions kind_byte_injective.
@@ -1127,3 +1200,4 @@ Print Assumptions decode_encode_reified_id.
 Print Assumptions space_and_collection_counters_distinct.
 Print Assumptions name_id_routes_to_sid.
 Print Assumptions canon_respects_par_eq.
+Print Assumptions seq_name_iff.

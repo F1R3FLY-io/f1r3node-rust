@@ -26,7 +26,7 @@
 //! | `mirror_publishes_a_successful_deploy` | A successful deploy publishes one upsert for each record with a vector, with its id, embedding, channel digest, persistence and document. A record without a vector and an unmirrored space are not mirrored. |
 //! | `mirror_journal_drops_failed_deploy` | A space error, an out-of-phlo deploy and a host-work rejection publish nothing, also after a transaction of the space has committed. |
 //! | `mirror_rule_e_coalesces` | A peek writes nothing (Rule E), a consume of a non-persistent record deletes it, and a persistent record stays. |
-//! | `mirror_temp_never_mirrored` | The factory refuses `mirror` with `temp` (`InvalidParam`, gate 9) and with `seq` (`QualifierUnavailable` until the Seq rules land), so nothing reaches the mirror. |
+//! | `mirror_temp_never_mirrored` | The factory refuses `mirror` with `temp` and with `seq` (`InvalidParam`, gate 9), so nothing reaches the mirror. |
 //! | `mirror_never_blocks_deploy` | With a stalled mirror and a full queue, or a mirror that refuses every write, deploys succeed at once and the collection is dirty. |
 //! | `mirror_journal_keeps_the_last_write_of_a_deploy` | A record that one transaction stores and a later transaction of the same deploy consumes leaves no record in the mirror. |
 //! | `mirror_fired_send_is_never_mirrored` | A send that fires a parked waiter never enters the collection, so nothing reaches the mirror. |
@@ -1263,9 +1263,8 @@ async fn mirror_rule_e_coalesces() {
 }
 
 /// The factory refuses `mirror` with the qualifiers `temp` and `seq`, so no ephemeral space has a
-/// mirror. Gate 9 refuses `temp` with `mirror` with `InvalidParam` on `mirror` (P7 step 1 makes
-/// `temp` available, design v3 QT-1). Gate 3 still refuses `seq` first with
-/// `QualifierUnavailable` until the Seq rules land in P7. The unit test
+/// mirror. Gate 9 refuses both with `InvalidParam` on `mirror` (P7 steps 1 and 2 make `temp` and
+/// `seq` available in native execution, design v3 QT-1). The unit test
 /// `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` checks gate 9. A
 /// refused call creates no space, so nothing reaches the mirror.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1275,7 +1274,9 @@ async fn mirror_temp_never_mirrored() {
     let _lock = backends::install(services(&embedder, &mirror)).await;
     // Changed by P7 step 1 (design v3 QT-1): gate 9 refuses `temp` with `mirror`.
     // for qualifier in ["temp", "seq"] {
-    for (qualifier, code) in [("temp", "InvalidParam"), ("seq", "QualifierUnavailable")] {
+    // Changed by P7 step 2 (design v3 QT-1): gate 9 refuses `seq` with `mirror` too.
+    // for (qualifier, code) in [("temp", "InvalidParam"), ("seq", "QualifierUnavailable")] {
+    for (qualifier, code) in [("temp", "InvalidParam"), ("seq", "InvalidParam")] {
         let term = format!(
             r#"new vdb(`{VDB_URN}`) in {{
   for (m <- vdb!?("{qualifier}"; capacity=4, dimensions=2, mirror="chroma")) {{

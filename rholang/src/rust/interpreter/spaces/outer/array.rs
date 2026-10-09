@@ -422,6 +422,7 @@ mod tests {
             budget: RuntimeBudget::new(Cost::create(1_000_000, "array store test")),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         };
         (space, env)
     }

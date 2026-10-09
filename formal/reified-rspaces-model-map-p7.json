@@ -1,15 +1,19 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P7",
-  "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation, the sweep at each root entry, and the dangling ids of ended deploys.",
-  "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3, 4 and 9. The headline ids are the ids of the P7 phase of formal/reified-rspaces-invariant-map.json.",
+  "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2) and the Seq rules (W3): the book of a root evaluation, the sweep at each root entry, the dangling ids of ended deploys, the claims and the send rule of seq spaces, and the qualifier gate.",
+  "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3, 4, 5 and 9. The headline ids are the ids of the P7 phase of formal/reified-rspaces-invariant-map.json.",
   "code_base": "The items are in the P7 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
     "rocq": [
+      "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
       "formal/rocq/reified_rspaces/theories/VolatileSweep.v"
     ],
-    "tla": []
+    "tla": [
+      "formal/tlaplus/reified_rspaces/SpaceCoordination.tla"
+    ]
   },
   "headlines": {
     "V1": {
@@ -23,6 +27,42 @@
       "name": "dead_ephemeral_dangling",
       "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
       "statement": "The spaces of two deploys are disjoint (I-19), so a space of another deploy is never live in this evaluation, and the live check passes exactly the spaces that this evaluation created (design v3 DG-1)."
+    },
+    "V3": {
+      "kind": "rocq",
+      "name": "seq_name_iff",
+      "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+      "statement": "The name of a space is a seq name exactly when its space is a live ephemeral space that is not exempt; every seq name decodes to a name of a live ephemeral space; the handle of a space and the names of a durable space are never seq names (design v3 SQ-1)."
+    },
+    "V4": {
+      "kind": "tla",
+      "name": "SeqExclusive",
+      "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+      "statement": "For each channel of a seq space, the admitted uses form one prefix chain of participant paths: every admitted use descends from the previous one (design v3 SQ-3, SQ-4, decision 73)."
+    },
+    "V5": {
+      "kind": "tla",
+      "name": "SeqNotSent",
+      "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+      "statement": "No delivered message holds a seq name; the channel argument of the own produce of a handle call is exempt (design v3 SQ-2)."
+    },
+    "V6": {
+      "kind": "tla",
+      "name": "QualifierSupport",
+      "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+      "statement": "Gate 3 creates a HashSet space only with seq, and a seq space only in native execution (design v3 QT-4, QT-5)."
+    },
+    "V7": {
+      "kind": "tla",
+      "name": "UseBalance",
+      "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+      "statement": "The use context of each participant is its lexical context: the body of a use block runs with its space, and the rest of the process keeps the context of its parent."
+    },
+    "V8": {
+      "kind": "tla",
+      "name": "ClaimTracksLastUse",
+      "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+      "statement": "The claim of a channel of a seq space is its last admitted use, and a channel has a claim exactly when it has an admitted use (design v3 SQ-4)."
     }
   },
   "items": [
@@ -247,6 +287,307 @@
       "tla": [],
       "covers": [
         "V2"
+      ]
+    },
+    {
+      "item": "SeqClaims",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "kind": "struct",
+      "name": "SeqClaims",
+      "role": "The claims of one program job on the channels of one seq space (SQ-3, SQ-4).",
+      "rocq": [],
+      "tla": [
+        "StartUse",
+        "CommitUse"
+      ],
+      "covers": [
+        "V4",
+        "V8"
+      ]
+    },
+    {
+      "item": "ClaimRole",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "kind": "struct",
+      "name": "ClaimRole",
+      "role": "The role of a use: a data channel, or a channel of the group of a waiting receive.",
+      "rocq": [],
+      "tla": [
+        "StartUse"
+      ],
+      "covers": [
+        "V4"
+      ]
+    },
+    {
+      "item": "SeqClaims::open",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "scope": "SeqClaims",
+      "kind": "fn",
+      "name": "open",
+      "role": "Opens the claims of a program job on a seq space with the participant path of its operation order.",
+      "rocq": [],
+      "tla": [
+        "StartUse"
+      ],
+      "covers": [
+        "V4"
+      ]
+    },
+    {
+      "item": "SeqClaims::claim",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "scope": "SeqClaims",
+      "kind": "fn",
+      "name": "claim",
+      "role": "Admits a use when the channel has no claim or its claim is a prefix of the participant path (SQ-3).",
+      "rocq": [],
+      "tla": [
+        "Admissible",
+        "StartUse"
+      ],
+      "covers": [
+        "V4"
+      ]
+    },
+    {
+      "item": "SeqClaims::store",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "scope": "SeqClaims",
+      "kind": "fn",
+      "name": "store",
+      "role": "Stores the pending claims after a successful commit (SQ-4).",
+      "rocq": [],
+      "tla": [
+        "CommitUse"
+      ],
+      "covers": [
+        "V4",
+        "V8"
+      ]
+    },
+    {
+      "item": "VolatileRegistry::seq_spaces",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "scope": "VolatileRegistry",
+      "kind": "fn",
+      "name": "seq_spaces",
+      "role": "The seq spaces of the evaluation, the live set of SQ-1.",
+      "rocq": [
+        "is_seq_name"
+      ],
+      "tla": [],
+      "covers": [
+        "V3",
+        "V5"
+      ]
+    },
+    {
+      "item": "Cx::claim",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "claim",
+      "role": "Claims the channels of each staging primitive of a program job on a seq space.",
+      "rocq": [],
+      "tla": [
+        "StartUse"
+      ],
+      "covers": [
+        "V4"
+      ]
+    },
+    {
+      "item": "run_plan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "run_plan",
+      "role": "Runs a join-engine plan with the claims of its job and stores them after the commit.",
+      "rocq": [],
+      "tla": [
+        "StartUse",
+        "CommitUse",
+        "FailUse"
+      ],
+      "covers": [
+        "V4",
+        "V8"
+      ]
+    },
+    {
+      "item": "own_claims",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/join.rs",
+      "kind": "fn",
+      "name": "own_claims",
+      "role": "Claims the own channels of a join-engine operation: the home of a datum, or the channel of each own collection.",
+      "rocq": [],
+      "tla": [
+        "StartUse"
+      ],
+      "covers": [
+        "V4"
+      ]
+    },
+    {
+      "item": "OpOrigin",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+      "kind": "struct",
+      "name": "OpOrigin",
+      "role": "The origin of a space job. An internal job (a re-issue) claims nothing, so the model has no step for it.",
+      "rocq": [],
+      "tla": [
+        "StartUse"
+      ],
+      "covers": [
+        "V4"
+      ]
+    },
+    {
+      "item": "ReducerCore::space_op_from",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "space_op_from",
+      "role": "Runs a space operation with its origin; the re-issue branch passes OpOrigin::Internal.",
+      "rocq": [],
+      "tla": [
+        "StartUse"
+      ],
+      "covers": [
+        "V4"
+      ]
+    },
+    {
+      "item": "check_send",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/seq.rs",
+      "kind": "fn",
+      "name": "check_send",
+      "role": "SQ-2: scans the message of a send for seq names, with the forwarder hop and the own channel argument exempt.",
+      "rocq": [
+        "is_seq_name"
+      ],
+      "tla": [
+        "SendPlain",
+        "SendHandle"
+      ],
+      "covers": [
+        "V3",
+        "V5"
+      ]
+    },
+    {
+      "item": "check_unforgeable",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/seq.rs",
+      "kind": "fn",
+      "name": "check_unforgeable",
+      "role": "SQ-1: an unforgeable is a seq name when it is a name of a live seq space that is not exempt.",
+      "rocq": [
+        "is_seq_name"
+      ],
+      "tla": [
+        "SendPlain"
+      ],
+      "covers": [
+        "V3",
+        "V5"
+      ]
+    },
+    {
+      "item": "Execution",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "kind": "struct",
+      "name": "Execution",
+      "role": "The execution model of a factory call (QT-5).",
+      "rocq": [
+        "execution"
+      ],
+      "tla": [
+        "Gate3"
+      ],
+      "covers": [
+        "V6"
+      ]
+    },
+    {
+      "item": "FactoryConstructor::validate_in",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "scope": "FactoryConstructor",
+      "kind": "fn",
+      "name": "validate_in",
+      "role": "Gate 3 in the execution model of the deploy: legacy execution refuses seq (QT-5).",
+      "rocq": [
+        "validate_qualifier"
+      ],
+      "tla": [
+        "Gate3",
+        "Create"
+      ],
+      "covers": [
+        "V6"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::execution",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "execution",
+      "role": "The execution model of the deploy that the runtime evaluates.",
+      "rocq": [
+        "execution"
+      ],
+      "tla": [
+        "Gate3"
+      ],
+      "covers": [
+        "V6"
+      ]
+    },
+    {
+      "item": "wrap_body",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "fn",
+      "name": "wrap_body",
+      "role": "Wraps a stored body in the USE tuple of its lexical context.",
+      "rocq": [],
+      "tla": [
+        "Use"
+      ],
+      "covers": [
+        "V7"
+      ]
+    },
+    {
+      "item": "ReducerCore::eval_use",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "eval_use",
+      "role": "Runs the body of a use block with its space as the context, and leaves the context of the rest.",
+      "rocq": [],
+      "tla": [
+        "Use"
+      ],
+      "covers": [
+        "V7"
       ]
     }
   ]

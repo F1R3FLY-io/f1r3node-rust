@@ -7941,15 +7941,16 @@
       ]
     },
     "P7": {
-      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), and the dangling ids of ended deploys (V2).",
-      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR) and 4 (DG), and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs and reified_volatile_sweep.rs and of the reducer hooks.",
+      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8).",
+      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs and reified_seq.rs and of the reducer hooks.",
       "test_status": "required",
       "test_files": [
+        "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/tests/reified_seq.rs",
         "rholang/tests/reified_temp_seq.rs",
-        "rholang/tests/reified_volatile_sweep.rs",
-        "rholang/src/rust/interpreter/reified/runtime.rs"
+        "rholang/tests/reified_volatile_sweep.rs"
       ],
-      "expected_properties": 2,
+      "expected_properties": 6,
       "formal": {
         "V1": {
           "kind": "rocq",
@@ -7968,6 +7969,60 @@
           "tests": [
             "prop_dead_ephemeral_dangling"
           ]
+        },
+        "V3": {
+          "kind": "rocq",
+          "name": "seq_name_iff",
+          "file": "formal/rocq/reified_rspaces/theories/Namespace.v",
+          "statement": "The name of a space is a seq name exactly when its space is a live ephemeral space that is not exempt, and the handle of a space and the names of a durable space are never seq names (design v3 SQ-1).",
+          "tests": [
+            "prop_seq_scan_finds_every_seq_name"
+          ]
+        },
+        "V4": {
+          "kind": "tla",
+          "name": "SeqExclusive",
+          "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "statement": "For each channel of a seq space, the admitted uses form one prefix chain of participant paths (design v3 SQ-3, SQ-4, decision 73).",
+          "tests": [
+            "prop_seq_claim_chain"
+          ]
+        },
+        "V5": {
+          "kind": "tla",
+          "name": "SeqNotSent",
+          "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "statement": "No delivered message holds a seq name (design v3 SQ-2).",
+          "tests": [
+            "prop_seq_scan_finds_every_seq_name"
+          ]
+        },
+        "V6": {
+          "kind": "tla",
+          "name": "QualifierSupport",
+          "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "statement": "Gate 3 creates a HashSet space only with seq, and a seq space only in native execution (design v3 QT-4, QT-5).",
+          "tests": [
+            "prop_seq_qualifier_support"
+          ]
+        },
+        "V7": {
+          "kind": "tla",
+          "name": "UseBalance",
+          "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "statement": "The use context of each participant is its lexical context.",
+          "tests": [
+            "prop_use_context_is_lexical"
+          ]
+        },
+        "V8": {
+          "kind": "tla",
+          "name": "ClaimTracksLastUse",
+          "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "statement": "The claim of a channel of a seq space is its last admitted use (design v3 SQ-4).",
+          "tests": [
+            "prop_seq_claim_chain"
+          ]
         }
       },
       "properties": [
@@ -7985,6 +8040,40 @@
           "file": "rholang/src/rust/interpreter/reified/runtime.rs",
           "covers": [
             "V2"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "prop_seq_claim_chain",
+          "file": "rholang/tests/reified_seq.rs",
+          "covers": [
+            "V4",
+            "V8"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "prop_seq_scan_finds_every_seq_name",
+          "file": "rholang/tests/reified_seq.rs",
+          "covers": [
+            "V3",
+            "V5"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "prop_seq_qualifier_support",
+          "file": "rholang/tests/reified_seq.rs",
+          "covers": [
+            "V6"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "prop_use_context_is_lexical",
+          "file": "rholang/tests/reified_seq.rs",
+          "covers": [
+            "V7"
           ]
         }
       ],
@@ -8067,6 +8156,32 @@
           "rule": "DG-4 (a fixed charge)",
           "covers": [
             "V2"
+          ]
+        },
+        {
+          "test": "reducer_seq_payload",
+          "file": "rholang/tests/reified_seq.rs",
+          "rule": "SQ-2 (data, quote, bundle, list, map, message and return name; the handle and the own channel argument exempt)",
+          "covers": [
+            "V3",
+            "V5"
+          ]
+        },
+        {
+          "test": "reducer_seq_atomic_guard",
+          "file": "rholang/tests/reified_seq.rs",
+          "rule": "SQ-3 and SQ-6 (the traces of design v3, section 5, and the re-issue at the round cap)",
+          "covers": [
+            "V4",
+            "V8"
+          ]
+        },
+        {
+          "test": "reducer_qualifier_matrix",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "rule": "QT-1, QT-4 and QT-5 (native execution accepts seq, legacy execution refuses it)",
+          "covers": [
+            "V6"
           ]
         }
       ]

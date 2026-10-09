@@ -82,6 +82,22 @@ pub struct SpaceEnv {
     /// The book of the ephemeral spaces of the root evaluation (P7, VR-1). `begin` records the
     /// volatile lock keys of each transaction in it (VR-2).
     pub volatile: Arc<VolatileRegistry>,
+    /// Who started the job: the program, or the runtime that re-issues an operation (P7, SQ-3).
+    /// The claims of the Seq rules apply only to program operations.
+    pub origin: OpOrigin,
+}
+
+/// The origin of a space job (P7, design v3 SQ-3, A3). A routed send, receive or join, an R7
+/// reply and the handle method `produce` are program operations. A re-issue at a divergent pair
+/// or at `FIRE_ROUND_CAP` is internal, and a settle job is internal by its variant
+/// (`SpaceOp::Settle`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpOrigin {
+    /// An operation that the program started.
+    #[default]
+    Program,
+    /// An operation that the runtime re-issues.
+    Internal,
 }
 
 impl SpaceEnv {
@@ -542,6 +558,7 @@ mod tests {
             budget: RuntimeBudget::new(Cost::create(1_000, "space agent test")),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         }
     }
 

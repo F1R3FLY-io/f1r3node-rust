@@ -102,11 +102,12 @@ use serde::Serialize;
 use shared::rust::collection_backing::tree_backing;
 
 use super::agent::{
-    AllocOp, Allocation, ConsumeOp, JoinOp, ParSpaceReceipt, ParSpaceTxn, Prepared, ProduceOp,
-    QueryParams, SettleOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceFire, SpaceOp, SpaceOutcome,
-    SpaceReissue,
+    AllocOp, Allocation, ConsumeOp, JoinOp, OpOrigin, ParSpaceReceipt, ParSpaceTxn, Prepared,
+    ProduceOp, QueryParams, SettleOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceFire, SpaceOp,
+    SpaceOutcome, SpaceReissue,
 };
 use super::counter::{self, BumpContext, CounterChannels, CounterOp};
+use super::ephemeral::{ClaimRole, SeqClaims};
 use super::errors::SpaceError;
 use super::factory::defaults::suggestion;
 use super::join::{self, JoinRoute, JoinScope};
@@ -687,6 +688,10 @@ struct Plan<'a> {
     /// mirror. It records the staged stores, and after the commit it gives the net writes of
     /// the transaction, with no meter and no error path.
     mirror: MirrorCapture,
+    /// The claims of a program job on a `seq` space (P7, SQ-3), or `None`. Every staging
+    /// primitive of [`Cx`] claims the channels that it uses, and the job stores the claims
+    /// after its commit succeeded (SQ-4).
+    seq: Option<SeqClaims>,
 }
 
 /// A produce-side fire: the head waiter that the datum fires, and the values that it binds.
@@ -984,6 +989,17 @@ impl<'p> Cx<'_, 'p> {
         push_reserved(&mut self.plan.staged, kind, meter)
     }
 
+    /// Claims `channel` in the role `role` for a program job on a `seq` space (P7, SQ-3). Every
+    /// other job claims nothing. A refused claim aborts the deploy with `SeqConcurrent` before
+    /// the primitive stages anything.
+    fn claim(&mut self, channel: &Par, role: ClaimRole) -> Result<(), SpaceError> {
+        let meter = self.meter();
+        match self.plan.seq.as_mut() {
+            Some(seq) => seq.claim(channel, role, meter),
+            None => Ok(()),
+        }
+    }
+
     /// Stages the store of `record` on the data channel of the collection, with the
     /// introduction of the operation.
     pub fn store(&mut self, record: ListParWithRandom, persist: bool) -> Result<(), SpaceError> {
@@ -1002,6 +1018,7 @@ impl<'p> Cx<'_, 'p> {
         persist: bool,
         introduction: &Arc<Introduction>,
     ) -> Result<(), SpaceError> {
+        self.claim(channel, ClaimRole::Data)?;
         let meter = self.meter();
         if self.plan.mirror.is_active() {
             let index = self.plan.staged.len();
@@ -1041,6 +1058,9 @@ impl<'p> Cx<'_, 'p> {
         persist: bool,
         peeks: BTreeSet<i32>,
     ) -> Result<(), SpaceError> {
+        for channel in &channels {
+            self.claim(channel, ClaimRole::Waiter)?;
+        }
         let meter = self.meter();
         let staged = SpaceConsume {
             channels,
@@ -1106,6 +1126,7 @@ impl<'p> Cx<'_, 'p> {
         source: Produce,
         introduction: &Arc<Introduction>,
     ) -> Result<(), SpaceError> {
+        self.claim(channel, ClaimRole::Waiter)?;
         let meter = self.meter();
         let channels = self.channel_list(channel)?;
         let mut candidates = meter.buffer::<ParCandidate>(1)?;
@@ -1178,6 +1199,12 @@ impl<'p> Cx<'_, 'p> {
                 "a fire group does not line up its channels, patterns, candidates and binds",
             ));
         }
+        for channel in &channels {
+            self.claim(channel, ClaimRole::Waiter)?;
+        }
+        for candidate in &candidates {
+            self.claim(&candidate.channel, ClaimRole::Data)?;
+        }
         let meter = self.meter();
         let staged = SpaceConsume {
             channels,
@@ -1243,6 +1270,11 @@ impl<'p> Cx<'_, 'p> {
             return Err(SpaceError::Inconsistent(
                 "an internal fire does not line up its channels, patterns and candidates",
             ));
+        }
+        // SQ-3: a retirement or a lift removes stored records, so it claims their data
+        // channels. A removed PathMap marker claims nothing.
+        for candidate in &candidates {
+            self.claim(&candidate.channel, ClaimRole::Data)?;
         }
         let meter = self.meter();
         let staged = SpaceConsume {
@@ -1979,6 +2011,7 @@ pub(crate) fn run_plan(
     data: &Par,
     config: &SpaceConfig,
     introduction_authority: &CostAuthority,
+    seq: Option<SeqClaims>,
     stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<Option<SpaceReissue>, SpaceError>,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
     let meter = &env.meter;
@@ -1996,6 +2029,7 @@ pub(crate) fn run_plan(
         legacy: LegacyChain::new(&env.budget),
         rounds: FireRounds::new(),
         mirror: MirrorCapture::of(config),
+        seq,
     };
     let reissue = stage(&mut Cx {
         txn: &mut txn,
@@ -2006,13 +2040,19 @@ pub(crate) fn run_plan(
         prefixes,
         legacy,
         mirror,
+        seq,
         ..
     } = plan;
     prepay_outcome(&staged, meter)?;
     Ok(Prepared::new(txn, move |receipt| {
         legacy.finish()?;
         let writes = mirror.writes(&receipt);
-        outcome(receipt, staged, prefixes, reissue).map(|outcome| outcome.with_mirror(writes))
+        let outcome = outcome(receipt, staged, prefixes, reissue)?.with_mirror(writes);
+        // SQ-4: the claims of the job hold from its successful commit on.
+        if let Some(seq) = seq {
+            seq.store();
+        }
+        Ok(outcome)
     }))
 }
 
@@ -2329,6 +2369,22 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
         };
         self.outer.check_key(&config, channel, key, meter)?;
         self.check_params(&config, params, query, meter)?;
+        // SQ-3: a program operation on a `seq` space claims its own collection first, as the
+        // home of its datum or as the channel of its waiter. A settle job is internal.
+        let mut seq = SeqClaims::open(
+            &env.volatile,
+            op.space(),
+            config.qualifier,
+            matches!(op, SpaceOp::Settle(_)) || env.origin == OpOrigin::Internal,
+            meter,
+        )?;
+        if let Some(claims) = seq.as_mut() {
+            let role = match &op {
+                SpaceOp::Produce(_) => ClaimRole::Data,
+                SpaceOp::Consume(_) | SpaceOp::Settle(_) | SpaceOp::Join(_) => ClaimRole::Waiter,
+            };
+            claims.claim(channels.data(), role, meter)?;
+        }
         let staged = meter.buffer::<Staged>(MAX_STAGED)?;
         let matcher = SpaceMatcher::metered(env)?;
         let introduction = Introduction::new(&env.budget, introduction_authority, meter)?;
@@ -2343,6 +2399,7 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             legacy: LegacyChain::new(&env.budget),
             rounds: FireRounds::new(),
             mirror: MirrorCapture::of(&config),
+            seq,
         };
         let reissue = match op {
             SpaceOp::Produce(op) => {
@@ -2403,13 +2460,19 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             prefixes,
             legacy,
             mirror,
+            seq,
             ..
         } = plan;
         prepay_outcome(&staged, meter)?;
         Ok(Prepared::new(txn, move |receipt| {
             legacy.finish()?;
             let writes = mirror.writes(&receipt);
-            outcome(receipt, staged, prefixes, reissue).map(|outcome| outcome.with_mirror(writes))
+            let outcome = outcome(receipt, staged, prefixes, reissue)?.with_mirror(writes);
+            // SQ-4: the claims of the job hold from its successful commit on.
+            if let Some(seq) = seq {
+                seq.store();
+            }
+            Ok(outcome)
         }))
     }
 
@@ -2806,6 +2869,7 @@ mod tests {
             budget: budget.clone(),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         }
     }
 
@@ -4993,6 +5057,7 @@ mod tests {
             legacy: LegacyChain::new(&env.budget),
             rounds: FireRounds::new(),
             mirror: MirrorCapture::inactive(),
+            seq: None,
         };
         stage(&mut Cx {
             txn: &mut txn,
@@ -5565,6 +5630,7 @@ mod tests {
             legacy: LegacyChain::new(&env.budget),
             rounds: FireRounds::new(),
             mirror: MirrorCapture::inactive(),
+            seq: None,
         };
         stage(&mut Cx {
             txn: &mut txn,
@@ -5968,6 +6034,7 @@ mod tests {
                 budget: budget.clone(),
                 meter: ScanMeter::new(Some(host_work.clone())),
                 volatile: Default::default(),
+                origin: Default::default(),
             };
             agent
                 .prepare_create(&env, creation(config()))

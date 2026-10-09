@@ -51,18 +51,20 @@ use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
 use crate::rust::interpreter::dispatch::DispatchType;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::reified::errors::ReifiedReduceError;
 use crate::rust::interpreter::reified::route::{classify_channel, ChannelClass, Route};
 use crate::rust::interpreter::reified::scope::{
     classify_space_ref, wrap_body, SpaceRef, UseTarget,
 };
+use crate::rust::interpreter::reified::seq;
 use crate::rust::interpreter::reified::system_channels::{
     check_persistent_send, handle_of, is_factory_op, op_of, packs_arguments,
 };
 use crate::rust::interpreter::reified::system_processes::native_agent;
 use crate::rust::interpreter::spaces::agent::{
-    AllocOp, ConsumeOp, JoinBind, JoinOp, ProduceOp, QueryParams, SpaceAgent, SpaceFire, SpaceOp,
-    SpaceOutcome, SpaceReissue,
+    AllocOp, ConsumeOp, JoinBind, JoinOp, OpOrigin, ProduceOp, QueryParams, SpaceAgent, SpaceFire,
+    SpaceOp, SpaceOutcome, SpaceReissue,
 };
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{self, CollectionKey, NameTail, NativeSpace};
@@ -398,6 +400,15 @@ impl ReducerCore {
             check_persistent_send(&chan, persistent)?;
         }
         self.check_route_live(&chan, &route)?;
+        // SQ-2 (P7): while the evaluation holds a `seq` space, a send whose data holds one of
+        // its names aborts before any mutation.
+        let seq = self.reified.seq_spaces();
+        if !seq.is_empty() {
+            let meter = ScanMeter::new(
+                deterministic_reduction::current().and_then(|context| context.host_work_budget()),
+            );
+            seq::check_send(&chan, &data.pars, &seq, &meter)?;
+        }
         match route {
             Route::Default => {
                 // Moved by P7 step 1 before the liveness check of DG-1 (above).
@@ -715,7 +726,19 @@ impl ReducerCore {
         op: SpaceOp,
         then: Option<DispatchFuture<'static>>,
     ) -> Result<DispatchType, InterpreterError> {
-        let outcome = self.reified.run_op(native_agent(), op).await?;
+        self.space_op_from(op, then, OpOrigin::Program).await
+    }
+
+    /// [`ReducerCore::space_op`] with the origin `origin` of the operation (P7, SQ-3): the
+    /// re-issue branch of a dispatch runs its operation as an internal job, so the Seq rules
+    /// do not count it as a use.
+    async fn space_op_from(
+        &self,
+        op: SpaceOp,
+        then: Option<DispatchFuture<'static>>,
+        origin: OpOrigin,
+    ) -> Result<DispatchType, InterpreterError> {
+        let outcome = self.reified.run_op(native_agent(), op, origin).await?;
         self.dispatch_space_outcome(outcome, then).await
     }
 
@@ -780,8 +803,12 @@ impl ReducerCore {
             }
             if let Some(SpaceReissue { op, .. }) = reissue {
                 let branch = self.with_metering_child(branches.len());
-                branches.push(Box::pin(async move { branch.space_op(op, None).await })
-                    as DispatchFuture<'static>);
+                // Changed by P7 step 2 (design v3 SQ-3, A3): a re-issue is an internal job.
+                // branches.push(Box::pin(async move { branch.space_op(op, None).await })
+                //     as DispatchFuture<'static>);
+                branches.push(Box::pin(async move {
+                    branch.space_op_from(op, None, OpOrigin::Internal).await
+                }) as DispatchFuture<'static>);
             }
             branches.extend(then);
             match deterministic_reduction::current() {

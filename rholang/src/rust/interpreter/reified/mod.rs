@@ -15,6 +15,7 @@ pub mod mirror_reconciler;
 pub mod route;
 pub mod runtime;
 pub mod scope;
+pub mod seq;
 pub mod system_channels;
 pub mod system_processes;
 pub mod vectordb_services;

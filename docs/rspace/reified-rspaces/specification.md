@@ -196,7 +196,7 @@ The VectorDB and HashSet families have no schema yet.
 `priorities` is a `GInt` of at least 1 ([decision I-10](decision-register.md#i-10)).
 The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:153-168`).
 
-**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:68-132`):
+**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:80-165`):
 
 1. the schema (`FamilyUnavailable`)
 2. the parse (`BadConstructorArgument`)
@@ -207,7 +207,7 @@ The bit sets of a value do not count, and a value with the connective flag fails
 7. missing required keys (`MissingParam`)
 8. values in bytewise key order (`InvalidParam`)
 
-**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:201-215`).
+**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:234-248`).
 The readers apply the defaults: an Array space without `cyclic` is fixed, and a priority queue without `priorities` has no bound on its levels.
 
 ## 2. Outer stores
@@ -226,7 +226,7 @@ Here $`\mathrm{sort}`$ is the normal form of `ParSortMatcher`, which is also the
 The encoding never uses Protocol Buffers, because the field `locally_free` would split one channel into two keys.
 
 **Rule HM-2: equal channels.** Two channels that are equal as `Par` values must have one key, so they name one collection.
-The theorem `canon_respects_par_eq` (`Namespace.v:1038`) proves this rule for the key function of the model.
+The theorem `canon_respects_par_eq` (`Namespace.v:1043`) proves this rule for the key function of the model.
 
 **Rule HM-3: order of lists.** The sorted form keeps the order of the elements of a list and of a tuple.
 So `@[1, 2]` and `@[2, 1]` name two collections, as they name two channels of the host.
@@ -300,7 +300,7 @@ This covers the names of its lock keys, the config and the shape of an Array spa
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
 In native execution, an allocation job runs as every space job does ([section 8](#8-native-execution), [decision 47](decision-register.md#decision-47)).
 
-**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:679-706`).
+**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:690-717`).
 That process evaluates the `new`, or it calls the handle method `gensym`.
 So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
 
@@ -650,7 +650,7 @@ A divergent pair or the cap re-issues the element in flight, and every read and 
 A cell collection holds at most one record and at most one waiting continuation (F15).
 The family `hashmap:cell` runs `CellDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/cell.rs:53-88`) on the head driver of the engine.
 
-**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:946-963`).
+**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:951-968`).
 The job drops the transaction, so the failed operation logs no event, bumps no counter, and makes no legacy charge.
 
 **Rule CL-2: both sides meet.** A fresh send always meets the waiting continuation of the cell, and a fresh receive always meets the record of the cell.
@@ -686,7 +686,7 @@ The settle fires the top pair. It lifts a stored record that is not persistent w
 **Rule SK-4: peeks in a settle.** A record that a peek waiter did not spend stays in flight, and it lands at its order when the settle ends (Rule E).
 
 **Rule SK-5: fire count.** One transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21)).
-The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1503-1516`).
+The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1535-1548`).
 A plan whose transaction is full after the settle before it stages nothing, and its operation re-issues.
 
 **Rule SK-6: re-issues.** At the cap or at a divergent pair, the settle before the plan re-issues the operation, which it has not inserted yet.
@@ -794,14 +794,14 @@ A re-issued element takes its FIFO place in its level, and a re-entered waiter k
 
 ### 3.7 Receive queries
 
-**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:854-868`).
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:881-895`).
 The inner channel takes the read rule of a receive source.
 
-**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:885-915`).
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:912-942`).
 A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
 The default space fails with `QuerySpecUnsupported`, and a user agent fails closed until P8.
 
-**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:841-843`).
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:868-870`).
 
 ### 3.8 Joins
 
@@ -939,7 +939,7 @@ Section [N15 of the design](design.md#n15-phase-p6-the-vectordb-family) explains
 
 **Rule VD-1: factory params.** The factory takes `capacity` (required, an `Int` in $`[1, 1\,000\,000]`$) and `dimensions` (required, an `Int` in $`[1, 4\,096]`$).
 It also takes `metric` (default `cosine`), one of `cosine`, `dot`, `euclidean`, `manhattan`, `hamming` and `jaccard`, and `mirror`, which must be `"chroma"` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
-A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:165-196`).
+A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:198-229`).
 
 **Rule VD-2: records.** A send stores its payload with an optional vector (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657`).
 The vector is the param `embedding`, or else the payload itself when the payload is exactly one non-empty list of numbers ([decision 66](decision-register.md#decision-66)).
@@ -1021,11 +1021,11 @@ A waiter that its guard refused on a better record can still fire later on a wor
 **Rule VD-11: joins.** A join of the space can name a VectorDB collection in single mode ([section 3.8](#38-joins)).
 Each bind sees its own eligible records in its own order, and the engine fires the join over one record of each bind (`JoinWindow::Similarity`).
 A removal never makes a single-mode join waiter without a guard fireable, so single-mode joins need no cascade.
-A bind in list mode fails the join with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:409-465`).
+A bind in list mode fails the join with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:410-466`).
 Without a query, a VectorDB bind of a join reads the canonical order.
 
 **Rule VD-12: capacity and merges.** A VectorDB collection has no counter, so every record and every waiter has the order 0.
-A store fails with `CapacityExceeded` when the collection holds `capacity` records, before anything is staged (`rholang/src/rust/interpreter/spaces/generic.rs:946-963`).
+A store fails with `CapacityExceeded` when the collection holds `capacity` records, before anything is staged (`rholang/src/rust/interpreter/spaces/generic.rs:951-968`).
 A store of Rule E never exceeds the capacity, because its COMM removed the record in the same transaction.
 
 Two concurrent branches that write one collection merge with no conflict, as on a host channel.
@@ -1060,7 +1060,7 @@ A checkpoint and a restart must keep its config record, its counters, its record
 **Rule QF-3: concurrent.** A default space accepts operations from parallel branches of one deploy and from many deploys.
 The scheduler orders the operations of one space, and it runs the operations of different spaces in parallel.
 
-**Rule QF-4: families.** Every outer store takes the qualifiers `"default"` and `"temp"`, except the HashSet store, which takes only `"seq"`.
+**Rule QF-4: families.** Every outer store takes the qualifiers `"default"`, `"temp"` and `"seq"`, except the HashSet store, which takes only `"seq"`.
 When a HashSet family is available, a constructor with another qualifier must abort with `BadConstructorArgument`.
 
 ### 4.2 Temp
@@ -1094,8 +1094,49 @@ Each error names the space id in lowercase hex, and the check costs nothing beyo
 
 ### 4.3 Seq
 
-A later step of P7 adds the qualifier `"seq"` ([decision 73](decision-register.md#decision-73)).
-Until that step, a constructor with `"seq"` must abort with `QualifierUnavailable`.
+A seq space is a temp space whose channels are linear (FIPS 279-285, [decision 73](decision-register.md#decision-73)).
+A name of a seq space is never sent, and each channel of the space is used by one sequential process.
+
+**Rule QF-11: native execution.** A constructor with the qualifier `"seq"` creates a seq space in native execution.
+Legacy execution must refuse it with `QualifierUnavailable`, because host operations bypass the scheduler there.
+The rule also holds for every HashSet family, which takes only `"seq"`.
+
+**Rule QF-12: one deploy.** A seq space is a temp space, so the rules QF-5 to QF-10 apply to it.
+
+**Rule QF-13: seq names.** A seq name is a name `n(sid…)` of a seq space that the current root evaluation created.
+The handle of a seq space is not a name, so a program may send it.
+
+**Rule QF-14: never sent.** While the root evaluation holds a seq space, the node checks the data of every send before any mutation.
+A send whose data holds a seq name at any depth must abort with `SeqSent`, and the error names the space id.
+The check covers data, quoted processes, bundles, collections and the message of a handle call.
+
+Two sends are exempt from the check of QF-14.
+In a send to the handle of a seq space, the channel argument of the method `produce` may hold names of that space.
+The forwarder of a handle continuation sends the arguments of a call to the handle process, and the node does not check it again.
+The replies of system processes are not sends of the program, so the reply of `gensym` carries its seq name.
+
+**Rule QF-15: one chain of uses for each channel.** Each channel of a seq space has its own claim: the participant path of its last use.
+An operation may use a channel only when the channel has no claim or the operation descends from its last use.
+Otherwise the deploy must abort with `SeqConcurrent`, and the error names the space id.
+
+A program operation uses each channel where it stores a record, parks a waiter, or fires.
+A send uses the data channel of its datum.
+A receive uses the channel where it waits, and a PathMap receive waits on its prefix channel.
+A fire uses the channels of its waiter and the channels of its records.
+
+**Rule QF-16: no use.** The methods `gensym`, `config` and `qualifier`, the allocations of `new x : s`, the factory, `getSpaceAgent` and the entry of a `use` block use no channel.
+A re-issue at a divergent pair or at the round cap and a settle job are internal jobs, so they use no channel either.
+
+**Rule QF-17: claims after success.** An operation stores its claims only after its commit succeeded.
+An operation that fails, or a transaction that the node drops, changes no claim.
+
+**Rule QF-18: consequences.** A routed send `x!(v)` ends the chain of `x`, because a send has no continuation and a split removes its parent.
+A parked receive on `x` also ends the chain of `x`, and it never fires.
+A program uses a channel again with sync handle calls such as `S!?("produce", *x, m); P`, because `P` runs below the reply of the call.
+
+**Rule QF-19: charges.** The check of a send reserves one `VerificationOperations` unit for each node of its data.
+It also reserves the `VerificationBytes` of each id and the `SearchStateBytes` of its work list.
+The check of a claim reserves its lookups and its comparison of participant paths on the meter of its job.
 
 ## 5. Theories
 
@@ -1119,15 +1160,15 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 
 | Rule | Formal evidence | Tests |
 |---|---|---|
-| SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:656`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:803`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
+| SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:669`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:816`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
 | SM-2 | `counter_and_config_roundtrip` (`RecordEnvelope.v:1075`), the TLA+ invariant `HandleUnique` (U5) | `prop_counter_and_config_records_roundtrip`, `space_meta_channels_config_record` |
 | SM-3 | The TLA+ invariant `DanglingIsDeterministicError` (U6) | `reified_handle_dangling_aborts`, `space_queue_dangling_name_aborts` |
-| SM-4, SM-5 | `storage_id_injective` (`Namespace.v:727`), `space_and_collection_counters_distinct` (`Namespace.v:784`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
+| SM-4, SM-5 | `storage_id_injective` (`Namespace.v:732`), `space_and_collection_counters_distinct` (`Namespace.v:789`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
 | SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
 | SM-10 | `route_rules` (`SpaceRefs.v:660`), `space_name_route_ignores_ctx` (`SpaceRefs.v:681`), `ordinary_channels_route_default` (`SpaceRefs.v:746`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
-| HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1038`) | `prop_canonical_inner_bytes_respects_par_eq` |
-| HM-4 | `name_id_routes_to_sid` (`Namespace.v:998`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
+| HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1043`) | `prop_canonical_inner_bytes_respects_par_eq` |
+| HM-4 | `name_id_routes_to_sid` (`Namespace.v:1003`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
 | OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:939`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
 | OC-4 | None | `space_counter_rejects_corrupt_counters` |
@@ -1140,20 +1181,24 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QD-7 | `queue_fifo` (`HeadOnlyDisciplines.v:1135`), `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2946`), the TLA+ invariants `FifoOrder` (U3) and `LeaveOrder` (U12) | `space_queue_head_only_fifo_delivery`, `prop_queue_fifo_with_reentries` |
 | QD-8 | None | `space_joins_queue_programs_run_as_joins`, `space_queue_send_params_rejected`, `space_queue_query_rejected` |
 | QD-9 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2373`), `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:3021`), `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2342`), the TLA+ invariants `ReissueKeepsOrd` (U10), `IntroducedOnce` (U11) and `FifoOrder` (U3) | `space_queue_reissue_reenters_ahead_of_younger_records`, `prop_queue_reissue_keeps_first_round_ord`, `prop_queue_reentry_head_blocks` |
-| QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:375`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
+| QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:383`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
 | QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay` |
 | QF-3 | The TLA+ invariant `HandleCallsMergeLikeContracts` (U8) | `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks`, `reified_handle_cross_block_merge_no_conflict` |
-| QF-5, QF-6 | `qualifier_matrix` (`SpaceFactory.v:375`), `ephemeral_durable_disjoint` (`Namespace.v:862`) | `reducer_qualifier_matrix`, `space_temp_replay_equal_hashmap` to `space_temp_replay_equal_vector` |
+| QF-5, QF-6 | `qualifier_matrix` (`SpaceFactory.v:383`), `ephemeral_durable_disjoint` (`Namespace.v:867`) | `reducer_qualifier_matrix`, `space_temp_replay_equal_hashmap` to `space_temp_replay_equal_vector` |
 | QF-7 | The P1 headlines of the substrate | `reified_ephemeral_cost_charged` |
 | QF-8 | `sweep_complete` (`VolatileSweep.v:1714`), `sweep_exact` (`VolatileSweep.v:894`), `sweep_root_neutral` (`VolatileSweep.v:1266`) | `prop_sweep_complete`, `space_temp_swept_at_deploy_end`, `space_temp_join_swept`, `space_temp_failed_deploy_reverts`, `space_temp_many_volatile_keys_export`, `reified_sweep_runs_at_each_entry_point_of_the_reducer`, `reified_sweep_runs_at_each_entry_point_native` |
 | QF-9 | `dead_ephemeral_dangling` (`VolatileSweep.v:1759`) | `prop_dead_ephemeral_dangling`, `reified_ephemeral_dangling_next_deploy`, `reified_ephemeral_dangling_charge_is_fixed` |
 | QF-10 | The gate 9 model `check_mirror` of `SpaceFactory.v` | `mirror_temp_never_mirrored`, `reducer_qualifier_matrix` |
-| FA-1 | `registered_families_complete` (`SpaceFactory.v:1360`) | `prop_registered_families_complete`, `space_factory_families_registered` |
+| QF-11 | `qualifier_matrix` (`SpaceFactory.v:383`), the TLA+ invariant `QualifierSupport` (V6) | `prop_seq_qualifier_support`, `reducer_qualifier_matrix`, `pattern_enforcement_qualifiers_fail_closed` |
+| QF-13, QF-14 | `seq_name_iff` (`Namespace.v:1150`), the TLA+ invariant `SeqNotSent` (V5) | `prop_seq_scan_finds_every_seq_name`, `reducer_seq_payload` |
+| QF-15, QF-16, QF-17 | The TLA+ invariants `SeqExclusive` (V4) and `ClaimTracksLastUse` (V8) | `prop_seq_claim_chain`, `reducer_seq_atomic_guard` |
+| QF-18 | The TLA+ invariant `SeqExclusive` (V4) | `reducer_seq_atomic_guard` |
+| FA-1 | `registered_families_complete` (`SpaceFactory.v:1374`) | `prop_registered_families_complete`, `space_factory_families_registered` |
 | FA-2 | `space_match_is_injected_match` (`Match.v:615`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
-| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1437`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
-| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1840`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
-| FA-5 | `priorities_validated` (`SpaceFactory.v:1977`), `array_size_validated` (`SpaceFactory.v:2090`) | `prop_priorities_validated`, `prop_array_size_validated` |
-| FA-7 | `array_size_validated` (`SpaceFactory.v:2090`) | `space_factory_kwargs_are_stored_canonical` |
+| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1451`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
+| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1854`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
+| FA-5 | `priorities_validated` (`SpaceFactory.v:1991`), `array_size_validated` (`SpaceFactory.v:2104`) | `prop_priorities_validated`, `prop_array_size_validated` |
+| FA-7 | `array_size_validated` (`SpaceFactory.v:2104`) | `space_factory_kwargs_are_stored_canonical` |
 | AR-1, AR-3, VE-1, VE-3 | `fixed_array_allocates_at_most_size` (`OuterStorage.v:313`), `vector_index_is_counter` (`VectorStore.v:184`) | `prop_fixed_array_allocates_at_most_size`, `prop_vector_index_is_counter` |
 | AR-2, VE-2 | `hashmap_get_put_other` (`HashMapStore.v:213`), `hashmap_iteration_permutation_invariant` (`HashMapStore.v:168`) | `prop_hashmap_get_put_other`, `prop_hashmap_iteration_permutation_invariant` |
 | AR-4, VE-4, AL-2 | `fixed_array_indices_sequential` (`OuterStorage.v:345`), `cyclic_array_index_mod_size` (`OuterStorage.v:376`), `vector_gensym_monotonic` (`VectorStore.v:219`) | `prop_fixed_array_indices_sequential`, `prop_cyclic_array_index_mod_size`, `prop_vector_gensym_monotonic` |
@@ -1226,7 +1271,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play` |
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
 | NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
-| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2289`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
+| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2303`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
 | VD-2 | None | `space_vectordb_payload_is_the_vector_by_default`, `space_vectordb_peek_restores_records_with_their_embedding`, `space_native_vectors_every_kind_enters_exactly` |
 | VD-3 | None | `space_vectordb_errors_have_their_codes`, `space_vectordb_source_errors_have_their_codes`, `space_vectordb_fixed_point_and_rational_thresholds` |
 | VD-4 | `cosine_squared_form_iff` (`Similarity.v:412`), `cosine_order_squared_form` (`Similarity.v:471`), `euclidean_radius_squared_form` (`Similarity.v:545`), `binary_laws` (`Similarity.v:1042`), `selection_total_order` (`Similarity.v:1169`) | `prop_selection_order_is_a_strict_total_order`, `space_vectordb_bounds_select_the_eligible_records`, `space_vectordb_ids_keep_only_the_listed_records`, `space_vectordb_binary_metrics_read_binary_vectors_only`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order`, `space_similarity_topk_reference_cases_through_the_space`, `space_hash_collision_tie_duplicates_are_interchangeable`, `space_hash_collision_tie_forced_equal_source_hashes_select_one_value` |
@@ -1367,10 +1412,10 @@ A delete names every removed record, also a record without a vector. The mirror 
 The computation has no meter, no error path and no wait, so it never changes the outcome, the events or the charges of a transaction.
 
 **Rule MR-2: the journal.** The journal of an evaluation keeps the last net write of each record id of each collection (`rholang/src/rust/interpreter/spaces/mirror.rs:408-457`).
-The start of each root evaluation drops a journal that no result settled (`rholang/src/rust/interpreter/reified/runtime.rs:100-116`).
+The start of each root evaluation drops a journal that no result settled (`rholang/src/rust/interpreter/reified/runtime.rs:102-118`).
 So an exploratory evaluation never publishes, and its writes never reach the next deploy.
 
-**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:286-291`, [decision 66](decision-register.md#decision-66)).
+**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:313-318`, [decision 66](decision-register.md#decision-66)).
 The two settle points are `rholang/src/rust/interpreter/interpreter.rs:257` for play and `rholang/src/rust/interpreter/rho_runtime.rs:1808` for native replay.
 Native replay publishes to the mirror of the node that replays, so a validator keeps its mirror current from the blocks that it certifies.
 A node that plays and then certifies one deploy publishes its batch twice, and the upserts by id make the second publication change nothing.

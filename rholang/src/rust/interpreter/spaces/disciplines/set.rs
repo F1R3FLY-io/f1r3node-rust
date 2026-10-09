@@ -478,6 +478,7 @@ mod tests {
             budget: RuntimeBudget::new(Cost::create(1_000_000, "set discipline test")),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         };
         let config = SpaceConfig::new(
             SPACE.sid,

@@ -406,6 +406,7 @@ mod tests {
             budget: RuntimeBudget::new(Cost::create(1_000, "space counter test")),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         };
         (space, env)
     }

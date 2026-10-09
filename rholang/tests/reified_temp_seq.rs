@@ -15,8 +15,8 @@
 //! | `reified_ephemeral_dangling_charge_is_fixed` | The failing deploy costs the same phlo whatever the dead space held (DG-4). |
 //! | `reified_ephemeral_cost_charged` | A `temp` program pays phlo, and it emits as many produce, consume and COMM events as the same program with `default` (QT-3). |
 //! | `reified_sweep_runs_at_each_entry_point_native` | Native play, native replay and the exploratory entry `RhoRuntime::inj` sweep. The unit tests `reified_sweep_runs_at_each_entry_point_*` of the reducer hooks cover `inj`, `inj_with_observation` and `inj_with_host_work` directly. |
-//! | `reducer_qualifier_matrix` | The factories accept `default` and `temp` on every family with a schema, refuse `seq` with `QualifierUnavailable` until the Seq rules land, and refuse `mirror` with `temp` (`InvalidParam`). The HashSet families have no factory yet (F1). |
-//! | `reified_handle_qualifier_method_temp` | The handle method `qualifier` of a `temp` space replies `"temp"`. |
+//! | `reducer_qualifier_matrix` | In native execution the factories accept `default`, `temp` and `seq` on every family with a schema. Legacy execution refuses `seq` with `QualifierUnavailable` (QT-5). A `temp` or `seq` space takes no `mirror` (`InvalidParam`). The HashSet families have no factory yet (F1). |
+//! | `reified_handle_qualifier_method_temp_seq` | The handle method `qualifier` of a `temp` space replies `"temp"`, and of a `seq` space `"seq"`. |
 //! | `reified_fips_example_temp_pathmap` | The example code of the FIPS with a `temp` PathMap space: names of both spaces in one `new`, a forged name in `use`, a same-space join and a sequential receive, `getSpaceAgent` and `assertEqual`. The handles name the same spaces inside and outside the `new` block, the deploy certifies, and the sweep removes the `temp` space. |
 //! | `prop_sweep_complete` | For generated `temp` programs of every family with extra stores and waiters, the hot store holds no volatile channel after the deploy, on the `Ok` and the `Err` path, and native replay reproduces the play. The property runs with a host-work budget above the v6 limits (`sweep_host_work`). |
 
@@ -35,7 +35,7 @@ use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
-use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
+use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
 use rholang::rust::interpreter::spaces::factory::defaults::constructor_schema;
 use rholang::rust::interpreter::spaces::namespace::{self, Durability, ReifiedId, SpaceId};
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
@@ -454,19 +454,46 @@ fn reducer_qualifier_matrix() {
             continue;
         };
         assert!(!matches!(family.outer, SpaceOuter::HashSet), "{family}");
+        // Changed by P7 step 2 (design v3 QT-5): native execution accepts `seq`.
+        // for (qualifier, expected) in [
+        //     ("default", SpaceQualifier::Default),
+        //     ("temp", SpaceQualifier::Temp),
+        // ] {
         for (qualifier, expected) in [
             ("default", SpaceQualifier::Default),
             ("temp", SpaceQualifier::Temp),
+            ("seq", SpaceQualifier::Seq),
         ] {
             let validated = FactoryConstructor::validate(family, &constructor(family, qualifier, Vec::new()))
                 .unwrap_or_else(|error| panic!("{family} {qualifier}: {error:?}"));
             assert_eq!(validated.qualifier, expected, "{family}");
         }
+        // QT-5: legacy execution refuses `seq` before the params, and accepts the others.
+        // assert_eq!(
+        //     FactoryConstructor::validate(family, &constructor(family, "seq", Vec::new())),
+        //     Err(SpaceError::QualifierUnavailable("seq".to_string())),
+        //     "{family}"
+        // );
         assert_eq!(
-            FactoryConstructor::validate(family, &constructor(family, "seq", Vec::new())),
+            FactoryConstructor::validate_in(
+                family,
+                &constructor(family, "seq", Vec::new()),
+                Execution::Legacy
+            ),
             Err(SpaceError::QualifierUnavailable("seq".to_string())),
             "{family}"
         );
+        for qualifier in ["default", "temp"] {
+            assert!(
+                FactoryConstructor::validate_in(
+                    family,
+                    &constructor(family, qualifier, Vec::new()),
+                    Execution::Legacy
+                )
+                .is_ok(),
+                "{family} {qualifier} in legacy execution"
+            );
+        }
         if matches!(family.inner, SpaceInner::VectorDb) {
             let mirror = || {
                 vec![SendParam::Named(
@@ -479,32 +506,38 @@ fn reducer_qualifier_matrix() {
                     .is_ok(),
                 "{family}: a default space takes a mirror"
             );
-            assert_eq!(
-                FactoryConstructor::validate(family, &constructor(family, "temp", mirror())),
-                Err(SpaceError::InvalidParam {
-                    key: "mirror".to_string()
-                }),
-                "{family}: a temp space takes no mirror"
-            );
+            for qualifier in ["temp", "seq"] {
+                assert_eq!(
+                    FactoryConstructor::validate(family, &constructor(family, qualifier, mirror())),
+                    Err(SpaceError::InvalidParam {
+                        key: "mirror".to_string()
+                    }),
+                    "{family}: a {qualifier} space takes no mirror"
+                );
+            }
         }
     }
 }
 
+/// The handle method `qualifier` of a `temp` space replies `"temp"`, and of a `seq` space
+/// `"seq"` (P7 steps 1 and 2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reified_handle_qualifier_method_temp() {
-    let term = format!(
-        r#"new factory(`rho:space:hashmap:bag`) in {{
-  for (space <- factory!?("temp")) {{
+async fn reified_handle_qualifier_method_temp_seq() {
+    for qualifier in ["temp", "seq"] {
+        let term = format!(
+            r#"new factory(`rho:space:hashmap:bag`) in {{
+  for (space <- factory!?("{qualifier}")) {{
     for (@qualifier <- space!?("qualifier")) {{ @"{OUT}"!(qualifier) }}
   }}
 }}"#
-    );
-    let played = play_and_certify("qualifier method", &term).await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
-    assert_eq!(
-        played.out,
-        vec![vec![new_gstring_par("temp".to_string(), Vec::new(), false)]]
-    );
+        );
+        let played = play_and_certify(&format!("qualifier method {qualifier}"), &term).await;
+        assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
+        assert_eq!(
+            played.out,
+            vec![vec![new_gstring_par(qualifier.to_string(), Vec::new(), false)]]
+        );
+    }
 }
 
 // ─── The FIPS example ──────────────────────────────────────────────────────────────────────────

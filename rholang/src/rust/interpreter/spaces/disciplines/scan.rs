@@ -1183,6 +1183,7 @@ mod tests {
             budget: RuntimeBudget::new(Cost::create(10_000_000, "scan driver test")),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         };
         let config = SpaceConfig::new(
             SPACE.sid,

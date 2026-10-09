@@ -212,6 +212,7 @@ mod tests {
             budget: RuntimeBudget::new(Cost::create(1_000_000, "vector store test")),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         };
         let creation = SpaceCreation {
             space: SPACE,

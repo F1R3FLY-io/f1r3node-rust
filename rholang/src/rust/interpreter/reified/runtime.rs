@@ -20,6 +20,7 @@
 //! transaction and at most one commit (S3). The job gets the host-work budget that the
 //! scheduler captured before it submitted the job (S5).
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 
 use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
@@ -36,11 +37,12 @@ use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::interpreter::interpreter::EvaluateResult;
 use crate::rust::interpreter::spaces::agent::{
-    self, AllocOp, Allocation, ParSpaceStore, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
-    SpaceOutcome,
+    self, AllocOp, Allocation, OpOrigin, ParSpaceStore, SpaceAgent, SpaceCreation, SpaceEnv,
+    SpaceOp, SpaceOutcome,
 };
 use crate::rust::interpreter::spaces::ephemeral::{ephemeral_space, VolatileRegistry};
 use crate::rust::interpreter::spaces::errors::SpaceError;
+use crate::rust::interpreter::spaces::factory::constructor::Execution;
 use crate::rust::interpreter::spaces::mirror::MirrorJournal;
 use crate::rust::interpreter::spaces::namespace::{self, NativeSpace, ReifiedId};
 use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
@@ -210,6 +212,26 @@ impl ReifiedRuntime {
     /// detached runtime, and in a native replay runtime that is not bound yet.
     pub fn ensure_available(&self) -> Result<(), SpaceError> { self.host().map(drop) }
 
+    /// The execution model of the deploy that the runtime evaluates (P7, design v3 QT-5):
+    /// native when the budget of the runtime runs native execution, in native play and in
+    /// native replay, and legacy otherwise.
+    pub fn execution(&self) -> Result<Execution, SpaceError> {
+        let (_, budget) = self.host()?;
+        Ok(match budget.native_execution_active() {
+            true => Execution::Native,
+            false => Execution::Legacy,
+        })
+    }
+
+    /// The `seq` spaces of the current root evaluation (P7, SQ-1), for the payload scan of
+    /// SQ-2. With no `seq` space the set is empty and nothing is scanned.
+    pub fn seq_spaces(&self) -> BTreeSet<namespace::SpaceId> {
+        match self.volatile.has_seq_space() {
+            true => self.volatile.seq_spaces(),
+            false => BTreeSet::new(),
+        }
+    }
+
     /// Binds a native replay runtime to the space store of its native replay session and to the
     /// budget of its environment (decision 47, W2). The environment registers the runtime with
     /// its system processes before the session exists, so it binds the runtime once, right
@@ -242,15 +264,19 @@ impl ReifiedRuntime {
             budget,
             meter: ScanMeter::new(host_work),
             volatile: Arc::clone(&self.volatile),
+            origin: OpOrigin::Program,
         })
     }
 
     /// Runs a collection operation with `agent` as an `Intent::Space` job: one transaction and
     /// one commit. The footprint holds the space key and `SpaceOp::footprint_authority`.
+    /// `origin` tells the Seq rules whether the program started the operation or the runtime
+    /// re-issues it (P7, SQ-3).
     pub async fn run_op(
         &self,
         agent: Arc<dyn SpaceAgent>,
         op: SpaceOp,
+        origin: OpOrigin,
     ) -> Result<SpaceOutcome, InterpreterError> {
         let (store, budget) = self.host()?;
         let volatile = Arc::clone(&self.volatile);
@@ -268,6 +294,7 @@ impl ReifiedRuntime {
                         budget,
                         meter: ScanMeter::new(host_work),
                         volatile,
+                        origin,
                     };
                     let mut outcome = agent::run_op(agent.as_ref(), &env, op).await?;
                     if let Some(writes) = outcome.mirror.take() {
@@ -318,6 +345,7 @@ impl ReifiedRuntime {
                         budget,
                         meter: ScanMeter::new(host_work),
                         volatile,
+                        origin: OpOrigin::Program,
                     };
                     let prepared = agent.prepare_create(&env, creation).await?;
                     Ok(prepared.commit().await?)
@@ -356,6 +384,7 @@ impl ReifiedRuntime {
                         budget,
                         meter: ScanMeter::new(host_work),
                         volatile,
+                        origin: OpOrigin::Program,
                     };
                     match agent.allocate(&env, op).await? {
                         Allocation::Baseline => Ok(None),
@@ -389,6 +418,7 @@ impl ReifiedRuntime {
                         budget,
                         meter: ScanMeter::new(host_work),
                         volatile,
+                        origin: OpOrigin::Program,
                     };
                     Ok(agent.read_config(&env, space).await?)
                 })
@@ -634,7 +664,7 @@ mod tests {
         };
         for result in [
             runtime
-                .run_op(Arc::clone(&agent), produce_op(Par::default()))
+                .run_op(Arc::clone(&agent), produce_op(Par::default()), OpOrigin::Program)
                 .await
                 .map(|_| ()),
             runtime
@@ -794,6 +824,7 @@ mod tests {
                 .run_op(
                     Arc::clone(&agent),
                     produce_op(new_gint_par(5, Vec::new(), false)),
+                    OpOrigin::Program,
                 )
                 .await?;
             // An agent without an allocator answers the baseline, and the job commits nothing.

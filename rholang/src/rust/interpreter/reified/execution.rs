@@ -29,7 +29,7 @@ use crate::rust::interpreter::execution_space::{
     ConsumeResult, ExecutionBackend, ExecutionSpace, ProduceResult,
 };
 use crate::rust::interpreter::reduce::ReducerCore;
-use crate::rust::interpreter::spaces::agent::{ProduceOp, SpaceOp};
+use crate::rust::interpreter::spaces::agent::{OpOrigin, ProduceOp, SpaceOp};
 use crate::rust::interpreter::spaces::namespace::{CollectionKey, NativeSpace};
 
 /// The execution space of the system processes (R7). [`wrap`] makes it.
@@ -83,6 +83,7 @@ impl RoutingExecution {
                     authority,
                     reissued_ord: None,
                 }),
+                OpOrigin::Program,
             )
             .await?;
         reducer.dispatch_space_outcome(outcome, None).await?;

@@ -29,9 +29,10 @@
 //! no space data. A creation or a stored config that names one fails in the family agent with
 //! `FamilyUnavailable`.
 //!
-//! **Qualifiers.** The `seq` qualifier fails closed with `QualifierUnavailable` until its rules
-//! land in P7, on every factory of this wave, before the gates of the params. P7 step 1 makes
-//! `temp` available (F17 of decision 39 puts its rows of the matrix in P7).
+//! **Qualifiers.** These suites run in legacy execution, which refuses the `seq` qualifier with
+//! `QualifierUnavailable` on every factory of this wave, before the gates of the params (P7,
+//! design v3 QT-5). P7 step 1 makes `temp` available (F17 of decision 39 puts its rows of the
+//! matrix in P7).
 //!
 //! The property `prop_pattern_enforcement_any_wired_family` restates `PatternEnforcement` (V2 of
 //! `GenericRSpace.tla`) and `wildcard_matcher_degenerate` (`Match.v`) end to end through Rholang:
@@ -54,7 +55,7 @@ use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::spaces::agent::{SpaceAgent, SpaceOp};
 use rholang::rust::interpreter::spaces::errors::SpaceError;
-use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
+use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
 use rholang::rust::interpreter::spaces::factory::defaults::constructor_schema;
 use rholang::rust::interpreter::spaces::factory::urn::registered_channel;
 use rholang::rust::interpreter::spaces::families::{send_params, Family, FamilyAgent};
@@ -771,11 +772,12 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
 
 // ─── Qualifiers ──────────────────────────────────────────────────────────────────────────────
 
-/// The `seq` qualifier fails closed with `QualifierUnavailable` until its rules land in P7. The
-/// constructor of every family with a schema refuses it, before its params: an Array factory
-/// without its required `size` reports the qualifier, not the missing param. Every factory of
-/// the rows of this wave refuses it in a Rholang deploy, which leaves no space data and runs
-/// no body. P7 step 1 makes `temp` available (design v3 QT-1); its rows of the matrix follow F17.
+/// Legacy execution refuses the `seq` qualifier with `QualifierUnavailable`, because its rules
+/// need the job order of native execution (P7, design v3 QT-5). The constructor of every family
+/// with a schema refuses it in legacy execution, before its params: an Array factory without
+/// its required `size` reports the qualifier, not the missing param. Every factory of the rows
+/// of this wave refuses it in a legacy Rholang deploy, which leaves no space data and runs no
+/// body. P7 step 1 makes `temp` available (design v3 QT-1). Its rows of the matrix follow F17.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pattern_enforcement_qualifiers_fail_closed() {
     for family in SpaceFactoryUrn::all().filter(|family| constructor_schema(*family).is_some()) {
@@ -790,8 +792,12 @@ async fn pattern_enforcement_qualifiers_fail_closed() {
                 Vec::new(),
                 false,
             );
+            // Changed by P7 step 2 (design v3 QT-5): native execution accepts `seq`, so the
+            // check names the legacy model.
+            // assert_eq!(
+            //     FactoryConstructor::validate(family, &ctor),
             assert_eq!(
-                FactoryConstructor::validate(family, &ctor),
+                FactoryConstructor::validate_in(family, &ctor, Execution::Legacy),
                 Err(SpaceError::QualifierUnavailable(
                     qualifier.as_str().to_string()
                 )),

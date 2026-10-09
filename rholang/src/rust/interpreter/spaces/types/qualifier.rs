@@ -1,9 +1,10 @@
 //! The qualifier of a native space: the persistence and the concurrency of its channels (P4
 //! design B.8 ports the legacy type as it is).
 //!
-//! The config record of a space names its qualifier (I-17). P4 creates `default` spaces only:
-//! a factory refuses `temp` and `seq` with `QualifierUnavailable` until P7, where the channels
-//! of those spaces live for one deploy (I-4).
+//! The config record of a space names its qualifier (I-17). The channels of `temp` and `seq`
+//! spaces live for one deploy (I-4, P7). Legacy execution refuses `seq` with
+//! `QualifierUnavailable`, because the Seq rules need the job order of native execution (P7,
+//! design v3 QT-5).
 
 use std::fmt;
 

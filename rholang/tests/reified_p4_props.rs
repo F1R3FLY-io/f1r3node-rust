@@ -98,7 +98,7 @@ use rholang::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
 use rholang::rust::interpreter::spaces::errors::{
     SpaceError, SpaceReplyCode, SPACE_ERROR_REPLY_TAG,
 };
-use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
+use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
 use rholang::rust::interpreter::spaces::factory::defaults::{constructor_schema, required_params};
 use rholang::rust::interpreter::spaces::factory::urn::{factory_capability, factory_channel};
 use rholang::rust::interpreter::spaces::generic::{
@@ -2628,6 +2628,7 @@ impl AgentRig {
             budget: RuntimeBudget::new(Cost::create(RIG_PHLO, "rrs-p4-props agent rig")),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         };
         let call = random_of(&[b"rrs-p4-props factory call"]);
         let creation = SpaceCreation {
@@ -6847,26 +6848,34 @@ fn prop_aliases_map_to_family() {
 }
 
 /// `qualifier_matrix`: the HashSet store takes the `seq` qualifier only, every other store
-/// takes every qualifier. Every factory with a constructor schema accepts `default` and `temp`
-/// (P7 step 1, design v3 QT-1) and refuses `seq` with `QualifierUnavailable` until the Seq rules
-/// land. An Array factory then also needs its `size` (F7, P5 design v3 A.10). Every family
-/// without a schema is unavailable.
+/// takes every qualifier. In native execution every factory with a constructor schema accepts
+/// `default`, `temp` and `seq` (P7 steps 1 and 2, design v3 QT-1). Legacy execution refuses `seq`
+/// with `QualifierUnavailable` before the params, because the Seq rules need the job order of
+/// native execution (QT-5). An Array factory then also needs its `size` (F7, P5 design v3 A.10).
+/// Every family without a schema is unavailable.
 #[test]
 fn prop_qualifier_matrix() {
     check(
         pure_config(),
-        (arb_family(), arb_factory_qualifier()),
-        |(family, qualifier)| {
+        (arb_family(), arb_factory_qualifier(), any::<bool>()),
+        |(family, qualifier, native)| {
             prop_assert_eq!(
                 family.supports_qualifier(qualifier),
                 family.outer != SpaceOuter::HashSet || qualifier == SpaceQualifier::Seq
             );
+            let execution = match native {
+                true => Execution::Native,
+                false => Execution::Legacy,
+            };
             let ctor = list(vec![gstring(qualifier.as_str())]);
-            let validated = FactoryConstructor::validate(family, &ctor);
+            let validated = FactoryConstructor::validate_in(family, &ctor, execution);
+            // Changed by P7 step 2 (design v3 QT-5): `seq` passes gate 3 in native execution.
+            // let validated = FactoryConstructor::validate(family, &ctor);
+            let passes_gate_3 = qualifier != SpaceQualifier::Seq || native;
             match (
                 constructor_schema(family).is_some(),
                 required_params(family),
-                qualifier,
+                passes_gate_3,
             ) {
                 // Changed by P7 step 1 (design v3 QT-1): `temp` is accepted like `default`.
                 // (true, [], SpaceQualifier::Default) => {
@@ -6874,9 +6883,9 @@ fn prop_qualifier_matrix() {
                 //     prop_assert_eq!(validated.qualifier, SpaceQualifier::Default);
                 //     prop_assert_eq!(validated.durability(), Durability::Durable);
                 // }
-                (true, [], SpaceQualifier::Default | SpaceQualifier::Temp) => {
+                (true, [], true) => {
                     let validated =
-                        validated.expect("a family with a schema accepts default and temp");
+                        validated.expect("a family with a schema accepts the qualifier");
                     prop_assert_eq!(validated.qualifier, qualifier);
                     let durability = match qualifier {
                         SpaceQualifier::Default => Durability::Durable,
@@ -6884,7 +6893,7 @@ fn prop_qualifier_matrix() {
                     };
                     prop_assert_eq!(validated.durability(), durability);
                 }
-                (true, [required, ..], SpaceQualifier::Default | SpaceQualifier::Temp) => {
+                (true, [required, ..], true) => {
                     prop_assert_eq!(
                         validated,
                         Err(SpaceError::MissingParam {
@@ -6892,7 +6901,7 @@ fn prop_qualifier_matrix() {
                         })
                     )
                 }
-                (true, _, SpaceQualifier::Seq) => prop_assert_eq!(
+                (true, _, false) => prop_assert_eq!(
                     validated,
                     Err(SpaceError::QualifierUnavailable(
                         SpaceQualifier::Seq.as_str().to_string()

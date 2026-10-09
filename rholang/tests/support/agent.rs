@@ -100,6 +100,7 @@ where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> +
         budget: budget.clone(),
         meter: ScanMeter::new(None),
         volatile: Default::default(),
+        origin: Default::default(),
     }
 }
 
@@ -111,6 +112,7 @@ where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> +
         budget: budget.clone(),
         meter: ScanMeter::new(Some(host_work.clone())),
         volatile: Default::default(),
+        origin: Default::default(),
     }
 }
 

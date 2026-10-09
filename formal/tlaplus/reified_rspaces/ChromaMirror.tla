@@ -87,10 +87,10 @@
 \*   NetUpserts, NetDeletes, Upserts
 \*                         spaces/mirror.rs:236-313 (MirrorCapture::writes: the first and the last event)
 \*   journal               spaces/mirror.rs:408-426, 429-457 (MirrorJournal::record, take)
-\*                         reified/runtime.rs:273-275 (a space job records its net writes)
+\*                         reified/runtime.rs:300-302 (a space job records its net writes)
 \*   CheckWork             reified/system_processes.rs:503-548 (ann_request: the checks of decision 67)
-\*   Deploy (M1)           reified/runtime.rs:286-291 (settle_mirror_journal), interpreter.rs:257, rho_runtime.rs:1808
-\*   Explore               reified/runtime.rs:100-116 (begin_evaluation_scope clears the journal)
+\*   Deploy (M1)           reified/runtime.rs:313-318 (settle_mirror_journal), interpreter.rs:257, rho_runtime.rs:1808
+\*   Explore               reified/runtime.rs:102-118 (begin_evaluation_scope clears the journal)
 \*   Publish               reified/vectordb_services.rs:486-499 (MirrorWriter::publish: try_send, never waits)
 \*   Apply                 reified/vectordb_services.rs:365-381 (apply), 455-482 (the writer task: attempts, dirty)
 \*   Reconcile             reified/mirror_reconciler.rs:139-212 (reconcile), 216-230 (prepare_dirty), 235-248 (remark)

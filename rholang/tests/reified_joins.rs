@@ -93,8 +93,8 @@ use rholang::rust::interpreter::reified::legacy_charges::{consume_charges, produ
 use rholang::rust::interpreter::reified::runtime;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::spaces::agent::{
-    CascadeState, ConsumeOp, JoinOp, PendingProduce, ProduceOp, QueryParams, SettleOp, SpaceEnv,
-    SpaceOp, SpaceOutcome, SpaceReissue,
+    CascadeState, ConsumeOp, JoinOp, OpOrigin, PendingProduce, ProduceOp, QueryParams, SettleOp,
+    SpaceEnv, SpaceOp, SpaceOutcome, SpaceReissue,
 };
 use rholang::rust::interpreter::spaces::disciplines::priority_queue::PRIORITY_PARAM;
 use rholang::rust::interpreter::spaces::disciplines::scan::{retire_continuation, retire_pattern};
@@ -3924,7 +3924,7 @@ async fn join_run(deploy: RuntimeBudget) -> JoinRun {
         let label = format!("{op:?}");
         outcomes.push(
             reified
-                .run_op(Arc::new(FamilyAgent), op)
+                .run_op(Arc::new(FamilyAgent), op, OpOrigin::Program)
                 .await
                 .unwrap_or_else(|error| panic!("the operation commits: {error:?}: {label}")),
         );
@@ -3974,7 +3974,7 @@ async fn space_joins_native_play_commits_as_legacy() {
         SpaceOp::Produce(send.clone()),
         settle_after(&send, &[&ch("c")], Vec::new(), None),
     ] {
-        match unbound.run_op(Arc::new(FamilyAgent), op.clone()).await {
+        match unbound.run_op(Arc::new(FamilyAgent), op.clone(), OpOrigin::Program).await {
             Err(InterpreterError::ReduceError(message)) => assert!(
                 message.starts_with("reified:RuntimeUnavailable: "),
                 "{message}: {op:?}"

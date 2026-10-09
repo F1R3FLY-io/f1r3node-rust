@@ -1848,7 +1848,7 @@
       ]
     },
     "p7": {
-      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call.",
+      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call. Step 2 adds the Seq rules: gate 3 in the execution model of the deploy (QT-5), the send rule of seq names (SQ-1, SQ-2), the claims of each channel of a seq space with their store after a successful commit (SQ-3, SQ-4), the internal origin of re-issues (A3), and the charges of the checks (SQ-8).",
       "sources": [
         "rholang/src/rust/interpreter/spaces/ephemeral.rs",
         "rholang/src/rust/interpreter/spaces/agent.rs",
@@ -1858,7 +1858,10 @@
         "rholang/src/rust/interpreter/reified/runtime.rs",
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
         "rholang/src/rust/interpreter/reified/factory.rs",
-        "rholang/src/rust/interpreter/reified/system_processes.rs"
+        "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "rholang/src/rust/interpreter/reified/seq.rs",
+        "rholang/src/rust/interpreter/spaces/join.rs",
+        "rholang/src/rust/interpreter/reified/execution.rs"
       ],
       "entry_points": [
         {
@@ -1940,6 +1943,70 @@
         {
           "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
           "pattern": "fn dangling_reply(space: SpaceId) -> Par {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/seq.rs",
+          "pattern": "pub fn check_send("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/seq.rs",
+          "pattern": "fn check_unforgeable("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub struct SeqClaims {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub enum ClaimRole {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub fn store(self) { self.registry.store_claims(self.pending, &self.path); }"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub fn seq_spaces(&self) -> BTreeSet<SpaceId> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "fn claim(&mut self, channel: &Par, role: ClaimRole) -> Result<(), SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "fn own_claims("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+          "pattern": "pub enum OpOrigin {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+          "pattern": "pub enum Execution {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+          "pattern": "pub fn validate_in("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "pattern": "pub fn execution(&self) -> Result<Execution, SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "pattern": "branch.space_op_from(op, None, OpOrigin::Internal).await"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "pattern": "seq::check_send(&chan, &data.pars, &seq, &meter)?;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "SeqSent { space: SpaceId },"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "SeqConcurrent { space: SpaceId },"
         }
       ],
       "tests": [
@@ -1950,7 +2017,9 @@
         "rholang/tests/reified_volatile_sweep.rs",
         "rholang/tests/support/native.rs",
         "rholang/tests/support/family_programs.rs",
-        "rholang/tests/support/props.rs"
+        "rholang/tests/support/props.rs",
+        "rholang/tests/reified_seq.rs",
+        "rholang/src/rust/interpreter/reified/seq.rs"
       ],
       "property_files": [
         "rholang/src/rust/interpreter/reified/runtime.rs",

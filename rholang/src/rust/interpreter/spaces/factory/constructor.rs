@@ -7,8 +7,9 @@
 //!
 //! 1. The family has a constructor schema in this phase, else `FamilyUnavailable`.
 //! 2. The constructor parses, else `BadConstructorArgument`.
-//! 3. The family takes the qualifier, else `BadConstructorArgument`. The qualifier is
-//!    `default` or `temp` (P7), else `QualifierUnavailable`.
+//! 3. The family takes the qualifier, else `BadConstructorArgument`. In native execution every
+//!    qualifier passes (P7). Legacy execution refuses `seq` with `QualifierUnavailable`, because
+//!    the Seq rules need the job order of native execution (P7, design v3 QT-5).
 //! 4. The constructor names no theory, else `TheoryUnavailable` (P7).
 //! 5. The params are not positional, else `PositionalParamsUnsupported`.
 //! 6. Each named param is in the schema of the family, else `UnknownParam` with a suggestion.
@@ -62,10 +63,31 @@ pub struct FactoryConstructor {
     pub params: BTreeMap<String, Par>,
 }
 
+/// The execution model of a factory call (P7, design v3 QT-5). The Seq rules need the
+/// deterministic job order of native execution, so gate 3 accepts `seq` only there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Execution {
+    /// Legacy execution: host produces and consumes bypass the scheduler (F11).
+    Legacy,
+    /// Native funded execution (protocol v6), in native play and native replay.
+    Native,
+}
+
 impl FactoryConstructor {
-    /// Validates the constructor list `ctor` of a call to the factory of `family` with the gates
-    /// 1 to 9 of this module, in order.
+    /// Validates the constructor list `ctor` of a call to the factory of `family` in native
+    /// execution, the model of every new deploy (decision 69). It is
+    /// [`FactoryConstructor::validate_in`] with [`Execution::Native`].
     pub fn validate(family: SpaceFactoryUrn, ctor: &Par) -> Result<FactoryConstructor, SpaceError> {
+        Self::validate_in(family, ctor, Execution::Native)
+    }
+
+    /// Validates the constructor list `ctor` of a call to the factory of `family` in the
+    /// execution model `execution` with the gates 1 to 9 of this module, in order.
+    pub fn validate_in(
+        family: SpaceFactoryUrn,
+        ctor: &Par,
+        execution: Execution,
+    ) -> Result<FactoryConstructor, SpaceError> {
         let schema = constructor_schema(family).ok_or_else(|| SpaceError::FamilyUnavailable {
             outer: family.outer.as_str().to_string(),
             inner: family.inner.as_str().to_string(),
@@ -93,9 +115,20 @@ impl FactoryConstructor {
         //         ))
         //     }
         // }
-        match qualifier {
-            SpaceQualifier::Default | SpaceQualifier::Temp => {}
-            SpaceQualifier::Seq => {
+        // Changed by P7 step 2 (design v3 QT-5): `seq` runs in native execution, and legacy
+        // execution keeps `QualifierUnavailable` for it.
+        // match qualifier {
+        //     SpaceQualifier::Default | SpaceQualifier::Temp => {}
+        //     SpaceQualifier::Seq => {
+        //         return Err(SpaceError::QualifierUnavailable(
+        //             qualifier.as_str().to_string(),
+        //         ))
+        //     }
+        // }
+        match (qualifier, execution) {
+            (SpaceQualifier::Default | SpaceQualifier::Temp, _)
+            | (SpaceQualifier::Seq, Execution::Native) => {}
+            (SpaceQualifier::Seq, Execution::Legacy) => {
                 return Err(SpaceError::QualifierUnavailable(
                     qualifier.as_str().to_string(),
                 ))
@@ -299,10 +332,27 @@ mod tests {
         let temp = validate(vec![string("temp")]).expect("a temp constructor is valid");
         assert_eq!(temp.qualifier, SpaceQualifier::Temp);
         assert_eq!(temp.durability(), Durability::Ephemeral);
+        // Changed by P7 step 2 (design v3 QT-5): native execution accepts `seq`, so the theory
+        // gate decides, and only legacy execution refuses `seq` at gate 3.
+        // assert_eq!(
+        //     validate(vec![string("seq"), nat()]),
+        //     Err(SpaceError::QualifierUnavailable("seq".to_string()))
+        // );
         assert_eq!(
             validate(vec![string("seq"), nat()]),
+            Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+        );
+        assert_eq!(
+            FactoryConstructor::validate_in(
+                SpaceFactoryUrn::HASHMAP_QUEUE,
+                &list(vec![string("seq"), nat()]),
+                Execution::Legacy
+            ),
             Err(SpaceError::QualifierUnavailable("seq".to_string()))
         );
+        let seq = validate(vec![string("seq")]).expect("a seq constructor is valid natively");
+        assert_eq!(seq.qualifier, SpaceQualifier::Seq);
+        assert_eq!(seq.durability(), Durability::Ephemeral);
         assert_eq!(
             validate(vec![nat()]),
             Err(SpaceError::TheoryUnavailable("Nat".to_string()))
@@ -466,9 +516,25 @@ mod tests {
         //     check(array_queue, vec![string("temp")]),
         //     Err(SpaceError::QualifierUnavailable("temp".to_string()))
         // );
+        // Changed by P7 step 2 (design v3 QT-5): native execution accepts `seq`, so legacy
+        // execution shows the order of gate 3, and natively the missing size decides.
+        // assert_eq!(
+        //     check(array_queue, vec![string("seq")]),
+        //     Err(SpaceError::QualifierUnavailable("seq".to_string()))
+        // );
+        assert_eq!(
+            FactoryConstructor::validate_in(
+                array_queue,
+                &list(vec![string("seq")]),
+                Execution::Legacy
+            ),
+            Err(SpaceError::QualifierUnavailable("seq".to_string()))
+        );
         assert_eq!(
             check(array_queue, vec![string("seq")]),
-            Err(SpaceError::QualifierUnavailable("seq".to_string()))
+            Err(SpaceError::MissingParam {
+                key: "size".to_string()
+            })
         );
         assert_eq!(
             check(array_queue, vec![nat()]),

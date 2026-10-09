@@ -532,6 +532,7 @@ mod tests {
             budget: budget(),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         };
         let config = SpaceConfig::new(
             SPACE.sid,

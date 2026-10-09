@@ -58,7 +58,7 @@
                             (run_tail, first_cascade_target,
                             lift_and_reoffer)
    jfill, first_fit         rholang/src/rust/interpreter/spaces/join.rs:
-                            3011-3124, 3277-3345, 1625-1720 (search: the
+                            3055-3168, 3321-3389, 1669-1764 (search: the
                             greedy search of the engine; similarity_bind:
                             the first record of the selection order of a
                             bind that its pattern binds, without the claimed

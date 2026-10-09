@@ -136,10 +136,11 @@ use rspace_plus_plus::rspace::space_store_handle::{incoming_candidate, metered_h
 use rspace_plus_plus::rspace::trace::event::Produce;
 
 use super::agent::{
-    CascadeState, ConsumeOp, JoinOp, PendingProduce, Prepared, ProduceOp, SettleOp, SpaceEnv,
-    SpaceOp, SpaceOutcome, SpaceReissue,
+    CascadeState, ConsumeOp, JoinOp, OpOrigin, PendingProduce, Prepared, ProduceOp, SettleOp,
+    SpaceEnv, SpaceOp, SpaceOutcome, SpaceReissue,
 };
 use super::counter::CounterChannels;
+use super::ephemeral::{ClaimRole, SeqClaims};
 use super::disciplines::priority_queue::{receive_lane, send_level, Lane, Level};
 use super::disciplines::scan::{retire_class_on, retire_continuation, same_class};
 use super::disciplines::vectordb::{self, Flight, ListFire, Mode, VdbConfig};
@@ -698,10 +699,53 @@ pub(crate) fn run_join_with<Src: JoinSource>(
             "a collection is outside its join scope",
         ))?
         .data;
-    generic::run_plan(env, txn, data, &config, &authority, |cx| {
+    let seq = own_claims(env, &config, &scope, &op)?;
+    generic::run_plan(env, txn, data, &config, &authority, seq, |cx| {
         let engine = Engine::new(source, &scope, &op, cx.config(), cx.meter())?;
         engine.run(cx, op)
     })
+}
+
+/// SQ-3 (P7): the claims of a program operation on a `seq` space with its own channels claimed
+/// first, or `None` for every other job. A send claims the home of its datum, the data channel
+/// `D(sid, key)` of its key (the data channel of its path in a PathMap space). A receive or a
+/// join claims the channel of each own collection as a waiter channel: `D(sid, k)` of a keyed
+/// store, `I(sid, q)` of a PathMap prefix. A settle job is internal. Each name is reserved
+/// before it is made.
+fn own_claims(
+    env: &SpaceEnv,
+    config: &SpaceConfig,
+    scope: &JoinScope,
+    op: &SpaceOp,
+) -> Result<Option<SeqClaims>, SpaceError> {
+    let meter = &env.meter;
+    let internal = matches!(op, SpaceOp::Settle(_)) || env.origin == OpOrigin::Internal;
+    let Some(mut claims) = SeqClaims::open(&env.volatile, op.space(), config.qualifier, internal, meter)?
+    else {
+        return Ok(None);
+    };
+    match op {
+        SpaceOp::Produce(produce) => {
+            meter.reserve_copy(&*GPRIVATE)?;
+            let length = namespace::SPACE_ID_PREFIX_LEN
+                .checked_add(produce.key.as_bytes().len())
+                .ok_or(RSpaceError::HostWorkRejected)?;
+            meter.reserve_buffer::<u8>(length)?;
+            let home = namespace::gprivate(namespace::data_channel(produce.space, &produce.key));
+            claims.claim(&home, ClaimRole::Data, meter)?;
+        }
+        SpaceOp::Consume(_) | SpaceOp::Join(_) => {
+            for key in &scope.own {
+                let index = scope.index_of_key(key, meter)?;
+                let collection = scope.collections.get(index).ok_or(SpaceError::Inconsistent(
+                    "a collection is outside its join scope",
+                ))?;
+                claims.claim(&collection.data, ClaimRole::Waiter, meter)?;
+            }
+        }
+        SpaceOp::Settle(_) => {}
+    }
+    Ok(Some(claims))
 }
 
 // ── The seam of a store ─────────────────────────────────────────────────────────────────────
@@ -4902,6 +4946,7 @@ mod tests {
             budget: RuntimeBudget::new(Cost::create(10_000_000, "join engine test")),
             meter: ScanMeter::new(None),
             volatile: Default::default(),
+            origin: Default::default(),
         };
         let family = SpaceFactoryUrn::all()
             .find(|urn| urn.outer == SpaceOuter::HashMap && urn.inner == inner)

@@ -112,7 +112,7 @@ A program that names one of them fails with the baseline error `No value set for
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1063-1103`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1090-1130`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 
@@ -124,7 +124,7 @@ The constructor must be the canonical sequence $`[q?]\,[\mathrm{FREE}?]\,[\mathr
 
 ### 3.2 The gates
 
-The factory checks the constructor with seven gates, in the order of Table 3 (`spaces/factory/constructor.rs:68-132`).
+The factory checks the constructor with seven gates, in the order of Table 3 (`spaces/factory/constructor.rs:80-165`).
 The first gate that fails aborts the deploy with its code, and the later gates do not run.
 
 *Table 3. The gates of a factory call.*
@@ -134,7 +134,7 @@ The first gate that fails aborts the deploy with its code, and the later gates d
 | 1 | The family has a schema in this phase. | `FamilyUnavailable` |
 | 2 | The constructor is the canonical sequence. An unknown qualifier string, a malformed theory or params tuple, and any other element fail here. | `BadConstructorArgument` |
 | 3 | The outer store takes the qualifier. The HashSet store takes only `"seq"`. | `BadConstructorArgument` |
-| 4 | The qualifier is `"default"` or `"temp"` ([specification 4.2](specification.md#42-temp)). The qualifier `"seq"` arrives in a later step of P7. | `QualifierUnavailable` |
+| 4 | Native execution takes every qualifier ([specification 4.2](specification.md#42-temp) and [4.3](specification.md#43-seq)). Legacy execution refuses `"seq"`, because its rules need the job order of native execution. | `QualifierUnavailable` |
 | 5 | The constructor names no theory. Theories arrive in P7. | `TheoryUnavailable` |
 | 6 | The params are named only. The send hook already checks this rule. | `PositionalParamsUnsupported` |
 | 7 | Each named param is in the schema of the family, in the bytewise order of the keys. The schema of `hashmap:queue` is empty. | `UnknownParam` |
@@ -173,7 +173,7 @@ A program that holds the capability can call the space, and it can give the capa
 A call on a handle has the form `h!(ret, method, a…; k=v…)`.
 The reducer removes the write bundle, and the channel $`H(\mathit{sid})`$ routes to the default space (rule R1).
 The handle continuation of the space is a persistent receive on $`H(\mathit{sid})`$ with the pattern `[...@args]`, so it binds the whole call as one list.
-Its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP` (`reified/factory.rs:132-156`).
+Its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP` (`reified/factory.rs:136-160`).
 The forwarder has no guard and no cost authority, so the caller pays for each call.
 
 The send hook applies two rules to a handle call before the forward:
@@ -237,7 +237,7 @@ The arity counts the arguments after `ret` and the method name.
 | Method | Call | Arity | Named params | Reply | Effect on the space |
 |---|---|---|---|---|---|
 | `gensym` | `h!(ret, "gensym")` | 0 | None | A new [space name](glossary.md#space-name) $`N(\mathit{sid} \Vert t)`$ | One allocation job: an Array or a Vector space takes and puts its allocator, and every other store stores nothing |
-| `qualifier` | `h!(ret, "qualifier")` | 0 | None | The qualifier of the space: `"default"` or `"temp"` | None |
+| `qualifier` | `h!(ret, "qualifier")` | 0 | None | The qualifier of the space: `"default"`, `"temp"` or `"seq"` | None |
 | `config` | `h!(ret, "config")` | 0 | None | The config map of the space | None |
 | `produce` | `h!(ret, "produce", ch, msg)` | 2 | `persistent`: a Boolean, `false` when absent, and the send params of the discipline | `Nil`, after the operation | One produce on the collection of `ch` |
 | `consume` | `h!(ret, "consume", pairs, arrow, body)` | 3 | None | None in P4: a typed reply or an abort | None |
@@ -301,7 +301,7 @@ The reply is one datum, the tuple of three elements that `typed_error` builds (`
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:254-266`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:270-282`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|
@@ -401,6 +401,8 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 | `FamilyUnavailable`, `BadConstructorArgument`, `QualifierUnavailable`, `TheoryUnavailable`, `UnknownParam` | A factory | A gate of Table 3 |
 | `SpaceAlreadyExists` | A factory | A config record on $`C(\mathit{sid})`$ |
 | `DanglingHandle` | A handle | The space has no config record, or it is a temp space of an ended deploy. The message names the space id. |
+| `SeqSent` | Every call, and every send | The data of the send holds a name of a seq space of the evaluation. The channel argument of the own `produce` of a seq space is exempt ([specification 4.3](specification.md#43-seq), rule QF-14). The message names the space id. |
+| `SeqConcurrent` | `produce` | The call uses a channel of a seq space whose last use is not an ancestor of the call (rule QF-15). The message names the space id. |
 | `AgentSpacesUnavailable` | `consume` | Matchers of user agents, until P8 |
 | `Inconsistent` | Every call that reads a space | A record that is not well formed |
 | `CounterOverflow` | `produce` | A counter at its greatest value |

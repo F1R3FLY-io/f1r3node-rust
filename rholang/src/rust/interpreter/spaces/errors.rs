@@ -33,8 +33,14 @@ pub enum SpaceError {
     /// Positional params on a factory, a handle or a space channel.
     #[error("this channel takes no positional params")]
     PositionalParamsUnsupported,
-    /// A qualifier that this phase does not support (`temp` and `seq` arrive in P7).
-    #[error("the {0} qualifier is not available")]
+    // Changed by P7 step 2 (design v3 QT-5): `temp` and `seq` are available, and only legacy
+    // execution refuses `seq`, because the Seq rules need the job order of native execution.
+    // /// A qualifier that this phase does not support (`temp` and `seq` arrive in P7).
+    // #[error("the {0} qualifier is not available")]
+    // QualifierUnavailable(String),
+    /// A qualifier that the execution model of the deploy cannot run: legacy execution refuses
+    /// `seq`, because its rules need the deterministic job order of native execution (QT-5).
+    #[error("the {0} qualifier needs native execution")]
     QualifierUnavailable(String),
     /// A theory that this phase does not support (P7).
     #[error("the theory {0} is not available")]
@@ -65,6 +71,14 @@ pub enum SpaceError {
     /// deploy created (P7, DG-1). The error names the missing space id (DG-3).
     #[error("the space {} of this name does not exist", hex::encode(.space))]
     DanglingName { space: SpaceId },
+    /// A send whose data holds a name of a `seq` space of the evaluation, at any depth (P7,
+    /// SQ-2). The error names the space id.
+    #[error("a name of the seq space {} is sent", hex::encode(.space))]
+    SeqSent { space: SpaceId },
+    /// A use of a channel of a `seq` space whose last use is not a causal ancestor of the
+    /// using process (P7, SQ-3). The error names the space id.
+    #[error("a channel of the seq space {} is used by a concurrent process", hex::encode(.space))]
+    SeqConcurrent { space: SpaceId },
     /// The `ord` counter of a collection reached `i64::MAX`.
     #[error("a space counter reached its maximum")]
     CounterOverflow,
@@ -192,6 +206,8 @@ impl SpaceError {
             // SpaceError::SpacesUnsupportedInNativeExecution => "SpacesUnsupportedInNativeExecution",
             SpaceError::DanglingHandle { .. } => "DanglingHandle",
             SpaceError::DanglingName { .. } => "DanglingName",
+            SpaceError::SeqSent { .. } => "SeqSent",
+            SpaceError::SeqConcurrent { .. } => "SeqConcurrent",
             SpaceError::CounterOverflow => "CounterOverflow",
             SpaceError::CellOccupied => "CellOccupied",
             SpaceError::CapacityExceeded => "CapacityExceeded",
@@ -314,7 +330,7 @@ mod tests {
                 suggestion: Some("priority".to_string()),
             },
             SpaceError::PositionalParamsUnsupported,
-            SpaceError::QualifierUnavailable("temp".to_string()),
+            SpaceError::QualifierUnavailable("seq".to_string()),
             SpaceError::TheoryUnavailable("Nat".to_string()),
             SpaceError::FamilyUnavailable {
                 outer: "hashmap".to_string(),
@@ -325,6 +341,8 @@ mod tests {
             // SpaceError::SpacesUnsupportedInNativeExecution,
             SpaceError::DanglingHandle { space: [1; 32] },
             SpaceError::DanglingName { space: [2; 32] },
+            SpaceError::SeqSent { space: [3; 32] },
+            SpaceError::SeqConcurrent { space: [4; 32] },
             SpaceError::CounterOverflow,
             SpaceError::CellOccupied,
             SpaceError::CapacityExceeded,
@@ -407,6 +425,29 @@ mod tests {
                 ))
             );
         }
+        // SQ-2 and SQ-3: a Seq violation names the seq space in lowercase hex.
+        assert_eq!(
+            InterpreterError::from(SpaceError::SeqSent { space: [0xcd; 32] }),
+            InterpreterError::ReduceError(format!(
+                "reified:SeqSent: a name of the seq space {} is sent",
+                "cd".repeat(32)
+            ))
+        );
+        assert_eq!(
+            InterpreterError::from(SpaceError::SeqConcurrent { space: [0xcd; 32] }),
+            InterpreterError::ReduceError(format!(
+                "reified:SeqConcurrent: a channel of the seq space {} is used by a concurrent \
+                 process",
+                "cd".repeat(32)
+            ))
+        );
+        // QT-5: legacy execution refuses `seq`.
+        assert_eq!(
+            InterpreterError::from(SpaceError::QualifierUnavailable("seq".to_string())),
+            InterpreterError::ReduceError(
+                "reified:QualifierUnavailable: the seq qualifier needs native execution".to_string()
+            )
+        );
     }
 
     #[test]

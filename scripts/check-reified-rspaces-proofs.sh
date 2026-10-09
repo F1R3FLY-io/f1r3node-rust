@@ -16,7 +16,8 @@
 # P6 step 8 adds headline 14 of SpaceFactory.v (vectordb_params_validated) and
 # headline 16 of CounterConflict.v (capped_writes_soft_bound, decision 71).
 # P6 step 8b adds VectorDbDiscipline.v (5: S21-S25), and step 8d adds
-# VectorOps.v (2: S27 and S28).
+# VectorOps.v (2: S27 and S28). P7 step 2 adds headline 12 of Namespace.v
+# (seq_name_iff, SQ-1).
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -50,7 +51,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 277: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 278: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -83,9 +84,10 @@
 #                        capped_writes_soft_bound of CounterConflict.v,
 #                        5 for P6 step 8b: the headlines of
 #                        VectorDbDiscipline.v, 2 for P6 step 8d:
-#                        the headlines of VectorOps.v, and 2 for P7 step 1:
+#                        the headlines of VectorOps.v, 2 for P7 step 1:
 #                        sweep_complete and dead_ephemeral_dangling of
-#                        VolatileSweep.v)
+#                        VolatileSweep.v, and 1 for P7 step 2:
+#                        seq_name_iff of Namespace.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -104,7 +106,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-277}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-278}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -114,7 +116,7 @@ declare -A EXPECTED_PER_MODULE=(
   [EventCorrelation]=21
   [VolatileSweep]=8
   [Encoding]=15
-  [Namespace]=11
+  [Namespace]=12
   [RecordEnvelope]=11
   [CounterConflict]=16
   [HeadOnlyDisciplines]=20

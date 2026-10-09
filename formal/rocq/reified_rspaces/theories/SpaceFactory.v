@@ -41,13 +41,13 @@
                             models/src/rust/space_factory_urn.rs:32, 35, 38,
                             225-263
    family_of_names          rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:218-236 (family_of)
+                            constructor.rs:251-269 (family_of)
    factory_op               rholang/src/rust/interpreter/spaces/factory/urn.rs:
                             213-217, 221-223 (the factory channel and the
                             capability that getSpaceAgent replies)
    validate_qualifier, durability_of
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:68-132, 135-140
+                            constructor.rs:80-165, 168-173
    parse_elements, to_elements, qual_of
                             models/src/rust/space_factory_urn.rs:368-398,
                             405-417, 428-438 (parse_elements, to_elements,
@@ -59,7 +59,7 @@
    check_persistent_send    rholang/src/rust/interpreter/reified/
                             system_channels.rs:103, 107, 112-124
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
-                            2614-2732
+                            2677-2795
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -98,9 +98,10 @@
                                           0 to 31, one each
     2. aliases_map_to_family              URNs and aliases parse to their
                                           families
-    3. qualifier_matrix                   HashSet takes only seq, and P7
-                                          step 1 creates default and temp
-                                          spaces (seq is not yet available)
+    3. qualifier_matrix                   HashSet takes only seq, native
+                                          execution creates default, temp
+                                          and seq spaces, and legacy
+                                          execution refuses seq (P7, QT-5)
     4. constructor_parse_canonical        parse ∘ to_elements = id
     5. constructor_parse_sound            to_elements ∘ parse = id
     6. sid_derivation_deterministic       the sid is a 32-byte draw of the
@@ -356,12 +357,17 @@ Qed.
 
 Inductive qual_check : Type := QualOk | QualBadArgument | QualUnavailable.
 
-(* FactoryConstructor::validate, step 3: the family takes the qualifier,
-   and the qualifier is default or temp (P7 step 1, design v3 QT-1). seq stays
-   unavailable until its rules land. *)
-Definition validate_qualifier (f : family) (q : qualifier) : qual_check :=
+(* The execution model of a factory call (constructor.rs Execution, P7 step 2,
+   design v3 QT-5). *)
+Inductive execution : Type := Legacy | Native.
+
+(* FactoryConstructor::validate_in, step 3: the family takes the qualifier.
+   Native execution accepts every qualifier (P7 steps 1 and 2, design v3
+   QT-1). Legacy execution refuses seq, because the Seq rules need the job
+   order of native execution (QT-5). *)
+Definition validate_qualifier (f : family) (q : qualifier) (e : execution) : qual_check :=
   if negb (supports_qualifier f q) then QualBadArgument
-  else match q with QDefault | QTemp => QualOk | QSeq => QualUnavailable end.
+  else match q, e with QSeq, Legacy => QualUnavailable | _, _ => QualOk end.
 
 Inductive durability : Type := Durable | Ephemeral.
 
@@ -369,26 +375,33 @@ Definition durability_of (q : qualifier) : durability :=
   match q with QDefault => Durable | QTemp | QSeq => Ephemeral end.
 
 (* Headline 3. HashSet takes only seq, every other store takes every
-   qualifier. P7 step 1 accepts default and temp (design v3 QT-1), and seq
-   stays unavailable until its rules land, so a HashSet family can create no
-   space yet. A default space is durable and a temp space is ephemeral. *)
+   qualifier. Gate 3 accepts a supported qualifier in native execution
+   (P7 steps 1 and 2, design v3 QT-1), and legacy execution refuses seq
+   with QualifierUnavailable (QT-5), so a HashSet family can create a space
+   only in native execution. A default space is durable, and a temp or seq
+   space is ephemeral. *)
 Theorem qualifier_matrix :
   (forall f q, supports_qualifier f q = true <-> (f_outer f <> HashSet \/ q = QSeq)) /\
-  (forall f q, validate_qualifier f q = QualOk <->
-                 ((q = QDefault \/ q = QTemp) /\ f_outer f <> HashSet)) /\
-  (forall f, f_outer f = HashSet -> forall q, validate_qualifier f q <> QualOk) /\
+  (forall f q e, validate_qualifier f q e = QualOk <->
+                   (supports_qualifier f q = true /\ (q = QSeq -> e = Native))) /\
+  (forall f q e, validate_qualifier f q e = QualUnavailable <->
+                   (supports_qualifier f q = true /\ q = QSeq /\ e = Legacy)) /\
+  (forall f q, f_outer f = HashSet -> validate_qualifier f q Legacy <> QualOk) /\
   (forall q, durability_of q = Durable <-> q = QDefault).
 Proof.
-  split; [| split; [| split]].
+  split; [| split; [| split; [| split]]].
   - intros [[] i] []; cbn; split; intros H;
       solve [ reflexivity | left; discriminate | right; reflexivity | discriminate H
             | destruct H as [H | H]; [contradiction H; reflexivity | discriminate H] ].
-  - intros [[] i] []; cbn; split; intros H;
-      solve [ reflexivity | split; [left; reflexivity | discriminate]
-            | split; [right; reflexivity | discriminate] | discriminate H
-            | destruct H as [[H1 | H1] H2];
-              first [discriminate H1 | contradiction H2; reflexivity] ].
-  - intros [o i] Ho q. cbn in Ho. subst o. destruct q; cbn; discriminate.
+  - intros [[] i] [] []; cbn; split; intros H;
+      solve [ reflexivity | discriminate H
+            | split; [reflexivity | intros Hq; solve [discriminate Hq | reflexivity]]
+            | destruct H as [H1 H2]; solve [discriminate H1 | discriminate (H2 eq_refl)] ].
+  - intros [[] i] [] []; cbn; split; intros H;
+      solve [ reflexivity | discriminate H
+            | split; [reflexivity | split; reflexivity]
+            | destruct H as [H1 [H2 H3]]; solve [discriminate H1 | discriminate H2 | discriminate H3] ].
+  - intros [o i] q Ho. cbn in Ho. subst o. destruct q; cbn; discriminate.
   - intros []; cbn; split; intros H; solve [reflexivity | discriminate H].
 Qed.
 
@@ -902,7 +915,7 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    get_space_agent_of       rholang/src/rust/interpreter/
                             reified/system_processes.rs:222-260 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:218-236 (family_of), urn.rs:221-223
+                            constructor.rs:251-269 (family_of), urn.rs:221-223
                             (factory_capability)
    rule, rule_of, canonical, max_capacity, max_dimensions
                             rholang/src/rust/interpreter/spaces/factory/
@@ -915,11 +928,11 @@ Print Assumptions space_already_exists_is_deterministic_abort.
                             defaults.rs:49, 248-257, 262-289
    validate_params, canonical_all
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:68-132 (validate), 191-205
+                            constructor.rs:80-165 (validate), 191-205
                             (canonical_params)
    lookup, mirror_metric, indexed_metrics, check_mirror, validate_factory
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:126 (the call of gate 9 in
+                            constructor.rs:159 (the call of gate 9 in
                             validate), 155-186 (check_mirror)
 
    ─────────────────────────────────────────────────────────────────────────
@@ -949,9 +962,10 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    - Gate 9 is the definition check_mirror over the qualifier and the
      canonical params. validate_factory runs it after the gates of
      validate_params, as validate does. Its qualifier is the one that the
-     gates 2 to 4 accepted (validate_qualifier). Gate 3 accepts temp since
-     P7 step 1, so gate 9 refuses a mirror on a temp space, and for its
-     metric. The model states the qualifier part as the code does.
+     gates 2 to 4 accepted (validate_qualifier). Gate 3 accepts temp and
+     seq in native execution since P7, so gate 9 refuses a mirror on a temp
+     or seq space, and for its metric. The model states the qualifier part
+     as the code does.
      The params of gate 9 are canonical, so their keys are distinct, and
      lookup reads the value of a key.
    - The Levenshtein distance is the section variable dist, so the

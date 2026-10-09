@@ -47,6 +47,12 @@
 # and makes the checks of play, a deploy publishes its exact net writes only
 # when its result has no errors, publication never waits, and a reconciler
 # pass repairs to the finalized view with a watermark that never runs ahead).
+# P7 step 2: SpaceCoordination.tla (the coordination rules of the
+# deploy-scoped qualifiers: per channel, the admitted uses of a seq space
+# form one prefix chain of participant paths; no delivered message holds a
+# seq name; gate 3 creates a HashSet space only with seq and a seq space
+# only in native execution; and the use context of each participant is its
+# lexical context).
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -138,6 +144,7 @@ SAFE_CONFIGS=(
   "VectorDb MC_VectorDb_Persist.cfg"
   "VectorDb MC_VectorDb_Plain.cfg"
   "ChromaMirror MC_ChromaMirror.cfg"
+  "SpaceCoordination MC_SpaceCoordination.cfg"
 )
 # <module> <config> <the one invariant that it must refute>
 UNSAFE_CONFIGS=(
@@ -210,6 +217,10 @@ UNSAFE_CONFIGS=(
   "ChromaMirror BlockingPublishUnsafe.cfg PublishNeverWaits"
   "ChromaMirror OrphansKeptUnsafe.cfg ReconciledEqualsFinalizedView"
   "ChromaMirror WatermarkAfterFailureUnsafe.cfg WatermarkHonest"
+  "SpaceCoordination SeqGuardToctouUnsafe.cfg SeqExclusive"
+  "SpaceCoordination SeqScanSkippedUnsafe.cfg SeqNotSent"
+  "SpaceCoordination QualifierSupportUnsafe.cfg QualifierSupport"
+  "SpaceCoordination UseBalanceUnsafe.cfg UseBalance"
 )
 # <name>|<module>|<config>|<length>|<expected outcome>|<marker in the violated formula>
 APALACHE_CHECKS=(
@@ -260,7 +271,7 @@ if [[ ! "$APALACHE_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue, PathMapPrefix, JoinCascade, NativeReplay, VectorDb, ChromaMirror)"
+echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue, PathMapPrefix, JoinCascade, NativeReplay, VectorDb, ChromaMirror, SpaceCoordination)"
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 tools_ok=true

@@ -431,6 +431,7 @@ The FIPS qualifiers are default, temp, and seq [[FIPS-RRS](#ref-fips-rrs)].
 - A seq space is a temp space with more limits: no process can send its names, and only one sequential process can use them.
 
 In this campaign, temp and seq spaces live for one deploy ([decision I-4](decision-register.md#i-4)).
+A seq space runs only in native execution, because its [seq claims](#seq-claim) need the job order of the deterministic scheduler.
 
 ### Outer store
 
@@ -923,6 +924,14 @@ A split replaces a participant with one child participant for each parallel bran
 The reducer of `feature/cost-accounted-rho`, which the campaign merged at `4d67b5ccc`, evaluates a fired body in a detached task.
 So a dispatch splits one child from the participant that makes it, and the child runs the body.
 After the dispatch, that participant makes no operation, so work that follows a space operation runs in a branch of its own ([design N6](design.md#n6-scheduling)).
+
+### Seq claim
+
+A seq claim is the participant path of the last use of one channel of a seq space ([decision 73](decision-register.md#decision-73)).
+The book of the root evaluation holds one claim for each used channel.
+An operation may use a channel only when the channel has no claim or the operation descends from its last use, as a [reduction participant](#reduction-participant).
+Otherwise the deploy aborts with `SeqConcurrent`.
+An operation stores its claims only after its commit succeeded, and internal jobs, such as re-issues and settle jobs, claim nothing.
 
 ### Operation order
 
