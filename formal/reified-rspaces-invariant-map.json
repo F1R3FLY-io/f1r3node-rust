@@ -7040,13 +7040,14 @@
       ]
     },
     "P6": {
-      "title": "P6 step 2: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break).",
-      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.4 and 5. witness_tests lists the deterministic tests, the reference vectors of the Sage leg included.",
+      "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break), the VectorDB discipline of one collection (VectorDbDiscipline.v S21-S25) and the replay of its transactions (S26, the H23 theorem of EventCorrelation.v).",
+      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1 and 4.3 to 4.6, and 5. witness_tests lists the deterministic tests, the reference vectors of the Sage leg included.",
       "test_status": "required",
       "test_files": [
-        "rholang/src/rust/interpreter/tensor/exact.rs"
+        "rholang/src/rust/interpreter/tensor/exact.rs",
+        "rholang/tests/reified_vectordb.rs"
       ],
-      "expected_properties": 16,
+      "expected_properties": 22,
       "formal": {
         "S1": {
           "kind": "rocq",
@@ -7180,7 +7181,8 @@
           "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
           "statement": "List mode, the first k eligible candidates in the selection order, depends only on the multiset of records, and the insertion sort computes it.",
           "tests": [
-            "prop_list_selection_is_deterministic"
+            "prop_list_selection_is_deterministic",
+            "prop_vectordb_list_is_ordered_and_complete"
           ]
         },
         "S16": {
@@ -7231,6 +7233,60 @@
           "tests": [
             "prop_selection_order_is_a_strict_total_order",
             "prop_topk_is_deterministic"
+          ]
+        },
+        "S21": {
+          "kind": "rocq",
+          "name": "vdb_join_removal_exposes_nothing",
+          "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+          "statement": "A removal keeps the order of each similarity window, so a greedy search of single-mode binds that fails before a removal fails after it. The search of one bind is the selection of the driver (design v3 4.6).",
+          "tests": [
+            "prop_vectordb_driver_and_engine_agree"
+          ]
+        },
+        "S22": {
+          "kind": "rocq",
+          "name": "vdb_no_pending_match",
+          "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+          "statement": "A transaction that ends leaves no parked waiter without a guard that can fire, in single mode and in list mode (LM-b, decision 66).",
+          "tests": [
+            "prop_vectordb_no_pending_match"
+          ]
+        },
+        "S23": {
+          "kind": "rocq",
+          "name": "vdb_list_needs_cascade",
+          "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+          "statement": "Negative result, computed: without LIST-CASCADE a receive ends with a parked list waiter that can fire (the counterexample CE-2 of the arbitration).",
+          "tests": [
+            "prop_vectordb_no_pending_match"
+          ]
+        },
+        "S24": {
+          "kind": "rocq",
+          "name": "vdb_txn_bounded",
+          "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+          "statement": "For a cap above 0, a transaction makes at most cap fires, and each loop of RECEIVE-VDB, OFFER-VDB and the tail ends within the fuel that the plans compute (I-21, decision 49).",
+          "tests": [
+            "prop_vectordb_transactions_are_bounded"
+          ]
+        },
+        "S25": {
+          "kind": "rocq",
+          "name": "vdb_no_record_lost",
+          "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+          "statement": "Rule E (decision 45): a record of the pre-state is in the post-state of a transaction that ends, or a fire of a waiter that does not peek spent it.",
+          "tests": [
+            "prop_vectordb_records_are_conserved"
+          ]
+        },
+        "S26": {
+          "kind": "rocq",
+          "name": "replay_reproduces_play_run",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "Replay stages the operations of play, pairs each recorded COMM once, and reproduces the run of play: its observer calls, its effects and its status (H23, decision 36). The VectorDB plans stage through the substrate, so their transactions replay this way.",
+          "tests": [
+            "prop_vectordb_replay_equal"
           ]
         }
       },
@@ -7371,6 +7427,55 @@
           "covers": [
             "S17"
           ]
+        },
+        {
+          "number": 17,
+          "test": "prop_vectordb_driver_and_engine_agree",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "covers": [
+            "S21"
+          ]
+        },
+        {
+          "number": 18,
+          "test": "prop_vectordb_no_pending_match",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "covers": [
+            "S22",
+            "S23"
+          ]
+        },
+        {
+          "number": 19,
+          "test": "prop_vectordb_list_is_ordered_and_complete",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "covers": [
+            "S15"
+          ]
+        },
+        {
+          "number": 20,
+          "test": "prop_vectordb_replay_equal",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "covers": [
+            "S26"
+          ]
+        },
+        {
+          "number": 21,
+          "test": "prop_vectordb_transactions_are_bounded",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "covers": [
+            "S24"
+          ]
+        },
+        {
+          "number": 22,
+          "test": "prop_vectordb_records_are_conserved",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "covers": [
+            "S25"
+          ]
         }
       ],
       "witness_tests": [
@@ -7428,6 +7533,96 @@
           "covers": [
             "S16"
           ]
+        },
+        {
+          "test": "space_vectordb_join_binds_each_position_by_its_query",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "design v3 4.6 (a window for each position)",
+          "covers": [
+            "S21"
+          ]
+        },
+        {
+          "test": "space_vectordb_join_waiter_fires_on_an_eligible_send",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "design v3 4.6 (the eligibility of each position)",
+          "covers": [
+            "S21"
+          ]
+        },
+        {
+          "test": "space_vectordb_list_mode_in_a_join_fails",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decision 66 (ListModeInJoin: a join bind is in single mode)",
+          "covers": [
+            "S21"
+          ]
+        },
+        {
+          "test": "space_vectordb_ce1_list_waiter_fires_with_the_incoming_datum",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decision 66 (CE-1)",
+          "covers": [
+            "S22"
+          ]
+        },
+        {
+          "test": "space_vectordb_ce2_removal_cascade_fires_the_list_waiter",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decision 66 (CE-2)",
+          "covers": [
+            "S22",
+            "S23"
+          ]
+        },
+        {
+          "test": "space_vectordb_list_cascade_carries_at_the_cap",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decision 49 (the cascade carries at the round cap)",
+          "covers": [
+            "S22",
+            "S24"
+          ]
+        },
+        {
+          "test": "space_vectordb_list_peek_restores_carry_at_the_cap",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decisions 45 and 49 (the restores carry at the round cap)",
+          "covers": [
+            "S24",
+            "S25"
+          ]
+        },
+        {
+          "test": "space_vectordb_peek_restores_records_with_their_embedding",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decision 45 (Rule E)",
+          "covers": [
+            "S25"
+          ]
+        },
+        {
+          "test": "space_vectordb_cascade_peek_restores_the_lifted_member",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decisions 30 and 45 (a cascade fire of a peek sends its lifted member again)",
+          "covers": [
+            "S25"
+          ]
+        },
+        {
+          "test": "space_vectordb_replay_equal",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decision 36",
+          "covers": [
+            "S26"
+          ]
+        },
+        {
+          "test": "space_vectordb_guard_refusal_parks_until_a_worse_record_passes",
+          "file": "rholang/tests/reified_vectordb.rs",
+          "rule": "decision 37 (one guard check)",
+          "covers": [],
+          "unmodeled": "The headlines of VectorDbDiscipline.v are for waiters without a guard. A guard is checked once, so a waiter that its guard refused on a better record can fire later with a worse one."
         }
       ]
     }

@@ -20,6 +20,8 @@
 //! | `prop_vectordb_no_pending_match` | after each operation of a program without guards, no parked waiter can fire on the records |
 //! | `prop_vectordb_list_is_ordered_and_complete` | a list holds `min(k, |E|)` values, and its delivered scores follow the selection order |
 //! | `prop_vectordb_replay_equal` | replay stages the transactions of play: equal outcomes, every COMM paired, the root of play |
+//! | `prop_vectordb_transactions_are_bounded` | a transaction fires at most `FIRE_ROUND_CAP` times and re-issues at the round cap only after exactly that many fires, and a flood of `n` records or waiters drains in `n` fires and `n / FIRE_ROUND_CAP` round-cap re-issues |
+//! | `prop_vectordb_records_are_conserved` | every record that leaves the collection was delivered by a fire of a waiter that does not peek, so no record leaves when every receive peeks (Rule E) |
 
 #[path = "support/mod.rs"]
 mod support;
@@ -188,24 +190,32 @@ impl Rig {
         run(&VectorDb::default(), &self.env, op).await
     }
 
+    /// Runs `op` and each re-issue that it leaves, and returns the outcome of each transaction
+    /// in order.
+    async fn run_chain(&self, op: SpaceOp) -> Result<Vec<SpaceOutcome>, SpaceError> {
+        let mut chain = Vec::new();
+        let mut next = Some(op);
+        while let Some(op) = next.take() {
+            assert!(chain.len() < 64, "a program of the suite settles");
+            let outcome = self.run(op).await?;
+            next = outcome.reissue.as_ref().map(|reissue| reissue.op.clone());
+            chain.push(outcome);
+        }
+        Ok(chain)
+    }
+
     /// Runs `op` and each re-issue that it leaves, and returns every fire in order and the
     /// causes of the re-issues.
     async fn run_all(
         &self,
         op: SpaceOp,
     ) -> Result<(Vec<(String, Vec<Par>)>, Vec<ReissueCause>), SpaceError> {
-        let mut fires = Vec::new();
-        let mut causes = Vec::new();
-        let mut next = Some(op);
-        while let Some(op) = next.take() {
-            assert!(causes.len() < 64, "a program of the suite settles");
-            let outcome = self.run(op).await?;
-            fires.extend(fired(&outcome));
-            if let Some(reissue) = outcome.reissue {
-                causes.push(reissue.cause);
-                next = Some(reissue.op);
-            }
-        }
+        let chain = self.run_chain(op).await?;
+        let fires = chain.iter().flat_map(fired).collect();
+        let causes = chain
+            .iter()
+            .filter_map(|outcome| outcome.reissue.as_ref().map(|reissue| reissue.cause))
+            .collect();
         Ok((fires, causes))
     }
 
@@ -224,6 +234,11 @@ impl Rig {
     /// The records of the collection, by source hash.
     async fn records(&self) -> Vec<Stored> { records_of(&self.host, &data()).await }
 
+    /// The records of the collection with the hash of their source produce, by that hash.
+    async fn sourced_records(&self) -> Vec<(Blake2b256Hash, Stored)> {
+        sourced_records_of(&self.host, &data()).await
+    }
+
     /// The body names of the waiters of the collection, sorted.
     async fn waiters(&self) -> Vec<String> { waiter_names(&self.host, &data()).await }
 
@@ -236,6 +251,15 @@ type Stored = (Vec<Par>, Option<Par>, bool);
 
 /// The records on the data channel `data`, by source hash.
 async fn records_of(space: &ParRSpace, data: &Par) -> Vec<Stored> {
+    sourced_records_of(space, data)
+        .await
+        .into_iter()
+        .map(|(_, stored)| stored)
+        .collect()
+}
+
+/// The records on the data channel `data` with the hash of their source produce, by that hash.
+async fn sourced_records_of(space: &ParRSpace, data: &Par) -> Vec<(Blake2b256Hash, Stored)> {
     let mut records: Vec<(Blake2b256Hash, Stored)> = space
         .get_data(data)
         .await
@@ -253,7 +277,7 @@ async fn records_of(space: &ParRSpace, data: &Par) -> Vec<Stored> {
         })
         .collect();
     records.sort_by(|left, right| left.0.cmp(&right.0));
-    records.into_iter().map(|(_, stored)| stored).collect()
+    records
 }
 
 /// The body names of the waiters on the data channel `data`, sorted.
@@ -1370,6 +1394,59 @@ async fn space_vectordb_list_cascade_carries_at_the_cap() {
     .await;
 }
 
+/// A cascade fire of a list waiter that peeks lifts the first member of its list (`K_lift`) and
+/// sends it again in the same transaction (decisions 30 and 45). Three records make the list of
+/// the waiter `[a, b]` too long, so it parks. A take of one record lets the cascade fire it, and
+/// both members of its list stay stored.
+async fn cascade_peek(rig: &Rig) {
+    rig.send(vector_send(&[1.0, 0.0], "first")).await;
+    rig.send(vector_send(&[0.0, 1.0], "taken")).await;
+    rig.send(vector_send(&[1.0, 1.0], "second")).await;
+    let taken = vector(&[0.0, 1.0]);
+    let kept: Vec<Stored> = rig
+        .records()
+        .await
+        .into_iter()
+        .filter(|(payload, _, _)| payload.as_slice() != std::slice::from_ref(&taken))
+        .collect();
+    assert_eq!(kept.len(), 2);
+    let outcome = rig
+        .receive(peeking(receive(
+            "list",
+            pair(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[(
+                "results",
+                string("all"),
+            )])),
+        )))
+        .await;
+    assert!(
+        outcome.fires.is_empty(),
+        "a list of three does not bind [a, b]"
+    );
+    let (fires, causes) = rig
+        .run_all(SpaceOp::Consume(receive("take", literal(taken), None)))
+        .await
+        .expect("the take commits");
+    assert_eq!(fires, vec![
+        delivery("take", vec![]),
+        delivery("list", vec![vector(&[1.0, 0.0]), vector(&[1.0, 1.0])]),
+    ]);
+    assert!(causes.is_empty());
+    assert_eq!(
+        rig.records().await,
+        kept,
+        "the lifted member is stored again with its embedding"
+    );
+    assert!(rig.waiters().await.is_empty());
+}
+
+#[tokio::test]
+async fn space_vectordb_cascade_peek_restores_the_lifted_member() {
+    cascade_peek(&Rig::new(COSINE).await).await;
+    cascade_peek(&Rig::joined(COSINE).await).await;
+}
+
 /// A waiter refused by its guard on a better record parks, and a later worse record that its
 /// guard admits fires it (decision 37, until P12).
 #[tokio::test]
@@ -2151,6 +2228,282 @@ fn prop_vectordb_replay_equal() {
                 true => Ok(()),
                 false => Err(failure("the roots differ")),
             }
+        })
+    });
+}
+
+/// The cause of the re-issue of `outcome`, or `None`.
+fn cause_of(outcome: &SpaceOutcome) -> Option<ReissueCause> {
+    outcome.reissue.as_ref().map(|reissue| reissue.cause)
+}
+
+/// The operation that each transaction of `chain` ran: `op`, then the re-issue of the
+/// transaction before it.
+fn inputs<'a>(op: &'a SpaceOp, chain: &'a [SpaceOutcome]) -> Vec<&'a SpaceOp> {
+    let mut inputs = Vec::with_capacity(chain.len());
+    let mut input = op;
+    for outcome in chain {
+        inputs.push(input);
+        if let Some(reissue) = &outcome.reissue {
+            input = &reissue.op;
+        }
+    }
+    inputs
+}
+
+/// The rounds of the chain that `op` started (S24). Each transaction fires at most
+/// [`FIRE_ROUND_CAP`] times. A transaction that runs an operation re-issues at the round cap only
+/// after exactly [`FIRE_ROUND_CAP`] fires. A settle job starts its own count (decision 49): it
+/// re-issues at the round cap after [`FIRE_ROUND_CAP`] fires of its own, or it re-issues the
+/// operation that its cascade state resumes, with the cause of the stop of that operation.
+fn check_rounds(op: &SpaceOp, chain: &[SpaceOutcome], context: &str) -> Result<(), TestCaseError> {
+    for (index, (outcome, input)) in chain.iter().zip(inputs(op, chain)).enumerate() {
+        let resumed = match input {
+            SpaceOp::Settle(settle) => settle
+                .cascade
+                .as_ref()
+                .and_then(|cascade| cascade.resume.as_deref()),
+            SpaceOp::Produce(_) | SpaceOp::Consume(_) | SpaceOp::Join(_) => None,
+        };
+        match (outcome.fires.len(), cause_of(outcome)) {
+            (fires, _) if fires > FIRE_ROUND_CAP => {
+                return Err(failure(format!(
+                    "{context}: transaction {index} fired {fires} times"
+                )));
+            }
+            (fires, Some(ReissueCause::RoundCap)) if fires != FIRE_ROUND_CAP => {
+                match (resumed, outcome.reissue.as_ref()) {
+                    (Some(resume), Some(reissue)) if resume == reissue => {}
+                    _ => {
+                        return Err(failure(format!(
+                            "{context}: transaction {index} re-issued at the round cap after \
+                             {fires} fires"
+                        )));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// A flood of `n` operations of one side, then one persistent operation of the other side that
+/// meets each of them: `n` records and a persistent receive, or `n` parked receives and a
+/// persistent send. Returns the persistent operation and its transactions.
+async fn flood(rig: &Rig, n: usize, records: bool) -> (SpaceOp, Vec<SpaceOutcome>) {
+    for index in 0..n {
+        let salt = format!("flood {index}");
+        match records {
+            true => {
+                rig.send(vector_send(&[1.0, index as f64], &salt)).await;
+            }
+            false => {
+                let outcome = rig
+                    .receive(resalted(receive(&format!("f{index}"), any(), None), &salt))
+                    .await;
+                assert!(outcome.fires.is_empty(), "the collection holds no record");
+            }
+        }
+    }
+    let drain = match records {
+        true => SpaceOp::Consume(ConsumeOp {
+            persistent: true,
+            ..receive("drain", any(), None)
+        }),
+        false => SpaceOp::Produce(send(vector(&[1.0, 1.0]), &[], "drain", true)),
+    };
+    let chain = rig
+        .run_chain(drain.clone())
+        .await
+        .expect("the drain commits");
+    (drain, chain)
+}
+
+/// A transaction fires at most `FIRE_ROUND_CAP` times, and its operation re-issues at the round
+/// cap only after exactly `FIRE_ROUND_CAP` fires (VectorDbDiscipline.v headline 4, S24). The
+/// generated programs stay below the cap. So each case also floods a collection with `n` records
+/// or `n` parked receives, and one persistent operation drains them: `n` fires, and
+/// `n / FIRE_ROUND_CAP` stops of the operation at the round cap. A stop that owes a cascade
+/// search continues in a settle job, which resumes the operation (the driver owes the search when
+/// a record left, the engine after every fire).
+#[test]
+fn prop_vectordb_transactions_are_bounded() {
+    let strategy = (arb_program(), 0usize..=150, proptest::bool::ANY);
+    check(pure_config(), strategy, |(program, n, records)| {
+        tokio_runtime().block_on(async {
+            let flooded = Shape {
+                capacity: 200,
+                ..COSINE
+            };
+            for engine in [false, true] {
+                let rig = match engine {
+                    false => Rig::new(COSINE).await,
+                    true => Rig::joined(COSINE).await,
+                };
+                for (index, op) in program.iter().enumerate() {
+                    let op = space_op(op, index);
+                    if let Ok(chain) = rig.run_chain(op.clone()).await {
+                        check_rounds(&op, &chain, &format!("op {index} (engine {engine})"))?;
+                    }
+                }
+                let rig = match engine {
+                    false => Rig::new(flooded).await,
+                    true => Rig::joined(flooded).await,
+                };
+                let (drain, chain) = flood(&rig, n, records).await;
+                let context = format!("a flood of {n} (records {records}, engine {engine})");
+                check_rounds(&drain, &chain, &context)?;
+                let fires: usize = chain.iter().map(|outcome| outcome.fires.len()).sum();
+                let stops = chain
+                    .iter()
+                    .zip(inputs(&drain, &chain))
+                    .filter(|(outcome, input)| {
+                        !matches!(input, SpaceOp::Settle(_))
+                            && cause_of(outcome) == Some(ReissueCause::RoundCap)
+                    })
+                    .count();
+                if (fires, stops) != (n, n / FIRE_ROUND_CAP) {
+                    return Err(failure(format!(
+                        "{context}: {fires} fires and {stops} stops at the round cap, expected \
+                         {n} and {}",
+                        n / FIRE_ROUND_CAP
+                    )));
+                }
+            }
+            Ok(())
+        })
+    });
+}
+
+/// The entries of `before` that `after` does not hold, as multisets.
+fn removed<T: PartialEq + Clone>(before: &[T], after: &[T]) -> Vec<T> {
+    let mut kept: Vec<&T> = after.iter().collect();
+    let mut gone = Vec::with_capacity(before.len());
+    for entry in before {
+        match kept.iter().position(|stored| *stored == entry) {
+            Some(position) => {
+                kept.swap_remove(position);
+            }
+            None => gone.push(entry.clone()),
+        }
+    }
+    gone
+}
+
+/// For each source produce that a COMM of `log` names, whether the last such COMM has no peeks.
+/// A record that leaves its collection ends on a COMM without peeks: a fire of a waiter that does
+/// not peek, or its `K_retire`. A `K_lift` has no peeks, and the fire of the lifted record follows
+/// it. A COMM with peeks removes a record that Rule E sends again (decision 45).
+fn last_comm_without_peeks(log: &[Event]) -> BTreeMap<Blake2b256Hash, bool> {
+    let mut last = BTreeMap::new();
+    for comm in comms(log) {
+        let without_peeks = comm.peeks.is_empty();
+        for produce in comm.produces {
+            last.insert(produce.hash, without_peeks);
+        }
+    }
+    last
+}
+
+/// `program` with each receive whose mode `select` accepts as a peek.
+fn with_peeks(program: &[VdbOp], select: fn(&Mode) -> bool) -> Vec<VdbOp> {
+    program
+        .iter()
+        .map(|op| match op {
+            VdbOp::Receive {
+                mode,
+                pattern,
+                peek,
+                salt,
+            } => VdbOp::Receive {
+                mode: mode.clone(),
+                pattern: *pattern,
+                peek: *peek || select(mode),
+                salt: *salt,
+            },
+            other => other.clone(),
+        })
+        .collect()
+}
+
+/// A drain of `program`: every send is not persistent, every list waiter peeks, and one plain
+/// receive without a peek for each operation follows the program. A plain receive takes the
+/// first record in canonical order. So a parked list waiter whose list is too long fires in a
+/// cascade when two eligible records remain, and the cascade lifts the first member of its list.
+fn drained(program: &[VdbOp]) -> Vec<VdbOp> {
+    let mut ops = Vec::with_capacity(2 * program.len());
+    for op in with_peeks(program, |mode| matches!(mode, Mode::List { .. })) {
+        ops.push(match op {
+            VdbOp::Send { values, salt, .. } => VdbOp::Send {
+                values,
+                persistent: false,
+                salt,
+            },
+            other => other,
+        });
+    }
+    ops.extend((0..program.len()).map(|index| VdbOp::Receive {
+        mode: Mode::Plain,
+        pattern: Pat::Any,
+        peek: false,
+        salt: u8::try_from(index).expect("a program has fewer than 256 operations"),
+    }));
+    ops
+}
+
+/// Rule E loses no record (VectorDbDiscipline.v headline 5, S25). After each operation of a
+/// generated program, every record that left the collection, by the hash of its source produce
+/// and its payload, embedding and persistence, ends on a COMM without peeks: the last COMM of the
+/// operation that names the record is a fire of a waiter that does not peek, or its `K_retire`. A
+/// peek fire removes its records and sends them again in the same transaction (decision 45). So
+/// when every receive of the program peeks, no record leaves. Each program also runs as a drain
+/// (`drained`), so a removal cascade fires peek waiters and lifts their first members.
+#[test]
+fn prop_vectordb_records_are_conserved() {
+    check(pure_config(), arb_program(), |program| {
+        let drain = drained(&program);
+        let peeks = with_peeks(&program, |_| true);
+        tokio_runtime().block_on(async {
+            for (program, peeks_only) in [(&program, false), (&drain, false), (&peeks, true)] {
+                for engine in [false, true] {
+                    let rig = match engine {
+                        false => Rig::new(COSINE).await,
+                        true => Rig::joined(COSINE).await,
+                    };
+                    for (index, op) in program.iter().enumerate() {
+                        let before = rig.sourced_records().await;
+                        rig.log().await;
+                        if rig.run_chain(space_op(op, index)).await.is_err() {
+                            continue;
+                        }
+                        let gone = removed(&before, &rig.sourced_records().await);
+                        let last = last_comm_without_peeks(&rig.log().await);
+                        let context =
+                            format!("op {index} (engine {engine}, peeks only {peeks_only})");
+                        match (peeks_only, gone.as_slice()) {
+                            (_, []) => {}
+                            (true, gone) => {
+                                return Err(failure(format!(
+                                    "{context}: records left although every receive peeks: \
+                                     {gone:?}"
+                                )));
+                            }
+                            (false, gone) => {
+                                if let Some((hash, record)) =
+                                    gone.iter().find(|(hash, _)| last.get(hash) != Some(&true))
+                                {
+                                    return Err(failure(format!(
+                                        "{context}: the record {record:?} ({hash:?}) left, and \
+                                         the last COMM that names it peeks or does not exist"
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
         })
     });
 }

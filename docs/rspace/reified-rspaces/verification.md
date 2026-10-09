@@ -3488,7 +3488,7 @@ It also checks the required params `capacity` and `dimensions`, the value rules 
 | `prop_vectordb_replay_equal` | Replay of each program gives the outcomes of play, pairs every COMM and reaches the root of play. |
 
 Each property runs 64 cases with the fixed seed of the P5 runner and keeps no failure file.
-Design step 8 adds the Rocq and TLA+ models of the discipline, and the invariant map will then name these properties.
+Step 8b maps these properties to the headlines of `VectorDbDiscipline.v`, the Rocq model of the discipline (section [22](#22-phase-p6-step-8b-the-model-of-the-vectordb-discipline-and-its-properties)).
 
 ### 15.6 Negative controls
 
@@ -3498,12 +3498,14 @@ The harness `scripts/verify-reified/vectordb-mutants.py` applies each mutant in 
 
 | Mutant | What it changes | Tests that fail |
 |---|---|---|
-| `driver-no-list-cascade` | The driver never searches the list cascade. | 5, both properties included |
-| `engine-no-list-cascade` | The engine never finds a list waiter for its cascade. | 4, both properties included |
+| `driver-no-list-cascade` | The driver never searches the list cascade. | 6, both properties included |
+| `engine-no-list-cascade` | The engine never finds a list waiter for its cascade. | 5, both properties included |
 | `no-member-retire` | A list fire retires no other member. | 2 |
-| `selection-reversed` | The selection order is reversed. | 15 |
-| `driver-rule-e-dropped` | A peek of the driver sends no record again. | 7 |
+| `selection-reversed` | The selection order is reversed. | 16 |
+| `driver-rule-e-dropped` | A peek of the driver sends no record again. | 8, `prop_vectordb_records_are_conserved` included |
 | `engine-bind-ignores-query` | A similarity bind of the engine reads the canonical order. | 3 |
+
+The counts are those of the run of step 8b, with its two new properties and its witness test (section [22.3](#223-negative-controls)).
 
 The first run of the harness refuted one hypothesis: the random programs did not reach the list cascade.
 Only the example tests failed under the two cascade mutants.
@@ -4381,6 +4383,153 @@ To run the checks of step 8a, do these steps from the repository root:
 3. Run `python3 scripts/verify-reified/tensor-mutants.py`, which must report `FAIL=0`.
 4. Run `python3 scripts/verify-reified/check-invariant-map.py`.
 5. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p5.json`.
+
+## 22. Phase P6, step 8b: the model of the VectorDB discipline and its properties
+
+Step 8b models the discipline of one VectorDB collection in Rocq, and it maps the properties of the VectorDB suite to that model.
+The module `VectorDbDiscipline.v` models the driver: RECEIVE-VDB, OFFER-VDB, and the tail with LIST-CASCADE, as one transaction of a space job.
+Two new properties test the bound of a transaction and the conservation of records.
+Seven Rocq mutants and three new Rust mutants show that the proofs and the properties depend on their rules.
+
+### 22.1 The model
+
+The model has one collection: its records, and its parked waiters in DR-75 order.
+A query is abstract: an eligibility and a selection order, with the three facts that `Similarity.v` proves for the order of `tensor/exact.rs`.
+The order is a permutation of the eligible records, and it depends only on the multiset of the records.
+An insertion keeps the order of the other records.
+The corollary `vdb_parameters_valid` discharges these facts with an insertion sort by a total order, so the hypotheses are consistent.
+
+A waiter binds in single mode or in list mode, and the claims are for waiters without a guard (decision 37).
+Each loop of a plan has fuel, and headline S24 shows that no loop runs out of it.
+
+Let $`R`$ be the records of the collection and $`W`$ its parked waiters.
+Let $`c`$ be the round cap `FIRE_ROUND_CAP`, $`f`$ the fires of the transaction, and $`o`$ the number of owed second sends.
+The plans compute the fuel of each loop from the state at its start:
+
+```math
+\mathit{fuel}_{\mathrm{receive}} = 1 + \lvert R \rvert, \qquad
+\mathit{fuel}_{\mathrm{offer}} = 1 + \lvert W \rvert, \qquad
+\mathit{fuel}_{\mathrm{tail}} = 1 + 2\,(c - f) + o .
+```
+
+Each step of the tail decreases $`2\,(c - f) + o`$.
+An owed send uses up one second send.
+A cascade fire adds one fire and at most one owed send, the lifted member of a peek.
+
+*Table 125. The headlines of `VectorDbDiscipline.v`.*
+
+| Id | Theorem | Statement |
+|---|---|---|
+| S21 | `vdb_join_removal_exposes_nothing` | A removal keeps the order of each similarity window. So a greedy search of single-mode binds that fails before a removal fails after it. The search of one bind is the selection of the driver (design v3 4.6). |
+| S22 | `vdb_no_pending_match` | A transaction that ends leaves no parked waiter without a guard that can fire, in single mode and in list mode (LM-b, decision 66). |
+| S23 | `vdb_list_needs_cascade` | A computed negative result: without LIST-CASCADE, a receive ends with a parked list waiter that can fire (CE-2 of the arbitration). With the tail, the same transaction leaves no pending match. |
+| S24 | `vdb_txn_bounded` | For a cap above 0, a transaction makes at most $`c`$ fires, and no loop runs out of its fuel (I-21, decision 49). |
+| S25 | `vdb_no_record_lost` | Rule E (decision 45): a record of the pre-state is in the post-state of a transaction that ends, or a fire of a waiter that does not peek spent it. |
+
+The invariant map also maps the replay property of the suite to S26, the theorem `replay_reproduces_play_run` (H23) of `EventCorrelation.v`.
+The VectorDB plans stage only through the substrate, so the replay of their transactions is an instance of H23.
+The model map `formal/reified-rspaces-model-map-p6.json` maps 16 Rust items of the driver, the engine and the fire count to S21 to S26.
+
+### 22.2 The properties
+
+*Table 126. The properties of the VectorDB suite and their headlines.*
+
+| Property | Headlines | What it checks |
+|---|---|---|
+| `prop_vectordb_driver_and_engine_agree` | S21 | The driver and the join engine fire the same continuations with the same values, and they leave the same records and waiters. |
+| `prop_vectordb_no_pending_match` | S22, S23 | After each operation of a program without guards, a fresh receive with the pattern and the query of each parked waiter does not fire. |
+| `prop_vectordb_list_is_ordered_and_complete` | S15 | A list holds $`\min(k, \lvert E \rvert)`$ values, and its delivered scores follow the selection order. |
+| `prop_vectordb_replay_equal` | S26 | Replay of each program gives the outcomes of play, pairs every COMM and reaches the root of play. |
+| `prop_vectordb_transactions_are_bounded` | S24 | Each transaction fires at most $`c`$ times. A flood of $`n \le 150`$ records or waiters drains in $`n`$ fires and $`\lfloor n / c \rfloor`$ stops at the round cap. |
+| `prop_vectordb_records_are_conserved` | S25 | The last COMM that names a record that left the collection has no peeks. No record leaves when every receive peeks. |
+
+Each property runs 64 cases with the fixed seed of the P5 runner.
+The properties of agreement, of no pending match, of the bound and of conservation run each case on the driver and on the join engine.
+The list property and the replay property run on the driver.
+The map also names witness tests: the counterexamples CE-1 and CE-2, the carries at the round cap, and Rule E with embeddings.
+The three join tests, the replay test and the restore of a member that a peek cascade lifts are witnesses too.
+
+`prop_vectordb_transactions_are_bounded` follows the operation of each transaction of a chain.
+A transaction that runs an operation stops at the round cap only after exactly $`c`$ fires.
+A settle job starts its own count (decision 49).
+It stops at the cap after $`c`$ fires of its own, or it resumes the stopped operation with the cause of that stop.
+
+The generated programs stay below the cap, so each case also floods a collection with up to 150 records or parked receives.
+One persistent operation then drains the flood.
+
+The first version of this property claimed that a re-issue with the cause `RoundCap` always follows exactly $`c`$ fires.
+Proptest refuted it with a flood of 64 parked receives in the join engine.
+The settle job of the cap re-issued the persistent send with the cause `RoundCap` after 0 fires.
+The engine owes a cascade search after every fire, and the driver owes it only when a record left.
+So at the cap the engine continues in a settle job, which resumes the send with the cause of its stop.
+Both behaviors satisfy S24, and the property now states the rule of the resume.
+
+`prop_vectordb_records_are_conserved` compares the records before and after each operation of a program.
+It identifies a record by the hash of its source produce and by its payload, its embedding and its persistence.
+For each record that left, the last COMM of the operation that names its source produce must have no peeks.
+That COMM is a fire of a waiter that does not peek, or its `K_retire`.
+A `K_lift` also has no peeks, but the fire of the lifted record follows it, with the peeks of its waiter.
+
+Each program runs in three variants.
+The first variant is the program as generated.
+In the second variant, every receive peeks, and then no record may leave.
+The third variant is a drain: every send is not persistent, and every list waiter peeks.
+After the program, the drain runs one plain receive without a peek for each operation, and each receive takes one record.
+So each parked list waiter whose list is too long fires in a cascade when two eligible records remain.
+
+The property reached its form in three measured steps.
+The first version compared the values that the fires deliver, and that check was wrong.
+A fire delivers the bindings of its pattern, so the pattern `[a, b]` delivers two values and not the record.
+The second version accepted any COMM without peeks that names the record.
+The mutant `driver-lift-not-owed` survived it, because a `K_lift` has no peeks.
+
+A count over the 64 generated programs, with every list waiter as a peek, then showed a second gap.
+Only 3 programs fired a parked list waiter after its own receive, and no program lifted a member for a peek waiter.
+In the drain variant, 57 programs fire a parked list waiter later, with 102 such fires in the chains of receives.
+The drain variant also makes 49 lifts that the fire of a peek waiter follows.
+With the rule of the last COMM and the drain, the property fails under the mutant.
+The witness test `space_vectordb_cascade_peek_restores_the_lifted_member` fails under it too, in its run on the driver.
+
+### 22.3 Negative controls
+
+*Table 127. The negative controls of step 8b.*
+
+| Control | Kind | What it changes | Must fail in |
+|---|---|---|---|
+| `vdb-no-cascade` | Rocq mutant | The tail runs no LIST-CASCADE. | `first_cascade_none` |
+| `vdb-peek-not-owed` | Rocq mutant | A peek fire of RECEIVE-VDB owes no second sends. | `receive_nl` |
+| `vdb-lift-not-owed` | Rocq mutant | A cascade fire of a peek owes no second send for its lifted member. | `tail_nl` |
+| `vdb-retire-unlogged` | Rocq mutant | An offer fire does not log the members that it retires. | `offer_nl` |
+| `vdb-window-top1` | Rocq mutant | The similarity window of a join bind holds only its best record. | `jfill_mono` |
+| `vdb-cont-on-persistent` | Rocq mutant | A fire whose persistent partner stays continues the loop. | `after_fire_cont` |
+| `vdb-offer-never-fires` | Rocq mutant | OFFER-VDB fires no parked waiter. | `first_offer_none` |
+| `cap-allows-one-more` | Rust mutant | A transaction fires $`c + 1`$ times before it stops. | `prop_vectordb_transactions_are_bounded` and 1 example test |
+| `driver-lift-not-owed` | Rust mutant | A cascade fire of a peek in the driver owes no second send for its lifted member. | `prop_vectordb_records_are_conserved` and the witness `space_vectordb_cascade_peek_restores_the_lifted_member` |
+| `engine-rule-e-dropped` | Rust mutant | A peek fire of the engine sends no record again. | `prop_vectordb_records_are_conserved` and `prop_vectordb_driver_and_engine_agree` |
+
+The plan named a control that drops the claims of the join search.
+Without claims, the search of one bind is `find`, and `find` fails on a filtered list when it fails on the list.
+So every statement of the module stays true, and that control would test only the text of a proof.
+`vdb-window-top1` replaces it, because a window of the best record makes the removal claim of S21 false.
+
+The first run of `vdb-lift-not-owed` failed in `tail_inv`, whose statement stays true.
+That proof restated the next transaction in full, so it depended on the text of the rule.
+The lemma `TI_drop_set` now proves the invariant on the transaction of the goal, and the control fails in `tail_nl`.
+The module records both lessons under "Failed strategies".
+
+The final run of `vectordb-mutants.py` kills all nine Rust mutants, and it restores the source files.
+Each new mutant fails the property of its headline: S24 for `cap-allows-one-more`, and S25 for the two Rule E mutants.
+Table 100 gives the counts of the six older mutants in the same run.
+
+### 22.4 Running the step-8b checks
+
+To run the checks of step 8b, do these steps from the repository root:
+
+1. Run `bash scripts/check-reified-rspaces-proofs.sh`, which must report `FAIL=0`.
+2. Run `cargo test -p rholang --test reified_vectordb`.
+3. Run `python3 scripts/verify-reified/vectordb-mutants.py`, which must report `FAIL=0`.
+4. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P6`.
+5. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json`.
 
 
 ## References

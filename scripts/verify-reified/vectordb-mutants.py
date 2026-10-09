@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Mutation controls of the VectorDB driver and join engine (P6 steps 3 and 4).
+"""Mutation controls of the VectorDB driver and join engine (P6 steps 3, 4 and 8b).
 
 Each mutant reverts one rule of the VectorDB discipline: in the driver
-(rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs) or in the join engine
-(rholang/src/rust/interpreter/spaces/join.rs). The harness applies one mutant at a time, runs the
-VectorDB suite (`cargo test -p rholang --test reified_vectordb`) and restores the source files. A
-mutant passes the control when at least one test fails.
+(rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs), in the join engine
+(rholang/src/rust/interpreter/spaces/join.rs) or in the fire count of a transaction
+(rholang/src/rust/interpreter/reified/costs.rs). The harness applies one mutant at a time, runs
+the VectorDB suite (`cargo test -p rholang --test reified_vectordb`) and restores the source
+files. A mutant passes the control when at least one test fails.
+
+The mutants of step 8b are the controls of the properties of VectorDbDiscipline.v headlines 4
+and 5: `cap-allows-one-more` (prop_vectordb_transactions_are_bounded),
+`driver-lift-not-owed` and `engine-rule-e-dropped` (prop_vectordb_records_are_conserved, with
+the existing `driver-rule-e-dropped`).
 
 Rules of the harness:
   * The harness reads the source files first and restores them after every mutant, also on an
@@ -32,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SPACES = REPO_ROOT / "rholang/src/rust/interpreter/spaces"
 DRIVER = SPACES / "disciplines/vectordb.rs"
 ENGINE = SPACES / "join.rs"
+COSTS = REPO_ROOT / "rholang/src/rust/interpreter/reified/costs.rs"
 
 # (name, file, old text, new text): each mutant reverts one rule of the discipline.
 MUTANTS = (
@@ -91,6 +98,19 @@ MUTANTS = (
      "        let entries: Vec<(usize, Option<Score>)> = match &query {",
      "        let query = vectordb::policy_query(cfg, policy, meter)?.filter(|_| false);\n"
      "        let entries: Vec<(usize, Option<Score>)> = match &query {"),
+    # A transaction fires once more than FIRE_ROUND_CAP before it stops (I-21, headline 4).
+    ("cap-allows-one-more", COSTS,
+     "            (false, false) if fired >= FIRE_ROUND_CAP => FireStep::Reissue(ReissueCause::RoundCap),",
+     "            (false, false) if fired > FIRE_ROUND_CAP => FireStep::Reissue(ReissueCause::RoundCap),"),
+    # A cascade fire of a peek waiter lifts its first member and owes no second send for it
+    # (Rule E, decision 30; the Rocq control vdb-lift-not-owed).
+    ("driver-lift-not-owed", DRIVER,
+     "        (true, true) => tail.owe(lead.a, meter)?,",
+     "        (true, true) => drop(lead.a),"),
+    # A peek fire of the engine sends no record again (Rule E, decision 45, in the engine).
+    ("engine-rule-e-dropped", ENGINE,
+     "                true => self.second_sends(cx, &w.colls, &bound, None, None)?,",
+     "                true => Vec::new(),"),
 )
 
 

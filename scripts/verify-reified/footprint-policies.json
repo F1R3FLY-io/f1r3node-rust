@@ -4802,6 +4802,7 @@
         "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
         "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
         "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
         "formal/rocq/reified_rspaces/theories/VectorStore.v",
         "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
         "formal/sage/reified_rspaces/similarity_metrics.sage",

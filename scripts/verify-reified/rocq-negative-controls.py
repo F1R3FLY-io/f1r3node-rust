@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocq negative controls for the Reified RSpaces P1, P2, P4 and P5 models.
+"""Rocq negative controls for the Reified RSpaces P1, P2, P4, P5 and P6 models.
 
 Each control mutates one rule in a scratch copy of a module
 (formal/rocq/reified_rspaces/theories). The mutation changes one definition,
@@ -242,6 +242,26 @@ Decision 71 (CounterConflict.v, headline 16) has two controls:
                                  cap records: capped_pass_iff breaks
   cc-capacity-hard-claimed       the claim that a merge never exceeds the
                                  capacity: capped_writes_soft_bound breaks
+
+P6 step 8b (VectorDbDiscipline.v) has seven controls. Each reverts one rule
+of the driver of a VectorDB collection:
+  vdb-no-cascade          the tail runs no LIST-CASCADE:
+                          first_cascade_none, and so headline 2, breaks
+  vdb-peek-not-owed       a peek fire of RECEIVE-VDB owes no second sends
+                          (Rule E): receive_nl, and so headline 5, breaks
+  vdb-lift-not-owed       a cascade fire of a peek owes no second send for
+                          its lifted member: tail_nl, and so headline 5,
+                          breaks
+  vdb-retire-unlogged     an offer fire does not log the members that it
+                          retires: offer_nl, and so headline 5, breaks
+  vdb-window-top1         the similarity window of a join bind holds only
+                          its best record: jfill_mono, and so headline 1,
+                          breaks
+  vdb-cont-on-persistent  a fire whose persistent partner stays continues
+                          the loop: after_fire_cont, and so the fuel bound
+                          of headline 4, breaks
+  vdb-offer-never-fires   OFFER-VDB fires no parked waiter:
+                          first_offer_none, and so headline 2, breaks
 
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
@@ -1805,6 +1825,45 @@ CONTROLS = (
      "      (forall t, rone < t -> ~ cosine_within (dot q e) t (dot q q * dot e e)).\n  Proof.",
      "      (forall t, rle rone t -> ~ cosine_within (dot q e) t (dot q q * dot e e)).\n  Proof.",
      ("cosine_bounds",)),
+    # P6 step 8b (VectorDbDiscipline.v): each control reverts one rule of the
+    # driver of a VectorDB collection.
+    ("vdb-no-cascade", "VectorDbDiscipline",
+     "the tail runs no LIST-CASCADE: no parked list waiter fires after a removal (decision 66, LM-b)",
+     "    | W :: rest => if is_list W && fires W R then Some W else first_cascade R rest",
+     "    | W :: rest => first_cascade R rest",
+     ("first_cascade_none",)),
+    ("vdb-peek-not-owed", "VectorDbDiscipline",
+     "a peek fire of RECEIVE-VDB removes its non-persistent members and owes no second sends (Rule E)",
+     "          let t' := mkTx (mkSt (drop gone (recs (t_st t))) (wtrs (t_st t))) (S (t_fired t))\n"
+     "                         (if w_peek W then gone ++ t_owed t else t_owed t) true",
+     "          let t' := mkTx (mkSt (drop gone (recs (t_st t))) (wtrs (t_st t))) (S (t_fired t))\n"
+     "                         (t_owed t) true",
+     ("receive_nl",)),
+    ("vdb-lift-not-owed", "VectorDbDiscipline",
+     "a cascade fire of a peek lifts its first member and owes no second send for it (Rule E, decision 30)",
+     "(if w_peek W && lifted then [lead] else []) true",
+     "[] true",
+     ("tail_nl",)),
+    ("vdb-retire-unlogged", "VectorDbDiscipline",
+     "an offer fire does not log the members that it retires as spent",
+     "(map r_id out ++ (if spent then [r_id x] else []) ++ t_spent t) in",
+     "((if spent then [r_id x] else []) ++ t_spent t) in",
+     ("offer_nl",)),
+    ("vdb-window-top1", "VectorDbDiscipline",
+     "the similarity window of a join bind holds only its best eligible record, so a removal can expose one",
+     "        match first_fit C p (esort q R) with",
+     "        match first_fit C p (firstn 1 (esort q R)) with",
+     ("jfill_mono",)),
+    ("vdb-cont-on-persistent", "VectorDbDiscipline",
+     "a fire whose persistent partner stays continues the loop: no divergent-pair stop (FireRounds::after_fire)",
+     "    if spent then Done else if stays then Stop else if cap <=? fired then Stop else Cont.",
+     "    if spent then Done else if cap <=? fired then Stop else Cont.",
+     ("after_fire_cont",)),
+    ("vdb-offer-never-fires", "VectorDbDiscipline",
+     "OFFER-VDB fires no parked waiter: a send is stored next to a waiter that it fires",
+     "    | W :: rest => if ofires W R x then Some W else first_offer R x rest",
+     "    | W :: rest => first_offer R x rest",
+     ("first_offer_none",)),
 )
 
 DECLARATION = re.compile(

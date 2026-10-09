@@ -1,13 +1,15 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P6",
-  "title": "P6 step 2: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v.",
-  "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.4 and 5. The headline ids are the ids of the P6 phase of formal/reified-rspaces-invariant-map.json.",
-  "code_base": "The items are in the P6 step 2 commit of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
+  "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v, and the VectorDB discipline of one collection (the driver of disciplines/vectordb.rs and the similarity paths of the join engine) and its Rocq model VectorDbDiscipline.v.",
+  "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.3 to 4.6 and 5. The headline ids are the ids of the P6 phase of formal/reified-rspaces-invariant-map.json.",
+  "code_base": "The items are in the P6 step 2 and step 8b commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
     "rocq": [
-      "formal/rocq/reified_rspaces/theories/Similarity.v"
+      "formal/rocq/reified_rspaces/theories/Similarity.v",
+      "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+      "formal/rocq/reified_rspaces/theories/EventCorrelation.v"
     ],
     "tla": []
   },
@@ -131,6 +133,42 @@
       "name": "selection_Qc",
       "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
       "statement": "S13 and S14 hold for rational scores."
+    },
+    "S21": {
+      "kind": "rocq",
+      "name": "vdb_join_removal_exposes_nothing",
+      "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+      "statement": "A removal keeps the order of each similarity window, so a greedy search of single-mode binds that fails before a removal fails after it. The search of one bind is the selection of the driver (design v3 4.6)."
+    },
+    "S22": {
+      "kind": "rocq",
+      "name": "vdb_no_pending_match",
+      "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+      "statement": "A transaction that ends leaves no parked waiter without a guard that can fire, in single mode and in list mode (LM-b, decision 66)."
+    },
+    "S23": {
+      "kind": "rocq",
+      "name": "vdb_list_needs_cascade",
+      "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+      "statement": "Negative result, computed: without LIST-CASCADE a receive ends with a parked list waiter that can fire (the counterexample CE-2 of the arbitration)."
+    },
+    "S24": {
+      "kind": "rocq",
+      "name": "vdb_txn_bounded",
+      "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+      "statement": "For a cap above 0, a transaction makes at most cap fires, and each loop of RECEIVE-VDB, OFFER-VDB and the tail ends within the fuel that the plans compute (I-21, decision 49)."
+    },
+    "S25": {
+      "kind": "rocq",
+      "name": "vdb_no_record_lost",
+      "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+      "statement": "Rule E (decision 45): a record of the pre-state is in the post-state of a transaction that ends, or a fire of a waiter that does not peek spent it."
+    },
+    "S26": {
+      "kind": "rocq",
+      "name": "replay_reproduces_play_run",
+      "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+      "statement": "Replay stages the operations of play, pairs each recorded COMM once, and reproduces the run of play: its observer calls, its effects and its status (H23, decision 36). The VectorDB plans stage through the substrate, so their transactions replay this way."
     }
   },
   "items": [
@@ -159,7 +197,7 @@
       "scope": "DyadicSum",
       "kind": "fn",
       "name": "add",
-      "line": 175,
+      "line": 189,
       "role": "The exact sum of dyadic terms with the least exponent as its unit: no rounding, so the sum does not depend on the order of the terms.",
       "rocq": [
         "dot",
@@ -468,6 +506,289 @@
       "tla": [],
       "covers": [],
       "unmodeled": "Rocq has no IEEE-754 model. The IEEE square root oracle, the Sage leg and the Python receipt check it."
+    },
+    {
+      "item": "Element",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "struct",
+      "name": "Element",
+      "line": 1239,
+      "role": "The element in flight of an offer: a datum, a second send of Rule E or a lifted record, with the identity of its produce and its persistence.",
+      "rocq": [
+        "rec"
+      ],
+      "tla": [],
+      "covers": [
+        "S25"
+      ]
+    },
+    {
+      "item": "eligible",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "eligible",
+      "line": 881,
+      "role": "The eligibility of a record for a query (its score, the bound and the ids), which orders the eligible records by the selection order of tensor/exact.rs.",
+      "rocq": [
+        "elist"
+      ],
+      "tla": [],
+      "covers": [
+        "S21",
+        "S22"
+      ]
+    },
+    {
+      "item": "list_selection",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "list_selection",
+      "line": 1068,
+      "role": "List mode: the first k eligible records in the selection order, bound as one list when the pattern binds it.",
+      "rocq": [
+        "sel",
+        "fires"
+      ],
+      "tla": [],
+      "covers": [
+        "S22",
+        "S23"
+      ]
+    },
+    {
+      "item": "list_offer",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "list_offer",
+      "line": 1123,
+      "role": "The list of a list waiter with the element in flight at its place: the waiter fires when the list holds the element.",
+      "rocq": [
+        "osel",
+        "ofires"
+      ],
+      "tla": [],
+      "covers": [
+        "S22"
+      ]
+    },
+    {
+      "item": "retire_members",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "retire_members",
+      "line": 1151,
+      "role": "K_retire: the other non-persistent members of a list that a fire of a waiter without a peek spends.",
+      "rocq": [
+        "retired"
+      ],
+      "tla": [],
+      "covers": [
+        "S25"
+      ]
+    },
+    {
+      "item": "offer_vdb",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "offer_vdb",
+      "line": 1422,
+      "role": "OFFER-VDB: the element fires the first waiter that it fires, or it is stored, and a fire that does not spend it offers it again (decision 30).",
+      "rocq": [
+        "offer",
+        "run_offer",
+        "first_offer"
+      ],
+      "tla": [],
+      "covers": [
+        "S22",
+        "S24",
+        "S25",
+        "S26"
+      ]
+    },
+    {
+      "item": "first_offer_target",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "first_offer_target",
+      "line": 1484,
+      "role": "The first parked waiter in DR-75 order that the element fires.",
+      "rocq": [
+        "first_offer",
+        "ofires"
+      ],
+      "tla": [],
+      "covers": [
+        "S22"
+      ]
+    },
+    {
+      "item": "receive_plan",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "receive_plan",
+      "line": 1546,
+      "role": "RECEIVE-VDB: the receive fires on its selection or parks, a persistent receive fires again, and a peek owes its removed members as second sends (Rule E). Then the tail runs.",
+      "rocq": [
+        "receive",
+        "run_receive"
+      ],
+      "tla": [],
+      "covers": [
+        "S22",
+        "S24",
+        "S25",
+        "S26"
+      ]
+    },
+    {
+      "item": "receive_selection",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "receive_selection",
+      "line": 1637,
+      "role": "The selection of a receive: plain, single mode or list mode.",
+      "rocq": [
+        "sel",
+        "fires"
+      ],
+      "tla": [],
+      "covers": [
+        "S22"
+      ]
+    },
+    {
+      "item": "run_tail",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "run_tail",
+      "line": 1773,
+      "role": "The tail: the owed second sends first, then LIST-CASCADE, with the round cap checked before each fire.",
+      "rocq": [
+        "tail",
+        "tail_fuel"
+      ],
+      "tla": [],
+      "covers": [
+        "S22",
+        "S24",
+        "S25"
+      ]
+    },
+    {
+      "item": "first_cascade_target",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "first_cascade_target",
+      "line": 1860,
+      "role": "The first parked list waiter in DR-75 order whose list is acceptable now.",
+      "rocq": [
+        "first_cascade",
+        "is_list"
+      ],
+      "tla": [],
+      "covers": [
+        "S22",
+        "S23"
+      ]
+    },
+    {
+      "item": "lift_and_reoffer",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "kind": "fn",
+      "name": "lift_and_reoffer",
+      "line": 1909,
+      "role": "LIFT-AND-REOFFER of a list target: the first member is lifted (K_lift), the waiter fires, the other members retire without a peek, and a peek owes the lifted member again.",
+      "rocq": [
+        "tail"
+      ],
+      "tla": [],
+      "covers": [
+        "S22",
+        "S24",
+        "S25"
+      ]
+    },
+    {
+      "item": "FireRounds::after_fire",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "FireRounds",
+      "kind": "fn",
+      "name": "after_fire",
+      "line": 322,
+      "role": "The step after one fire: Done when the incoming side is spent, a divergent-pair stop when its partner stays, a round-cap stop at FIRE_ROUND_CAP, else Continue.",
+      "rocq": [
+        "after_fire"
+      ],
+      "tla": [],
+      "covers": [
+        "S24"
+      ]
+    },
+    {
+      "item": "KeyedSource::window",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/join.rs",
+      "scope": "KeyedSource",
+      "kind": "fn",
+      "name": "window",
+      "line": 1625,
+      "role": "The window of a bind: for JoinWindow::Similarity, the eligible records of the query of the bind in its selection order.",
+      "rocq": [
+        "elist"
+      ],
+      "tla": [],
+      "covers": [
+        "S21"
+      ]
+    },
+    {
+      "item": "Engine::search",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/join.rs",
+      "scope": "Engine",
+      "kind": "fn",
+      "name": "search",
+      "line": 3011,
+      "role": "The greedy search of the engine over the positions of a join, each over its own window.",
+      "rocq": [
+        "jfill"
+      ],
+      "tla": [],
+      "covers": [
+        "S21"
+      ]
+    },
+    {
+      "item": "Engine::similarity_bind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/join.rs",
+      "scope": "Engine",
+      "kind": "fn",
+      "name": "similarity_bind",
+      "line": 3277,
+      "role": "The first record of the selection order of a bind that its pattern binds, without the records that earlier binds claimed.",
+      "rocq": [
+        "first_fit",
+        "claimed"
+      ],
+      "tla": [],
+      "covers": [
+        "S21"
+      ]
     }
   ]
 }
