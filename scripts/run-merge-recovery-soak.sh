@@ -403,7 +403,10 @@ session_bounded() {
 		bash "$seconds" "$pid" >/dev/null 2>&1 &
 	watchdog=$!
 	wait "$pid" || status=$?
-	kill -KILL -- "-$watchdog" 2>/dev/null || true
+	if ! kill -KILL -- "-$watchdog" 2>/dev/null; then
+		kill -KILL "$watchdog" 2>/dev/null || true
+		kill -KILL -- "-$watchdog" 2>/dev/null || true
+	fi
 	wait "$watchdog" 2>/dev/null || true
 	return "$status"
 }
