@@ -12469,3 +12469,161 @@ These tests stay on legacy deploys:
 
 **Cross-refs.** DR-55, DR-69, DR-72, DR-101, DR-115. Bugs 10986 and 11004. Leaf
 `ofp-3-recovery-offered-format`.
+
+## DR-117 — Each COMM authority region is validated once (the canonical authority witness)
+
+**Status.** Implemented 2026-10-09 for Phase D item D-F1 of epic 8946
+(`ofp-2-cap-d-f1-canonical-authority`). The user chose the core scope: "Core
+only (Recommended)".
+
+**Context.**
+
+- A COMM charges its authority, which is the set of regions of its
+  participants. Before this record, a granted COMM canonicalized that
+  authority five times, in play and in native replay:
+  - V1: the merge of the participants (`merge_authorities_metered`), after a
+    copy of every region.
+  - V2 and V3: the instantiation of persistent regions
+    (`instantiate_persistent_regions_metered`), before and after the new
+    identities.
+  - V4: the native observation in replay (`into_native_metered`) or the
+    producer's reservation in play (`reserve_authority_identity`).
+  - V5: the demand computation (`authority_demand_metered`).
+- Each canonicalization checks each identity, validates each signature, sorts
+  the regions by identity and rejects two different signatures with one
+  identity. Its output is canonical. V2, V4 and V5 therefore returned their
+  input, and V3 only re-sorted by the new identities with the same conflict
+  check.
+- This work is host work, not phlo. The phlo charge of a COMM reads only the
+  matched data and the channel count, and the authority decides only who
+  pays. Receipts and cost traces do not depend on the number of
+  canonicalizations.
+- The D-E5 probe at HEAD 55431d1c1 measured the gateway funding block. It put
+  the repeated work at about 14 to 15 MB of VerificationBytes per validator
+  and 20 to 22 MB in producer execution.
+
+**Decision.**
+
+1. `authority.rs` defines `CanonicalAuthority`, a witness with a private
+   field. Only canonicalization and the rekey of a witness construct it. It
+   has no `Default`, no deserialization and no public constructor.
+2. The merge reads the regions in place (`merge_canonical_metered`). It
+   reserves one unit for each participant, as before, and canonicalizes the
+   borrowed regions in participant order. The copy was only the input of the
+   canonicalization, and nothing read it afterwards. The copying body stays,
+   unchanged, as the test oracle `merge_authorities_metered_legacy`.
+3. The instantiation rekeys the witness (`rekey_metered`). It keeps the
+   identity order and the conflict check of a repeated new identity. It does
+   not validate the signatures again, and it moves the identities that do not
+   change instead of copying them.
+4. A COMM observation carries the witness (`MeasuredCommObservation`). The
+   native observation moves it, with no canonicalization and no copy. The
+   empty-authority check stays, with its error.
+5. The producer reserves from the witness (`reserve_comm_authority_canonical`),
+   and the demand reads it in place (`authority_demand_from_canonical_metered`).
+   The legacy entry `reserve_comm_authority_measured` canonicalizes its
+   `&CostAuthority` once and then uses the same core.
+6. Three validations stay on purpose:
+   - the validation of persistent participants before the merge, because it
+     decides the error order
+   - the DR-101 resolution of residue seals
+   - the boundary validation of introductions in
+     `register_introduction_authority`.
+7. Two parts of the planned item are not adopted (user decision). The replay
+   demand keeps its canonicalization, because a witness there needs a new
+   carrier through the replay observation path for about 2 MB per validator.
+   The introduction registry keeps owned authorities. A shared registry
+   touches about ten sites for about 1 MB in producer execution and 2 MB per
+   validator.
+
+Validations of one region of a granted COMM:
+
+| Path | Before | After |
+| --- | --- | --- |
+| Play (producer execution) | 5 | 1 |
+| Native replay, granted COMM | 5 | 2 (the merge and the replay demand) |
+| Native replay, denied COMM | 4 | 1 |
+| A persistent participant | one more | one more |
+| A resolved residue seal (DR-101) | one more | one more |
+
+**Why the results are unchanged.**
+
+- The merge passes the same regions, in the same participant order, to the
+  same canonicalization. The value and the first error are the same.
+- A witness has 32-byte identities in strictly ascending order and canonical
+  signatures, and the validation of a canonical signature returns it
+  unchanged. A new canonicalization of a witness therefore returns it, and
+  the only error it can give is a host-work rejection.
+- The rekey visits the witness in identity order, as V3 did after V2, and it
+  keeps the conflict check. Its output is the output of V3.
+- The demand reads the lanes of the same signatures in the same identity
+  order.
+- Each stage reserves no more than before, and play and replay run the same
+  code. A COMM that fitted its host-work budget before still fits, with the
+  same result.
+
+**Verification.**
+
+- Rocq `CanonicalAuthorityWitness.v` uses the standard library only and no
+  axiom. It proves eight theorems:
+  - `canonical_idempotent_on_outputs`: a canonical output is a witness, and a
+    new canonicalization returns it.
+  - `canonical_regions_eq_canonical_of_merged_copy`: the merge in place
+    equals the merge of a copy.
+  - `rekey_of_canonical_eq_canonical_of_rekey`: the rekey of a witness equals
+    the canonicalization of the rekeyed regions.
+  - `witness_pipeline_eq_legacy_pipeline`: the witness pipeline returns the
+    value and the first error of the five-canonicalization pipeline.
+  - `witness_charge_le_legacy_charge`: its charge is no greater.
+  - Three negative controls:
+    - five validations against one
+    - a rekey without the conflict check, which accepts a collision
+    - a merge in reverse participant order, which reports another first error.
+- The proof gate passes in cost-accounting mode: 276 modules and 3127 closed
+  assumption queries.
+- Rust tests in `authority.rs`:
+  - `canonical_witness_pipeline_matches_legacy_pipeline` (256 cases) uses
+    valid, invalid and conflicting authorities. It checks three properties:
+    - The values and the errors are equal.
+    - The charge is no greater in any dimension.
+    - Under a limit that does not reject the legacy pipeline for host work,
+      the results are equal.
+  - `merge_from_borrowed_regions_copies_no_intermediate_region` checks with
+    the counting allocator that the merge in place allocates exactly what the
+    canonicalization allocates, and less than the copying merge.
+  - `legacy_pipeline_recanonicalized_each_stage` (negative control) counts the
+    signature inspections: five runs before, one run after.
+  - `rekey_keeps_the_conflict_check_of_new_identities` forces a collision of
+    new identities.
+  - `block_mode_authority_sites_accept_exact_credit` covers the merge in
+    place, the rekey and the demand of a witness.
+- The exact-usage A/B on the gateway funding block ran three times for each
+  arm (`target/verification/d-f1/probe-A1` to `probe-B3`). Arm A is HEAD
+  `55431d1c1`, and arm B adds this record. The table gives the mean of the
+  three runs:
+
+  | Role | Dimension | Arm A | Arm B | Change |
+  | --- | --- | --- | --- | --- |
+  | Validator replay | VerificationBytes | 593.96 MB | 579.81 MB | −14.2 MB |
+  | Validator replay | SearchStateBytes | 120.16 MB | 112.57 MB | −7.6 MB |
+  | Validator replay | VerificationOperations | 60.93 M | 58.44 M | −2.5 M |
+  | Producer execution | VerificationBytes | 151.16 MB | 134.73 MB | −16.4 MB |
+  | Producer execution | SearchStateBytes | 64.14 MB | 52.98 MB | −11.2 MB |
+  | Producer execution | VerificationOperations | 44.67 M | 40.05 M | −4.6 M |
+
+  No dimension rises for any role. In every run all validator replays agree
+  exactly, and the producer self-replay equals the validator replay. The test
+  outcome is unchanged: the known gateway failure of gap G3.
+- Suites: rholang and rspace++ pass 4119 of 4119. On casper, block-storage and
+  the node HTTP handlers, the provisional caps pass 1940 of 1944 and the
+  committed caps pass 1938 of 1944. All failures are the known ones of
+  DR-116.
+
+**Side findings, not in scope.**
+
+- DR-101 recomputes the payer region of each seal (`residue.rs`), about 8 MB
+  per validator and 14 MB in producer execution.
+- `region_demands` runs an unmetered signature canonicalization.
+- `prepare_authority_stack_transfer` canonicalizes twice.
+
+**Cross-refs.** DR-94, DR-101, DR-110, DR-112. Phase D (`ofp-2-cap-phase-d`).

@@ -423,9 +423,37 @@ pub fn cost_region(
     })
 }
 
+/// Added by D-F1 (DR-117): an authority that canonicalization produced. Its
+/// regions have 32-byte identities in strictly ascending order, and each
+/// signature is canonical, so a new canonicalization returns it unchanged.
+/// Only this module constructs it, through canonicalization or through a
+/// rekey of a witness. A holder therefore never validates its regions again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalAuthority(CostAuthority);
+
+impl CanonicalAuthority {
+    #[cfg(test)]
+    pub(crate) fn as_authority(&self) -> &CostAuthority { &self.0 }
+
+    pub(crate) fn into_authority(self) -> CostAuthority { self.0 }
+
+    pub(crate) fn is_empty(&self) -> bool { self.0.regions.is_empty() }
+}
+
+// Changed by D-F1 (DR-117): the body moved, unchanged, into
+// `canonical_regions`, which reads borrowed regions and returns the witness.
 pub fn canonical_authority(authority: &CostAuthority) -> Result<CostAuthority, AuthorityError> {
+    canonical_regions(&authority.regions).map(CanonicalAuthority::into_authority)
+}
+
+/// Added by D-F1 (DR-117): `canonical_authority` over borrowed regions, in
+/// their order. The value and the first error are those of
+/// `canonical_authority` of an authority with these regions.
+pub(crate) fn canonical_regions<'a>(
+    input: impl IntoIterator<Item = &'a CostRegion>,
+) -> Result<CanonicalAuthority, AuthorityError> {
     let mut regions = BTreeMap::<Vec<u8>, CostSignature>::new();
-    for region in &authority.regions {
+    for region in input {
         if region.instance_id.len() != 32 {
             return Err(AuthorityError::InvalidRegionIdentity);
         }
@@ -445,7 +473,7 @@ pub fn canonical_authority(authority: &CostAuthority) -> Result<CostAuthority, A
             }
         }
     }
-    Ok(CostAuthority {
+    Ok(CanonicalAuthority(CostAuthority {
         regions: regions
             .into_iter()
             .map(|(instance_id, signature)| CostRegion {
@@ -453,16 +481,28 @@ pub fn canonical_authority(authority: &CostAuthority) -> Result<CostAuthority, A
                 signature: Some(signature),
             })
             .collect(),
-    })
+    }))
 }
 
+// Changed by D-F1 (DR-117): the body moved, unchanged, into
+// `canonical_regions_metered`, which reads borrowed regions and returns the
+// witness. This entry point keeps its value, its errors and its charges.
 pub fn canonical_authority_metered(
     authority: &CostAuthority,
     backing: &dyn BackingMeter,
 ) -> Result<CostAuthority, AuthorityError> {
+    canonical_regions_metered(&authority.regions, backing).map(CanonicalAuthority::into_authority)
+}
+
+/// Added by D-F1 (DR-117): `canonical_authority_metered` over borrowed
+/// regions, in their order, with the same value, errors and charges.
+pub(crate) fn canonical_regions_metered<'a>(
+    input: impl IntoIterator<Item = &'a CostRegion>,
+    backing: &dyn BackingMeter,
+) -> Result<CanonicalAuthority, AuthorityError> {
     let meter = SorterMeter::new(backing);
     let mut regions = BTreeMap::<Vec<u8>, CostSignature>::new();
-    for region in &authority.regions {
+    for region in input {
         meter
             .reserve(1, std::mem::size_of::<CostRegion>(), 0)
             .map_err(authority_backing_error)?;
@@ -528,7 +568,7 @@ pub fn canonical_authority_metered(
             signature: Some(signature),
         });
     }
-    Ok(CostAuthority { regions: sorted })
+    Ok(CanonicalAuthority(CostAuthority { regions: sorted }))
 }
 
 fn reserve_authority_tree_insert<K, V>(
@@ -562,6 +602,50 @@ fn reserve_authority_tree_insert<K, V>(
 }
 
 pub fn merge_authorities_metered<'a, I>(
+    authorities: I,
+    backing: &dyn BackingMeter,
+) -> Result<CostAuthority, AuthorityError>
+where
+    I: IntoIterator<Item = &'a CostAuthority>,
+    I::IntoIter: Clone,
+{
+    // Changed by D-F1 (DR-117): the copy was only the input of the
+    // canonicalization, which reads the borrowed regions in the same order.
+    // Nothing read the copy afterwards. The copying body is kept, unchanged,
+    // as the test oracle `merge_authorities_metered_legacy`.
+    merge_canonical_metered(authorities, backing).map(CanonicalAuthority::into_authority)
+}
+
+/// Added by D-F1 (DR-117): the canonical merge of `authorities`, read in
+/// place. It reserves one unit for each authority, as the copying merge did,
+/// and canonicalizes the borrowed regions in participant order. The copying
+/// merge passed the same regions in the same order to the same
+/// canonicalization, so the value and the first error are the same.
+pub(crate) fn merge_canonical_metered<'a, I>(
+    authorities: I,
+    backing: &dyn BackingMeter,
+) -> Result<CanonicalAuthority, AuthorityError>
+where
+    I: IntoIterator<Item = &'a CostAuthority>,
+    I::IntoIter: Clone,
+{
+    let authorities = authorities.into_iter();
+    let meter = SorterMeter::new(backing);
+    for _ in authorities.clone() {
+        meter
+            .reserve(1, std::mem::size_of::<CostAuthority>(), 0)
+            .map_err(authority_backing_error)?;
+    }
+    canonical_regions_metered(
+        authorities.flat_map(|authority| authority.regions.iter()),
+        backing,
+    )
+}
+
+/// D-F1 (DR-117): the copying merge that `merge_authorities_metered` ran
+/// before, kept as the test oracle of the in-place merge.
+#[cfg(test)]
+pub(crate) fn merge_authorities_metered_legacy<'a, I>(
     authorities: I,
     backing: &dyn BackingMeter,
 ) -> Result<CostAuthority, AuthorityError>
@@ -621,6 +705,53 @@ pub fn authority_demand(
             continue;
         }
         demand = demand.checked_add(&ResourceMultiset::singleton(signature.lane_hash(), 1))?;
+    }
+    Ok(demand)
+}
+
+/// Added by D-F1 (DR-117): the demand of a witness. The regions are canonical
+/// and in identity order, so the lanes come in the order and from the
+/// signatures that `authority_demand` reads after its canonicalization.
+pub(crate) fn authority_demand_from_canonical(
+    witness: &CanonicalAuthority,
+) -> Result<ResourceMultiset<[u8; 32]>, AuthorityError> {
+    let mut demand = ResourceMultiset::default();
+    for region in &witness.0.regions {
+        let signature = cost_signature_to_sig(
+            region
+                .signature
+                .as_ref()
+                .ok_or(AuthorityError::MissingSignature)?,
+        )?;
+        if signature == Sig::Unit {
+            continue;
+        }
+        demand = demand.checked_add(&ResourceMultiset::singleton(signature.lane_hash(), 1))?;
+    }
+    Ok(demand)
+}
+
+/// Added by D-F1 (DR-117): `authority_demand_from_canonical` with charges. It
+/// reserves the read of each region as `authority_regions_metered` did, and
+/// it charges each lane and increment as `authority_demand_metered` does.
+/// The canonicalization and the identity map are not rebuilt.
+pub(crate) fn authority_demand_from_canonical_metered(
+    witness: &CanonicalAuthority,
+    backing: &dyn BackingMeter,
+) -> Result<ResourceMultiset<[u8; 32]>, AuthorityError> {
+    let meter = SorterMeter::new(backing);
+    let mut demand = ResourceMultiset::default();
+    for region in &witness.0.regions {
+        meter
+            .reserve(1, std::mem::size_of::<CostRegion>(), 0)
+            .map_err(authority_backing_error)?;
+        let signature = region
+            .signature
+            .as_ref()
+            .ok_or(AuthorityError::MissingSignature)?;
+        if let Some(lane) = cost_signature_lane_metered(signature, &meter)? {
+            demand.increment_metered(lane, 1, &meter)?;
+        }
     }
     Ok(demand)
 }
@@ -1400,8 +1531,21 @@ pub fn instantiate_persistent_regions(
     persistent_regions: &BTreeSet<[u8; 32]>,
     occurrence: [u8; 32],
 ) -> Result<CostAuthority, AuthorityError> {
+    // Changed by D-F1 (DR-117): the body moved, unchanged, into
+    // `instantiate_persistent_regions_canonical`, which returns the witness.
+    instantiate_persistent_regions_canonical(authority, persistent_regions, occurrence)
+        .map(CanonicalAuthority::into_authority)
+}
+
+/// Added by D-F1 (DR-117): `instantiate_persistent_regions` with its
+/// canonical result as a witness.
+pub(crate) fn instantiate_persistent_regions_canonical(
+    authority: &CostAuthority,
+    persistent_regions: &BTreeSet<[u8; 32]>,
+    occurrence: [u8; 32],
+) -> Result<CanonicalAuthority, AuthorityError> {
     let regions = authority_regions(authority)?;
-    canonical_authority(&CostAuthority {
+    let instantiated = CostAuthority {
         regions: regions
             .into_iter()
             .map(|(instance_id, signature)| {
@@ -1422,7 +1566,8 @@ pub fn instantiate_persistent_regions(
                 }
             })
             .collect(),
-    })
+    };
+    canonical_regions(&instantiated.regions)
 }
 
 pub fn instantiate_persistent_regions_metered(
@@ -1479,6 +1624,109 @@ pub fn instantiate_persistent_regions_metered(
         },
         backing,
     )
+}
+
+/// Added by D-F1 (DR-117): the persistent-occurrence instantiation of a
+/// witness. A persistent region takes a fresh identity from its identity and
+/// the occurrence, and every other region keeps its identity. The witness is
+/// canonical, so no signature is validated again. Only the new identity order
+/// and the conflict check of a repeated new identity remain. The value and
+/// the first error are those of `instantiate_persistent_regions_metered`,
+/// which canonicalizes the witness again before and after the new identities.
+pub(crate) fn rekey_metered(
+    witness: CanonicalAuthority,
+    persistent_regions: &BTreeSet<[u8; 32]>,
+    occurrence: [u8; 32],
+    backing: &dyn BackingMeter,
+) -> Result<CanonicalAuthority, AuthorityError> {
+    rekey_by(witness, backing, |instance_id, meter| {
+        let key: [u8; 32] = instance_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| AuthorityError::InvalidRegionIdentity)?;
+        let comparisons = persistent_regions
+            .len()
+            .checked_add(1)
+            .ok_or(AuthorityError::HostWorkRejected)?;
+        let scanned = comparisons
+            .checked_mul(32)
+            .ok_or(AuthorityError::HostWorkRejected)?;
+        meter
+            .reserve(comparisons, scanned, 0)
+            .map_err(authority_backing_error)?;
+        if !persistent_regions.contains(&key) {
+            return Ok(instance_id);
+        }
+        let capacity = REGION_OCCURRENCE_DOMAIN
+            .len()
+            .checked_add(key.len())
+            .and_then(|len| len.checked_add(occurrence.len()))
+            .ok_or(AuthorityError::HostWorkRejected)?;
+        let mut bytes = meter.vec::<u8>(capacity).map_err(authority_backing_error)?;
+        bytes.extend_from_slice(REGION_OCCURRENCE_DOMAIN);
+        bytes.extend_from_slice(&key);
+        bytes.extend_from_slice(&occurrence);
+        meter
+            .reserve(1, capacity, 32)
+            .map_err(authority_backing_error)?;
+        Ok(Blake2b256::hash(bytes))
+    })
+}
+
+/// Added by D-F1 (DR-117): the rekey of a witness with an arbitrary identity
+/// map, so that a test can force a collision of new identities. The regions
+/// are visited in identity order, as the canonicalization visits them.
+fn rekey_by(
+    witness: CanonicalAuthority,
+    backing: &dyn BackingMeter,
+    mut new_identity: impl FnMut(Vec<u8>, &SorterMeter<'_>) -> Result<Vec<u8>, AuthorityError>,
+) -> Result<CanonicalAuthority, AuthorityError> {
+    let meter = SorterMeter::new(backing);
+    let mut regions = BTreeMap::<Vec<u8>, CostSignature>::new();
+    for region in witness.0.regions {
+        meter
+            .reserve(1, std::mem::size_of::<CostRegion>(), 0)
+            .map_err(authority_backing_error)?;
+        let signature = region.signature.ok_or(AuthorityError::MissingSignature)?;
+        let instance_id = new_identity(region.instance_id, &meter)?;
+        let comparisons = regions
+            .len()
+            .checked_add(1)
+            .ok_or(AuthorityError::HostWorkRejected)?;
+        let scanned = comparisons
+            .checked_mul(32)
+            .ok_or(AuthorityError::HostWorkRejected)?;
+        meter
+            .reserve(comparisons, scanned, 0)
+            .map_err(authority_backing_error)?;
+        match regions.get(&instance_id) {
+            Some(existing) => {
+                meter
+                    .inspect_blocks(existing)
+                    .map_err(authority_backing_error)?;
+                meter
+                    .inspect_blocks(&signature)
+                    .map_err(authority_backing_error)?;
+                if existing != &signature {
+                    return Err(AuthorityError::RegionIdentityConflict);
+                }
+            }
+            None => {
+                reserve_authority_tree_insert::<Vec<u8>, CostSignature>(&meter, regions.len())?;
+                regions.insert(instance_id, signature);
+            }
+        }
+    }
+    let mut sorted = meter
+        .vec::<CostRegion>(regions.len())
+        .map_err(authority_backing_error)?;
+    for (instance_id, signature) in regions {
+        sorted.push(CostRegion {
+            instance_id,
+            signature: Some(signature),
+        });
+    }
+    Ok(CanonicalAuthority(CostAuthority { regions: sorted }))
 }
 
 pub trait CanonicalAuthorityKey {
@@ -5742,7 +5990,296 @@ mod tests {
             assert_exact_credit("merge", &|meter| {
                 merge_authorities_metered([&authority, &authority], meter).map(drop)
             });
+            // Added by D-F1 (DR-117): the witness sites.
+            let witness = canonical_regions(&authority.regions).expect("canonical regions");
+            let persistent = BTreeSet::from([[1; 32]]);
+            assert_exact_credit("witness merge", &|meter| {
+                merge_canonical_metered([&authority, &authority], meter).map(drop)
+            });
+            assert_exact_credit("rekey", &|meter| {
+                rekey_metered(witness.clone(), &persistent, [3; 32], meter).map(drop)
+            });
+            assert_exact_credit("witness demand", &|meter| {
+                authority_demand_from_canonical_metered(&witness, meter).map(drop)
+            });
         }
+    }
+
+    /// D-F1 (DR-117): the authority pipeline of one COMM before the witness.
+    /// It runs the copying merge, the instantiation (which canonicalizes
+    /// before and after the new identities), the canonicalization of the
+    /// observation, the empty-authority check and the demand, which
+    /// canonicalizes again.
+    fn legacy_comm_pipeline(
+        participants: &[CostAuthority],
+        persistent: &BTreeSet<[u8; 32]>,
+        occurrence: [u8; 32],
+        meter: &dyn BackingMeter,
+    ) -> Result<(CostAuthority, ResourceMultiset<[u8; 32]>), AuthorityError> {
+        let merged = merge_authorities_metered_legacy(participants, meter)?;
+        let instantiated =
+            instantiate_persistent_regions_metered(&merged, persistent, occurrence, meter)?;
+        let observed = canonical_authority_metered(&instantiated, meter)?;
+        if observed.regions.is_empty() {
+            return Err(AuthorityError::MissingAuthority);
+        }
+        let demand = authority_demand_metered(&observed, meter)?;
+        Ok((observed, demand))
+    }
+
+    /// D-F1 (DR-117): the same pipeline with the witness: the in-place merge,
+    /// the rekey, the empty-authority check and the demand of the witness.
+    fn witness_comm_pipeline(
+        participants: &[CostAuthority],
+        persistent: &BTreeSet<[u8; 32]>,
+        occurrence: [u8; 32],
+        meter: &dyn BackingMeter,
+    ) -> Result<(CostAuthority, ResourceMultiset<[u8; 32]>), AuthorityError> {
+        let merged = merge_canonical_metered(participants, meter)?;
+        let rekeyed = rekey_metered(merged, persistent, occurrence, meter)?;
+        if rekeyed.is_empty() {
+            return Err(AuthorityError::MissingAuthority);
+        }
+        let demand = authority_demand_from_canonical_metered(&rekeyed, meter)?;
+        Ok((rekeyed.into_authority(), demand))
+    }
+
+    /// D-F1 (DR-117): the charge that `run` reserves, whatever its result.
+    fn charge_and_result<T>(
+        run: impl FnOnce(&dyn BackingMeter) -> Result<T, AuthorityError>,
+    ) -> ([usize; 3], Result<T, AuthorityError>) {
+        let totals = std::cell::Cell::new([0_usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [total_operations, total_scanned, total_backing] = totals.get();
+            totals.set([
+                total_operations + operations,
+                total_scanned + scanned,
+                total_backing + backing,
+            ]);
+            Ok(())
+        };
+        let result = run(&meter);
+        (totals.get(), result)
+    }
+
+    /// D-F1 (DR-117): `run` under a limit in each dimension.
+    fn result_within<T>(
+        limit: [usize; 3],
+        run: impl FnOnce(&dyn BackingMeter) -> Result<T, AuthorityError>,
+    ) -> Result<T, AuthorityError> {
+        let used = std::cell::Cell::new([0_usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [total_operations, total_scanned, total_backing] = used.get();
+            let next = [
+                total_operations.saturating_add(operations),
+                total_scanned.saturating_add(scanned),
+                total_backing.saturating_add(backing),
+            ];
+            if next.iter().zip(limit).any(|(total, bound)| *total > bound) {
+                return Err(BackingError::Rejected);
+            }
+            used.set(next);
+            Ok(())
+        };
+        run(&meter)
+    }
+
+    /// D-F1 (DR-117): the signatures of the generated pipeline inputs, with
+    /// canonical, non-canonical and missing signatures.
+    fn pipeline_signature() -> impl Strategy<Value = Option<CostSignature>> {
+        prop_oneof![
+            4 => (0_u8..3).prop_map(|byte| Some(ground(&[byte]))),
+            2 => (0_u8..3).prop_map(|byte| Some(private_name(&[byte]))),
+            2 => (1_usize..4).prop_map(|depth| Some(quoted_chain(depth))),
+            1 => Just(Some(CostSignature {
+                value: Some(CostSignatureValue::Unit(true)),
+            })),
+            1 => Just(Some(
+                compound_cost_signatures(&ground(&[1]), &ground(&[2])).expect("compound"),
+            )),
+            1 => Just(None),
+            1 => Just(Some(CostSignature { value: None })),
+            1 => Just(Some(CostSignature {
+                value: Some(CostSignatureValue::Unit(false)),
+            })),
+            1 => Just(Some(CostSignature {
+                value: Some(CostSignatureValue::BoundLevel(0)),
+            })),
+            1 => Just(Some(CostSignature {
+                value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+                    elements: vec![ground(&[1])],
+                })),
+            })),
+            1 => Just(Some(CostSignature {
+                value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+                    elements: vec![ground(&[2]), ground(&[1])],
+                })),
+            })),
+        ]
+    }
+
+    /// D-F1 (DR-117): participants with repeated identities (so equal and
+    /// conflicting regions occur), short identities and the signatures above.
+    fn pipeline_participants() -> impl Strategy<Value = Vec<CostAuthority>> {
+        prop::collection::vec(
+            prop::collection::vec((0_u8..6, 0_u8..10, pipeline_signature()), 0..4),
+            0..4,
+        )
+        .prop_map(|participants| {
+            participants
+                .into_iter()
+                .map(|regions| CostAuthority {
+                    regions: regions
+                        .into_iter()
+                        .map(|(identity, shape, signature)| CostRegion {
+                            instance_id: if shape == 0 {
+                                vec![identity; 31]
+                            } else {
+                                vec![identity; 32]
+                            },
+                            signature,
+                        })
+                        .collect(),
+                })
+                .collect()
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// D-F1 (DR-117): the witness pipeline returns the value or the first
+        /// error of the legacy pipeline, on valid, invalid and conflicting
+        /// authorities. It reserves no more in any dimension. Under any limit,
+        /// a legacy result that is not a host-work rejection is also the
+        /// result of the witness pipeline.
+        #[test]
+        fn canonical_witness_pipeline_matches_legacy_pipeline(
+            participants in pipeline_participants(),
+            persistent_mask in any::<u8>(),
+            occurrence in any::<[u8; 32]>(),
+            limit in prop::array::uniform3(0_usize..24_000),
+        ) {
+            let persistent: BTreeSet<[u8; 32]> = (0_u8..6)
+                .filter(|identity| persistent_mask & (1 << identity) != 0)
+                .map(|identity| [identity; 32])
+                .collect();
+            let (legacy_charge, legacy) = charge_and_result(|meter| {
+                legacy_comm_pipeline(&participants, &persistent, occurrence, meter)
+            });
+            let (witness_charge, witness) = charge_and_result(|meter| {
+                witness_comm_pipeline(&participants, &persistent, occurrence, meter)
+            });
+            prop_assert_eq!(&witness, &legacy);
+            for dimension in 0..3 {
+                prop_assert!(
+                    witness_charge[dimension] <= legacy_charge[dimension],
+                    "dimension {}: witness {:?} legacy {:?}",
+                    dimension,
+                    witness_charge,
+                    legacy_charge
+                );
+            }
+            let legacy_limited = result_within(limit, |meter| {
+                legacy_comm_pipeline(&participants, &persistent, occurrence, meter)
+            });
+            if !matches!(legacy_limited, Err(AuthorityError::HostWorkRejected)) {
+                let witness_limited = result_within(limit, |meter| {
+                    witness_comm_pipeline(&participants, &persistent, occurrence, meter)
+                });
+                prop_assert_eq!(witness_limited, legacy_limited);
+            }
+        }
+    }
+
+    /// D-F1 (DR-117): the in-place merge allocates exactly what the
+    /// canonicalization of the concatenated regions allocates. The copying
+    /// merge allocated the copies of the regions as well.
+    #[test]
+    fn merge_from_borrowed_regions_copies_no_intermediate_region() {
+        let participants: Vec<CostAuthority> = (1_u8..4)
+            .map(|identity| CostAuthority {
+                regions: vec![CostRegion {
+                    instance_id: vec![identity; 32],
+                    signature: Some(quoted_chain(usize::from(identity))),
+                }],
+            })
+            .collect();
+        let flat = CostAuthority {
+            regions: participants
+                .iter()
+                .flat_map(|authority| authority.regions.iter().cloned())
+                .collect(),
+        };
+        let unlimited = |_: usize, _: usize, _: usize| Ok(());
+        let (merged, merge_bytes) =
+            crate::rust::interpreter::accounting::measured_allocations(|| {
+                merge_canonical_metered(&participants, &unlimited)
+            });
+        let (canonical, canonical_bytes) =
+            crate::rust::interpreter::accounting::measured_allocations(|| {
+                canonical_authority_metered(&flat, &unlimited)
+            });
+        let canonical = canonical.expect("canonical");
+        assert_eq!(merged.expect("merge").into_authority(), canonical);
+        assert_eq!(merge_bytes, canonical_bytes);
+        let (legacy, legacy_bytes) =
+            crate::rust::interpreter::accounting::measured_allocations(|| {
+                merge_authorities_metered_legacy(&participants, &unlimited)
+            });
+        assert_eq!(legacy.expect("legacy merge"), canonical);
+        assert!(
+            legacy_bytes > merge_bytes,
+            "the copying merge allocated {legacy_bytes} bytes, the in-place merge {merge_bytes}"
+        );
+    }
+
+    /// D-F1 (DR-117), negative control: the legacy pipeline validates the
+    /// signature of a region at each of its five canonicalizations (the
+    /// merge, both canonicalizations of the instantiation, the observation
+    /// and the demand). The witness pipeline validates it once.
+    #[test]
+    fn legacy_pipeline_recanonicalized_each_stage() {
+        let signature = quoted_chain(3);
+        let pattern = inspection_log(&signature);
+        let participants = vec![CostAuthority {
+            regions: vec![CostRegion {
+                instance_id: vec![1; 32],
+                signature: Some(signature),
+            }],
+        }];
+        let persistent = BTreeSet::new();
+        let legacy = reservation_log(|meter| {
+            legacy_comm_pipeline(&participants, &persistent, [7; 32], meter).map(drop)
+        });
+        let witness = reservation_log(|meter| {
+            witness_comm_pipeline(&participants, &persistent, [7; 32], meter).map(drop)
+        });
+        assert_eq!(runs(&legacy, &pattern), vec![3, 3, 3, 3, 3]);
+        assert_eq!(runs(&witness, &pattern), vec![3]);
+    }
+
+    /// D-F1 (DR-117): a rekey that maps two regions to one new identity keeps
+    /// the conflict check. Equal signatures merge into one region, and
+    /// different signatures conflict.
+    #[test]
+    fn rekey_keeps_the_conflict_check_of_new_identities() {
+        let unlimited = |_: usize, _: usize, _: usize| Ok(());
+        let region = |identity: u8, signature: CostSignature| CostRegion {
+            instance_id: vec![identity; 32],
+            signature: Some(signature),
+        };
+        let collide = |_: Vec<u8>, _: &SorterMeter<'_>| Ok(vec![9; 32]);
+        let different = canonical_regions(&[region(1, ground(&[1])), region(2, ground(&[2]))])
+            .expect("canonical");
+        assert!(matches!(
+            rekey_by(different, &unlimited, collide),
+            Err(AuthorityError::RegionIdentityConflict)
+        ));
+        let equal = canonical_regions(&[region(1, ground(&[1])), region(2, ground(&[1]))])
+            .expect("canonical");
+        let merged = rekey_by(equal, &unlimited, collide).expect("equal signatures merge");
+        assert_eq!(merged.as_authority().regions, vec![region(9, ground(&[1]))]);
     }
 
     /// D-E3 (DR-110): every reservation that `charge` makes, in order.

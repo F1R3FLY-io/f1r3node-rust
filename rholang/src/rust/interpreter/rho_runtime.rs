@@ -821,10 +821,19 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 &residue,
             )?,
         };
+        // Changed by D-F1 (DR-117): the COMM authority is a canonical witness,
+        // so the reservation moves it instead of canonicalizing it again.
+        // self.budget
+        //     .reserve_comm_authority_measured(
+        //         observed.event_id,
+        //         &observed.authority,
+        //         observed.measurement,
+        //     )
+        //     .map_err(RSpaceError::from)?;
         self.budget
-            .reserve_comm_authority_measured(
+            .reserve_comm_authority_canonical(
                 observed.event_id,
-                &observed.authority,
+                observed.authority,
                 observed.measurement,
             )
             .map_err(RSpaceError::from)?;

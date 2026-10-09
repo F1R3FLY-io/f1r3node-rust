@@ -22,6 +22,16 @@ pub(crate) struct MeasuredRSpaceObservation<'a> {
     pub(crate) measurement: ByteCharge,
 }
 
+/// Added by D-F1 (DR-117): a COMM observation. Its authority is the witness
+/// that the merge and the rekey produced, so it is canonical: the merge
+/// validated each region once. Neither the native observation nor the
+/// producer's reservation canonicalizes it again.
+pub(crate) struct MeasuredCommObservation {
+    pub(crate) event_id: [u8; 32],
+    pub(crate) authority: authority::CanonicalAuthority,
+    pub(crate) measurement: ByteCharge,
+}
+
 #[cfg(test)]
 fn error(error: impl std::fmt::Display) -> InterpreterError {
     InterpreterError::ReduceError(error.to_string())
@@ -160,6 +170,46 @@ impl MeasuredRSpaceObservation<'_> {
     }
 }
 
+impl MeasuredCommObservation {
+    #[cfg(test)]
+    pub(crate) fn into_native(self) -> Result<ByteObservation, InterpreterError> {
+        if self.authority.is_empty() {
+            return Err(error(authority::AuthorityError::MissingAuthority));
+        }
+        Ok(ByteObservation {
+            event_id: self.event_id,
+            kind: AuthorityByteEventKind::Comm,
+            authority: self.authority.into_authority(),
+            measurement: Some(self.measurement),
+            legacy_amount: None,
+        })
+    }
+
+    /// Added by D-F1 (DR-117): the native observation moves the witness. The
+    /// authority is canonical, so no canonicalization runs and no copy is
+    /// made, and the empty-authority check stays.
+    pub(crate) fn into_native_metered(
+        self,
+        _meter: &dyn SourceMeter,
+    ) -> Result<ByteObservation, RSpaceError> {
+        // Changed by D-F1 (DR-117): the COMM authority is a canonical
+        // witness, because the merge validated each region once.
+        // let authority = authority_metered(meter, |backing| {
+        //     authority::canonical_authority_metered(&self.authority, backing)
+        // })?;
+        if self.authority.is_empty() {
+            return Err(construction_error(AuthorityError::MissingAuthority));
+        }
+        Ok(ByteObservation {
+            event_id: self.event_id,
+            kind: AuthorityByteEventKind::Comm,
+            authority: self.authority.into_authority(),
+            measurement: Some(self.measurement),
+            legacy_amount: None,
+        })
+    }
+}
+
 pub(crate) fn produce_introduction<'a>(
     source: &Produce,
     channel: &Par,
@@ -285,7 +335,7 @@ pub(crate) fn comm(
     continuation_persistent: bool,
     data: &[(&ListParWithRandom, bool)],
     residue: &authority::ResidueContext,
-) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
+) -> Result<MeasuredCommObservation, RSpaceError> {
     let identity: [u8; 32] = comm
         .cost_identity()
         .0
@@ -310,7 +360,7 @@ pub(crate) fn comm_metered(
     data: &[(&ListParWithRandom, bool)],
     residue: &authority::ResidueContext,
     meter: &dyn SourceMeter,
-) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
+) -> Result<MeasuredCommObservation, RSpaceError> {
     // Disabled by C12 (DR-76): cost_identity_metered inspects the consume,
     // peeks and repetition counts and reserves its produce work itself, and
     // comm_charge reads only the channel count. This inspection charged the
@@ -412,7 +462,7 @@ fn comm_with_identity(
     identity: [u8; 32],
     residue: &authority::ResidueContext,
     meter: Option<&dyn SourceMeter>,
-) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
+) -> Result<MeasuredCommObservation, RSpaceError> {
     let mut authorities = Vec::<&CostAuthority>::new();
     let mut datum_seals = Vec::<Option<Cow<'_, CostAuthority>>>::new();
     if let Some(meter) = meter {
@@ -485,30 +535,52 @@ fn comm_with_identity(
             }
         }
     }
+    // Changed by D-F1 (DR-117): the metered merge reads the regions in place
+    // and returns the witness, and the rekey keeps it canonical without a
+    // second validation of each signature. The unmetered path keeps the
+    // legacy merge and instantiation and returns the same witness.
+    // let authority = match meter {
+    //     Some(meter) => authority_metered(meter, |backing| {
+    //         authority::merge_authorities_metered(authorities, backing)
+    //     })?,
+    //     None => authority::merge_authorities(authorities).map_err(construction_error)?,
+    // };
+    // let authority = match meter {
+    //     Some(meter) => authority_metered(meter, |backing| {
+    //         authority::instantiate_persistent_regions_metered(
+    //             &authority,
+    //             &persistent_regions,
+    //             identity,
+    //             backing,
+    //         )
+    //     })?,
+    //     None => {
+    //         authority::instantiate_persistent_regions(&authority, &persistent_regions, identity)
+    //             .map_err(construction_error)?
+    //     }
+    // };
     let authority = match meter {
-        Some(meter) => authority_metered(meter, |backing| {
-            authority::merge_authorities_metered(authorities, backing)
-        })?,
-        None => authority::merge_authorities(authorities).map_err(construction_error)?,
-    };
-    let authority = match meter {
-        Some(meter) => authority_metered(meter, |backing| {
-            authority::instantiate_persistent_regions_metered(
-                &authority,
+        Some(meter) => {
+            let merged = authority_metered(meter, |backing| {
+                authority::merge_canonical_metered(authorities.iter().copied(), backing)
+            })?;
+            authority_metered(meter, |backing| {
+                authority::rekey_metered(merged, &persistent_regions, identity, backing)
+            })?
+        }
+        None => {
+            let merged = authority::merge_authorities(authorities).map_err(construction_error)?;
+            authority::instantiate_persistent_regions_canonical(
+                &merged,
                 &persistent_regions,
                 identity,
-                backing,
             )
-        })?,
-        None => {
-            authority::instantiate_persistent_regions(&authority, &persistent_regions, identity)
-                .map_err(construction_error)?
+            .map_err(construction_error)?
         }
     };
-    Ok(MeasuredRSpaceObservation {
+    Ok(MeasuredCommObservation {
         event_id: identity,
-        kind: AuthorityByteEventKind::Comm,
-        authority: Cow::Owned(authority),
+        authority,
         measurement: byte_accounting::comm_charge(comm, data).map_err(construction_error)?,
     })
 }

@@ -509,6 +509,44 @@ fn authority_demand_with_host(
     }
 }
 
+/// Added by D-F1 (DR-117): `canonical_authority_with_host` that returns the
+/// witness, with the same canonicalization, charges and errors.
+fn canonical_witness_with_host(
+    authority: &CostAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<authority::CanonicalAuthority, InterpreterError> {
+    match host {
+        Some(host) => {
+            let backing = |operations, scanned, bytes| {
+                reserve_owned_backing(host, operations, scanned, bytes)
+            };
+            authority::canonical_regions_metered(&authority.regions, &backing)
+                .map_err(native_authority_error)
+        }
+        None => authority::canonical_regions(&authority.regions)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string())),
+    }
+}
+
+/// Added by D-F1 (DR-117): `authority_demand_with_host` for a witness. It
+/// reads the canonical regions in place instead of canonicalizing again.
+fn authority_demand_from_canonical_with_host(
+    witness: &authority::CanonicalAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<authority::ResourceMultiset<[u8; 32]>, InterpreterError> {
+    match host {
+        Some(host) => {
+            let backing = |operations, scanned, bytes| {
+                reserve_owned_backing(host, operations, scanned, bytes)
+            };
+            authority::authority_demand_from_canonical_metered(witness, &backing)
+                .map_err(native_authority_error)
+        }
+        None => authority::authority_demand_from_canonical(witness)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string())),
+    }
+}
+
 fn reserve_authority_clone(
     authority: &CostAuthority,
     host: Option<&HostWorkBudget>,
@@ -1355,6 +1393,23 @@ impl RuntimeBudget {
         self.reserve_authority_identity(identity, cost_authority, cost, Some(measurement))
     }
 
+    /// Added by D-F1 (DR-117): `reserve_comm_authority_measured` for the
+    /// canonical witness of a COMM observation. The witness is moved, and no
+    /// region is validated again.
+    pub(crate) fn reserve_comm_authority_canonical(
+        &self,
+        identity: [u8; 32],
+        witness: authority::CanonicalAuthority,
+        measurement: byte_accounting::ByteCharge,
+    ) -> Result<(), InterpreterError> {
+        let cost = self.measured_legacy_cost(measurement)?;
+        if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
+            return Ok(());
+        }
+        let host = self.native_host_work();
+        self.reserve_canonical_authority_identity(identity, witness, cost, Some(measurement), host)
+    }
+
     pub fn prepare_authority_stack_transfer(
         &self,
         produce_hash: [u8; 32],
@@ -1747,9 +1802,42 @@ impl RuntimeBudget {
             return Ok(());
         }
         let host = self.native_host_work();
-        let canonical_authority =
-            canonical_observation_authority_with_host(cost_authority, host.as_ref())?;
-        let demand = authority_demand_with_host(&canonical_authority, host.as_ref())?;
+        // Changed by D-F1 (DR-117): an unchecked authority becomes a witness
+        // here, with the canonicalization and the charges of
+        // `canonical_observation_authority_with_host`. The core below takes
+        // the witness, as the COMM observation path does, and reads the
+        // demand from it instead of canonicalizing again.
+        // let canonical_authority =
+        //     canonical_observation_authority_with_host(cost_authority, host.as_ref())?;
+        // let demand = authority_demand_with_host(&canonical_authority, host.as_ref())?;
+        let witness = canonical_witness_with_host(cost_authority, host.as_ref())?;
+        self.reserve_canonical_authority_identity(
+            identity,
+            witness,
+            comm_byte_cost,
+            measurement,
+            host,
+        )
+    }
+
+    /// Added by D-F1 (DR-117): the COMM reservation core for a canonical
+    /// witness. It keeps the empty-authority error of the canonicalization
+    /// and reads the demand from the witness.
+    fn reserve_canonical_authority_identity(
+        &self,
+        identity: [u8; 32],
+        witness: authority::CanonicalAuthority,
+        comm_byte_cost: u64,
+        measurement: Option<byte_accounting::ByteCharge>,
+        host: Option<HostWorkBudget>,
+    ) -> Result<(), InterpreterError> {
+        if witness.is_empty() {
+            return Err(InterpreterError::ReduceError(
+                authority::AuthorityError::MissingAuthority.to_string(),
+            ));
+        }
+        let demand = authority_demand_from_canonical_with_host(&witness, host.as_ref())?;
+        let canonical_authority = witness.into_authority();
         let legacy_amount = (comm_byte_cost > 0 && !demand.0.is_empty()).then_some(comm_byte_cost);
         reserve_authority_clone(&canonical_authority, host.as_ref())?;
         reserve_observation_birth(host.as_ref())?;
