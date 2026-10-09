@@ -34,6 +34,15 @@ cmp "$tmp/once.py" "$tmp/metrics.py"
 
 for metric in \
     dag_merge_relation_items \
+    finalizer_run_time \
+    finalizer_api_lfb_time \
+    deploy_selection_age_time \
+    finalizer_run_timeouts \
+    finalizer_api_lfb_overlaps \
+    block_creator_ordinary_deploys_deferred \
+    block_creator_empty_block_skipped \
+    block_creator_empty_block_built \
+    heartbeat_proposals \
     dag_merge_rejection_selection_time \
     dag_merge_apply_trie_actions_time \
     block_replay_phase_user_deploys_work \
