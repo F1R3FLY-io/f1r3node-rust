@@ -16,13 +16,11 @@
 //! after the H-29-3 lift + streaming-backing slice reshuffled the
 //! registration list.
 //!
-//! **Triage port note:** `fs_remove_dir_urn_dispatches` is
-//! `#[ignore]` because triage ships the slice 5.44 FSERR_UNSUPPORTED
-//! stub for `removeDir` (fileio has the real recursive-remove
-//! implementation).  Un-ignore when a future slice ports the real
-//! `fs_remove_dir` handler.  URN binding itself is still exercised
-//! by `c10_consensus_ban_count_matches_docs_authority`'s count-pin
-//! sibling spec `fs_genesis_spec.rs::fs_native_urn_versioned_prefix_matches_rholang`.
+//! **Triage port note:** `fs_remove_dir_urn_dispatches` was previously
+//! `#[ignore]` because triage shipped the slice 5.44 FSERR_UNSUPPORTED
+//! stub for `removeDir`.  Slices 5.141–5.143 ported the real
+//! DD-RemoveDirReplyShape handler, swapped the URN registration, and
+//! deleted the stub; slice 5.145 un-ignored this test.
 
 #[cfg(test)]
 mod tests {
@@ -541,14 +539,6 @@ mod tests {
         assert_reply_head_bool(&reply, true);
     }
 
-    /// **Triage status**: `#[ignore]` — triage ships only the slice
-    /// 5.44 FSERR_UNSUPPORTED stub for `removeDir`, not fileio's
-    /// recursive-remove implementation.  Un-ignore when a future
-    /// slice ports the real DD-RemoveDirReplyShape handler; the URN
-    /// itself IS registered (see `assert_remove_dir_body_ref_axes`
-    /// in `rho_runtime.rs`), so the stub is dispatchable — only
-    /// the `[true, ...]` success assertion is wrong for triage.
-    #[ignore = "removeDir in triage is a FSERR_UNSUPPORTED stub (slice 5.44); un-ignore when the real handler lands"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn fs_remove_dir_urn_dispatches() {
         let dir = tempfile::tempdir().unwrap();

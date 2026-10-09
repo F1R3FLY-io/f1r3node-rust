@@ -72,13 +72,12 @@
 // without adding a one-off `divergence_reply(args, reason)` trait
 // method used by only this handler.
 //
-// Current state (dev): a stub replies with `[false,
-// "FSERR_UNSUPPORTED", ...]` on the ack channel (see
-// `SystemProcesses::fs_remove_dir_stub` + the explicit
-// Definition registration in
-// `rho_runtime::dispatch_table_creator`, both added in slice 5.44).
-// The real DD-RemoveDirReplyShape handler with its four divergence
-// shapes lands at a future Wave 4 handler slice.
+// Current state (dev): the real DD-RemoveDirReplyShape handler
+// (`FsProcesses::fs_remove_dir`, ported in slices 5.136–5.141) is
+// registered at the explicit Definition site in
+// `rho_runtime::dispatch_table_creator`.  Slice 5.142 swapped the
+// slice-5.44 stub for the real handler; slice 5.143 deleted the
+// stub.  See `handlers/removedir/handler.rs` for the handler body.
 
 use std::future::Future;
 use std::pin::Pin;

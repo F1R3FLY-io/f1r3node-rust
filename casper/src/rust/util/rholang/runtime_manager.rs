@@ -289,6 +289,79 @@ pub struct RuntimeManager {
     exploratory_deploy_phlo_limit: i64,
     exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
+    /// Slice 30b: shared snapshot-writer config threaded into every
+    /// runtime spawned by this manager.  `None` when the operator
+    /// has no consensus-static provisioning (backward compat).
+    /// Populated at boot via `set_fs_snapshot_writer`.  Wrapped in
+    /// `Arc<RwLock<_>>` so a Cloned `RuntimeManager` shares the
+    /// same slot — a boot-time set on one clone is visible to all
+    /// others.  Default on triage: `Arc::new(RwLock::new(None))`.
+    pub fs_snapshot_writer:
+        Arc<tokio::sync::RwLock<Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>>>,
+    /// Phase 7b-1 (2026-08-27): per-block snapshot Merkle roots
+    /// keyed by finalized block hash.  Populated by the
+    /// `WalSnapshotWrite` finalization effect after `maybe_write`
+    /// returns `Some((root, merkle_root))`; consumed by the
+    /// snapshot-chunk retriever so joiners can verify chunks over
+    /// `get_snapshot_chunk` against a locally-anchored Merkle root.
+    /// Values are `(atomic_root, merkle_root)`.  Default on triage:
+    /// `Arc::new(RwLock::new(HashMap::new()))` — no writer wires
+    /// in production yet; the slice-5.103 `snapshot_chunk_sync`
+    /// driver reads this cache in its boot enumerator.
+    pub snapshot_merkle_roots:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
+    /// Phase 7b-2 shared write-payload store bundle.  Boot pipeline
+    /// populates via `set_payload_store` from a
+    /// `PayloadStoreBundle::from_directory(...)` pointed at
+    /// `<data-dir>/wal_payload_store/`.  The bundle carries both
+    /// trait-object aspects of the same underlying store —
+    /// `PayloadPersistence` (write side, threaded into every
+    /// spawned runtime's handler-table payload store) and
+    /// `PayloadLookup` (read side, threaded into the future
+    /// `WalPayloadContext.payload_lookup`).
+    ///
+    /// `None` when the operator has no consensus-static provisioning
+    /// (observer nodes, dev-mode nodes) OR when the boot pipeline
+    /// hasn't fired yet.  Handlers see `None` and skip the persist
+    /// step; joiners can still fetch from other peers.
+    ///
+    /// Wrapped in `Arc<RwLock<Option<...>>>` for the same reason
+    /// as `fs_snapshot_writer` — a boot-time set on one clone is
+    /// visible to every other clone.  Default on triage:
+    /// `Arc::new(RwLock::new(None))`.
+    pub payload_store: Arc<
+        tokio::sync::RwLock<Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>>,
+    >,
+    /// Operator-provisioned consensus-static roots.  Threaded into
+    /// the WAL applier's `allowed_roots` via the boot apply
+    /// subscriber (slice 5.131) as defense-in-depth: a WAL entry
+    /// whose target path does not sit under one of these roots is
+    /// rejected by the applier.
+    ///
+    /// Populated at boot via `register_consensus_static_root` from
+    /// each entry in the operator's fs bundle (file paths + dir
+    /// paths).  Empty on observer nodes without consensus
+    /// provisioning; the applier skips validation on empty.
+    ///
+    /// Shared `Arc<RwLock<_>>` so a boot-time register from one
+    /// clone is visible to every other clone (same discipline as
+    /// `payload_store` / `fs_snapshot_writer`).
+    pub consensus_static_roots: Arc<tokio::sync::RwLock<Vec<std::path::PathBuf>>>,
+    /// Manager-shared `RootIdentityRegistry`.  Owns the two-layer
+    /// indirection (`Arc<RwLock<Arc<RwLock<Inner>>>>`); every
+    /// spawned runtime's `fs_handles.root_registry` is pointed at
+    /// this backing via `share_root_registry` so a boot-time
+    /// `register(logical, root)` on the manager-held handle is
+    /// visible to every runtime clone (same discipline as
+    /// `payload_store` and the WAL registries).
+    ///
+    /// Populated at boot via
+    /// [`RootIdentityRegistry::register`] for each entry in the
+    /// operator's fs bundle (file paths + dir paths).  Empty on
+    /// observer nodes without consensus provisioning; handlers'
+    /// `safe_descend` falls through to the identity branch
+    /// (matches pre-Shape-A behavior).
+    pub root_registry: rholang::rust::interpreter::io::path::identity::RootIdentityRegistry,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -519,6 +592,62 @@ impl RuntimeManager {
         }
     }
 
+    /// Phase 7b-2 boot hook: install (or clear) the shared
+    /// payload persistence backend.  Writes to the `payload_store`
+    /// slot are visible across every clone of the `RuntimeManager`
+    /// because the outer slot is an `Arc<RwLock<_>>` shared by
+    /// construction.
+    ///
+    /// Consensus-safety: `journal_write` reads the store slot per
+    /// call; a boot-time set is immediately visible to every live
+    /// runtime.  Store identity (which dir, which retention) is a
+    /// per-node local concern and does not affect consensus — only
+    /// the WAL entries themselves are consensus-observable.
+    ///
+    /// Idempotent: a boot pipeline that calls this a second time
+    /// with the same bundle replaces the slot's contents atomically
+    /// without disturbing concurrent reads.
+    pub async fn set_payload_store(
+        &self,
+        bundle: Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>,
+    ) {
+        *self.payload_store.write().await = bundle;
+    }
+
+    /// Slice-30b boot hook: install (or clear) the shared
+    /// `SnapshotWriter` config.  Same clone-visibility discipline
+    /// as [`set_payload_store`](Self::set_payload_store) — the
+    /// slot's `Arc<RwLock<_>>` is shared across clones.
+    ///
+    /// A `None` writer disables Consensus-mode WAL-snapshot
+    /// scheduling (the pre-slice-30b default); an observer boot
+    /// without consensus provisioning passes `None` here.
+    pub async fn set_fs_snapshot_writer(
+        &self,
+        writer: Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>,
+    ) {
+        *self.fs_snapshot_writer.write().await = writer;
+    }
+
+    /// Boot hook: append `root` to the operator's consensus-static
+    /// root list.  Called from `node::setup` for each entry in the
+    /// operator's fs bundle (file paths + dir paths).  Duplicates
+    /// are permitted (the applier's `allowed_roots` check uses
+    /// `starts_with`, which is set-semantic — duplicate entries
+    /// cost one extra prefix compare per lookup but don't change
+    /// the accept/reject outcome).  No normalization applied here;
+    /// callers are expected to pass canonical absolute paths.
+    pub async fn register_consensus_static_root(&self, root: std::path::PathBuf) {
+        self.consensus_static_roots.write().await.push(root);
+    }
+
+    /// Snapshot the current consensus-static root list.  Used by
+    /// the boot apply subscriber (slice 5.131) to populate the
+    /// WAL applier's `allowed_roots` defense-in-depth check.
+    pub async fn consensus_static_roots(&self) -> Vec<std::path::PathBuf> {
+        self.consensus_static_roots.read().await.clone()
+    }
+
     pub async fn spawn_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_space = self.space.spawn().expect("Failed to spawn RSpace");
@@ -530,6 +659,7 @@ impl RuntimeManager {
             self.external_services.clone(),
         )
         .await?;
+        self.broadcast_fs_slots(&runtime).await;
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -551,12 +681,64 @@ impl RuntimeManager {
             self.external_services.clone(),
         )
         .await?;
+        self.broadcast_fs_slots(&runtime).await;
         metrics::counter!(RUNTIME_SPAWN_REPLAY_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
         Ok(runtime)
+    }
+
+    /// Phase 7b boot broadcast: push the manager's shared
+    /// `payload_store` and `fs_snapshot_writer` slot contents onto
+    /// a freshly-spawned runtime.  Called by `spawn_runtime` and
+    /// `spawn_replay_runtime` so every runtime the manager hands
+    /// out starts with the same handler-facing state regardless
+    /// of boot-sequence ordering (the slots can be populated
+    /// before OR after any given spawn — both orderings end up
+    /// consistent).
+    ///
+    /// Both slots are `Option<_>`:
+    ///   * `payload_store` populated by `set_payload_store` at boot
+    ///     — the broadcast threads `bundle.persistence` into
+    ///     `fs_handles.share_payload_store` so every Consensus-cap
+    ///     write handler can content-address-persist its bytes.
+    ///   * `fs_snapshot_writer` populated by `set_fs_snapshot_writer`
+    ///     — the broadcast threads it onto the runtime's own
+    ///     `fs_snapshot_writer` slot so the WAL-snapshot scheduler
+    ///     can fire on cadence-hit blocks.
+    ///
+    /// A `None` slot is a no-op broadcast — matches the observer /
+    /// unconfigured deployment case.
+    async fn broadcast_fs_slots(&self, runtime: &RhoRuntimeImpl) {
+        if let Some(bundle) = self.payload_store.read().await.as_ref() {
+            runtime
+                .fs_handles
+                .share_payload_store(Some(bundle.persistence.clone()));
+        }
+        // Snapshot the writer out of the manager's read guard
+        // BEFORE awaiting the runtime's own write guard.  Avoids
+        // holding `self.fs_snapshot_writer.read()` across the
+        // `.await` on `runtime.set_fs_snapshot_writer`.  Both
+        // locks are on different objects so no deadlock risk
+        // today — this is defensive scoping that keeps the hot
+        // path free of cross-object-held async guards.
+        let writer = self.fs_snapshot_writer.read().await.clone();
+        if let Some(writer) = writer {
+            runtime.set_fs_snapshot_writer(Some(writer)).await;
+        }
+        // Share the manager's `RootIdentityRegistry` backing with
+        // the spawned runtime via the two-layer-indirection
+        // discipline (see `RootIdentityRegistry::share_from`).
+        // After this call, the runtime's own `fs_handles.root_registry`
+        // routes every read through the manager's inner map — so a
+        // post-spawn `register(logical, root)` on the manager is
+        // visible through the runtime's handlers.  Idempotent on
+        // re-spawn (sharing the same inner twice is a no-op).
+        runtime
+            .fs_handles
+            .share_root_registry(self.root_registry.clone());
     }
 
     pub async fn compute_state(
@@ -1515,6 +1697,14 @@ impl RuntimeManager {
             exploratory_deploy_phlo_limit: exploratory_deploy_config.phlo_limit,
             exploratory_deploy_execution_timeout: exploratory_deploy_config.execution_timeout,
             external_services,
+            fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
+            snapshot_merkle_roots: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            payload_store: Arc::new(tokio::sync::RwLock::new(None)),
+            consensus_static_roots: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            root_registry:
+                rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new(),
         }
     }
 

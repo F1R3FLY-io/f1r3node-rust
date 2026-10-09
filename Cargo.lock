@@ -799,6 +799,7 @@ dependencies = [
  "eyre",
  "futures",
  "graphz",
+ "heed",
  "hex",
  "humantime",
  "imbl",

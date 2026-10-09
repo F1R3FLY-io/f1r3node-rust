@@ -422,9 +422,11 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
             [[ ! -d /case/evidence/vanish-closed ]] || break
             sleep 0.05
         done
-        probes="$(grep -c LogPath /case/evidence/docker-commands.txt || true)"
+        probes="$(grep -c LogPath /case/evidence/docker-commands.txt 2>/dev/null || true)"
+        probes="${probes:-0}"
         for _ in $(seq 1 100); do
-            (($(grep -c LogPath /case/evidence/docker-commands.txt || true) <= probes)) || break
+            seen="$(grep -c LogPath /case/evidence/docker-commands.txt 2>/dev/null || true)"
+            ((${seen:-0} <= probes)) || break
             sleep 0.05
         done
         ;;
