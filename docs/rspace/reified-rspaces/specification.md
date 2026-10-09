@@ -94,7 +94,7 @@ A collection operation, a handle method, and `getSpaceAgent` read the map, and n
 | `"inner"` | A string that names the inner collection | `"queue"` |
 | `"qualifier"` | A string that names the qualifier | `"default"` |
 | `"params"` | A map from the named factory params to their values | `{}`, because the family takes no param |
-| `"theory"` | The theory of the space | `Nil` until P7 |
+| `"theory"` | `Nil`, or one `GByteArray` with the canonical bytes of the identity of the theory of the space (Rule TH-2) | `Nil` |
 
 **Rule SM-3: existence.** An operation on a space without a config record must abort the deploy.
 The code is `DanglingName` when the program reaches the space through a space name, and `DanglingHandle` in every other case.
@@ -197,18 +197,18 @@ The HashSet families take the params of their discipline only (rule HS-7).
 `priorities` is a `GInt` of at least 1 ([decision I-10](decision-register.md#i-10)).
 The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:173-188`).
 
-**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:80-165`):
+**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:87-178`):
 
 1. the schema (`FamilyUnavailable`)
 2. the parse (`BadConstructorArgument`)
 3. the qualifier (`BadConstructorArgument`, `QualifierUnavailable`)
-4. the theory (`TheoryUnavailable`)
+4. the theory (`BadConstructorArgument`, `UnknownTheory`, Rule TH-4)
 5. positional params (`PositionalParamsUnsupported`)
 6. unknown keys in bytewise order (`UnknownParam` with the nearest key within two edits)
 7. missing required keys (`MissingParam`)
 8. values in bytewise key order (`InvalidParam`)
 
-**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:234-248`).
+**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:265-279`).
 The readers apply the defaults: an Array space without `cyclic` is fixed, and a priority queue without `priorities` has no bound on its levels.
 
 ## 2. Outer stores
@@ -444,7 +444,7 @@ So a process never observes that a unit is absent (SQ-6 (d) of the P7 design).
 Their factories take the params of their discipline only (Table 1a), after the qualifier `"seq"`.
 
 The checks of HS-2 and HS-3 are hooks of the outer store.
-They run after the key check and before the params, in the driver and in the join engine (`rholang/src/rust/interpreter/spaces/generic.rs:2391-2396`, `rholang/src/rust/interpreter/spaces/join.rs:412-471`).
+They run after the key check and before the params, in the driver and in the join engine (`rholang/src/rust/interpreter/spaces/generic.rs:2586-2591`, `rholang/src/rust/interpreter/spaces/join.rs:412-471`).
 Each check reserves one operation on the meter of the job before it reads.
 Headline `hashset_unit_rules` of `HashMapStore.v` proves the unit rules.
 
@@ -644,7 +644,7 @@ Figure 1 shows the states of one queue collection and the transitions between th
 ### 3.2 Bag
 
 A bag collection is a multiset on both sides.
-The scan driver plans its operations (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:178-217`, `rholang/src/rust/interpreter/spaces/disciplines/scan.rs:228-314`), and `BagDiscipline` uses it (`rholang/src/rust/interpreter/spaces/disciplines/bag.rs:35-99`).
+The scan driver plans its operations (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:179-218`, `rholang/src/rust/interpreter/spaces/disciplines/scan.rs:229-321`), and `BagDiscipline` uses it (`rholang/src/rust/interpreter/spaces/disciplines/bag.rs:35-99`).
 
 **Rule BG-1: canonical order.** The driver visits the records and the waiters of a collection in the canonical order of DR-75 ([decision 41](decision-register.md#decision-41)).
 The order sorts by the hash of the source produce or consume of each entry, and then by digest inside a run of equal hashes. It depends on the entry set only.
@@ -667,7 +667,7 @@ $`\mathrm{taken}(o, R, j)`$ is 1 for a fire that binds a non-persistent record $
 
 **Rule BG-5: peeks.** A peek fire removes a non-persistent record, as the host COMM does ([decision 45](decision-register.md#decision-45), Rule E).
 The same operation sends the record again: the record is offered to the waiters first, and it is stored when no waiter takes it.
-The second send has the identity of the record and registers the cost authority of the record (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:722-754`).
+The second send has the identity of the record and registers the cost authority of the record (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:730-762`).
 
 **Rule BG-6: peek waiters.** A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
 
@@ -682,7 +682,7 @@ A divergent pair or the cap re-issues the element in flight, and every read and 
 A cell collection holds at most one record and at most one waiting continuation (F15).
 The family `hashmap:cell` runs `CellDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/cell.rs:53-88`) on the head driver of the engine.
 
-**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:972-989`).
+**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:1118-1135`).
 The job drops the transaction, so the failed operation logs no event, bumps no counter, and makes no legacy charge.
 
 **Rule CL-2: both sides meet.** A fresh send always meets the waiting continuation of the cell, and a fresh receive always meets the record of the cell.
@@ -718,7 +718,7 @@ The settle fires the top pair. It lifts a stored record that is not persistent w
 **Rule SK-4: peeks in a settle.** A record that a peek waiter did not spend stays in flight, and it lands at its order when the settle ends (Rule E).
 
 **Rule SK-5: fire count.** One transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21)).
-The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1556-1569`).
+The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1702-1715`).
 A plan whose transaction is full after the settle before it stages nothing, and its operation re-issues.
 
 **Rule SK-6: re-issues.** At the cap or at a divergent pair, the settle before the plan re-issues the operation, which it has not inserted yet.
@@ -751,19 +751,19 @@ The view of the records has one representative for each class: its first member 
 The receive checks its guard once, on that record, and a refusal parks it ([decision 37](decision-register.md#decision-37)).
 
 **Rule ST-5: class fire.** A receive that does not peek fires one consume over $`[D; n]`$ on every stored member of the class, the representative first (F3, F20).
-The fire dispatches only the result of the representative, and it removes every member that is not persistent (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:589-677`).
+The fire dispatches only the result of the representative, and it removes every member that is not persistent (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:597-685`).
 
 **Rule ST-6: send and retire.** A send fires the first waiter in canonical order whose pattern binds the datum and whose guard admits it.
 After each fire of a waiter that does not peek, the send retires the non-persistent stored members of the class of its datum.
-Each retire is a single-channel COMM of a `K_retire` continuation, in canonical order (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:786-871`).
+Each retire is a single-channel COMM of a `K_retire` continuation, in canonical order (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:794-879`).
 A retire is never dispatched, and it is not a fire round of the transaction.
 
 **Rule ST-7: peeks.** A peek binds only the representative, on $`[D]`$, and its fire removes a representative that is not persistent.
 The same operation sends the representative again (Rule E, [decision 45](decision-register.md#decision-45)), and a peek retires nothing.
-When the second send fires a waiter that does not peek, that fire retires the class (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:701-781`).
+When the second send fires a waiter that does not peek, that fire retires the class (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:709-789`).
 
 **Rule ST-8: membership.** The driver compares the metered hashes of two keys first, and it compares the full keys only when the hashes are equal (DR-90).
-So a hash collision never joins two classes (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:876-891`).
+So a hash collision never joins two classes (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:884-899`).
 
 **Rule ST-9: no counter.** A set has no counter, no params, no query and no capacity.
 Two waiters are equal only when their bytes are equal (F14). Every order is 0, so a re-issued element keeps its identity ([decision 43](decision-register.md#decision-43)).
@@ -772,7 +772,7 @@ Without a counter, the merges of a set follow the merge checks of its records.
 Writes to one set merge, and the merged view is the view of each serial order (F25).
 Two branches that each retire one stored member of a set race in merge check 1 on the produce of that member (F24).
 
-**Rule ST-10: keys under a budget.** A metered job stores only a record whose key exists under its metering (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:412-422`).
+**Rule ST-10: keys under a budget.** A metered job stores only a record whose key exists under its metering (`rholang/src/rust/interpreter/spaces/disciplines/scan.rs:419-429`).
 The metered sorter rejects a term deeper than its depth limit with `HostWorkRejected`, so the send of such a payload fails before it stages anything.
 Without a budget the host sorter keys every payload, so a job without a budget stores every record.
 A record that such a job stored can lack a key under a later budget.
@@ -806,18 +806,18 @@ The lane of the level $`p`$ sees the head of the level $`p`$ (`rholang/src/rust/
 The unrestricted lane sees the heads of all levels in ascending level order (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:513-539`).
 
 **Rule PQ-5: send.** A send offers its datum to the head of the lane of its level and to the head of the unrestricted lane.
-The older head that fits fires, and a refusal moves the send on to the other head (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:545-597`, `765-824`).
+The older head that fits fires, and a refusal moves the send on to the other head (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:545-597`, `795-854`).
 
 **Rule PQ-6: receive.** A receive binds the first matching level head that its lane sees, and it checks its guard once, on that head.
-A refusal parks the receive (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:830-933`).
+A refusal parks the receive (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:860-965`).
 
-**Rule PQ-7: peeks.** A peek of a record that is not persistent stores the record again at once, at its order and in its level (Rule E, `rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:938-947`).
+**Rule PQ-7: peeks.** A peek of a record that is not persistent stores the record again at once, at its order and in its level (Rule E, `rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:970-979`).
 
 **Rule PQ-8: settle.** A fire can expose a pair, so the priority queue settles before and after each plan and in a settle job (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:319-345`).
-Strict confluence fails for a priority queue (readiness review S4), so the settle fires the oldest fireable lane head first (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:978-1072`).
+Strict confluence fails for a priority queue (readiness review S4), so the settle fires the oldest fireable lane head first (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:1010-1105`).
 When that fire binds a stored record while a record is in flight, the record in flight lands first (`rholang/src/rust/interpreter/spaces/settle.rs:425-430`).
 
-**Rule PQ-9: params.** The send param and the query param `priority` take a `GInt` of at least 0 (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:720-732`).
+**Rule PQ-9: params.** The send param and the query param `priority` take a `GInt` of at least 0 (`rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:750-762`).
 When the space sets the bound `priorities`, the value must be below it, and otherwise the operation fails with `InvalidParam`.
 A positional query part fails with `PositionalParamsUnsupported`.
 
@@ -971,7 +971,7 @@ Section [N15 of the design](design.md#n15-phase-p6-the-vectordb-family) explains
 
 **Rule VD-1: factory params.** The factory takes `capacity` (required, an `Int` in $`[1, 1\,000\,000]`$) and `dimensions` (required, an `Int` in $`[1, 4\,096]`$).
 It also takes `metric` (default `cosine`), one of `cosine`, `dot`, `euclidean`, `manhattan`, `hamming` and `jaccard`, and `mirror`, which must be `"chroma"` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:63-102`).
-A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:198-229`).
+A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:229-260`).
 
 **Rule VD-2: records.** A send stores its payload with an optional vector (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657`).
 The vector is the param `embedding`, or else the payload itself when the payload is exactly one non-empty list of numbers ([decision 66](decision-register.md#decision-66)).
@@ -1006,7 +1006,7 @@ A higher similarity and a lower distance are better.
 Without a query vector, $`E`$ keeps the canonical order, so the receive is a list read of the records.
 Figure N15.2 of the design shows the selection.
 
-**Rule VD-5: single mode.** A receive without `k` and `results` takes the first record of $`E`$ whose payload its pattern binds (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1637-1689`).
+**Rule VD-5: single mode.** A receive without `k` and `results` takes the first record of $`E`$ whose payload its pattern binds (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1655-1707`).
 It checks its `where` guard once, on that record, and a refusal parks the receive ([decision 37](decision-register.md#decision-37)).
 The fire is one COMM over $`[D]`$. With `scores = true`, the receive binds `[score, value]`.
 Without a record, the receive parks, with its query in the policy slot of its envelope.
@@ -1039,10 +1039,10 @@ A divergent pair re-issues the operation at the end of the transaction, after th
 A re-issued element keeps its record and its identity ([decision 43](decision-register.md#decision-43)).
 
 **Rule VD-9: peeks.** A peek fire removes each non-persistent record that it binds, as the host COMM does ([decision 45](decision-register.md#decision-45), Rule E).
-The same transaction sends each removed record again with its vector, the last owed record first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1773-1808`).
+The same transaction sends each removed record again with its vector, the last owed record first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1791-1826`).
 A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
 
-**Rule VD-10: LIST-CASCADE.** After each removal, the tail checks the parked list waiters in the canonical order (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1860-1954`).
+**Rule VD-10: LIST-CASCADE.** After each removal, the tail checks the parked list waiters in the canonical order (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1878-1978`).
 It fires the first waiter whose list $`L(W, R)`$ is not empty, binds its pattern and passes its guard.
 The fire lifts the first member of the list with `K_lift`, when the member is not persistent, and offers it to the waiter.
 The tail repeats until no parked list waiter can fire, or until the fire count reaches `FIRE_ROUND_CAP`.
@@ -1057,7 +1057,7 @@ A bind in list mode fails the join with `ListModeInJoin`, because a list is one 
 Without a query, a VectorDB bind of a join reads the canonical order.
 
 **Rule VD-12: capacity and merges.** A VectorDB collection has no counter, so every record and every waiter has the order 0.
-A store fails with `CapacityExceeded` when the collection holds `capacity` records, before anything is staged (`rholang/src/rust/interpreter/spaces/generic.rs:972-989`).
+A store fails with `CapacityExceeded` when the collection holds `capacity` records, before anything is staged (`rholang/src/rust/interpreter/spaces/generic.rs:1118-1135`).
 A store of Rule E never exceeds the capacity, because its COMM removed the record in the same transaction.
 
 Two concurrent branches that write one collection merge with no conflict, as on a host channel.
@@ -1172,14 +1172,88 @@ The check of a claim reserves its lookups and its comparison of participant path
 
 ## 5. Theories
 
-Phase P7 adds the theories of the FIPS, which a constructor names with `free Th(args)`.
-Until then, a constructor with a theory must abort with `TheoryUnavailable`, and the config map holds `Nil` at the key `"theory"`.
-The section of P7 must state the admission of a datum under a theory and its charge.
+A factory call may name a builtin theory with `free Th()`, where `Th` is one of `Nat`, `Int`, `String`, `Bool`, and `Any` ([decision 9](decision-register.md#decision-9), item 1).
+The theory decides which values a send may add to the space and which stored data a receive may take.
+The [theory seam](theory-seam.md) explains the design and the data flow, and [F1r3lang integration](f1r3lang-integration.md) states the plan for installed theories.
+
+**Rule TH-1: builtins.** A builtin decides a value by its shape alone.
+The predicate $`\mathrm{sole}(v)`$ holds when $`v`$ has exactly one expression, every other field of $`v`$ is empty, and $`v`$ uses no connective.
+Table 11 gives the values of each builtin.
+So the string `"Nat(42)"` is not in `Nat`, and neither is the par `1 | 2` or `Nil`.
+
+*Table 11. The builtin theories.*
+
+| Theory | A value $`v`$ is in the theory when |
+|---|---|
+| `Nat` | $`\mathrm{sole}(v)`$, and the expression is a `GInt` of at least 0 or a non-negative `GBigInt` |
+| `Int` | $`\mathrm{sole}(v)`$, and the expression is a `GInt` or a `GBigInt` |
+| `String` | $`\mathrm{sole}(v)`$, and the expression is a `GString` |
+| `Bool` | $`\mathrm{sole}(v)`$, and the expression is a `GBool` |
+| `Any` | Always |
+
+**Rule TH-2: identity.** The config of a space holds the [identity](glossary.md#theory-identity) of its theory, never a handle, a token, or an epoch.
+The identity has eight fields.
+They are a version, a language fingerprint, a category, a category name, a theorem id, a checker ABI, a limit profile, and the arguments.
+A builtin has the language `"rrs:builtin"`, the category `"Proc"`, and the ABI `"rrs:structural:v1"`.
+Its limit profile is one work unit and no evidence, and it has no arguments.
+
+**Rule TH-2a: identity bytes.** The config slot `"theory"` holds `Nil` or one `GByteArray` with the canonical bytes of the identity ([decision 74](decision-register.md#decision-74)).
+The bytes hold the eight fields in their order of declaration.
+The version is an `i64` and each limit is a `u64`, all in big-endian form.
+Each string and each argument comes after its length, which is a big-endian `u32`, and the arguments come after their count.
+The decoder accepts exactly the image of the encoder, so a decoded identity encodes to its input bytes.
+
+The `config` reply of a handle shows the identity as a map with the keys `version`, `languageFingerprint`, `category`, `categoryName`, `theoremId`, `checkerAbi`, `limitProfile`, and `args`.
+
+**Rule TH-3: resolution.** Each config read resolves the identity to a checker of this build.
+This build resolves only the structural builtins: the builtin fields with a builtin theorem id, no arguments, and any limit profile.
+Every other identity fails with `TheoryUnavailable`, which names its theorem id.
+The resolution is a function of the identity alone.
+So a restarted node, a validator in replay, and a node that attaches later resolve one identity to one checker.
+
+**Rule TH-4: the factory gate.** Gate 4 of a constructor (Rule FA-6) accepts a builtin name without arguments, and the config stores its identity.
+A builtin with arguments fails with `BadConstructorArgument`.
+Any other name fails with `UnknownTheory`, which names the nearest builtin within two edits, or no builtin.
+
+**Rule TH-5: admission of a send.** On a space with a theory, the checker admits each value of a send in order.
+The admission runs after the config read and the gates of the send, and before any staging or counter bump.
+The first value that the checker refutes aborts the deploy with `TheoryRefuted`.
+The first value that the checker cannot decide aborts the deploy with `TheoryUndetermined`.
+Both errors name the theory and the index of the value.
+
+The admission covers a routed send, the handle `produce`, and each round of a re-issued send.
+A second send of Rule E, a re-store, and a re-offer carry admitted data, so they are not admitted again.
+
+**Rule TH-6: check at a match.** After the `where` guard admits a match, the checker checks each stored datum of the match with the values that its bind captures.
+A verdict other than `Proven` is a guard refusal: a scan receive parks, a head blocks, and a join keeps the search of [decision 37](decision-register.md#decision-37).
+A datum in flight is not checked, because its send admitted it.
+Such a datum is the datum of a send, or a record that a cascade or a re-offer carries.
+
+In list mode, each stored member is checked, and one refusal refuses the list.
+On a PathMap space, the checker checks the own payload of the datum, not its re-rooted value.
+A builtin checks each stored value again, so a datum that it admitted is always `Proven`.
+
+**Rule TH-7: attach.** Each config read decodes the identity and resolves it (Rule TH-3), at the charge of the read.
+
+**Rule TH-8: charges.** A theory check adds no phlo, because the introduction bytes of a send already pay for its values.
+Each check of a builtin reserves one `VerificationOperations` unit before it reads the value.
+The reservation is the same on a hit and a miss, and in play and replay.
+A limit profile of zero units gives `Undetermined` before any reservation.
+The identity bytes make a config read less than a tenth more expensive ([decision 74](decision-register.md#decision-74)).
+
+**Rule TH-9: leases.** A checker may attach a lease to a `Proven` verdict, which the commit must revalidate under the authority of its language.
+A transaction with two or more leases aborts with `NestedCommitGuard` before its commit, until the guard composition of P12.
+The builtins attach no lease.
+
+**Rule TH-10: test checkers.** The checkers with a lease, with a refusal at a match, or with a starved limit profile exist only in test builds.
+So the library tests of `spaces/theory` check them.
 
 ## 6. Constructs that fail closed
 
 P4 rejects each construct that a later phase adds with a deterministic code ([decision 34](decision-register.md#decision-34), item A9).
 The [syntax contract](syntax-contract.md#meaning-at-run-time) lists each construct with its code and its phase.
+Phase P7 replaced the code `TheoryUnavailable` of a theory in a constructor with the rules of section [5](#5-theories).
+The code stays for an identity that names no checker of this build (Rule TH-3).
 Phase P8 replaces the code `AgentSpacesUnavailable` with the rules of spaces that user agents implement.
 
 ## 7. Conformance
@@ -1225,12 +1299,21 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QF-13, QF-14 | `seq_name_iff` (`Namespace.v:1150`), the TLA+ invariant `SeqNotSent` (V5) | `prop_seq_scan_finds_every_seq_name`, `reducer_seq_payload` |
 | QF-15, QF-16, QF-17 | The TLA+ invariants `SeqExclusive` (V4) and `ClaimTracksLastUse` (V8) | `prop_seq_claim_chain`, `reducer_seq_atomic_guard` |
 | QF-18 | The TLA+ invariant `SeqExclusive` (V4) | `reducer_seq_atomic_guard` |
-| FA-1 | `registered_families_complete` (`SpaceFactory.v:1416`) | `prop_registered_families_complete`, `space_factory_families_registered` |
-| FA-2 | `space_match_is_injected_match` (`Match.v:615`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
-| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1505`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
-| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1910`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
-| FA-5 | `priorities_validated` (`SpaceFactory.v:2047`), `array_size_validated` (`SpaceFactory.v:2160`) | `prop_priorities_validated`, `prop_array_size_validated` |
-| FA-7 | `array_size_validated` (`SpaceFactory.v:2160`) | `space_factory_kwargs_are_stored_canonical` |
+| FA-1 | `registered_families_complete` (`SpaceFactory.v:1444`) | `prop_registered_families_complete`, `space_factory_families_registered` |
+| FA-2 | `space_match_is_injected_match` (`Match.v:642`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
+| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1533`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
+| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1938`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
+| FA-5 | `priorities_validated` (`SpaceFactory.v:2075`), `array_size_validated` (`SpaceFactory.v:2188`) | `prop_priorities_validated`, `prop_array_size_validated` |
+| FA-7 | `array_size_validated` (`SpaceFactory.v:2188`) | `space_factory_kwargs_are_stored_canonical` |
+| TH-1 | `builtin_decidable_structural` (`TheoryAdmission.v:254`) | `prop_theory_builtin_decidable`, `theory_nat_accepts_bigint_nonneg`, `theory_nat_rejects_minus1_string_par` |
+| TH-2, TH-2a | `identity_bytes_roundtrip` (`TheoryAdmission.v:822`) | `prop_theory_identity_bytes_roundtrip`, `theory_identity_persisted_no_handle`, `theory_config_slot_is_one_compact_par` |
+| TH-3, TH-7 | `resolve_identity_deterministic` (`TheoryAdmission.v:587`), `replay_preserves_theory_admission` (`TheoryAdmission.v:851`) | `prop_resolve_identity_deterministic`, `theory_unavailable_fails_each_config_read` |
+| TH-4 | `theory_gate_validated` (`SpaceFactory.v:2525`) | `prop_theory_gate`, `theory_unknown_name_suggestion`, `theory_builtin_args_rejected`, `reified_factory_theory_gate` |
+| TH-5 | `fail_closed` (`TheoryAdmission.v:398`), `replay_preserves_theory_admission` (`TheoryAdmission.v:851`) | `prop_theory_fail_closed`, `prop_replay_preserves_theory_admission`, `theory_refuted_value_aborts_before_staging`, `theory_undetermined_budget0_aborts`, `theory_admission_precedes_any_staging` |
+| TH-6 | `theory_refusal_is_guard_refusal` (`Match.v:795`) | `prop_theory_refusal_is_guard_refusal`, `space_guard_match`, `space_guard_match_refusal_is_a_guard_refusal`, `space_theory_admission`, `space_theory_admission_vectordb` |
+| TH-8 | `usage_cache_transparent` (`TheoryAdmission.v:475`), `builtin_decidable_structural` (`TheoryAdmission.v:254`) | `prop_theory_usage_cache_transparent`, `theory_admission_reserves_one_unit_per_checked_value`, `theory_match_reserves_one_unit_per_stored_datum` |
+| TH-9 | `fail_closed` (`TheoryAdmission.v:398`) | `theory_nested_commit_guard` |
+| TH-10 | None | `theory_nested_commit_guard`, `space_guard_match_refusal_is_a_guard_refusal`, `theory_undetermined_budget0_aborts` |
 | AR-1, AR-3, VE-1, VE-3 | `fixed_array_allocates_at_most_size` (`OuterStorage.v:313`), `vector_index_is_counter` (`VectorStore.v:184`) | `prop_fixed_array_allocates_at_most_size`, `prop_vector_index_is_counter` |
 | AR-2, VE-2 | `hashmap_get_put_other` (`HashMapStore.v:256`), `hashmap_iteration_permutation_invariant` (`HashMapStore.v:211`) | `prop_hashmap_get_put_other`, `prop_hashmap_iteration_permutation_invariant` |
 | AR-4, VE-4, AL-2 | `fixed_array_indices_sequential` (`OuterStorage.v:345`), `cyclic_array_index_mod_size` (`OuterStorage.v:376`), `vector_gensym_monotonic` (`VectorStore.v:219`) | `prop_fixed_array_indices_sequential`, `prop_cyclic_array_index_mod_size`, `prop_vector_gensym_monotonic` |
@@ -1258,9 +1341,9 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | HS-4 | None | `reified_hashset_joins`, `reified_hashset_pattern_not_empty` |
 | HS-5 | `hashset_unit_rules` (`HashMapStore.v:378`) | `reified_hashset_unit_sends`, `reified_hashset_disciplines`, `reified_hashset_head_order`, `space_engine_hashset_families_take_units_only` |
 | HS-6 | `qualifier_matrix` (`SpaceFactory.v:383`), the TLA+ invariant `QualifierSupport` (V6) | `reified_hashset_seq_only`, `reified_hashset_absent_unit_waits`, `reducer_qualifier_matrix`, `reified_factory_hashset_takes_only_seq_in_native_execution` |
-| HS-7 | `registered_families_complete` (`SpaceFactory.v:1416`) | `reified_hashset_factory_params`, `space_factory_families_registered`, `p7_system_channels_have_the_table_values` |
+| HS-7 | `registered_families_complete` (`SpaceFactory.v:1444`) | `reified_hashset_factory_params`, `space_factory_families_registered`, `p7_system_channels_have_the_table_values` |
 | BG-1 | `bag_visit_order_canonical` (`DataCollection.v:243`), `waiter_visit_order_canonical` (`ContinuationCollection.v:337`) | `prop_bag_visit_order_canonical`, `prop_bag_waiter_visit_order_canonical` |
-| BG-2, BG-3 | `bag_consume_first_spatial_match` (`DataCollection.v:445`), `guard_once_greedy_like_head` (`Match.v:658`) | `prop_bag_consume_first_spatial_match`, `prop_engine_guard_checked_once_as_the_host_checks_it` |
+| BG-2, BG-3 | `bag_consume_first_spatial_match` (`DataCollection.v:445`), `guard_once_greedy_like_head` (`Match.v:685`) | `prop_bag_consume_first_spatial_match`, `prop_engine_guard_checked_once_as_the_host_checks_it` |
 | BG-4 | `bag_multiplicity_preserved` (`DataCollection.v:559`), `bag_removal_keeps_equal_duplicate` (`DataCollection.v:578`), `bag_persistent_match_not_removed` (`DataCollection.v:536`) | `prop_bag_multiplicity_preserved`, `prop_bag_removal_keeps_equal_duplicate` |
 | BG-5, BG-6 | `bag_peek_restore_is_host_second_send` (`DataCollection.v:725`), `peek_restore_equals_host_reproduce` (`GenericRSpace.v:1156`), the TLA+ invariant `PeekRestoresRecord` (V8) | `prop_bag_legacy_charges_equal_host`, `prop_bag_restore_registers_the_record_authority` |
 | BG-7 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`) | `prop_engine_scan_reissue_keeps_identity` |
@@ -1309,7 +1392,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play` |
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
 | NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
-| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2359`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
+| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2387`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
 | VD-2 | None | `space_vectordb_payload_is_the_vector_by_default`, `space_vectordb_peek_restores_records_with_their_embedding`, `space_native_vectors_every_kind_enters_exactly` |
 | VD-3 | None | `space_vectordb_errors_have_their_codes`, `space_vectordb_source_errors_have_their_codes`, `space_vectordb_fixed_point_and_rational_thresholds` |
 | VD-4 | `cosine_squared_form_iff` (`Similarity.v:412`), `cosine_order_squared_form` (`Similarity.v:471`), `euclidean_radius_squared_form` (`Similarity.v:545`), `binary_laws` (`Similarity.v:1042`), `selection_total_order` (`Similarity.v:1169`) | `prop_selection_order_is_a_strict_total_order`, `space_vectordb_bounds_select_the_eligible_records`, `space_vectordb_ids_keep_only_the_listed_records`, `space_vectordb_binary_metrics_read_binary_vectors_only`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order`, `space_similarity_topk_reference_cases_through_the_space`, `space_hash_collision_tie_duplicates_are_interchangeable`, `space_hash_collision_tie_forced_equal_source_hashes_select_one_value` |
@@ -1427,7 +1510,7 @@ A failure reply is recorded too.
 Replay produces the recorded reply and asks no embedder and no mirror, so two nodes with other services compute the same state.
 Both processes run in native execution ([decision 68](decision-register.md#decision-68)).
 
-**Rule SP-6: the `config` reply of a mirrored space.** The reply of `space!?("config")` holds one more entry for a space with a mirror (`rholang/src/rust/interpreter/reified/handle.rs:505-531`).
+**Rule SP-6: the `config` reply of a mirrored space.** The reply of `space!?("config")` holds one more entry for a space with a mirror (`rholang/src/rust/interpreter/reified/handle.rs:507-547`).
 The entry `"mirror"` is the map `{"backend": "chroma", "collection": c}`.
 Here `c` is `rrs-` and the lowercase hex of the first 16 bytes of the space id.
 The stored config record does not change, so the name of the collection is never consensus state.

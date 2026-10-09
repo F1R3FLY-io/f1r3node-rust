@@ -63,17 +63,17 @@
    fire_round_cap, after_fire
                             reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:1577-1644 (offer_head, the
+   offer, offer_loop        spaces/generic.rs:1723-1791 (offer_head, the
                             head driver of Discipline::offer)
-   receive, receive_loop    spaces/generic.rs:1653-1737 (receive_head, the
+   receive, receive_loop    spaces/generic.rs:1800-1884 (receive_head, the
                             head driver of Discipline::receive. The row of
                             code_ops covers its re-store of decision 45.)
-   head_waiter, head_record spaces/generic.rs:855-871, 875-888, 892-903
+   head_waiter, head_record spaces/generic.rs:1001-1017, 1021-1034, 1038-1049
                             (Cx::scan_head, Cx::head_waiter, Cx::head_datum)
    bump                     spaces/counter.rs:165-245 (the ord is the
                             counter value, and the first operation takes 0
                             and opens the counter at 1)
-   produce, consume         spaces/generic.rs:2349-2513 (run_with of
+   produce, consume         spaces/generic.rs:2544-2714 (run_with of
                             FamilySpace: bump, then plan)
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
@@ -82,26 +82,26 @@
                             (ProduceOp::reissued_ord and
                             ConsumeOp::reissued_ord: the first-round ord of
                             a re-issued persistent operation)
-   operation_ord            spaces/generic.rs:1768-1796 (the check
+   operation_ord            spaces/generic.rs:1915-1943 (the check
                             0 <= reissued_ord < bump.ord, else
                             Inconsistent, and the bump value for a fresh
                             operation)
    ord_precedes             spaces/disciplines/queue.rs:65-74
                             (QueueDiscipline::precedes: ord < head)
-   reentry_at_head          spaces/generic.rs:944-965, 907-927
+   reentry_at_head          spaces/generic.rs:1090-1111, 1053-1073
                             (Cx::at_head and Cx::head_ord: an empty side,
                             or an ord that precedes the head, and
                             Inconsistent on an equal ord)
    reenter_offer, reenter_receive
-                            spaces/generic.rs:1577-1644, 1653-1737
+                            spaces/generic.rs:1723-1791, 1800-1884
                             (offer_head and receive_head: store or park at
                             its place when not at the head, else the loop)
    reenter_produce, reenter_consume
-                            spaces/generic.rs:2349-2513 (run_with of
+                            spaces/generic.rs:2544-2714 (run_with of
                             FamilySpace with a reissued_ord: bump, then
                             operation_ord, then the plan)
    reissued_ord, flight_after
-                            spaces/generic.rs:1636, 1729 (offer_head and
+                            spaces/generic.rs:1783, 1876 (offer_head and
                             receive_head: the re-issue sets
                             reissued_ord: op.persistent.then_some(ord))
    round, run_rounds        reified/reducer_hooks.rs:763-819
@@ -109,8 +109,8 @@
                             Intent::Space, the last dispatch branch of the
                             same deploy)
    code_staged, code_of, code_ops
-                            spaces/generic.rs:1120-1131, 1773-1782, 1728-1733
-                            and 1674-1703 (Cx::restore and Cx::restore_on
+                            spaces/generic.rs:1266-1277, 1920-1929, 1875-1880
+                            and 1821-1850 (Cx::restore and Cx::restore_on
                             stage a Store of the same record bytes with
                             persist = false, and restore_peeked calls
                             Discipline::restore, whose default is

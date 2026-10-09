@@ -37,7 +37,7 @@ Decision 47 fixed the space instance of F-47-4 in its own backend (commit `c6cb3
 
 ## 3. F-47-1: space errors have no typed class
 
-A space error that is not a host error becomes `InterpreterError::ReduceError("reified:…")` (`rholang/src/rust/interpreter/spaces/errors.rs:266-273`).
+A space error that is not a host error becomes `InterpreterError::ReduceError("reified:…")` (`rholang/src/rust/interpreter/spaces/errors.rs:294-301`).
 The economic failure policy classifies a `ReduceError` as Unclassified, and an Unclassified failure prevents the economic publication (`docs/casper/theory/cost-accounting-impl/economic-failure-observation.md:29`).
 The production check of an offered witness rejects every failure that is not a user failure.
 So a native deploy that fails with a space error, for example `CellOccupied` or `DanglingHandle`, is never charged.

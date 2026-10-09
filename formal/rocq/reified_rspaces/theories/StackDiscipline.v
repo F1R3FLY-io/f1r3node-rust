@@ -79,16 +79,16 @@
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code (rholang/src/rust/interpreter)
    ─────────────────────────────────────────────────────────────────────────
-   above, top_from, top      spaces/disciplines/stack.rs:75-93, 227-262
+   above, top_from, top      spaces/disciplines/stack.rs:75-93, 233-268
                              (StackDiscipline::head_metered: the greatest
                              (ord, bytes), the earlier index on equal keys,
                              and Top::challenge)
    reenter_offer,            spaces/disciplines/stack.rs:96, 99-108
    reenter_receive           (reaches_head is true, precedes is ord > head)
-                             and spaces/generic.rs:944-965 (Cx::at_head)
+                             and spaces/generic.rs:1090-1111 (Cx::at_head)
    after_fire, cap           reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP,
                              FireRounds::after_fire)
-   next_fire                 spaces/disciplines/stack.rs:159-212
+   next_fire                 spaces/disciplines/stack.rs:159-218
                              (StackView::next_fire: the top waiter, then
                              the top record or the record in flight, then
                              Cx::matches)
@@ -103,26 +103,26 @@
                              starts the count at 0 (the settle before the
                              plan and a settle job). settle_at continues
                              the count (the settle after the plan).
-   fires (the fire count)    spaces/generic.rs:707, 772 and 2426
+   fires (the fire count)    spaces/generic.rs:708, 801 and 2623
                              (Plan.rounds, Cx::rounds, and the new
                              FireRounds of each transaction in run_with)
-   plan_at_cap               spaces/generic.rs:1556-1569 (open_plan: the
+   plan_at_cap               spaces/generic.rs:1702-1715 (open_plan: the
                              settle before the plan, then the cap check of
                              the transaction)
-   offer_loop                spaces/generic.rs:1577-1644 (offer_head)
-   receive_loop,             spaces/generic.rs:1653-1737 and 1740-1749
+   offer_loop                spaces/generic.rs:1723-1791 (offer_head)
+   receive_loop,             spaces/generic.rs:1800-1884 and 1887-1896
    consume_fire              (receive_head and restore_peeked: the plain
                              re-store of a peeked record, Rule E)
-   with_settles              spaces/generic.rs:1556-1569, 1577-1644 and
-                             1621-1705 (open_plan and the settle hooks
+   with_settles              spaces/generic.rs:1702-1715, 1723-1791 and
+                             1768-1852 (open_plan and the settle hooks
                              around the plans) and
                              spaces/disciplines/stack.rs:112-138
    carried, next_round       spaces/settle.rs:643-675 and 681-705
                              (reissued_operation: persistent.then(first-
                              round order), and settle_operation) and
-                             spaces/generic.rs:1636, 1729 (the re-issue of
+                             spaces/generic.rs:1783, 1876 (the re-issue of
                              a plan)
-   produce, consume,         spaces/generic.rs:2349-2513 (run_with of
+   produce, consume,         spaces/generic.rs:2544-2714 (run_with of
    bumped, bump_ord          FamilySpace: the bump, then the plan) and
                              spaces/counter.rs:165-245 (bump)
    apply, run                the staged view of the substrate
@@ -136,9 +136,9 @@
                              of space_store_handle.rs)
    produce_without_settle    the Unsafe control StackNoSettle of
                              StackDiscipline.tla (no settle hooks)
-   scan, settle_round,       spaces/disciplines/stack.rs:159-212,
+   scan, settle_round,       spaces/disciplines/stack.rs:159-218,
    settle_trace              spaces/settle.rs:404-498 and 519-563, and
-                             spaces/generic.rs:875-903 (the scans of the
+                             spaces/generic.rs:1021-1049 (the scans of the
                              two tops, the payload decode, the metered
                              match, the copies of the plan and of the
                              lift, the prepaid unwrap, the re-offer)

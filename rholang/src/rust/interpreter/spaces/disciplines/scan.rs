@@ -89,7 +89,8 @@ use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, ScanMeter
 use crate::rust::interpreter::spaces::agent::{ConsumeOp, ProduceOp, SpaceOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{
-    open_plan, peek_set, Cx, Discipline, OfferFire, OpView, ParCandidate, ParDatum, ParWaiter, Side,
+    open_plan, peek_set, Cx, Discipline, OfferFire, OpView, ParCandidate, ParDatum, ParWaiter,
+    Side, StoredMatch,
 };
 use crate::rust::interpreter::spaces::namespace::{CollectionKey, RandomPurpose};
 use crate::rust::interpreter::spaces::record::{self, Introduction};
@@ -261,7 +262,13 @@ pub fn receive<D: ScanDiscipline>(
             cx.park(&op, continuation, peeks)?;
             return discipline.settle_after(cx, OpView::Consume(&op));
         };
-        if !cx.admits(&continuation, &found.matched)? {
+        // The theory of the space checks the stored record after the guard (P7, TH-6). A set
+        // class is one value (F5), so the check of its first member decides the class.
+        let stored = StoredMatch {
+            payload: &found.payload,
+            captures: &found.matched,
+        };
+        if !cx.admits(&continuation, &found.matched, &[stored])? {
             cx.check_capacity::<D>(Side::Waiters)?;
             cx.park(&op, continuation, peeks)?;
             return discipline.settle_after(cx, OpView::Consume(&op));
@@ -545,7 +552,8 @@ fn first_admitting_waiter(
             continue;
         };
         let waiter = meter.copy(waiter_at(cx, index)?)?;
-        if cx.admits(&waiter.continuation, &matched)? {
+        // The element is in flight, so the theory checks no stored data here (P7, TH-6).
+        if cx.admits(&waiter.continuation, &matched, &[])? {
             return Ok(Some(FoundWaiter {
                 position,
                 waiter,

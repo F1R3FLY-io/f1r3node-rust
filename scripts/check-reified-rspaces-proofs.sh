@@ -17,7 +17,9 @@
 # headline 16 of CounterConflict.v (capped_writes_soft_bound, decision 71).
 # P6 step 8b adds VectorDbDiscipline.v (5: S21-S25), and step 8d adds
 # VectorOps.v (2: S27 and S28). P7 step 2 adds headline 12 of Namespace.v
-# (seq_name_iff, SQ-1).
+# (seq_name_iff, SQ-1). P7 step 4 adds TheoryAdmission.v (6: TA1 to TA6),
+# headline 4 of Match.v (theory_refusal_is_guard_refusal, TH-6) and
+# headline 15 of SpaceFactory.v (theory_gate_validated, TH-4).
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -51,7 +53,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 279: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 287: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -87,8 +89,12 @@
 #                        the headlines of VectorOps.v, 2 for P7 step 1:
 #                        sweep_complete and dead_ephemeral_dangling of
 #                        VolatileSweep.v, 1 for P7 step 2:
-#                        seq_name_iff of Namespace.v, and 1 for P7 step
-#                        3: hashset_unit_rules of HashMapStore.v)
+#                        seq_name_iff of Namespace.v, 1 for P7 step
+#                        3: hashset_unit_rules of HashMapStore.v, and 8
+#                        for P7 step 4: the 6 headlines of
+#                        TheoryAdmission.v, theory_refusal_is_guard_refusal
+#                        of Match.v and theory_gate_validated of
+#                        SpaceFactory.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -107,7 +113,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-279}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-287}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -122,13 +128,13 @@ declare -A EXPECTED_PER_MODULE=(
   [CounterConflict]=16
   [HeadOnlyDisciplines]=20
   [SpaceRefs]=12
-  [SpaceFactory]=14
+  [SpaceFactory]=15
   [AgentReadCoverage]=9
   [LegacyCharges]=2
   [CellDiscipline]=3
   [DataCollection]=7
   [ContinuationCollection]=5
-  [Match]=3
+  [Match]=4
   [GenericRSpace]=5
   [OuterStorage]=8
   [VectorStore]=3
@@ -141,6 +147,7 @@ declare -A EXPECTED_PER_MODULE=(
   [Similarity]=20
   [VectorDbDiscipline]=5
   [VectorOps]=2
+  [TheoryAdmission]=6
 )
 
 PASS=0

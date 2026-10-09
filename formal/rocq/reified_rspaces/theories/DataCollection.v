@@ -36,7 +36,7 @@
                             hashes are byte-identical records, so a sort of
                             the keys is the canonical order.
    first_match,
-   receive_choice           scan.rs:228-314 (receive: first_bound_record at
+   receive_choice           scan.rs:229-321 (receive: first_bound_record at
                             533-553, then Cx::admits once, then park)
    op, on_records           the staged operations of the driver and the
                             effect of each one on the records of D:
@@ -45,7 +45,7 @@
                             stored) and FireSt (Cx::fire_receive_group: the
                             bound record leaves unless it is persistent,
                             space_store_handle.rs removed_records)
-   fits, offer_pass, offer  scan.rs:401-492 (offer_scan with
+   fits, offer_pass, offer  scan.rs:408-499 (offer_scan with
                             first_admitting_waiter at 497-528: one pass
                             over the waiters in canonical order, a guard
                             refusal moves on, after_fire of FireRounds)
@@ -57,7 +57,7 @@
                             persistent datum or of a peek waiter
                             (reduce.rs continue_produce_process,
                             produce_peeks)
-   peek_plan                scan.rs:228-314, 701-711 and 722-754 (receive
+   peek_plan                scan.rs:229-321, 709-719 and 730-762 (receive
                             with restore_in and restore_scan: the second
                             send of the removed record with
                             Introduction::for_record), and 723-744

@@ -48,21 +48,21 @@
                             check_commit_metered, or get and check_commit)
    matches                  spaces/matching.rs:105-120 (SpaceMatcher::matches:
                             bind, then the guard) and spaces/generic.rs:
-                            815-851 (Cx::bind, Cx::admits, Cx::matches)
+                            844-997 (Cx::bind, Cx::admits, Cx::matches)
    first_spatial,           the RECEIVE-SCAN step of A.7: the first record
      scan_receive           of canonical_data_order with a spatial match,
                             then admits once (spaces/disciplines/scan.rs,
                             batch BAG); the order is Cx::canonical_data_order
-                            (spaces/generic.rs:800-805)
+                            (spaces/generic.rs:829-834)
    first_unrefused,         the OFFER-SCAN step of A.7: the first waiter of
      scan_offer_loop,       canonical_waiter_order outside the refused set
      scan_offer             with a spatial match; a refusal joins the
                             refused set (spaces/disciplines/scan.rs, batch
                             BAG); the order is Cx::canonical_waiter_order
-                            (spaces/generic.rs:807-813)
+                            (spaces/generic.rs:836-842)
    head_receive, head_offer the head driver of S1: receive_head and
                             offer_head match the head with Cx::matches
-                            (spaces/generic.rs:1577-1644, 1653-1737)
+                            (spaces/generic.rs:1723-1791, 1800-1884)
    host_consume             the host consume (rspace++/src/rspace/rspace/
                             ops_consume.rs:95-151): extract_data_candidates
                             takes the first datum of the bind that matches
@@ -80,6 +80,22 @@
                             Match.v:95-120 and GenericRSpace.tla
                             "Matches == TRUE"): every pattern matches
                             every payload
+   th, admits_th            the theory of the space at a match (P7 step 4,
+                            TH-6): spaces/generic.rs:891-901 (Cx::admits:
+                            the guard, then theory_admits on the stored
+                            data) and 982-997 (theory_admits: check_match
+                            on each stored datum; a verdict other than
+                            Proven refuses)
+   scan_receive_th          spaces/disciplines/scan.rs:267-271 (the stored
+                            record of RECEIVE-SCAN goes to the theory)
+   scan_offer_th            spaces/disciplines/scan.rs:556 (OFFER-SCAN
+                            checks no stored datum: the element is in
+                            flight)
+   head_receive_th          spaces/generic.rs:958-976 (Cx::matches with
+                            Held::Stored) and 1832 (receive_head)
+   with_stored_theory       the guard that also runs the theory on the
+                            chosen record: the claim of design v3 TH-6
+                            that a non-Proven verdict is a guard refusal
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -100,7 +116,7 @@
      AgentReadCoverage.v models it.
 
    ─────────────────────────────────────────────────────────────────────────
-   Results (3 headlines, axiom-free)
+   Results (4 headlines, axiom-free)
    ─────────────────────────────────────────────────────────────────────────
    F17 space_match_is_injected_match   every fire of a plan carries the
                                        spatial match of the injected
@@ -120,11 +136,22 @@
                                        sides, and the pattern plays no part
                                        in a choice; the real matcher parks
                                        and stores
+   TH6 theory_refusal_is_guard_refusal P7 step 4: the theory of the space at
+                                       a match is part of the guard. A fire
+                                       binds a record that the guard and
+                                       the theory admit, a theory refusal
+                                       is a guard refusal (RECEIVE-SCAN and
+                                       the head driver), a refused first
+                                       match parks, a theory that proves
+                                       every datum changes no choice, and a
+                                       datum in flight is never checked
 
    Rust correspondence of the extracted tests: rholang/tests/
    reified_engine_props.rs (prop_engine_match_is_the_injected_matcher,
    prop_engine_guard_checked_once_as_the_host_checks_it,
-   prop_engine_wildcard_matcher_breaks_pattern_enforcement).
+   prop_engine_wildcard_matcher_breaks_pattern_enforcement), and the library
+   test prop_theory_refusal_is_guard_refusal (rholang/src/rust/interpreter/
+   spaces/generic.rs) of TH6.
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -668,6 +695,137 @@ Section Plans.
     split; [intros mt p g d; split; [apply scan_receive_one | apply guard_filter_one] |].
     exact scan_offer_one.
   Qed.
+
+  (* ── 8. The theory of the space at a match (P7 step 4, TH-6) ─────────── *)
+
+  (* check_match of the theory of the space: the stored payload of a match and
+     the values that its bind captures. A space without a theory acts as the
+     theory that proves every datum. *)
+  Variable th : V -> M -> bool.
+
+  (* Cx::admits with the stored data of a match: the guard, then the theory
+     on each stored datum. *)
+  Definition admits_th (mt : matcher) (g : G) (m : M) (stored : list V) : bool :=
+    admits mt g m && forallb (fun v => th v m) stored.
+
+  (* RECEIVE-SCAN with the theory: the first spatial match, then the guard
+     and the theory on its stored record, once. A refusal parks. *)
+  Definition scan_receive_th (mt : matcher) (p : P) (g : G) (l : list D) : receive_choice :=
+    match first_spatial mt p l with
+    | Some (d, m) => if admits_th mt g m [payload d] then RFire d m else RPark
+    | None => RPark
+    end.
+
+  (* receive_head with the theory: Cx::matches with Held::Stored. *)
+  Definition head_receive_th (mt : matcher) (p : P) (g : G) (head : D) : receive_choice :=
+    match spatial mt p (payload head) with
+    | Some m => if admits_th mt g m [payload head] then RFire head m else RPark
+    | None => RPark
+    end.
+
+  (* OFFER-SCAN with the theory: the datum is in flight, so the theory checks
+     no stored datum (Held::InFlight, and the empty slice of
+     first_admitting_waiter). *)
+  Fixpoint scan_offer_loop_th (fuel : nat) (mt : matcher) (v : V) (refused : list nat)
+      (ws : list W) : offer_choice :=
+    match fuel with
+    | O => OStore
+    | S fuel' =>
+        match first_unrefused mt v refused ws with
+        | None => OStore
+        | Some (w, m) =>
+            if admits_th mt (w_guard w) m [] then OFire w m
+            else scan_offer_loop_th fuel' mt v (w_id w :: refused) ws
+        end
+    end.
+
+  Definition scan_offer_th (mt : matcher) (v : V) (ws : list W) : offer_choice :=
+    scan_offer_loop_th (S (length ws)) mt v [] ws.
+
+  (* The matcher whose guard also runs the theory on the stored record d. *)
+  Definition with_stored_theory (mt : matcher) (d : D) : matcher :=
+    mkMatcher (spatial mt) (fun g m => admits mt g m && th (payload d) m).
+
+  Lemma first_spatial_some :
+    forall mt p l d m, first_spatial mt p l = Some (d, m) -> In d l /\ spatial mt p (payload d) = Some m.
+  Proof.
+    intros mt p. induction l as [| x rest IH]; intros d m H; cbn in H; [discriminate H |].
+    destruct (spatial mt p (payload x)) as [m' |] eqn:E.
+    - injection H as -> ->. split; [left; reflexivity | exact E].
+    - destruct (IH d m H) as [Hin Hs]. split; [right; exact Hin | exact Hs].
+  Qed.
+
+  Lemma first_spatial_with_theory :
+    forall mt d p l, first_spatial (with_stored_theory mt d) p l = first_spatial mt p l.
+  Proof.
+    intros mt d p. induction l as [| x rest IH]; [reflexivity |].
+    cbn [first_spatial]. cbn [spatial with_stored_theory]. rewrite IH. reflexivity.
+  Qed.
+
+  Lemma admits_th_one :
+    forall mt g m v, admits_th mt g m [v] = admits mt g m && th v m.
+  Proof. intros mt g m v. unfold admits_th. cbn [forallb]. rewrite andb_true_r. reflexivity. Qed.
+
+  Lemma admits_th_none : forall mt g m, admits_th mt g m [] = admits mt g m.
+  Proof. intros mt g m. unfold admits_th. cbn [forallb]. apply andb_true_r. Qed.
+
+  Lemma scan_offer_loop_th_plain :
+    forall fuel mt v refused ws, scan_offer_loop_th fuel mt v refused ws = scan_offer_loop fuel mt v refused ws.
+  Proof.
+    induction fuel as [| fuel IH]; intros mt v refused ws; [reflexivity |].
+    cbn [scan_offer_loop_th scan_offer_loop].
+    destruct (first_unrefused mt v refused ws) as [[w m] |]; [| reflexivity].
+    rewrite admits_th_none. destruct (admits mt (w_guard w) m); [reflexivity | apply IH].
+  Qed.
+
+  (* Headline 4 (TH-6): the theory of the space at a match is part of the
+     guard.
+     1. A fire binds a stored record that matches spatially and that the
+        guard and the theory both admit.
+     2. A theory refusal is a guard refusal: RECEIVE-SCAN with the theory
+        chooses as RECEIVE-SCAN without it under the guard that also runs the
+        theory on the first spatial match.
+     3. So a refused first match parks, as a guard refusal parks under
+        decision 37, even when a later record passes both.
+     4. A theory that proves every datum changes no choice.
+     5. A datum in flight is never checked: OFFER-SCAN with the theory is
+        OFFER-SCAN without it.
+     6. The head driver: the theory refusal of the stored head is a guard
+        refusal, so the head blocks (decision 11). *)
+  Theorem theory_refusal_is_guard_refusal :
+    (forall mt p g l d m, scan_receive_th mt p g l = RFire d m ->
+       In d l /\ spatial mt p (payload d) = Some m /\ admits mt g m = true /\ th (payload d) m = true) /\
+    (forall mt p g l, scan_receive_th mt p g l =
+       match first_spatial mt p l with
+       | Some (d, _) => scan_receive (with_stored_theory mt d) p g l
+       | None => RPark
+       end) /\
+    (forall mt p g l d m, first_spatial mt p l = Some (d, m) -> th (payload d) m = false ->
+       scan_receive_th mt p g l = RPark) /\
+    ((forall v m, th v m = true) -> forall mt p g l, scan_receive_th mt p g l = scan_receive mt p g l) /\
+    (forall mt v ws, scan_offer_th mt v ws = scan_offer mt v ws) /\
+    (forall mt p g d, head_receive_th mt p g d = head_receive (with_stored_theory mt d) p g d).
+  Proof.
+    split; [| split; [| split; [| split; [| split]]]].
+    - intros mt p g l d m H. unfold scan_receive_th in H.
+      destruct (first_spatial mt p l) as [[d' m'] |] eqn:F; [| discriminate H].
+      destruct (admits_th mt g m' [payload d']) eqn:A; [| discriminate H].
+      injection H as -> ->. rewrite admits_th_one in A. apply andb_true_iff in A as [Ag At].
+      destruct (first_spatial_some mt p l d m F) as [Hin Hs].
+      split; [exact Hin |]. split; [exact Hs |]. split; [exact Ag | exact At].
+    - intros mt p g l. unfold scan_receive_th.
+      destruct (first_spatial mt p l) as [[d m] |] eqn:F; [| reflexivity].
+      unfold scan_receive. rewrite first_spatial_with_theory, F, admits_th_one. reflexivity.
+    - intros mt p g l d m F T. unfold scan_receive_th. rewrite F, admits_th_one, T, andb_false_r.
+      reflexivity.
+    - intros Hall mt p g l. unfold scan_receive_th, scan_receive.
+      destruct (first_spatial mt p l) as [[d m] |]; [| reflexivity].
+      rewrite admits_th_one, Hall, andb_true_r. reflexivity.
+    - intros mt v ws. unfold scan_offer_th, scan_offer. apply scan_offer_loop_th_plain.
+    - intros mt p g d. unfold head_receive_th, head_receive, matches. cbn [spatial admits with_stored_theory].
+      destruct (spatial mt p (payload d)) as [m |]; [| reflexivity].
+      rewrite admits_th_one. destruct (admits mt g m && th (payload d) m); reflexivity.
+  Qed.
 End Plans.
 
 Arguments mkMatcher {V P G M} spatial admits.
@@ -737,3 +895,4 @@ Qed.
 Print Assumptions space_match_is_injected_match.
 Print Assumptions guard_once_greedy_like_head.
 Print Assumptions wildcard_matcher_degenerate.
+Print Assumptions theory_refusal_is_guard_refusal.

@@ -957,12 +957,30 @@ async fn reified_factory_kwargs_fold() {
             &["QualifierUnavailable"],
         )
         .await;
+    // Changed by P7 step 4 (design v3 TH-4): gate 4 accepts the builtin theories, so an
+    // unknown theory shows that the theory gate runs before the params gate.
+    // session
+    //     .fail_with(
+    //         r#"new factory(`rho:space:hashmap:queue`) in { for (q <- factory!?(free Nat(); capacity=4)) { Nil } }"#,
+    //         "rrs-p4-kwargs-after-theory",
+    //         &Injections::new(),
+    //         &["TheoryUnavailable"],
+    //     )
+    //     .await;
+    session
+        .fail_with(
+            r#"new factory(`rho:space:hashmap:queue`) in { for (q <- factory!?(free Bounded(); capacity=4)) { Nil } }"#,
+            "rrs-p4-kwargs-after-theory",
+            &Injections::new(),
+            &["UnknownTheory"],
+        )
+        .await;
     session
         .fail_with(
             r#"new factory(`rho:space:hashmap:queue`) in { for (q <- factory!?(free Nat(); capacity=4)) { Nil } }"#,
-            "rrs-p4-kwargs-after-theory",
+            "rrs-p4-kwargs-after-builtin-theory",
             &Injections::new(),
-            &["TheoryUnavailable"],
+            &["UnknownParam"],
         )
         .await;
     // An empty params section adds no PARAMS tuple: the call is the call without params.
@@ -1133,11 +1151,20 @@ async fn reified_factory_p4_gates_fail_closed() {
         // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
         // ("temp", r#""temp""#, "QualifierUnavailable"),
         ("seq", r#""seq""#, "QualifierUnavailable"),
-        ("theory", "free Nat()", "TheoryUnavailable"),
+        // Changed by P7 step 4 (design v3 TH-4): gate 4 accepts the builtin theories and
+        // refuses every other name.
+        // ("theory", "free Nat()", "TheoryUnavailable"),
+        // (
+        //     "theory-with-args",
+        //     "free Bounded(1, 2)",
+        //     "TheoryUnavailable",
+        // ),
+        ("theory", "free Bounded()", "UnknownTheory"),
+        ("theory-with-args", "free Bounded(1, 2)", "UnknownTheory"),
         (
-            "theory-with-args",
-            "free Bounded(1, 2)",
-            "TheoryUnavailable",
+            "builtin-theory-with-args",
+            "free Nat(1)",
+            "BadConstructorArgument",
         ),
         (
             "qualifier-before-theory",

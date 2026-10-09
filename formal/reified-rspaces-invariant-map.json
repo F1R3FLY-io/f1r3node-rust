@@ -7941,8 +7941,8 @@
       ]
     },
     "P7": {
-      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8); and the HashSet store (W4): the unit rules of a HashSet collection (HashMapStore.v V9).",
-      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ), 6 (HS) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs, reified_seq.rs and reified_hashset.rs and of the reducer hooks.",
+      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8); and the HashSet store (W4): the unit rules of a HashSet collection (HashMapStore.v V9); and the theory seam (W5): the builtin theories, the fail-closed admission and the commit guard, the transparent cache, the resolution of an identity, replay of the admission, the identity bytes (TheoryAdmission.v V10 to V15), the theory at a match (Match.v V16) and gate 4 (SpaceFactory.v V17).",
+      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ), 6 (HS) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs, reified_seq.rs and reified_hashset.rs and of the reducer hooks; section 7 (TH) and decision 74 for the theory seam. The witness tests of W5 are in reified_theory.rs and in the library tests of spaces/theory, spaces/generic.rs and spaces/factory/constructor.rs.",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/reified/runtime.rs",
@@ -7950,9 +7950,10 @@
         "rholang/tests/reified_hashset.rs",
         "rholang/tests/reified_seq.rs",
         "rholang/tests/reified_temp_seq.rs",
+        "rholang/tests/reified_theory.rs",
         "rholang/tests/reified_volatile_sweep.rs"
       ],
-      "expected_properties": 7,
+      "expected_properties": 15,
       "formal": {
         "V1": {
           "kind": "rocq",
@@ -8034,6 +8035,78 @@
           "tests": [
             "prop_hashset_unit_rules"
           ]
+        },
+        "V10": {
+          "kind": "rocq",
+          "name": "builtin_decidable_structural",
+          "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+          "statement": "With a limit of at least one unit, each builtin decides every value by its shape as TH-1 states, never Undetermined, with the usage {1, 0} and one reserved unit; a match checks every stored value for one unit; a limit of 0 gives Undetermined before any reservation (design v3 TH-1, TH-8).",
+          "tests": [
+            "prop_theory_builtin_decidable"
+          ]
+        },
+        "V11": {
+          "kind": "rocq",
+          "name": "fail_closed",
+          "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+          "statement": "A send is admitted exactly when every value is Proven; otherwise it aborts at its first value that is not, with TheoryRefuted or TheoryUndetermined and its index; a commit with two or more leases is refused (design v3 TH-5, TH-9).",
+          "tests": [
+            "prop_theory_fail_closed"
+          ]
+        },
+        "V12": {
+          "kind": "rocq",
+          "name": "usage_cache_transparent",
+          "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+          "statement": "A cache whose entries are results of the check gives the verdict and the reserved units of the check on a hit and a miss, and stays consistent (design v3 TH-8).",
+          "tests": [
+            "prop_theory_usage_cache_transparent"
+          ]
+        },
+        "V13": {
+          "kind": "rocq",
+          "name": "resolve_identity_deterministic",
+          "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+          "statement": "The resolution is a function of the content of the identity: exactly the structural builtins resolve, with any limit profile, and every identity that the factory builds resolves to its kind (design v3 TH-2, TH-3).",
+          "tests": [
+            "prop_resolve_identity_deterministic"
+          ]
+        },
+        "V14": {
+          "kind": "rocq",
+          "name": "replay_preserves_theory_admission",
+          "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+          "statement": "Replay decodes the persisted identity bytes and admits or refuses each send as play does, at the same index and with the same reserved units; an identity that names no checker fails the send (design v3 TH-5, TH-7, TH-8).",
+          "tests": [
+            "prop_replay_preserves_theory_admission"
+          ]
+        },
+        "V15": {
+          "kind": "rocq",
+          "name": "identity_bytes_roundtrip",
+          "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+          "statement": "The decoder of the identity bytes inverts the encoder, accepts only the image of the encoder, and the encoder is injective (decision 74).",
+          "tests": [
+            "prop_theory_identity_bytes_roundtrip"
+          ]
+        },
+        "V16": {
+          "kind": "rocq",
+          "name": "theory_refusal_is_guard_refusal",
+          "file": "formal/rocq/reified_rspaces/theories/Match.v",
+          "statement": "The theory of the space at a match is part of the guard: a fire binds a stored record that the guard and the theory admit, a theory refusal is a guard refusal, a refused first match parks, a theory that proves every datum changes no choice, and a datum in flight is never checked (design v3 TH-6).",
+          "tests": [
+            "prop_theory_refusal_is_guard_refusal"
+          ]
+        },
+        "V17": {
+          "kind": "rocq",
+          "name": "theory_gate_validated",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "Gate 4 passes no theory and the builtin names without arguments; a builtin with arguments fails with BadConstructorArgument, another name with UnknownTheory and the least builtin within two edits; gate 4 runs after gate 3 and before the params gates (design v3 TH-4).",
+          "tests": [
+            "prop_theory_gate"
+          ]
         }
       },
       "properties": [
@@ -8093,6 +8166,70 @@
           "file": "rholang/tests/reified_hashset.rs",
           "covers": [
             "V9"
+          ]
+        },
+        {
+          "number": 8,
+          "test": "prop_theory_builtin_decidable",
+          "file": "rholang/tests/reified_theory.rs",
+          "covers": [
+            "V10"
+          ]
+        },
+        {
+          "number": 9,
+          "test": "prop_theory_fail_closed",
+          "file": "rholang/tests/reified_theory.rs",
+          "covers": [
+            "V11"
+          ]
+        },
+        {
+          "number": 10,
+          "test": "prop_theory_usage_cache_transparent",
+          "file": "rholang/tests/reified_theory.rs",
+          "covers": [
+            "V12"
+          ]
+        },
+        {
+          "number": 11,
+          "test": "prop_resolve_identity_deterministic",
+          "file": "rholang/tests/reified_theory.rs",
+          "covers": [
+            "V13"
+          ]
+        },
+        {
+          "number": 12,
+          "test": "prop_replay_preserves_theory_admission",
+          "file": "rholang/tests/reified_theory.rs",
+          "covers": [
+            "V14"
+          ]
+        },
+        {
+          "number": 13,
+          "test": "prop_theory_identity_bytes_roundtrip",
+          "file": "rholang/tests/reified_theory.rs",
+          "covers": [
+            "V15"
+          ]
+        },
+        {
+          "number": 14,
+          "test": "prop_theory_refusal_is_guard_refusal",
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "covers": [
+            "V16"
+          ]
+        },
+        {
+          "number": 15,
+          "test": "prop_theory_gate",
+          "file": "rholang/tests/reified_theory.rs",
+          "covers": [
+            "V17"
           ]
         }
       ],
@@ -8274,6 +8411,159 @@
           "covers": [
             "V4",
             "V9"
+          ]
+        },
+        {
+          "test": "space_theory_admission",
+          "file": "rholang/tests/reified_theory.rs",
+          "rule": "TH-4 to TH-6 on every family program (free Nat() delivers as no theory, free String() refuses)",
+          "covers": [
+            "V10",
+            "V11",
+            "V16"
+          ]
+        },
+        {
+          "test": "space_theory_admission_vectordb",
+          "file": "rholang/tests/reified_theory.rs",
+          "rule": "TH-5 and TH-6 on the VectorDB families, list members included",
+          "covers": [
+            "V11",
+            "V16"
+          ]
+        },
+        {
+          "test": "theory_nat_accepts_bigint_nonneg",
+          "file": "rholang/tests/reified_theory.rs",
+          "rule": "TH-1: Nat admits non-negative GInt and GBigInt values",
+          "covers": [
+            "V10"
+          ]
+        },
+        {
+          "test": "theory_nat_rejects_minus1_string_par",
+          "file": "rholang/tests/reified_theory.rs",
+          "rule": "TH-1 and TH-5: Nat refuses every other shape at the index of the value",
+          "covers": [
+            "V10",
+            "V11"
+          ]
+        },
+        {
+          "test": "theory_identity_persisted_no_handle",
+          "file": "rholang/tests/reified_theory.rs",
+          "rule": "TH-2 and decision 74: the config reply shows the identity map, content only",
+          "covers": [
+            "V13",
+            "V15"
+          ]
+        },
+        {
+          "test": "theory_unknown_name_suggestion",
+          "file": "rholang/tests/reified_theory.rs",
+          "rule": "TH-4: UnknownTheory with the nearest builtin",
+          "covers": [
+            "V17"
+          ]
+        },
+        {
+          "test": "theory_builtin_args_rejected",
+          "file": "rholang/tests/reified_theory.rs",
+          "rule": "TH-4: a builtin takes no arguments",
+          "covers": [
+            "V17"
+          ]
+        },
+        {
+          "test": "space_guard_match",
+          "file": "rholang/tests/reified_theory.rs",
+          "rule": "TH-6: the guard and the theory at a match, with a refusing control per case",
+          "covers": [
+            "V16"
+          ]
+        },
+        {
+          "test": "theory_undetermined_budget0_aborts",
+          "file": "rholang/src/rust/interpreter/spaces/theory/tests.rs",
+          "rule": "TH-1 and TH-5: a starved limit profile aborts a send with TheoryUndetermined before any staging",
+          "covers": [
+            "V10",
+            "V11"
+          ]
+        },
+        {
+          "test": "theory_refuted_value_aborts_before_staging",
+          "file": "rholang/src/rust/interpreter/spaces/theory/tests.rs",
+          "rule": "TH-5: a refused value aborts a send before any staging, bump or event",
+          "covers": [
+            "V11"
+          ]
+        },
+        {
+          "test": "theory_nested_commit_guard",
+          "file": "rholang/src/rust/interpreter/spaces/theory/tests.rs",
+          "rule": "TH-9: two leases abort before the commit",
+          "covers": [
+            "V11"
+          ]
+        },
+        {
+          "test": "space_guard_match_refusal_is_a_guard_refusal",
+          "file": "rholang/src/rust/interpreter/spaces/theory/tests.rs",
+          "rule": "TH-6: the ineligible branch (a refuted stored datum parks a bag receive, blocks a queue head and parks a join)",
+          "covers": [
+            "V16"
+          ]
+        },
+        {
+          "test": "theory_unavailable_fails_each_config_read",
+          "file": "rholang/src/rust/interpreter/spaces/theory/tests.rs",
+          "rule": "TH-3 and TH-7: an identity with no checker fails each config read",
+          "covers": [
+            "V13",
+            "V14"
+          ]
+        },
+        {
+          "test": "theory_config_slot_is_one_compact_par",
+          "file": "rholang/src/rust/interpreter/spaces/theory/tests.rs",
+          "rule": "decision 74: the config slot is one GByteArray, and its read costs less than a tenth more",
+          "covers": [
+            "V15"
+          ]
+        },
+        {
+          "test": "theory_admission_reserves_one_unit_per_checked_value",
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "rule": "TH-5 and TH-8: one unit per checked value, none for a receive or without a theory",
+          "covers": [
+            "V10",
+            "V11"
+          ]
+        },
+        {
+          "test": "theory_match_reserves_one_unit_per_stored_datum",
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "rule": "TH-6 and TH-8: one unit per stored datum after an admitting guard, none after a refusing guard",
+          "covers": [
+            "V12",
+            "V16"
+          ]
+        },
+        {
+          "test": "theory_admission_precedes_any_staging",
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "rule": "TH-5: the admission runs before any staging or bump (the control of the mutant admission after the bump)",
+          "covers": [
+            "V11"
+          ]
+        },
+        {
+          "test": "reified_factory_theory_gate",
+          "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+          "rule": "TH-4: gate 4 on every builtin, with arguments and with other names",
+          "covers": [
+            "V17"
           ]
         }
       ]

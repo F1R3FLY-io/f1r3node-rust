@@ -124,7 +124,7 @@ The constructor must be the canonical sequence $`[q?]\,[\mathrm{FREE}?]\,[\mathr
 
 ### 3.2 The gates
 
-The factory checks the constructor with seven gates, in the order of Table 3 (`spaces/factory/constructor.rs:80-165`).
+The factory checks the constructor with seven gates, in the order of Table 3 (`spaces/factory/constructor.rs:87-178`).
 The first gate that fails aborts the deploy with its code, and the later gates do not run.
 
 *Table 3. The gates of a factory call.*
@@ -135,12 +135,13 @@ The first gate that fails aborts the deploy with its code, and the later gates d
 | 2 | The constructor is the canonical sequence. An unknown qualifier string, a malformed theory or params tuple, and any other element fail here. | `BadConstructorArgument` |
 | 3 | The outer store takes the qualifier. The HashSet store takes only `"seq"`. | `BadConstructorArgument` |
 | 4 | Native execution takes every qualifier ([specification 4.2](specification.md#42-temp) and [4.3](specification.md#43-seq)). Legacy execution refuses `"seq"`, because its rules need the job order of native execution. | `QualifierUnavailable` |
-| 5 | The constructor names no theory. Theories arrive in P7. | `TheoryUnavailable` |
+| 5 | A theory names a builtin, `Nat`, `Int`, `String`, `Bool`, or `Any`, without arguments ([specification 5](specification.md#5-theories), rule TH-4). A builtin with arguments fails with `BadConstructorArgument`. | `UnknownTheory`, `BadConstructorArgument` |
 | 6 | The params are named only. The send hook already checks this rule. | `PositionalParamsUnsupported` |
 | 7 | Each named param is in the schema of the family, in the bytewise order of the keys. The schema of `hashmap:queue` is empty. | `UnknownParam` |
 
 The code `UnknownParam` of a factory has a suggestion in its message, but a suggestion needs a schema key, so `hashmap:queue` never gives one.
-For example, the constructor `("default", "seq", "temp")` fails at gate 2, and the next program fails at gate 5 with `TheoryUnavailable`:
+For example, the constructor `("default", "seq", "temp")` fails at gate 2.
+The next program passes gate 5 and gives its space the theory `Nat`, and the name `Natt` would fail there with `UnknownTheory`, which suggests `Nat`:
 
 ```rholang
 new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?(free Nat())) { Nil } }
@@ -251,7 +252,8 @@ Each call has its own random state, so two calls give two names.
 The name routes to the space by itself (rule R3), so a send or a receive on it reaches the space in every context.
 
 **`config`.** The reply is the map that the config record holds, with the six keys of the [specification](specification.md#11-spaces).
-For example, `config.get("outer")` gives `"hashmap"`, and `config.get("theory")` gives `Nil`.
+The record holds the identity of a theory as bytes, and the reply shows it as the identity map of rule TH-2a ([decision 74](decision-register.md#decision-74)).
+For example, `config.get("outer")` gives `"hashmap"`, and `config.get("theory")` gives `Nil` for a space without a theory.
 
 **`produce`.** The method removes `persistent` and passes the other named params to the agent of the space, which checks their values before the bump.
 The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:402-444`).
@@ -301,7 +303,7 @@ The reply is one datum, the tuple of three elements that `typed_error` builds (`
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:281-293`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:309-321`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|
@@ -398,7 +400,10 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 | `ParamsUnsupported` | `getSpaceAgent`, `assertEqual` | A params section |
 | `Malformed` | Every call with params | A params section that is not canonical after the refresh of [I-20](decision-register.md#i-20) |
 | `PositionalParamsUnsupported` | A factory, a handle | A positional param |
-| `FamilyUnavailable`, `BadConstructorArgument`, `QualifierUnavailable`, `TheoryUnavailable`, `UnknownParam` | A factory | A gate of Table 3 |
+| `FamilyUnavailable`, `BadConstructorArgument`, `QualifierUnavailable`, `UnknownTheory`, `UnknownParam` | A factory | A gate of Table 3 |
+| `TheoryUnavailable` | Every call that reads a space | The config names a theory with no checker in this build ([specification 5](specification.md#5-theories), rule TH-3) |
+| `TheoryRefuted`, `TheoryUndetermined` | `produce`, and every send | A value of the send that the theory of the space refutes or cannot decide, before any staging (rule TH-5). The message names the theory and the index of the value. |
+| `NestedCommitGuard` | Every call | A transaction with two or more theory leases (rule TH-9) |
 | `SpaceAlreadyExists` | A factory | A config record on $`C(\mathit{sid})`$ |
 | `DanglingHandle` | A handle | The space has no config record, or it is a temp space of an ended deploy. The message names the space id. |
 | `SeqSent` | Every call, and every send | The data of the send holds a name of a seq space of the evaluation. The channel argument of the own `produce` of a seq space is exempt ([specification 4.3](specification.md#43-seq), rule QF-14). The message names the space id. |

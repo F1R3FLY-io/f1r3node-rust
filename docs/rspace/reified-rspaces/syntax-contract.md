@@ -481,7 +481,7 @@ The table lists each construct that P4 rejects, with its code and the phase that
 | Construct | Example | Code | Phase |
 |---|---|---|---|
 | A query `~` on the default space, or on a discipline without query params | `for (y <- @"x" ~ 5) { Nil }` | `QuerySpecUnsupported` | P5 for the priority queue, P6 for VectorDB |
-| A theory reference in a factory constructor | `hmq!?(free Nat())` | `TheoryUnavailable` | P7 |
+| A theory reference in a factory constructor | `hmq!?(free Nat())` | `TheoryUnavailable` in P4 to P6 | P7 step 4: a builtin name without arguments gives the space its theory ([specification 5](specification.md#5-theories)). A builtin with arguments fails with `BadConstructorArgument`, and another name fails with `UnknownTheory` |
 | The qualifier `"seq"` in legacy execution | `hmq!?("seq")` in a legacy deploy | `QualifierUnavailable` | None: legacy execution keeps this abort. P7 steps 1 and 2 give `"temp"` and `"seq"` their meaning in native execution ([specification 4.2](specification.md#42-temp) and [4.3](specification.md#43-seq)) |
 | A space reference that names a user agent | `use @"space" { @"x"!(1) }` | `AgentSpacesUnavailable` | P8 |
 | A send or a receive on a name of a user agent | None in P4, because only a user agent makes such a name | `AgentSpacesUnavailable` | P8 |

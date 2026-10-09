@@ -69,3 +69,7 @@
 ' Arrows: a committed effect, and a failure path.
 !$rrs_effect = $ca_credit
 !$rrs_fail = $ca_debit
+
+' The checker of a theory (P7 step 4): compiled-in code of the build that
+' decides values, as a system process is, so it shares the system color.
+!$rrs_checker = $rrs_system

@@ -71,8 +71,8 @@
    handle_of                rholang/src/rust/interpreter/reified/
                             system_channels.rs:95-100
    parse_message            rholang/src/rust/interpreter/reified/handle.rs:
-                            139-168, 182-191, 626-662, 664-669, 671-676,
-                            678-687, 696-701 (ParsedMessage::parse,
+                            139-168, 182-191, 642-678, 680-685, 687-692,
+                            694-703, 712-717 (ParsedMessage::parse,
                             is_reply_name and the sole readers)
    method_of, arity         rholang/src/rust/interpreter/reified/handle.rs:
                             92-101, 104-110

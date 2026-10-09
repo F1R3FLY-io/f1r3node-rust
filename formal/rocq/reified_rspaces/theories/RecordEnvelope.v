@@ -92,8 +92,8 @@
    unwrap_join_continuation spaces/record.rs:1830-1840, 1843-1866,
                             1876-1891
    space_config, to_par, from_par
-                            spaces/types/config.rs:31-49, 53-64, 85-106,
-                            112-141, 160-208 (the keys, SpaceConfig,
+                            spaces/types/config.rs:36-54, 58-71, 93-127,
+                            133-180, 209-257 (the keys, SpaceConfig,
                             to_par, from_par, and string_par, map_par,
                             string_of, bytes_of, map_entries)
    map_par flags            models/src/rust/par_map.rs:48-55, 67-70

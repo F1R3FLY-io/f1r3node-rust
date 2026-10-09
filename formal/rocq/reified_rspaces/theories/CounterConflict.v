@@ -111,7 +111,7 @@
                             165-245, 251-309 (bump, and take: the COMM has
                             no peeks)
    exec (the plan)          rholang/src/rust/interpreter/spaces/generic.rs:
-                            2349-2513 (run_with: bump, then plan)
+                            2544-2714 (run_with: bump, then plan)
    list_diff                rspace++/src/rspace/merger/channel_change.rs:
                             74-82 (vec_diff), rspace++/src/rspace/merger/
                             state_change.rs:318-357 (multiset_diff gives
@@ -144,14 +144,14 @@
                             (the block index skips a failed user deploy,
                             so a CellOccupied abort never reaches check #1)
    the cell abort (P5)      rholang/src/rust/interpreter/spaces/generic.rs:
-                            972-989 (Cx::check_capacity: CellOccupied
+                            1118-1135 (Cx::check_capacity: CellOccupied
                             before any staging), rholang/src/rust/
                             interpreter/spaces/disciplines/cell.rs:57
                             (CAPACITY = Some 1)
    exec_rf, run_rf (P5)     the removal without a counter bump that the
                             M-1 arbitration rejects (no code)
    capped_pass (P6)         rholang/src/rust/interpreter/spaces/generic.rs:
-                            972-989 (Cx::check_capacity: a store fails when
+                            1118-1135 (Cx::check_capacity: a store fails when
                             its view holds the bound or more), rholang/src/
                             rust/interpreter/spaces/disciplines/
                             vectordb.rs:173-185 (the bound of a VectorDB
@@ -163,9 +163,9 @@
    bump, bump_all (P5c)     rholang/src/rust/interpreter/spaces/counter.rs:
                             165-245 (bump, as in exec), one for each
                             collection of the group: Engine::touch and
-                            Engine::touch_all of spaces/join.rs:2590-2634
+                            Engine::touch_all of spaces/join.rs:2621-2665
                             (TOUCH, joins plan 4.3)
-   jstep, exec_join,        the join step: spaces/join.rs:2650-2737
+   jstep, exec_join,        the join step: spaces/join.rs:2681-2768
    run_jsteps, join_bumps   (Engine::run: TOUCH of each own collection,
    (P5c)                    then the settle before the plan and the plan),
                             1913-1925 (touch_all of the distinct
@@ -175,11 +175,11 @@
    retires (W3)             a COMM without peeks that consumes a stored
                             member: the class fire over [D; n] of a set
                             receive (rholang/src/rust/interpreter/spaces/
-                            disciplines/scan.rs:589-645, class_of), and the
-                            K_retire COMMs of RETIRE-CLASS (scan.rs:786-801,
-                            811-871) and of RETIRE-SET-BINDS in a join
+                            disciplines/scan.rs:597-653, class_of), and the
+                            K_retire COMMs of RETIRE-CLASS (scan.rs:794-809,
+                            819-879) and of RETIRE-SET-BINDS in a join
                             (rholang/src/rust/interpreter/spaces/join.rs:
-                            2223-2257)
+                            2254-2288)
    set_view (W3)            the class view of a set: one representative of
                             each class in the canonical order of DR-75
                             (decision 41), a parameter of headline 14
@@ -187,18 +187,18 @@
    (P5e)                    prefix source, spaces/pathmap/join.rs:
                             2116-2132 (an ordered discipline bumps S(sid)
                             as both counter channels of counter.rs bump),
-                            FINISH, spaces/pathmap/join.rs:2745-2766 (a bag
+                            FINISH, spaces/pathmap/join.rs:2766-2787 (a bag
                             or a set bumps S(sid) once when the transaction
                             changed the state), and the shared bump of the
-                            engine, spaces/join.rs:2590-2619 (once in a
+                            engine, spaces/join.rs:2621-2650 (once in a
                             transaction)
    peffect, pstep_changes   the changed flag of a transaction: spaces/
-   (P5e)                    join.rs:3626-3628 (a store that is not a
+   (P5e)                    join.rs:3699-3701 (a store that is not a
                             restore), 3333-3341 (an offer fire), 3581-3583
                             and 3625-3628 (the fires of a receive), 3738-
                             3739 (a park), 3832-3834 (a cascade fire), and
                             the class retire of the prefix source,
-                            spaces/pathmap/join.rs:2921-2922
+                            spaces/pathmap/join.rs:2942-2943
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction

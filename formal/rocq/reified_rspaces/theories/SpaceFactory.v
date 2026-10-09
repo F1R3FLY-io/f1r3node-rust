@@ -41,13 +41,13 @@
                             models/src/rust/space_factory_urn.rs:32, 35, 38,
                             225-263
    family_of_names          rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:251-269 (family_of)
+                            constructor.rs:282-300 (family_of)
    factory_op               rholang/src/rust/interpreter/spaces/factory/urn.rs:
                             255-259, 263-265 (the factory channel and the
                             capability that getSpaceAgent replies)
    validate_qualifier, durability_of
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:80-165, 168-173
+                            constructor.rs:87-178, 181-186
    parse_elements, to_elements, qual_of
                             models/src/rust/space_factory_urn.rs:368-398,
                             405-417, 428-438 (parse_elements, to_elements,
@@ -59,7 +59,7 @@
    check_persistent_send    rholang/src/rust/interpreter/reified/
                             system_channels.rs:103, 107, 112-124
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
-                            2703-2821
+                            2904-3022
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -922,7 +922,7 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    get_space_agent_of       rholang/src/rust/interpreter/
                             reified/system_processes.rs:228-266 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:251-269 (family_of), urn.rs:263-265
+                            constructor.rs:282-300 (family_of), urn.rs:263-265
                             (factory_capability)
    rule, rule_of, canonical, max_capacity, max_dimensions
                             rholang/src/rust/interpreter/spaces/factory/
@@ -935,12 +935,20 @@ Print Assumptions space_already_exists_is_deterministic_abort.
                             defaults.rs:51, 268-277, 282-309
    validate_params, canonical_all
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:80-165 (validate), 191-205
+                            constructor.rs:87-178 (validate), 191-205
                             (canonical_params)
    lookup, mirror_metric, indexed_metrics, check_mirror, validate_factory
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:159 (the call of gate 9 in
+                            constructor.rs:171 (the call of gate 9 in
                             validate), 155-186 (check_mirror)
+   builtin_theories, theory_gate (P7 step 4, TH-4)
+                            rholang/src/rust/interpreter/spaces/theory/
+                            builtin.rs:30 (BUILTIN_NAMES), and
+                            rholang/src/rust/interpreter/spaces/factory/
+                            constructor.rs:205-216 (theory_gate)
+   validate_from_gate3      rholang/src/rust/interpreter/spaces/factory/
+                            constructor.rs:148-151 (gate 4 after gate 3 and
+                            before the params gates)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -1002,6 +1010,15 @@ Print Assumptions space_already_exists_is_deterministic_abort.
                                           and dimensions (required, GInt
                                           ranges), metric and mirror
                                           (names), and gate 9
+   15. theory_gate_validated             P7 step 4 (TH-4): gate 4 passes no
+                                          theory and the five builtin names
+                                          without arguments; a builtin with
+                                          arguments fails with
+                                          BadConstructorArgument, another
+                                          name with UnknownTheory and the
+                                          least builtin within two edits;
+                                          gate 4 runs after gate 3 and
+                                          before the params gates
 
    ─────────────────────────────────────────────────────────────────────────
    Failed strategies (do not try them again)
@@ -1081,6 +1098,17 @@ Module StrP6.
   Definition vectordb_embed := Str.b "rho:vectordb:embed".
   Definition vectordb_ann := Str.b "rho:vectordb:ann".
 End StrP6.
+
+(* The ASCII bytes of the names of P7: the builtin theories. *)
+Module StrP7.
+  Import (notations) Stdlib.Strings.String.
+  Local Open Scope string_scope.
+  Definition any := Str.b "Any".
+  Definition bool := Str.b "Bool".
+  Definition int := Str.b "Int".
+  Definition nat := Str.b "Nat".
+  Definition string := Str.b "String".
+End StrP7.
 
 (* ── 8. Helpers: byte lists, families and lists ───────────────────────── *)
 
@@ -2436,6 +2464,108 @@ Section Params.
     - intros k [<- | [<- | []]]; cbn [map fst]; [left | right; left]; reflexivity.
     - intros kv [<- | [<- | []]]; cbn [fst]; [left | right; left]; reflexivity.
   Qed.
+
+  (* ── P7 step 4: gate 4, the theory of a factory call (design v3 TH-4) ── *)
+
+  (* theory/builtin.rs BUILTIN_NAMES: the builtin theories, in bytewise
+     order. *)
+  Definition builtin_theories : list bytes :=
+    [StrP7.any; StrP7.bool; StrP7.int; StrP7.nat; StrP7.string].
+
+  (* The outcome of gate 4. *)
+  Inductive theory_check : Type :=
+  | TNone                                      (* the call names no theory *)
+  | TBuiltin (name : bytes)                    (* TheoryIdentity::builtin name *)
+  | TBadArgument                               (* BadConstructorArgument *)
+  | TUnknown (name : bytes) (s : option bytes). (* UnknownTheory, its suggestion *)
+
+  (* constructor.rs theory_gate and the theory arm of validate: the FREE
+     value names a theory and the number of its arguments. *)
+  Definition theory_gate (free : option (bytes * nat)) : theory_check :=
+    match free with
+    | None => TNone
+    | Some (name, nargs) =>
+        if mem name builtin_theories
+        then match nargs with O => TBuiltin name | S _ => TBadArgument end
+        else TUnknown name (suggest name builtin_theories)
+    end.
+
+  (* The result of validate from gate 3 on. *)
+  Inductive gate3_result : Type :=
+  | G3Ok (theory : option bytes) (ps : list (bytes * pvalue))
+  | G3Qualifier (c : qual_check)
+  | G3Theory (t : theory_check)
+  | G3Params (e : perror).
+
+  (* constructor.rs validate_in after the parse: gate 3 (the qualifier), gate
+     4 (the theory), then the gates of validate_factory (5 to 9). *)
+  Definition validate_from_gate3 (f : family) (q : qualifier) (e : execution)
+      (free : option (bytes * nat)) (pos : list pvalue) (named : list (bytes * pvalue)) : gate3_result :=
+    match validate_qualifier f q e with
+    | QualOk =>
+        match theory_gate free with
+        | TBadArgument => G3Theory TBadArgument
+        | TUnknown n s => G3Theory (TUnknown n s)
+        | t =>
+            match validate_factory f q pos named with
+            | POk ps => G3Ok (match t with TBuiltin n => Some n | _ => None end) ps
+            | PErr err => G3Params err
+            end
+        end
+    | c => G3Qualifier c
+    end.
+
+  (* Headline 15 (TH-4). Gate 4 passes a call without a theory, and a
+     builtin name without arguments, whose identity the config keeps. A
+     builtin with arguments fails with BadConstructorArgument. Another name
+     fails with UnknownTheory and the least builtin within two edits. Gate 4
+     runs after gate 3 and before the gates of the params: a refused
+     qualifier wins, a refused theory wins over every params error, and an
+     accepted theory leaves the params gates unchanged. *)
+  Theorem theory_gate_validated :
+    theory_gate None = TNone /\
+    (forall name nargs, theory_gate (Some (name, nargs)) = TBuiltin name <->
+       In name builtin_theories /\ nargs = 0) /\
+    (forall name n, In name builtin_theories -> theory_gate (Some (name, S n)) = TBadArgument) /\
+    (forall name nargs, ~ In name builtin_theories ->
+       theory_gate (Some (name, nargs)) = TUnknown name (suggest name builtin_theories)) /\
+    (forall f q e free pos named, validate_qualifier f q e <> QualOk ->
+       validate_from_gate3 f q e free pos named = G3Qualifier (validate_qualifier f q e)) /\
+    (forall f q e free pos named, validate_qualifier f q e = QualOk ->
+       (theory_gate free = TBadArgument \/ exists n s, theory_gate free = TUnknown n s) ->
+       validate_from_gate3 f q e free pos named = G3Theory (theory_gate free)) /\
+    (forall f q e name pos named, validate_qualifier f q e = QualOk -> In name builtin_theories ->
+       validate_from_gate3 f q e (Some (name, 0)) pos named =
+       match validate_factory f q pos named with
+       | POk ps => G3Ok (Some name) ps
+       | PErr err => G3Params err
+       end).
+  Proof.
+    split; [reflexivity |].
+    split.
+    { intros name nargs. cbn [theory_gate]. destruct (mem name builtin_theories) eqn:Mm.
+      - apply mem_spec in Mm. destruct nargs as [| n]; split; intros H.
+        + split; [exact Mm | reflexivity].
+        + reflexivity.
+        + discriminate H.
+        + destruct H as [_ H]. discriminate H.
+      - split; intros H; [discriminate H |]. destruct H as [Hin _].
+        apply mem_spec in Hin. rewrite Hin in Mm. discriminate Mm. }
+    split.
+    { intros name n Hin. cbn [theory_gate]. apply mem_spec in Hin. rewrite Hin. reflexivity. }
+    split.
+    { intros name nargs Hn. cbn [theory_gate]. destruct (mem name builtin_theories) eqn:Mm.
+      - apply mem_spec in Mm. contradiction (Hn Mm).
+      - reflexivity. }
+    split.
+    { intros f q e free pos named Hq. unfold validate_from_gate3.
+      destruct (validate_qualifier f q e); [contradiction (Hq eq_refl) | reflexivity | reflexivity]. }
+    split.
+    { intros f q e free pos named Hq Ht. unfold validate_from_gate3. rewrite Hq.
+      destruct Ht as [Ht | [n [s Ht]]]; rewrite Ht; reflexivity. }
+    intros f q e name pos named Hq Hin. unfold validate_from_gate3. rewrite Hq.
+    cbn [theory_gate]. apply mem_spec in Hin. rewrite Hin. reflexivity.
+  Qed.
 End Params.
 
 (* ── Headline assumptions (P5) ───────────────────────────────────────── *)
@@ -2447,3 +2577,6 @@ Print Assumptions array_size_validated.
 
 (* ── Headline assumptions (P6) ───────────────────────────────────────── *)
 Print Assumptions vectordb_params_validated.
+
+(* ── Headline assumptions (P7) ───────────────────────────────────────── *)
+Print Assumptions theory_gate_validated.

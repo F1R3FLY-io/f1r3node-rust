@@ -1519,7 +1519,15 @@ fn first_offer_target(
             continue;
         };
         let waiter = meter.copy(waiter_at(cx, index)?)?;
-        if cx.admits(&waiter.continuation, &matched)? {
+        // The theory of the space checks the stored members of a list, and not the element in
+        // flight (P7, TH-6).
+        if cx.admits_records(
+            &waiter.continuation,
+            &matched,
+            &others,
+            |record| Some(&record.a),
+            payload_of,
+        )? {
             return Ok(Some(OfferTarget {
                 position,
                 waiter,
@@ -1572,7 +1580,17 @@ fn receive_plan(
     let own = loop {
         let found = receive_selection(cx, &cfg, query.as_ref(), &op.pattern, data)?;
         let fire = match found {
-            Some(fire) if cx.admits(&continuation, &fire.matched)? => fire,
+            Some(fire)
+                if cx.admits_records(
+                    &continuation,
+                    &fire.matched,
+                    &fire.members,
+                    |(record, _)| Some(&record.a),
+                    payload_of,
+                )? =>
+            {
+                fire
+            }
             Some(_) | None => {
                 cx.check_capacity::<VectorDbDiscipline>(Side::Waiters)?;
                 let peeks = peek_set(op.peek, meter)?;
@@ -1882,7 +1900,13 @@ fn first_cascade_target(
             continue;
         };
         let waiter = meter.copy(waiter_at(cx, index)?)?;
-        if !cx.admits(&waiter.continuation, &fire.matched)? {
+        if !cx.admits_records(
+            &waiter.continuation,
+            &fire.matched,
+            &fire.members,
+            |member| member.as_ref().map(|(record, _)| &record.a),
+            payload_of,
+        )? {
             continue;
         }
         let mut members = meter.buffer::<ParDatum>(fire.members.len())?;

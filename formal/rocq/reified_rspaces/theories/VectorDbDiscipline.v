@@ -40,10 +40,10 @@
                             bound and the ids, then the selection order of
                             tensor/exact.rs, Similarity.v S13 to S15)
    sel, fires               rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1637-1689, 1068-1117
+                            vectordb.rs:1655-1707, 1068-1117
                             (receive_selection, list_selection)
    osel, ofires             rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1484-1532, 1123-1142
+                            vectordb.rs:1484-1540, 1123-1142
                             (first_offer_target, list_offer)
    after_fire               rholang/src/rust/interpreter/reified/costs.rs:
                             322-333 (FireRounds::after_fire)
@@ -52,13 +52,13 @@
    offer                    rholang/src/rust/interpreter/spaces/disciplines/
                             vectordb.rs:1422-1471 (offer_vdb)
    receive                  rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1546-1626 (receive_plan)
+                            vectordb.rs:1554-1644 (receive_plan)
    first_cascade, tail      rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1773-1808, 1860-1902, 1909-1954
+                            vectordb.rs:1791-1826, 1878-1926, 1933-1978
                             (run_tail, first_cascade_target,
                             lift_and_reoffer)
    jfill, first_fit         rholang/src/rust/interpreter/spaces/join.rs:
-                            3060-3173, 3326-3394, 1674-1769 (search: the
+                            3091-3204, 3399-3467, 1689-1784 (search: the
                             greedy search of the engine; similarity_bind:
                             the first record of the selection order of a
                             bind that its pattern binds, without the claimed

@@ -1,7 +1,7 @@
 //! The native spaces of Reified RSpaces (P4 to P7): the namespace, the agent interface, the space
 //! errors, the records and counters, the generic space with its outer stores and disciplines,
-//! the family agent, the space types, the factory parts, and the book of the ephemeral spaces
-//! of one evaluation (P7).
+//! the family agent, the space types, the factory parts, the book of the ephemeral spaces of one
+//! evaluation, and the theory seam (P7).
 //!
 //! A native space keeps its state in the host store under the `0xE0` namespace. Every space
 //! operation goes through the substrate `SpaceStoreHandle` and `SpaceTxn`.
@@ -23,4 +23,5 @@ pub mod outer;
 pub mod pathmap;
 pub mod record;
 pub mod settle;
+pub mod theory;
 pub mod types;

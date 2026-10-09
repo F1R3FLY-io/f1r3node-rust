@@ -96,9 +96,9 @@
    first_match               spaces/disciplines/priority_queue.rs:513-539
                              (the first level head, in ascending level
                              order, that the lane sees and that matches)
-   fireable                  spaces/disciplines/priority_queue.rs:978-1072
+   fireable                  spaces/disciplines/priority_queue.rs:1010-1105
                              (first_match, then Cx::admits once)
-   fire_candidates, oldest,  spaces/disciplines/priority_queue.rs:978-1072
+   fire_candidates, oldest,  spaces/disciplines/priority_queue.rs:1010-1105
    next_fire                 (PriorityQueueView::next_fire: the fireable
                              waiter-lane head with the least order)
    lands_first               spaces/settle.rs:425-430 (a fire of a stored
@@ -119,25 +119,25 @@
    offer_pick                spaces/disciplines/priority_queue.rs:545-597
                              (offer_target: the older head first, and each
                              refusal marks its lane)
-   fits_datum                spaces/generic.rs:844-851 (Cx::matches)
-   offer_loop                spaces/disciplines/priority_queue.rs:765-824
+   fits_datum                spaces/generic.rs:958-997 (Cx::matches)
+   offer_loop                spaces/disciplines/priority_queue.rs:795-854
                              (offer_pq)
-   receive_loop,             spaces/disciplines/priority_queue.rs:830-933 and
+   receive_loop,             spaces/disciplines/priority_queue.rs:860-965 and
    consume_fire              929-938 (receive_pq and restore_peeked) and
-                             spaces/generic.rs:441-448 (Discipline::restore)
+                             spaces/generic.rs:442-449 (Discipline::restore)
    fresh_offer,              spaces/disciplines/priority_queue.rs:254-268 and
    fresh_receive,            416-437 (reaches_head, precedes and
    reenter_offer,            at_lane_head: a fresh element joins the tail of
    reenter_receive           its lane, and a re-entry precedes with <)
-   with_settles,             spaces/generic.rs:1556-1569 (open_plan) and
+   with_settles,             spaces/generic.rs:1702-1715 (open_plan) and
    plan_at_cap               spaces/disciplines/priority_queue.rs:319-345
                              (the settle hooks)
    carried, next_round       spaces/settle.rs:643-675 and 681-705, and
-                             spaces/disciplines/priority_queue.rs:816 and 925
+                             spaces/disciplines/priority_queue.rs:846 and 957
                              (reissued_ord: persistent.then_some(ord))
-   produce, consume,         spaces/generic.rs:2349-2513 (run_with) and
+   produce, consume,         spaces/generic.rs:2544-2714 (run_with) and
    bumped, bump_ord          spaces/counter.rs:165-245 (bump)
-   fires (the fire count)    spaces/generic.rs:707, 772 and 2426 (Plan.rounds,
+   fires (the fire count)    spaces/generic.rs:708, 801 and 2623 (Plan.rounds,
                              Cx::rounds, and the FireRounds of a transaction)
    apply, run, drop_key      the staged view of the substrate
                              (space_store_handle.rs, stage_produce and

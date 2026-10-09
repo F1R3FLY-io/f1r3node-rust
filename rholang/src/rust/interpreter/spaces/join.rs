@@ -146,9 +146,9 @@ use super::disciplines::scan::{retire_class_on, retire_continuation, same_class}
 use super::disciplines::vectordb::{self, Flight, ListFire, Mode, VdbConfig};
 use super::errors::SpaceError;
 use super::generic::{
-    self, operation_ord, peek_set, peek_set_all, receive_candidate, CollectionTxn, Cx, Discipline,
-    GenericSpace, JoinWindow, Ordered, OuterStore, ParCandidate, ParDatum, ParWaiter, ReceiveFire,
-    Side, SideBound, GPRIVATE,
+    self, operation_ord, peek_set, peek_set_all, receive_candidate, Admission, CollectionTxn, Cx,
+    Discipline, GenericSpace, JoinWindow, Ordered, OuterStore, ParCandidate, ParDatum, ParWaiter,
+    ReceiveFire, Side, SideBound, StoredMatch, GPRIVATE,
 };
 use super::namespace::{self, CollectionKey, NativeSpace, RandomPurpose, ReifiedId};
 use super::record::{self, Introduction, JoinSlot, OperationAuthority, WaiterPolicy};
@@ -704,8 +704,10 @@ pub(crate) fn run_join_with<Src: JoinSource>(
             "a collection is outside its join scope",
         ))?
         .data;
+    // TH-5: the theory admits the values of a send before any staging or bump.
+    let admission = Admission::of(&config, &op, meter)?;
     let seq = own_claims(env, &config, &scope, &op)?;
-    generic::run_plan(env, txn, data, &config, &authority, seq, |cx| {
+    generic::run_plan(env, txn, data, &config, &authority, seq, admission, |cx| {
         let engine = Engine::new(source, &scope, &op, cx.config(), cx.meter())?;
         engine.run(cx, op)
     })
@@ -1032,6 +1034,19 @@ pub(crate) trait JoinSource {
         index: usize,
         missing: &'static str,
     ) -> Result<StoredEntry, SpaceError>;
+
+    /// The payload of the stored entry `index` of `coll` as its send carried it (P7, TH-6): the
+    /// payload that the theory of the space checks after the guard. On a PathMap space it is the
+    /// own payload of the datum of the marker, not re-rooted. `missing` is the error of an index
+    /// outside the staged view.
+    fn stored_payload(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        missing: &'static str,
+    ) -> Result<ListParWithRandom, SpaceError>;
 
     /// The stored entries of `coll` that a single-bind class fire visits, in canonical order
     /// (F3, F20).
@@ -2020,6 +2035,22 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
             persist,
             claim,
         })
+    }
+
+    fn stored_payload(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        missing: &'static str,
+    ) -> Result<ListParWithRandom, SpaceError> {
+        let meter = cx.meter();
+        let records = cx.data_on(&collection(scope, coll)?.data)?;
+        let datum = records
+            .get(index)
+            .ok_or(SpaceError::Inconsistent(missing))?;
+        self.payload_of(&datum.a, meter)
     }
 
     fn members(
@@ -3173,12 +3204,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     }
 
     /// The guard of `continuation` over the values of `bound` in the bind order of `slots`
-    /// (decision 37: once, after every bind matched).
+    /// (decision 37: once, after every bind matched), and then the check of the theory of the
+    /// space on each stored entry of `bound`, whose collection `colls` gives at its position
+    /// (P7, TH-6). The element in flight was admitted at its send, so it is not checked. The
+    /// stored payloads are read only for a space with a theory and only after the guard admitted
+    /// the match, so a space without a theory does no work for them.
     fn admits(
         &self,
         cx: &mut Cx<'_, '_>,
         continuation: &TaggedContinuation,
         slots: &[JoinSlot],
+        colls: &[usize],
         bound: &[Bound],
     ) -> Result<bool, SpaceError> {
         let meter = cx.meter();
@@ -3198,7 +3234,44 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 .ok_or(SpaceError::Inconsistent("a position has no bound entry"))?;
             values.push(meter.copy(&entry.matched)?);
         }
-        cx.admits_all(continuation, &values)
+        if !cx.admits_all(continuation, &values, &[])? {
+            return Ok(false);
+        }
+        if !cx.has_theory() {
+            return Ok(true);
+        }
+        let count = bound
+            .iter()
+            .filter(|entry| matches!(entry.at, EntryAt::Stored(_)))
+            .count();
+        let mut payloads = meter.buffer::<(ListParWithRandom, usize)>(count)?;
+        for (position, entry) in bound.iter().enumerate() {
+            let EntryAt::Stored(index) = entry.at else {
+                continue;
+            };
+            let coll = *colls
+                .get(position)
+                .ok_or(SpaceError::Inconsistent("a position has no collection"))?;
+            let payload = self.source.stored_payload(
+                cx,
+                self.scope,
+                coll,
+                index,
+                "a bound entry is outside the staged view",
+            )?;
+            payloads.push((payload, position));
+        }
+        let mut stored = meter.buffer::<StoredMatch<'_>>(payloads.len())?;
+        for (payload, position) in &payloads {
+            let entry = bound
+                .get(*position)
+                .ok_or(SpaceError::Inconsistent("a position has no bound entry"))?;
+            stored.push(StoredMatch {
+                payload,
+                captures: &entry.matched,
+            });
+        }
+        cx.theory_admits(&stored)
     }
 
     /// SEARCH-PRODUCE (joins plan section 3.5): the fire of the stored waiter `waiter` with the
@@ -3659,6 +3732,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                                 cx,
                                 &waiter.waiting.continuation,
                                 &waiter.slots,
+                                &waiter.colls,
                                 &bound,
                             )? {
                                 true => Some((position, bound, None)),
@@ -3840,7 +3914,15 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         else {
             return Ok(None);
         };
-        if !cx.admits(&waiter.waiting.continuation, &matched)? {
+        // The theory of the space checks the stored members of the list, and not the element in
+        // flight (P7, TH-6).
+        if !cx.admits_records(
+            &waiter.waiting.continuation,
+            &matched,
+            &others,
+            |record| Some(&record.a),
+            vectordb::payload_of,
+        )? {
             return Ok(None);
         }
         let claim = self
@@ -3960,7 +4042,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             else {
                 return self.park(cx, w);
             };
-            if !self.admits(cx, &w.continuation, &w.slots, &bound)? {
+            if !self.admits(cx, &w.continuation, &w.slots, &w.colls, &bound)? {
                 return self.park(cx, w);
             }
             let peek = !w.peeks.is_empty();
@@ -4155,7 +4237,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             else {
                 return self.park(cx, w);
             };
-            if !cx.admits(&w.continuation, &matched)? {
+            if !cx.admits_records(
+                &w.continuation,
+                &matched,
+                &members,
+                |member| member.as_ref().map(|(record, _)| &record.a),
+                vectordb::payload_of,
+            )? {
                 return self.park(cx, w);
             }
             let pattern = meter.copy(pattern)?;
@@ -4321,7 +4409,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 else {
                     continue;
                 };
-                if self.admits(cx, &waiter.waiting.continuation, &waiter.slots, &bound)? {
+                if self.admits(
+                    cx,
+                    &waiter.waiting.continuation,
+                    &waiter.slots,
+                    &waiter.colls,
+                    &bound,
+                )? {
                     return Ok(Some(Fireable::Pair(waiter, bound)));
                 }
             }
@@ -4357,7 +4451,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         else {
             return Ok(None);
         };
-        match cx.admits(&waiter.waiting.continuation, &fire.matched)? {
+        match cx.admits_records(
+            &waiter.waiting.continuation,
+            &fire.matched,
+            &fire.members,
+            |member| member.as_ref().map(|(record, _)| &record.a),
+            vectordb::payload_of,
+        )? {
             true => Ok(Some(fire)),
             false => Ok(None),
         }

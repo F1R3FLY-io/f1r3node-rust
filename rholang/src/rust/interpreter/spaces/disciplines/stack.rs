@@ -56,7 +56,7 @@ use serde::Serialize;
 use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{SettleOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
-use crate::rust::interpreter::spaces::generic::{Cx, Discipline, OpView, Ordered, Side};
+use crate::rust::interpreter::spaces::generic::{Cx, Discipline, Held, OpView, Ordered, Side};
 use crate::rust::interpreter::spaces::record;
 use crate::rust::interpreter::spaces::settle::{
     self, Bound, BoundRecord, FirePlan, InFlight, SettleView,
@@ -197,7 +197,13 @@ impl SettleView for StackView<'_> {
                 )
             }
         };
-        let Some(matched) = cx.matches(pattern, &payload, &waiter.continuation)? else {
+        // The theory of the space checks a stored top record, and not the record in flight
+        // (P7, TH-6).
+        let held = match record {
+            BoundRecord::Stored { .. } => Held::Stored,
+            BoundRecord::InFlight => Held::InFlight,
+        };
+        let Some(matched) = cx.matches(pattern, &payload, &waiter.continuation, held)? else {
             return Ok(None);
         };
         let mut group = meter.buffer::<Par>(1)?;

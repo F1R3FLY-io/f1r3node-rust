@@ -1,0 +1,116 @@
+' 10 The theory seam: the gate of a factory call, the admission of a send,
+' and the check at a match.
+'
+' Source of the figure of theory-seam.md (section 3) and of
+' f1r3lang-integration.md. The figure restates rules TH-1 to TH-9 of
+' specification.md section 5 and the code of
+' rholang/src/rust/interpreter/spaces/theory/, spaces/factory/constructor.rs
+' (theory_gate) and spaces/generic.rs (Admission::of, Cx::admits,
+' check_leases). It adds no new fact.
+'
+' Reading order:
+'   1. A factory call with free Th(args): gate 4 keeps the identity of a
+'      builtin without arguments as bytes in the config (TH-2a, TH-4).
+'   2. A send: each config read resolves the identity (TH-3, TH-7), and the
+'      checker admits each value in order, before any staging (TH-5).
+'   3. A receive: after the where guard, the checker checks each stored
+'      datum of the match. A refusal is a guard refusal (TH-6).
+'   4. The commit refuses two or more leases (TH-9).
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 10-theory-admission.puml   Check: ./render.sh --check
+
+@startuml 10-theory-admission
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam NoteBorderColor $rrs_relation
+skinparam NoteBackgroundColor $ca_note_grey
+title The theory seam (P7 step 4): a factory gate, an admission at a send, a check at a match
+
+start
+if (the operation?) then (factory call)
+  :free Th(args) in the constructor (gate 4, TH-4); <<$rrs_factory>>
+  if (Th is Nat, Int, String, Bool or Any?) then (yes)
+    if (args?) then (none)
+      :config slot "theory" ← one GByteArray
+      with the bytes of the builtin identity of Th
+      (TH-2, TH-2a, decision 74); <<$rrs_storage>>
+      stop
+    else (some)
+      :BadConstructorArgument; <<$rrs_reject>>
+      stop
+    endif
+  else (no)
+    :UnknownTheory, with the nearest builtin
+    within two edits; <<$rrs_reject>>
+    stop
+  endif
+elseif (send) then
+  :read C(sid): decode the identity bytes
+  and resolve them (TH-3, TH-7); <<$rrs_agent>>
+  if (a checker of this build?) then (no)
+    :TheoryUnavailable; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  :admit each value v_i in order, one reserved unit each,
+  before any staging or counter bump (TH-5, TH-8); <<$rrs_checker>>
+  note right
+    TH-1: a builtin decides by shape,
+    <latex>\mathrm{sole}(v) \wedge \mathrm{kind}(v) \in \mathrm{Th}</latex>
+  end note
+  if (the first verdict that is not Proven?) then (Refuted at i)
+    :TheoryRefuted(theory, i); <<$rrs_reject>>
+    stop
+  elseif (Undetermined at i) then
+    :TheoryUndetermined(theory, i); <<$rrs_reject>>
+    stop
+  else (none)
+    :<color:white>store the datum, or fire a waiter with the datum in flight:</color>
+    <color:white>the checker checks no datum in flight (TH-6)</color>; <<$rrs_effect>>
+  endif
+else (receive)
+  :read C(sid): decode the identity bytes
+  and resolve them (TH-3, TH-7); <<$rrs_agent>>
+  :the first candidate that matches spatially:
+  a head, a scan record, a lane head or a join search; <<$rrs_agent>>
+  if (the where guard admits the match?) then (yes)
+    :check_match on each stored datum of the match,
+    with the values that its bind captures (TH-6); <<$rrs_checker>>
+    if (every verdict is Proven?) then (yes)
+      :<color:white>fire</color>; <<$rrs_effect>>
+    else (no)
+      :a guard refusal: a scan receive parks, a head blocks,
+      a join keeps its search (decision 37); <<$rrs_storage>>
+      stop
+    endif
+  else (no)
+    :a guard refusal; <<$rrs_storage>>
+    stop
+  endif
+endif
+if (two or more leases in the transaction (TH-9)?) then (yes)
+  :NestedCommitGuard before the commit; <<$rrs_reject>>
+  stop
+else (no)
+  :<color:white>commit</color>; <<$rrs_effect>>
+endif
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_factory>  | the factory call |
+|<$rrs_agent>    | a step of the plan of the space agent |
+|<$rrs_checker>  | the checker of the theory |
+|<$rrs_storage>  | the config record, or a parked waiter |
+|<$rrs_effect>   | a staged or committed effect |
+|<$rrs_reject>   | a failure that aborts the deploy |
+endlegend
+@enduml

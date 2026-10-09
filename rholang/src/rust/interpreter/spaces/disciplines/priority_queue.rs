@@ -99,8 +99,8 @@ use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::factory::defaults::PRIORITIES_PARAM;
 use crate::rust::interpreter::spaces::generic::{
-    open_plan, peek_set, Cx, Discipline, JoinWindow, OfferFire, OpView, Ordered, ParDatum,
-    ParWaiter, ReceiveFire, Side,
+    open_plan, peek_set, Cx, Discipline, Held, JoinWindow, OfferFire, OpView, Ordered, ParDatum,
+    ParWaiter, ReceiveFire, Side, StoredMatch,
 };
 use crate::rust::interpreter::spaces::record;
 use crate::rust::interpreter::spaces::settle::{
@@ -584,7 +584,7 @@ impl PriorityQueueDiscipline {
                     "a waiting continuation of a collection has several binds",
                 ));
             };
-            match cx.matches(pattern, data, &waiter.continuation)? {
+            match cx.matches(pattern, data, &waiter.continuation, Held::InFlight)? {
                 Some(matched) => return Ok(Some((waiter, matched))),
                 None => {
                     if let Some(mark) = refused.get_mut(slot) {
@@ -643,6 +643,36 @@ fn head_payload(
                 "a level head is in flight, but no record is in flight",
             )),
         },
+    }
+}
+
+/// The stored datum of the match of the head at `position` (P7, TH-6): the payload of a stored
+/// head with the values `matched` of its match, or nothing for the record in flight of a settle,
+/// which its send admitted.
+fn stored_match<'a>(
+    heads: &[RecordHead],
+    payloads: &'a [Option<ListParWithRandom>],
+    position: usize,
+    matched: &'a ListParWithRandom,
+) -> Result<Option<StoredMatch<'a>>, SpaceError> {
+    match heads.get(position).map(|head| head.at) {
+        Some(HeadAt::Stored(_)) => {
+            let payload =
+                payloads
+                    .get(position)
+                    .and_then(Option::as_ref)
+                    .ok_or(SpaceError::Inconsistent(
+                        "a matched level head has no payload",
+                    ))?;
+            Ok(Some(StoredMatch {
+                payload,
+                captures: matched,
+            }))
+        }
+        Some(HeadAt::InFlight) => Ok(None),
+        None => Err(SpaceError::Inconsistent(
+            "a matched position is not a level head",
+        )),
     }
 }
 
@@ -870,8 +900,10 @@ fn receive_pq(
             return discipline.settle_after(cx, OpView::Consume(&op));
         };
         // Decision 38: the guard is checked once, on the first level head that matches the
-        // pattern, and a refusal parks the continuation.
-        if !cx.admits(&continuation, &matched)? {
+        // pattern, and a refusal parks the continuation. The theory of the space then checks the
+        // stored head (P7, TH-6), and a refusal parks it too.
+        let stored = stored_match(&heads, &payloads, position, &matched)?;
+        if !cx.admits(&continuation, &matched, stored.as_slice())? {
             cx.park(&op, continuation, peeks)?;
             return discipline.settle_after(cx, OpView::Consume(&op));
         }
@@ -1023,7 +1055,8 @@ impl SettleView for PriorityQueueView<'_> {
             let Some((position, matched)) = found else {
                 continue;
             };
-            if !cx.admits(&waiter.continuation, &matched)? {
+            let stored = stored_match(&heads, &payloads, position, &matched)?;
+            if !cx.admits(&waiter.continuation, &matched, stored.as_slice())? {
                 continue;
             }
             let older = match &chosen {

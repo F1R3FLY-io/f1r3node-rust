@@ -1,15 +1,17 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P7",
-  "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2), the Seq rules (W3) and the HashSet store (W4): the book of a root evaluation, the sweep at each root entry, the dangling ids of ended deploys, the claims and the send rule of seq spaces, the qualifier gate, and the unit rules of a HashSet collection.",
+  "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2), the Seq rules (W3) and the HashSet store (W4): the book of a root evaluation, the sweep at each root entry, the dangling ids of ended deploys, the claims and the send rule of seq spaces, the qualifier gate, and the unit rules of a HashSet collection, and the theory seam (W5): the builtin theories, the admission of a send, the theory at a match, the identity of a theory and its bytes (decision 74), and gate 4.",
   "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3, 4, 5, 6 and 9. The headline ids are the ids of the P7 phase of formal/reified-rspaces-invariant-map.json.",
   "code_base": "The items are in the P7 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
     "rocq": [
       "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+      "formal/rocq/reified_rspaces/theories/Match.v",
       "formal/rocq/reified_rspaces/theories/Namespace.v",
       "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
       "formal/rocq/reified_rspaces/theories/VolatileSweep.v"
     ],
     "tla": [
@@ -70,6 +72,54 @@
       "name": "hashset_unit_rules",
       "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
       "statement": "The payload check of a HashSet collection accepts exactly the empty payload and its pattern check exactly the empty pattern list with no binder and no remainder. An empty pattern list matches exactly the empty payload, a rejected send or receive stages nothing, and so every record of a HashSet store is a unit (design v3 HS-2, HS-3, HS-5)."
+    },
+    "V10": {
+      "kind": "rocq",
+      "name": "builtin_decidable_structural",
+      "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+      "statement": "With a limit of at least one unit, each builtin decides every value by its shape as TH-1 states, never Undetermined, with the usage {1, 0} and one reserved unit; a match checks every stored value for one unit; a limit of 0 gives Undetermined before any reservation (design v3 TH-1, TH-8)."
+    },
+    "V11": {
+      "kind": "rocq",
+      "name": "fail_closed",
+      "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+      "statement": "A send is admitted exactly when every value is Proven; otherwise it aborts at its first value that is not, with TheoryRefuted or TheoryUndetermined and its index; a commit with two or more leases is refused (design v3 TH-5, TH-9)."
+    },
+    "V12": {
+      "kind": "rocq",
+      "name": "usage_cache_transparent",
+      "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+      "statement": "A cache whose entries are results of the check gives the verdict and the reserved units of the check on a hit and a miss, and stays consistent (design v3 TH-8)."
+    },
+    "V13": {
+      "kind": "rocq",
+      "name": "resolve_identity_deterministic",
+      "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+      "statement": "The resolution is a function of the content of the identity: exactly the structural builtins resolve, with any limit profile, and every identity that the factory builds resolves to its kind (design v3 TH-2, TH-3)."
+    },
+    "V14": {
+      "kind": "rocq",
+      "name": "replay_preserves_theory_admission",
+      "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+      "statement": "Replay decodes the persisted identity bytes and admits or refuses each send as play does, at the same index and with the same reserved units; an identity that names no checker fails the send (design v3 TH-5, TH-7, TH-8)."
+    },
+    "V15": {
+      "kind": "rocq",
+      "name": "identity_bytes_roundtrip",
+      "file": "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+      "statement": "The decoder of the identity bytes inverts the encoder, accepts only the image of the encoder, and the encoder is injective (decision 74)."
+    },
+    "V16": {
+      "kind": "rocq",
+      "name": "theory_refusal_is_guard_refusal",
+      "file": "formal/rocq/reified_rspaces/theories/Match.v",
+      "statement": "The theory of the space at a match is part of the guard: a fire binds a stored record that the guard and the theory admit, a theory refusal is a guard refusal, a refused first match parks, a theory that proves every datum changes no choice, and a datum in flight is never checked (design v3 TH-6)."
+    },
+    "V17": {
+      "kind": "rocq",
+      "name": "theory_gate_validated",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "Gate 4 passes no theory and the builtin names without arguments; a builtin with arguments fails with BadConstructorArgument, another name with UnknownTheory and the least builtin within two edits; gate 4 runs after gate 3 and before the params gates (design v3 TH-4)."
     }
   },
   "items": [
@@ -646,6 +696,372 @@
       "tla": [],
       "covers": [
         "V9"
+      ]
+    },
+    {
+      "item": "TheoryUsage",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+      "kind": "struct",
+      "name": "TheoryUsage",
+      "role": "The logical work and the evidence of one check (F1r3lang AdmissionUsage).",
+      "rocq": [
+        "usage",
+        "structural_usage"
+      ],
+      "tla": [],
+      "covers": [
+        "V10",
+        "V12"
+      ]
+    },
+    {
+      "item": "TheoryVerdict",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+      "kind": "struct",
+      "name": "TheoryVerdict",
+      "role": "The verdict of a check: Proven, Refuted or Undetermined; only Proven admits.",
+      "rocq": [
+        "verdict",
+        "is_proven"
+      ],
+      "tla": [],
+      "covers": [
+        "V10",
+        "V11"
+      ]
+    },
+    {
+      "item": "resolve",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+      "kind": "fn",
+      "name": "resolve",
+      "role": "TH-3: the checker of an identity in this build, a structural builtin or TheoryUnavailable.",
+      "rocq": [
+        "resolve",
+        "structural"
+      ],
+      "tla": [],
+      "covers": [
+        "V13",
+        "V14"
+      ]
+    },
+    {
+      "item": "admit_values",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+      "kind": "fn",
+      "name": "admit_values",
+      "role": "TH-5: the values of a send in order; the first that is not Proven aborts with its index; the leases in order.",
+      "rocq": [
+        "admit_from",
+        "admit_values"
+      ],
+      "tla": [],
+      "covers": [
+        "V11"
+      ]
+    },
+    {
+      "item": "BuiltinKind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+      "kind": "struct",
+      "name": "BuiltinKind",
+      "role": "The five structural builtins.",
+      "rocq": [
+        "kind"
+      ],
+      "tla": [],
+      "covers": [
+        "V10"
+      ]
+    },
+    {
+      "item": "BuiltinKind::contains",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+      "scope": "BuiltinKind",
+      "kind": "fn",
+      "name": "contains",
+      "role": "TH-1: the shape test of a builtin.",
+      "rocq": [
+        "contains",
+        "table"
+      ],
+      "tla": [],
+      "covers": [
+        "V10"
+      ]
+    },
+    {
+      "item": "sole",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+      "kind": "fn",
+      "name": "sole",
+      "role": "The one expression of a value with every other field empty and no connective.",
+      "rocq": [
+        "shape"
+      ],
+      "tla": [],
+      "covers": [
+        "V10"
+      ]
+    },
+    {
+      "item": "BuiltinTheory::of_identity",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+      "scope": "BuiltinTheory",
+      "kind": "fn",
+      "name": "of_identity",
+      "role": "TH-3: a structural identity with a builtin theorem id and no args, any limit profile.",
+      "rocq": [
+        "structural",
+        "kind_of_name"
+      ],
+      "tla": [],
+      "covers": [
+        "V13"
+      ]
+    },
+    {
+      "item": "BuiltinTheory::check",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+      "scope": "BuiltinTheory",
+      "kind": "fn",
+      "name": "check",
+      "role": "TH-1 and TH-8: a starved limit is Undetermined before any reservation; else one unit, then the shape.",
+      "rocq": [
+        "builtin_check"
+      ],
+      "tla": [],
+      "covers": [
+        "V10",
+        "V12"
+      ]
+    },
+    {
+      "item": "BuiltinTheory::check_match",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+      "scope": "BuiltinTheory",
+      "kind": "fn",
+      "name": "check_match",
+      "role": "TH-6: every value of the stored payload, for one unit.",
+      "rocq": [
+        "builtin_check_match"
+      ],
+      "tla": [],
+      "covers": [
+        "V10"
+      ]
+    },
+    {
+      "item": "TheoryIdentity",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+      "kind": "struct",
+      "name": "TheoryIdentity",
+      "role": "TH-2: the content identity of a theory, never a handle.",
+      "rocq": [
+        "identity"
+      ],
+      "tla": [],
+      "covers": [
+        "V13",
+        "V15"
+      ]
+    },
+    {
+      "item": "TheoryIdentity::builtin",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+      "scope": "TheoryIdentity",
+      "kind": "fn",
+      "name": "builtin",
+      "role": "The identity that the factory builds for a builtin name.",
+      "rocq": [
+        "builtin_identity"
+      ],
+      "tla": [],
+      "covers": [
+        "V13"
+      ]
+    },
+    {
+      "item": "TheoryIdentity::to_bytes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+      "scope": "TheoryIdentity",
+      "kind": "fn",
+      "name": "to_bytes",
+      "role": "Decision 74: the canonical bytes of the identity, which the config holds.",
+      "rocq": [
+        "to_bytes",
+        "enc_str",
+        "enc_one"
+      ],
+      "tla": [],
+      "covers": [
+        "V15"
+      ]
+    },
+    {
+      "item": "TheoryIdentity::from_bytes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+      "scope": "TheoryIdentity",
+      "kind": "fn",
+      "name": "from_bytes",
+      "role": "Decision 74: the strict decoder of the identity bytes.",
+      "rocq": [
+        "from_bytes",
+        "parse",
+        "read_str",
+        "read_len",
+        "take"
+      ],
+      "tla": [],
+      "covers": [
+        "V15"
+      ]
+    },
+    {
+      "item": "Admission::of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Admission",
+      "kind": "fn",
+      "name": "of",
+      "role": "TH-5: the theory of the config and the admission of the values of a send, before any staging or bump.",
+      "rocq": [
+        "admit_send",
+        "play_send"
+      ],
+      "tla": [],
+      "covers": [
+        "V11",
+        "V14"
+      ]
+    },
+    {
+      "item": "check_leases",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "check_leases",
+      "role": "TH-9: two or more leases abort with NestedCommitGuard before the commit.",
+      "rocq": [
+        "commit_allowed"
+      ],
+      "tla": [],
+      "covers": [
+        "V11"
+      ]
+    },
+    {
+      "item": "Cx::admits",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "admits",
+      "role": "TH-6: the guard, then the theory on the stored data of the match.",
+      "rocq": [
+        "admits_th"
+      ],
+      "tla": [],
+      "covers": [
+        "V16"
+      ]
+    },
+    {
+      "item": "Cx::theory_admits",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "theory_admits",
+      "role": "TH-6: check_match on each stored datum; a verdict other than Proven refuses.",
+      "rocq": [
+        "admits_th"
+      ],
+      "tla": [],
+      "covers": [
+        "V16"
+      ]
+    },
+    {
+      "item": "Cx::matches",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "matches",
+      "role": "TH-6: the spatial match, the guard, and the theory only for a datum held in the store.",
+      "rocq": [
+        "head_receive_th",
+        "scan_offer_th"
+      ],
+      "tla": [],
+      "covers": [
+        "V16"
+      ]
+    },
+    {
+      "item": "Cx::admits_records",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Cx",
+      "kind": "fn",
+      "name": "admits_records",
+      "role": "TH-6: the stored members of a list, each checked after the guard.",
+      "rocq": [
+        "admits_th"
+      ],
+      "tla": [],
+      "covers": [
+        "V16"
+      ]
+    },
+    {
+      "item": "theory_gate",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "kind": "fn",
+      "name": "theory_gate",
+      "role": "TH-4: gate 4 of the factory constructor.",
+      "rocq": [
+        "theory_gate",
+        "builtin_theories"
+      ],
+      "tla": [],
+      "covers": [
+        "V17"
+      ]
+    },
+    {
+      "item": "SpaceConfig::from_par_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/types/config.rs",
+      "scope": "SpaceConfig",
+      "kind": "fn",
+      "name": "from_par_metered",
+      "role": "TH-7: each config read decodes the identity bytes and resolves them.",
+      "rocq": [
+        "replay_send",
+        "from_bytes"
+      ],
+      "tla": [],
+      "covers": [
+        "V14",
+        "V15"
       ]
     }
   ]

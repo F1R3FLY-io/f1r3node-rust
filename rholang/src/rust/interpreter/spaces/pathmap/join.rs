@@ -2548,6 +2548,27 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         })
     }
 
+    /// The own payload of the datum of the marker at `index` of `I(q)`, not re-rooted (P7,
+    /// TH-6): the payload that its send carried and that the theory admitted.
+    fn stored_payload(
+        &self,
+        cx: &mut Cx<'_, '_>,
+        scope: &JoinScope,
+        coll: usize,
+        index: usize,
+        missing: &'static str,
+    ) -> Result<ListParWithRandom, SpaceError> {
+        let meter = cx.meter();
+        let found = self.marker_datum(cx, scope, coll, index, missing)?;
+        let records = cx.data_on(self.home_at(found.home)?)?;
+        let record = records
+            .get(found.record_index)
+            .ok_or(SpaceError::Inconsistent(
+                "a record index is outside its path",
+            ))?;
+        self.payload_of(&record.a, meter)
+    }
+
     /// The markers of `I(q)` in the order of CONSUME-CANDIDATES (path-key order, then the
     /// canonical order of DR-75 within a path), without the datums in flight.
     fn members(

@@ -42,9 +42,33 @@ pub enum SpaceError {
     /// `seq`, because its rules need the deterministic job order of native execution (QT-5).
     #[error("the {0} qualifier needs native execution")]
     QualifierUnavailable(String),
-    /// A theory that this phase does not support (P7).
+    // Changed by P7 step 4 (design v3 TH-3, TH-7): a factory now resolves the builtin theories,
+    // so the code means that a persisted identity names no checker of this build.
+    // /// A theory that this phase does not support (P7).
+    /// A theory identity that names no checker of this build (P7, TH-3, TH-7). Each config read
+    /// resolves the identity of its space, so the operation fails at the charge of that read.
     #[error("the theory {0} is not available")]
     TheoryUnavailable(String),
+    /// A factory call that names a theory with no builtin of that name (P7, TH-4). The error
+    /// names the nearest builtin within two edits.
+    #[error("{name:?} is not a theory{}", suggestion_text(.suggestion))]
+    UnknownTheory {
+        name: String,
+        suggestion: Option<String>,
+    },
+    /// A value of a send that the theory of its space refutes (P7, TH-5). The error names the
+    /// theory and the index of the value in the payload.
+    #[error("the theory {theory} refutes the value {index} of the send")]
+    TheoryRefuted { theory: String, index: usize },
+    /// A value of a send that the theory of its space cannot decide within its limits (P7,
+    /// TH-5). Undetermined fails closed. The error names the theory and the index of the value.
+    #[error("the theory {theory} cannot decide the value {index} of the send")]
+    TheoryUndetermined { theory: String, index: usize },
+    /// A transaction that holds two or more theory leases (P7, TH-9). Their composition under
+    /// one commit belongs to the guard composition of P12, so the transaction aborts before its
+    /// commit.
+    #[error("a transaction holds more than one theory lease")]
+    NestedCommitGuard,
     /// A config record whose outer store and inner collection this phase does not support.
     #[error("the {outer}:{inner} space family is not available")]
     FamilyUnavailable { outer: String, inner: String },
@@ -209,6 +233,10 @@ impl SpaceError {
             SpaceError::PositionalParamsUnsupported => "PositionalParamsUnsupported",
             SpaceError::QualifierUnavailable(_) => "QualifierUnavailable",
             SpaceError::TheoryUnavailable(_) => "TheoryUnavailable",
+            SpaceError::UnknownTheory { .. } => "UnknownTheory",
+            SpaceError::TheoryRefuted { .. } => "TheoryRefuted",
+            SpaceError::TheoryUndetermined { .. } => "TheoryUndetermined",
+            SpaceError::NestedCommitGuard => "NestedCommitGuard",
             SpaceError::FamilyUnavailable { .. } => "FamilyUnavailable",
             SpaceError::RuntimeUnavailable => "RuntimeUnavailable",
             // Retired by decision 47 with its variant.
@@ -343,6 +371,19 @@ mod tests {
             SpaceError::PositionalParamsUnsupported,
             SpaceError::QualifierUnavailable("seq".to_string()),
             SpaceError::TheoryUnavailable("Nat".to_string()),
+            SpaceError::UnknownTheory {
+                name: "Natt".to_string(),
+                suggestion: Some("Nat".to_string()),
+            },
+            SpaceError::TheoryRefuted {
+                theory: "Nat".to_string(),
+                index: 1,
+            },
+            SpaceError::TheoryUndetermined {
+                theory: "Nat".to_string(),
+                index: 0,
+            },
+            SpaceError::NestedCommitGuard,
             SpaceError::FamilyUnavailable {
                 outer: "hashmap".to_string(),
                 inner: "bag".to_string(),
@@ -453,6 +494,26 @@ mod tests {
                  process",
                 "cd".repeat(32)
             ))
+        );
+        // TH-4 and TH-5: the theory errors name the theory, its suggestion and the value.
+        assert_eq!(
+            InterpreterError::from(SpaceError::UnknownTheory {
+                name: "Natt".to_string(),
+                suggestion: Some("Nat".to_string()),
+            }),
+            InterpreterError::ReduceError(
+                "reified:UnknownTheory: \"Natt\" is not a theory, did you mean \"Nat\"?"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            InterpreterError::from(SpaceError::TheoryRefuted {
+                theory: "Nat".to_string(),
+                index: 1,
+            }),
+            InterpreterError::ReduceError(
+                "reified:TheoryRefuted: the theory Nat refutes the value 1 of the send".to_string()
+            )
         );
         // HS-2 and HS-3: a HashSet collection takes units only.
         assert_eq!(

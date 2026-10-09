@@ -75,15 +75,15 @@
 \* Code (rholang/src/rust/interpreter/spaces; the line numbers are those of
 \* the commit of step 8c):
 \*   Eligible, Order       disciplines/vectordb.rs:881-952 (eligible)
-\*   Sel, FiresOn          disciplines/vectordb.rs:1637-1689, 1068-1117 (receive_selection, list_selection)
-\*   OFires                disciplines/vectordb.rs:1484-1532, 1123-1142 (first_offer_target, list_offer)
+\*   Sel, FiresOn          disciplines/vectordb.rs:1655-1707, 1068-1117 (receive_selection, list_selection)
+\*   OFires                disciplines/vectordb.rs:1484-1540, 1123-1142 (first_offer_target, list_offer)
 \*   AfterFire             reified/costs.rs:322-333 (FireRounds::after_fire)
 \*   Offer                 disciplines/vectordb.rs:1422-1471 (offer_vdb), 1151-1194 (retire_members)
-\*   Recv                  disciplines/vectordb.rs:1546-1626 (receive_plan)
-\*   Lift                  disciplines/vectordb.rs:1909-1954 (lift_and_reoffer)
-\*   RunTail               disciplines/vectordb.rs:1773-1808, 1860-1902 (run_tail, first_cascade_target)
-\*   RunOp                 disciplines/vectordb.rs:1754-1768 (finish_tail)
-\*   NewJobs               disciplines/vectordb.rs:1814-1840 (conclude), join.rs:4669-4731 (Engine::commit)
+\*   Recv                  disciplines/vectordb.rs:1554-1644 (receive_plan)
+\*   Lift                  disciplines/vectordb.rs:1933-1978 (lift_and_reoffer)
+\*   RunTail               disciplines/vectordb.rs:1791-1826, 1878-1926 (run_tail, first_cascade_target)
+\*   RunOp                 disciplines/vectordb.rs:1772-1786 (finish_tail)
+\*   NewJobs               disciplines/vectordb.rs:1832-1858 (conclude), join.rs:4769-4831 (Engine::commit)
 \*   RunSettle             join.rs:371-404 (classify), 2645-2732 (Engine::run), 4362-4394 (drain_and_cascade)
 
 EXTENDS Naturals, Sequences, FiniteSets

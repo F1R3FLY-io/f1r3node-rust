@@ -11,7 +11,10 @@
 //! The factory builds the map with [`SpaceConfig::to_par`], and the agent stages it in the
 //! creation of the space. The record is immutable. A collection operation, a handle method and
 //! `getSpaceAgent` read it. The decoder is strict: it accepts exactly the image of
-//! [`SpaceConfig::to_par`], and the theory slot is `Nil` in P4 (free theories arrive in P7).
+//! [`SpaceConfig::to_par`]. The theory slot holds `Nil` for a space without a theory, and the
+//! canonical bytes of the identity of its theory otherwise, in one `GByteArray` (P7, TH-2 and
+//! decision 74). The metered decode resolves the identity, so a config read of a theory that
+//! this build cannot check fails with `TheoryUnavailable` (TH-7).
 
 use std::collections::BTreeMap;
 
@@ -26,6 +29,8 @@ use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::SpaceId;
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr, MalformedRecord, RecordKind};
+use crate::rust::interpreter::spaces::theory;
+use crate::rust::interpreter::spaces::theory::identity::TheoryIdentity;
 
 /// The key of the space id.
 pub const SPACE_ID_KEY: &str = "spaceId";
@@ -61,6 +66,8 @@ pub struct SpaceConfig {
     pub qualifier: SpaceQualifier,
     /// The named factory params, by key.
     pub params: BTreeMap<String, Par>,
+    /// The identity of the theory of the space, or `None` (P7, TH-2).
+    pub theory: Option<TheoryIdentity>,
 }
 
 impl SpaceConfig {
@@ -72,6 +79,7 @@ impl SpaceConfig {
             inner: inner.to_owned(),
             qualifier,
             params: BTreeMap::new(),
+            theory: None,
         }
     }
 
@@ -101,14 +109,27 @@ impl SpaceConfig {
                 string_par(self.qualifier.as_str()),
             ),
             (string_par(PARAMS_KEY), params),
-            (string_par(THEORY_KEY), Par::default()),
+            // Changed by decision 74: the slot holds the canonical bytes of the identity in one
+            // `GByteArray`, because every operation reads the config.
+            // (
+            //     string_par(THEORY_KEY),
+            //     self.theory
+            //         .as_ref()
+            //         .map_or_else(Par::default, TheoryIdentity::to_par),
+            // ),
+            (
+                string_par(THEORY_KEY),
+                self.theory.as_ref().map_or_else(Par::default, |identity| {
+                    expr_par(ExprInstance::GByteArray(identity.to_bytes()))
+                }),
+            ),
         ])
     }
 
     /// Decodes a config map. Anything but the exact image of [`SpaceConfig::to_par`] is a
     /// malformed config record: another key set, a value of another kind, a space id without
-    /// 32 bytes, an unknown qualifier, a theory other than `Nil`, or another entry order or bit
-    /// flag.
+    /// 32 bytes, an unknown qualifier, a theory that is neither `Nil` nor the bytes of an
+    /// identity, or another entry order or bit flag.
     pub fn from_par(map: &Par) -> Result<Self, MalformedRecord> {
         let malformed = MalformedRecord(RecordKind::Config);
         let entries = map_entries(map).ok_or(malformed)?;
@@ -130,13 +151,31 @@ impl SpaceConfig {
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), value.clone()))
                 .collect(),
+            // Changed by P7 step 4 (design v3 TH-2): the slot holds `Nil` or an identity map.
+            // Changed by decision 74: the slot holds `Nil` or the bytes of an identity.
+            // theory: match entry(THEORY_KEY)? {
+            //     theory if *theory == Par::default() => None,
+            //     theory => Some(TheoryIdentity::from_par(theory).ok_or(malformed)?),
+            // },
+            theory: match entry(THEORY_KEY)? {
+                theory if *theory == Par::default() => None,
+                theory => Some(
+                    bytes_of(theory)
+                        .and_then(TheoryIdentity::from_bytes)
+                        .ok_or(malformed)?,
+                ),
+            },
         };
-        match (
-            *entry(THEORY_KEY)? == Par::default(),
-            config.to_par() == *map,
-        ) {
-            (true, true) => Ok(config),
-            (true, false) | (false, _) => Err(malformed),
+        // match (
+        //     *entry(THEORY_KEY)? == Par::default(),
+        //     config.to_par() == *map,
+        // ) {
+        //     (true, true) => Ok(config),
+        //     (true, false) | (false, _) => Err(malformed),
+        // }
+        match config.to_par() == *map {
+            true => Ok(config),
+            false => Err(malformed),
         }
     }
 }
@@ -147,13 +186,23 @@ impl SpaceConfig {
     /// the decoded config again with [`SpaceConfig::to_par`] and compares the two maps. Each
     /// part reads or copies at most `map`, so the reservations are a read of `map`, two copies
     /// of `map` and a read of each side of the comparison.
+    ///
+    /// The decode then resolves the identity of the theory (TH-7): an identity that names no
+    /// checker of this build fails with `TheoryUnavailable`, at the charge of the read. The
+    /// resolution is a pure function of the identity, and it reads nothing more.
     pub fn from_par_metered(map: &Par, meter: &ScanMeter) -> Result<Self, SpaceError> {
         meter.inspect(map)?;
         meter.reserve_copy(map)?;
         meter.reserve_copy(map)?;
         meter.inspect(map)?;
         meter.inspect(map)?;
-        Ok(Self::from_par(map)?)
+        // Changed by P7 step 4 (design v3 TH-7): the read resolves the theory.
+        // Ok(Self::from_par(map)?)
+        let config = Self::from_par(map)?;
+        if let Some(identity) = &config.theory {
+            theory::resolve(identity)?;
+        }
+        Ok(config)
     }
 }
 

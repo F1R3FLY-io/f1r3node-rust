@@ -10,7 +10,10 @@
 //! 3. The family takes the qualifier, else `BadConstructorArgument`. In native execution every
 //!    qualifier passes (P7). Legacy execution refuses `seq` with `QualifierUnavailable`, because
 //!    the Seq rules need the job order of native execution (P7, design v3 QT-5).
-//! 4. The constructor names no theory, else `TheoryUnavailable` (P7).
+//! 4. A theory `free Th()` names a builtin: `Nat`, `Int`, `String`, `Bool` or `Any` (P7, TH-4).
+//!    Another name fails with `UnknownTheory` and the nearest builtin within two edits, and a
+//!    builtin with arguments fails with `BadConstructorArgument`. The config persists the
+//!    identity of the theory, never a handle.
 //! 5. The params are not positional, else `PositionalParamsUnsupported`.
 //! 6. Each named param is in the schema of the family, else `UnknownParam` with a suggestion.
 //!    The keys are checked in bytewise order.
@@ -47,6 +50,8 @@ use super::defaults::{
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{Durability, NativeSpace};
 use crate::rust::interpreter::spaces::record::sole_expr;
+use crate::rust::interpreter::spaces::theory::builtin::{BuiltinKind, BUILTIN_NAMES};
+use crate::rust::interpreter::spaces::theory::identity::TheoryIdentity;
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier as ConfigQualifier;
 use crate::rust::interpreter::tensor::exact::Metric;
@@ -61,6 +66,8 @@ pub struct FactoryConstructor {
     /// The named params, which the schema of the family accepts, each in the canonical form of
     /// its rule.
     pub params: BTreeMap<String, Par>,
+    /// The identity of the theory of the space, or `None` (P7, TH-4).
+    pub theory: Option<TheoryIdentity>,
 }
 
 /// The execution model of a factory call (P7, design v3 QT-5). The Seq rules need the
@@ -134,9 +141,14 @@ impl FactoryConstructor {
                 ))
             }
         }
-        if let Some(theory) = theory {
-            return Err(SpaceError::TheoryUnavailable(theory.name));
-        }
+        // Changed by P7 step 4 (design v3 TH-4): gate 4 resolves the builtin theories.
+        // if let Some(theory) = theory {
+        //     return Err(SpaceError::TheoryUnavailable(theory.name));
+        // }
+        let theory = match theory {
+            None => None,
+            Some(free) => Some(theory_gate(&free.name, &free.args)?),
+        };
         let SendParams { positional, named } = params.unwrap_or_default();
         if !positional.is_empty() {
             return Err(SpaceError::PositionalParamsUnsupported);
@@ -161,6 +173,7 @@ impl FactoryConstructor {
             family,
             qualifier,
             params,
+            theory,
         })
     }
 
@@ -172,7 +185,7 @@ impl FactoryConstructor {
         }
     }
 
-    /// The config of the new space `space` (I-17). Its theory is `Nil` until P7.
+    /// The config of the new space `space` (I-17), with the identity of its theory (P7).
     pub fn config(&self, space: NativeSpace) -> SpaceConfig {
         SpaceConfig {
             space_id: space.sid,
@@ -180,7 +193,25 @@ impl FactoryConstructor {
             inner: self.family.inner.as_str().to_string(),
             qualifier: config_qualifier(self.qualifier),
             params: self.params.clone(),
+            theory: self.theory.clone(),
         }
+    }
+}
+
+/// Gate 4 (P7, TH-4): the identity of the builtin theory `name` without arguments. Another name
+/// fails with `UnknownTheory` and the nearest builtin within two edits, and a builtin with
+/// arguments fails with `BadConstructorArgument`. Until the F1r3lang merge, `args[0]` has no
+/// meaning: after it, it is the capability token of an installed theory (P12).
+fn theory_gate(name: &str, args: &[Par]) -> Result<TheoryIdentity, SpaceError> {
+    match (BuiltinKind::of_name(name), args.is_empty()) {
+        (Some(_), true) => Ok(TheoryIdentity::builtin(name)),
+        (Some(_), false) => Err(SpaceError::BadConstructorArgument(format!(
+            "the builtin theory {name} takes no arguments"
+        ))),
+        (None, _) => Err(SpaceError::UnknownTheory {
+            name: name.to_string(),
+            suggestion: suggestion(name, &BUILTIN_NAMES).map(str::to_string),
+        }),
     }
 }
 
@@ -284,10 +315,12 @@ mod tests {
 
     fn string(value: &str) -> Par { new_gstring_par(value.to_string(), Vec::new(), false) }
 
-    fn nat() -> Par {
+    fn nat() -> Par { free("Nat", Vec::new()) }
+
+    fn free(name: &str, args: Vec<Par>) -> Par {
         encode_free(&FreeTheory {
-            name: "Nat".to_string(),
-            args: Vec::new(),
+            name: name.to_string(),
+            args,
         })
         .expect("a valid theory")
     }
@@ -317,6 +350,7 @@ mod tests {
                 family: SpaceFactoryUrn::HASHMAP_QUEUE,
                 qualifier: SpaceQualifier::Default,
                 params: BTreeMap::new(),
+                theory: None,
             });
             assert_eq!(validated.durability(), Durability::Durable);
         }
@@ -338,9 +372,24 @@ mod tests {
         //     validate(vec![string("seq"), nat()]),
         //     Err(SpaceError::QualifierUnavailable("seq".to_string()))
         // );
+        // Changed by P7 step 4 (design v3 TH-4): gate 4 accepts the builtin theories, so an
+        // unknown theory shows the order of gates 3 and 4.
+        // assert_eq!(
+        //     validate(vec![string("seq"), nat()]),
+        //     Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+        // );
         assert_eq!(
-            validate(vec![string("seq"), nat()]),
-            Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+            validate(vec![string("seq"), free("Bounded", Vec::new())]),
+            Err(SpaceError::UnknownTheory {
+                name: "Bounded".to_string(),
+                suggestion: None,
+            })
+        );
+        assert_eq!(
+            validate(vec![string("seq"), nat()])
+                .expect("a seq space with a builtin theory is valid natively")
+                .theory,
+            Some(TheoryIdentity::builtin("Nat"))
         );
         assert_eq!(
             FactoryConstructor::validate_in(
@@ -353,13 +402,35 @@ mod tests {
         let seq = validate(vec![string("seq")]).expect("a seq constructor is valid natively");
         assert_eq!(seq.qualifier, SpaceQualifier::Seq);
         assert_eq!(seq.durability(), Durability::Ephemeral);
+        // Changed by P7 step 4 (design v3 TH-4): gate 4 accepts the builtin theories, so an
+        // unknown theory shows the order of gates 4 and 5.
+        // assert_eq!(
+        //     validate(vec![nat()]),
+        //     Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+        // );
+        // assert_eq!(
+        //     validate(vec![nat(), params(vec![SendParam::Positional(int(1))])]),
+        //     Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+        // );
         assert_eq!(
-            validate(vec![nat()]),
-            Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+            validate(vec![nat()])
+                .expect("a builtin theory is valid")
+                .theory,
+            Some(TheoryIdentity::builtin("Nat"))
+        );
+        assert_eq!(
+            validate(vec![
+                free("Natt", Vec::new()),
+                params(vec![SendParam::Positional(int(1))])
+            ]),
+            Err(SpaceError::UnknownTheory {
+                name: "Natt".to_string(),
+                suggestion: Some("Nat".to_string()),
+            })
         );
         assert_eq!(
             validate(vec![nat(), params(vec![SendParam::Positional(int(1))])]),
-            Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+            Err(SpaceError::PositionalParamsUnsupported)
         );
         assert_eq!(
             validate(vec![params(vec![
@@ -629,9 +700,24 @@ mod tests {
                 key: "size".to_string()
             })
         );
+        // Changed by P7 step 4 (design v3 TH-4): gate 4 accepts the builtin theories, so the
+        // missing size decides, and an unknown theory fails before it.
+        // assert_eq!(
+        //     check(array_queue, vec![nat()]),
+        //     Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+        // );
         assert_eq!(
             check(array_queue, vec![nat()]),
-            Err(SpaceError::TheoryUnavailable("Nat".to_string()))
+            Err(SpaceError::MissingParam {
+                key: "size".to_string()
+            })
+        );
+        assert_eq!(
+            check(array_queue, vec![free("Even", Vec::new())]),
+            Err(SpaceError::UnknownTheory {
+                name: "Even".to_string(),
+                suggestion: None,
+            })
         );
         assert_eq!(
             check(array_queue, vec![params(vec![SendParam::Positional(int(
@@ -866,6 +952,51 @@ mod tests {
                     "{qualifier:?} {metric:?} with a mirror"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn reified_factory_theory_gate() {
+        // TH-4: a builtin name without arguments gives the identity of the builtin, and the
+        // config of the space persists it.
+        for name in BUILTIN_NAMES {
+            let validated =
+                validate(vec![free(name, Vec::new())]).expect("a builtin theory is valid");
+            assert_eq!(
+                validated.theory,
+                Some(TheoryIdentity::builtin(name)),
+                "{name}"
+            );
+            assert_eq!(
+                validated.config(space()).theory,
+                Some(TheoryIdentity::builtin(name)),
+                "{name}"
+            );
+        }
+        // A builtin with arguments fails with `BadConstructorArgument`.
+        assert_eq!(
+            validate(vec![free("Nat", vec![int(1)])]),
+            Err(SpaceError::BadConstructorArgument(
+                "the builtin theory Nat takes no arguments".to_string()
+            ))
+        );
+        // Another name fails with `UnknownTheory` and the nearest builtin within two edits, with
+        // or without arguments.
+        for (name, args, suggested) in [
+            ("Natt", Vec::new(), Some("Nat")),
+            ("Strng", Vec::new(), Some("String")),
+            ("Boll", vec![int(1)], Some("Bool")),
+            ("Bounded", vec![int(1), int(2)], None),
+            ("Th", Vec::new(), None),
+        ] {
+            assert_eq!(
+                validate(vec![free(name, args)]),
+                Err(SpaceError::UnknownTheory {
+                    name: name.to_string(),
+                    suggestion: suggested.map(str::to_string),
+                }),
+                "{name}"
+            );
         }
     }
 }

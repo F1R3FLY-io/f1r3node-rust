@@ -486,13 +486,15 @@ A theory describes the data that a space admits ([decision 9](decision-register.
 The FIPS describes it as a MeTTaIL theory of the data that processes can send on the channels of a space [[FIPS-RRS](#ref-fips-rrs)].
 A program names a theory with the syntax `free Th(args)`.
 Before the F1r3lang merge, the builtin theories are `Nat`, `Int`, `String`, `Bool`, and `Any`, and they check only the structure of a value.
+P7 step 4 implements them ([specification 5](specification.md#5-theories)), and the [theory seam](theory-seam.md) explains the design.
 
 ### Theory identity
 
 A theory identity is the content that names a theory ([decision 9](decision-register.md#decision-9)).
 It holds a version, a language fingerprint, a category, a category name, a theorem id, a checker ABI, a limit profile, and the arguments.
 It never holds process-local state, such as a reference to an installed theory, a token, or an epoch.
-The config record of a space stores the theory identity.
+The config record of a space stores the theory identity as one `GByteArray` of its canonical bytes ([decision 74](decision-register.md#decision-74)).
+The `config` reply of a handle shows the identity as a map.
 So the first use of the space in a later deploy, and replay, can check data again deterministically.
 
 ### Admission verdict
@@ -501,6 +503,8 @@ An admission verdict is the result of a theory check: `Proven`, `Refuted`, or `U
 A produce stores its data only when each argument is `Proven`.
 A COMM uses a stored datum only when its check is `Proven`.
 `Undetermined` fails closed: it has the same effect as `Refuted`.
+At a send, a verdict other than `Proven` aborts the deploy ([specification 5](specification.md#5-theories), rule TH-5).
+At a match, it is a guard refusal (rule TH-6).
 
 ### Namespace tag
 

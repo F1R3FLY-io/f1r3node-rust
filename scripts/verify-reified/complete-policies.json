@@ -1848,7 +1848,7 @@
       ]
     },
     "p7": {
-      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call. Step 2 adds the Seq rules: gate 3 in the execution model of the deploy (QT-5), the send rule of seq names (SQ-1, SQ-2), the claims of each channel of a seq space with their store after a successful commit (SQ-3, SQ-4), the internal origin of re-issues (A3), and the charges of the checks (SQ-8). Step 3 adds the HashSet store (HS-1 to HS-8): the HashSet outer store with the key, the channels and the names of the HashMap store, the payload and pattern hooks of the outer stores before any staging (PayloadNotEmpty, PatternNotEmpty), and the six HashSet families with their schemas, dispatch arms, factory rows and system channels.",
+      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call. Step 2 adds the Seq rules: gate 3 in the execution model of the deploy (QT-5), the send rule of seq names (SQ-1, SQ-2), the claims of each channel of a seq space with their store after a successful commit (SQ-3, SQ-4), the internal origin of re-issues (A3), and the charges of the checks (SQ-8). Step 3 adds the HashSet store (HS-1 to HS-8): the HashSet outer store with the key, the channels and the names of the HashMap store, the payload and pattern hooks of the outer stores before any staging (PayloadNotEmpty, PatternNotEmpty), and the six HashSet families with their schemas, dispatch arms, factory rows and system channels. Step 4 adds the theory seam (TH-1 to TH-10): the builtin theories and their structural checks, the theory identity with its canonical bytes in the config (decision 74), the resolution of each config read, gate 4 of the factory, the admission of each value of a send before any staging, the check of each stored datum of a match after the guard at every user-match site, and the commit guard of two or more leases.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/ephemeral.rs",
         "rholang/src/rust/interpreter/spaces/agent.rs",
@@ -1867,7 +1867,16 @@
         "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
         "rholang/src/rust/interpreter/spaces/factory/urn.rs",
         "rholang/src/rust/interpreter/reified/system_channels.rs",
-        "rholang/src/rust/interpreter/spaces/pathmap/join.rs"
+        "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+        "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+        "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+        "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+        "rholang/src/rust/interpreter/spaces/types/config.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs"
       ],
       "entry_points": [
         {
@@ -2069,6 +2078,70 @@
         {
           "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
           "pattern": "for (family, channel) in p7_families {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+          "pattern": "pub fn resolve(identity: &TheoryIdentity) -> Result<Arc<dyn SpaceTheory>, SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+          "pattern": "pub fn admit_values("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+          "pattern": "pub trait SpaceTheory: Send + Sync + std::fmt::Debug {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+          "pattern": "pub fn sole(value: &Par) -> Option<&ExprInstance> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+          "pattern": "pub fn of_identity(identity: &TheoryIdentity) -> Option<Self> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+          "pattern": "pub fn to_bytes(&self) -> Vec<u8> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+          "pattern": "pub fn from_bytes(bytes: &[u8]) -> Option<Self> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+          "pattern": "fn theory_gate(name: &str, args: &[Par]) -> Result<TheoryIdentity, SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "pub(crate) fn theory_admits(&mut self, stored: &[StoredMatch<'_>]) -> Result<bool, SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "fn check_leases(leases: &[Box<dyn TheoryCommitLease>]) -> Result<(), SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "fn stored_payload("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "TheoryRefuted { theory: String, index: usize },"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "TheoryUndetermined { theory: String, index: usize },"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "NestedCommitGuard,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/types/config.rs",
+          "pattern": "theory::resolve(identity)?;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/handle.rs",
+          "pattern": "(THEORY_KEY, Some(identity)) => identity.to_par(),"
         }
       ],
       "tests": [

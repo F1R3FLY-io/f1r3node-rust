@@ -3,7 +3,7 @@
 # charges, P5 wave W2: the engine, the bag, cell and stack disciplines, the
 # Array and Vector stores, the PathMap paths and the P5 families, P5 wave
 # W3: the joins of one space and the PathMap engine, P6: the exact
-# similarity decisions of the VectorDB family)
+# similarity decisions of the VectorDB family, P7: the theory seam)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -142,6 +142,17 @@
 #                     Rule E (decision 45), and the greedy limit.
 #                     RecordEnvelope.v adds continuation_v2_roundtrip, and
 #                     CounterConflict.v adds join_ops_race_on_every_counter.
+#   TheoryAdmission   P7 step 4 (6 headlines): the theory seam. The builtin
+#                     theories decide by shape with one reserved unit, an
+#                     admission fails closed at the first value that is not
+#                     Proven and a commit refuses two leases, a cache of
+#                     checks is transparent, the resolution is a function
+#                     of the content of the identity, replay of the
+#                     persisted bytes admits as play does, and the bytes of
+#                     an identity (decision 74) decode exactly to it.
+#                     Match.v adds the TH-6 headline (a theory refusal at a
+#                     match is a guard refusal), and SpaceFactory.v adds
+#                     gate 4 (theory_gate_validated, TH-4).
 #   Similarity        P6 step 2 (20 headlines): the exact decisions of the
 #                     VectorDB family over an ordered commutative ring (the
 #                     real numbers included): the squared forms of cosine and
@@ -190,3 +201,4 @@ theories/JoinCascade.v
 theories/Similarity.v
 theories/VectorDbDiscipline.v
 theories/VectorOps.v
+theories/TheoryAdmission.v

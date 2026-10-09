@@ -118,6 +118,8 @@ use rholang::rust::interpreter::spaces::record::{
     wrap_datum, ContinuationRecord, DatumRecord, MalformedRecord, RecordKind, RECORD_TAG_MARK,
     RECORD_VERSION,
 };
+use rholang::rust::interpreter::spaces::theory::builtin::BUILTIN_NAMES;
+use rholang::rust::interpreter::spaces::theory::identity::TheoryIdentity;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::id::derive_space_id;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier as ConfigQualifier;
@@ -1320,20 +1322,30 @@ fn arb_space_config() -> BoxedStrategy<SpaceConfig> {
         select(vec!["hashmap", "pathmap", "queue", "bag", "stack"]).prop_map(String::from),
         "[a-z]{0,6}",
     ];
+    // Changed by P7 step 4 (design v3 TH-2): the config holds the identity of its theory or
+    // `None`, so the codec property covers both forms of the theory slot.
+    let theory = prop_oneof![
+        Just(None),
+        select(BUILTIN_NAMES.to_vec()).prop_map(|name| Some(TheoryIdentity::builtin(name))),
+    ];
     (
         uniform32(any::<u8>()),
         name.clone(),
         name,
         arb_config_qualifier(),
         proptest::collection::btree_map("[a-z]{1,4}", arb_ground_par(), 0..3),
+        theory,
     )
-        .prop_map(|(space_id, outer, inner, qualifier, params)| SpaceConfig {
-            space_id,
-            outer,
-            inner,
-            qualifier,
-            params,
-        })
+        .prop_map(
+            |(space_id, outer, inner, qualifier, params, theory)| SpaceConfig {
+                space_id,
+                outer,
+                inner,
+                qualifier,
+                params,
+                theory,
+            },
+        )
         .boxed()
 }
 
@@ -1348,7 +1360,16 @@ fn config_entries(config: &SpaceConfig) -> Vec<(String, Par)> {
             "params".to_string(),
             reified_strategies::map(config.params.clone().into_iter().collect()),
         ),
-        ("theory".to_string(), Par::default()),
+        // Changed by P7 step 4 (design v3 TH-2, decision 74): the slot holds `Nil` or the
+        // canonical bytes of the identity.
+        // ("theory".to_string(), Par::default()),
+        (
+            "theory".to_string(),
+            config
+                .theory
+                .as_ref()
+                .map_or_else(Par::default, |identity| bytes_par(&identity.to_bytes())),
+        ),
     ]
 }
 

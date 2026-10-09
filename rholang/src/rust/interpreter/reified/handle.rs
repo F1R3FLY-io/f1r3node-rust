@@ -66,7 +66,7 @@ use crate::rust::interpreter::spaces::families::send_params;
 use crate::rust::interpreter::spaces::namespace::{
     self, CollectionKey, NameTail, NativeSpace, ReifiedId,
 };
-use crate::rust::interpreter::spaces::types::config::{map_entries, SpaceConfig};
+use crate::rust::interpreter::spaces::types::config::{map_entries, SpaceConfig, THEORY_KEY};
 
 /// The methods of a handle, in bytewise order.
 pub const HANDLE_METHODS: [&str; 5] = ["config", "consume", "gensym", "produce", "qualifier"];
@@ -498,35 +498,51 @@ fn reducer(dispatcher: &RhoDispatch) -> Result<Arc<ReducerCore>, InterpreterErro
 /// The key of the derived entry of the `config` reply of a space with a mirror.
 pub const MIRROR_ENTRY: &str = "mirror";
 
-/// The reply of `config` (P6 step 7, design v3 4.9): the stored config map, and for a space with
-/// a mirror one more entry `"mirror"`, the map `{"backend": b, "collection": "rrs-…"}`, where `b`
-/// is the value of the factory param `mirror` and the collection is [`collection_name`] of the
-/// space. The stored config record does not change.
+/// The reply of `config` (P6 step 7, design v3 4.9, decision 74): the stored config map, with
+/// the theory slot shown as the identity map of TH-2 instead of the bytes that the record holds,
+/// and for a space with a mirror one more entry `"mirror"`, the map
+/// `{"backend": b, "collection": "rrs-…"}`, where `b` is the value of the factory param `mirror`
+/// and the collection is [`collection_name`] of the space. The stored config record does not
+/// change.
 fn config_reply(
     space: NativeSpace,
     config_map: &Par,
     config: &SpaceConfig,
 ) -> Result<Par, InterpreterError> {
-    let Some(backend) = config.params.get(MIRROR_PARAM) else {
+    // Changed by decision 74: a space with a theory shows the identity map in its reply.
+    // let Some(backend) = config.params.get(MIRROR_PARAM) else {
+    //     return Ok(config_map.clone());
+    // };
+    let backend = config.params.get(MIRROR_PARAM);
+    if backend.is_none() && config.theory.is_none() {
         return Ok(config_map.clone());
-    };
+    }
     let entries = map_entries(config_map).ok_or(SpaceError::Inconsistent(
         "the config record is not a map with string keys",
     ))?;
-    let mirror = map_par(vec![
-        (string_par("backend"), backend.clone()),
-        (
-            string_par("collection"),
-            string_par(&collection_name(&space.sid)),
-        ),
-    ]);
     let mut pairs = Vec::with_capacity(entries.len() + 1);
-    pairs.extend(
-        entries
-            .into_iter()
-            .map(|(key, value)| (string_par(key), value.clone())),
-    );
-    pairs.push((string_par(MIRROR_ENTRY), mirror));
+    // pairs.extend(
+    //     entries
+    //         .into_iter()
+    //         .map(|(key, value)| (string_par(key), value.clone())),
+    // );
+    pairs.extend(entries.into_iter().map(|(key, value)| {
+        let shown = match (key, &config.theory) {
+            (THEORY_KEY, Some(identity)) => identity.to_par(),
+            _ => value.clone(),
+        };
+        (string_par(key), shown)
+    }));
+    if let Some(backend) = backend {
+        let mirror = map_par(vec![
+            (string_par("backend"), backend.clone()),
+            (
+                string_par("collection"),
+                string_par(&collection_name(&space.sid)),
+            ),
+        ]);
+        pairs.push((string_par(MIRROR_ENTRY), mirror));
+    }
     Ok(map_par(pairs))
 }
 

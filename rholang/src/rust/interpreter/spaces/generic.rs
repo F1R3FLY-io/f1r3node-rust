@@ -118,6 +118,7 @@ use super::mirror::MirrorCapture;
 use super::namespace::{self, CollectionKey, NativeSpace, RandomPurpose, ReifiedId};
 use super::record::{self, Introduction, OperationAuthority};
 use super::settle::reissued_operation;
+use super::theory::{self, SpaceTheory, TheoryCommitLease};
 use super::types::config::SpaceConfig;
 use crate::rust::interpreter::reified::costs::{
     FireRounds, FireStep, ReissueCause, ScanMeter, FIRE_ROUND_CAP,
@@ -713,6 +714,34 @@ struct Plan<'a> {
     /// primitive of [`Cx`] claims the channels that it uses, and the job stores the claims
     /// after its commit succeeded (SQ-4).
     seq: Option<SeqClaims>,
+    /// The checker of the theory of the space, or `None` (P7, TH-6). The config read resolved
+    /// it, so the plan reads nothing more for it.
+    theory: Option<Arc<dyn SpaceTheory>>,
+    /// The leases of the `Proven` verdicts of the transaction, in order (P7, TH-9). Two or more
+    /// abort the transaction with `NestedCommitGuard` before its commit.
+    leases: Vec<Box<dyn TheoryCommitLease>>,
+}
+
+/// A stored datum that a match binds (P7, TH-6): its payload as its send carried it, and the
+/// values that the pattern of its bind captures. The theory of the space checks each stored
+/// datum of a match after the guard admitted the match.
+#[derive(Clone, Copy, Debug)]
+pub struct StoredMatch<'a> {
+    /// The payload of the stored datum, without its envelope.
+    pub payload: &'a ListParWithRandom,
+    /// The values that the pattern of its bind captures.
+    pub captures: &'a ListParWithRandom,
+}
+
+/// Where the datum of a match is (P7, TH-6): a record of the store, or a datum in flight (the
+/// datum of a send, or a record that a cascade, a re-offer or a second send carries). The theory
+/// checks only stored data at a match: a datum in flight was admitted when it was sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// A record of the store.
+    Stored,
+    /// A datum in flight.
+    InFlight,
 }
 
 /// A produce-side fire: the head waiter that the datum fires, and the values that it binds.
@@ -821,33 +850,150 @@ impl<'p> Cx<'_, 'p> {
         self.plan.matcher.bind(pattern, data)
     }
 
-    /// The `where` guard of `continuation` over `matched`, metered (decision 37).
+    // Changed by P7 step 4 (design v3 TH-6): every user match names its stored data, and the
+    // theory of the space checks them after the guard.
+    // /// The `where` guard of `continuation` over `matched`, metered (decision 37).
+    // pub fn admits(
+    //     &self,
+    //     continuation: &TaggedContinuation,
+    //     matched: &ListParWithRandom,
+    // ) -> Result<bool, SpaceError> {
+    //     self.plan.matcher.admits(continuation, matched)
+    // }
+    //
+    // /// The `where` guard of `continuation` over the values `matched` of every bind, in bind
+    // /// order, metered (decision 37: once, after every bind matched).
+    // pub fn admits_all(
+    //     &self,
+    //     continuation: &TaggedContinuation,
+    //     matched: &[ListParWithRandom],
+    // ) -> Result<bool, SpaceError> {
+    //     self.plan.matcher.admits_all(continuation, matched)
+    // }
+    //
+    // /// The spatial match and then the guard: `None` when either refuses.
+    // pub fn matches(
+    //     &self,
+    //     pattern: &BindPattern,
+    //     data: &ListParWithRandom,
+    //     continuation: &TaggedContinuation,
+    // ) -> Result<Option<ListParWithRandom>, SpaceError> {
+    //     self.plan.matcher.matches(pattern, data, continuation)
+    // }
+
+    /// True when the space has a theory (P7, TH-6). A site that must read a stored payload for
+    /// the theory reads it only then, so a space without a theory does no work for it.
+    pub fn has_theory(&self) -> bool { self.plan.theory.is_some() }
+
+    /// The `where` guard of `continuation` over `matched`, metered (decision 37), and then the
+    /// check of the theory of the space on each datum of `stored` (P7, TH-6). A refusal of
+    /// either is a guard refusal.
     pub fn admits(
-        &self,
+        &mut self,
         continuation: &TaggedContinuation,
         matched: &ListParWithRandom,
+        stored: &[StoredMatch<'_>],
     ) -> Result<bool, SpaceError> {
-        self.plan.matcher.admits(continuation, matched)
+        match self.plan.matcher.admits(continuation, matched)? {
+            true => self.theory_admits(stored),
+            false => Ok(false),
+        }
     }
 
     /// The `where` guard of `continuation` over the values `matched` of every bind, in bind
-    /// order, metered (decision 37: once, after every bind matched).
+    /// order, metered (decision 37: once, after every bind matched), and then the check of the
+    /// theory of the space on each datum of `stored` (P7, TH-6).
     pub fn admits_all(
-        &self,
+        &mut self,
         continuation: &TaggedContinuation,
         matched: &[ListParWithRandom],
+        stored: &[StoredMatch<'_>],
     ) -> Result<bool, SpaceError> {
-        self.plan.matcher.admits_all(continuation, matched)
+        match self.plan.matcher.admits_all(continuation, matched)? {
+            true => self.theory_admits(stored),
+            false => Ok(false),
+        }
     }
 
-    /// The spatial match and then the guard: `None` when either refuses.
+    /// The `where` guard of `continuation` over `matched`, metered (decision 37), and then the
+    /// check of the theory of the space on each stored record of `members`, with the values
+    /// `matched` as the captures of each (P7, TH-6: each stored member of a list). `stored` gives
+    /// the record of a stored member, or `None` for the element in flight, which its send
+    /// admitted. The decode of each payload (`payload_of`) and its buffer are reserved. They
+    /// happen only for a space with a theory and only after the guard admitted the match, so a
+    /// space without a theory does no work for them.
+    pub fn admits_records<T>(
+        &mut self,
+        continuation: &TaggedContinuation,
+        matched: &ListParWithRandom,
+        members: &[T],
+        stored: impl Fn(&T) -> Option<&ListParWithRandom>,
+        payload_of: fn(&ListParWithRandom, &ScanMeter) -> Result<ListParWithRandom, SpaceError>,
+    ) -> Result<bool, SpaceError> {
+        if !self.plan.matcher.admits(continuation, matched)? {
+            return Ok(false);
+        }
+        if self.plan.theory.is_none() {
+            return Ok(true);
+        }
+        let meter = self.meter();
+        let count = members
+            .iter()
+            .filter(|member| stored(member).is_some())
+            .count();
+        let mut payloads = meter.buffer::<ListParWithRandom>(count)?;
+        for record in members.iter().filter_map(&stored) {
+            payloads.push(payload_of(record, meter)?);
+        }
+        let mut checks = meter.buffer::<StoredMatch<'_>>(payloads.len())?;
+        checks.extend(payloads.iter().map(|payload| StoredMatch {
+            payload,
+            captures: matched,
+        }));
+        self.theory_admits(&checks)
+    }
+
+    /// The spatial match of `pattern` against `data`, then the guard, then the check of the
+    /// theory on `data` when it is `held` in the store (P7, TH-6): `None` when one refuses.
     pub fn matches(
-        &self,
+        &mut self,
         pattern: &BindPattern,
         data: &ListParWithRandom,
         continuation: &TaggedContinuation,
+        held: Held,
     ) -> Result<Option<ListParWithRandom>, SpaceError> {
-        self.plan.matcher.matches(pattern, data, continuation)
+        let Some(matched) = self.plan.matcher.bind(pattern, data)? else {
+            return Ok(None);
+        };
+        let admitted = match held {
+            Held::Stored => self.admits(continuation, &matched, &[StoredMatch {
+                payload: data,
+                captures: &matched,
+            }])?,
+            Held::InFlight => self.admits(continuation, &matched, &[])?,
+        };
+        Ok(admitted.then_some(matched))
+    }
+
+    /// TH-6: the check of the theory of the space on each datum of `stored`, in order. Each
+    /// check reserves its work before it reads. A verdict that is not `Proven` refuses the
+    /// match, and a `Proven` verdict adds its lease to the transaction (TH-9). A space without a
+    /// theory admits every match and does no work.
+    pub(crate) fn theory_admits(&mut self, stored: &[StoredMatch<'_>]) -> Result<bool, SpaceError> {
+        let Some(theory) = self.plan.theory.clone() else {
+            return Ok(true);
+        };
+        let meter = self.meter();
+        for datum in stored {
+            if !theory
+                .check_match(datum.payload, datum.captures, meter)?
+                .is_proven()
+            {
+                return Ok(false);
+            }
+            self.plan.leases.extend(theory.commit_lease());
+        }
+        Ok(true)
     }
 
     /// The head of the entries of one side: its index in `entries` and its order. The scan
@@ -1604,7 +1750,8 @@ pub fn offer_head<D: Discipline>(
                 "a waiting continuation of a collection has several binds",
             ));
         };
-        let Some(matched) = cx.matches(pattern, &op.data, &waiter.continuation)? else {
+        let Some(matched) = cx.matches(pattern, &op.data, &waiter.continuation, Held::InFlight)?
+        else {
             cx.check_capacity::<D>(Side::Data)?;
             cx.store(record, op.persistent)?;
             return discipline.settle_after(cx, OpView::Produce(&op));
@@ -1682,7 +1829,7 @@ pub fn receive_head<D: Discipline>(
             return discipline.settle_after(cx, OpView::Consume(&op));
         };
         let payload = record::unwrap_datum_metered(&head.a, meter)?.datum;
-        let Some(matched) = cx.matches(&op.pattern, &payload, &continuation)? else {
+        let Some(matched) = cx.matches(&op.pattern, &payload, &continuation, Held::Stored)? else {
             cx.check_capacity::<D>(Side::Waiters)?;
             cx.park(&op, continuation, peeks)?;
             return discipline.settle_after(cx, OpView::Consume(&op));
@@ -2020,6 +2167,49 @@ pub async fn prepare_collection_op(
     }
 }
 
+/// The theory of a transaction and the leases of its admissions (P7, TH-5, TH-9): the checker
+/// that the config read resolved, and the leases that the admission of the values of a send gave.
+pub(crate) struct Admission {
+    pub(crate) theory: Option<Arc<dyn SpaceTheory>>,
+    pub(crate) leases: Vec<Box<dyn TheoryCommitLease>>,
+}
+
+impl Admission {
+    /// TH-5: the theory of the space of `config`, and the admission of the values of `op` when
+    /// `op` is a send. A send of the program and a re-issued send are admitted value by value,
+    /// in order, before any staging or bump. A settle job carries only data that was admitted,
+    /// so it admits nothing. The first value that is not `Proven` aborts the operation with
+    /// `TheoryRefuted` or `TheoryUndetermined`.
+    pub(crate) fn of(
+        config: &SpaceConfig,
+        op: &SpaceOp,
+        meter: &ScanMeter,
+    ) -> Result<Self, SpaceError> {
+        let theory = match &config.theory {
+            Some(identity) => Some(theory::resolve(identity)?),
+            None => None,
+        };
+        let leases = match (&theory, op) {
+            (Some(theory), SpaceOp::Produce(produce)) => {
+                theory::admit_values(theory.as_ref(), &produce.data.pars, meter)?
+            }
+            (Some(_), SpaceOp::Consume(_) | SpaceOp::Join(_) | SpaceOp::Settle(_)) | (None, _) => {
+                Vec::new()
+            }
+        };
+        Ok(Self { theory, leases })
+    }
+}
+
+/// TH-9: a transaction with two or more theory leases aborts with `NestedCommitGuard` before its
+/// commit, because their composition belongs to the guard composition of P12.
+fn check_leases(leases: &[Box<dyn TheoryCommitLease>]) -> Result<(), SpaceError> {
+    match leases {
+        [] | [_] => Ok(()),
+        [_, _, ..] => Err(SpaceError::NestedCommitGuard),
+    }
+}
+
 /// The plan of one transaction of the join engine (P5c) over the open transaction `txn`, whose
 /// own data channel is `data`: the staged list, the metered matcher, the introduction of
 /// `introduction_authority`, the legacy chain of decision 45 and the fire count of the
@@ -2033,6 +2223,7 @@ pub(crate) fn run_plan(
     config: &SpaceConfig,
     introduction_authority: &CostAuthority,
     seq: Option<SeqClaims>,
+    admission: Admission,
     stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<Option<SpaceReissue>, SpaceError>,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
     let meter = &env.meter;
@@ -2051,6 +2242,8 @@ pub(crate) fn run_plan(
         rounds: FireRounds::new(),
         mirror: MirrorCapture::of(config),
         seq,
+        theory: admission.theory,
+        leases: admission.leases,
     };
     let reissue = stage(&mut Cx {
         txn: &mut txn,
@@ -2062,8 +2255,10 @@ pub(crate) fn run_plan(
         legacy,
         mirror,
         seq,
+        leases,
         ..
     } = plan;
+    check_leases(&leases)?;
     prepay_outcome(&staged, meter)?;
     Ok(Prepared::new(txn, move |receipt| {
         legacy.finish()?;
@@ -2395,6 +2590,8 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             SpaceOp::Settle(_) | SpaceOp::Join(_) => {}
         }
         self.check_params(&config, params, query, meter)?;
+        // TH-5: the theory admits the values of a send before any staging or bump.
+        let admission = Admission::of(&config, &op, meter)?;
         // SQ-3: a program operation on a `seq` space claims its own collection first, as the
         // home of its datum or as the channel of its waiter. A settle job is internal.
         let mut seq = SeqClaims::open(
@@ -2426,6 +2623,8 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             rounds: FireRounds::new(),
             mirror: MirrorCapture::of(&config),
             seq,
+            theory: admission.theory,
+            leases: admission.leases,
         };
         let reissue = match op {
             SpaceOp::Produce(op) => {
@@ -2487,8 +2686,10 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             legacy,
             mirror,
             seq,
+            leases,
             ..
         } = plan;
+        check_leases(&leases)?;
         prepay_outcome(&staged, meter)?;
         Ok(Prepared::new(txn, move |receipt| {
             legacy.finish()?;
@@ -2875,6 +3076,8 @@ mod tests {
     use crate::rust::interpreter::spaces::families::FamilyAgent;
     use crate::rust::interpreter::spaces::namespace::{Durability, SID_LEN};
     use crate::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
+    use crate::rust::interpreter::spaces::theory::identity::TheoryIdentity;
+    use crate::rust::interpreter::spaces::theory::TheoryUsage;
     use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 
     type Queue = GenericSpace<HashMapOuter, QueueDiscipline>;
@@ -5067,6 +5270,15 @@ mod tests {
         env: &SpaceEnv,
         stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<(), SpaceError>,
     ) -> Result<SpaceOutcome, SpaceError> {
+        staged_plan_with(env, None, stage).await
+    }
+
+    /// `staged_plan` in a space whose theory is `theory` (P7, TH-6).
+    async fn staged_plan_with(
+        env: &SpaceEnv,
+        theory: Option<Arc<dyn SpaceTheory>>,
+        stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<(), SpaceError>,
+    ) -> Result<SpaceOutcome, SpaceError> {
         let ch = channels();
         let mut txn = env.store.begin(ch.lock_keys()).await?;
         let matcher = SpaceMatcher::metered(env)?;
@@ -5084,6 +5296,8 @@ mod tests {
             rounds: FireRounds::new(),
             mirror: MirrorCapture::inactive(),
             seq: None,
+            theory,
+            leases: Vec::new(),
         };
         stage(&mut Cx {
             txn: &mut txn,
@@ -5657,6 +5871,8 @@ mod tests {
             rounds: FireRounds::new(),
             mirror: MirrorCapture::inactive(),
             seq: None,
+            theory: None,
+            leases: Vec::new(),
         };
         stage(&mut Cx {
             txn: &mut txn,
@@ -6328,5 +6544,314 @@ mod tests {
         // The record bound of a VectorDB space fails with its own code (P6).
         assert_eq!(SideBound::Records(7).limit(), 7);
         assert_eq!(SideBound::Records(7).full(), SpaceError::CapacityExceeded);
+    }
+
+    // ── The theory seam (P7, TH-5, TH-6, TH-8) ───────────────────────────────────────────────
+
+    fn host_work() -> (HostWorkBudget, ScanMeter) {
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+        (budget.clone(), ScanMeter::new(Some(budget)))
+    }
+
+    fn work_of(budget: &HostWorkBudget) -> [u64; 3] {
+        [
+            HostWorkDimension::VerificationOperations,
+            HostWorkDimension::VerificationBytes,
+            HostWorkDimension::SearchStateBytes,
+        ]
+        .map(|dimension| budget.usage(dimension).get())
+    }
+
+    fn theory_config(identity: Option<TheoryIdentity>) -> SpaceConfig {
+        SpaceConfig {
+            theory: identity,
+            ..SpaceConfig::new(
+                SPACE.sid,
+                HashMapOuter::NAME,
+                QueueDiscipline::NAME,
+                SpaceQualifier::Default,
+            )
+        }
+    }
+
+    fn send_values(values: Vec<Par>) -> SpaceOp {
+        SpaceOp::Produce(ProduceOp {
+            data: ListParWithRandom {
+                pars: values,
+                ..send(0).data
+            },
+            ..send(0)
+        })
+    }
+
+    /// TH-5 and TH-8: the admission of a send checks its values in order and reserves one
+    /// `VerificationOperations` unit for each check before it reads the value, and nothing
+    /// else. The first value that is not `Proven` stops it with its index. A receive and a space
+    /// without a theory admit nothing and reserve nothing.
+    #[test]
+    fn theory_admission_reserves_one_unit_per_checked_value() {
+        let nat = theory_config(Some(TheoryIdentity::builtin("Nat")));
+        let (budget, meter) = host_work();
+        let admission = Admission::of(&nat, &send_values(vec![int(0), int(1), int(2)]), &meter)
+            .expect("Nat admits three naturals");
+        assert!(admission.theory.is_some());
+        assert!(admission.leases.is_empty(), "a builtin gives no lease");
+        assert_eq!(work_of(&budget), [3, 0, 0]);
+
+        let (budget, meter) = host_work();
+        assert_eq!(
+            Admission::of(&nat, &send_values(vec![int(0), int(-1), int(2)]), &meter).err(),
+            Some(SpaceError::TheoryRefuted {
+                theory: "Nat".to_string(),
+                index: 1,
+            })
+        );
+        assert_eq!(
+            work_of(&budget),
+            [2, 0, 0],
+            "the check stops at the refusal"
+        );
+
+        let starved = theory_config(Some(TheoryIdentity {
+            limit_profile: TheoryUsage::new(0, 0),
+            ..TheoryIdentity::builtin("Nat")
+        }));
+        let (budget, meter) = host_work();
+        assert_eq!(
+            Admission::of(&starved, &send_values(vec![int(0)]), &meter).err(),
+            Some(SpaceError::TheoryUndetermined {
+                theory: "Nat".to_string(),
+                index: 0,
+            })
+        );
+        assert_eq!(work_of(&budget), [0, 0, 0], "a starved check reads nothing");
+
+        for (config, op) in [
+            (nat.clone(), SpaceOp::Consume(receive("w", any()))),
+            (theory_config(None), send_values(vec![int(-1)])),
+        ] {
+            let (budget, meter) = host_work();
+            let admission = Admission::of(&config, &op, &meter).expect("nothing to admit");
+            assert!(admission.leases.is_empty());
+            assert_eq!(work_of(&budget), [0, 0, 0]);
+        }
+        let unavailable = theory_config(Some(TheoryIdentity::builtin("Real")));
+        assert_eq!(
+            Admission::of(
+                &unavailable,
+                &send_values(vec![int(0)]),
+                &ScanMeter::new(None)
+            )
+            .err(),
+            Some(SpaceError::TheoryUnavailable("Real".to_string()))
+        );
+    }
+
+    /// TH-6 and TH-8: after the guard admitted a match, the theory checks each stored datum of
+    /// the match for one `VerificationOperations` unit, and a datum in flight for none. A guard
+    /// refusal checks nothing, and a space without a theory does no work for its stored data.
+    #[tokio::test]
+    async fn theory_match_reserves_one_unit_per_stored_datum() {
+        let admitting = named("w", None);
+        let refusing = named("w", Some(new_gbool_par(false, Vec::new(), false)));
+        let matched = ListParWithRandom {
+            pars: vec![int(1)],
+            ..ListParWithRandom::default()
+        };
+        let stored = [
+            StoredMatch {
+                payload: &matched,
+                captures: &matched,
+            },
+            StoredMatch {
+                payload: &matched,
+                captures: &matched,
+            },
+        ];
+        let nat = theory::resolve(&TheoryIdentity::builtin("Nat")).expect("Nat resolves");
+        for (theory, checks, expected) in [
+            (Some(nat.clone()), &stored[..], 2),
+            (Some(nat.clone()), &stored[..1], 1),
+            (Some(nat.clone()), &[][..], 0),
+            (None, &stored[..], 0),
+        ] {
+            let Fixture { env, .. } = fixture().await;
+            let (budget, meter) = host_work();
+            let env = SpaceEnv { meter, ..env };
+            let mut work = [[0u64; 3]; 5];
+            staged_plan_with(&env, theory, |cx| {
+                work[0] = work_of(&budget);
+                assert_eq!(cx.admits(&admitting, &matched, &[]), Ok(true));
+                work[1] = work_of(&budget);
+                assert_eq!(cx.admits(&admitting, &matched, checks), Ok(true));
+                work[2] = work_of(&budget);
+                assert_eq!(cx.admits(&refusing, &matched, &[]), Ok(false));
+                work[3] = work_of(&budget);
+                assert_eq!(cx.admits(&refusing, &matched, checks), Ok(false));
+                work[4] = work_of(&budget);
+                Ok(())
+            })
+            .await
+            .expect("the plan commits");
+            let step = |from: usize| -> [u64; 3] {
+                [0, 1, 2].map(|dimension| work[from + 1][dimension] - work[from][dimension])
+            };
+            let (guard, checked) = (step(0), step(1));
+            assert_eq!(
+                [0, 1, 2].map(|dimension| checked[dimension] - guard[dimension]),
+                [expected, 0, 0],
+                "{expected} checks after an admitting guard"
+            );
+            assert_eq!(step(3), step(2), "a refusing guard checks no stored datum");
+        }
+    }
+
+    /// TH-5: the admission of a send runs after the config read and the gates, and before any
+    /// staging or bump. A send that fails at the params gate does the work of those steps and
+    /// one params check more, and nothing that comes after the gates, in either order of the
+    /// admission. So a budget of that work and one more `VerificationOperations` unit lets the
+    /// theory refuse a send at its first value, and the same budget rejects an admitted send at
+    /// the plan.
+    #[tokio::test]
+    async fn theory_admission_precedes_any_staging() {
+        let space = play().await;
+        let open = env_over(space.clone(), &budget());
+        create(
+            &open,
+            creation(theory_config(Some(TheoryIdentity::builtin("Nat"))).to_par()),
+        )
+        .await;
+        let metered = |host_work: &HostWorkBudget| SpaceEnv {
+            meter: ScanMeter::new(Some(host_work.clone())),
+            ..env_over(space.clone(), &budget())
+        };
+        let gates = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
+        let unknown = SpaceOp::Produce(ProduceOp {
+            params: BTreeMap::from([("zz".to_string(), int(1))]),
+            ..send(-1)
+        });
+        assert!(matches!(
+            run_op(&FamilyAgent, &metered(&gates), unknown).await,
+            Err(SpaceError::UnknownParam { .. })
+        ));
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(0));
+        for dimension in HostWorkDimension::ALL {
+            let slack = u64::from(dimension == HostWorkDimension::VerificationOperations);
+            limits.set(
+                dimension,
+                HostWorkLimit::new(gates.usage(dimension).get() + slack),
+            );
+        }
+        for (op, expected) in [
+            (
+                send_values(vec![int(-1)]),
+                Err(SpaceError::TheoryRefuted {
+                    theory: "Nat".to_string(),
+                    index: 0,
+                }),
+            ),
+            (
+                send_values(vec![int(1)]),
+                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
+            ),
+        ] {
+            let host_work = HostWorkBudget::new(limits);
+            let result = run_op(&FamilyAgent, &metered(&host_work), op)
+                .await
+                .map(|_| ());
+            assert_eq!(result, expected);
+        }
+    }
+
+    /// TH-6 (`theory_refusal_is_guard_refusal` of Match.v): after the guard, the theory of the
+    /// space checks each stored datum of a match, and a verdict that is not `Proven` refuses the
+    /// match as a guard refusal does. A datum in flight is never checked. For generated guards,
+    /// theories, values and numbers of stored data, `Cx::admits` gives the guard result and the
+    /// verdicts of the stored data, conjoined, and `Cx::matches` checks the datum only when it
+    /// is held in the store.
+    #[test]
+    fn prop_theory_refusal_is_guard_refusal() {
+        use proptest::prelude::{any as arbitrary, prop_assert_eq, prop_oneof, Just};
+        use proptest::test_runner::{Config, RngSeed, TestCaseError, TestRunner};
+
+        use crate::rust::interpreter::spaces::theory::test_theories::{self, TestBehavior};
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Checker {
+            Without,
+            Proves,
+            Refutes,
+            Starved,
+        }
+        let checkers = prop_oneof![
+            Just(Checker::Without),
+            Just(Checker::Proves),
+            Just(Checker::Refutes),
+            Just(Checker::Starved),
+        ];
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let mut runner = TestRunner::new(Config {
+            cases: 64,
+            rng_seed: RngSeed::Fixed(0x0E0D_2026_1009_0046),
+            failure_persistence: None,
+            ..Config::default()
+        });
+        runner
+            .run(
+                &(checkers, arbitrary::<bool>(), 0usize..3, -2i64..3),
+                |(checker, guard, stored, value)| {
+                    let theory = match checker {
+                        Checker::Without => None,
+                        Checker::Proves => Some(test_theories::identity(TestBehavior::RefuteValue)),
+                        Checker::Refutes => {
+                            Some(test_theories::identity(TestBehavior::RefuteMatch))
+                        }
+                        Checker::Starved => Some(TheoryIdentity {
+                            limit_profile: TheoryUsage::new(0, 0),
+                            ..TheoryIdentity::builtin("Nat")
+                        }),
+                    }
+                    .map(|identity| theory::resolve(&identity).expect("the theory resolves"));
+                    let proves = matches!(checker, Checker::Without | Checker::Proves);
+                    let continuation = named("w", Some(new_gbool_par(guard, Vec::new(), false)));
+                    let data = ListParWithRandom {
+                        pars: vec![int(value)],
+                        ..ListParWithRandom::default()
+                    };
+                    let records = vec![data.clone(); stored];
+                    let mut seen = [false; 3];
+                    runtime
+                        .block_on(async {
+                            let Fixture { env, .. } = fixture().await;
+                            staged_plan_with(&env, theory, |cx| {
+                                let checks: Vec<StoredMatch<'_>> = records
+                                    .iter()
+                                    .map(|payload| StoredMatch {
+                                        payload,
+                                        captures: &data,
+                                    })
+                                    .collect();
+                                seen[0] = cx.admits(&continuation, &data, &checks)?;
+                                seen[1] = cx
+                                    .matches(&any(), &data, &continuation, Held::Stored)?
+                                    .is_some();
+                                seen[2] = cx
+                                    .matches(&any(), &data, &continuation, Held::InFlight)?
+                                    .is_some();
+                                Ok(())
+                            })
+                            .await
+                        })
+                        .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+                    prop_assert_eq!(seen[0], guard && (stored == 0 || proves));
+                    prop_assert_eq!(seen[1], guard && proves);
+                    prop_assert_eq!(seen[2], guard);
+                    Ok(())
+                },
+            )
+            .expect("TH-6 holds");
     }
 }

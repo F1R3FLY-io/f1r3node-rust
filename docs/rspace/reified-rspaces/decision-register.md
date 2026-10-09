@@ -56,7 +56,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 6](#decision-6) | Milestone commits | 2026-10-03 | Fixture part superseded by decision 18 |
 | [Decision 7](#decision-7) | Namespace tag 0xE0 | 2026-10-03 | In force |
 | [Decision 8](#decision-8) | Agent-shaped API | 2026-10-03 | In force |
-| [Decision 9](#decision-9) | Approved design proposals | 2026-10-03 | In force |
+| [Decision 9](#decision-9) | Approved design proposals | 2026-10-03 | In force. Item 1 (the theory seam) implemented in P7 step 4, with the slot of decision 74 |
 | [Decision 10](#decision-10) | Parser branch name | 2026-10-03 | In force |
 | [Decision 11](#decision-11) | Head-only matching | 2026-10-04 | In force |
 | [Decision 12](#decision-12) | Lane rule | 2026-10-04 | In force |
@@ -121,6 +121,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 71](#decision-71) | `capacity` is a soft bound under merges | 2026-10-08 | In force |
 | [Decision 72](#decision-72) | The P7 design process | 2026-10-09 | In force |
 | [Decision 73](#decision-73) | P7 design v2, Seq claims per channel, HashSet on units | 2026-10-09 | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store) |
+| [Decision 74](#decision-74) | The config persists the theory identity as compact bytes | 2026-10-09 | In force. Implemented in P7 step 4 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -2076,6 +2077,35 @@ Their main terms are these:
 - `PatternNotEmpty`: a bind on a HashSet collection with a pattern, a binder or a remainder (HS-3). A wildcard or a literal pattern is a pattern too, because the FIPS allows only the empty pattern.
 
 Both checks run before any staging, in the driver and in the join engine.
+
+### <a id="decision-74"></a>Decision 74: The config persists the theory identity as compact bytes
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-09 |
+| Status | In force. Implemented in P7 step 4 |
+| Amends | TH-2 of P7 design v3 ("The config slot `"theory"` holds `Nil` or this map") |
+| Related | [Decision 9](#decision-9) (item 1), [decision 40](#decision-40), [decision 47](#decision-47), [I-17](#i-17), [theory identity](glossary.md#theory-identity) |
+
+**Statement.**
+
+- The config slot `"theory"` holds `Nil` or one `GByteArray` with the canonical bytes of the identity of the theory.
+- The bytes hold the eight fields of the identity in their order of declaration. A number is big endian, and a string or an arg comes after its length as a `u32`.
+- The decoder accepts exactly the image of the encoder. A decoded identity encodes to its input bytes.
+- The `config` reply of a handle expands the bytes to the identity map of TH-2, so a program sees the same map as before.
+- The identity stays content only, in the one config record, with no new record kind.
+
+**User's words.** "Compact bytes (Recommended)".
+
+**Reason.**
+
+- Every space operation reads the config through the strict metered decoder.
+- The clone-backing cost model charges about 600 `VerificationBytes` for each bincode byte of that read.
+- The TH-2 map has eight string keys and a nested limits map, which is about 22 `Par` nodes. One config read of a space with a builtin theory cost 2,495,724 `VerificationBytes` instead of 927,045: 169 % more on every operation.
+- With that cost, many family programs with `free Nat()` exceeded the v6 replay limit of $`2^{28}`$ `VerificationBytes`.
+- A slot of one `Par` costs about 47,600 `VerificationBytes` more for each read, which is 5 %.
+
+**Evidence.** `theory_config_slot_is_one_compact_par` pins the slot form and bounds the cost of the read to a tenth more. `identity_bytes_roundtrip` (`TheoryAdmission.v`) proves the codec, and `prop_theory_identity_bytes_roundtrip` tests it.
 
 ## Minimal-footprint revision: M-1 to M-5
 

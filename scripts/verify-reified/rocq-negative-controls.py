@@ -186,6 +186,16 @@ The P5 controls (wave W3) revert one rule of the join engine:
                          race on every counter, and the set merges (a
                          retirement as a peek, a set view in list order)
 
+P7 step 4 (the theory seam) has fourteen controls. Each reverts one rule of
+TheoryAdmission.v, of the TH-6 headline of Match.v or of gate 4 in
+SpaceFactory.v: the TH-1 table (Nat), the starved check that reserves
+nothing, the fail-closed admission, the commit guard of two leases, the
+cache lookup by value, the ABI check of the resolution, the length prefix
+and the strict comparison of the identity bytes (decision 74), the limit of
+replay, the check of a datum in flight and the check of a stored record at
+a receive (TH-6), and the arguments, the names and the order of gate 4
+(TH-4).
+
 P6 step 2 (Similarity.v) has five controls. Each reverts one rule of the
 exact decisions of the VectorDB family, or claims more than the rule gives:
   sim-squares-without-signs        cosine compares the squares only:
@@ -2000,6 +2010,80 @@ CONTROLS = (
      "    x <= ((r + hi) * (1 # 2)) * ((r + hi) * (1 # 2)) ->",
      "    x <= hi * hi ->",
      ("root_midpoint_nearest",)),
+    # ── P7 step 4: TheoryAdmission.v, Match.v and SpaceFactory.v (the theory seam) ─────────
+    ("ta-nat-admits-negative", "TheoryAdmission",
+     "the builtin Nat admits a negative GInt, so the shapes that it proves are not the TH-1 table",
+     "  | KNat => match v with SInt z => Z.leb 0 z | SBig b => b | _ => false end",
+     "  | KNat => match v with SInt z => true | SBig b => b | _ => false end",
+     ("contains_table",)),
+    ("ta-starved-check-reserves", "TheoryAdmission",
+     "a check with a limit of 0 units reserves one unit before it gives Undetermined (TH-1)",
+     "Definition builtin_check (k : kind) (limit : nat) (v : shape) : check_result :=\n"
+     "  if limit <? 1 then (Undetermined (WorkBudgetExhausted 1 limit) structural_usage, 0)",
+     "Definition builtin_check (k : kind) (limit : nat) (v : shape) : check_result :=\n"
+     "  if limit <? 1 then (Undetermined (WorkBudgetExhausted 1 limit) structural_usage, 1)",
+     ("builtin_decidable_structural",)),
+    ("ta-undetermined-admitted", "TheoryAdmission",
+     "an Undetermined verdict lets the admission go on, so a send is admitted without a proof (fails open)",
+     "        | Undetermined _ _ => AbortUndetermined i",
+     "        | Undetermined _ _ => admit_from (S i) rest",
+     ("admitted_inv", "stop_inv", "fail_closed")),
+    ("ta-two-leases-commit", "TheoryAdmission",
+     "a transaction with two leases commits, so two opaque guards compose without revalidation (TH-9)",
+     "  Definition commit_allowed (n : nat) : bool := n <=? 1.",
+     "  Definition commit_allowed (n : nat) : bool := n <=? 2.",
+     ("fail_closed",)),
+    ("ta-cache-any-entry", "TheoryAdmission",
+     "the cache answers a lookup with the entry of another value, so a hit can return a stale result",
+     "    | (a', r) :: rest => if A_eq_dec a a' then Some r else lookup rest a",
+     "    | (a', r) :: rest => if A_eq_dec a a' then lookup rest a else Some r",
+     ("lookup_in",)),
+    ("ta-resolve-ignores-abi", "TheoryAdmission",
+     "the resolution ignores the checker ABI, so an identity of another checker resolves to a builtin",
+     "  bytes_eqb (id_abi id) Names.abi && match id_args id with [] => true | _ :: _ => false end.",
+     "  match id_args id with [] => true | _ :: _ => false end.",
+     ("structural_spec",)),
+    ("ta-string-without-length", "TheoryAdmission",
+     "a string of the identity bytes has no length prefix, so the decoder cannot find its end (decision 74)",
+     "  Definition enc_str (s : bytes) : bytes := enc_len (length s) ++ s.",
+     "  Definition enc_str (s : bytes) : bytes := s.",
+     ("read_str_enc",)),
+    ("ta-decoder-not-strict", "TheoryAdmission",
+     "the decoder skips the comparison of the re-encoded bytes, so it accepts bytes that are not the image of the encoder",
+     "    | Some id => if bytes_eqb (to_bytes id) bs then Some id else None",
+     "    | Some id => Some id",
+     ("from_bytes_strict",)),
+    ("ta-replay-fixed-limit", "TheoryAdmission",
+     "replay checks with a fixed limit instead of the limit profile of the persisted identity",
+     "    | Some id => admit_send (resolve id) (id_work id) vs\n    | None => SendMalformed",
+     "    | Some id => admit_send (resolve id) 1 vs\n    | None => SendMalformed",
+     ("replay_preserves_theory_admission",)),
+    ("mt-theory-checks-in-flight", "Match",
+     "the theory checks the datum in flight of a send, as a check_match in bind would (design v3 TH-6)",
+     "            if admits_th mt (w_guard w) m [] then OFire w m",
+     "            if admits_th mt (w_guard w) m [v] then OFire w m",
+     ("scan_offer_loop_th_plain",)),
+    ("mt-theory-skipped-at-receive", "Match",
+     "a receive fires a stored record without the check of the theory",
+     "    | Some (d, m) => if admits_th mt g m [payload d] then RFire d m else RPark",
+     "    | Some (d, m) => if admits mt g m then RFire d m else RPark",
+     ("theory_refusal_is_guard_refusal",)),
+    ("sf-p7-theory-args-accepted", "SpaceFactory",
+     "gate 4 accepts a builtin theory with arguments",
+     "        then match nargs with O => TBuiltin name | S _ => TBadArgument end",
+     "        then TBuiltin name",
+     ("theory_gate_validated",)),
+    ("sf-p7-theory-any-name", "SpaceFactory",
+     "gate 4 accepts every theory name as a builtin",
+     "        if mem name builtin_theories\n        then match nargs",
+     "        if true\n        then match nargs",
+     ("theory_gate_validated",)),
+    ("sf-p7-theory-after-params", "SpaceFactory",
+     "gate 4 runs after the params gates, so a params error hides a refused theory",
+     "        | TBadArgument => G3Theory TBadArgument",
+     "        | TBadArgument => match validate_factory f q pos named with "
+     "POk _ => G3Theory TBadArgument | PErr err => G3Params err end",
+     ("theory_gate_validated",)),
 )
 
 DECLARATION = re.compile(

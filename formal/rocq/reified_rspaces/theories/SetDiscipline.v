@@ -43,15 +43,15 @@
                             and 188-208 (canonical_bytes: bincode of the
                             sorted Par, metered sort and encode)
    rkey, same, class_val    set.rs:160-165 (ScanDiscipline::class_key) and
-                            scan.rs:876-891 (same_class)
+                            scan.rs:884-899 (same_class)
    canon, first_match       space_store_handle.rs canonical_data_order
-                            (DR-75) and scan.rs:562-582 (first_bound_record)
+                            (DR-75) and scan.rs:570-590 (first_bound_record)
    view, dedup              the classes in the order of their first members:
-                            scan.rs:589-645 (class_of: the representative
+                            scan.rs:597-653 (class_of: the representative
                             is the first member in canonical order)
-   receive_choice           scan.rs:228-314 (receive: the first spatial
+   receive_choice           scan.rs:229-321 (receive: the first spatial
                             match, Cx::admits once, then park)
-   class_of, remove_all     scan.rs:589-645 (class_of) and 643-670
+   class_of, remove_all     scan.rs:597-653 (class_of) and 643-670
                             (fire_class: the consume over [D; n] that
                             removes each non-persistent member)
    staged, class_fire,
@@ -59,21 +59,21 @@
                             staging rules of space_store_handle.rs
                             (check_arity, canonical_group_key,
                             check_lined_up, check_stored_candidates,
-                            claim_positions); scan.rs:650-677 and 786-871
+                            claim_positions); scan.rs:658-685 and 794-879
    op, on_records           the staged operations of the driver (Cx::store_on,
                             Cx::park, Cx::fire_offer_on,
                             Cx::fire_receive_group, Cx::retire)
-   retire_class             scan.rs:786-871 (retire_class: K_retire of each
+   retire_class             scan.rs:794-879 (retire_class: K_retire of each
                             stored non-persistent member in canonical order)
-   fits, offer_pass         scan.rs:401-492 (offer_scan with
+   fits, offer_pass         scan.rs:408-499 (offer_scan with
                             first_admitting_waiter at 519-550 and
                             retiring_of at 491-513)
-   peek_group, peek_plan    scan.rs:228-314 (receive: a peek binds [r]),
+   peek_group, peek_plan    scan.rs:229-321 (receive: a peek binds [r]),
                             694-704 (restore_in) and 715-747 (restore_scan)
-   same_class               scan.rs:876-891 (same_class: metered_hash, then
+   same_class               scan.rs:884-899 (same_class: metered_hash, then
                             the full compare only on equal hashes)
    key_trace                set.rs:176-220 (the reserved buffers, the
-                            metered sort and encode) and scan.rs:876-891
+                            metered sort and encode) and scan.rs:884-899
                             (the reserved hash and comparisons)
 
    ─────────────────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@
      the payload through val, so the members of one class bind a pattern
      alike. The Rust driver does not assume this: class_of binds each member
      again and fails closed with Inconsistent when a member does not bind
-     (scan.rs:632-636).
+     (scan.rs:640-644).
    - A set has no counter, so every ord is 0 (decision 43), and the model
      needs no ord. rounds counts the fires that FIRE_ROUND_CAP still allows
      after the next fire (I-21).
