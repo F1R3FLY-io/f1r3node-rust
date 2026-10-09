@@ -137,17 +137,24 @@ test_bounded_command_returns_when_its_watchdog_starts_late() {
 mkdir -p /tmp/late-setsid
 cat >/tmp/late-setsid/setsid <<'SH'
 #!/usr/bin/env bash
-[[ "${1:-}" != bash ]] || sleep 0.5
+if [[ "${1:-}" == bash ]]; then
+    : >>/tmp/late-setsid/delayed
+    sleep 0.5
+fi
 exec /usr/bin/setsid "$@"
 SH
 chmod +x /tmp/late-setsid/setsid
 PATH="/tmp/late-setsid:$PATH"
 start="$(date +%s%N)"
 session_bounded 8 true
-printf '%s\n' "$((($(date +%s%N) - start) / 1000000))"
+elapsed="$((($(date +%s%N) - start) / 1000000))"
+[[ -e /tmp/late-setsid/delayed ]] || elapsed=no-delay
+printf '%s\n' "$elapsed"
 EOF
     } | docker run --rm -i --network none --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 \
         --entrypoint bash "$image" -s)"
+    [[ "$elapsed" != no-delay ]] ||
+        fail "The setsid stand-in did not delay the watchdog, so the check did not force the race. session_bounded no longer starts its watchdog with setsid bash."
     [[ "$elapsed" =~ ^[0-9]+$ ]] || fail "The late-watchdog check printed no elapsed time."
     ((elapsed < 3000)) ||
         fail "session_bounded waited ${elapsed} ms for a command that had ended, because its watchdog started late."

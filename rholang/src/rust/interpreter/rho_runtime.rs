@@ -1258,9 +1258,12 @@ fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 /// when the real cost-accounted-rho API lands.
 ///
 /// `fs_remove_dir` is trait-exempt (DD-RemoveDirReplyShape complexity)
-/// and NOT in `FS_HANDLERS`; it gets a dedicated `Definition` row at
-/// a future call site that explicitly handles the 4 divergence reply
-/// shapes.
+/// and NOT in `FS_HANDLERS`; it gets a dedicated `Definition` row
+/// built by `dispatch_table_creator` using the `FsProcesses` handle
+/// returned alongside the trait-handler Vec.  Both paths share the
+/// SAME `FsProcesses` instance so state continuity (fd table, mode,
+/// metering) spans the trait-registered 27 handlers plus the
+/// trait-exempt one.
 ///
 /// Called by `dispatch_table_creator` to register every fs native
 /// URN into the runtime's dispatch map.  Phase-scoped visibility
@@ -1272,7 +1275,10 @@ fn fs_handlers_to_definitions(
     dispatcher: RhoDispatch,
     space: RhoISpace,
     fs_handles: super::io::handle_table::FileHandleTable,
-) -> Vec<Definition> {
+) -> (
+    Vec<Definition>,
+    super::io::handler_trait::fs_processes::FsProcesses,
+) {
     use super::accounting::noop::{Metering, NoopMetering};
     use super::io::handler_trait::fs_processes::FsProcesses;
     use super::io::handler_trait::FS_HANDLERS;
@@ -1287,7 +1293,7 @@ fn fs_handlers_to_definitions(
         fs_metering,
     );
 
-    FS_HANDLERS
+    let defs = FS_HANDLERS
         .iter()
         .map(|entry| {
             let fs_processes = fs_processes.clone();
@@ -1304,7 +1310,9 @@ fn fs_handlers_to_definitions(
                 remainder: None,
             }
         })
-        .collect()
+        .collect();
+
+    (defs, fs_processes)
 }
 
 fn dispatch_table_creator(
@@ -1345,32 +1353,29 @@ fn dispatch_table_creator(
     // through its `ProcessContext`, so the fs native handlers see
     // the same reducer / space / dispatcher as the rest of the
     // system-processes layer.
-    all_processes.extend(fs_handlers_to_definitions(
-        dispatcher.clone(),
-        space.clone(),
-        fs_handles,
-    ));
+    let (fs_defs, fs_processes) =
+        fs_handlers_to_definitions(dispatcher.clone(), space.clone(), fs_handles);
+    all_processes.extend(fs_defs);
 
     // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
     // URN + fixed_channel + proc_defs so FsGenesis composition could
-    // resolve the URN at genesis-time, but there was no dispatch_table
-    // entry — a user-held Dir cap that invoked removeDir at state-
-    // execution would send to the channel, trigger the body_ref=58
-    // reader, and hit "dispatch: no function for 58".  This stub
-    // replies with [false, "FSERR_UNSUPPORTED", "..."] so the caller
-    // gets a well-formed error reply.  The real handler (DD-RemoveDir
-    // ReplyShape) lands at a future Wave 4 handler slice.  See
-    // SystemProcesses::fs_remove_dir_stub for the body.
+    // resolve the URN at genesis-time; slice 5.44 added a stub
+    // replying FSERR_UNSUPPORTED so user-held Dir caps got a
+    // well-formed error.  Slice 5.142 swaps the stub for the real
+    // handler ported in slices 5.136–5.141 (DD-RemoveDirReplyShape
+    // with its 4 divergence reply shapes).  The `fs_processes`
+    // handle is shared with the 27 trait-registered handlers, so
+    // state continuity (fd table, mode, metering) spans both.
     all_processes.push(Definition {
         urn: format!("{}removeDir", super::io::FS_NATIVE_URN_PREFIX_VERSIONED),
         fixed_channel: FixedChannels::fs_remove_dir(),
         arity: 5,
         body_ref: BodyRefs::FS_REMOVE_DIR,
-        handler: Box::new(|ctx| {
-            let sp = ctx.system_processes.clone();
+        handler: Box::new(move |_ctx| {
+            let fs_processes = fs_processes.clone();
             Box::new(move |args| {
-                let sp = sp.clone();
-                Box::pin(async move { sp.fs_remove_dir_stub(args).await })
+                let fs_processes = fs_processes.clone();
+                Box::pin(async move { fs_processes.fs_remove_dir(args).await })
             })
         }),
         remainder: None,
@@ -1981,7 +1986,7 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_count_matches_registry() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(
+        let (defs, _fs_processes) = fs_handlers_to_definitions(
             dispatcher,
             space,
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
@@ -2005,7 +2010,7 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_unique() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(
+        let (defs, _fs_processes) = fs_handlers_to_definitions(
             dispatcher,
             space,
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
@@ -2035,7 +2040,7 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(
+        let (defs, _fs_processes) = fs_handlers_to_definitions(
             dispatcher,
             space,
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
@@ -2062,7 +2067,7 @@ mod tests {
     #[tokio::test]
     async fn fs_handlers_to_definitions_covers_every_registry_entry() {
         let (dispatcher, space) = minimal_dispatch_and_space().await;
-        let defs = fs_handlers_to_definitions(
+        let (defs, _fs_processes) = fs_handlers_to_definitions(
             dispatcher,
             space,
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
@@ -2194,18 +2199,20 @@ mod tests {
     /// shapes don't fit the `FsHandler` trait (see
     /// `handler_trait::fs_handler` docstring "Trait-exempt handler
     /// (fs_remove_dir)").  It MUST NOT appear in `FS_HANDLERS`
-    /// because the trait-exempt stub (slice 5.44) is registered
-    /// separately in `dispatch_table_creator`.  If both were
-    /// registered, the dispatcher's `HashMap<body_ref, handler>`
+    /// because the trait-exempt `FsProcesses::fs_remove_dir` method
+    /// (ported in slices 5.136-5.141, URN-registered in slice 5.142)
+    /// is registered separately in `dispatch_table_creator`.  If both
+    /// were registered, the dispatcher's `HashMap<body_ref, handler>`
     /// insert would silently clobber one with the other — depending
-    /// on insertion order, callers might get either the stub's
-    /// FSERR_UNSUPPORTED reply or the (future) real handler's
+    /// on insertion order, callers might get either the trait-based
+    /// response or the trait-exempt handler's divergence-reply-shape
     /// response, with no compile-time or load-time warning.
     ///
     /// This test catches a regression where someone adds a
     /// `fs_remove_dir` entry to `FS_HANDLERS` without first removing
-    /// the explicit stub registration in `dispatch_table_creator`.
-    /// Pins both axes: `urn_suffix == "removeDir"` AND `body_ref ==
+    /// the explicit trait-exempt registration in
+    /// `dispatch_table_creator`.  Pins both axes:
+    /// `urn_suffix == "removeDir"` AND `body_ref ==
     /// BodyRefs::FS_REMOVE_DIR` — either match would collide.
     #[test]
     fn fs_remove_dir_stays_trait_exempt_in_fs_handlers() {
@@ -2214,14 +2221,14 @@ mod tests {
                 entry.urn_suffix, "removeDir",
                 "FS_HANDLERS contains an entry with urn_suffix = \
                  \"removeDir\" (name = `{}`).  fs_remove_dir is \
-                 trait-exempt; the explicit stub registration in \
-                 `dispatch_table_creator` would collide at the \
+                 trait-exempt; the explicit trait-exempt registration \
+                 in `dispatch_table_creator` would collide at the \
                  dispatcher's body_ref HashMap, silently clobbering \
                  one handler with the other.  Either (a) remove the \
                  new FS_HANDLERS entry if fs_remove_dir still needs \
                  the four divergence reply shapes, or (b) if the \
-                 real handler now fits the FsHandler trait, remove \
-                 the explicit stub registration in \
+                 handler is refactored to fit the FsHandler trait, \
+                 remove the explicit trait-exempt registration in \
                  `dispatch_table_creator` and this test.",
                 entry.name,
             );
@@ -2231,8 +2238,9 @@ mod tests {
                 "FS_HANDLERS contains an entry with body_ref = \
                  BodyRefs::FS_REMOVE_DIR ({}) (name = `{}`, \
                  urn_suffix = `{}`).  fs_remove_dir is trait-exempt; \
-                 the body_ref slot is reserved for the explicit stub \
-                 registration (slice 5.44) and must not be reused.",
+                 the body_ref slot is reserved for the explicit \
+                 trait-exempt registration (slice 5.142) and must \
+                 not be reused.",
                 BodyRefs::FS_REMOVE_DIR,
                 entry.name,
                 entry.urn_suffix,
