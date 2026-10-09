@@ -5137,9 +5137,9 @@ Volatile ids are unique to one deploy (I-19), so the pre-state and the post-stat
 A swept key becomes a delete of an absent key, which leaves the root unchanged (headline H15).
 
 Reporting replay evaluates each deploy through `inj_with_observation` (`rholang/src/rust/interpreter/interpreter.rs:231`).
-Casper refuses an offered-funded deploy in a report (`casper/src/rust/reporting_casper.rs:85-89`), so reporting replay evaluates only legacy deploys.
-[Decision 69](decision-register.md#decision-69) excludes new tests of the legacy model, so no test replays a `temp` deploy in a report.
-The reducer test `reified_sweep_runs_at_each_entry_point_of_the_reducer` covers `inj_with_observation` on both paths.
+Casper builds a report only for legacy deploys (`casper/src/rust/reporting_casper.rs:85-89`).
+The reducer test `reified_sweep_runs_at_each_entry_point_of_the_reporting_replay` replays each root entry on a `ReportingRspace` host with the log of a play.
+On the `Ok` and the `Err` path, the replay gives the result of the play, consumes the log and leaves no volatile channel.
 
 ### 27.3 Dangling ids
 
@@ -5196,6 +5196,7 @@ The two new theorems close under the global context, and `rocqchk` reports no ax
 | `prop_sweep_complete` | The same | P7-1: generated `temp` programs of each family with extra records and waiters leave no volatile channel, and native replay reproduces them. |
 | `reified_volatile_sweep_skips_ordinary_channels` | `rholang/tests/reified_volatile_sweep.rs` | Checklist item 20: a deploy with a `temp` space reaches the root of the same deploy without the space. The `default` control reaches another root. |
 | `reified_sweep_runs_at_each_entry_point_of_the_reducer` | `rholang/src/rust/interpreter/reified/reducer_hooks.rs` | `inj`, `inj_with_observation` and `inj_with_host_work` sweep on the `Ok` and the `Err` path. |
+| `reified_sweep_runs_at_each_entry_point_of_the_reporting_replay` | The same | A replay runtime over a `ReportingRspace` host replays each root entry with the log of a play. It gives the result of the play, consumes the log and sweeps, on both paths. |
 | `reified_sweep_root_predicate_excludes_nested_calls` | The same | A call inside a reduction is not a root, so it neither clears nor sweeps (VR-3). |
 | `prop_dead_ephemeral_dangling` | `rholang/src/rust/interpreter/reified/runtime.rs` | P7-2: a space that this evaluation did not create fails with its space id, and a created space passes. |
 | `mirror_temp_never_mirrored` | `rholang/tests/reified_vectordb_chroma.rs` | The obligation of P6: `temp` with `mirror` fails with `InvalidParam`. |

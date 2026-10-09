@@ -8022,6 +8022,14 @@
           ]
         },
         {
+          "test": "reified_sweep_runs_at_each_entry_point_of_the_reporting_replay",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "rule": "VR-4 (reporting replay of inj, inj_with_observation and inj_with_host_work)",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
           "test": "reified_sweep_runs_at_each_entry_point_native",
           "file": "rholang/tests/reified_temp_seq.rs",
           "rule": "VR-4 (native play, native replay and RhoRuntime::inj)",

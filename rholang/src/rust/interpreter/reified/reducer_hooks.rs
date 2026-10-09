@@ -4196,7 +4196,10 @@ mod tests {
     // ── P7: the volatile sweep at each root entry ──────────────────────────────────────────────
 
     /// The volatile channels with records or waiting continuations in the hot store of `host`.
-    async fn volatile_channels(host: &ParRSpace) -> Vec<Par> {
+    async fn volatile_channels<S>(host: &S) -> Vec<Par>
+    where
+        S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    {
         use crate::rust::interpreter::spaces::ephemeral::ephemeral_space;
 
         host.to_map()
@@ -4277,6 +4280,74 @@ mod tests {
                     volatile_channels(&fixture.host).await,
                     Vec::<Par>::new(),
                     "{entry:?}: the root entry sweeps (failing: {fails})"
+                );
+            }
+        }
+    }
+
+    /// P7 (VR-4, VR-8): reporting replay sweeps at each root entry. A play on a play host records
+    /// its event log. A replay runtime over a fresh `ReportingRspace` rigs the log and runs the
+    /// same root entry with the same random state, on the `Ok` and the `Err` path. The replay
+    /// gives the result of the play and consumes the log, and the reporting host holds no
+    /// volatile channel.
+    #[tokio::test]
+    async fn reified_sweep_runs_at_each_entry_point_of_the_reporting_replay() {
+        use rspace_plus_plus::rspace::reporting_rspace::ReportingRspace;
+
+        use crate::rust::interpreter::compiler::compiler::Compiler;
+        use crate::rust::interpreter::rho_runtime::{create_replay_rho_runtime, RhoRuntime};
+
+        let ok = r#"new factory(`rho:space:hashmap:bag`) in {
+  for (s <- factory!?("temp")) {
+    for (x <- s!?("gensym")) { x!(1) | x!(2) | for (@"never" <- x) { Nil } }
+  }
+}"#;
+        let err = r#"new factory(`rho:space:hashmap:cell`) in {
+  for (s <- factory!?("temp")) {
+    for (x <- s!?("gensym")) { x!(1) | x!(2) }
+  }
+}"#;
+        for entry in [RootEntry::Inj, RootEntry::Observation, RootEntry::HostWork] {
+            for (source, fails) in [(ok, false), (err, true)] {
+                let term = Compiler::source_to_adt(source).expect("the program parses");
+                let fixture = hosted().await;
+                let played = run_root_entry(&fixture.reducer, entry, term.clone()).await;
+                assert_eq!(played.is_err(), fails, "{entry:?}: play {played:?}");
+                let log = fixture.host.take_event_log().await;
+
+                let mut stores = InMemoryStoreManager::new();
+                let reporting = ReportingRspace::create(
+                    stores.r_space_stores().await.expect("in-memory stores"),
+                    Arc::new(Box::new(Matcher)),
+                )
+                .expect("a reporting space");
+                let runtime = create_replay_rho_runtime(
+                    reporting.clone(),
+                    Arc::new(HashMap::new()),
+                    false,
+                    &mut Vec::new(),
+                    ExternalServices::noop(),
+                )
+                .await
+                .expect("create the reporting runtime");
+                runtime
+                    .cost
+                    .set(Cost::create(i64::MAX, "reified hooks test".to_string()));
+                runtime.rig(log).await.expect("rig the reporting runtime");
+                let replayed = run_root_entry(&runtime.reducer, entry, term).await;
+                assert_eq!(
+                    format!("{replayed:?}"),
+                    format!("{played:?}"),
+                    "{entry:?}: the reporting replay gives the result of the play"
+                );
+                runtime
+                    .check_replay_data()
+                    .await
+                    .unwrap_or_else(|error| panic!("{entry:?}: the replay leaves events: {error:?}"));
+                assert_eq!(
+                    volatile_channels(&reporting).await,
+                    Vec::<Par>::new(),
+                    "{entry:?}: the reporting replay sweeps (failing: {fails})"
                 );
             }
         }
