@@ -510,6 +510,250 @@ fn canonical_won_over_parents(
     }
 }
 
+/// Added by DR-116 (gap G6): whether one selected parent DAG-covers every valid
+/// latest message. The legacy buffered-retry stage tests the same predicate
+/// inline.
+fn parents_cover_valid_latest_messages(
+    casper_snapshot: &CasperSnapshot,
+) -> Result<bool, CasperError> {
+    'parents: for parent in &casper_snapshot.parents {
+        for justification in &casper_snapshot.justifications {
+            if !casper_snapshot
+                .invalid_blocks
+                .contains_key(&justification.latest_block_hash)
+                && !casper_snapshot
+                    .dag
+                    .is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)?
+            {
+                continue 'parents;
+            }
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Added by DR-116 (gap G6): why a retry that the frontier would defer escapes
+/// now, if it does. The legacy buffered-retry stage applies the same rule inline.
+fn retry_frontier_escape(block_number: i64, rejection_height: Option<i64>) -> Option<&'static str> {
+    match rejection_height {
+        None => Some("rejection_height_unknown"),
+        Some(height) if retry_frontier_deferral_lease_expired(block_number, height) => {
+            Some("deferral_lease_expired")
+        }
+        Some(_) => None,
+    }
+}
+
+/// Added by DR-116 (gap G6): the offered half of the buffered-retry stage. It
+/// makes the decisions of the legacy stage, in the same order, on the envelope
+/// table of the rejected-deploy buffer:
+/// 1. it removes time-expired and floor-window-closed entries from the buffer
+///    and the pending store;
+/// 2. it purges entries whose effect is settled in the floor;
+/// 3. it keeps entries that are not canonical wins and that are out of scope or
+///    rejected in scope, when the retry gate is open;
+/// 4. it keeps entries that are valid on the floor clock;
+/// 5. it defers entries that no parent frontier covers, until their lease ends.
+/// It returns the recovered envelopes in canonical order and the identities
+/// that stay buffered after the purges.
+#[allow(clippy::too_many_arguments)]
+fn recovered_offered_envelopes(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    deploy_storage_guard: &mut KeyValueDeployStorage,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
+    earliest_block_number: i64,
+    floor_expiry_bound: Option<i64>,
+    envelope_limits: models::rust::deploy_envelope::DeployEnvelopeLimits,
+) -> Result<(Vec<DeployEnvelope>, HashSet<Bytes>), CasperError> {
+    use models::rust::deploy_id::DeployLookupId;
+    let identity_of =
+        |envelope: &DeployEnvelope| -> Bytes { envelope.identity().as_bytes().to_vec().into() };
+    let buffered = rejected_deploy_buffer
+        .lock()?
+        .read_all_envelopes(envelope_limits)?;
+
+    // 1. Both expiry kinds are terminal for buffered work.
+    let mut live = Vec::with_capacity(buffered.len());
+    for envelope in buffered {
+        let body = envelope.body();
+        let expired = body.is_expired_at(current_time_millis)
+            || floor_expiry_bound.is_some_and(|bound| body.valid_after_block_number <= bound);
+        if !expired {
+            live.push(envelope);
+            continue;
+        }
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "buffer_removed",
+            deploy_sig = %hex::encode(envelope.identity().as_bytes()),
+            reason = "expired",
+            valid_after_block = body.valid_after_block_number,
+            floor_expiry_bound = ?floor_expiry_bound,
+            current_time_millis,
+            "deploy lifecycle"
+        );
+        if let DeployLookupId::V6(deploy_id) = envelope.identity() {
+            rejected_deploy_buffer
+                .lock()?
+                .remove_envelope_by_id(deploy_id)?;
+            deploy_storage_guard.remove_envelope_by_id(deploy_id)?;
+        }
+    }
+
+    // 2. Terminal purge: the effect is in the floor block's committed state.
+    if let Some(ctx) = floor_ctx {
+        let mut unsettled = Vec::with_capacity(live.len());
+        for envelope in live {
+            let identity = identity_of(&envelope);
+            if !ctx.effect_settled_in_floor(
+                block_store,
+                envelope.body().valid_after_block_number,
+                &identity,
+            )? {
+                unsettled.push(envelope);
+                continue;
+            }
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                deploy_sig = %hex::encode(&identity),
+                next_block = block_number,
+                "Purged a rejected-envelope buffer entry with a floor-settled effect"
+            );
+            if let DeployLookupId::V6(deploy_id) = envelope.identity() {
+                rejected_deploy_buffer
+                    .lock()?
+                    .remove_envelope_by_id(deploy_id)?;
+            }
+        }
+        live = unsettled;
+    }
+    let buffered_ids: HashSet<Bytes> = live.iter().map(identity_of).collect();
+    if live.is_empty() {
+        return Ok((Vec::new(), buffered_ids));
+    }
+
+    // 3. Canonical wins, scope and the retry gate.
+    let scan_floor = live
+        .iter()
+        .map(|envelope| envelope.body().valid_after_block_number)
+        .min()
+        .map(|height| height.min(earliest_block_number))
+        .unwrap_or(earliest_block_number);
+    let won = canonical_won_over_parents(floor_ctx, casper_snapshot, block_store, scan_floor)?;
+    let mut candidates = Vec::with_capacity(live.len());
+    for envelope in live {
+        let identity = identity_of(&envelope);
+        let in_scope = casper_snapshot.deploys_in_scope.contains(&identity);
+        let rejected_in_scope = casper_snapshot.rejected_in_scope.contains(&identity);
+        if won.contains(&identity) || (in_scope && !rejected_in_scope) {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "recovery_suppressed",
+                deploy_sig = %hex::encode(&identity),
+                canonical_won = won.contains(&identity),
+                in_scope,
+                rejected_in_scope,
+                next_block = block_number,
+                "deploy lifecycle"
+            );
+            continue;
+        }
+        if let Some(ctx) = floor_ctx {
+            match ctx.retry_gate_basis(
+                &casper_snapshot.dag,
+                block_store,
+                earliest_block_number,
+                &identity,
+            )? {
+                RetryGateBasis::Open => candidates.push(envelope),
+                basis => trace_retry_gate_deferral(&identity, &basis, ctx),
+            }
+        }
+    }
+
+    // 4. Retry work reads the floor clock for block expiry.
+    let expiry_bound = floor_expiry_bound.unwrap_or(earliest_block_number);
+    candidates.retain(|envelope| {
+        let body = envelope.body();
+        body.valid_after_block_number < block_number
+            && body.valid_after_block_number > expiry_bound
+            && !body.is_expired_at(current_time_millis)
+    });
+
+    // 5. Frontier deferral, bounded by the lease.
+    if !candidates.is_empty() && !parents_cover_valid_latest_messages(casper_snapshot)? {
+        let candidate_ids: Vec<Bytes> = candidates.iter().map(identity_of).collect();
+        let rejection_heights = match floor_ctx {
+            Some(ctx) => ctx.latest_kept_rejection_heights(
+                block_store,
+                earliest_block_number,
+                candidate_ids.iter(),
+            )?,
+            None => HashMap::new(),
+        };
+        candidates.retain(|envelope| {
+            let identity = identity_of(envelope);
+            let rejection_height = rejection_heights.get(&identity).copied().flatten();
+            let escape = retry_frontier_escape(block_number, rejection_height);
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = if escape.is_some() {
+                    "retry_frontier_escape"
+                } else {
+                    "retry_frontier_deferred"
+                },
+                deploy_sig = %hex::encode(&identity),
+                reason = escape.unwrap_or("no_covering_parent"),
+                next_block = block_number,
+                rejection_height,
+                deferral_lease_blocks = RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS,
+                "deploy lifecycle"
+            );
+            escape.is_some()
+        });
+    }
+
+    candidates.sort_by(|left, right| {
+        left.body()
+            .valid_after_block_number
+            .cmp(&right.body().valid_after_block_number)
+            .then_with(|| left.body().time_stamp.cmp(&right.body().time_stamp))
+            .then_with(|| left.identity().as_bytes().cmp(right.identity().as_bytes()))
+    });
+    for envelope in &candidates {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "recovery_candidate",
+            deploy_sig = %hex::encode(envelope.identity().as_bytes()),
+            valid_after_block = envelope.body().valid_after_block_number,
+            next_block = block_number,
+            "deploy lifecycle"
+        );
+    }
+    Ok((candidates, buffered_ids))
+}
+
+/// Added by DR-116 (gap G6): quarantines a rejected offered candidate in the
+/// pending store and the status log, and ends its recovery custody in the
+/// rejected-deploy buffer, as the legacy toxic-deploy quarantine does.
+fn quarantine_offered_candidate(
+    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    rejection: EnvelopeRejection,
+) -> Result<(bool, bool), CasperError> {
+    let deploy_id = rejection.deploy_id;
+    let removed_from_deploy_storage = deploy_storage.lock().quarantine_envelope(rejection)?;
+    let removed_from_rejected_buffer = rejected_deploy_buffer
+        .lock()?
+        .remove_envelope_by_id(&deploy_id)?;
+    Ok((removed_from_deploy_storage, removed_from_rejected_buffer))
+}
+
 async fn prepare_user_deploys_with_policy(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
@@ -659,6 +903,24 @@ async fn prepare_user_deploys_with_policy_and_limits(
             )
         })
         .transpose()?;
+    // Added by DR-116 (gap G6): the offered buffered-retry stage. It is gated
+    // only on recovery and offered activation, not on ordinary admission, as
+    // the legacy retry stage is.
+    let (recovered_offered, buffered_offered_ids) = match offered_limits {
+        Some(limits) if allow_recovered_deploys => recovered_offered_envelopes(
+            casper_snapshot,
+            block_number,
+            current_time_millis,
+            &mut deploy_storage_guard,
+            &rejected_deploy_buffer,
+            block_store,
+            floor_ctx,
+            earliest_block_number,
+            floor_expiry_bound,
+            limits.envelope,
+        )?,
+        _ => (Vec::new(), HashSet::new()),
+    };
     // Both expiry kinds are terminal for buffered work: a floor-window-closed
     // deploy can never again pass the merge window rule, so holding it
     // "recoverable" only re-offers it to a proposer that must reject it.
@@ -1583,6 +1845,33 @@ async fn prepare_user_deploys_with_policy_and_limits(
     let mut cap_hit = cap_hit;
     let mut byte_cap_hit = byte_cap_hit;
     let mut offered_alternates = Vec::new();
+    // Added by DR-116 (gap G6): the recovered offered pass, retry before ordinary
+    // as in the legacy stage. At most one recovered envelope per block, as the
+    // selected candidate: the pre-state guard in create_inner covers only the
+    // selected candidates, so a recovered envelope never becomes an alternate.
+    // Further recovered envelopes wait for later proposals.
+    if let Some(envelope) = recovered_offered.into_iter().next() {
+        let encoded_bytes = envelope
+            .to_proto()
+            .map_err(CasperError::RuntimeError)?
+            .encoded_len();
+        if selected_user_deploy_bytes.saturating_add(encoded_bytes) > total_byte_budget {
+            byte_cap_hit = true;
+            cap_hit = true;
+        }
+        selected_user_deploy_bytes = selected_user_deploy_bytes.saturating_add(encoded_bytes);
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "selected",
+            deploy_sig = %hex::encode(envelope.identity().as_bytes()),
+            next_block = block_number,
+            retry = true,
+            in_scope_recovery = false,
+            valid_after_block = envelope.body().valid_after_block_number,
+            "deploy lifecycle"
+        );
+        selected_candidates.push(PendingDeployCandidate::Envelope(envelope));
+    }
     if !eligible_offered {
         stored_offered.clear();
     }
@@ -1604,10 +1893,13 @@ async fn prepare_user_deploys_with_policy_and_limits(
             }
             continue;
         }
+        // Changed by DR-116 (gap G6): a buffered identity stays out of the
+        // ordinary lane, as legacy buffered deploys do.
         if !allow_ordinary_deploys
             || body.valid_after_block_number >= block_number
             || canonical_won.contains(&identity)
             || casper_snapshot.deploys_in_scope.contains(&identity)
+            || buffered_offered_ids.contains(&identity)
         {
             continue;
         }
@@ -1898,7 +2190,19 @@ fn storage_has_unresolved_in_scope_deploys(
     casper_snapshot: &CasperSnapshot,
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     _rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    offered_limits: Option<OfferedFundedProtocolLimits>,
 ) -> Result<bool, CasperError> {
+    // Added by DR-116 (gap G6): under offered activation the stored work is
+    // the stored offered envelopes, as the proposer selects them.
+    if let Some(limits) = offered_limits {
+        return Ok(stored_offered_envelopes(&deploy_storage.lock(), limits)?
+            .iter()
+            .any(|envelope| {
+                casper_snapshot
+                    .deploys_in_scope
+                    .contains(envelope.identity().as_bytes())
+            }));
+    }
     let stored_deploys = deploy_storage.lock().read_all()?;
     for deploy in stored_deploys {
         if casper_snapshot.deploys_in_scope.contains(&deploy.sig) {
@@ -2336,6 +2640,104 @@ fn deploy_inclusion_progress_staleness(
     }
 }
 
+/// Added by DR-116 (gap G6): the stored offered envelopes that the proposer
+/// may select, as `prepare_user_deploys_with_policy_and_limits` collects them.
+fn stored_offered_envelopes(
+    deploy_storage: &KeyValueDeployStorage,
+    limits: OfferedFundedProtocolLimits,
+) -> Result<Vec<DeployEnvelope>, CasperError> {
+    Ok(deploy_storage
+        .read_all_envelopes(limits.envelope)?
+        .into_iter()
+        .filter_map(|candidate| match candidate {
+            PendingDeployCandidate::Envelope(envelope)
+                if envelope.format() == DeployEnvelopeFormat::OfferedFunded =>
+            {
+                Some(envelope)
+            }
+            _ => None,
+        })
+        .collect())
+}
+
+/// Added by DR-116 (gap G6): `fresh_local_deploy_stats` for offered
+/// envelopes, with the same filters in the same order. A validator that is not
+/// the deploy-inclusion leader reads it to admit its own fresh work.
+#[allow(clippy::too_many_arguments)]
+fn fresh_local_envelope_stats(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
+    limits: OfferedFundedProtocolLimits,
+) -> Result<FreshLocalDeployStats, CasperError> {
+    let stored = stored_offered_envelopes(&deploy_storage.lock(), limits)?;
+    if stored.is_empty() {
+        return Ok(FreshLocalDeployStats::default());
+    }
+    let buffered_ids: HashSet<Bytes> = rejected_deploy_buffer
+        .lock()?
+        .read_all_envelopes(limits.envelope)?
+        .iter()
+        .map(|envelope| envelope.identity().as_bytes().to_vec().into())
+        .collect();
+    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+        block_number,
+        casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+    )?;
+    let candidates: Vec<DeployEnvelope> = stored
+        .into_iter()
+        .filter(|envelope| {
+            let identity = envelope.identity().as_bytes();
+            let body = envelope.body();
+            !buffered_ids.contains(identity)
+                && !casper_snapshot.deploys_in_scope.contains(identity)
+                && body.valid_after_block_number < block_number
+                && body.valid_after_block_number > earliest_block_number
+                && !body.is_expired_at(current_time_millis)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(FreshLocalDeployStats::default());
+    }
+    let canonical_scan_floor = candidates
+        .iter()
+        .map(|envelope| envelope.body().valid_after_block_number)
+        .min()
+        .map(|h| h.min(earliest_block_number))
+        .unwrap_or(earliest_block_number);
+    let canonical_won = canonical_won_over_parents(
+        floor_ctx,
+        casper_snapshot,
+        block_store,
+        canonical_scan_floor,
+    )?;
+    let mut count = 0usize;
+    let mut oldest_time = None;
+    for envelope in candidates {
+        if canonical_won.contains(envelope.identity().as_bytes()) {
+            continue;
+        }
+        let time_stamp = envelope.body().time_stamp;
+        count += 1;
+        oldest_time = Some(
+            oldest_time
+                .map(|current: i64| current.min(time_stamp))
+                .unwrap_or(time_stamp),
+        );
+    }
+    Ok(FreshLocalDeployStats {
+        count,
+        oldest_age_millis: oldest_time
+            .map(|time_stamp| current_time_millis.saturating_sub(time_stamp))
+            .unwrap_or(0),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn fresh_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
@@ -2344,7 +2746,22 @@ fn fresh_local_deploy_stats(
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
+    offered_limits: Option<OfferedFundedProtocolLimits>,
 ) -> Result<FreshLocalDeployStats, CasperError> {
+    // Added by DR-116 (gap G6): under offered activation the fresh local work
+    // is the stored offered envelopes.
+    if let Some(limits) = offered_limits {
+        return fresh_local_envelope_stats(
+            casper_snapshot,
+            block_number,
+            current_time_millis,
+            deploy_storage,
+            rejected_deploy_buffer,
+            block_store,
+            floor_ctx,
+            limits,
+        );
+    }
     let stored_deploys = deploy_storage.lock().read_all()?;
     if stored_deploys.is_empty() {
         return Ok(FreshLocalDeployStats::default());
@@ -3087,10 +3504,15 @@ async fn create_inner(
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;
+        // Changed by DR-116 (gap G6): the fallback inputs count stored offered
+        // envelopes under offered activation.
+        let offered_limits = offered_funded_active
+            .then(models::rust::cost_protocol_limits::offered_funded_v6_limits);
         let storage_deploys_in_scope = storage_has_unresolved_in_scope_deploys(
             casper_snapshot,
             &deploy_storage,
             &rejected_deploy_buffer,
+            offered_limits,
         )?;
         let stale_in_scope_work = user_deploys_in_scope || storage_deploys_in_scope;
         let user_work_in_flight = stale_in_scope_work;
@@ -3116,6 +3538,7 @@ async fn create_inner(
             &rejected_deploy_buffer,
             block_store,
             floor_ctx.as_ref(),
+            offered_limits,
         )?;
         let in_scope_local_stats = in_scope_local_deploy_stats(
             casper_snapshot,
@@ -3642,14 +4065,26 @@ async fn create_inner(
             Err(CasperError::OfferedCandidateRejected(rejection))
                 if attempted_offered_id == Some(rejection.deploy_id) =>
             {
-                let removed = deploy_storage
-                    .lock()
-                    .quarantine_envelope(EnvelopeRejection {
+                // Changed by DR-116 (gap G6): the quarantine also ends the
+                // envelope's recovery custody, as the legacy toxic quarantine does.
+                // let removed = deploy_storage
+                //     .lock()
+                //     .quarantine_envelope(EnvelopeRejection {
+                //         deploy_id: rejection.deploy_id,
+                //         pre_state_root: Some(rejection.pre_state_root.to_vec()),
+                //         block_number: next_block_num,
+                //         reason: rejection.reason.clone(),
+                //     })?;
+                let (removed, removed_from_rejected_buffer) = quarantine_offered_candidate(
+                    &deploy_storage,
+                    &rejected_deploy_buffer,
+                    EnvelopeRejection {
                         deploy_id: rejection.deploy_id,
                         pre_state_root: Some(rejection.pre_state_root.to_vec()),
                         block_number: next_block_num,
                         reason: rejection.reason.clone(),
-                    })?;
+                    },
+                )?;
                 tracing::warn!(
                     target: "f1r3fly.casper.deploy_lifecycle",
                     event = "rejected",
@@ -3657,6 +4092,7 @@ async fn create_inner(
                     deploy_id = %hex::encode(rejection.deploy_id.as_array()),
                     pre_state_root = %hex::encode(&rejection.pre_state_root),
                     removed_from_deploy_storage = removed,
+                    removed_from_rejected_buffer,
                     next_block = next_block_num,
                     error = %rejection.reason,
                     "deploy lifecycle"
@@ -4679,7 +5115,8 @@ mod tests {
         assert!(!storage_has_unresolved_in_scope_deploys(
             &snapshot,
             &deploy_storage,
-            &rejected_deploy_buffer
+            &rejected_deploy_buffer,
+            None
         )
         .expect("empty storage"));
 
@@ -4690,7 +5127,8 @@ mod tests {
         assert!(!storage_has_unresolved_in_scope_deploys(
             &snapshot,
             &deploy_storage,
-            &rejected_deploy_buffer
+            &rejected_deploy_buffer,
+            None
         )
         .expect("stored deploy not yet in scope"));
 
@@ -4698,7 +5136,8 @@ mod tests {
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
             &deploy_storage,
-            &rejected_deploy_buffer
+            &rejected_deploy_buffer,
+            None
         )
         .expect("stored deploy in scope"));
 
@@ -4710,7 +5149,8 @@ mod tests {
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
             &deploy_storage,
-            &rejected_deploy_buffer
+            &rejected_deploy_buffer,
+            None
         )
         .expect("stored deploy parked in rejected buffer remains unresolved while in scope"));
         rejected_deploy_buffer
@@ -4723,7 +5163,8 @@ mod tests {
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
             &deploy_storage,
-            &rejected_deploy_buffer
+            &rejected_deploy_buffer,
+            None
         )
         .expect("stored rejected deploy in scope remains unresolved"));
     }

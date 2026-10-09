@@ -3250,6 +3250,10 @@ pass both closed-gate and settled-gate paths. The unchanged finalization
 eviction tests preserve an above-floor carrier and remove a floor-terminal
 deploy.
 
+**Amendment (DR-116, 2026-10-09).** Owner custody also holds for offered
+envelopes. A failed offered deploy that a merge rejects is final, so its owner
+buffers nothing.
+
 **Cross-refs.** DR-33, TM-CA-171, O10 through O14, and
 `formal/tlaplus/deploy_recovery/README.md`.
 
@@ -4256,6 +4260,10 @@ rejectable by the merge. So the recovery error that this record removes now
 also reaches failed offered deploys. By user decision, gap G6 follows DR-115
 directly.
 
+**Amendment (DR-116, 2026-10-09).** DR-116 implements this record. It lists
+the tests that stay on legacy deploys and the residuals, including in-scope
+recovery.
+
 **Cross-refs.** DR-55, DR-56, DR-66. Leaf `ofp-3-recovery-offered-format`.
 
 ## DR-70 — Block reporting replays offered blocks through the offered replay path
@@ -4424,6 +4432,9 @@ The integration test
 `unfundable_offer_at_queue_head_is_quarantined_and_next_offer_is_included`
 shows that an unfundable head offer does not stop the next offer. It also
 checks the root-bound status entry.
+
+**Amendment (DR-116, 2026-10-09).** The quarantine also removes the buffer
+entry of the candidate.
 
 **Cross-refs.** P1 `sec:deploy-boundaries`. DR-63, DR-65. Leaves
 `ofp-1-baseline-liveness` and `ofp-1-baseline-verify-quarantine`. Leaf
@@ -8322,6 +8333,10 @@ code and on `unit_payer_keeps_its_region`.
 `a_process_that_a_system_contract_runs_keeps_its_callers_seal` also passes
 under the committed caps. Six of the nine tests still need the Phase D caps.
 
+**Amendment (DR-116, 2026-10-09).** Gap G6 landed.
+`a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` is
+re-enabled and passes.
+
 **Cross-refs.** DR-31, DR-41, DR-68, DR-98, DR-100. Bug 10056
 (`bug-after-one-signer-writes-the-registry-any-other-signer-s-registry-lookup-or-insert-is-unfundable-work-charged-to-the-earlier-writer-s-authority-51d630`).
 
@@ -11882,5 +11897,138 @@ lifecycle projection (variant M3) and G6 stay outside this record.
 (DR-66). The change activates atomically with the branch binary, as A9 does.
 Dev and legacy chains are byte-identical.
 
+**Amendment (DR-116, 2026-10-09).** The G6 recovery error is gone. A
+rejected failed offered deploy is final: its owner buffers nothing, and the
+rejection removes an earlier buffer entry with the same identity.
+
 **Cross-refs.** DR-57, DR-64, DR-66, DR-69, DR-101, DR-113, DR-114. E2E-052,
 CA-P-203, TM-CA-193, UC-CA-184. Bugs 10986, 11004 and 11008.
+
+## DR-116 — Recovery carries offered envelopes
+
+**Status.** Implemented 2026-10-09 for gap G6 of epic 8946. It implements
+DR-69 (decision D6). By user decision it follows DR-115 directly ("R1 now, G6
+next").
+
+**Context.**
+
+- The owner of a merge-rejected offered deploy marked the honest merge block
+  invalid. The error was "offered-funded recovery requires an envelope
+  buffer". The owner then forked away from the chain.
+- The rejected-deploy buffer held legacy deploys only, so no proposer retried
+  an offered deploy.
+- Three lookups found legacy deploys only: the pool release at the verdict,
+  the admission check and the status lookup.
+- A validator that is not the deploy-inclusion leader includes its own fresh
+  work through a fallback. The fallback counted legacy pending deploys only.
+  Under protocol 6 that validator never included a fresh offer while an
+  unfinalized deploy block was in its scope.
+
+**Decision.**
+
+1. Storage. The rejected-deploy buffer gets the LMDB table
+   `rejected_envelope_buffer`, keyed by the 32-byte deploy id. The legacy table
+   keeps its type and its bytes, so no migration is necessary.
+2. Populate. Only the owner buffers a rejected offer, as DR-55 requires for a
+   legacy deploy. The owner is the sender of the rejected copy's carrier.
+3. Failed deploys. Casper treats a failed deploy as final, and this record
+   keeps that rule (user rule "stick with Casper's existing behavior"). A
+   failed offered deploy that a merge rejects is not buffered. The rejection
+   also removes an earlier buffer entry with the same identity.
+4. Retry. The offered retry stage makes the decisions of the legacy stage in
+   the same order: the expiry purge, the terminal purge, the canonical win,
+   the scope and retry gate, the floor-clock validity, and the frontier
+   deferral with its lease.
+5. A block takes at most one recovered envelope, as its selected candidate. A
+   block holds one offer until gap G2 lands.
+6. The quarantine of DR-72 also removes the buffer entry of the candidate.
+7. Identity lookups. `contains_sig` and `remove_by_sig` of the pending store
+   and of the buffer accept a deploy id. A 32-byte key names the envelope
+   table, and a legacy signature is never 32 bytes. So the pool release, the
+   admission check and the status lookup cover both formats with no
+   call-site change.
+8. Fallback. Under offered activation the fallback counts the stored offered
+   envelopes (`fresh_local_envelope_stats`). The stale-work signal counts them
+   too. The legacy branch does not change.
+9. Nothing consensus-visible changes. The populate, retry, quarantine and
+   fallback decisions are node-local, so this record adds no formal model.
+
+**Test migration.** A harness seam meets the DR-69 obligation, so no test
+needs a rewrite.
+
+- `casper/tests/helper/offered_deploy.rs` builds offered envelopes with the
+  signatures of `construct_deploy`. `OfferedDeploy::sig` holds the 32-byte
+  deploy id, as `RejectedDeploy::sig` does.
+- The `TestNode` deploy methods take `impl TestDeploys`, so they accept both
+  formats. An empty list `&[]` needs no type annotation.
+- `GenesisBuilder::offered_v6()` builds the protocol-6 genesis: the offered
+  policy, header version 6 and minimum phlo price 1.
+- Staged proposals call `create_with_adopted_policy` with the node's adopted
+  policy. On a legacy genesis this is the same call as `create`.
+- A typical port changes the import line and the genesis line. The old lines
+  stay in the source as comments.
+
+Two scenario rules follow from open gaps. Each changed line names its gap.
+
+- One key signs a contested cell's seed and every reader of that cell. A
+  deploy that consumes another signer's datum needs that signer's funding
+  (P1 Rule 4), and cross-signer funding is gap G3.
+- A block that only fills a sibling slot carries no offer. Under bug 11004
+  (the global `costCursorLock`) any two offered siblings conflict.
+
+| Test file | Tests | Result |
+| --- | ---: | --- |
+| `batch2/recovery_cycle_spec.rs` | 2 | Pass |
+| `batch2/retry_gate_spec.rs` | 2 | Pass. The premature retry is staged through `compute_deploys_checkpoint_envelopes`. |
+| `batch2/exactly_once_spec.rs` | 4 | Pass. The neutral branch N1 is empty (bug 11004). |
+| `batch2/loss_priority_spec.rs` | 2 | Pass. The costlier write adds two COMMs, because the native compute dimension counts COMMs, not arithmetic. One test stays ignored, as on dev. |
+| `batch2/slash_recovery_spec.rs` | 4 | Pass |
+| `batch2/finalized_eviction_spec.rs` | 2 | Pass. The pool check uses `contains_sig`. |
+| `batch2/finalized_win_pending_rejection_spec.rs` | 3 | Pass |
+| `batch2/orphan_reinclusion_spec.rs` | 2 | Pass |
+| `batch2/floor_erasure_reproduction_spec.rs` | 1 | Pass |
+| `batch2/verdict_convergence_spec.rs` | 6 | Pass. The sibling S and the neutral branch N1 are empty (bug 11004). |
+| `batch2/map_cell_convergence_spec.rs` | 4 | Pass. The soak test stays ignored, as on dev. |
+| `batch2/populate_cache_shadow_spec.rs` | 1 | Pass |
+| `sync/recovery_purge_race_spec.rs` | 1 | Pass |
+| `api/offered_funded_api_test.rs` | 21 | Pass, with `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` re-enabled |
+
+These tests stay on legacy deploys:
+
+| Tests | Reason |
+| --- | --- |
+| `recovery_repeat_deploy_misfire_spec.rs` (3), `recovery_no_double_apply.rs` (1) | They build blocks by hand and execute nothing. `repeat_deploy` and `canonical_won_sigs` read `identity_bytes()` for both formats. |
+| `dedup_orphan_recovery_spec.rs` (1), `multi_validator_recovery_spec.rs` (1) | The orphan half needs two user deploys in one block (gap G2). |
+| Seven recovery tests of `block_creator_spec.rs` | They call the legacy public `prepare_user_deploys`. The offered stage has no public entry point, and the migrated tests above cover it end to end. |
+| Four recovery tests of `pending_deploys_test.rs` | The pending-deploys API returns legacy-typed deploys. An offered listing is an API change (G7 or G5). |
+
+**Residuals.**
+
+- In-scope recovery. The offered selection skips a pending envelope whose
+  identity is in scope, so the rejected-in-scope pool exemption does not carry
+  offers. DR-69 names in-scope recovery. No migrated test needs it.
+- The pending-deploys API lists legacy deploys only.
+- The scenario rules above end when gap G3 and bug 11004 are closed.
+
+**Verification.**
+
+- The three family runs are in `target/verification/g6/`
+  (`c4-family-run1.log` to `c4-family-run3.log`). All 55 tests pass: the 34
+  migrated recovery tests and the 21 offered API tests.
+- Two unit tests check the identity lookups of the pending store and of the
+  buffer.
+- The traffic phase of
+  `three_validator_same_payer_merge_keeps_purses_single_valued_and_live` now
+  checks that every validator includes its own traffic offer. Negative
+  control: with the offered branch of the fallback disabled, the test fails
+  with "validator 0 must include its own traffic deploy". With the branch
+  restored, it passes.
+- Committed caps, `-p casper -p block-storage`: 1914 of 1920 tests pass. The 6
+  failures are the known ones of DR-115: two registry tests and two gateway
+  tests that need the Phase D caps, and the two legacy-charge tests of I6.
+- Provisional caps, the same packages: 1916 of 1920 tests pass. The 4 failures
+  are the known ones: the gateway test (gap G3), the 64-source test, and the
+  two legacy-charge tests of I6.
+
+**Cross-refs.** DR-55, DR-69, DR-72, DR-101, DR-115. Bugs 10986 and 11004. Leaf
+`ofp-3-recovery-offered-format`.

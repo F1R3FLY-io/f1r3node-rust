@@ -32,7 +32,9 @@ use models::rust::phlo_intent::{
     PhloConversionCompositionV2, PhloFundingIntentV1, PhloFundingIntentV2,
     PhloFundingIntentV2Limits,
 };
-use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
+use models::rust::phlo_schedule::PhloGenesisPolicy;
 use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
@@ -40,9 +42,10 @@ use node::rust::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
 use node::rust::api::web_api::{WebApi, WebApiImpl};
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
-use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativePhloDimension,
-};
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use rholang::rust::interpreter::accounting::native_phlo_rules::{
+//     native_resource_compatibility_rule, NativePhloDimension,
+// };
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
 use rholang::rust::interpreter::rho_type::RhoNumber;
@@ -52,6 +55,9 @@ use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 
 use crate::helper::block_util::resign_block;
+// Added by DR-116 (gap G6): the offer builder and the schedule moved to the
+// shared offered test module.
+use crate::helper::offered_deploy::{owner_direct_offer, selected_schedule};
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -132,25 +138,6 @@ fn offered_web_api(node: &TestNode) -> WebApiImpl {
         0,
         Arc::new(AtomicBool::new(true)),
     )
-}
-
-fn selected_schedule() -> PhloScheduleV1<'static> {
-    let identities: [&[u8]; 4] = [b"compute", b"introduction", b"transfer", b"trace"];
-    PhloScheduleV1 {
-        protocol_version: 6,
-        network: b"test",
-        shard: b"root",
-        settlement_asset: b"REV",
-        settlement_unit: b"atomic-REV",
-        decimal_scale: 8,
-        classes: NativePhloDimension::ALL
-            .into_iter()
-            .zip(identities)
-            .map(|(dimension, identity)| dimension.resource_class(identity, 1))
-            .collect(),
-        actual_price: 2,
-        compatibility_rule: native_resource_compatibility_rule(),
-    }
 }
 
 fn signed_offer(
@@ -242,16 +229,23 @@ fn signed_offer_at(
 }
 
 async fn offered_v6_genesis(validators: usize) -> crate::util::genesis_builder::GenesisContext {
-    let mut parameters =
-        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators));
-    parameters.2.version = 6;
-    parameters.2.proof_of_stake.min_phlo_price = 1;
-    let policy = PhloGenesisPolicy::from_schedule(&selected_schedule())
-        .expect("selected schedule forms a genesis policy")
-        .with_offered_funded_v6_active();
-    GenesisBuilder::new()
-        .with_resource_policy(policy)
-        .build_genesis_with_parameters(Some(parameters))
+    // Changed by DR-116 (gap G6): the shared offered genesis builder.
+    // let mut parameters =
+    //     GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators));
+    // parameters.2.version = 6;
+    // parameters.2.proof_of_stake.min_phlo_price = 1;
+    // let policy = PhloGenesisPolicy::from_schedule(&selected_schedule())
+    //     .expect("selected schedule forms a genesis policy")
+    //     .with_offered_funded_v6_active();
+    // GenesisBuilder::new()
+    //     .with_resource_policy(policy)
+    //     .build_genesis_with_parameters(Some(parameters))
+    //     .await
+    //     .expect("offered v6 genesis builds")
+    GenesisBuilder::offered_v6()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators)),
+        ))
         .await
         .expect("offered v6 genesis builds")
 }
@@ -941,94 +935,6 @@ fn registry_insert(
     )
 }
 
-/// An owner-direct offer that funds only its signer's own principal resources.
-fn owner_direct_offer(
-    owner: &(
-        crypto::rust::private_key::PrivateKey,
-        crypto::rust::public_key::PublicKey,
-    ),
-    time_stamp: i64,
-    term: String,
-) -> models::casper::DeployDataProto {
-    let (owner_secret, owner_public) = owner;
-    let limits = offered_funded_v6_limits().envelope.payload;
-    let signature = CostSignature {
-        value: Some(Value::Ground(principal_ground_v61(&owner_public.bytes))),
-    };
-    let payer = vault_payer(&signature).unwrap();
-    let schedule = selected_schedule();
-    let acquisition_terms = schedule.encode(PhloGenesisPolicy::LIMITS).unwrap();
-    let authority = cost_signature_to_sig(&signature).unwrap();
-    let location = SignatureChannel::from_sig(&authority).par.encode_to_vec();
-    let permissions = (0..schedule.classes.len())
-        .map(|class| {
-            PhloResource {
-                location: &location,
-                class,
-                acquisition_terms: &acquisition_terms,
-                authority: &authority,
-            }
-            .wire_key(PhloExecutionLimits {
-                resource_entries: 1,
-                authority_nodes: limits.funding.authority_nodes,
-                key_bytes: limits.funding.wire.field_bytes,
-            })
-            .unwrap()
-        })
-        .collect();
-    let cap = 400_000_000;
-    let source = PhloSourcePolicyV1::new(
-        &payer.custody_key,
-        cap,
-        cap,
-        true,
-        permissions,
-        PhloSourceLimits {
-            wire: limits.funding.wire,
-            resource_permissions: schedule.classes.len(),
-            authority_nodes: limits.funding.authority_nodes,
-        },
-    )
-    .unwrap();
-    let funding = PhloFundingIntentV2 {
-        base: PhloFundingIntentV1 {
-            controls: PhloControlsV1 {
-                limit: 100_000_000,
-                price_ceiling: 2,
-                required_owner_ceilings: vec![2],
-                permitted_schedules: vec![schedule.clone()],
-            },
-            schedule_commitment: schedule.digest(PhloGenesisPolicy::LIMITS).unwrap(),
-            total_exposure: u128::from(cap),
-            sources: vec![source],
-        },
-        grant_uses: Vec::new(),
-        conversion: PhloConversionCompositionV2::NoConversion,
-    }
-    .encode(PhloFundingIntentV2Limits {
-        wire: limits.funding.wire,
-        base: limits.funding,
-        grant_uses: limits.funding.wire.total_bytes / 8,
-        grant_id_bytes: limits.funding.wire.field_bytes,
-        quote_evidence_bytes: limits.funding.wire.field_bytes,
-    })
-    .unwrap();
-    let body = DeployData {
-        term,
-        language: "rholang".to_string(),
-        time_stamp,
-        valid_after_block_number: 0,
-        shard_id: "root".to_string(),
-        expiration_timestamp: None,
-        authority_presentations: Vec::new(),
-    };
-    let payload = OfferedFundedDeploy::new(body, funding, 100_000_000, 2, limits).unwrap();
-    let signed =
-        Cosigned::create_single_envelope(payload, Box::new(Secp256k1), owner_secret.clone())
-            .unwrap();
-    OfferedFundedDeploy::to_proto(&signed).unwrap()
-}
-
 /// Proposes one owner-direct offer on node 0. Every other node replays the
 /// block, and all settlement receipts agree.
 async fn propose_offer(
@@ -1376,7 +1282,8 @@ async fn another_signer_inserts_a_version_after_a_version_insert() {
 /// recovery requires an envelope buffer", before funding runs. The test
 /// fails for that reason with and without DR-101.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "needs gap G6 (offered recovery for a multi-parent merge); see DR-101"]
+// Re-enabled by DR-116: gap G6 lands offered recovery for a multi-parent merge.
+// #[ignore = "needs gap G6 (offered recovery for a multi-parent merge); see DR-101"]
 async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() {
     let genesis = offered_v6_genesis(4).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
@@ -1934,4 +1841,207 @@ async fn a_failed_offered_deploy_in_two_sibling_blocks_is_charged_once() {
         1,
         "the merge rejects the second copy with one record"
     );
+}
+
+/// DR-116 (gap G6): the identities in a node's rejected-envelope buffer.
+fn buffered_envelope_ids(node: &TestNode) -> Vec<Vec<u8>> {
+    node.rejected_deploy_buffer
+        .lock()
+        .expect("the buffer lock is not poisoned")
+        .read_all_envelopes(offered_funded_v6_limits().envelope)
+        .expect("the envelope table decodes")
+        .iter()
+        .map(|envelope| envelope.identity().as_bytes().to_vec())
+        .collect()
+}
+
+/// DR-116 (gap G6): two offered siblings conflict through the global cost
+/// cursor lock (bug 11004), so the merge rejects node 0's offer. Node 0 owns the
+/// rejected carrier. It accepts the merge block and buffers the envelope. Before
+/// DR-116 it marked the honest block invalid.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owner_accepts_a_merge_that_rejects_its_own_offer() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    nodes[2].allow_empty_blocks = true;
+    let (first, first_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(
+            &genesis.genesis_vaults[2],
+            1,
+            "new x in { x!(0) }".to_string(),
+        ),
+    )
+    .await;
+    let (second, _) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(
+            &genesis.genesis_vaults[0],
+            2,
+            "new y in { y!(0) }".to_string(),
+        ),
+    )
+    .await;
+    assert!(!first.body.deploys[0].is_failed());
+    for node in nodes.iter_mut() {
+        for block in [&first, &second] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merge = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates the merge block");
+    assert_eq!(merge.header.parents_hash_list, vec![
+        second.block_hash.clone(),
+        first.block_hash.clone()
+    ]);
+    assert!(
+        merge.body.rejected_deploys.iter().any(|record| {
+            record.sig.as_ref() == first_id.as_slice()
+                && record.carrier == first.block_hash
+                && !record.duplicate
+        }),
+        "staging precondition: the merge rejects node 0's offer"
+    );
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(merge.clone()).await.unwrap(),
+                Either::Right(_)
+            ),
+            "every node accepts the merge block"
+        );
+    }
+    assert_eq!(buffered_envelope_ids(&nodes[0]), vec![first_id]);
+    assert!(buffered_envelope_ids(&nodes[1]).is_empty());
+    assert!(buffered_envelope_ids(&nodes[2]).is_empty());
+}
+
+/// Stages a merge that rejects a failed offered deploy of node 0: block A holds
+/// the failed deploy, and the base sibling B settles another payer's offer.
+/// Returns the nodes, A, the failed deploy's identity, the merge block and the
+/// payer's genesis balance. No node has processed the merge block yet.
+async fn rejected_failed_offer_merge() -> (
+    Vec<TestNode>,
+    models::rust::casper::protocol::casper_message::BlockMessage,
+    Vec<u8>,
+    models::rust::casper::protocol::casper_message::BlockMessage,
+    u64,
+) {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    nodes[2].allow_empty_blocks = true;
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let initial = vault_balance(
+        &nodes,
+        &genesis.genesis_block.body.state.post_state_hash,
+        &payer_vault,
+    )
+    .await;
+    let (failed, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string()),
+    )
+    .await;
+    assert!(failed.body.deploys[0].is_failed());
+    let (sibling, _) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(
+            &genesis.genesis_vaults[0],
+            2,
+            "new x in { x!(0) }".to_string(),
+        ),
+    )
+    .await;
+    for node in nodes.iter_mut() {
+        for block in [&failed, &sibling] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merge = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates the merge block");
+    assert!(
+        merge.body.rejected_deploys.iter().any(|record| {
+            record.sig.as_ref() == id.as_slice()
+                && record.carrier == failed.block_hash
+                && !record.duplicate
+        }),
+        "staging precondition: the merge rejects the failed offered deploy"
+    );
+    (nodes, failed, id, merge, initial)
+}
+
+/// DR-116 (gap G6): a failed offered deploy that a merge rejects is final, as a
+/// failed deploy is in Casper. Its owner accepts the merge and buffers nothing,
+/// and the merged state does not charge the payer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejected_failed_offered_deploy_is_not_recovered() {
+    let (mut nodes, _failed, id, merge, initial) = rejected_failed_offer_merge().await;
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(merge.clone()).await.unwrap(),
+                Either::Right(_)
+            ),
+            "every node accepts the merge block"
+        );
+    }
+    for node in &nodes {
+        assert!(buffered_envelope_ids(node).is_empty());
+    }
+    let payer =
+        VaultAddress::from_public_key(&offered_v6_genesis(3).await.genesis_vaults[2].1).unwrap();
+    assert_eq!(
+        vault_balance(&nodes, &merge.body.state.pre_state_hash, &payer).await,
+        initial,
+        "the merged state does not charge the rejected failed deploy"
+    );
+    assert!(!merge
+        .body
+        .applied_from_scope
+        .iter()
+        .any(|sig| sig.as_ref() == id.as_slice()));
+}
+
+/// DR-116 (gap G6): the rejection of a failed offered copy ends the recovery
+/// custody of its identity, so an entry that the owner already buffered for the
+/// same identity is removed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejected_failed_offered_copy_removes_the_buffered_entry() {
+    let (mut nodes, failed, id, merge, _initial) = rejected_failed_offer_merge().await;
+    let envelope = failed.body.deploys[0]
+        .as_offered()
+        .expect("block A holds an offered deploy")
+        .envelope()
+        .clone();
+    nodes[0]
+        .rejected_deploy_buffer
+        .lock()
+        .expect("the buffer lock is not poisoned")
+        .add_envelopes(std::slice::from_ref(&envelope))
+        .expect("the envelope is buffered");
+    assert_eq!(buffered_envelope_ids(&nodes[0]), vec![id]);
+    assert!(matches!(
+        nodes[0].process_block(merge.clone()).await.unwrap(),
+        Either::Right(_)
+    ));
+    assert!(buffered_envelope_ids(&nodes[0]).is_empty());
 }

@@ -14,13 +14,15 @@
 // 5. Depth below the tips is not evidence of loss.
 use casper::rust::api::deploy_finalization_status::{self};
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -39,7 +41,9 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
@@ -89,7 +93,9 @@ async fn stage_contest() -> (Vec<TestNode>, String, Bytes, usize, &'static str) 
         r#"@"race"!("s")"#.to_string(),
         None,
         None,
-        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+        // Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
         Some(0),
         Some(shard_id.clone()),
     )
@@ -125,11 +131,13 @@ async fn stage_contest() -> (Vec<TestNode>, String, Bytes, usize, &'static str) 
             r#"for (@v <- @"race") { @"race"!("f") | @"XF"!(v) }"#.to_string(),
             None,
             None,
-            Some(
-                crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-                    .0
-                    .clone(),
-            ),
+            // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+            // Some(
+            // crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+            // .0
+            // .clone(),
+            // ),
+            Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
         )
@@ -348,17 +356,24 @@ async fn a_deploy_finalizes_from_a_carrier_the_spine_never_holds() {
         .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .expect("carrier B");
-    let sibling_marker = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        construct_deploy::basic_deploy_data(
-            151,
-            Some(construct_deploy::DEFAULT_SEC2.clone()),
-            Some(shard_id.clone()),
-        )
-        .expect("sibling marker")
-    };
+    // Changed by DR-116 (gap G6): the sibling S carries no offer. Under bug
+    // 11004 (the global cost-cursor lock) any two offered siblings conflict, so
+    // a marker offer in S would reject B's deploy. The marker only filled S.
+    // let sibling_marker = {
+    //     tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    //     construct_deploy::basic_deploy_data(
+    //         151,
+    //         Some(construct_deploy::DEFAULT_SEC2.clone()),
+    //         Some(shard_id.clone()),
+    //     )
+    //     .expect("sibling marker")
+    // };
+    // let s_block = nodes[1]
+    //     .add_block_from_deploys(std::slice::from_ref(&sibling_marker))
+    //     .await
+    //     .expect("sibling S");
     let s_block = nodes[1]
-        .add_block_from_deploys(std::slice::from_ref(&sibling_marker))
+        .add_block_from_deploys(&[])
         .await
         .expect("sibling S");
 
@@ -466,7 +481,9 @@ async fn private_carrier_must_not_strand_the_verdict_pending_forever() {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
@@ -593,7 +610,9 @@ async fn verdict_must_not_freeze_during_reinstatement_transient() {
         r#"@"race"!("s")"#.to_string(),
         None,
         None,
-        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+        // Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
         Some(0),
         Some(shard_id.clone()),
     )
@@ -612,15 +631,21 @@ async fn verdict_must_not_freeze_during_reinstatement_transient() {
     // nodes[2] mints its neutral branch off S FIRST — its merge later must
     // fork below everything so the loser's chain arrives via SCOPE, not
     // via spine inheritance (that is what forces applied_from_scope).
+    // Changed by DR-116 (gap G6): N1 carries no offer. Under bug 11004 any two
+    // offered siblings conflict, so a spacer offer in N1 makes X reject the loser.
+    // let _n1 = nodes[2]
+    //     .add_block_from_deploys(std::slice::from_ref(
+    //         &construct_deploy::basic_deploy_data(
+    //             1100,
+    //             Some(construct_deploy::DEFAULT_SEC2.clone()),
+    //             Some(shard_id.clone()),
+    //         )
+    //         .expect("neutral spacer"),
+    //     ))
+    //     .await
+    //     .expect("neutral branch N1 on nodes[2]");
     let _n1 = nodes[2]
-        .add_block_from_deploys(std::slice::from_ref(
-            &construct_deploy::basic_deploy_data(
-                1100,
-                Some(construct_deploy::DEFAULT_SEC2.clone()),
-                Some(shard_id.clone()),
-            )
-            .expect("neutral spacer"),
-        ))
+        .add_block_from_deploys(&[])
         .await
         .expect("neutral branch N1 on nodes[2]");
 
@@ -643,11 +668,13 @@ async fn verdict_must_not_freeze_during_reinstatement_transient() {
             r#"for (@v <- @"race") { @"race"!("f") | @"XF"!(v) }"#.to_string(),
             None,
             None,
-            Some(
-                crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-                    .0
-                    .clone(),
-            ),
+            // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+            // Some(
+            // crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+            // .0
+            // .clone(),
+            // ),
+            Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
         )

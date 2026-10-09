@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId};
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
@@ -13,7 +13,7 @@ use casper::rust::blocks::block_processor::{
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::new_proposer;
-use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
+use casper::rust::casper::{Casper, CasperShardConf, DeployError, MultiParentCasper};
 use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
@@ -43,10 +43,12 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
+use models::rust::deploy_envelope::DeployEnvelope;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::util::comm::transport_layer_test_impl::test_network::TestNetwork;
 use crate::util::comm::transport_layer_test_impl::{
     TransportLayerServerTestImpl, TransportLayerTestImpl,
@@ -88,7 +90,75 @@ pub struct TestNode {
     pub allow_empty_blocks: bool,
 }
 
+/// Added by DR-116 (gap G6): one test deploy, in either deploy format.
+#[derive(Clone, Debug)]
+pub enum TestDeploy {
+    Legacy(Signed<DeployData>),
+    Offered(DeployEnvelope),
+}
+
+impl From<Signed<DeployData>> for TestDeploy {
+    fn from(deploy: Signed<DeployData>) -> Self { Self::Legacy(deploy) }
+}
+
+impl From<OfferedDeploy> for TestDeploy {
+    fn from(deploy: OfferedDeploy) -> Self { Self::Offered(deploy.envelope) }
+}
+
+/// Added by DR-116 (gap G6): the deploy list of a `TestNode` block. An empty
+/// list `&[]` is a legacy array, so it needs no type annotation.
+pub trait TestDeploys {
+    fn test_deploys(self) -> Vec<TestDeploy>;
+}
+
+impl TestDeploys for &[Signed<DeployData>] {
+    fn test_deploys(self) -> Vec<TestDeploy> { self.iter().cloned().map(Into::into).collect() }
+}
+
+impl<const N: usize> TestDeploys for &[Signed<DeployData>; N] {
+    fn test_deploys(self) -> Vec<TestDeploy> { self.as_slice().test_deploys() }
+}
+
+impl TestDeploys for &Vec<Signed<DeployData>> {
+    fn test_deploys(self) -> Vec<TestDeploy> { self.as_slice().test_deploys() }
+}
+
+impl TestDeploys for &[OfferedDeploy] {
+    fn test_deploys(self) -> Vec<TestDeploy> { self.iter().cloned().map(Into::into).collect() }
+}
+
+impl TestDeploys for &[OfferedDeploy; 1] {
+    fn test_deploys(self) -> Vec<TestDeploy> { self.as_slice().test_deploys() }
+}
+
+impl TestDeploys for &Vec<OfferedDeploy> {
+    fn test_deploys(self) -> Vec<TestDeploy> { self.as_slice().test_deploys() }
+}
+
 impl TestNode {
+    /// Added by DR-116 (gap G6): submits one deploy to this node's Casper, as
+    /// `create_block` does. An offered envelope needs an offered genesis.
+    pub fn deploy(
+        &self,
+        deploy: impl Into<TestDeploy>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        match deploy.into() {
+            TestDeploy::Legacy(deploy) => self.casper.deploy(deploy),
+            TestDeploy::Offered(envelope) => {
+                let policy = self
+                    .casper
+                    .adopted_resource_policy
+                    .as_ref()
+                    .ok_or_else(|| {
+                        CasperError::RuntimeError(
+                            "an offered test deploy needs an offered genesis".to_string(),
+                        )
+                    })?;
+                self.casper.deploy_envelope(envelope, policy)
+            }
+        }
+    }
+
     /// Creates a block with the given deploys (equivalent to Scala createBlock, line 233-239).
     ///
     /// This method:
@@ -100,11 +170,16 @@ impl TestNode {
     /// Returns BlockCreatorResult which may be Created, NoNewDeploys, or ReadOnlyMode.
     pub async fn create_block(
         &mut self,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
     ) -> Result<BlockCreatorResult, CasperError> {
         // Deploy all datums
-        for deploy_datum in deploy_datums {
-            self.casper.deploy(deploy_datum.clone())?;
+        // Changed by DR-116 (gap G6): a test deploy is a legacy deploy or an
+        // offered envelope.
+        // for deploy_datum in deploy_datums {
+        //     self.casper.deploy(deploy_datum.clone())?;
+        // }
+        for deploy_datum in deploy_datums.test_deploys() {
+            self.deploy(deploy_datum)?;
         }
 
         // Get snapshot
@@ -147,7 +222,7 @@ impl TestNode {
     /// This is useful for tests that expect block creation to succeed.
     pub async fn create_block_unsafe(
         &mut self,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
     ) -> Result<BlockMessage, CasperError> {
         let result = self.create_block(deploy_datums).await?;
 
@@ -231,7 +306,7 @@ impl TestNode {
     /// 3. Returns the block (assuming Valid status)
     pub async fn add_block_from_deploys(
         &mut self,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
     ) -> Result<BlockMessage, CasperError> {
         self.add_block_status(deploy_datums, |status| matches!(status, Either::Right(_)))
             .await
@@ -250,7 +325,7 @@ impl TestNode {
     /// * `expected_status` - Predicate to validate the processing status
     pub async fn add_block_status<F>(
         &mut self,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
         expected_status: F,
     ) -> Result<BlockMessage, CasperError>
     where
@@ -296,7 +371,7 @@ impl TestNode {
     /// * `nodes` - Other nodes to publish to
     pub async fn publish_block(
         &mut self,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
         nodes: &mut [&mut TestNode],
     ) -> Result<BlockMessage, CasperError> {
         // Create and add block
@@ -350,7 +425,7 @@ impl TestNode {
     pub async fn propagate_block_at_index(
         nodes: &mut [TestNode],
         index: usize,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
     ) -> Result<BlockMessage, CasperError> {
         let (before, rest) = nodes.split_at_mut(index);
         let (current, after) = rest.split_at_mut(1);
@@ -401,7 +476,7 @@ impl TestNode {
         nodes: &mut [TestNode],
         from_index: usize,
         to_index: usize,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
     ) -> Result<BlockMessage, CasperError> {
         assert_ne!(
             from_index, to_index,
@@ -440,7 +515,7 @@ impl TestNode {
     pub async fn publish_block_at_index(
         nodes: &mut [TestNode],
         index: usize,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
     ) -> Result<BlockMessage, CasperError> {
         let (before, rest) = nodes.split_at_mut(index);
         let (current, after) = rest.split_at_mut(1);
@@ -465,7 +540,7 @@ impl TestNode {
         nodes: &mut [TestNode],
         from_index: usize,
         to_index: usize,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
     ) -> Result<BlockMessage, CasperError> {
         assert_ne!(
             from_index, to_index,
@@ -499,7 +574,7 @@ impl TestNode {
     /// * `nodes` - Target nodes to propagate to
     pub async fn propagate_block(
         &mut self,
-        deploy_datums: &[Signed<DeployData>],
+        deploy_datums: impl TestDeploys,
         nodes: &mut [&mut TestNode],
     ) -> Result<BlockMessage, CasperError> {
         // Log block creation

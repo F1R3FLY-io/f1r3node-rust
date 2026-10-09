@@ -12,32 +12,42 @@
 // (`InvalidRejectedDeploy`), so cross-node acceptance proves the proposer and
 // validators computed identical rejection sets from the same on-DAG data.
 
-use casper::rust::casper::{Casper, MultiParentCasper};
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
-use casper::rust::util::construct_deploy;
 use crypto::rust::private_key::PrivateKey;
-use crypto::rust::signatures::signed::Signed;
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
-use models::rust::casper::protocol::casper_message::DeployData;
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use models::rust::casper::protocol::casper_message::DeployData;
 use serial_test::serial;
 
 use super::staging::mint_on_parents;
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 async fn build_genesis(n_validators: usize) -> GenesisContext {
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // GenesisBuilder::new()
+    GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap()
 }
 
 /// Cheap same-cell write: the content ordering's permanent loser.
-fn cheap_write(key: &str, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData> {
+// Changed by DR-116 (gap G6): the builder returns an offered deploy.
+// fn cheap_write(key: &str, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData> {
+fn cheap_write(key: &str, sec: &PrivateKey, shard_id: &str) -> construct_deploy::OfferedDeploy {
     let rho = format!(r#"for (@m <- @"m") {{ @"m"!(m.set("{}", 1)) }}"#, key);
     construct_deploy::source_deploy_now_full(
         rho,
@@ -50,12 +60,31 @@ fn cheap_write(key: &str, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData
     .expect("build cheap write")
 }
 
-/// Strictly costlier same-cell write: extra arithmetic buys enough phlo cost
+// Changed by DR-116 (gap G6): the native meter does not charge arithmetic.
+// /// Strictly costlier same-cell write: extra arithmetic buys enough phlo cost
+// /// that the content ordering (total cost first) always prefers it.
+/// Strictly costlier same-cell write: two extra COMMs buy enough phlo cost
 /// that the content ordering (total cost first) always prefers it.
-fn costly_write(key: &str, val: i64, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData> {
+// Changed by DR-116 (gap G6): the builder returns an offered deploy.
+// fn costly_write(key: &str, val: i64, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData> {
+fn costly_write(
+    key: &str,
+    val: i64,
+    sec: &PrivateKey,
+    shard_id: &str,
+) -> construct_deploy::OfferedDeploy {
+    // Changed by DR-116 (gap G6): the native meter charges COMMs and bytes,
+    // not arithmetic, so the costlier write adds two COMMs.
+    // let rho = format!(
+    //     r#"match ((1 + 2) * (3 + 4) + (5 * 6)) % 7 {{ _ => Nil }} |
+    //        match ((7 + 8) * (9 + 10) + (11 * 12)) % 13 {{ _ => Nil }} |
+    //        for (@m <- @"m") {{ @"m"!(m.set("{}", {})) }}"#,
+    //     key, val
+    // );
     let rho = format!(
         r#"match ((1 + 2) * (3 + 4) + (5 * 6)) % 7 {{ _ => Nil }} |
            match ((7 + 8) * (9 + 10) + (11 * 12)) % 13 {{ _ => Nil }} |
+           new c in {{ c!(0) | for (_ <- c) {{ c!(1) | for (_ <- c) {{ Nil }} }} }} |
            for (@m <- @"m") {{ @"m"!(m.set("{}", {})) }}"#,
         key, val
     );
@@ -106,7 +135,9 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
     }
 
     let starved_sec = construct_deploy::DEFAULT_SEC.clone();
-    let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
+    // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+    // let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
+    let contender_sec = construct_deploy::DEFAULT_SEC.clone();
     let init = construct_deploy::source_deploy_now_full(
         r#"@"m"!({})"#.to_string(),
         None,
@@ -116,7 +147,9 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         Some(shard_id.clone()),
     )
     .expect("build init");
-    nodes[0].casper.deploy(init).expect("init deploy");
+    // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+    // nodes[0].casper.deploy(init).expect("init deploy");
+    nodes[0].deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
     for node in nodes.iter_mut() {
         node.process_block(init_block.clone())
@@ -126,13 +159,16 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
 
     let starved = cheap_write("starved", &starved_sec, &shard_id);
     let starved_sig = starved.sig.clone();
-    nodes[0].casper.deploy(starved).expect("starved deploy");
+    // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+    // nodes[0].casper.deploy(starved).expect("starved deploy");
+    nodes[0].deploy(starved).expect("starved deploy");
     let starved_sibling =
         mint_on_parents(&mut nodes[0], vec![init_block.clone()], "starved sibling").await;
 
     let first_contender = costly_write("first", 1, &contender_sec, &shard_id);
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(first_contender)
         .expect("first contender deploy");
     let contender_sibling =
@@ -224,7 +260,8 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
     let second_contender = costly_write("second", 2, &contender_sec, &shard_id);
     let second_contender_sig = second_contender.sig.clone();
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(second_contender)
         .expect("second contender deploy");
     let second_contender_sibling = mint_on_parents(
@@ -305,7 +342,9 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
         node.allow_empty_blocks = true;
     }
     let starved_sec = construct_deploy::DEFAULT_SEC.clone();
-    let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
+    // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+    // let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
+    let contender_sec = construct_deploy::DEFAULT_SEC.clone();
 
     // Initialize the single-value cell and distribute.
     let init = construct_deploy::source_deploy_now_full(
@@ -317,7 +356,9 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
         Some(shard_id.clone()),
     )
     .expect("build init");
-    nodes[0].casper.deploy(init).expect("init deploy");
+    // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+    // nodes[0].casper.deploy(init).expect("init deploy");
+    nodes[0].deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
     for node in nodes.iter_mut() {
         node.process_block(init_block.clone())
@@ -379,7 +420,9 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
             &contender_sec,
             &shard_id,
         );
-        nodes[1].casper.deploy(contender).expect("contender deploy");
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // nodes[1].casper.deploy(contender).expect("contender deploy");
+        nodes[1].deploy(contender).expect("contender deploy");
         let contender_block = nodes[1]
             .create_block_unsafe(&[])
             .await
@@ -452,7 +495,9 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
         node.allow_empty_blocks = true;
     }
     let starved_sec = construct_deploy::DEFAULT_SEC.clone();
-    let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
+    // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+    // let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
+    let contender_sec = construct_deploy::DEFAULT_SEC.clone();
 
     let init = construct_deploy::source_deploy_now_full(
         r#"@"m"!({})"#.to_string(),
@@ -463,7 +508,9 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
         Some(shard_id.clone()),
     )
     .expect("build init");
-    nodes[0].casper.deploy(init).expect("init deploy");
+    // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+    // nodes[0].casper.deploy(init).expect("init deploy");
+    nodes[0].deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
     for node in nodes.iter_mut() {
         node.process_block(init_block.clone())
@@ -517,7 +564,9 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
             &contender_sec,
             &shard_id,
         );
-        nodes[1].casper.deploy(contender).expect("contender deploy");
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // nodes[1].casper.deploy(contender).expect("contender deploy");
+        nodes[1].deploy(contender).expect("contender deploy");
         let contender_block = nodes[1]
             .create_block_unsafe(&[])
             .await
@@ -564,7 +613,9 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
             &contender_sec,
             &shard_id,
         );
-        nodes[1].casper.deploy(contender).expect("contender deploy");
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // nodes[1].casper.deploy(contender).expect("contender deploy");
+        nodes[1].deploy(contender).expect("contender deploy");
         let contender_block = nodes[1]
             .create_block_unsafe(&[])
             .await

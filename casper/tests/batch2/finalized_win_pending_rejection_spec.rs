@@ -23,11 +23,13 @@
 // vault; `conflict_set_merger::fold_rejection` deterministically rejects
 // the lex-larger sig, which is routed to validator 0's block_a.
 
-use casper::rust::util::construct_deploy;
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -38,7 +40,9 @@ struct TestContext {
 impl TestContext {
     async fn new() -> Self {
         let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
-        let genesis = GenesisBuilder::new()
+        // Changed by DR-116 (gap G6): an offered-funded genesis.
+        // let genesis = GenesisBuilder::new()
+        let genesis = GenesisBuilder::offered_v6()
             .build_genesis_with_parameters(Some(parameters))
             .await
             .unwrap();

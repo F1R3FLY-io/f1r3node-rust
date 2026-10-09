@@ -24,10 +24,12 @@
 
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
-use casper::rust::util::construct_deploy;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -37,12 +39,17 @@ use crate::util::genesis_builder::GenesisBuilder;
 fn test_ftt() -> FtThreshold { FtThreshold::from_f32_lossy(0.0) }
 
 fn pool_holds(node: &TestNode, sig: &Bytes) -> bool {
+    // Changed by DR-116 (gap G6): the identity lookup covers both deploy formats.
+    // node.deploy_storage
+    //     .lock()
+    //     .read_all()
+    //     .expect("read deploy pool")
+    //     .iter()
+    //     .any(|d| d.sig == *sig)
     node.deploy_storage
         .lock()
-        .read_all()
+        .contains_sig(sig)
         .expect("read deploy pool")
-        .iter()
-        .any(|d| d.sig == *sig)
 }
 
 /// Drive one round of empty proposals by every validator, delivering each to
@@ -74,7 +81,9 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
@@ -185,7 +194,9 @@ async fn a_deploy_is_evicted_once_the_floor_covers_its_carrier() {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();

@@ -6,6 +6,7 @@ pub mod bonding_util;
 pub mod casper_invalid_blocks_contract;
 pub mod deployer_id_contract;
 pub mod no_ops_casper_effect;
+pub mod offered_deploy;
 pub mod offered_replay_usage;
 pub mod process_context_ext;
 pub mod rho_logger_contract;

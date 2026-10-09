@@ -80,6 +80,8 @@ static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
     resource_policy: Option<PhloGenesisPolicy>,
+    /// Added by DR-116 (gap G6): build a protocol-6 offered-funded genesis.
+    offered_v6: bool,
 }
 
 impl GenesisBuilder {
@@ -87,6 +89,18 @@ impl GenesisBuilder {
         Self {
             vaults: None,
             resource_policy: None,
+            offered_v6: false,
+        }
+    }
+
+    /// Added by DR-116 (gap G6): a builder for a genesis with the offered-funded
+    /// v6 resource policy, header version 6 and minimum phlo price 1. Every
+    /// deploy on such a chain is an offered envelope.
+    pub fn offered_v6() -> Self {
+        Self {
+            vaults: None,
+            resource_policy: Some(crate::helper::offered_deploy::offered_v6_policy()),
+            offered_v6: true,
         }
     }
 
@@ -273,8 +287,12 @@ impl GenesisBuilder {
         &mut self,
         parameters: Option<GenesisParameters>,
     ) -> Result<GenesisContext, CasperError> {
-        let parameters =
+        let mut parameters =
             parameters.unwrap_or(Self::build_genesis_parameters_with_defaults(None, None));
+        if self.offered_v6 {
+            parameters.2.version = 6;
+            parameters.2.proof_of_stake.min_phlo_price = 1;
+        }
         CACHE_ACCESSES.fetch_add(1, Ordering::SeqCst);
 
         let key = (parameters.clone(), self.resource_policy.clone());

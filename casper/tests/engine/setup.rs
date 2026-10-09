@@ -305,6 +305,7 @@ impl TestFixture {
         let rejected_deploy_buffer =
             Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
                 store: rejected_buffer_typed_store,
+                envelope_store: KeyValueTypedStoreImpl::new(Arc::new(MockKeyValueStore::new())),
             }));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)

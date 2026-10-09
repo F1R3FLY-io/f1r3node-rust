@@ -20,14 +20,18 @@
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
-use casper::rust::util::construct_deploy;
 use crypto::rust::private_key::PrivateKey;
-use crypto::rust::signatures::signed::Signed;
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::casper::protocol::casper_message::DeployData;
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use models::rust::casper::protocol::casper_message::DeployData;
 use serial_test::serial;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -39,7 +43,9 @@ impl TestContext {
     async fn new(n_validators: usize) -> Self {
         let genesis_parameters =
             GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-        let genesis = GenesisBuilder::new()
+        // Changed by DR-116 (gap G6): an offered-funded genesis.
+        // let genesis = GenesisBuilder::new()
+        let genesis = GenesisBuilder::offered_v6()
             .build_genesis_with_parameters(Some(genesis_parameters))
             .await
             .unwrap();
@@ -53,17 +59,29 @@ impl TestContext {
 /// genesis vault key (funded 9M Rev for the default 4-validator genesis). An UNFUNDED
 /// key here fails precharge and never writes — which silently breaks the test.
 fn signer_key(v: usize) -> PrivateKey {
-    match v {
-        0 => construct_deploy::DEFAULT_SEC.clone(),
-        1 => construct_deploy::DEFAULT_SEC2.clone(),
-        2 => crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-            .0
-            .clone(),
-        _ => panic!("convergence ladder supports up to 3 distinct funded deployer keys"),
-    }
+    // Changed by DR-116 (gap G6): one key signs the cell seed and its writers
+    // until gap G3. A deploy that consumes another signer's datum needs that
+    // signer's funding (P1 Rule 4). Each writer still runs on its own validator.
+    // match v {
+    //     0 => construct_deploy::DEFAULT_SEC.clone(),
+    //     1 => construct_deploy::DEFAULT_SEC2.clone(),
+    //     2 => crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+    //         .0
+    //         .clone(),
+    //     _ => panic!("convergence ladder supports up to 3 distinct funded deployer keys"),
+    // }
+    assert!(v < 3, "convergence ladder supports up to 3 writers");
+    construct_deploy::DEFAULT_SEC.clone()
 }
 
-fn map_set_deploy(key: &str, val: i64, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData> {
+// Changed by DR-116 (gap G6): the builder returns an offered deploy.
+// fn map_set_deploy(key: &str, val: i64, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData> {
+fn map_set_deploy(
+    key: &str,
+    val: i64,
+    sec: &PrivateKey,
+    shard_id: &str,
+) -> construct_deploy::OfferedDeploy {
     let rho = format!(r#"for (@m <- @"m") {{ @"m"!(m.set("{}", {})) }}"#, key, val);
     construct_deploy::source_deploy_now_full(
         rho,
@@ -222,7 +240,9 @@ async fn run_convergence(
         Some(shard_id.clone()),
     )
     .expect("build init");
-    nodes[0].casper.deploy(init).expect("init deploy");
+    // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+    // nodes[0].casper.deploy(init).expect("init deploy");
+    nodes[0].deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
     for node in nodes.iter_mut().take(n_validators) {
         node.process_block(init_block.clone())
@@ -262,7 +282,9 @@ async fn run_convergence(
                 key,
                 hex::encode(&d.sig[..8.min(d.sig.len())])
             );
-            nodes[v].casper.deploy(d).expect("deploy write");
+            // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+            // nodes[v].casper.deploy(d).expect("deploy write");
+            nodes[v].deploy(d).expect("deploy write");
             writes.push((key.clone(), val));
             let blk = nodes[v]
                 .create_block_unsafe(&[])
@@ -289,7 +311,9 @@ async fn run_convergence(
         let marker =
             construct_deploy::basic_deploy_data(round as i32, None, Some(shard_id.clone()))
                 .expect("marker");
-        nodes[0].casper.deploy(marker).expect("marker deploy");
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // nodes[0].casper.deploy(marker).expect("marker deploy");
+        nodes[0].deploy(marker).expect("marker deploy");
         let merge = nodes[0]
             .create_block_unsafe(&[])
             .await
@@ -320,7 +344,9 @@ async fn run_convergence(
             Some(shard_id.clone()),
         )
         .expect("drain marker");
-        nodes[proposer].casper.deploy(marker).expect("drain deploy");
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // nodes[proposer].casper.deploy(marker).expect("drain deploy");
+        nodes[proposer].deploy(marker).expect("drain deploy");
         if let Ok(blk) = nodes[proposer].create_block_unsafe(&[]).await {
             for node in nodes.iter_mut().take(n_validators) {
                 node.process_block(blk.clone()).await.ok();
@@ -348,7 +374,9 @@ async fn run_convergence(
     // Settle: node 0 proposes a final block; read the cell at its post-state.
     let final_marker = construct_deploy::basic_deploy_data(9999, None, Some(shard_id.clone()))
         .expect("final marker");
-    nodes[0].casper.deploy(final_marker).expect("final deploy");
+    // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+    // nodes[0].casper.deploy(final_marker).expect("final deploy");
+    nodes[0].deploy(final_marker).expect("final deploy");
     let final_block = nodes[0]
         .create_block_unsafe(&[])
         .await
@@ -394,7 +422,12 @@ async fn run_convergence(
 async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
     let snapshot = node.casper.get_snapshot().await.expect("snapshot");
     let validator = node.casper.get_validator().expect("validator");
-    block_creator::create(
+    // Added by DR-116 (gap G6): a staged proposal takes the node's adopted policy.
+    let adopted_casper = node.casper.clone();
+    // block_creator::create(
+    block_creator::create_with_adopted_policy(
+        adopted_casper.adopted_resource_policy.as_ref(),
+        adopted_casper.offered_funded_active,
         &snapshot,
         &validator,
         None,
@@ -448,8 +481,12 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
     }
     let fresh_a = map_set_deploy("fresh-a", 3, &signer_key(0), &shard);
     let fresh_b = map_set_deploy("fresh-b", 4, &signer_key(1), &shard);
-    nodes[0].casper.deploy(fresh_a.clone()).expect("fresh a");
-    nodes[1].casper.deploy(fresh_b.clone()).expect("fresh b");
+    // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+    // nodes[0].casper.deploy(fresh_a.clone()).expect("fresh a");
+    nodes[0].deploy(fresh_a.clone()).expect("fresh a");
+    // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+    // nodes[1].casper.deploy(fresh_b.clone()).expect("fresh b");
+    nodes[1].deploy(fresh_b.clone()).expect("fresh b");
     let proposal_a = create_allow_empty(&mut nodes[0]).await;
     let proposal_b = create_allow_empty(&mut nodes[1]).await;
 

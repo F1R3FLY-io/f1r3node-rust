@@ -14,6 +14,8 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy,
     RejectedDeploy, SystemDeployData,
 };
+use models::rust::deploy_envelope::DeployEnvelope;
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -312,6 +314,24 @@ fn retain_recoverable_rejected_deploys_for_buffer(
             > floor_block_number
     });
     before - deploys.len()
+}
+
+/// Added by DR-116 (gap G6): the window rule of
+/// `retain_recoverable_rejected_deploys_for_buffer`, for offered envelopes.
+fn retain_recoverable_rejected_envelopes_for_buffer(
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+    envelopes: &mut Vec<DeployEnvelope>,
+) -> usize {
+    let before = envelopes.len();
+    envelopes.retain(|envelope| {
+        envelope
+            .body()
+            .valid_after_block_number
+            .saturating_add(deploy_lifespan)
+            > floor_block_number
+    });
+    before - envelopes.len()
 }
 
 /// Update `disposition[sig]` toward the latest (highest-block) verdict. A higher
@@ -2102,6 +2122,10 @@ pub async fn compute_parents_post_state(
                             .push(sig.clone());
                     }
                     let mut deploys_to_buffer: Vec<Signed<DeployData>> = Vec::new();
+                    // Added by DR-116 (gap G6): rejected offered envelopes, and the
+                    // failed offered deploys whose recovery custody ends.
+                    let mut envelopes_to_buffer: Vec<DeployEnvelope> = Vec::new();
+                    let mut custody_ended: Vec<DeployIdV6> = Vec::new();
                     for (src_block, sigs) in by_block {
                         let sig_set: HashSet<Bytes> = sigs.into_iter().collect();
                         match block_store.get(&src_block) {
@@ -2139,13 +2163,47 @@ pub async fn compute_parents_post_state(
                                             floor_block = floor_block_number,
                                             "deploy lifecycle"
                                         );
-                                        let legacy = pd.as_legacy().ok_or_else(|| {
-                                            CasperError::RuntimeError(
-                                                "offered-funded recovery requires an envelope buffer"
-                                                    .to_string(),
-                                            )
-                                        })?;
-                                        deploys_to_buffer.push(legacy.deploy.clone());
+                                        // Changed by DR-116 (gap G6): the buffer carries a
+                                        // rejected offered envelope in its own table.
+                                        // let legacy = pd.as_legacy().ok_or_else(|| {
+                                        //     CasperError::RuntimeError(
+                                        //         "offered-funded recovery requires an envelope buffer"
+                                        //             .to_string(),
+                                        //     )
+                                        // })?;
+                                        // deploys_to_buffer.push(legacy.deploy.clone());
+                                        match pd {
+                                            ProcessedUserDeploy::Legacy(legacy) => {
+                                                deploys_to_buffer.push(legacy.deploy.clone());
+                                            }
+                                            // A failed deploy is final in Casper: the dev
+                                            // merge index never held one, so recovery never
+                                            // retried one. A failed offered deploy that a
+                                            // merge rejects therefore ends its recovery
+                                            // custody (user decision, DR-116).
+                                            ProcessedUserDeploy::Offered(offered)
+                                                if offered.is_failed() =>
+                                            {
+                                                tracing::info!(
+                                                    target: "f1r3fly.casper.deploy_lifecycle",
+                                                    event = "buffer_suppressed",
+                                                    deploy_sig = %hex::encode(pd.identity_bytes()),
+                                                    carrier = %hex::encode(&src_block),
+                                                    reason = "failed_offered_settlement",
+                                                    floor_block = floor_block_number,
+                                                    "deploy lifecycle"
+                                                );
+                                                if let DeployLookupId::V6(deploy_id) =
+                                                    offered.envelope().identity()
+                                                {
+                                                    custody_ended.push(*deploy_id);
+                                                }
+                                            }
+                                            ProcessedUserDeploy::Offered(offered) => {
+                                                envelopes_to_buffer
+                                                    .push(offered.envelope().clone());
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2196,6 +2254,64 @@ pub async fn compute_parents_post_state(
                             Err(_) => {
                                 tracing::warn!(
                                     "RejectedDeployBuffer lock poisoned; skipping populate"
+                                );
+                            }
+                        }
+                    }
+                    // Added by DR-116 (gap G6): the same window rule for offered
+                    // envelopes. A failed copy of an identity ends custody even when
+                    // the same merge also rejects a successful copy of it.
+                    let skipped_envelopes = retain_recoverable_rejected_envelopes_for_buffer(
+                        floor_block_number,
+                        s.on_chain_state.shard_conf.deploy_lifespan,
+                        &mut envelopes_to_buffer,
+                    );
+                    if skipped_envelopes > 0 {
+                        tracing::info!(
+                            target: "f1r3fly.casper.recovery",
+                            "RejectedDeployBuffer populate: skipped {} window-closed envelope(s)",
+                            skipped_envelopes
+                        );
+                    }
+                    envelopes_to_buffer.retain(|envelope| match envelope.identity() {
+                        DeployLookupId::V6(deploy_id) => !custody_ended.contains(deploy_id),
+                        _ => true,
+                    });
+                    if !envelopes_to_buffer.is_empty() || !custody_ended.is_empty() {
+                        for envelope in &envelopes_to_buffer {
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_added",
+                                deploy_sig = %hex::encode(envelope.identity().as_bytes()),
+                                valid_after_block = envelope.body().valid_after_block_number,
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
+                            );
+                        }
+                        // One lock section: a proposer never reads an entry whose
+                        // custody this merge ends.
+                        match buffer.lock() {
+                            Ok(mut guard) => {
+                                if !envelopes_to_buffer.is_empty() {
+                                    if let Err(err) = guard.add_envelopes(&envelopes_to_buffer) {
+                                        tracing::warn!(
+                                            "RejectedDeployBuffer add_envelopes failed: {}",
+                                            err
+                                        );
+                                    }
+                                }
+                                for deploy_id in &custody_ended {
+                                    if let Err(err) = guard.remove_envelope_by_id(deploy_id) {
+                                        tracing::warn!(
+                                            "RejectedDeployBuffer remove_envelope_by_id failed: {}",
+                                            err
+                                        );
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    "RejectedDeployBuffer lock poisoned; skipping envelope populate"
                                 );
                             }
                         }
@@ -3523,6 +3639,49 @@ mod backstop_tests {
         let mut boundary = vec![closed.clone()];
         let skipped = retain_recoverable_rejected_deploys_for_buffer(50, 50, &mut boundary);
         assert_eq!(skipped, 1);
+        assert!(boundary.is_empty());
+    }
+
+    /// DR-116 (gap G6): a body envelope with the given validity window start.
+    fn body_envelope(
+        valid_after_block_number: i64,
+        time_stamp: i64,
+    ) -> models::rust::deploy_envelope::DeployEnvelope {
+        use crypto::rust::private_key::PrivateKey;
+        use crypto::rust::signatures::signed::Cosigned;
+        let body = models::rust::cost_deploy_data::DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp,
+            valid_after_block_number,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let signed = Cosigned::create_single_envelope(
+            body,
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[2; 32]),
+        )
+        .expect("a body envelope signs");
+        models::rust::deploy_envelope::DeployEnvelope::from_body_envelope(signed)
+            .expect("a body envelope encodes")
+    }
+
+    #[test]
+    fn window_open_rejected_envelopes_stay_buffered_and_window_closed_drop() {
+        let open = body_envelope(60, 1);
+        let closed = body_envelope(0, 2);
+        let mut envelopes = vec![open.clone(), closed.clone()];
+        let skipped =
+            super::retain_recoverable_rejected_envelopes_for_buffer(100, 50, &mut envelopes);
+        assert_eq!(skipped, 1);
+        assert_eq!(envelopes, vec![open]);
+        let mut boundary = vec![closed];
+        assert_eq!(
+            super::retain_recoverable_rejected_envelopes_for_buffer(50, 50, &mut boundary),
+            1
+        );
         assert!(boundary.is_empty());
     }
 }

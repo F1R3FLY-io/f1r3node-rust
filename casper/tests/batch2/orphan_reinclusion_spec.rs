@@ -35,12 +35,15 @@
 //   v0 syncs I/A/B/M and proposes: X must stay among its parents.
 
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::{construct_deploy, proto_util};
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::proto_util;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -59,7 +62,9 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
@@ -141,11 +146,13 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
             r#"for (@m <- @"m") { @"m"!(m.set("b", 2)) }"#.to_string(),
             None,
             None,
-            Some(
-                crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-                    .0
-                    .clone(),
-            ),
+            // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+            // Some(
+            // crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+            // .0
+            // .clone(),
+            // ),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
             None,
             Some(shard_id.clone()),
         )
@@ -270,7 +277,9 @@ async fn foreign_orphaned_work_returns_by_owner_pool_reproposal() {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
