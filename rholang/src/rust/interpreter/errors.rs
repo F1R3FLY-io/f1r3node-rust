@@ -18,6 +18,7 @@ pub enum InterpreterError {
     UnexpectedBundleContent(String),
     UnrecognizedNormalizerError(String),
     OutOfPhlogistonsError,
+    HostWorkRejected,
     UserAbortError,
     TopLevelWildcardsNotAllowedError(String),
     TopLevelFreeVariablesNotAllowedError(String),
@@ -153,6 +154,10 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::OutOfPhlogistonsError => {
                 write!(f, "Computation ran out of phlogistons.")
+            }
+
+            InterpreterError::HostWorkRejected => {
+                write!(f, "Host work budget rejected evaluation.")
             }
 
             InterpreterError::UserAbortError => {
