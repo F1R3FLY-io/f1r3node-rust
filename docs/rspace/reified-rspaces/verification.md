@@ -37,7 +37,9 @@ The [decision register](decision-register.md) is normative, and the [design](des
 27. [Phase P7, step 1: `temp` spaces, the volatile sweep and dangling ids](#27-phase-p7-step-1-temp-spaces-the-volatile-sweep-and-dangling-ids)
 28. [Phase P7, step 2: the Seq rules](#28-phase-p7-step-2-the-seq-rules)
 29. [Phase P7, step 3: the HashSet store](#29-phase-p7-step-3-the-hashset-store)
-30. [References](#references)
+30. [Phase P7, step 4: the theory seam](#30-phase-p7-step-4-the-theory-seam)
+31. [Phase P7, step 5: rehydration and charging evidence](#31-phase-p7-step-5-rehydration-and-charging-evidence)
+32. [References](#references)
 
 ## 1. Purpose and scope
 
@@ -5703,6 +5705,160 @@ To run the checks of step 4, do these steps from the repository root:
 5. Run `cargo test -p casper --test mod -- empty_state_hash`.
 6. Run `python3 scripts/verify-reified/check-footprint.py --policy p7` and `python3 scripts/verify-reified/check-complete.py --phase p7`.
 7. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P7`.
+
+## 31. Phase P7, step 5: rehydration and charging evidence
+
+Step 5 implements the part W6 of the P7 design v3: the evidence of the rules RH-1 to RH-4 of rehydration and charging.
+It also tests every row of the dangling ids of W2.
+Step 5 adds no production code.
+The rules hold by the design of the earlier phases, and step 5 tests them across restarts, resets, runtimes and processes.
+[Diagram 07a](diagrams/07a-restart-lazy-attach.svg) shows the restart, and Figure S7a of the [design](design.md) explains it.
+
+### 31.1 The rules
+
+*Table 167. The rules of rehydration and charging (design v3 section 8).*
+
+| Rule | Statement | Tests |
+|---|---|---|
+| RH-1 | No Reified state outlives an evaluation, so each operation reads `C(sid)` and its records through the metered view. The first touch after a restart reads the keys and values of a warm touch and pays the same. | `space_lazy_attach`, `space_attach_warm_cold_cost_equal`, `prop_attach_warm_cold_cost_equal`, `space_restart_rehydrate_three_processes` |
+| RH-2 | No derived state exists to fork or to clear, and the volatile registry lives for one evaluation. A reset restores the state of its root. | `space_checkpoint_reset` |
+| RH-3 | The rule of decision 47 stays: a view load is charged by its key and its value, the same on a hit and a miss. | `space_attach_cost`, `reducer_attach_costs` |
+| RH-4 | A cold and a warm attach have equal cost vectors, and the tests pin two of them. | `space_attach_cost`, `reducer_attach_costs` |
+
+Rule QF-2 of the [specification](specification.md#41-default) now states the result for a restart.
+The invariant map binds the property test `prop_attach_warm_cold_cost_equal` to the headline `view_charge_cache_independent` (`EventCorrelation.v:8773`) as V18 of phase P7.
+
+A cost vector is the set of values that the tests compare for one play.
+It holds the phlo usage of native play and its budget recording: the usage, the attempts and the journal rows.
+It also holds the authority events, the byte observations, and the host work of the play in each of the 16 dimensions.
+
+### 31.2 The harness
+
+The support module `support::native` gains these parts:
+
+- The injected ids of a play (`Played::injections`), which native replay normalizes again (`finish_injected`).
+- A play with a host-work budget that the caller keeps (`NativeChain::play_with`), so a test reads the host work of the play.
+- A restarted chain (`NativeChain::restarted`): a spawned space over the same history with an empty hot store, and a new runtime reset to the root.
+- A chain over an LMDB store (`NativeChain::open`), and `reset`, `history`, `waiters` and `space_channels` of a chain.
+- The evidence as bytes (`evidence_bytes`, `decode_evidence`), the certification from the parts of a play (`replay_environment_from`), and the event log as bytes (`encode_log`, `decode_log`).
+
+The support module `support::family_programs` gains the stored families (`StoredFamily`, `STORED_FAMILIES`).
+Block 1 of a family leaves records on `a` and a waiter on `b`.
+It stores the handle and both names on a public channel.
+Block 2 calls `config`, takes a record, fires the stored waiter, and stores a record.
+The families are a queue, a set, a priority queue, a VectorDB space and a PathMap space.
+
+### 31.3 The residue check reads every map of the hot store
+
+The residue check of step 1 read the rows of `get_hot_changes`.
+`HotStore::to_map` makes a row only for a channel that holds data (`rspace++/src/rspace/hot_store.rs:1191-1220`).
+So a volatile channel with waiting continuations alone, or with join entries alone, never reached the check.
+The test `reified_factory_ephemeral_staging` showed the gap: the channel `H(sid)` of a default space holds only the handle continuation, and the check did not see it.
+
+The check now reads every map of a hot-store snapshot (`hot_store_residue`).
+The snapshot is the soft checkpoint of a play, or the shared store of a chain.
+The old readers stay as comments with the reason.
+After the change, the default row sees `H(sid)`, and every P7 suite with the check passes again (Table 168).
+So the sweep also leaves no waiter and no join entry, which the old check could not show.
+
+*Table 168. The suites with the residue check, after the change.*
+
+| Suite | Result |
+|---|---|
+| `reified_temp_seq.rs` | 16 passed, 0 failed |
+| `reified_seq.rs` | 6 passed, 0 failed |
+| `reified_hashset.rs` | 11 passed, 0 failed |
+| `reified_volatile_sweep.rs` | 1 passed, 0 failed |
+| `reified_theory.rs` | 15 passed, 0 failed |
+| `reified_native_spaces.rs` | 15 passed, 0 failed |
+| `reified_vectordb_chroma.rs` | 25 passed, 0 failed |
+
+### 31.4 Tests
+
+*Table 169. The tests of step 5.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `space_lazy_attach` | `rholang/tests/reified_rehydrate.rs` | A restarted runtime holds no space channel before its first operation. Block 2 of each stored family gives on it the outcome and the cost vector of the warm runtime. |
+| `space_checkpoint_reset` | The same | For each stored family, a reset to the root of block 1 restores the records, waiters and counters of the channels of block 2. Block 2 then reaches its root and cost vector again, and a restarted runtime reads the state of block 1. |
+| `space_attach_cost` | The same | A handle call `config` and a send on a stored queue have the pinned cost vectors of Table 170, warm and cold. The accounting observer receives the cost of each COMM. |
+| `space_attach_warm_cold_cost_equal` | The same | For each of the 24 families, block 2 over the state of the family program gives equal outcomes and cost vectors, warm and cold. |
+| `prop_attach_warm_cold_cost_equal` | The same | The same equality for generated families, stored records and block-2 operations (16 cases). |
+| `reducer_attach_costs` | The same | Each DG-2 entry of a missing durable space has one cost vector for two space ids, on a fresh runtime and on a runtime with other spaces. The handle calls `config` and `gensym` through a stored handle cost the same, warm and cold. |
+| `reified_handle_persisted_restart_replay` | The same | A stored handle serves three calls on a restarted runtime through the stored handle continuation, and native replay reproduces the play. |
+| `reducer_dangling_handle` | The same | Every row of DG-1 and DG-2 fails with its code and names the space id. `getSpaceAgent` replies `DanglingHandle` with the space id, and `ann` replies `NotAVectorDbSpace`. |
+| `reducer_space_costs` | The same | Native play of parallel space work on two spaces gives equal outcomes and cost vectors on a current-thread and on a multi-thread tokio runtime. |
+| `reified_factory_ephemeral_staging` | The same | The factory stages the config, the space counter and the handle under the KIND of the qualifier. Only a default space leaves channels after its deploy. |
+| `reified_factory_theory_argument` | The same | After a restart, the first operation resolves the stored theory: a `Nat` value is admitted, a string fails with `TheoryRefuted`, and `config` shows the identity. A `temp` space stages its theory too. |
+| `space_restart_rehydrate_three_processes` | `rholang/tests/reified_restart_rehydrate.rs` | The harness of three processes. The warm run of the parent gives the roots, cost vectors, evidence bytes and event logs of the children. |
+
+The P4 test `reified_handle_persisted_restart_replay` of `reified_queue_restart.rs` stays as it is, because it runs in legacy execution ([decision 69](decision-register.md#decision-69)).
+The test of the same name in `reified_rehydrate.rs` runs in native execution.
+
+**The harness of three processes.** The test binary starts itself again with `current_exe()` and a role variable, and each child runs one role over one LMDB store.
+The store is in a run directory under `RRS_SCRATCH`, and never under `/tmp`.
+The parent keeps the standard output of each child, so no test-harness line of a child reaches the output of the parent.
+
+The child `create` plays block 1 and checkpoints to R1.
+The child `touch` opens the store at R1, so each space attaches lazily from the trie, and it plays block 2 to R2.
+The child `replay` certifies each deploy of block 2 from its pre-state through the evidence bytes and the event log, as a validator does.
+
+### 31.5 Measurements
+
+*Table 170. The pinned cost vectors of `space_attach_cost` (a stored queue without a theory), warm and cold.*
+
+| Value | Handle call `config` | Send `a!(4)` |
+|---|---|---|
+| Phlo usage | 13,594 | 7,909 |
+| `StructuralItems` | 1 | 1 |
+| `StructuralBytes` | 1,414 | 848 |
+| `ReductionSteps` | 9 | 4 |
+| `ReductionTermBytes` | 1,391 | 459 |
+| `PrimitiveCalls` | 15 | 2 |
+| `PrimitiveInputBytes` | 685 | 4 |
+| `SubstitutionBindings` | 39 | 14 |
+| `SubstitutionBytes` | 1,220 | 285 |
+| `AuthorityNodes` | 34 | 20 |
+| `AuthorityDepth` | 28 | 16 |
+| `SearchCandidates` | 0 | 0 |
+| `SearchStateBytes` | 522,199 | 472,265 |
+| `WitnessFields` | 0 | 0 |
+| `WitnessBytes` | 0 | 0 |
+| `VerificationOperations` | 182,890 | 148,895 |
+| `VerificationBytes` | 3,969,620 | 4,226,954 |
+
+A system process can reply to a name of a missing space through the routing of R7.
+That reply reports the space error inside the RSpace error of its routed produce, for example `RSpaceError(InterpreterError("Reduce error: reified:DanglingName: …"))`.
+The code and the space id are the same as on the other paths.
+So the tests read the code from the first `reified:<Code>:` of the error.
+
+### 31.6 Results
+
+*Table 171. The results of step 5.*
+
+| Check | Result |
+|---|---|
+| `cargo test -p rholang --test reified_rehydrate` | 11 passed, 0 failed |
+| `cargo test -p rholang --test reified_restart_rehydrate` | 1 passed, 0 failed, with three child processes |
+| The seven suites of Table 168 | 89 passed, 0 failed |
+| `cargo clippy -p rholang` on the nine suites that use the native harness | No warning |
+| `cargo test -p casper --test mod -- empty_state_hash` (I-14) | 2 passed, 0 failed |
+| `check-invariant-map.py --phase P7` | `PASS=261 FAIL=0`, with V18 and 16 properties |
+| The 34 checker runs of step 1 | Each run exits with status 0 |
+| `check-footprint.py --policy p7` | 0 violations in 5,024 files |
+| `check-complete.py --phase p7` | 0 findings |
+| `doc_lint.py` | 0 violations, with the render check of diagram 07a |
+
+### 31.7 Running the step-5 checks
+
+To run the checks of step 5, do these steps from the repository root:
+
+1. Run `cargo test -p rholang --test reified_rehydrate --test reified_restart_rehydrate`.
+2. Run `cargo test -p rholang --test reified_temp_seq --test reified_seq --test reified_hashset --test reified_volatile_sweep`.
+3. Run `cargo test -p rholang --test reified_theory --test reified_native_spaces --test reified_vectordb_chroma`.
+4. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P7`.
+5. Run `python3 scripts/verify-reified/check-footprint.py --policy p7` and `python3 scripts/verify-reified/check-complete.py --phase p7`.
+6. Run `docs/rspace/reified-rspaces/diagrams/render.sh --check`.
 
 ## References
 

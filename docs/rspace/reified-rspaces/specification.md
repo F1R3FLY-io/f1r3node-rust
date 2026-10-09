@@ -1088,6 +1088,7 @@ The constructor `"default"` has the same effect.
 **Rule QF-2: durable.** A default space is durable.
 Its ids use the uppercase [KIND](glossary.md#kind) bytes, and its records are ordinary channels of the RSpace of the node.
 A checkpoint and a restart must keep its config record, its counters, its records, and its waiters.
+After a restart, the first operation reads the space from the trie and pays what a node without a restart pays (NE-2).
 
 **Rule QF-3: concurrent.** A default space accepts operations from parallel branches of one deploy and from many deploys.
 The scheduler orders the operations of one space, and it runs the operations of different spaces in parallel.
@@ -1268,7 +1269,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 |---|---|---|
 | SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:669`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:816`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
 | SM-2 | `counter_and_config_roundtrip` (`RecordEnvelope.v:1075`), the TLA+ invariant `HandleUnique` (U5) | `prop_counter_and_config_records_roundtrip`, `space_meta_channels_config_record` |
-| SM-3 | The TLA+ invariant `DanglingIsDeterministicError` (U6) | `reified_handle_dangling_aborts`, `space_queue_dangling_name_aborts` |
+| SM-3 | The TLA+ invariant `DanglingIsDeterministicError` (U6) | `reified_handle_dangling_aborts`, `space_queue_dangling_name_aborts`, `reducer_dangling_handle`, `reducer_attach_costs` |
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:732`), `space_and_collection_counters_distinct` (`Namespace.v:789`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
 | SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
@@ -1288,12 +1289,12 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QD-8 | None | `space_joins_queue_programs_run_as_joins`, `space_queue_send_params_rejected`, `space_queue_query_rejected` |
 | QD-9 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2373`), `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:3021`), `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2342`), the TLA+ invariants `ReissueKeepsOrd` (U10), `IntroducedOnce` (U11) and `FifoOrder` (U3) | `space_queue_reissue_reenters_ahead_of_younger_records`, `prop_queue_reissue_keeps_first_round_ord`, `prop_queue_reentry_head_blocks` |
 | QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:383`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
-| QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay` |
+| QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7), `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay`, `prop_attach_warm_cold_cost_equal`, `space_lazy_attach`, `space_checkpoint_reset`, `space_attach_warm_cold_cost_equal`, `space_restart_rehydrate_three_processes` |
 | QF-3 | The TLA+ invariant `HandleCallsMergeLikeContracts` (U8) | `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks`, `reified_handle_cross_block_merge_no_conflict` |
-| QF-5, QF-6 | `qualifier_matrix` (`SpaceFactory.v:383`), `ephemeral_durable_disjoint` (`Namespace.v:867`) | `reducer_qualifier_matrix`, `space_temp_replay_equal_hashmap` to `space_temp_replay_equal_vector` |
+| QF-5, QF-6 | `qualifier_matrix` (`SpaceFactory.v:383`), `ephemeral_durable_disjoint` (`Namespace.v:867`) | `reducer_qualifier_matrix`, `space_temp_replay_equal_hashmap` to `space_temp_replay_equal_vector`, `reified_factory_ephemeral_staging` |
 | QF-7 | The P1 headlines of the substrate | `reified_ephemeral_cost_charged` |
 | QF-8 | `sweep_complete` (`VolatileSweep.v:1714`), `sweep_exact` (`VolatileSweep.v:894`), `sweep_root_neutral` (`VolatileSweep.v:1266`) | `prop_sweep_complete`, `space_temp_swept_at_deploy_end`, `space_temp_join_swept`, `space_temp_failed_deploy_reverts`, `space_temp_many_volatile_keys_export`, `reified_sweep_runs_at_each_entry_point_of_the_reducer`, `reified_sweep_runs_at_each_entry_point_native` |
-| QF-9 | `dead_ephemeral_dangling` (`VolatileSweep.v:1759`) | `prop_dead_ephemeral_dangling`, `reified_ephemeral_dangling_next_deploy`, `reified_ephemeral_dangling_charge_is_fixed` |
+| QF-9 | `dead_ephemeral_dangling` (`VolatileSweep.v:1759`) | `prop_dead_ephemeral_dangling`, `reified_ephemeral_dangling_next_deploy`, `reified_ephemeral_dangling_charge_is_fixed`, `reducer_dangling_handle` |
 | QF-10 | The gate 9 model `check_mirror` of `SpaceFactory.v` | `mirror_temp_never_mirrored`, `reducer_qualifier_matrix` |
 | QF-11 | `qualifier_matrix` (`SpaceFactory.v:383`), the TLA+ invariant `QualifierSupport` (V6) | `prop_seq_qualifier_support`, `reducer_qualifier_matrix`, `pattern_enforcement_qualifiers_fail_closed` |
 | QF-13, QF-14 | `seq_name_iff` (`Namespace.v:1150`), the TLA+ invariant `SeqNotSent` (V5) | `prop_seq_scan_finds_every_seq_name`, `reducer_seq_payload` |
@@ -1307,7 +1308,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | FA-7 | `array_size_validated` (`SpaceFactory.v:2188`) | `space_factory_kwargs_are_stored_canonical` |
 | TH-1 | `builtin_decidable_structural` (`TheoryAdmission.v:254`) | `prop_theory_builtin_decidable`, `theory_nat_accepts_bigint_nonneg`, `theory_nat_rejects_minus1_string_par` |
 | TH-2, TH-2a | `identity_bytes_roundtrip` (`TheoryAdmission.v:822`) | `prop_theory_identity_bytes_roundtrip`, `theory_identity_persisted_no_handle`, `theory_config_slot_is_one_compact_par` |
-| TH-3, TH-7 | `resolve_identity_deterministic` (`TheoryAdmission.v:587`), `replay_preserves_theory_admission` (`TheoryAdmission.v:851`) | `prop_resolve_identity_deterministic`, `theory_unavailable_fails_each_config_read` |
+| TH-3, TH-7 | `resolve_identity_deterministic` (`TheoryAdmission.v:587`), `replay_preserves_theory_admission` (`TheoryAdmission.v:851`) | `prop_resolve_identity_deterministic`, `theory_unavailable_fails_each_config_read`, `reified_factory_theory_argument` |
 | TH-4 | `theory_gate_validated` (`SpaceFactory.v:2525`) | `prop_theory_gate`, `theory_unknown_name_suggestion`, `theory_builtin_args_rejected`, `reified_factory_theory_gate` |
 | TH-5 | `fail_closed` (`TheoryAdmission.v:398`), `replay_preserves_theory_admission` (`TheoryAdmission.v:851`) | `prop_theory_fail_closed`, `prop_replay_preserves_theory_admission`, `theory_refuted_value_aborts_before_staging`, `theory_undetermined_budget0_aborts`, `theory_admission_precedes_any_staging` |
 | TH-6 | `theory_refusal_is_guard_refusal` (`Match.v:795`) | `prop_theory_refusal_is_guard_refusal`, `space_guard_match`, `space_guard_match_refusal_is_a_guard_refusal`, `space_theory_admission`, `space_theory_admission_vectordb` |
@@ -1388,8 +1389,8 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | JN-13 | `join_txn_fires_bounded` (`JoinCascade.v:4642`), the TLA+ invariant `TxnFiresBounded` (V31) | `prop_join_txn_fires_bounded_at_the_cap`, `space_joins_txn_fires_bounded_at_the_cap`, `space_joins_cascade_round_cap_reissues_settle`, `space_joins_cap_carries_pending_second_sends`, `space_joins_settle_before_cap_resumes_the_operation` |
 | JN-14 | `cascade_restores_inv` (`JoinCascade.v:7230`), the TLA+ invariant `QuiescentNoPendingMatch` (V26) | `prop_cascade_restores_inv_any_schedule`, `prop_quiescent_no_pending_match_any_schedule`, `prop_join_engine_agrees_with_drivers_without_joins` |
 | JN-15 | `join_ops_race_on_every_counter` (`CounterConflict.v:1947`) | `prop_join_ops_race_on_every_counter`, `space_collection_conflicts_join_ops_race_all_counters`, `space_collection_conflicts_unrelated_collections_merge`, `space_collection_conflicts_bag_join_potential_comm`, `space_joins_persisted_waiter_check3_conflict`, `reified_p5c_only_user_joins_persist` |
-| NE-1, NE-3 | `native_replay_reproduces_play` (`EventCorrelation.v:8617`), `native_replay_denial_keeps_prefix` (`EventCorrelation.v:8663`), the TLA+ invariant `NativeReplayOutcomeEqual` (N5) | `prop_native_space_replay_reproduces_play`, `prop_native_space_replay_denial_keeps_prefix`, `space_native_replay_equal_hashmap`, `space_native_denial_replay` |
-| NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play` |
+| NE-1, NE-3 | `native_replay_reproduces_play` (`EventCorrelation.v:8617`), `native_replay_denial_keeps_prefix` (`EventCorrelation.v:8663`), the TLA+ invariant `NativeReplayOutcomeEqual` (N5) | `prop_native_space_replay_reproduces_play`, `prop_native_space_replay_denial_keeps_prefix`, `space_native_replay_equal_hashmap`, `space_native_denial_replay`, `reducer_space_costs` |
+| NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play`, `prop_attach_warm_cold_cost_equal`, `space_attach_cost`, `space_attach_warm_cold_cost_equal`, `reducer_attach_costs` |
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
 | NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
 | VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2387`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |

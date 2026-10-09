@@ -1211,6 +1211,15 @@ Figure S7 shows a full cycle of play, checkpoint, replay, and sweep.
 
 *Figure S7. Source: [diagrams/07-checkpoint-replay-sweep.puml](diagrams/07-checkpoint-replay-sweep.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
+Figure S7a shows a restart in three processes, as the suite `reified_restart_rehydrate.rs` runs it.
+The state of a space crosses a restart only through the history trie, because no Reified state outlives an evaluation.
+So the first operation after a restart reads the config and the records through the metered view.
+It pays what the operation pays on a warm runtime (design v3 RH-1 to RH-4, rule NE-2).
+
+![Restart and lazy attach as a sequence over three processes, an LMDB store, the space agent and the metered view. Process 1 plays block 1 natively: it creates the spaces, stores records and waiters, certifies each deploy by native replay, and checkpoints the config, the counters, the records, the markers, the waiters and the handle into the store at root R1. Process 2 opens the store at R1 with an empty hot store. The first operation on a space reads the config through the metered view, which loads it from the history and reserves the work of the load; the charge is the same on a hit and a miss and depends only on the key and the value. The agent reads the records and the waiters of the operation, each reserved first, stages and commits with the observer calls of play, and process 2 checkpoints root R2 and writes the roots, the cost vector, the evidence bytes and the event log of each deploy. Process 3 opens the store at the pre-state root of each deploy, decodes the evidence, checks the journal, binds the trace to the event log, replays natively, and reaches the post-state root and the phlo usage of play. The parent plays both blocks warm in one process over an in-memory store and finds equal roots, cost vectors, evidence bytes and event logs.](diagrams/07a-restart-lazy-attach.svg)
+
+*Figure S7a. Source: [diagrams/07a-restart-lazy-attach.puml](diagrams/07a-restart-lazy-attach.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
 ### S8. What is unchanged
 
 P1 keeps every item of the consensus-preservation checklist of the plan that concerns ordinary execution.

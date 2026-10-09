@@ -7941,19 +7941,21 @@
       ]
     },
     "P7": {
-      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8); and the HashSet store (W4): the unit rules of a HashSet collection (HashMapStore.v V9); and the theory seam (W5): the builtin theories, the fail-closed admission and the commit guard, the transparent cache, the resolution of an identity, replay of the admission, the identity bytes (TheoryAdmission.v V10 to V15), the theory at a match (Match.v V16) and gate 4 (SpaceFactory.v V17).",
-      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ), 6 (HS) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs, reified_seq.rs and reified_hashset.rs and of the reducer hooks; section 7 (TH) and decision 74 for the theory seam. The witness tests of W5 are in reified_theory.rs and in the library tests of spaces/theory, spaces/generic.rs and spaces/factory/constructor.rs.",
+      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8); and the HashSet store (W4): the unit rules of a HashSet collection (HashMapStore.v V9); and the theory seam (W5): the builtin theories, the fail-closed admission and the commit guard, the transparent cache, the resolution of an identity, replay of the admission, the identity bytes (TheoryAdmission.v V10 to V15), the theory at a match (Match.v V16) and gate 4 (SpaceFactory.v V17); and rehydration and charging (W6): the charge of a view load, the same on a hit and a miss, applied to the first operation after a restart (EventCorrelation.v V18).",
+      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ), 6 (HS) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs, reified_seq.rs and reified_hashset.rs and of the reducer hooks; section 7 (TH) and decision 74 for the theory seam. The witness tests of W5 are in reified_theory.rs and in the library tests of spaces/theory, spaces/generic.rs and spaces/factory/constructor.rs. Section 8 (RH) and the rows of section 4 for W6: the witness tests are in reified_rehydrate.rs and reified_restart_rehydrate.rs.",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/reified/runtime.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
         "rholang/tests/reified_hashset.rs",
+        "rholang/tests/reified_rehydrate.rs",
+        "rholang/tests/reified_restart_rehydrate.rs",
         "rholang/tests/reified_seq.rs",
         "rholang/tests/reified_temp_seq.rs",
         "rholang/tests/reified_theory.rs",
         "rholang/tests/reified_volatile_sweep.rs"
       ],
-      "expected_properties": 15,
+      "expected_properties": 16,
       "formal": {
         "V1": {
           "kind": "rocq",
@@ -8107,6 +8109,15 @@
           "tests": [
             "prop_theory_gate"
           ]
+        },
+        "V18": {
+          "kind": "rocq",
+          "name": "view_charge_cache_independent",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "A view load charges its key and its value only, so a warm load and a cold load reserve the same work (H27 of decision 47, rule NE-2). No Reified state outlives an evaluation (F18), so the first operation on a space after a restart reads the keys and the values of a warm runtime and pays the same: the outcome and the cost vector are equal (design v3 RH-1 and RH-4).",
+          "tests": [
+            "prop_attach_warm_cold_cost_equal"
+          ]
         }
       },
       "properties": [
@@ -8230,6 +8241,14 @@
           "file": "rholang/tests/reified_theory.rs",
           "covers": [
             "V17"
+          ]
+        },
+        {
+          "number": 16,
+          "test": "prop_attach_warm_cold_cost_equal",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "covers": [
+            "V18"
           ]
         }
       ],
@@ -8564,6 +8583,92 @@
           "rule": "TH-4: gate 4 on every builtin, with arguments and with other names",
           "covers": [
             "V17"
+          ]
+        },
+        {
+          "test": "space_lazy_attach",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "RH-1: block 2 on a restarted runtime gives the outcome and the cost vector of the warm runtime, for the queue, set, priority queue, VectorDB and PathMap families",
+          "covers": [
+            "V18"
+          ]
+        },
+        {
+          "test": "space_checkpoint_reset",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "RH-2: a reset restores the state of block 1, block 2 then reaches its root and cost vector again, and a restarted runtime reads the state of block 1",
+          "covers": [
+            "V18"
+          ]
+        },
+        {
+          "test": "space_attach_cost",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "RH-4: the pinned cost vectors of a handle call and a send, warm and cold; the accounting observer receives the cost of each COMM",
+          "covers": [
+            "V18"
+          ]
+        },
+        {
+          "test": "space_attach_warm_cold_cost_equal",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "RH-1 and RH-4 on the 24 families",
+          "covers": [
+            "V18"
+          ]
+        },
+        {
+          "test": "reducer_attach_costs",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "DG-4: one cost vector for each entry of a missing space, for any space id and on two runtimes; RH-4 for the handle calls through a stored handle",
+          "covers": [
+            "V18"
+          ]
+        },
+        {
+          "test": "reified_handle_persisted_restart_replay",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "QF-2 and RH-1: a stored handle serves three calls after a restart, and native replay from the history of the root reproduces the play",
+          "covers": [
+            "V18"
+          ]
+        },
+        {
+          "test": "reducer_dangling_handle",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "DG-1 to DG-3: every row for the ids of an ended deploy and of a missing durable space, with the space id in each error and reply",
+          "covers": [
+            "V2"
+          ]
+        },
+        {
+          "test": "reducer_space_costs",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "child metering: parallel space work on a current-thread and on a multi-thread runtime",
+          "covers": [],
+          "unmodeled": "The deterministic job order of native execution (decision 47) makes native play independent of the schedule of the tokio runtime. The models of that order are in the section D47. This test checks the consequence for parallel space work: equal outcomes and cost vectors under two schedules."
+        },
+        {
+          "test": "reified_factory_ephemeral_staging",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "QT-2: the factory stages the config, the space counter and the handle under the KIND of the qualifier",
+          "covers": [],
+          "unmodeled": "The KIND bytes of an ephemeral id and their disjointness from the durable ids are modeled in Namespace.v (ephemeral_durable_disjoint). This test checks the factory: the ids that it stages and the channels that a deploy leaves."
+        },
+        {
+          "test": "reified_factory_theory_argument",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "TH-7: the first operation after a restart resolves the stored identity, and a temp space stages its theory",
+          "covers": [
+            "V13"
+          ]
+        },
+        {
+          "test": "space_restart_rehydrate_three_processes",
+          "file": "rholang/tests/reified_restart_rehydrate.rs",
+          "rule": "M-5: block 1, block 2 after a restart, and the certification of block 2 in three processes; the warm run gives the same roots, cost vectors, evidence and logs",
+          "covers": [
+            "V18"
           ]
         }
       ]

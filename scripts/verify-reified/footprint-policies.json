@@ -5453,7 +5453,7 @@
       ]
     },
     "p7": {
-      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). It extends campaign and restates the edits and the new files of p6, as p6 restates d47. Step 1 (temp spaces, the volatile sweep and the dangling checks) replaces the three counted begin_evaluation_scope lines of reduce.rs. Each root entry (inj, inj_with_observation, inj_with_host_work) now calls begin_root_evaluation before its evaluation and the sweep call after it. Step 1 also makes ReductionCoordinator::enter_boundary pub(crate) in deterministic_reduction.rs, so the sweep runs under the boundary guard. Its new files are the volatile registry, the temp suite, the sweep-scope suite, the shared family programs and the P7 model map. Step 2 (the Seq rules) edits only campaign files. Its new files are the send rule of seq names, the Seq suite, and the TLA+ model SpaceCoordination.tla with its safe configuration and its four Unsafe controls. Step 3 (the HashSet store) edits only campaign files. Its new files are the HashSet outer store and the HashSet suite. Step 4 (the theory seam) edits only campaign files. Its new files are the theory module (mod, builtin, identity and its library tests), the theory suite, the Rocq model TheoryAdmission.v, the documents theory-seam.md and f1r3lang-integration.md, and diagram 10.",
+      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). It extends campaign and restates the edits and the new files of p6, as p6 restates d47. Step 1 (temp spaces, the volatile sweep and the dangling checks) replaces the three counted begin_evaluation_scope lines of reduce.rs. Each root entry (inj, inj_with_observation, inj_with_host_work) now calls begin_root_evaluation before its evaluation and the sweep call after it. Step 1 also makes ReductionCoordinator::enter_boundary pub(crate) in deterministic_reduction.rs, so the sweep runs under the boundary guard. Its new files are the volatile registry, the temp suite, the sweep-scope suite, the shared family programs and the P7 model map. Step 2 (the Seq rules) edits only campaign files. Its new files are the send rule of seq names, the Seq suite, and the TLA+ model SpaceCoordination.tla with its safe configuration and its four Unsafe controls. Step 3 (the HashSet store) edits only campaign files. Its new files are the HashSet outer store and the HashSet suite. Step 4 (the theory seam) edits only campaign files. Its new files are the theory module (mod, builtin, identity and its library tests), the theory suite, the Rocq model TheoryAdmission.v, the documents theory-seam.md and f1r3lang-integration.md, and diagram 10. Step 5 (rehydration and charging evidence) edits only campaign files. Its new files are the rehydration suite, the restart suite of three processes, and diagram 07a.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -6708,6 +6708,8 @@
         "docs/rspace/reified-rspaces/diagrams/06a-space-txn-lifecycle.svg",
         "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.puml",
         "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.svg",
+        "docs/rspace/reified-rspaces/diagrams/07a-restart-lazy-attach.puml",
+        "docs/rspace/reified-rspaces/diagrams/07a-restart-lazy-attach.svg",
         "docs/rspace/reified-rspaces/diagrams/08-counter-conflict-merge.puml",
         "docs/rspace/reified-rspaces/diagrams/08-counter-conflict-merge.svg",
         "docs/rspace/reified-rspaces/diagrams/09-pathmap-delivery.puml",
@@ -7063,6 +7065,8 @@
         "rholang/tests/reified_queue_replay.rs",
         "rholang/tests/reified_queue_restart.rs",
         "rholang/tests/reified_queue_source.rs",
+        "rholang/tests/reified_rehydrate.rs",
+        "rholang/tests/reified_restart_rehydrate.rs",
         "rholang/tests/reified_routing.rs",
         "rholang/tests/reified_seq.rs",
         "rholang/tests/reified_set.rs",

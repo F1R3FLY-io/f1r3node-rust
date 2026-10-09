@@ -173,3 +173,113 @@ pub fn program_with(outer: Outer, inner: Inner, qualifier: &str) -> String {
         &format!("{} |\n{} |\n{}", inner.part(), JOIN, outer.part()),
     )
 }
+
+/// A family whose state outlives its deploy (P7, design v3 W6). Block 1 creates a space of the
+/// family, leaves records on `a` and a waiter on `b`, and stores the handle and both names on a
+/// public channel. Block 2 calls the handle method `config` and touches the stored state: it
+/// takes a record, fires the waiter, and stores a record. The values on `out` go to the public
+/// channel [`OUT`] as pairs `[label, value]`.
+pub struct StoredFamily {
+    /// The label of the family in the outputs and the stash channel.
+    pub label: &'static str,
+    /// The factory URN.
+    pub urn: &'static str,
+    /// The constructor of the factory call.
+    pub ctor: &'static str,
+    /// The records and the waiter of block 1, over `space`, `a` and `b`.
+    pub state: &'static str,
+    /// The operations of block 2, over `space`, `a` and `b`. They deliver `take` and `fired`.
+    pub touch: &'static str,
+}
+
+impl StoredFamily {
+    /// The public channel that holds the handle and the names `a` and `b`.
+    pub fn stash(&self) -> String { format!("rrs-p7-stored-{}", self.label) }
+
+    /// Block 1: the creation of the space, its state, and the stash.
+    pub fn creation(&self) -> String {
+        format!(
+            r#"new factory(`{urn}`), out in {{
+  for (space <- factory!?({ctor})) {{
+    for (a <- space!?("gensym")) {{
+      for (b <- space!?("gensym")) {{
+        @"{stash}"!(*space, *a, *b) | {state}
+      }}
+    }}
+  }} |
+  for (@value <= out) {{ @"{OUT}"!(["{label}", value]) }}
+}}"#,
+            urn = self.urn,
+            ctor = self.ctor,
+            stash = self.stash(),
+            state = self.state,
+            label = self.label,
+        )
+    }
+
+    /// Block 2: the handle call `config` and the operations of [`StoredFamily::touch`] over the
+    /// stored handle and names.
+    pub fn touching(&self) -> String {
+        self.with_stash(&format!("{} | {}", CONFIG_CALL, self.touch))
+    }
+
+    /// A deploy that runs `body` over the stored handle `space` and the names `a` and `b`, with
+    /// the values on `out` forwarded to [`OUT`] under the label of the family.
+    pub fn with_stash(&self, body: &str) -> String {
+        format!(
+            r#"new out in {{
+  for (space, a, b <<- @"{stash}") {{
+    {body}
+  }} |
+  for (@value <= out) {{ @"{OUT}"!(["{label}", value]) }}
+}}"#,
+            stash = self.stash(),
+            label = self.label,
+        )
+    }
+}
+
+/// The handle call `config` of block 2, which delivers `config` with the config map.
+pub const CONFIG_CALL: &str = r#"for (@config <- space!?("config")) { out!(["config", config]) }"#;
+
+/// The families of the restart and rehydration suites: a queue, a set, a priority queue, a
+/// VectorDB space and a PathMap space (design v3 section 10, `reified_restart_rehydrate.rs`).
+pub const STORED_FAMILIES: [StoredFamily; 5] = [
+    StoredFamily {
+        label: "queue",
+        urn: "rho:space:hashmap:queue",
+        ctor: r#""default""#,
+        state: r#"a!(1) | a!(2) | a!(3) | for (@2 <- b) { out!(["fired", 2]) }"#,
+        touch: r#"for (@x <- a) { out!(["take", x]) | a!(x + 10) } | b!(2)"#,
+    },
+    StoredFamily {
+        label: "set",
+        urn: "rho:space:hashmap:set",
+        ctor: r#""default""#,
+        state: r#"a!(1) | a!(1) | a!(2) | for (@3 <- b) { out!(["fired", 3]) }"#,
+        touch: r#"for (@1 <- a) { out!(["take", 1]) | a!(11) } | b!(3)"#,
+    },
+    StoredFamily {
+        label: "priorityqueue",
+        urn: "rho:space:hashmap:priorityqueue",
+        ctor: r#""default""#,
+        state: r#"a!(1; priority=1) | a!(2; priority=0) | a!(3) |
+for (@z <- b ~ (; priority=0)) { out!(["fired", z]) }"#,
+        touch: r#"for (@x <- a) { out!(["take", x]) | a!(x + 10; priority=1) } | b!(9; priority=0)"#,
+    },
+    StoredFamily {
+        label: "vectordb",
+        urn: "rho:space:hashmap:vectordb",
+        ctor: r#""default"; capacity=16, dimensions=2"#,
+        state: r#"a!([1.0, 0.0]) | a!([0.6, 0.8]) |
+for (@w <- b ~ ([0.0, 1.0]; threshold=0.9)) { out!(["fired", w]) }"#,
+        touch: r#"for (@x <- a ~ ([1.0, 0.0])) { out!(["take", x]) | a!([0.0, 2.0]) } | b!([0.0, 1.0])"#,
+    },
+    StoredFamily {
+        label: "pathmap",
+        urn: "rho:space:pathmap:bag",
+        ctor: r#""default""#,
+        state: r#"use space { @[*a, 1]!(5) | @[*a, 2]!(6) } | for (@v <- b) { out!(["fired", v]) }"#,
+        touch: r#"for (@v <- a) { out!(["take", v]) } | use space { @[*b, 3]!(7) }"#,
+    },
+];
