@@ -220,6 +220,11 @@ printf 'SYSTEM_INTEGRATION_REF=0123456789abcdef0123456789abcdef01234567\n' >"$SR
 git -C "$SRC" init -q
 git -C "$SRC" config user.name t
 git -C "$SRC" config user.email t@example.com
+# Fixture hermeticity: contributors with tag.gpgsign=true globally
+# would otherwise fail at `git tag v0.4.46` (lightweight tag, no -m)
+# with `fatal: no tag message?` because gpgsign upgrades it to a
+# signed-annotated tag.
+git -C "$SRC" config tag.gpgsign false
 git -C "$SRC" add .
 git -C "$SRC" commit -qm fixture
 git -C "$SRC" tag v0.4.46
