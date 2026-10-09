@@ -4,7 +4,7 @@
 //! function takes the casper instance as a `&MultiParentCasperImpl<T>`
 //! reference; the trait method is a one-line delegate in `traits.rs`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Instant;
 
 use comm::rust::transport::transport_layer::TransportLayer;
@@ -90,31 +90,20 @@ fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
     // gap; a concurrent eviction is in principle observable) but
     // becomes trivially unreachable when each block is read only
     // once.
-    let mut blocks_in_store: HashMap<BlockHash, BlockMessage> =
-        HashMap::with_capacity(candidate_hashes.len());
+    let mut result: Vec<BlockMessage> = Vec::new();
     for candidate_hash in candidate_hashes {
-        if let Some(block) = this.block_store.get(&candidate_hash)? {
-            blocks_in_store.insert(candidate_hash, block);
-        }
-    }
-
-    let mut dep_free_keys: Vec<BlockHash> = Vec::with_capacity(blocks_in_store.len());
-    for (candidate_hash, block) in &blocks_in_store {
-        let all_deps = proto_util::dependencies_hashes_of(block);
-        let all_deps_available = all_deps.into_iter().all(|dep| {
-            admit_dag_contains(this, &dep)
-                || equivocation_hashes.contains(&dep)
-                || invalid_block_hashes.contains(&dep)
-        });
-
+        let Some(block) = this.block_store.get(&candidate_hash)? else {
+            continue;
+        };
+        let all_deps_available =
+            proto_util::dependencies_hashes_of(&block)
+                .into_iter()
+                .all(|dep| {
+                    admit_dag_contains(this, &dep)
+                        || equivocation_hashes.contains(&dep)
+                        || invalid_block_hashes.contains(&dep)
+                });
         if all_deps_available {
-            dep_free_keys.push(candidate_hash.clone());
-        }
-    }
-
-    let mut result: Vec<BlockMessage> = Vec::with_capacity(dep_free_keys.len());
-    for hash in dep_free_keys {
-        if let Some(block) = blocks_in_store.remove(&hash) {
             result.push(block);
         }
     }
