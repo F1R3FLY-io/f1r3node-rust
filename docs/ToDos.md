@@ -196,9 +196,12 @@ tasks:
       - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
   - id: TASK-023-9
     title: "Switch the rulesets to the new check names and remove the temporary jobs (step 2)"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T02:00:00Z
+    branch: chore/ci-ruleset-switch
+    merge_order: "Merge only after #687 is merged and a repository admin has changed devProtect and masterProtect. Merging earlier removes checks that the rulesets still require."
     blocked_by: [TASK-023-4, TASK-023-6]
     owner_note: "Steps 1 and 2 of the acceptance need a repository admin. An agent does not change rulesets."
     acceptance:

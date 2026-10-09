@@ -105,20 +105,15 @@ The job runs 20 script tests:
 
 Check names on pull requests and runs from before the change keep the old names.
 
-## Ruleset switch
+## Required checks
 
-The branch rulesets require check names. The switch has two steps, so that no pull request waits for a check that never reports.
+The `devProtect` ruleset requires these checks:
 
-**Step 1 (TASK-023-4).** The new jobs run. Temporary jobs keep the old required names: `Lint` in `ci.yml`, `Test (casper)` in `ci.yml`, and `Integration Tests (amd64)` and `(arm64)` in `ci.yml` and `ci-fork-pr.yml`. Each temporary job needs the new job and reports its result. When the new job is skipped, the temporary job is also skipped.
+- Static Checks, Script Tests, and Soak Harness Tests
+- cargo-deny
+- Test (*crate*) for each crate, and Test (casper 1/2) and Test (casper 2/2)
+- Integration Gate (amd64) and Integration Gate (arm64)
 
-**Step 2 (after step 1 is merged).**
+The `masterProtect` ruleset requires Static Checks, Script Tests, Soak Harness Tests, cargo-deny, Test (*crate*) for each crate, and Test Gate (casper).
 
-1. A repository admin changes `devProtect`: remove `Lint`, `Integration Tests (amd64)`, and `Integration Tests (arm64)`. Add `Static Checks`, `Script Tests`, `Soak Harness Tests`, `Integration Gate (amd64)`, and `Integration Gate (arm64)`.
-2. A repository admin changes `masterProtect`: remove `Lint` and `Test (casper)`. Add `Static Checks`, `Script Tests`, `Soak Harness Tests`, and `Test Gate (casper)`.
-3. A pull request makes these changes in the same commit:
-   - The heavy reuse gate in the `build_base` target step of `ci.yml` reads `Integration Gate (amd64)` and `(arm64)`.
-   - `release-train.sh validate-ci-evidence` reads the same names.
-   - `test-ci-stack-gate.sh` and `test-release-train.sh` use the new names.
-   - The temporary jobs are removed from `ci.yml` and `ci-fork-pr.yml`.
-
-Runs from step 1 carry both the old and the new names, so the readers find the new names in every run after step 1.
+The heavy reuse gate in the `build_base` target step and `release-train.sh validate-ci-evidence` read Integration Gate (amd64) and (arm64). A pull request run from before TASK-023-4 has only the old names. A merge group therefore cannot reuse the heavy result of such a run, and it runs the Integration Pipeline again.
