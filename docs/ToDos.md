@@ -221,6 +221,136 @@ tasks:
 
 ---
 
+### EPIC-022: OCI CI Spend Alerting and Runner Cleanup
+
+```yaml
+---
+epic_id: EPIC-022
+title: "OCI CI Spend Alerting and Runner Cleanup"
+status: in_progress
+priority: p1
+user_story: null
+issues: []
+blocked_by: []
+created_at: 2026-10-07
+updated_at: 2026-10-07
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-07T22:00:00Z
+branch: ci/oci-spend-budget-reaper-control
+pr_base_branch: dev
+pr: 668
+origin: "On 2026-10-07 the user asked why the OCI spend of this billing cycle is almost twice the spend of August. The October pace is about 4,090 USD for the month against 2,203 USD in August. All of the increase is ephemeral CI runner compute in the ci-runner compartment: 37.76 USD per day in August, 73.46 in September, 98.85 on October 1 to 7. The user chose three controls: a daily spend alert above 70 USD, a reaper outside the GitHub scheduler, and run-scoped VM cleanup when a launch is cancelled or fails."
+execution_contract:
+  base_branch: dev
+  scope: "Add a daily tenancy spend alert, move the ephemeral runner reaper to an OCI Function on the OCI Resource Scheduler, and terminate the VMs of a heavy CI run when the run ends for any reason. The reaper stays as the backstop."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  oci_policy: "Creating or changing OCI resources (topics, functions, schedules, dynamic groups, policies) and sending subscription emails needs a separate user go-ahead for each deploy."
+  language_policy: "Bash only for new scripts and handlers (repository rule)."
+evidence:
+  monthly_cost_usd: {2026-08: 2203.33, 2026-09: 3262.19, 2026-10-01_to_07: 922.71}
+  ci_runner_compute_usd_per_day: {2026-08: 37.76, 2026-09: 73.46, 2026-10-01_to_07: 98.85}
+  spike: "2026-09-29 to 2026-10-01: 924 USD of ci-runner compute in 3 days. On those days 42 to 72 VMs per day cost 2 USD or more each. Other days had 0 to 6 such VMs."
+  reaper_cadence: "ci-runner-reaper.yml is scheduled every 30 minutes (48 runs per day). GitHub ran it 3 to 7 times per day from 2026-09-20 to 2026-10-07."
+  reclaim_gap: "In a sample of 30 cancelled or failed CI runs from 2026-09-25 to 2026-10-07 whose launch job ran, the Reclaim Ephemeral Runners job did not exist in 18. The reclaim job finds VMs only through GitHub runner registrations, so it cannot see a VM that never registered."
+  not_proven: "The cause of the long-lived VMs of 2026-09-29 to 2026-10-01 is not proven. Run 36820334083 had a failed launch and no reclaim job, but all six launches failed with LimitExceeded and created no VM. OCI does not return the terminated instances, so the VMs cannot be named."
+  budgets: "OCI budgets reset only monthly and only send alerts. ci-runner-monthly (500 USD) was at 689.84 USD on 2026-10-07. Monthly-Tenancy-Budget (5,000 USD) forecast 4,073.71 USD, below its alert."
+tasks:
+  - id: TASK-022-1
+    title: "Send an email when the tenancy spend of one UTC day is above 70 USD"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T21:00:00Z
+    blocked_by: []
+    files:
+      - oci/spend-alert/handler.sh
+      - oci/spend-alert/test-handler.sh
+      - oci/spend-alert/Dockerfile
+      - oci/spend-alert/README.md
+      - scripts/oci/deploy-spend-alert.sh
+    design: "An OCI Function in the f1r3node-ci-schedulers application runs at 14:00 UTC daily from the OCI Resource Scheduler. It sums the previous UTC day's tenancy cost from the Usage API and publishes to the ONS topic oci-daily-spend-alerts when the total is above THRESHOLD_USD (70). The topic subscribers are the recipients of the two monthly budget alert rules. The recipient list stays in OCI."
+    acceptance:
+      - "bash oci/spend-alert/test-handler.sh passes. It covers the UTC day window, above, at, and under the threshold, a custom threshold, and failure on missing data, a Usage API error, and a bad threshold. Done 2026-10-07."
+      - "After deployment, a manual invoke returns alerted or under_threshold for the previous UTC day."
+      - "Each budget alert recipient has a confirmed ONS subscription."
+      - "The first scheduled run appears in the invoke log of the f1r3node-ci-schedulers application."
+    notes: "At 70 USD the alert would have fired on 36 of the 67 days from 2026-08-01 to 2026-10-06 (median day 72 USD). The Usage API lags by hours, so the alert reports the previous day and does not stop resources."
+  - id: TASK-022-2
+    title: "Run the ephemeral runner reaper from an OCI Function on the OCI Resource Scheduler"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T23:30:00Z
+    blocked_by: []
+    files:
+      - oci/runner-reaper/handler.sh
+      - oci/runner-reaper/test-handler.sh
+      - oci/runner-reaper/Dockerfile
+      - oci/runner-reaper/README.md
+      - scripts/oci/deploy-runner-reaper.sh
+      - scripts/oci/lib/fn-deploy.sh
+      - scripts/oci/test-fn-deploy.sh
+      - .github/workflows/ci-runner-reaper.yml
+    progress: "2026-10-07: handler, tests, and deploy script written and not deployed. The tests run the jq program of ci-runner-reaper.yml on the same instances as the handler and require the same result. A deliberate change of the 7-day cap in the workflow made the test fail. scripts/oci/lib/fn-deploy.sh now holds the upserts that deploy-spend-alert.sh and deploy-runner-reaper.sh share. scripts/oci/test-fn-deploy.sh runs both deploy scripts with stub oci and docker commands."
+    design: "Port the reap rule of ci-runner-reaper.yml to a Bash handler in oci/runner-reaper/, deployed to the f1r3node-ci-schedulers application and invoked every 30 minutes. The rule stays the same: terminate RUNNING or STOPPED ci-eph-* instances in the ci-runner compartment that are older than MAX_AGE_HOURS (2), unless a valid soak-deadline-epoch tag is in the future. The GitHub workflow keeps workflow_dispatch and its schedule as a second, idempotent sweep."
+    acceptance:
+      - "Handler tests prove parity with the workflow filter: untagged old instance reaped, young instance kept, future soak deadline kept, expired deadline reaped, and Infinity, NaN, 1e309, unparseable, and more-than-7-day deadlines reaped."
+      - "The handler never terminates an instance whose name does not start with ci-eph-, and it has a dry-run mode."
+      - "The compartment OCID of the Function config equals the literal in ci-runner-reaper.yml. The deploy script reads it from that file and stops on a different OCI_COMPARTMENT_OCID. Done 2026-10-07 (scripts/oci/test-fn-deploy.sh)."
+      - "IAM lets the Function manage instance-family only in the ci-runner compartment, the same grant as ci-runner-ephemeral-policy that the runners use to terminate themselves."
+      - "The first deployment uses DRY_RUN=true, and its result matches a manual dry run of the GitHub workflow."
+      - "Over 24 hours after deployment, the invoke log shows at least 44 of 48 scheduled sweeps."
+  - id: TASK-022-3
+    title: "Tag each heavy-pipeline runner VM with its GitHub run at launch"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T00:30:00Z
+    blocked_by: []
+    files:
+      - .github/workflows/_integration-pipeline.yml
+      - .github/scripts/test-ephemeral-run-tagging.sh
+      - .github/workflows/ci.yml
+    progress: "2026-10-08: the launch step passes RUNNER_NAMES_FILE, and the new step Tag launched VMs with this run (if: always()) tags each listed VM. The step accepts only names that match ^ci-eph-[A-Za-z0-9._-]+$, retries each VM 6 times at 10 s, and only warns when a VM stays untagged. test-ephemeral-run-tagging.sh extracts the step from the workflow and runs it against a stub oci CLI. A deliberate mutation that dropped the existing tags made the test fail. The Lint job of ci.yml now runs this test and the three EPIC-022 Function and deploy tests. All four pass in an ubuntu:24.04 container with mawk."
+    design: "launch_ephemeral_runners passes RUNNER_NAMES_FILE to launch-runner.sh, which appends the name of each VM that OCI accepted. A step with if: always() in the same job tags each named instance with github-run-id and github-run-key (run id and attempt, the key that merge-recovery-soak.yml already uses), with the read-modify-write and retry of the soak self-tag step, also when some launches failed or the launch step was cancelled. The step stays inline because the launch job holds the OCI secrets and checks out only system-integration."
+    acceptance:
+      - "Every VM that a launch job creates carries github-run-id and github-run-key, including the created VMs of a partly failed launch."
+      - "A VM created after a step was cancelled and before it was tagged is left to the reaper (accepted residual)."
+      - "No change to the system-integration repository is necessary."
+  - id: TASK-022-4
+    title: "Terminate the VMs of a heavy CI run when the run ends for any reason"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T01:30:00Z
+    blocked_by: [TASK-022-3]
+    files:
+      - .github/workflows/ci-runner-reclaim.yml
+      - .github/workflows/_integration-pipeline.yml
+      - .github/scripts/test-ci-runner-reclaim.sh
+      - .github/scripts/check-workflow-invariants.sh
+      - .github/workflows/ci.yml
+    progress: "2026-10-08: ci-runner-reclaim.yml runs on workflow_run (CI and CI (fork PRs), completed). Its detect job uses only GITHUB_TOKEN and starts the oci-credentials job only when the run launch job ran. That job terminates live VMs whose name matches ^ci-eph-[A-Za-z0-9._-]+$ and whose github-run-id and github-run-key equal the completed run attempt. A workflow_dispatch input allows a manual run with dry_run. The in-run reclaim step now also finds VMs by tag, does not stop when no runner registered, and skips the VMs that its runner loop already terminated. Invariant 6 now covers the compartment literal of the new workflow. test-ci-runner-reclaim.sh runs the three steps against stub gh and oci commands. Deliberate removals of the attempt-key filter and of the handled-list skip each made the test fail. The Lint job runs the test. All EPIC-022 tests pass in ubuntu:24.04, and the invariants pass there with a UTF-8 locale."
+    out_of_scope: "Full OCI Validation (oci-validation.yml) launches 22 VMs with its own launcher and does not tag them. The reaper still covers those VMs."
+    review_followup: "2026-10-08 multi-agent review of PR #668 (comment 6047352001, 2 of 5 providers voted, 0 critical, 0 major). Decision of the user: fork pull requests use OCI only after approval. The detect job now starts the credential job only when Await Launch Approval succeeded and the launch job ran in that attempt, with anchored job names. The in-run reclaim no longer counts a failed termination twice. The tag step lists the compartment once per round, at most 6 list calls. fn-deploy.sh uses jq first() instead of head -1 under pipefail. Deliberate removals of the approval gate and of the name anchors each made test-ci-runner-reclaim.sh fail."
+    design: "A new workflow on workflow_run (CI, completed) terminates the VMs tagged with the completed run id and deregisters their runners, for every conclusion. It does not check out code. It complements the in-run reclaim job, which also changes to find VMs by tag instead of only by GitHub registration."
+    acceptance:
+      - "A cancelled heavy run and a run with a failed launch leave no VM tagged with their run id 15 minutes after the run completes."
+      - "A successful run terminates idle leftover runners, for example the second arm64 runner that waits up to 2 hours."
+      - "The workflow never terminates an instance without both the ci-eph- name prefix and a matching github-run-id tag."
+      - "The task records why the Reclaim job did not exist in 18 of 30 sampled runs, or records that the cause is not found. Recorded 2026-10-08: the cause is not found. The sampled run 36820334083 had a failed launch, skipped integration matrices that never expanded, and no Reclaim job. ci-runner-reclaim.yml does not depend on that job."
+    notes: "workflow_run runs only from the default branch, so the new workflow is effective after master promotion."
+  - id: TASK-022-5
+    title: "Measure the effect one week after deployment"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-022-1, TASK-022-2, TASK-022-4]
+    acceptance:
+      - "Compare ci-runner compute per day, the count of VMs that cost 2 USD or more per day, and the alert count against 2026-10-01 to 07."
+      - "Report the reaper sweep count per day and the count of instances that each sweep terminates."
+---
+```
+
+**Current state:** TASK-022-1 code and tests are in PR #668 and not deployed. TASK-022-1 to TASK-022-4 code and tests are in PR #668. The two OCI Functions are not deployed, and ci-runner-reclaim.yml becomes active after master promotion. TASK-022-5 measures the effect one week after deployment.
+
+---
+
 ### EPIC-021: Issue #24 Replay Throughput Root Cause Under the CbC Harness
 
 ```yaml
