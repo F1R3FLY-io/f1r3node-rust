@@ -212,6 +212,61 @@ fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<Dep
     ordered
 }
 
+/// Ordinary admission accounting for one deploy preparation: a disabled
+/// lane, and the ordinary candidates the selection left out.
+pub(crate) fn record_ordinary_admission(
+    lane_enabled: bool,
+    ordinary_candidates: usize,
+    selected_ordinary: usize,
+) {
+    use crate::rust::metrics_constants::{
+        BLOCK_CREATOR_ORDINARY_DEPLOYS_DEFERRED_METRIC,
+        BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC, CASPER_METRICS_SOURCE,
+    };
+    if !lane_enabled {
+        metrics::counter!(BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+    }
+    let deferred = ordinary_candidates.saturating_sub(selected_ordinary);
+    if deferred > 0 {
+        metrics::counter!(BLOCK_CREATOR_ORDINARY_DEPLOYS_DEFERRED_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(deferred as u64);
+    }
+}
+
+/// The age of each selected user deploy, from its own timestamp to the
+/// creation time of the block. A timestamp in the future records zero.
+pub(crate) fn record_selected_deploy_ages(
+    time_stamps: impl IntoIterator<Item = i64>,
+    current_time_millis: i64,
+) {
+    use crate::rust::metrics_constants::{CASPER_METRICS_SOURCE, DEPLOY_SELECTION_AGE_TIME_METRIC};
+    let histogram =
+        metrics::histogram!(DEPLOY_SELECTION_AGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE);
+    for time_stamp in time_stamps {
+        let age_millis = current_time_millis.saturating_sub(time_stamp).max(0);
+        histogram.record(age_millis as f64 / 1000.0);
+    }
+}
+
+/// A block build that goes ahead with no user deploys.
+pub(crate) fn record_empty_block_build() {
+    metrics::counter!(
+        crate::rust::metrics_constants::BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+}
+
+/// A proposal that stopped because the block would be empty.
+pub(crate) fn record_empty_block_skip() {
+    metrics::counter!(
+        crate::rust::metrics_constants::BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+}
+
 #[cfg(test)]
 fn select_recovered_deploys_for_block(
     deploys: &HashSet<Signed<DeployData>>,
@@ -1126,6 +1181,15 @@ async fn prepare_user_deploys_with_policy(
             .len()
             .saturating_sub(selected_in_scope_recovery_count);
     let cap_hit = retry_capped || ordinary_capped || in_scope_recovery_capped;
+    record_ordinary_admission(
+        allow_ordinary_deploys,
+        ordinary_candidates.len(),
+        selected_ordinary_count,
+    );
+    record_selected_deploy_ages(
+        selected.iter().map(|deploy| deploy.data.time_stamp),
+        current_time_millis,
+    );
     if ordinary_capped {
         tracing::info!(
             "Ordinary deploy selection capped for block #{}: selected={}, deferred={}, cap={}, strategy={}, selected_bytes={}, deferred_bytes={}, remaining_byte_budget={}",
@@ -3063,7 +3127,11 @@ pub async fn create(
         tracing::info!(
             "Skipping empty block creation: no new user deploys, no slashing deploys, no merge-rejected slashes to recover"
         );
+        record_empty_block_skip();
         return Ok(BlockCreatorResult::NoNewDeploys);
+    }
+    if !has_user_or_dummy_deploys {
+        record_empty_block_build();
     }
 
     // Make sure closeBlock is the last system Deploy
@@ -6499,5 +6567,109 @@ mod tests {
                 .any(|deploy| deploy.sig == retry.sig),
             "the bounded lease must prevent frontier deferral from consuming the validity window"
         );
+    }
+}
+
+#[cfg(test)]
+mod stage_metric_tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+
+    use super::*;
+    use crate::rust::metrics_constants::{
+        BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC, BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC,
+        BLOCK_CREATOR_ORDINARY_DEPLOYS_DEFERRED_METRIC,
+        BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC, DEPLOY_SELECTION_AGE_TIME_METRIC,
+    };
+
+    /// One snapshot per test: the debugging recorder drains histogram
+    /// samples on every snapshot.
+    fn take(snapshotter: &Snapshotter) -> HashMap<String, (u64, Vec<f64>)> {
+        let mut values: HashMap<String, (u64, Vec<f64>)> = HashMap::new();
+        for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+            let entry = values.entry(key.key().name().to_owned()).or_default();
+            match value {
+                DebugValue::Counter(c) => entry.0 += c,
+                DebugValue::Histogram(s) => entry.1.extend(s.iter().map(|v| v.into_inner())),
+                _ => {}
+            }
+        }
+        values
+    }
+
+    #[test]
+    fn deferred_ordinary_candidates_are_counted_by_number() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_ordinary_admission(true, 10, 4);
+        record_ordinary_admission(true, 3, 3);
+
+        let recorded = take(&snapshotter);
+        let deferred = recorded.get(BLOCK_CREATOR_ORDINARY_DEPLOYS_DEFERRED_METRIC);
+        assert_eq!(deferred.map_or(0, |v| v.0), 6);
+        let disabled = recorded.get(BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC);
+        assert_eq!(disabled.map_or(0, |v| v.0), 0);
+    }
+
+    #[test]
+    fn a_disabled_ordinary_lane_is_counted_once_per_preparation() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_ordinary_admission(false, 0, 0);
+        record_ordinary_admission(false, 0, 0);
+
+        let recorded = take(&snapshotter);
+        let disabled = recorded.get(BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC);
+        assert_eq!(disabled.map_or(0, |v| v.0), 2);
+    }
+
+    #[test]
+    fn each_selected_deploy_records_its_age_in_seconds() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_selected_deploy_ages([10_000, 7_500, 13_000], 12_000);
+
+        let recorded = take(&snapshotter);
+        let mut ages = recorded
+            .get(DEPLOY_SELECTION_AGE_TIME_METRIC)
+            .map(|v| v.1.clone())
+            .unwrap_or_default();
+        ages.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(ages, vec![0.0, 2.0, 4.5], "a future timestamp records zero");
+    }
+
+    #[test]
+    fn an_empty_block_skip_is_counted() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_empty_block_skip();
+
+        let recorded = take(&snapshotter);
+        let skipped = recorded.get(BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC);
+        assert_eq!(skipped.map_or(0, |v| v.0), 1);
+    }
+
+    #[test]
+    fn an_empty_block_build_is_counted_apart_from_a_skip() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_empty_block_build();
+        record_empty_block_build();
+        record_empty_block_skip();
+
+        let recorded = take(&snapshotter);
+        let built = recorded.get(BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC);
+        assert_eq!(built.map_or(0, |v| v.0), 2);
+        let skipped = recorded.get(BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC);
+        assert_eq!(skipped.map_or(0, |v| v.0), 1);
     }
 }

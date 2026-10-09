@@ -139,9 +139,12 @@ tasks:
       - "If a CI failure shows driver exit 124, a measured driver duration on the CI runner sets any new cap. Without a measurement the cap stays."
   - id: TASK-023-4
     title: "Reorganize the CI jobs by purpose"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T21:00:00Z
+    branch: chore/ci-reorganize-and-relabel
+    decision: "2026-10-08: the user chose the two-step switch. Step 1 adds Static Checks, Script Tests, and Soak Harness Tests, renames the misleading jobs, and keeps temporary jobs with the old required names. TASK-023-9 is step 2."
     blocked_by: []
     branch_note: "Separate branch, because the change moves jobs that the merge queue and the branch rulesets require."
     acceptance:
@@ -152,9 +155,11 @@ tasks:
       - "check-workflow-invariants.sh passes, and the change does not increase the total CI time by more than the measured cost of one extra job setup."
   - id: TASK-023-6
     title: "Relabel the CI jobs and steps so that each name states what it runs"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T21:00:00Z
+    branch: chore/ci-reorganize-and-relabel
     blocked_by: [TASK-023-4]
     branch_note: "Same branch as TASK-023-4, so that the rulesets change once."
     acceptance:
@@ -189,6 +194,18 @@ tasks:
       - "SOAK_DISK_TEST_STRESS_ROUNDS=10 gives 0 runs without a pass."
       - "The CbC evidence record for scripts/run-merge-recovery-soak.sh is updated for the new commit, or a maintainer waiver records why not."
       - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
+  - id: TASK-023-9
+    title: "Switch the rulesets to the new check names and remove the temporary jobs (step 2)"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: [TASK-023-4, TASK-023-6]
+    owner_note: "Steps 1 and 2 of the acceptance need a repository admin. An agent does not change rulesets."
+    acceptance:
+      - "devProtect requires Static Checks, Script Tests, Soak Harness Tests, Integration Gate (amd64), and Integration Gate (arm64) instead of Lint and Integration Tests (amd64), (arm64)."
+      - "masterProtect requires Static Checks, Script Tests, Soak Harness Tests, and Test Gate (casper) instead of Lint and Test (casper)."
+      - "In one commit: the build_base heavy reuse gate and release-train.sh validate-ci-evidence read Integration Gate (amd64), (arm64); test-ci-stack-gate.sh and test-release-train.sh use the new names; the temporary jobs leave ci.yml and ci-fork-pr.yml."
+      - "A merge group with the change passes the queue. docs/ci.md describes the result without the switch section."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
@@ -201,6 +218,136 @@ tasks:
 ```
 
 **Current state:** TASK-023-1, -2, -3, and -8 are in review on fix/lint-flake-resolution. TASK-023-8 CbC evidence records wait for the CbC acceptance policy decision. TASK-023-4 and TASK-023-6 need their own branch. TASK-023-5 runs after the merge.
+
+---
+
+### EPIC-022: OCI CI Spend Alerting and Runner Cleanup
+
+```yaml
+---
+epic_id: EPIC-022
+title: "OCI CI Spend Alerting and Runner Cleanup"
+status: in_progress
+priority: p1
+user_story: null
+issues: []
+blocked_by: []
+created_at: 2026-10-07
+updated_at: 2026-10-07
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-07T22:00:00Z
+branch: ci/oci-spend-budget-reaper-control
+pr_base_branch: dev
+pr: 668
+origin: "On 2026-10-07 the user asked why the OCI spend of this billing cycle is almost twice the spend of August. The October pace is about 4,090 USD for the month against 2,203 USD in August. All of the increase is ephemeral CI runner compute in the ci-runner compartment: 37.76 USD per day in August, 73.46 in September, 98.85 on October 1 to 7. The user chose three controls: a daily spend alert above 70 USD, a reaper outside the GitHub scheduler, and run-scoped VM cleanup when a launch is cancelled or fails."
+execution_contract:
+  base_branch: dev
+  scope: "Add a daily tenancy spend alert, move the ephemeral runner reaper to an OCI Function on the OCI Resource Scheduler, and terminate the VMs of a heavy CI run when the run ends for any reason. The reaper stays as the backstop."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  oci_policy: "Creating or changing OCI resources (topics, functions, schedules, dynamic groups, policies) and sending subscription emails needs a separate user go-ahead for each deploy."
+  language_policy: "Bash only for new scripts and handlers (repository rule)."
+evidence:
+  monthly_cost_usd: {2026-08: 2203.33, 2026-09: 3262.19, 2026-10-01_to_07: 922.71}
+  ci_runner_compute_usd_per_day: {2026-08: 37.76, 2026-09: 73.46, 2026-10-01_to_07: 98.85}
+  spike: "2026-09-29 to 2026-10-01: 924 USD of ci-runner compute in 3 days. On those days 42 to 72 VMs per day cost 2 USD or more each. Other days had 0 to 6 such VMs."
+  reaper_cadence: "ci-runner-reaper.yml is scheduled every 30 minutes (48 runs per day). GitHub ran it 3 to 7 times per day from 2026-09-20 to 2026-10-07."
+  reclaim_gap: "In a sample of 30 cancelled or failed CI runs from 2026-09-25 to 2026-10-07 whose launch job ran, the Reclaim Ephemeral Runners job did not exist in 18. The reclaim job finds VMs only through GitHub runner registrations, so it cannot see a VM that never registered."
+  not_proven: "The cause of the long-lived VMs of 2026-09-29 to 2026-10-01 is not proven. Run 36820334083 had a failed launch and no reclaim job, but all six launches failed with LimitExceeded and created no VM. OCI does not return the terminated instances, so the VMs cannot be named."
+  budgets: "OCI budgets reset only monthly and only send alerts. ci-runner-monthly (500 USD) was at 689.84 USD on 2026-10-07. Monthly-Tenancy-Budget (5,000 USD) forecast 4,073.71 USD, below its alert."
+tasks:
+  - id: TASK-022-1
+    title: "Send an email when the tenancy spend of one UTC day is above 70 USD"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T21:00:00Z
+    blocked_by: []
+    files:
+      - oci/spend-alert/handler.sh
+      - oci/spend-alert/test-handler.sh
+      - oci/spend-alert/Dockerfile
+      - oci/spend-alert/README.md
+      - scripts/oci/deploy-spend-alert.sh
+    design: "An OCI Function in the f1r3node-ci-schedulers application runs at 14:00 UTC daily from the OCI Resource Scheduler. It sums the previous UTC day's tenancy cost from the Usage API and publishes to the ONS topic oci-daily-spend-alerts when the total is above THRESHOLD_USD (70). The topic subscribers are the recipients of the two monthly budget alert rules. The recipient list stays in OCI."
+    acceptance:
+      - "bash oci/spend-alert/test-handler.sh passes. It covers the UTC day window, above, at, and under the threshold, a custom threshold, and failure on missing data, a Usage API error, and a bad threshold. Done 2026-10-07."
+      - "After deployment, a manual invoke returns alerted or under_threshold for the previous UTC day."
+      - "Each budget alert recipient has a confirmed ONS subscription."
+      - "The first scheduled run appears in the invoke log of the f1r3node-ci-schedulers application."
+    notes: "At 70 USD the alert would have fired on 36 of the 67 days from 2026-08-01 to 2026-10-06 (median day 72 USD). The Usage API lags by hours, so the alert reports the previous day and does not stop resources."
+  - id: TASK-022-2
+    title: "Run the ephemeral runner reaper from an OCI Function on the OCI Resource Scheduler"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T23:30:00Z
+    blocked_by: []
+    files:
+      - oci/runner-reaper/handler.sh
+      - oci/runner-reaper/test-handler.sh
+      - oci/runner-reaper/Dockerfile
+      - oci/runner-reaper/README.md
+      - scripts/oci/deploy-runner-reaper.sh
+      - scripts/oci/lib/fn-deploy.sh
+      - scripts/oci/test-fn-deploy.sh
+      - .github/workflows/ci-runner-reaper.yml
+    progress: "2026-10-07: handler, tests, and deploy script written and not deployed. The tests run the jq program of ci-runner-reaper.yml on the same instances as the handler and require the same result. A deliberate change of the 7-day cap in the workflow made the test fail. scripts/oci/lib/fn-deploy.sh now holds the upserts that deploy-spend-alert.sh and deploy-runner-reaper.sh share. scripts/oci/test-fn-deploy.sh runs both deploy scripts with stub oci and docker commands."
+    design: "Port the reap rule of ci-runner-reaper.yml to a Bash handler in oci/runner-reaper/, deployed to the f1r3node-ci-schedulers application and invoked every 30 minutes. The rule stays the same: terminate RUNNING or STOPPED ci-eph-* instances in the ci-runner compartment that are older than MAX_AGE_HOURS (2), unless a valid soak-deadline-epoch tag is in the future. The GitHub workflow keeps workflow_dispatch and its schedule as a second, idempotent sweep."
+    acceptance:
+      - "Handler tests prove parity with the workflow filter: untagged old instance reaped, young instance kept, future soak deadline kept, expired deadline reaped, and Infinity, NaN, 1e309, unparseable, and more-than-7-day deadlines reaped."
+      - "The handler never terminates an instance whose name does not start with ci-eph-, and it has a dry-run mode."
+      - "The compartment OCID of the Function config equals the literal in ci-runner-reaper.yml. The deploy script reads it from that file and stops on a different OCI_COMPARTMENT_OCID. Done 2026-10-07 (scripts/oci/test-fn-deploy.sh)."
+      - "IAM lets the Function manage instance-family only in the ci-runner compartment, the same grant as ci-runner-ephemeral-policy that the runners use to terminate themselves."
+      - "The first deployment uses DRY_RUN=true, and its result matches a manual dry run of the GitHub workflow."
+      - "Over 24 hours after deployment, the invoke log shows at least 44 of 48 scheduled sweeps."
+  - id: TASK-022-3
+    title: "Tag each heavy-pipeline runner VM with its GitHub run at launch"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T00:30:00Z
+    blocked_by: []
+    files:
+      - .github/workflows/_integration-pipeline.yml
+      - .github/scripts/test-ephemeral-run-tagging.sh
+      - .github/workflows/ci.yml
+    progress: "2026-10-08: the launch step passes RUNNER_NAMES_FILE, and the new step Tag launched VMs with this run (if: always()) tags each listed VM. The step accepts only names that match ^ci-eph-[A-Za-z0-9._-]+$, retries each VM 6 times at 10 s, and only warns when a VM stays untagged. test-ephemeral-run-tagging.sh extracts the step from the workflow and runs it against a stub oci CLI. A deliberate mutation that dropped the existing tags made the test fail. The Lint job of ci.yml now runs this test and the three EPIC-022 Function and deploy tests. All four pass in an ubuntu:24.04 container with mawk."
+    design: "launch_ephemeral_runners passes RUNNER_NAMES_FILE to launch-runner.sh, which appends the name of each VM that OCI accepted. A step with if: always() in the same job tags each named instance with github-run-id and github-run-key (run id and attempt, the key that merge-recovery-soak.yml already uses), with the read-modify-write and retry of the soak self-tag step, also when some launches failed or the launch step was cancelled. The step stays inline because the launch job holds the OCI secrets and checks out only system-integration."
+    acceptance:
+      - "Every VM that a launch job creates carries github-run-id and github-run-key, including the created VMs of a partly failed launch."
+      - "A VM created after a step was cancelled and before it was tagged is left to the reaper (accepted residual)."
+      - "No change to the system-integration repository is necessary."
+  - id: TASK-022-4
+    title: "Terminate the VMs of a heavy CI run when the run ends for any reason"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T01:30:00Z
+    blocked_by: [TASK-022-3]
+    files:
+      - .github/workflows/ci-runner-reclaim.yml
+      - .github/workflows/_integration-pipeline.yml
+      - .github/scripts/test-ci-runner-reclaim.sh
+      - .github/scripts/check-workflow-invariants.sh
+      - .github/workflows/ci.yml
+    progress: "2026-10-08: ci-runner-reclaim.yml runs on workflow_run (CI and CI (fork PRs), completed). Its detect job uses only GITHUB_TOKEN and starts the oci-credentials job only when the run launch job ran. That job terminates live VMs whose name matches ^ci-eph-[A-Za-z0-9._-]+$ and whose github-run-id and github-run-key equal the completed run attempt. A workflow_dispatch input allows a manual run with dry_run. The in-run reclaim step now also finds VMs by tag, does not stop when no runner registered, and skips the VMs that its runner loop already terminated. Invariant 6 now covers the compartment literal of the new workflow. test-ci-runner-reclaim.sh runs the three steps against stub gh and oci commands. Deliberate removals of the attempt-key filter and of the handled-list skip each made the test fail. The Lint job runs the test. All EPIC-022 tests pass in ubuntu:24.04, and the invariants pass there with a UTF-8 locale."
+    out_of_scope: "Full OCI Validation (oci-validation.yml) launches 22 VMs with its own launcher and does not tag them. The reaper still covers those VMs."
+    review_followup: "2026-10-08 multi-agent review of PR #668 (comment 6047352001, 2 of 5 providers voted, 0 critical, 0 major). Decision of the user: fork pull requests use OCI only after approval. The detect job now starts the credential job only when Await Launch Approval succeeded and the launch job ran in that attempt, with anchored job names. The in-run reclaim no longer counts a failed termination twice. The tag step lists the compartment once per round, at most 6 list calls. fn-deploy.sh uses jq first() instead of head -1 under pipefail. Deliberate removals of the approval gate and of the name anchors each made test-ci-runner-reclaim.sh fail."
+    design: "A new workflow on workflow_run (CI, completed) terminates the VMs tagged with the completed run id and deregisters their runners, for every conclusion. It does not check out code. It complements the in-run reclaim job, which also changes to find VMs by tag instead of only by GitHub registration."
+    acceptance:
+      - "A cancelled heavy run and a run with a failed launch leave no VM tagged with their run id 15 minutes after the run completes."
+      - "A successful run terminates idle leftover runners, for example the second arm64 runner that waits up to 2 hours."
+      - "The workflow never terminates an instance without both the ci-eph- name prefix and a matching github-run-id tag."
+      - "The task records why the Reclaim job did not exist in 18 of 30 sampled runs, or records that the cause is not found. Recorded 2026-10-08: the cause is not found. The sampled run 36820334083 had a failed launch, skipped integration matrices that never expanded, and no Reclaim job. ci-runner-reclaim.yml does not depend on that job."
+    notes: "workflow_run runs only from the default branch, so the new workflow is effective after master promotion."
+  - id: TASK-022-5
+    title: "Measure the effect one week after deployment"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-022-1, TASK-022-2, TASK-022-4]
+    acceptance:
+      - "Compare ci-runner compute per day, the count of VMs that cost 2 USD or more per day, and the alert count against 2026-10-01 to 07."
+      - "Report the reaper sweep count per day and the count of instances that each sweep terminates."
+---
+```
+
+**Current state:** TASK-022-1 code and tests are in PR #668 and not deployed. TASK-022-1 to TASK-022-4 code and tests are in PR #668. The two OCI Functions are not deployed, and ci-runner-reclaim.yml becomes active after master promotion. TASK-022-5 measures the effect one week after deployment.
 
 ---
 
@@ -430,13 +577,16 @@ tasks:
       - "The changed workflow and claim artifacts have a review package and maintainer acceptance under their claims."
   - id: TASK-021-10
     title: "Write the checkpoint nodes and root in one LMDB transaction (contention reduction)"
-    status: pending
+    status: review
     priority: p0
     claimed_by: null
     blocked_by: []
     branch: fix/issue-24-deepening-resolution
     pr: 653
-    merge_hold: "Draft PR #653 with label awaiting-soak-evidence. Do not merge it until a soak of dev after PR #622 and PR #620 merge, and a soak of this branch, are compared. TASK-021-11 must also discharge CLAIM-RSPACE-002."
+    merged: "PR #653 merged to dev on 2026-10-07 (31b228604) and reached master through PR #632 (e6564599c). The merge did not wait for the soak comparison or for CLAIM-RSPACE-002."
+    post_merge_obligations:
+      - "Compare a soak of master e6564599c or later with the dev soak 37469364217. The soak must show lower root commit and roots lock times and a sustained finalization p95 that is not worse."
+      - "TASK-021-11 registers and discharges CLAIM-RSPACE-002."
     pr_base_branch: dev
     discovered_in: docs/discoveries/architecture-review-2026-10-06T114619Z.md
     design: docs/casper/design/history-checkpoint-commit.md
@@ -478,7 +628,7 @@ tasks:
     blocked_by: []
     branch: fix/issue-24-deepening-resolution
     pr: 653
-    origin: "On 2026-10-06 the user asked for a /cbc task for the checkpoint commit enhancements. The EPIC-021 cbc_policy requires a pending claim before any code change. The step-1 code of TASK-021-10 (74ab85dd2) was written without a claim, so this task closes that gap before PR #653 leaves draft."
+    origin: "On 2026-10-06 the user asked for a /cbc task for the checkpoint commit enhancements. The EPIC-021 cbc_policy requires a pending claim before any code change. The step-1 code of TASK-021-10 (74ab85dd2) was written without a claim. PR #653 merged on 2026-10-07 before the claim existed, so this task closes that gap after the merge."
     method: "/cbc identify, then /cbc verify, then /cbc discharge. Follow the pattern of CLAIM-FINALITY-001 (docs/claims/settled-effect-probe-equivalence.md): specification first, a mechanized model, and a property test against the previous code path as the oracle."
     files:
       - docs/claims/rspace-history-checkpoint-commit.md
@@ -495,10 +645,10 @@ tasks:
       - "A bounded model checks atomicity over every crash point of the write sequence, both for one shared environment and for the fallback with separate stores. A negative control shows that root-before-nodes ordering violates atomicity."
       - "A property test checks state equivalence on random action batches, with the previous process and record_root path as the oracle. The state root is consensus data, so any difference fails the test."
       - "/cbc verify writes an evidence record for CLAIM-RSPACE-002, and /cbc discharge passes for the step-1 diff. The claims audit of CLAIM-CASPER-SOAK-001 to -008 still exits 0."
-      - "The maintainer accepts the evidence before PR #653 leaves draft."
+      - "The maintainer accepts the evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
   - id: TASK-021-12
     title: "Release parked blocks without queue, scan, and stale-link delays (issue #24)"
-    status: in_progress
+    status: review
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-07T00:40:00Z
@@ -506,21 +656,82 @@ tasks:
     branch: fix/issue-24-deepening-resolution
     pr: 653
     tdd_plan: docs/tdd-plans/issue-24-parked-block-release-2026-10-07.md
+    merged: "PR #653 merged to dev on 2026-10-07 (31b228604) and reached master through PR #632 (e6564599c). All plan behaviors B1 to B11 are done."
+    evidence:
+      - "Soak 37579803394 on master e6564599c failed in the integration preflight: test_load had 7 deploys not finalized within 45s in the high phase, with inclusion p95 21.9 s. The sustained phase passed with 0 unfinalized. The 24-hour soak did not start."
+      - "On the test_load shard, each node parked 0 to 5 of 271 to 364 processed blocks, and each park had one release. The 2026-09-25 breakdown measured 56% on a saturated local host, so the values do not compare directly."
+      - "Issue #24 comment 6040401089 records the phase table, the park counts, and the attribution limits."
+      - "Soak 37640235959 (daily-24h without the integration preflight, target 1381ecbe9, the node code of dev 31b228604): segment 1 failed with 6 test_load failures in 32 iterations (19%). Each failure was N deploy(s) not finalized within 45s. On 2026-10-07 at 21:50 UTC the final segment was running with 4 more failures. The rate did not change materially after PR #653: soak 37224478325 segment 2 had 19 failures in 91 iterations (21%), and dev 778cc6754 had 8 in 49 (16%)."
+    open:
+      - "A soak that passes the integration preflight. Soak 37640235959 gave the 24-hour test_load failure rate without the preflight."
+      - "CLAIM-CASPER-BUFFER-001 discharge items 2 to 7, and maintainer acceptance of the soak and CbC evidence."
+      - "Follow-up outside this task: deploy inclusion latency in the test_load high phase (TASK-021-13)."
     origin: "On 2026-10-07 the user chose to fix issue #24 on the #653 branch. Soak 37469364217 on dev 778cc6754 failed 8 of 49 iterations with test_load 'N deploy(s) not finalized within 45s'. The 2026-09-25 issue breakdown shows that 56% of blocks park on missing parents, 7.1 s median and 39.6 s p90. A code trace found three release-path causes."
     scope: "Release priority, the stale-link defect, and an incremental release scan, plus the round-length metrics. The recovery re-request for parents that the node already holds is out of scope."
     files:
       - docs/claims/casper-buffer-release.md
       - casper/src/rust/blocks/block_processor.rs
       - casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs
+      - casper/src/rust/engine/multi_parent_casper/block_admission.rs
+      - casper/src/rust/engine/multi_parent_casper/dispatch.rs
+      - casper/src/rust/engine/block_retriever.rs
+      - casper/src/rust/casper.rs
+      - casper/src/rust/metrics_constants.rs
       - node/src/rust/instances/block_processor_instance.rs
+      - node/src/rust/instances/release_queue.rs
       - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
+      - block-storage/src/rust/dag/buffer_dag_transition.rs
       - scripts/bench/extend-issue24-metrics.sh
     acceptance:
       - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 as pending before any code change (EPIC-021 cbc_policy)."
       - "Each plan behavior has a test that fails before its change and passes after it. B5 reproduces the stale-link hold on the current code."
       - "The soak records park time, release queue wait, release scan duration, and recovery re-requests."
       - "A comparison soak against the scheduled dev soak on the same base reports sustained finalization p95, the test_load failure count, and the new metrics."
-      - "The maintainer accepts the soak and CbC evidence before PR #653 leaves draft."
+      - "The maintainer accepts the soak and CbC evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
+  - id: TASK-021-13
+    title: "Find why test_load deploys are not finalized within 45 s in the high and sustained phases (issue #24)"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    origin: "On 2026-10-07 two integration preflights on master e6564599c failed in the same test_load phase after PR #653 nearly stopped block parking. The user asked for a task that owns the deploy inclusion delay."
+    problem: "test_load fails with deploys not finalized within 45 s in two phases. The two preflights of 2026-10-07 showed only the high phase. The 24-hour soak 37640235959 shows failures in the high and sustained phases, and the sustained phase fails more often. In failing iterations, the mean p95 inclusion latency rises most in the high phase, and the mean p95 finalization latency rises most in the sustained phase. These are aggregate values. They do not show if each unfinalized deploy was included, so the stage that holds a deploy is not known yet."
+    evidence:
+      - "Soak 37579803394, preflight: high phase inclusion p50 9.0 s and p95 21.9 s, finalization p95 33.2 s, 7 unfinalized. The other phases had inclusion p95 5.3 to 13.7 s. Sustained finalization p95 31.2 s, 0 unfinalized."
+      - "Scheduled soak 37598606554, preflight: high phase inclusion p50 8.9 s and p95 21.7 s, finalization p95 41.2 s, 7 unfinalized."
+      - "The 2026-09-16 issue #24 comment found every earlier failure in the sustained phase and none in the high phase. Correction of 2026-10-07: the failure did not move to the high phase after PR #653. The preflights sampled one iteration each. Soak 37640235959 shows both phases."
+      - "Soak 37640235959 (daily-24h without the integration preflight, target 1381ecbe9, the node code of dev 31b228604): segment 1 failed with 6 test_load failures in 32 iterations (19%). Each failure was N deploy(s) not finalized within 45s. On 2026-10-07 at 21:50 UTC the final segment was running with 4 more failures."
+      - "Soak 37640235959 by phase, 41 iterations: sustained phase failed 7 times (40, 45, 11, 12, 147, 11, and 43 unfinalized), high phase 4 times (13, 14, 15, 8), burst phase never."
+      - "Soak 37640235959 latency, failing against passing iterations. High phase: inclusion p95 mean 21.6 s against 13.2 s, finalization p95 mean 38.5 s against 30.2 s. Sustained phase: inclusion p95 mean 18.0 s against 11.7 s, finalization p95 mean 60.7 s against 38.4 s."
+      - "Fewer than 2% of the blocks parked on the failing test_load shard (issue #24 comment 6040401089), so parked blocks do not explain the delay."
+      - "Issue #24 comment 6043103631 (2026-10-07) records the state of every optimization in the issue. Fixed: settled-signature probes (PR #362), prior_rejection_counts (PR #366), and parked blocks (PR #653). Open: the bonds query, the precharge and refund cost, the heartbeat wait, the deploy admission cap, and the suppression of empty heartbeat blocks."
+    evidence_gap: "The soak cannot give the cause yet. Its ISSUE24_METRICS cover block replay, repeat-deploy validation, and merge selection only. No metric covers the deploy pool wait, the proposal trigger, block creation, propagation, admission cap hits, heartbeat waits, empty heartbeat blocks, the finalizer runs, or the API-driven LFB computation. More soak iterations improve the failure rate and the phase split, but not the cause. In soak 37640235959, segment 1 ran its full window to the 13:00 Pacific checkpoint and the final segment continued to the 24-hour end. Segments 2 to 5 were skipped for a reason that is not confirmed yet. A run with the new metrics must give data from at least two segments."
+    hypothesis: "Two causes, not proven, from the aggregate latency split only. High phase: deploys wait for inclusion, because deploy selection or the proposer cadence holds them under the high-phase submit rate (10 deploys/s for 15 s). Sustained phase: included deploys wait for finalization, so the finalizer metrics and the API-driven LFB computation apply there first. The per-deploy timeline of the stage metrics confirms or rejects each part. The first step measures before any change."
+    first_suspects:
+      - "Deploy admission cap. block_creator.rs caps ordinary user deploys per block at 4, 8, or 16 in the non-leader fallback (NON_LEADER_FALLBACK_*_ORDINARY_DEPLOY_CAP). In the 2026-09-25 breakdown the cap held at 4 under sustained load, and about 484 of 1512 deploys were never included. At 10 deploys/s, a cap of 4 or 8 per block can hold deploys for several blocks."
+      - "Heartbeat wait. The 2026-09-25 breakdown measured 5.6 s of each 7 s idle round as validators waiting for their next heartbeat tick before they propose (casper.heartbeat check-interval 5 s). Each wait adds directly to inclusion time."
+      - "Empty heartbeat blocks. The proposer skips an empty proposal only outside the heartbeat lane (block_creator.rs). Heartbeat proposals use EmptyBlocks::HeartbeatLane (proposer.rs) and still emit empty blocks, which every peer must replay. The issue measured about 54% empty blocks in April. The current share is not measured. The counters block-creator.empty-block.built and heartbeat.proposals on feat/issue-24-stage-metrics measure it."
+      - "API-driven LFB computation. MultiParentCasper::last_finalized_block (dispatch.rs) calls compute_last_finalized_block directly, outside the single-flight guard of run_queued_finalizer. The bond_status and exploratory_deploy API endpoints (casper/src/rust/api/block_api.rs) call it. A request during a background finalizer run starts a second, overlapping evaluation that can apply the finalization effect. record_directly_finalized tolerates concurrent callers (global write lock and a reconcile loop). Whether the effect closure (process_finalized: event publication and mergeable-channel GC) can run twice for one block is not verified."
+    finalizer_facts:
+      - "The background finalizer is single-flight (finalizer_task_in_progress). Triggers during a run set finalizer_task_queued and coalesce into one rerun (finalization_runner.rs)."
+      - "Each run selects at most one new LFB through floor::floor_of_view. record_directly_finalized then finalizes the LFB and all its unfinalized ancestors in one batch."
+      - "A run that exceeds 15 s is abandoned for that cycle with a warning."
+      - "Decision D-05 (ratified 2026-09-16) keeps single-flight as the default. The bounded parallel evaluation of PR #216 is optional, and the casper-soak publication profile blocks it (parallel_policy_not_approved). That profile is qualified only on synthetic fixtures and does not model the API-driven path."
+    not_suspects:
+      - "Merger conflict detection: compute_relation_map is still O(N²), but the merger buckets measure about 45 ms per merge."
+      - "Replay runtime spawn: about 3.8 ms per block in the soak."
+      - "Block parking: below 2% after PR #653."
+    measurement: "Branch feat/issue-24-stage-metrics (2026-10-07) adds 15 metrics under the pending claim CLAIM-CASPER-STAGE-METRICS-001 (docs/claims/casper-stage-metrics.md), all registered in ISSUE24_METRICS. Finalizer: finalizer.run.time, failures, timeouts, reruns, queued. API: finalizer.api-lfb.calls, overlaps, time. Block creator: block-creator.ordinary-deploys.deferred, ordinary-lane.disabled, empty-block.skipped, empty-block.built, and deploy.selection.age.time. Heartbeat: heartbeat.checks, heartbeat.proposals. The branch also tags finalization_runner.rs and proposer.rs cbc=mandatory. cargo test --release -p casper -p node passed with 1,896 tests. The next soak on a base that includes the branch gives the first stage data."
+    scope: "Measurement first: the time from deploy submit to the first block that includes the deploy, split by stage (deploy pool wait, proposal trigger, block creation, block propagation). Add finalizer metrics to ISSUE24_METRICS: finalizer run duration, queued reruns, 15 s timeouts, and API-triggered LFB computations with their overlap with a background run. Check whether the system-integration test_load calls exploratory_deploy or bond_status during its load phases. A fix starts only after a measurement names the stage. The fix needs its own TDD plan and, under the EPIC-021 cbc_policy, a pending claim before any code change."
+    acceptance:
+      - "A per-deploy timeline for failing high-phase and sustained-phase iterations names the stage that holds the deploy, with evidence from two runs."
+      - "A pending CbC claim exists before any code change to proposal or deploy selection."
+      - "The soak record reports the finalizer metrics and the API-triggered LFB computations."
+      - "Each fix behavior has a test that fails before its change and passes after it."
+      - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in every phase."
+      - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
+    candidate_fix_empty_heartbeat_blocks: "If the soak shows that the heartbeat lane builds many empty blocks in the failing phases, suppress empty heartbeat blocks while user deploys are pending or finality advances. This changes proposer behavior and the liveness mechanism that the discharged heartbeat proposal amplification bound claim covers, so it needs its own pending claim, a TDD plan, and evidence that finality still advances without deploys."
+    candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
 ---
 ```
 
