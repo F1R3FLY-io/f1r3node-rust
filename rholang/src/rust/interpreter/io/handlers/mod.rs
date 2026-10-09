@@ -18,11 +18,13 @@
 // bumps [`EXPECTED_MIGRATED_HANDLER_COUNT`](super::handler_trait::fs_handlers::EXPECTED_MIGRATED_HANDLER_COUNT)
 // by one.
 //
-// # Status (Wave 4 complete)
+// # Status (Wave 4 complete; removedir trait-exempt wired in Wave 5)
 //
 // All 27 trait-registered handlers landed; the trait-exempt
-// fs_remove_dir has a stub handler (slice 5.44) with the real
-// DD-RemoveDirReplyShape impl deferred to a future Wave 4 slice.
+// fs_remove_dir has the real DD-RemoveDirReplyShape handler ported
+// in slices 5.136-5.141 (decomposed removedir submodule under
+// `handlers/removedir/`), URN registration swapped from the slice-
+// 5.44 stub in slice 5.142, and the stub deleted in slice 5.143.
 //
 //   - `lifecycle` (3): fs_quarantine (4.12), fs_close (4.13),
 //     fs_open (4.32).
@@ -37,14 +39,16 @@
 //     fs_entries_stream_open (4.29), fs_entries_stream_next (4.30).
 //   - `lock` (4): fs_lock_range (4.34), fs_lock_sequential (4.35),
 //     fs_release_lock (4.36), fs_release_all_for_holder (4.37).
-//   - `removedir`: trait-exempt stub (slice 5.44 —
-//     `SystemProcesses::fs_remove_dir_stub` replies
-//     `FSERR_UNSUPPORTED`; the real divergence-reply-shape handler
-//     remains a Wave 4 follow-up).
+//   - `removedir`: trait-exempt `FsProcesses::fs_remove_dir` method
+//     (slices 5.136–5.141) with the DD-RemoveDirReplyShape 4-shape
+//     divergence replies.  URN registration swapped from the slice-
+//     5.44 stub to the real handler in slice 5.142; stub deleted in
+//     slice 5.143.
 
 pub mod helpers;
 pub mod lifecycle;
 pub mod lock;
 pub mod mutation;
 pub mod observation;
+pub mod removedir;
 pub mod stream;

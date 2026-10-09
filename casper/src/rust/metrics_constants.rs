@@ -42,6 +42,11 @@ pub const PARENTS_POST_STATE_CACHE_SIZE_METRIC: &str = "parents-post-state-cache
 pub const REPLAY_CACHE_ENTRIES_METRIC: &str = "replay-cache.entries";
 pub const REPLAY_CACHE_RETAINED_BYTES_METRIC: &str = "replay-cache.retained-bytes";
 pub const PROPOSER_QUEUE_PENDING_METRIC: &str = "proposer.queue.pending";
+// Issue #24 heartbeat stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
+// Counter: heartbeat checks, one per wake or interval tick.
+pub const HEARTBEAT_CHECKS_METRIC: &str = "heartbeat.checks";
+// Counter: proposals that a heartbeat check triggered.
+pub const HEARTBEAT_PROPOSALS_METRIC: &str = "heartbeat.proposals";
 pub const PROPOSER_QUEUE_REJECTED_TOTAL_METRIC: &str = "proposer.queue.rejected.total";
 pub const INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC: &str = "init.block-message.queue.pending";
 pub const INIT_TUPLE_SPACE_QUEUE_PENDING_METRIC: &str = "init.tuple-space.queue.pending";
@@ -303,6 +308,21 @@ pub const BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC: &str =
 pub const BLOCK_CREATOR_PACKAGE_BLOCK_TIME_METRIC: &str = "block-creator.package-block.time";
 pub const BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC: &str = "block-creator.packed-block.bytes";
 pub const BLOCK_CREATOR_TOTAL_TIME_METRIC: &str = "block-creator.total.time";
+// Issue #24 high-phase stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
+// Counter: ordinary deploy candidates that a block left out (cap or bytes).
+pub const BLOCK_CREATOR_ORDINARY_DEPLOYS_DEFERRED_METRIC: &str =
+    "block-creator.ordinary-deploys.deferred";
+// Counter: deploy preparations with the ordinary lane disabled.
+pub const BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC: &str =
+    "block-creator.ordinary-lane.disabled";
+// Counter: proposals skipped because the block would be empty.
+pub const BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC: &str = "block-creator.empty-block.skipped";
+// Counter: block builds that go ahead with no user deploys (heartbeat lane or
+// system deploys only).
+pub const BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC: &str = "block-creator.empty-block.built";
+// Histogram: age of each user deploy when a block selects it, from the deploy
+// timestamp to the block creation time, in seconds.
+pub const DEPLOY_SELECTION_AGE_TIME_METRIC: &str = "deploy.selection.age.time";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC: &str =
     "block-creator.deploy-admission.fresh-local";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC: &str =
@@ -407,6 +427,24 @@ pub const FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC: &str =
 // settled differently: a finality DIVERGENCE. The most severe event the
 // finalizer can observe; alert on any nonzero value.
 pub const FINALITY_DIVERGENCE_DETECTED_METRIC: &str = "finality.divergence.detected";
+// Issue #24 finalizer stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
+// Histogram: one sample per finalizer cycle, timeouts included.
+pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
+// Counter: cycles that returned an error.
+pub const FINALIZER_RUN_FAILURES_METRIC: &str = "finalizer.run.failures";
+// Counter: cycles abandoned by the backstop timeout of run_queued_finalizer.
+pub const FINALIZER_RUN_TIMEOUTS_METRIC: &str = "finalizer.run.timeouts";
+// Counter: extra cycles a run made because a trigger arrived during it.
+pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";
+// Counter: triggers that arrived while a finalizer run was in progress.
+pub const FINALIZER_RUN_QUEUED_METRIC: &str = "finalizer.run.queued";
+// Counter: LFB computations requested through the API (bond_status,
+// exploratory_deploy), which bypass the single-flight finalizer guard.
+pub const FINALIZER_API_LFB_CALLS_METRIC: &str = "finalizer.api-lfb.calls";
+// Histogram: duration of each API-requested LFB computation.
+pub const FINALIZER_API_LFB_TIME_METRIC: &str = "finalizer.api-lfb.time";
+// Counter: API-requested LFB computations that started during a finalizer run.
+pub const FINALIZER_API_LFB_OVERLAPS_METRIC: &str = "finalizer.api-lfb.overlaps";
 /// A shipped genesis refused during LFS restore (claimed hash or content
 /// re-hash failed against the learned register) — peer equivocation on the
 /// restore channel, visible on dashboards.
