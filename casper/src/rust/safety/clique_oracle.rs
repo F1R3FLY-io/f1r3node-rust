@@ -326,7 +326,8 @@ impl CliqueOracle {
                 );
                 value
             };
-            let target_height = dag.lookup_unsafe_metered(meter, target_msg)?.block_number;
+            meter.lookup()?;
+            let target_height = dag.block_number_unsafe(target_msg)?;
             let mut last_yield = Instant::now();
             let mut idx: usize = 0;
             while let Some(hash) = current {
@@ -372,7 +373,8 @@ impl CliqueOracle {
                     if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
                         *cached
                     } else {
-                        let visited_height = dag.lookup_unsafe_metered(meter, &hash)?.block_number;
+                        meter.lookup()?;
+                        let visited_height = dag.block_number_unsafe(&hash)?;
                         let value = if visited_height < target_height {
                             dag.is_in_main_chain_metered(meter, &hash, target_msg)?
                         } else {
