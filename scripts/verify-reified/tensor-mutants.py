@@ -61,6 +61,45 @@ MUTANTS = (
      "                let limit = product(radius, radius, meter)?;\n"
      "                compare(distance2, &limit, meter)? != Ordering::Greater",
      "                compare(distance2, radius, meter)? != Ordering::Greater"),
+    # P6 step 8 (design v3 section 6): the dot product of dyadic vectors sums its terms in f64,
+    # one rounding after each term, as a float kernel does.
+    ("dot-f64-accumulation", EXACT,
+     "            let mut sum = DyadicSum::new();\n"
+     "            for (x, y) in left.iter().zip(right) {\n"
+     "                costs::reserve_product(&x.mantissa, &y.mantissa, meter)?;\n"
+     "                sum.add(\n"
+     "                    &x.mantissa * &y.mantissa,\n"
+     "                    exponent_sum(x.exponent, y.exponent)?,\n"
+     "                    meter,\n"
+     "                )?;\n"
+     "            }\n"
+     "            sum.value(meter)\n"
+     "        }\n"
+     "        _ => {\n"
+     "            let (left, right) = (a.rationals(meter)?, b.rationals(meter)?);\n"
+     "            let mut sum = Exact::zero();\n"
+     "            for (x, y) in left.iter().zip(right.iter()) {\n"
+     "                costs::reserve_rational(x, y, meter)?;\n"
+     "                let product = x * y;",
+     "            let mut sum = 0f64;\n"
+     "            for (x, y) in left.iter().zip(right) {\n"
+     "                costs::reserve_product(&x.mantissa, &y.mantissa, meter)?;\n"
+     "                let mut term = DyadicSum::new();\n"
+     "                term.add(\n"
+     "                    &x.mantissa * &y.mantissa,\n"
+     "                    exponent_sum(x.exponent, y.exponent)?,\n"
+     "                    meter,\n"
+     "                )?;\n"
+     "                sum += round_to_f64(&term.value(meter)?, meter)?;\n"
+     "            }\n"
+     "            Exact::from_float(sum).ok_or(NumError::NonFiniteValue)\n"
+     "        }\n"
+     "        _ => {\n"
+     "            let (left, right) = (a.rationals(meter)?, b.rationals(meter)?);\n"
+     "            let mut sum = Exact::zero();\n"
+     "            for (x, y) in left.iter().zip(right.iter()) {\n"
+     "                costs::reserve_rational(x, y, meter)?;\n"
+     "                let product = x * y;"),
 )
 
 

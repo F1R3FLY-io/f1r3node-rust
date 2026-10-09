@@ -287,7 +287,7 @@ So the identities of each job are new, also when a cyclic allocator takes a valu
 
 **Rule AL-5: races.** Two branches that allocate from one space consume one produce of $`A(\mathit{sid})`$.
 So merge check #1 sees their race, and a merge never hands one index to both branches (`NoDuplicateIndex`).
-Two `new` blocks inside `use` of one Array or Vector space race in the same way (`rholang/tests/reified_merge_p5.rs:874-935`).
+Two `new` blocks inside `use` of one Array or Vector space race in the same way (`rholang/tests/reified_merge_p5.rs:930-991`).
 
 **Rule AL-6: other stores.** A HashMap or PathMap space has no allocator.
 Its allocation job answers `Baseline`: it reads the config, commits nothing, and charges no phlo.
@@ -441,7 +441,7 @@ A collection with two counter records, or with a persistent counter record, is `
 **Rule OC-5: races and chains.** Two branches that both operate on one collection consume one counter produce, so merge check 1 must report a race.
 Two branches whose first operations open collections of one space race on the space counter in the same way.
 Two deploys of one block that operate on one collection form one chain, so a rejection removes both.
-This holds for every family with a counter: the queue, the stack and the cell, also in Array and Vector spaces (`shared_collection_race`, `CounterConflict.v:877`).
+This holds for every family with a counter: the queue, the stack and the cell, also in Array and Vector spaces (`shared_collection_race`, `CounterConflict.v:889`).
 
 **Rule OC-6: serializable merges.** When merge check 1 finds no race, the merged state must equal the state of a serial run of the two branches.
 
@@ -458,7 +458,7 @@ The pushes bump different counters and the pops take different records, so no ch
 
 In the merge A pops 20 and B pops 10.
 But after A, B pops 1, and after B, A pops 2, so no serial order gives the merged pops.
-Rule OC-1 makes both branches race on both counters instead (`crossed_stacks_without_removal_counters_fabricate`, `CounterConflict.v:2459`).
+Rule OC-1 makes both branches race on both counters instead (`crossed_stacks_without_removal_counters_fabricate`, `CounterConflict.v:2578`).
 
 ### 3.1 Queue
 
@@ -638,7 +638,7 @@ The second send has the identity of the record and registers the cost authority 
 **Rule BG-6: peek waiters.** A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
 
 **Rule BG-7: no counter.** A bag has no counter. Every record and every waiter has the order 0, so a re-issued element keeps its record and its identity ([decision 43](decision-register.md#decision-43)).
-So two branches that write one bag merge, as on a host channel (`rholang/tests/reified_merge_p5.rs:644-699`).
+So two branches that write one bag merge, as on a host channel (`rholang/tests/reified_merge_p5.rs:700-755`).
 
 **Rule BG-8: bounds.** One transaction makes at most `FIRE_ROUND_CAP` fires, the fires of a peek re-store included ([decision I-21](decision-register.md#i-21)).
 A divergent pair or the cap re-issues the element in flight, and every read and copy is reserved before it is made ([decision 42](decision-register.md#decision-42)).
@@ -656,7 +656,7 @@ Only an element that does not fire is stored or parked, so a receive can fire th
 
 **Rule CL-3: counter.** Every operation that commits bumps the counter of the collection once ([decision 31](decision-register.md#decision-31)).
 Two branches that operate on one cell race under merge check #1, so a merge never puts two records into one cell.
-A cell operation that fails with `CellOccupied` fails its deploy, and the merge leaves a failed deploy out (`rholang/tests/reified_merge_p5.rs:703-751`).
+A cell operation that fails with `CellOccupied` fails its deploy, and the merge leaves a failed deploy out (`rholang/tests/reified_merge_p5.rs:759-807`).
 
 **Rule CL-4: peeks.** A consume-side peek removes a non-persistent record, and the same transaction stores the record again with its identity (Rule E).
 The fire left the record slot empty, so the re-store is never `CellOccupied`.
@@ -984,10 +984,10 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1038`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:998`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
-| OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:927`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
+| OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:939`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
 | OC-4 | None | `space_counter_rejects_corrupt_counters` |
-| OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:898`), `ordered_reads_race_on_counter` (`CounterConflict.v:912`), `same_block_ops_chain` (`CounterConflict.v:1101`), `shared_collection_race` (`CounterConflict.v:877`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain`, `space_collection_conflicts_cell_writes_race`, `space_collection_conflicts_stack_push_pop_race`, `prop_cell_ops_race_on_counter` |
-| OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1477`), `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2459`), the TLA+ invariant `NoMergedOrderFabrication` (U4, and V16 with `MC_CounterConflict_Stacks.cfg`) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge`, `prop_merged_stack_state_is_serial`, `space_collection_conflicts_crossed_stacks` |
+| OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:910`), `ordered_reads_race_on_counter` (`CounterConflict.v:924`), `same_block_ops_chain` (`CounterConflict.v:1113`), `shared_collection_race` (`CounterConflict.v:889`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain`, `space_collection_conflicts_cell_writes_race`, `space_collection_conflicts_stack_push_pop_race`, `prop_cell_ops_race_on_counter` |
+| OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1489`), `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2578`), the TLA+ invariant `NoMergedOrderFabrication` (U4, and V16 with `MC_CounterConflict_Stacks.cfg`) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge`, `prop_merged_stack_state_is_serial`, `space_collection_conflicts_crossed_stacks` |
 | QD-1 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:530`) | `prop_queue_candidates_head_only` |
 | QD-2, QD-3 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`), the TLA+ invariant `HeadBlocks` (U2) | `space_queue_head_only_data_head_blocks`, `space_queue_head_only_waiter_head_blocks` |
 | QD-4, QD-5 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1380`) | `space_queue_reissue_persistent_send`, `space_queue_reissue_peek_produce`, `space_queue_divergent_pair_exhausts_phlo` |
@@ -998,12 +998,12 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:372`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
 | QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay` |
 | QF-3 | The TLA+ invariant `HandleCallsMergeLikeContracts` (U8) | `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks`, `reified_handle_cross_block_merge_no_conflict` |
-| FA-1 | `registered_families_complete` (`SpaceFactory.v:1215`) | `prop_registered_families_complete`, `space_factory_families_registered` |
+| FA-1 | `registered_families_complete` (`SpaceFactory.v:1354`) | `prop_registered_families_complete`, `space_factory_families_registered` |
 | FA-2 | `space_match_is_injected_match` (`Match.v:615`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
-| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1279`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
-| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1624`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
-| FA-5 | `priorities_validated` (`SpaceFactory.v:1755`), `array_size_validated` (`SpaceFactory.v:1854`) | `prop_priorities_validated`, `prop_array_size_validated` |
-| FA-7 | `array_size_validated` (`SpaceFactory.v:1854`) | `space_factory_kwargs_are_stored_canonical` |
+| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1431`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
+| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1834`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
+| FA-5 | `priorities_validated` (`SpaceFactory.v:1971`), `array_size_validated` (`SpaceFactory.v:2084`) | `prop_priorities_validated`, `prop_array_size_validated` |
+| FA-7 | `array_size_validated` (`SpaceFactory.v:2084`) | `space_factory_kwargs_are_stored_canonical` |
 | AR-1, AR-3, VE-1, VE-3 | `fixed_array_allocates_at_most_size` (`OuterStorage.v:313`), `vector_index_is_counter` (`VectorStore.v:184`) | `prop_fixed_array_allocates_at_most_size`, `prop_vector_index_is_counter` |
 | AR-2, VE-2 | `hashmap_get_put_other` (`HashMapStore.v:213`), `hashmap_iteration_permutation_invariant` (`HashMapStore.v:168`) | `prop_hashmap_get_put_other`, `prop_hashmap_iteration_permutation_invariant` |
 | AR-4, VE-4, AL-2 | `fixed_array_indices_sequential` (`OuterStorage.v:345`), `cyclic_array_index_mod_size` (`OuterStorage.v:376`), `vector_gensym_monotonic` (`VectorStore.v:219`) | `prop_fixed_array_indices_sequential`, `prop_cyclic_array_index_mod_size`, `prop_vector_gensym_monotonic` |
@@ -1048,7 +1048,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | ST-6 | `set_produce_fire_retires_stored_class` (`SetDiscipline.v:1151`), the TLA+ invariant `SetClassRetired` (V6) | `prop_set_produce_fire_retires_stored_class`, `prop_set_class_retired_any_schedule`, `space_set_discipline_guarded_waiter_then_equal_send_retires_class` |
 | ST-7 | `set_peek_restores_representative_only` (`SetDiscipline.v:1205`) | `prop_set_peek_restores_representative_only`, `space_set_discipline_peek_restore_reoffer_retires_class` |
 | ST-8 | `set_membership_full_compare_on_equal_hash` (`SetDiscipline.v:1274`) | `prop_set_membership_full_compare_on_equal_hash` |
-| ST-9 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`), `set_retirements_race` (`CounterConflict.v:1980`), `unordered_set_writes_commute` (`CounterConflict.v:2012`) | `space_set_discipline_persistent_reissue_keeps_identity`, `space_set_discipline_equal_receives_stay_two_waiters`, `prop_set_retirements_race`, `prop_unordered_set_writes_commute`, `space_collection_conflicts_set_retirements_race`, `space_collection_conflicts_set_writes_merge` |
+| ST-9 | `scan_reissue_identity_stable` (`GenericRSpace.v:1300`), `set_retirements_race` (`CounterConflict.v:1992`), `unordered_set_writes_commute` (`CounterConflict.v:2024`) | `space_set_discipline_persistent_reissue_keeps_identity`, `space_set_discipline_equal_receives_stay_two_waiters`, `prop_set_retirements_race`, `prop_unordered_set_writes_commute`, `space_collection_conflicts_set_retirements_race`, `space_collection_conflicts_set_writes_merge` |
 | ST-10 | `set_key_trace_covered` (`SetDiscipline.v:1389`) | `prop_set_key_trace_covered`, `space_set_discipline_failed_canonicalization_rejects_before_staging` |
 | PQ-1 | `pq_level_order` (`PriorityQueue.v:863`), `pq_unprioritized_lowest` (`PriorityQueue.v:887`), the TLA+ invariant `PqLevelOrder` (V17) | `prop_pq_level_order`, `space_disciplines_pq_ascending_levels`, `space_disciplines_pq_unprioritized_lowest` |
 | PQ-2, PQ-4 | `pq_restricted_waiter_in_level_queue` (`PriorityQueue.v:1921`), `pq_unrestricted_first_matching_level` (`PriorityQueue.v:1943`), `pq_fifo_within_level` (`PriorityQueue.v:2151`), `pq_head_blocks_within_level` (`PriorityQueue.v:2324`) | `prop_pq_fifo_order_any_schedule`, `space_disciplines_pq_restricted_waiter_waits_in_level_queue`, `space_disciplines_pq_head_blocks_within_level` |
@@ -1071,7 +1071,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | JN-12 | `peek_join_restores_stored_candidates` (`JoinCascade.v:5156`), the TLA+ invariant `NoRecordLost` (V32) | `prop_peek_join_restores_stored_candidates`, `prop_no_record_lost_any_schedule`, `space_joins_peek_join_restores_stored_candidates`, `space_joins_produce_side_peek_reproduces_in_receipt_order` |
 | JN-13 | `join_txn_fires_bounded` (`JoinCascade.v:4642`), the TLA+ invariant `TxnFiresBounded` (V31) | `prop_join_txn_fires_bounded_at_the_cap`, `space_joins_txn_fires_bounded_at_the_cap`, `space_joins_cascade_round_cap_reissues_settle`, `space_joins_cap_carries_pending_second_sends`, `space_joins_settle_before_cap_resumes_the_operation` |
 | JN-14 | `cascade_restores_inv` (`JoinCascade.v:7230`), the TLA+ invariant `QuiescentNoPendingMatch` (V26) | `prop_cascade_restores_inv_any_schedule`, `prop_quiescent_no_pending_match_any_schedule`, `prop_join_engine_agrees_with_drivers_without_joins` |
-| JN-15 | `join_ops_race_on_every_counter` (`CounterConflict.v:1935`) | `prop_join_ops_race_on_every_counter`, `space_collection_conflicts_join_ops_race_all_counters`, `space_collection_conflicts_unrelated_collections_merge`, `space_collection_conflicts_bag_join_potential_comm`, `space_joins_persisted_waiter_check3_conflict`, `reified_p5c_only_user_joins_persist` |
+| JN-15 | `join_ops_race_on_every_counter` (`CounterConflict.v:1947`) | `prop_join_ops_race_on_every_counter`, `space_collection_conflicts_join_ops_race_all_counters`, `space_collection_conflicts_unrelated_collections_merge`, `space_collection_conflicts_bag_join_potential_comm`, `space_joins_persisted_waiter_check3_conflict`, `reified_p5c_only_user_joins_persist` |
 | NE-1, NE-3 | `native_replay_reproduces_play` (`EventCorrelation.v:8617`), `native_replay_denial_keeps_prefix` (`EventCorrelation.v:8663`), the TLA+ invariant `NativeReplayOutcomeEqual` (N5) | `prop_native_space_replay_reproduces_play`, `prop_native_space_replay_denial_keeps_prefix`, `space_native_replay_equal_hashmap`, `space_native_denial_replay` |
 | NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play` |
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |

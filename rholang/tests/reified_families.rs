@@ -17,7 +17,8 @@
 // P6 registers the VectorDB families `hashmap:vectordb` and `vector:vectordb` after the rows and
 // aliases of P5 (design v3 4.2). Their factories require `capacity` and `dimensions`, and take
 // the optional `metric` and `mirror`. Gate 9 then refuses a `mirror` whose metric ChromaDB does
-// not index. The oracles of this file restate these rules.
+// not index. The oracles of this file restate these rules, and `prop_vectordb_params_validated`
+// restates the P6 headline `vectordb_params_validated` of `SpaceFactory.v`.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -52,8 +53,8 @@ use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::factory::constructor::{family_of, FactoryConstructor};
 use rholang::rust::interpreter::spaces::factory::defaults::{
     constructor_schema, required_params, suggestion, ParamRule, CAPACITY_PARAM, CYCLIC_PARAM,
-    DIMENSIONS_PARAM, METRIC_PARAM, MIRROR_CHROMA, MIRROR_PARAM, PRIORITIES_PARAM, SIZE_PARAM,
-    SUGGESTION_DISTANCE,
+    DIMENSIONS_PARAM, MAX_CAPACITY, MAX_DIMENSIONS, METRIC_PARAM, MIRROR_CHROMA, MIRROR_PARAM,
+    PRIORITIES_PARAM, SIZE_PARAM, SUGGESTION_DISTANCE,
 };
 use rholang::rust::interpreter::spaces::factory::urn::{
     factory_capability, factory_channel, is_wired, registered_aliases, registered_channel,
@@ -418,6 +419,43 @@ fn arb_positional() -> BoxedStrategy<Vec<Par>> {
     prop_oneof![
         4 => Just(Vec::new()),
         1 => vec(arb_value(), 1..3),
+    ]
+    .boxed()
+}
+
+/// A value of the VectorDB param `key`: mostly a value that its rule accepts, near the bounds of
+/// the rule, else a near miss or any value of [`arb_value`].
+fn arb_vectordb_value(key: &'static str) -> BoxedStrategy<Par> {
+    let (valid, near): (BoxedStrategy<Par>, BoxedStrategy<Par>) = match key {
+        CAPACITY_PARAM => (
+            select(vec![1i64, 2, 999_999, 1_000_000])
+                .prop_map(int)
+                .boxed(),
+            select(vec![0i64, -1, 1_000_001, i64::MAX])
+                .prop_map(int)
+                .boxed(),
+        ),
+        DIMENSIONS_PARAM => (
+            select(vec![1i64, 2, 4095, 4096]).prop_map(int).boxed(),
+            select(vec![0i64, -1, 4097, i64::MAX]).prop_map(int).boxed(),
+        ),
+        METRIC_PARAM => (
+            select(METRICS.to_vec()).prop_map(string).boxed(),
+            select(vec!["Cosine", "l2", "chroma", ""])
+                .prop_map(string)
+                .boxed(),
+        ),
+        _ => (
+            Just(string(MIRROR_CHROMA)).boxed(),
+            select(vec!["Chroma", "qdrant", "cosine", ""])
+                .prop_map(string)
+                .boxed(),
+        ),
+    };
+    prop_oneof![
+        6 => valid,
+        2 => near,
+        1 => arb_value(),
     ]
     .boxed()
 }
@@ -1213,7 +1251,7 @@ async fn space_factory_kwargs_are_stored_canonical() {
     }
 }
 
-// ─── Properties (the P5 headlines of SpaceFactory.v) ─────────────────────────────────────────
+// ─── Properties (the P5 and P6 headlines of SpaceFactory.v) ──────────────────────────────────
 
 /// `registered_families_complete` (F26): a family is registered exactly when it has a row and
 /// its dispatch arm. A registered family has the op of its index, the body ref `200 + op`, its
@@ -1497,6 +1535,63 @@ fn prop_array_size_validated() {
                     prop_assert_eq!(validated.map(|validated| validated.params), expected);
                 }
             }
+            Ok(())
+        },
+    );
+}
+
+/// `vectordb_params_validated` (design v3 4.2): a VectorDB factory requires `capacity`, a `GInt`
+/// in `[1, 1_000_000]`, and `dimensions`, a `GInt` in `[1, 4096]`. It takes the optional
+/// `metric`, one of the six metric names, and `mirror`, the name `"chroma"`. The values are
+/// checked in bytewise key order, and then gate 9 refuses a mirror whose metric ChromaDB does not
+/// index. For every combination of the four params, the outcome equals the oracle.
+#[test]
+fn prop_vectordb_params_validated() {
+    let families: Vec<SpaceFactoryUrn> = schema_families()
+        .into_iter()
+        .filter(|family| family.inner == SpaceInner::VectorDb)
+        .collect();
+    assert_eq!(families.len(), 2, "hashmap:vectordb and vector:vectordb");
+    assert_eq!(
+        (MAX_CAPACITY, MAX_DIMENSIONS),
+        (1_000_000, 4096),
+        "the bounds of design v3 4.2"
+    );
+    let slot = |key| proptest::option::weighted(0.9, arb_vectordb_value(key));
+    check(
+        pure_config(),
+        (
+            select(families),
+            slot(CAPACITY_PARAM),
+            slot(DIMENSIONS_PARAM),
+            slot(METRIC_PARAM),
+            slot(MIRROR_PARAM),
+        ),
+        |(family, capacity, dimensions, metric, mirror)| {
+            prop_assert_eq!(
+                constructor_schema(family),
+                Some(&[CAPACITY_PARAM, DIMENSIONS_PARAM, METRIC_PARAM, MIRROR_PARAM][..])
+            );
+            prop_assert_eq!(
+                required_params(family),
+                &[CAPACITY_PARAM, DIMENSIONS_PARAM][..]
+            );
+            let mut pairs = BTreeMap::new();
+            for (key, value) in [
+                (CAPACITY_PARAM, capacity),
+                (DIMENSIONS_PARAM, dimensions),
+                (METRIC_PARAM, metric),
+                (MIRROR_PARAM, mirror),
+            ] {
+                if let Some(value) = value {
+                    pairs.insert(key.to_string(), value);
+                }
+            }
+            let validated = FactoryConstructor::validate(family, &ctor(&[], &pairs));
+            prop_assert_eq!(
+                validated.map(|validated| validated.params),
+                expected_params(family, &[], &pairs)
+            );
             Ok(())
         },
     );

@@ -150,6 +150,12 @@
                             (CAPACITY = Some 1)
    exec_rf, run_rf (P5)     the removal without a counter bump that the
                             M-1 arbitration rejects (no code)
+   capped_pass (P6)         rholang/src/rust/interpreter/spaces/generic.rs:
+                            946-963 (Cx::check_capacity: a store fails when
+                            its view holds the bound or more), rholang/src/
+                            rust/interpreter/spaces/disciplines/
+                            vectordb.rs:173-185 (the bound of a VectorDB
+                            collection: its capacity, records only)
    CrossedStacks.splan (P5) rholang/src/rust/interpreter/spaces/disciplines/
                             stack.rs:71-93 (a counter, and the head is the
                             entry with the greatest ord: a pop takes the
@@ -275,6 +281,12 @@
                                           ordered discipline on it, race on
                                           its token S(sid) (P5e, decision
                                           51)
+   16. capped_writes_soft_bound          capped stores (the capacity of a
+                                          VectorDB collection) merge with no
+                                          race, and a merge can exceed the
+                                          capacity by at most the stores of
+                                          the branch with fewer stores (P6,
+                                          decision 71)
 
    The negative control cc-join-bumps-first-only (a join step bumps only
    the first collection of its group) fails in headline 12. The control
@@ -2298,6 +2310,113 @@ Section Spaces.
       rewrite Hb in Hfirst. discriminate.
     - exact (IH _ s v cr Hdata Hrest Hin).
   Qed.
+
+  (* ── 15. Headline 16: the soft bound of capacity under merges ───────── *)
+
+  (* A capped store (the VectorDB discipline, design v3 4.3, decision 71): a
+     store into k reads the records of k in the view of its own
+     transaction, and it fails when they number cap or more
+     (Cx::check_capacity). capped_pass holds when every store of a branch
+     passes. Otherwise the deploy fails, and the merge drops it
+     (block_index.rs). The stores themselves are the counter-free produces
+     of bag_run. *)
+  Fixpoint capped_pass (cap : nat) (st : store) (ws : list (Coll * D)) : bool :=
+    match ws with
+    | [] => true
+    | (k, d) :: rest =>
+        (length (sd st k) <? cap) &&
+        capped_pass cap (mkStore (upd_c (sd st) k (sd st k ++ [d])) (sc st) (ss st)) rest
+    end.
+
+  Lemma writes_to_cons :
+    forall q p d rest,
+      writes_to q ((p, d) :: rest) = if coll_eq_dec p q then d :: writes_to q rest else writes_to q rest.
+  Proof. intros q p d rest. unfold writes_to. cbn [filter fst]. destruct (coll_eq_dec p q); reflexivity. Qed.
+
+  (* A run of capped stores passes exactly when, on every collection that
+     it writes, the records before the run and its stores number at most
+     cap. *)
+  Lemma capped_pass_iff :
+    forall cap ws st, capped_pass cap st ws = true <->
+      (forall k, writes_to k ws <> [] -> length (sd st k) + length (writes_to k ws) <= cap).
+  Proof.
+    intros cap. induction ws as [| [k d] rest IH]; intros st.
+    - split; [intros _ k H; contradiction H; reflexivity | intros _; reflexivity].
+    - cbn [capped_pass]. rewrite andb_true_iff, Nat.ltb_lt, IH. cbn [sd]. split.
+      + intros [Hk Hrest] k'. rewrite writes_to_cons. destruct (coll_eq_dec k k') as [<- | Hne].
+        * intros _. specialize (Hrest k). revert Hrest. rewrite upd_c_eq, length_app.
+          destruct (writes_to k rest) as [| w ws']; cbn [length]; intros Hrest.
+          -- lia.
+          -- assert (Hrest' := Hrest ltac:(discriminate)). lia.
+        * intros Hw. specialize (Hrest k' Hw). rewrite upd_c_neq in Hrest by exact Hne. exact Hrest.
+      + intros H. split.
+        * specialize (H k). revert H. rewrite writes_to_cons.
+          destruct (coll_eq_dec k k) as [_ | C]; [| contradiction C; reflexivity].
+          intros H. assert (H' := H ltac:(discriminate)). cbn [length] in H'. lia.
+        * intros k' Hw. specialize (H k'). revert H. rewrite writes_to_cons.
+          destruct (coll_eq_dec k k') as [<- | Hne]; intros H.
+          -- rewrite upd_c_eq, length_app. cbn [length].
+             assert (H' := H ltac:(discriminate)). cbn [length] in H'. lia.
+          -- rewrite upd_c_neq by exact Hne. exact (H Hw).
+  Qed.
+
+  (* The records of k after a run of stores: the records before the run and
+     the stores of the run to k. *)
+  Lemma bag_run_length :
+    forall tag n st ws k, length (sd (fst (bag_run tag n st ws)) k) = length (sd st k) + length (writes_to k ws).
+  Proof.
+    intros tag n st ws k. pose proof (bag_view tag ws n st (ChD k)) as H. cbn [view bag_added] in H.
+    apply (f_equal (@length item)) in H. rewrite length_app, !length_map in H. exact H.
+  Qed.
+
+  (* Headline 16 (decision 71). Two branches of capped stores that both
+     pass from one base merge without a race in check #1, as every
+     counter-free write does (headline 7). On every collection the merge
+     holds the base records and the stores of both branches. So the merge
+     can hold more records than cap, but by at most the stores of the
+     branch with fewer stores to that collection. The serial order A then B
+     passes exactly when every collection that B writes stays within cap
+     with the stores of both branches, so an overflow is a state that no
+     serial order gives. A store fails exactly on a collection that holds
+     cap records or more: after an overflow every store fails until
+     removals bring the count below cap. *)
+  Theorem capped_writes_soft_bound :
+    forall cap tA tB base wsA wsB,
+      (forall k d, In (k, d) wsA -> In (k, d) wsB -> False) ->
+      capped_pass cap base wsA = true -> capped_pass cap base wsB = true ->
+      let endA := fst (bag_run tA 0 base wsA) in
+      let endB := fst (bag_run tB 0 base wsB) in
+      check1_spaces (snd (bag_run tA 0 base wsA)) (snd (bag_run tB 0 base wsB)) = [] /\
+      (forall k, exists l, merged base endA endB (ChD k) = Some l /\
+         length l = length (sd base k) + length (writes_to k wsA) + length (writes_to k wsB) /\
+         (writes_to k wsA ++ writes_to k wsB <> [] ->
+          length l <= cap + Nat.min (length (writes_to k wsA)) (length (writes_to k wsB)))) /\
+      (capped_pass cap endA wsB = true <->
+       (forall k, writes_to k wsB <> [] ->
+          length (sd base k) + length (writes_to k wsA) + length (writes_to k wsB) <= cap)) /\
+      (forall st k d, capped_pass cap st [(k, d)] = false <-> cap <= length (sd st k)).
+  Proof.
+    intros cap tA tB base wsA wsB Hdisj HA HB. cbv zeta.
+    destruct (unordered_writes_commute tA tB base wsA wsB Hdisj) as [Hc Hm].
+    rewrite capped_pass_iff in HA, HB.
+    split; [exact Hc |].
+    split; [| split].
+    - intros k. destruct (Hm (ChD k)) as (l & Hl & HpB & _).
+      exists l. split; [exact Hl |].
+      assert (Hlen : length l = length (sd base k) + length (writes_to k wsA) + length (writes_to k wsB)).
+      { apply Permutation_length in HpB. rewrite HpB. cbn [view].
+        rewrite length_map, !bag_run_length. lia. }
+      split; [exact Hlen |].
+      rewrite Hlen. pose proof (HA k) as Ha. pose proof (HB k) as Hb. revert Ha Hb.
+      destruct (writes_to k wsA) as [| a0 la]; destruct (writes_to k wsB) as [| b0 lb];
+        cbn [length app]; intros Ha Hb Hne.
+      + contradiction Hne. reflexivity.
+      + assert (Hb' := Hb ltac:(discriminate)). lia.
+      + assert (Ha' := Ha ltac:(discriminate)). lia.
+      + assert (Ha' := Ha ltac:(discriminate)). assert (Hb' := Hb ltac:(discriminate)). lia.
+    - rewrite capped_pass_iff. split; intros H k Hw; specialize (H k Hw); rewrite bag_run_length in *; lia.
+    - intros st k d. cbn [capped_pass]. rewrite andb_true_r, Nat.ltb_ge. reflexivity.
+  Qed.
 End Spaces.
 
 Arguments QEnqueue {D} d.
@@ -2494,3 +2613,4 @@ Print Assumptions join_ops_race_on_every_counter.
 Print Assumptions set_retirements_race.
 Print Assumptions unordered_set_writes_commute.
 Print Assumptions pathmap_token_race.
+Print Assumptions capped_writes_soft_bound.

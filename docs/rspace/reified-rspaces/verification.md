@@ -1464,15 +1464,15 @@ CounterConflict.v restates merge check 1 of the baseline, and it proves the race
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q20 | `check1_race_iff` (`CounterConflict.v:483`) | Check 1 reports a race exactly for a shared non-persistent event that is not mergeable in both logs. | `prop_check1_restatement_matches_merger` |
-| Q21 | `ordered_writes_race_on_counter` (`CounterConflict.v:898`) | Two branches that write one queue race on its counter. | `prop_queue_writes_race_on_counter` |
-| Q22 | `ordered_reads_race_on_counter` (`CounterConflict.v:912`) | A peek bumps the counter too, so two branches that read one queue race. | `prop_queue_reads_race_on_counter` |
-| Q23 | `first_ops_race_on_space_counter` (`CounterConflict.v:927`) | Two branches whose first operations open collections of one space race on the space counter. | `prop_first_ops_race_on_space_counter` |
-| Q24 | `crossed_collections_race` (`CounterConflict.v:941`) | Branches that use two queues in crossed orders race on both counters. | `prop_crossed_collections_race` |
-| Q25 | `same_block_ops_chain` (`CounterConflict.v:1101`) | Two deploys of one block that use one queue form one chain. | `prop_same_block_queue_ops_chain` |
-| Q26 | `unordered_writes_commute` (`CounterConflict.v:1639`) | Writes to a collection without a counter never race, and the merge holds both serial orders. | `prop_counter_free_writes_commute` |
-| Q27 | `merge_without_race_is_serializable` (`CounterConflict.v:1477`) | Without a race, the merged state and the observations are those of a serial run. | `prop_nonracing_queue_branches_serializable` |
-| Q28 | `counter_free_peek_admits_write_skew` (`CounterConflict.v:2366`) | A peek without the counter admits the write skew of a peek and a dequeue, as a computed counterexample. | `prop_counter_free_peek_admits_write_skew` |
+| Q20 | `check1_race_iff` (`CounterConflict.v:495`) | Check 1 reports a race exactly for a shared non-persistent event that is not mergeable in both logs. | `prop_check1_restatement_matches_merger` |
+| Q21 | `ordered_writes_race_on_counter` (`CounterConflict.v:910`) | Two branches that write one queue race on its counter. | `prop_queue_writes_race_on_counter` |
+| Q22 | `ordered_reads_race_on_counter` (`CounterConflict.v:924`) | A peek bumps the counter too, so two branches that read one queue race. | `prop_queue_reads_race_on_counter` |
+| Q23 | `first_ops_race_on_space_counter` (`CounterConflict.v:939`) | Two branches whose first operations open collections of one space race on the space counter. | `prop_first_ops_race_on_space_counter` |
+| Q24 | `crossed_collections_race` (`CounterConflict.v:953`) | Branches that use two queues in crossed orders race on both counters. | `prop_crossed_collections_race` |
+| Q25 | `same_block_ops_chain` (`CounterConflict.v:1113`) | Two deploys of one block that use one queue form one chain. | `prop_same_block_queue_ops_chain` |
+| Q26 | `unordered_writes_commute` (`CounterConflict.v:1651`) | Writes to a collection without a counter never race, and the merge holds both serial orders. | `prop_counter_free_writes_commute` |
+| Q27 | `merge_without_race_is_serializable` (`CounterConflict.v:1489`) | Without a race, the merged state and the observations are those of a serial run. | `prop_nonracing_queue_branches_serializable` |
+| Q28 | `counter_free_peek_admits_write_skew` (`CounterConflict.v:2485`) | A peek without the counter admits the write skew of a peek and a dequeue, as a computed counterexample. | `prop_counter_free_peek_admits_write_skew` |
 
 P5 adds two headlines to the module, and section [12.11](#1211-the-merge-of-the-p5-families) describes them.
 
@@ -2566,11 +2566,11 @@ The 17 Rocq negative controls fail inside their expected lemmas. One control cha
 
 | Headline | Location | Property test |
 |---|---|---|
-| `registered_families_complete` | `SpaceFactory.v:1215` | `prop_registered_families_complete`, `prop_factory_config_names_its_family` |
-| `aliases_bind_family_capability` | `SpaceFactory.v:1279` | `prop_aliases_bind_family_capability`, `prop_factory_config_names_its_family` |
-| `constructor_params_validated` | `SpaceFactory.v:1624` | `prop_constructor_params_validated` |
-| `priorities_validated` | `SpaceFactory.v:1755` | `prop_priorities_validated` |
-| `array_size_validated` | `SpaceFactory.v:1854` | `prop_array_size_validated` |
+| `registered_families_complete` | `SpaceFactory.v:1354` | `prop_registered_families_complete`, `prop_factory_config_names_its_family` |
+| `aliases_bind_family_capability` | `SpaceFactory.v:1431` | `prop_aliases_bind_family_capability`, `prop_factory_config_names_its_family` |
+| `constructor_params_validated` | `SpaceFactory.v:1834` | `prop_constructor_params_validated` |
+| `priorities_validated` | `SpaceFactory.v:1971` | `prop_priorities_validated` |
+| `array_size_validated` | `SpaceFactory.v:2084` | `prop_array_size_validated` |
 
 `rholang/tests/reified_families.rs` holds 10 tests and 6 properties, and the factory modules hold 27 unit tests.
 Every check of the suite runs for each registered family, so a new arm extends the suite with no edit.
@@ -2637,13 +2637,13 @@ The second wave of W2 checks this rule for the bag, the cell, the stack, and the
 
 | Headline | Location | Design name | Property test |
 |---|---|---|---|
-| `shared_collection_race` | `CounterConflict.v:877` | F23 `cell_ops_race_on_counter` | `prop_cell_ops_race_on_counter` |
-| `crossed_stacks_without_removal_counters_fabricate` | `CounterConflict.v:2459` | the same name | `prop_crossed_stacks_without_removal_counters_fabricate` |
-| `crossed_collections_race` (Q24 of P4) | `CounterConflict.v:941` | `crossed_stacks_race` | `prop_crossed_stacks_race` |
-| `unordered_writes_commute` (Q26 of P4) | `CounterConflict.v:1639` | the bag row | `prop_bag_writes_commute` |
-| `set_retirements_race` | `CounterConflict.v:1980` | F24, the same name | `prop_set_retirements_race` |
-| `unordered_set_writes_commute` | `CounterConflict.v:2012` | F25, the same name | `prop_unordered_set_writes_commute` |
-| `pathmap_token_race` | `CounterConflict.v:2193` | the same name ([decision 51](decision-register.md#decision-51)) | `prop_pathmap_token_race` |
+| `shared_collection_race` | `CounterConflict.v:889` | F23 `cell_ops_race_on_counter` | `prop_cell_ops_race_on_counter` |
+| `crossed_stacks_without_removal_counters_fabricate` | `CounterConflict.v:2578` | the same name | `prop_crossed_stacks_without_removal_counters_fabricate` |
+| `crossed_collections_race` (Q24 of P4) | `CounterConflict.v:953` | `crossed_stacks_race` | `prop_crossed_stacks_race` |
+| `unordered_writes_commute` (Q26 of P4) | `CounterConflict.v:1651` | the bag row | `prop_bag_writes_commute` |
+| `set_retirements_race` | `CounterConflict.v:1992` | F24, the same name | `prop_set_retirements_race` |
+| `unordered_set_writes_commute` | `CounterConflict.v:2024` | F25, the same name | `prop_unordered_set_writes_commute` |
+| `pathmap_token_race` | `CounterConflict.v:2205` | the same name ([decision 51](decision-register.md#decision-51)) | `prop_pathmap_token_race` |
 
 The plan of the model is a section variable, so the race theorems of P4 also hold for the stack and the cell.
 A cell operation that fails with `CellOccupied` fails its deploy before it stages anything.
@@ -2658,22 +2658,22 @@ The four new Rocq negative controls fail inside their expected declarations.
 
 At the end of wave W2, `rholang/tests/reified_merge_p5.rs` held 8 tests and 5 properties.
 The tests compute the merge as `dag_merger.rs` does, and each race test also strips the counter events, after which the branches merge.
-Two `new` blocks inside `use` of one Array or Vector space race on the allocator `A(sid)` (`rholang/tests/reified_merge_p5.rs:874-935`).
-The tests of items 18 and 19 of the consensus checklist are at `rholang/tests/reified_merge_p5.rs:1105-1244`.
-The test of item 18 for the joins of P5c is at `rholang/tests/reified_merge_p5.rs:2096-2179`.
+Two `new` blocks inside `use` of one Array or Vector space race on the allocator `A(sid)` (`rholang/tests/reified_merge_p5.rs:930-991`).
+The tests of items 18 and 19 of the consensus checklist are at `rholang/tests/reified_merge_p5.rs:1161-1300`.
+The test of item 18 for the joins of P5c is at `rholang/tests/reified_merge_p5.rs:2152-2235`.
 
 Wave W3 extends these checks to the set, the priority queue and the joins, and it adds 8 tests and 2 properties.
 So `reified_merge_p5.rs` now holds 16 tests and 7 properties.
 A set has no counter, so its merges follow the HEAD checks of its records.
-Writes to one set merge, and the merged view is the view of each serial order (F25, `rholang/tests/reified_merge_p5.rs:1801-1840`).
-Two branches that each retire one stored member of a set race in check #1 on the produce of that member (F24, `rholang/tests/reified_merge_p5.rs:1842-1880`).
+Writes to one set merge, and the merged view is the view of each serial order (F25, `rholang/tests/reified_merge_p5.rs:1857-1896`).
+Two branches that each retire one stored member of a set race in check #1 on the produce of that member (F24, `rholang/tests/reified_merge_p5.rs:1898-1936`).
 
-Two dequeues of one priority queue race on its counter and on the head record that both take (`rholang/tests/reified_merge_p5.rs:1884-1925`).
-A peek of a priority queue races with a send and with a dequeue on the counter alone (`rholang/tests/reified_merge_p5.rs:1927-1956`).
+Two dequeues of one priority queue race on its counter and on the head record that both take (`rholang/tests/reified_merge_p5.rs:1940-1981`).
+A peek of a priority queue races with a send and with a dequeue on the counter alone (`rholang/tests/reified_merge_p5.rs:1983-2012`).
 The merge index counts no consume of a peek COMM, so without the counter events each of these pairs merges.
-A join races on the counter of each of its collections, and it merges with operations on other collections (`rholang/tests/reified_merge_p5.rs:1968-2018`).
-A bag join has no counter, and it meets a send on one of its collections as a potential COMM in check #2 (`rholang/tests/reified_merge_p5.rs:2020-2048`).
-The properties `prop_set_retirements_race` and `prop_unordered_set_writes_commute` run 16 cases each (`rholang/tests/reified_merge_p5.rs:2183-2255`).
+A join races on the counter of each of its collections, and it merges with operations on other collections (`rholang/tests/reified_merge_p5.rs:2024-2074`).
+A bag join has no counter, and it meets a send on one of its collections as a potential COMM in check #2 (`rholang/tests/reified_merge_p5.rs:2076-2104`).
+The properties `prop_set_retirements_race` and `prop_unordered_set_writes_commute` run 16 cases each (`rholang/tests/reified_merge_p5.rs:2239-2311`).
 
 Phase 2 of the PathMap engine adds headline 15, `pathmap_token_race`, to `CounterConflict.v` (R129).
 Two deploys from one pre-state that each run a PathMap step that bumps the token race in check #1 on $`S(\mathit{sid})`$.
@@ -2681,9 +2681,9 @@ A step bumps the token when its discipline is ordered, or when its transaction c
 The predicate `pstep_changes` of the model is the `changed` rule of the engine, with the class retire of a set added.
 Its two new negative controls fail inside `exec_pmap_consumes_token` and `store_changes`.
 
-The test `space_collection_conflicts_pathmap_token_race` checks that two writes to disjoint paths of one bag space race on the token (`rholang/tests/reified_merge_p5.rs:2319-2360`).
+The test `space_collection_conflicts_pathmap_token_race` checks that two writes to disjoint paths of one bag space race on the token (`rholang/tests/reified_merge_p5.rs:2375-2416`).
 A bag branch that only peeks bumps no token, so it merges with a write, and a peek of a queue races with a write.
-The property `prop_pathmap_token_race` generates pairs of sends and peeks on the bag and the queue (`rholang/tests/reified_merge_p5.rs:2401-2461`).
+The property `prop_pathmap_token_race` generates pairs of sends and peeks on the bag and the queue (`rholang/tests/reified_merge_p5.rs:2457-2517`).
 Two branches race exactly when both bump the token, and the same logs without the token events merge.
 So `reified_merge_p5.rs` now holds 17 tests and 8 properties.
 
@@ -2879,7 +2879,7 @@ The property `prop_pq_txn_fires_bounded_at_the_cap` reaches 54 settle jobs at th
 | `peek_join_restores_stored_candidates` | `JoinCascade.v:5156` | `prop_peek_join_restores_stored_candidates` |
 | `greedy_join_can_miss_assignment` | `JoinCascade.v:1345` | `prop_greedy_join_limit` |
 | `continuation_v2_roundtrip` | `RecordEnvelope.v:1734` | `prop_continuation_v2_roundtrip` |
-| `join_ops_race_on_every_counter` | `CounterConflict.v:1935` | `prop_join_ops_race_on_every_counter` |
+| `join_ops_race_on_every_counter` | `CounterConflict.v:1947` | `prop_join_ops_race_on_every_counter` |
 
 The cascade invariant (CI) has one argument for every discipline that cascades: the head-only disciplines (decision 11) and the set (decision 50).
 CI says that every fireable waiter has a dirty collection.
@@ -3336,10 +3336,11 @@ So three implementations agree on all 182 cases: the Rust core, the Sage leg and
 | `cosine-negative-case-reversed` | Rust mutant | `within` reverses the case of a negative cosine and a negative threshold. | 3 tests |
 | `cosine-order-swapped-norms` | Rust mutant | `better` multiplies each square by its own norm. | 2 tests |
 | `ties-round-up` | Rust mutant | The rounding breaks a tie upward. | 2 tests |
-| `dyadic-sum-keeps-unit` | Rust mutant | DYADIC-SUM shifts its sum but keeps its old unit. | 5 tests |
+| `dyadic-sum-keeps-unit` | Rust mutant | DYADIC-SUM shifts its sum but keeps its old unit. | 6 tests (5 at step 2, and the step-6 test `vector_ops_are_exact_before_the_rounding`) |
 | `euclidean-radius-unsquared` | Rust mutant | `within` compares $`d^2`$ with $`r`$. | 3 tests |
 
 The five Rocq mutants pass the gate (`rocq-negative-controls.py`), and the Z3 controls are in Table 95.
+Step 8a adds the Rust mutant `dot-f64-accumulation` (Table 124).
 The harness `scripts/verify-reified/tensor-mutants.py` applies each Rust mutant in turn, runs the tensor tests, and restores the source files.
 Each mutant fails the tests that the table counts, and the harness confirms that the restored files equal the originals.
 
@@ -4278,6 +4279,108 @@ To run the checks of step 7c, do these steps from the repository root:
 3. Run `bash scripts/verify-reified/chroma-live.sh` on a host with Docker.
 4. Run `cargo check -p node --features rholang/chromadb`.
 5. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+
+
+## 21. Phase P6, step 8a: the factory model, the VectorDB merges and the f64 mutant
+
+Step 8a closes three obligations of design v3, section 6, and of the factory model.
+It extends the Rocq model of the factories to the tables of the code, and it adds the property of the VectorDB params.
+It adds the merge cases of the VectorDB family in native execution, with the soft bound of `capacity` of plan decision 71.
+It also adds the f64-accumulation mutant of the numeric core.
+
+### 21.1 The factory model
+
+`SpaceFactory.v` now models the tables of the code of P6.
+The model of P5 wave W2 had no PathMap rows, no alias `rho:space:PathMapSpace` and no PathMap schema, although the code had them since wave W3.
+The model now has the six PathMap rows (ops 7 to 12) and the alias row (op 7).
+It also has the two VectorDB rows (ops 6 and 25).
+The three processes of P6 follow them: `rho:lang:vector` (op 35), `rho:vectordb:embed` (op 36) and `rho:vectordb:ann` (op 37).
+Headlines 9 and 10 range over these rows, and headline 9 names the three processes of P6 as the other definitions.
+
+Headline 14 (`vectordb_params_validated`) states the params of a VectorDB family:
+
+- Exactly `hashmap:vectordb` and `vector:vectordb` take `capacity`, `dimensions`, `metric` and `mirror`, and they require `capacity` and `dimensions`.
+- Every other family refuses the four names as unknown keys.
+- `capacity` accepts the `GInt` values from 1 to 1,000,000, and `dimensions` the `GInt` values from 1 to 4,096.
+- `metric` accepts the six metric names, and `mirror` accepts the name `chroma`.
+- A call without `capacity`, or with `capacity` and without `dimensions`, fails with `MissingParam` on the first missing key in bytewise order.
+- Gate 9 runs on the canonical params. It accepts a mirror exactly with the default qualifier and a metric that ChromaDB indexes: `cosine` (also without the param), `dot` or `euclidean`.
+
+The first compile of the extended model measured a slow kernel check.
+With the 23 rows of P5, the `Qed` of `definitions_incl` and of headline 9 took about 33 seconds each.
+Without the six PathMap rows, it took 0.5 seconds.
+A conversion strategy that unfolds the row tables last brings each `Qed` to milliseconds.
+A strategy changes only the order of the unfolding, never what the kernel accepts.
+The module now compiles in about 3 seconds, and its comment records the hypotheses that the measurement refuted.
+
+### 21.2 The VectorDB merges
+
+A VectorDB collection uses no counter (design v3 4.3), so its stores merge as the stores on a host channel do (M-1).
+The merge suite (`rholang/tests/reified_merge_p5.rs`) now runs its node in one of two models of execution.
+The P5 cases keep the legacy model, and the VectorDB cases run in native execution at the v6 limits (plan decision 69).
+
+A store checks `capacity` against the view of its own transaction.
+So two branches that each add a record to a collection one record below its capacity merge without a conflict.
+The merged collection then holds one record more than its capacity.
+No serial order gives that state, because the second deploy of a serial order fails with `CapacityExceeded`.
+
+Plan decision 71 keeps this soft bound: a merge can exceed the capacity by at most the stores of the branch with fewer stores.
+After an overflow, every store fails until removals bring the count below the capacity.
+Headline 16 of `CounterConflict.v` (`capped_writes_soft_bound`) states the bound, the serial outcome and the check of a store.
+
+### 21.3 Tests
+
+*Table 123. The tests of step 8a.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `prop_vectordb_params_validated` | `rholang/tests/reified_families.rs` | Headline 14: for every combination of the four params, the validation of both VectorDB families equals the oracle of the design. |
+| `prop_vectordb_writes_commute` | `rholang/tests/reified_merge_p5.rs` | Headline 7 of `CounterConflict.v` for the VectorDB family below its capacity: the stores touch no counter, the branches do not conflict, and the merge is the state of both serial orders. |
+| `prop_vectordb_capacity_soft_bound` | the same | Headline 16: from $`n`$ records and stores $`a`$ and $`b`$ that each fit a capacity $`c`$, the merge holds $`n + a + b \le c + \min(a, b)`$ records, and the serial order passes exactly when $`n + a + b \le c`$. |
+| `space_collection_conflicts_vectordb_writes_merge` | the same | Two branches of stores merge into the state of both serial orders, and two takes of one record race on the record. |
+| `space_collection_conflicts_vectordb_capacity_soft_bound` | the same | With a capacity of two, the merge holds three records. Then a store fails until two takes bring the count below the capacity. |
+
+The two properties run 16 cases each, as every property of the merge suite does.
+`prop_vectordb_capacity_soft_bound` also checks that its cases reach both sides of the bound.
+
+### 21.4 Negative controls
+
+*Table 124. The negative controls of step 8a.*
+
+| Control | Kind | What it changes | Must fail in |
+|---|---|---|---|
+| `sf-p5-pathmap-alias-other-op` | Rocq mutant | The alias `PathMapSpace` names the op 0. | `alias_rows_facts` |
+| `sf-p6-register-unwired` | Rocq mutant | A P6 row is registered without its dispatch arm. | `registered_rows` |
+| `sf-p6-define-unregistered` | Rocq mutant | The factory of every P6 row is defined. | `definitions_incl` |
+| `sf-p6-row-wrong-op` | Rocq mutant | `vector:vectordb` takes the op 24. | `rows_facts` |
+| `sf-p6-vectordb-on-pathmap` | Rocq mutant | `pathmap:vectordb` gets the VectorDB schema. | `vectordb_schema` |
+| `sf-p6-metric-required` | Rocq mutant | The VectorDB families require `metric`. | `vectordb_schema` |
+| `sf-p6-capacity-zero` | Rocq mutant | `capacity` accepts 0. | `canonical_capacity_rule` |
+| `sf-p6-capacity-bound` | Rocq mutant | The bound of `capacity` is 1,000,001. | `vectordb_params_validated` |
+| `sf-p6-dimensions-bound` | Rocq mutant | The bound of `dimensions` is 4,097. | `vectordb_params_validated` |
+| `sf-p6-metric-any-string` | Rocq mutant | `metric` accepts every string. | `canonical_metric_rule` |
+| `sf-p6-mirror-any-string` | Rocq mutant | `mirror` accepts every string. | `canonical_mirror_rule` |
+| `sf-p6-gate9-any-metric` | Rocq mutant | Gate 9 accepts a mirror with every metric name. | `check_mirror_spec` |
+| `sf-p6-gate9-any-qualifier` | Rocq mutant | Gate 9 accepts a mirror with every qualifier. | `check_mirror_spec` |
+| `sf-p6-gate9-no-default-metric` | Rocq mutant | Without the `metric` param, gate 9 has no metric. | `mirror_metric_default` |
+| `sf-p6-indexed-manhattan` | Rocq mutant | ChromaDB indexes `manhattan` too. | `vectordb_params_validated` |
+| `cc-capped-store-at-cap` | Rocq mutant | A store passes on a collection that holds the capacity. | `capped_pass_iff` |
+| `cc-capacity-hard-claimed` | Rocq mutant | The claim that a merge never exceeds the capacity. | `capped_writes_soft_bound` |
+| `dot-f64-accumulation` | Rust mutant | The dot product of dyadic vectors sums its terms in f64, with one rounding after each term. | 6 tests |
+
+Five controls of P5 now cite the moved texts of the tables and of the schema.
+All 41 controls of `SpaceFactory.v` and all 15 controls of `CounterConflict.v` fail where they must.
+The f64 mutant fails `tensor_exact_dot_differs_from_f64_accumulation`, the reference vectors, the correctly rounded values and three exact-kernel tests.
+
+### 21.5 Running the step-8a checks
+
+To run the checks of step 8a, do these steps from the repository root:
+
+1. Run `bash scripts/check-reified-rspaces-proofs.sh`, which must report `FAIL=0`.
+2. Run `cargo test -p rholang --test reified_families --test reified_merge_p5`.
+3. Run `python3 scripts/verify-reified/tensor-mutants.py`, which must report `FAIL=0`.
+4. Run `python3 scripts/verify-reified/check-invariant-map.py`.
+5. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p5.json`.
 
 
 ## References

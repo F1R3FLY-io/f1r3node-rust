@@ -1731,8 +1731,8 @@ The two consumed sets do not overlap, but no serial order of the branches gives 
 A second example uses persistent receives: each branch fires the persistent head waiter of one queue and stores a datum on the other queue.
 With a bump on every operation, both examples race on the counters.
 
-The headline `merge_without_race_is_serializable` (`CounterConflict.v:1477`) proves that a merge without a race gives the state of some serial run of whole deploys [[Pap79](#ref-pap79)].
-The headline `counter_free_peek_admits_write_skew` (`CounterConflict.v:2366`) computes the write skew of the counter-free peek.
+The headline `merge_without_race_is_serializable` (`CounterConflict.v:1489`) proves that a merge without a race gives the state of some serial run of whole deploys [[Pap79](#ref-pap79)].
+The headline `counter_free_peek_admits_write_skew` (`CounterConflict.v:2485`) computes the write skew of the counter-free peek.
 
 **Cost.** Each operation on a queue pays three extra events: the Consume and the COMM of the take, and the Produce of the put.
 The first operation on a collection pays four extra events, because it also produces the space counter.
@@ -1746,7 +1746,7 @@ Figure N3 shows the merge flow of the counter conflict.
 A removal must bump the counter too.
 The M-1 arbitration found this with two [crossed stacks](glossary.md#crossed-stacks), and Figure N3b shows the case.
 `CounterConflict.tla` runs the same merge for stacks, and its Unsafe control `RemovalCounterFreeUnsafe.cfg` drops the bump of a pop.
-The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2459`) computes the counterexample.
+The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConflict.v:2578`) computes the counterexample.
 
 ![The crossed stacks, as an activity diagram. The pre-state holds the stack a with the record 10 and the stack b with the record 20, each with its counter record. Branch A pushes 1 onto a and pops b, and branch B pushes 2 onto b and pops a. In lane 1, the code, every operation bumps its counter, so both branches consume the pre-state counter produces of a and b, check 1 finds the shared produces, and the merge rejects one branch. In lane 2 a pop does not bump the counter: the branches consume different produces, checks 1, 2 and 3 find nothing, and the merge keeps both pops, A popped 20 and B popped 10. But the serial order A then B makes B pop 1, and the order B then A makes A pop 2, so no serial order gives the merged outcome.](diagrams/23-crossed-stacks-merge.svg)
 

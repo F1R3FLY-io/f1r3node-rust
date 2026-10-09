@@ -203,6 +203,46 @@ exact decisions of the VectorDB family, or claims more than the rule gives:
 Headline S16 (kappa_dropped_not_unique) is the proved negative result of the
 kappa tie-break: without kappa, two sorted arrangements differ.
 
+P6 step 8 (SpaceFactory.v, headline 14 and the P6 rows of headlines 9 and 10)
+has controls that revert one rule of the registration or of the VectorDB
+params:
+  sf-p6-register-unwired         a P6 row is registered without its arm:
+                                 registered_rows breaks
+  sf-p6-define-unregistered      the factory of every P6 row is defined:
+                                 definitions_incl breaks
+  sf-p6-row-wrong-op             vector:vectordb takes the op 24:
+                                 rows_facts breaks
+  sf-p5-pathmap-alias-other-op   PathMapSpace names the op 0: alias_rows_facts
+                                 breaks
+  sf-p6-vectordb-on-pathmap      pathmap:vectordb gets a schema:
+                                 vectordb_schema breaks
+  sf-p6-metric-required          the VectorDB families require metric:
+                                 vectordb_schema breaks
+  sf-p6-capacity-zero            capacity accepts 0: canonical_capacity_rule
+                                 breaks
+  sf-p6-capacity-bound           the capacity bound is 1000001:
+                                 vectordb_params_validated breaks
+  sf-p6-dimensions-bound         the dimensions bound is 4097:
+                                 vectordb_params_validated breaks
+  sf-p6-metric-any-string        metric accepts every string:
+                                 canonical_metric_rule breaks
+  sf-p6-mirror-any-string        mirror accepts every string:
+                                 canonical_mirror_rule breaks
+  sf-p6-gate9-any-metric         gate 9 accepts every metric name:
+                                 check_mirror_spec breaks
+  sf-p6-gate9-any-qualifier      gate 9 ignores the qualifier:
+                                 check_mirror_spec breaks
+  sf-p6-gate9-no-default-metric  without the metric param, gate 9 has no
+                                 metric: mirror_metric_default breaks
+  sf-p6-indexed-manhattan        ChromaDB indexes manhattan too:
+                                 vectordb_params_validated breaks
+
+Decision 71 (CounterConflict.v, headline 16) has two controls:
+  cc-capped-store-at-cap         a store passes on a collection that holds
+                                 cap records: capped_pass_iff breaks
+  cc-capacity-hard-claimed       the claim that a merge never exceeds the
+                                 capacity: capped_writes_soft_bound breaks
+
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
   * A control has one mutation, or a tuple of mutations that the harness
@@ -1075,8 +1115,8 @@ CONTROLS = (
     # ── P5 W2: SpaceFactory.v, the P5 families (batch FACTORY) ──────────────────────────
     ("sf-p5-register-unwired", "SpaceFactory",
      "a P5 row is registered without its dispatch arm",
-     "  Definition registered : list (family * sys_channel) := p4_rows ++ filter (fun r => wired (fst r)) p5_rows.",
-     "  Definition registered : list (family * sys_channel) := p4_rows ++ p5_rows.",
+     "    p4_rows ++ filter (fun r => wired (fst r)) p5_rows ++",
+     "    p4_rows ++ p5_rows ++",
      ("registered_rows",)),
     ("sf-p5-row-wrong-op", "SpaceFactory",
      "the hashmap:set row takes the op 2 of hashmap:stack instead of its index 3",
@@ -1090,13 +1130,18 @@ CONTROLS = (
      ("definitions_incl", "registered_families_complete")),
     ("sf-p5-alias-other-op", "SpaceFactory",
      "the alias HashMapBagSpace names the op 1 of hashmap:queue",
-     "Definition alias_rows : list (sys_channel * family) := [(mkChan Str.hashmap_bag_alias 0 2, hashmap_bag)].",
-     "Definition alias_rows : list (sys_channel * family) := [(mkChan Str.hashmap_bag_alias 1 2, hashmap_bag)].",
+     "(mkChan Str.hashmap_bag_alias 0 2, hashmap_bag)",
+     "(mkChan Str.hashmap_bag_alias 1 2, hashmap_bag)",
      ("alias_rows_facts",)),
     ("sf-p5-alias-other-urn", "SpaceFactory",
      "the alias row carries the URN of hashmap:queue, so it does not parse to hashmap:bag",
-     "Definition alias_rows : list (sys_channel * family) := [(mkChan Str.hashmap_bag_alias 0 2, hashmap_bag)].",
-     "Definition alias_rows : list (sys_channel * family) := [(mkChan (urn_of queue_family) 0 2, hashmap_bag)].",
+     "(mkChan Str.hashmap_bag_alias 0 2, hashmap_bag)",
+     "(mkChan (urn_of queue_family) 0 2, hashmap_bag)",
+     ("alias_rows_facts",)),
+    ("sf-p5-pathmap-alias-other-op", "SpaceFactory",
+     "the alias PathMapSpace names the op 0 of hashmap:bag",
+     "(mkChan Str.pathmap_bag_alias 7 2, pathmap_bag)",
+     "(mkChan Str.pathmap_bag_alias 0 2, pathmap_bag)",
      ("alias_rows_facts",)),
     ("sf-p5-alias-without-family", "SpaceFactory",
      "the alias is registered before its family is registered",
@@ -1144,14 +1189,14 @@ CONTROLS = (
      "  | RPriorities, VInt z => if (0 <=? z)%Z && (z <=? i64_max)%Z then Some (VInt z) else None",
      ("canonical_int_rule",)),
     ("sf-p5-priorities-on-queue", "SpaceFactory",
-     "the HashMap and Vector families that are no priority queue take priorities",
-     "  | (HashMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])",
-     "  | (HashMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([StrP5.priorities], [])",
+     "the HashMap, PathMap and Vector families that are no priority queue take priorities",
+     "  | (HashMap | PathMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])",
+     "  | (HashMap | PathMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([StrP5.priorities], [])",
      ("schema_cases",)),
     ("sf-p5-priorities-required", "SpaceFactory",
-     "the HashMap and Vector priority queues require priorities",
-     "  | (HashMap | Vector), PriorityQueue => Some ([StrP5.priorities], [])",
-     "  | (HashMap | Vector), PriorityQueue => Some ([StrP5.priorities], [StrP5.priorities])",
+     "the HashMap, PathMap and Vector priority queues require priorities",
+     "  | (HashMap | PathMap | Vector), PriorityQueue => Some ([StrP5.priorities], [])",
+     "  | (HashMap | PathMap | Vector), PriorityQueue => Some ([StrP5.priorities], [StrP5.priorities])",
      ("schema_cases",)),
     ("sf-p5-size-optional", "SpaceFactory",
      "an Array family does not require size",
@@ -1170,9 +1215,91 @@ CONTROLS = (
      ("canonical_cyclic_rule",)),
     ("sf-p5-vector-takes-size", "SpaceFactory",
      "a Vector family takes size",
-     "  | (HashMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])",
-     "  | HashMap, (Bag | Queue | Stack | SetC | Cell) => Some ([], [])\n  | Vector, (Bag | Queue | Stack | SetC | Cell) => Some ([StrP5.size], [])",
+     "  | (HashMap | PathMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])",
+     "  | (HashMap | PathMap), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])\n  | Vector, (Bag | Queue | Stack | SetC | Cell) => Some ([StrP5.size], [])",
      ("schema_cases",)),
+    # ── P6 step 8: CounterConflict.v, the soft bound of capacity (decision 71) ─────────
+    ("cc-capped-store-at-cap", "CounterConflict",
+     "a capped store passes on a collection that already holds cap records",
+     "        (length (sd st k) <? cap) &&",
+     "        (length (sd st k) <=? cap) &&",
+     ("capped_pass_iff",)),
+    ("cc-capacity-hard-claimed", "CounterConflict",
+     "the claim that a merge of capped stores never exceeds the capacity",
+     "          length l <= cap + Nat.min (length (writes_to k wsA)) (length (writes_to k wsB)))) /\\",
+     "          length l <= cap)) /\\",
+     ("capped_writes_soft_bound",)),
+    # ── P6 step 8: SpaceFactory.v, the P6 rows and the VectorDB params ─────────────────
+    ("sf-p6-register-unwired", "SpaceFactory",
+     "a P6 row is registered without its dispatch arm",
+     " ++ filter (fun r => wired (fst r)) p6_rows.",
+     " ++ p6_rows.",
+     ("registered_rows",)),
+    ("sf-p6-define-unregistered", "SpaceFactory",
+     "definitions installs the factory of every P6 row, wired or not",
+     "    map (fun r => (snd r, Some (fst r))) (filter (fun r => wired (fst r)) p6_rows) ++",
+     "    map (fun r => (snd r, Some (fst r))) p6_rows ++",
+     ("definitions_incl", "registered_families_complete")),
+    ("sf-p6-row-wrong-op", "SpaceFactory",
+     "the vector:vectordb row takes the op 24 of vector:priorityqueue instead of its index 25",
+     "row Vector VectorDb 25]",
+     "row Vector VectorDb 24]",
+     ("rows_facts",)),
+    ("sf-p6-vectordb-on-pathmap", "SpaceFactory",
+     "the pathmap:vectordb pair gets the VectorDB schema",
+     "  | (HashMap | Vector), VectorDb => Some (vectordb_params, vectordb_required)",
+     "  | (HashMap | PathMap | Vector), VectorDb => Some (vectordb_params, vectordb_required)",
+     ("vectordb_schema",)),
+    ("sf-p6-metric-required", "SpaceFactory",
+     "the VectorDB families require metric",
+     "Definition vectordb_required : list bytes := [StrP6.capacity; StrP6.dimensions].",
+     "Definition vectordb_required : list bytes := [StrP6.capacity; StrP6.dimensions; StrP6.metric].",
+     ("vectordb_schema",)),
+    ("sf-p6-capacity-zero", "SpaceFactory",
+     "capacity accepts 0",
+     "  | RCapacity, VInt z => if (1 <=? z)%Z && (z <=? max_capacity)%Z then Some (VInt z) else None",
+     "  | RCapacity, VInt z => if (0 <=? z)%Z && (z <=? max_capacity)%Z then Some (VInt z) else None",
+     ("canonical_capacity_rule",)),
+    ("sf-p6-capacity-bound", "SpaceFactory",
+     "the capacity bound is one more than MAX_CAPACITY",
+     "Definition max_capacity : Z := 1000000%Z.",
+     "Definition max_capacity : Z := 1000001%Z.",
+     ("vectordb_params_validated",)),
+    ("sf-p6-dimensions-bound", "SpaceFactory",
+     "the dimensions bound is one more than MAX_DIMENSIONS",
+     "Definition max_dimensions : Z := 4096%Z.",
+     "Definition max_dimensions : Z := 4097%Z.",
+     ("vectordb_params_validated",)),
+    ("sf-p6-metric-any-string", "SpaceFactory",
+     "metric accepts every string",
+     "  | RMetric, VStr s => if mem s metric_names then Some (VStr s) else None",
+     "  | RMetric, VStr s => Some (VStr s)",
+     ("canonical_metric_rule",)),
+    ("sf-p6-mirror-any-string", "SpaceFactory",
+     "mirror accepts every string",
+     "  | RMirror, VStr s => if bytes_eqb s StrP6.chroma then Some (VStr s) else None",
+     "  | RMirror, VStr s => Some (VStr s)",
+     ("canonical_mirror_rule",)),
+    ("sf-p6-gate9-any-metric", "SpaceFactory",
+     "gate 9 accepts a mirror with every metric name",
+     "      | QDefault, Some m => mem m indexed_metrics",
+     "      | QDefault, Some m => mem m metric_names",
+     ("check_mirror_spec",)),
+    ("sf-p6-gate9-any-qualifier", "SpaceFactory",
+     "gate 9 accepts a mirror with every qualifier",
+     "      | QDefault, Some m => mem m indexed_metrics\n      | _, _ => false",
+     "      | _, Some m => mem m indexed_metrics\n      | _, None => false",
+     ("check_mirror_spec",)),
+    ("sf-p6-gate9-no-default-metric", "SpaceFactory",
+     "without the metric param gate 9 has no metric, so it refuses every mirror",
+     "  | None => Some StrP6.cosine",
+     "  | None => None",
+     ("mirror_metric_default",)),
+    ("sf-p6-indexed-manhattan", "SpaceFactory",
+     "ChromaDB indexes manhattan too",
+     "Definition indexed_metrics : list bytes := [StrP6.cosine; StrP6.dot; StrP6.euclidean].",
+     "Definition indexed_metrics : list bytes := [StrP6.cosine; StrP6.dot; StrP6.euclidean; StrP6.manhattan].",
+     ("vectordb_params_validated",)),
     # ── P5 W2: PathMapPrefix.v (batch PATHMAP, P5e) ─────────────────────────────────────
     ("pm-term-is-tag", "PathMapPrefix",
      "GBool(false) takes the byte 0x00 of the terminator as its tag (codec and parser)",

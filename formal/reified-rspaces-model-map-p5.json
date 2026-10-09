@@ -1,7 +1,7 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P5",
-  "title": "P5 wave W2: the engine, the bag, the cell and the stack, the Array and Vector stores with the allocator, the pure PathMap layer, the P5 families and the routing of receive queries, and for P5 wave W3 the PathMap engine of Phase 1 (markers, delivery plans, store), and for P5 wave W3 the join engine (spaces/join.rs and the v2 record of record.rs) and the set merges (F24, F25)",
+  "title": "P5 wave W2: the engine, the bag, the cell and the stack, the Array and Vector stores with the allocator, the pure PathMap layer, the P5 families and the routing of receive queries, and for P5 wave W3 the PathMap engine of Phase 1 (markers, delivery plans, store), and for P5 wave W3 the join engine (spaces/join.rs and the v2 record of record.rs) and the set merges (F24, F25), and for P6 step 8 the VectorDB params and gate 9 of SpaceFactory.v (R130) and the soft bound of capacity of CounterConflict.v (R131, decision 71)",
   "design": "P5 design v3 (decision 48) and the W2 batch reports. The headline ids are the ids of the P5 phase of formal/reified-rspaces-invariant-map.json. The stack items come from the STACK and STACK-I21 batches, with one fire count for each transaction (decision 49). The PathMap items of wave W3 come from the PATHMAP-ENGINE report (Phase 1). The join items come from the JOINS-FORMAL batch (fragments/JOINS-FORMAL/model-map-rows.json), with headline names mapped to the ids R108-R126 and V26-V34. R127 and R128 (F24, F25) are modeled by retires and bag_run of CounterConflict.v.",
   "code_base": "The items are in the P5 W2 commit of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
@@ -1013,6 +1013,18 @@
       "name": "pathmap_token_race",
       "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
       "statement": "Two branches that each run a PathMap step that bumps the token of one space race on S(sid) in check #1. A step bumps the token when its discipline is ordered, or when its transaction changes the state (decision 51)."
+    },
+    "R130": {
+      "kind": "rocq",
+      "name": "vectordb_params_validated",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+      "statement": "P6: exactly the VectorDB families hashmap:vectordb and vector:vectordb take capacity, dimensions, metric and mirror, and they require capacity and dimensions; every other family refuses the four names. capacity accepts exactly the GInt values in [1, 1000000], dimensions the GInt values in [1, 4096], metric the six metric names and mirror the name chroma. A missing capacity, then a missing dimensions, fails with MissingParam. Gate 9 runs on the canonical params and accepts a mirror exactly with the default qualifier and a metric (cosine without the param) that ChromaDB indexes: cosine, dot or euclidean."
+    },
+    "R131": {
+      "kind": "rocq",
+      "name": "capped_writes_soft_bound",
+      "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+      "statement": "Decision 71: two branches of capped stores (a VectorDB collection) that both pass from one base merge without a race in check #1. The merge holds the base records and both branches' stores, so it can exceed the capacity, by at most the stores of the branch with fewer stores. The serial order passes exactly when the stores of both fit, and a store fails exactly on a collection that holds the capacity or more."
     }
   },
   "items": [
@@ -1284,7 +1296,8 @@
       "role": "The capacity check of a side before a store or a park.",
       "rocq": [
         "side_full",
-        "cell_inv"
+        "cell_inv",
+        "capped_pass"
       ],
       "tla": [
         "StoreRec",
@@ -1294,7 +1307,8 @@
         "R46",
         "V7",
         "R49",
-        "R1"
+        "R1",
+        "R131"
       ]
     },
     {
@@ -2444,7 +2458,7 @@
       "kind": "const",
       "name": "P5_SYSTEM_CHANNELS",
       "line": 323,
-      "role": "The op channels of the P5 factories.",
+      "role": "The op channels of the P5 factories and aliases.",
       "rocq": [
         "p5_rows",
         "alias_rows"
@@ -2491,7 +2505,7 @@
       "kind": "const",
       "name": "P5_ALIAS_ROWS",
       "line": 144,
-      "role": "The P5 alias rows.",
+      "role": "The P5 alias rows: HashMapBagSpace and PathMapSpace.",
       "rocq": [
         "alias_rows"
       ],
@@ -2594,10 +2608,11 @@
       "kind": "fn",
       "name": "definitions",
       "line": 63,
-      "role": "The installed definitions: P4 processes, P5 families, aliases.",
+      "role": "The installed definitions: P4 processes, P5 families, aliases, P6 families and processes.",
       "rocq": [
         "definitions",
-        "binds"
+        "binds",
+        "p6_others"
       ],
       "covers": [
         "R18",
@@ -2628,12 +2643,15 @@
       "line": 68,
       "role": "The constructor schema of a family.",
       "rocq": [
-        "schema_of"
+        "schema_of",
+        "vectordb_params",
+        "vectordb_required"
       ],
       "covers": [
         "R20",
         "R21",
-        "R22"
+        "R22",
+        "R130"
       ]
     },
     {
@@ -2648,7 +2666,8 @@
         "schema_of"
       ],
       "covers": [
-        "R20"
+        "R20",
+        "R130"
       ]
     },
     {
@@ -2664,7 +2683,8 @@
       ],
       "covers": [
         "R20",
-        "R22"
+        "R22",
+        "R130"
       ]
     },
     {
@@ -2681,7 +2701,8 @@
       "covers": [
         "R20",
         "R21",
-        "R22"
+        "R22",
+        "R130"
       ]
     },
     {
@@ -2697,7 +2718,8 @@
         "rule_of"
       ],
       "covers": [
-        "R20"
+        "R20",
+        "R130"
       ]
     },
     {
@@ -2710,12 +2732,16 @@
       "line": 138,
       "role": "The canonical value of a param, or none.",
       "rocq": [
-        "canonical"
+        "canonical",
+        "max_capacity",
+        "max_dimensions",
+        "metric_names"
       ],
       "covers": [
         "R20",
         "R21",
-        "R22"
+        "R22",
+        "R130"
       ]
     },
     {
@@ -2746,12 +2772,14 @@
       "role": "The gates of a constructor, in order.",
       "rocq": [
         "validate_params",
-        "validate_qualifier"
+        "validate_qualifier",
+        "validate_factory"
       ],
       "covers": [
         "R20",
         "R21",
-        "R22"
+        "R22",
+        "R130"
       ]
     },
     {
@@ -6527,6 +6555,191 @@
       "covers": [
         "R104",
         "R105"
+      ]
+    },
+    {
+      "item": "PATHMAP_SPACE_ALIAS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "const",
+      "name": "PATHMAP_SPACE_ALIAS",
+      "line": 313,
+      "role": "The FIPS alias of pathmap:bag.",
+      "rocq": [
+        "alias_rows"
+      ],
+      "covers": [
+        "R19"
+      ]
+    },
+    {
+      "item": "P6_FAMILY_ROWS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "const",
+      "name": "P6_FAMILY_ROWS",
+      "line": 145,
+      "role": "The P6 factory rows: the two VectorDB families.",
+      "rocq": [
+        "p6_rows"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "registered_p6_families",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "registered_p6_families",
+      "line": 182,
+      "role": "The P6 rows of the wired families.",
+      "rocq": [
+        "registered"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "P6_SYSTEM_CHANNELS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "const",
+      "name": "P6_SYSTEM_CHANNELS",
+      "line": 378,
+      "role": "The op channels of the P6 factories.",
+      "rocq": [
+        "p6_rows"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "P6_PROCESSES",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+      "kind": "const",
+      "name": "P6_PROCESSES",
+      "line": 421,
+      "role": "rho:lang:vector, rho:vectordb:embed and rho:vectordb:ann, after the P6 factories.",
+      "rocq": [
+        "p6_others"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "VECTORDB_PARAMS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "const",
+      "name": "VECTORDB_PARAMS",
+      "line": 97,
+      "role": "The constructor schema of a VectorDB family.",
+      "rocq": [
+        "vectordb_params"
+      ],
+      "covers": [
+        "R130"
+      ]
+    },
+    {
+      "item": "VECTORDB_REQUIRED",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "const",
+      "name": "VECTORDB_REQUIRED",
+      "line": 100,
+      "role": "The params that a VectorDB family requires.",
+      "rocq": [
+        "vectordb_required"
+      ],
+      "covers": [
+        "R130"
+      ]
+    },
+    {
+      "item": "MAX_CAPACITY",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "const",
+      "name": "MAX_CAPACITY",
+      "line": 76,
+      "role": "The greatest capacity of a VectorDB space.",
+      "rocq": [
+        "max_capacity"
+      ],
+      "covers": [
+        "R130"
+      ]
+    },
+    {
+      "item": "MAX_DIMENSIONS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+      "kind": "const",
+      "name": "MAX_DIMENSIONS",
+      "line": 79,
+      "role": "The greatest dimensions of a VectorDB space.",
+      "rocq": [
+        "max_dimensions"
+      ],
+      "covers": [
+        "R130"
+      ]
+    },
+    {
+      "item": "Metric::parse",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/exact.rs",
+      "scope": "Metric",
+      "kind": "fn",
+      "name": "parse",
+      "line": 87,
+      "role": "The metric of a name: one of the six metric names.",
+      "rocq": [
+        "metric_names"
+      ],
+      "covers": [
+        "R130"
+      ]
+    },
+    {
+      "item": "check_mirror",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+      "kind": "fn",
+      "name": "check_mirror",
+      "line": 158,
+      "role": "Gate 9: a mirror needs the default qualifier and a metric that ChromaDB indexes.",
+      "rocq": [
+        "check_mirror",
+        "mirror_metric",
+        "indexed_metrics",
+        "lookup"
+      ],
+      "covers": [
+        "R130"
+      ]
+    },
+    {
+      "item": "VectorDbDiscipline::bound",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+      "scope": "VectorDbDiscipline",
+      "kind": "fn",
+      "name": "bound",
+      "line": 173,
+      "role": "The bound of a VectorDB collection: its capacity, records only.",
+      "rocq": [
+        "capped_pass"
+      ],
+      "covers": [
+        "R131"
       ]
     }
   ]

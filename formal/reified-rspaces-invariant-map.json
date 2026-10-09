@@ -2686,7 +2686,7 @@
       ]
     },
     "P5": {
-      "title": "P5 wave W2: the engine (Match.v, GenericRSpace.v and the engine headline of AgentReadCoverage.v), the bag (DataCollection.v, ContinuationCollection.v), the cell (CellDiscipline.v), the Array and Vector stores with the allocator (OuterStorage.v, VectorStore.v, HashMapStore.v, and the allocator race of CounterConflict.tla), the pure PathMap layer (PathMapPrefix.v), the P5 families (SpaceFactory.v), the routing of receive queries (SpaceRefs.v), and the stack with one fire count for each transaction (StackDiscipline.v, StackDiscipline.tla, decision 49), and for P5 wave W3 the PathMap engine of Phase 1 (PathMapPrefix.v headlines R97-R107, PathMapPrefix.tla invariants V23-V25), and the joins of one space (JoinCascade.v R108-R124, the join rows R125-R126 of RecordEnvelope.v and CounterConflict.v, JoinCascade.tla V26-V34) with the set merges of CounterConflict.v (R127-R128)",
+      "title": "P5 wave W2: the engine (Match.v, GenericRSpace.v and the engine headline of AgentReadCoverage.v), the bag (DataCollection.v, ContinuationCollection.v), the cell (CellDiscipline.v), the Array and Vector stores with the allocator (OuterStorage.v, VectorStore.v, HashMapStore.v, and the allocator race of CounterConflict.tla), the pure PathMap layer (PathMapPrefix.v), the P5 families (SpaceFactory.v), the routing of receive queries (SpaceRefs.v), and the stack with one fire count for each transaction (StackDiscipline.v, StackDiscipline.tla, decision 49), and for P5 wave W3 the PathMap engine of Phase 1 (PathMapPrefix.v headlines R97-R107, PathMapPrefix.tla invariants V23-V25), and the joins of one space (JoinCascade.v R108-R124, the join rows R125-R126 of RecordEnvelope.v and CounterConflict.v, JoinCascade.tla V26-V34) with the set merges of CounterConflict.v (R127-R128), and for P6 step 8 the VectorDB params of SpaceFactory.v (R130: the schema, the value rules and gate 9 of the two VectorDB families) and the VectorDB merges of CounterConflict.v (R66 for the VectorDB family, and R131: the soft bound of capacity of decision 71)",
       "design": "P5 design v3 (decision 48) and the W2 batch reports. R# are Rocq headlines and V# are TLA+ invariants. V1-V8 are the invariants of GenericRSpace.tla, V9-V10 the allocator invariants of CounterConflict.tla. The properties of the engine run the real bag, queue and cell disciplines and a probe of the set. witness_tests lists deterministic tests of the W2 code. V11-V15 are the invariants of StackDiscipline.tla, with TxnFiresBounded (decision 49). V23-V25 are the invariants of PathMapPrefix.tla. Six PathMap properties are pending, with no file yet: Phase 2 of the PathMap engine writes them in rholang/tests/reified_pathmap.rs, and that change adds the file and removes the status (decision 51). R108-R126 and V26-V34 are the rows of the JOINS-FORMAL batch (fragments/JOINS-FORMAL/invariant-map-rows.json), and the JOINS-TESTS batch writes their properties in rholang/tests/reified_join_props.rs. R127-R128 are F24 and F25 of the P5 design v2. The engine anchor prop_join_engine_agrees_with_drivers_without_joins covers the two search headlines, because on a join-free collection the engine must make the choices of the drivers.",
       "test_status": "required",
       "test_files": [
@@ -2713,7 +2713,7 @@
         "rholang/tests/reified_set.rs",
         "rholang/tests/reified_stack.rs"
       ],
-      "expected_properties": 145,
+      "expected_properties": 148,
       "formal": {
         "R1": {
           "kind": "rocq",
@@ -3469,9 +3469,10 @@
           "kind": "rocq",
           "name": "unordered_writes_commute",
           "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
-          "statement": "Writes to collections without a counter touch no counter, never race in check #1, and merge into a state that both serial orders give. The P5 property checks it for the bag.",
+          "statement": "Writes to collections without a counter touch no counter, never race in check #1, and merge into a state that both serial orders give. The P5 property checks it for the bag. The P5 property checks it for the bag, and the P6 property for the VectorDB family below its capacity.",
           "tests": [
-            "prop_bag_writes_commute"
+            "prop_bag_writes_commute",
+            "prop_vectordb_writes_commute"
           ]
         },
         "V16": {
@@ -4221,6 +4222,24 @@
           "statement": "Two branches that each run a PathMap step that bumps the token of one space race on S(sid) in check #1. A step bumps the token when its discipline is ordered, or when its transaction changes the state (decision 51).",
           "tests": [
             "prop_pathmap_token_race"
+          ]
+        },
+        "R130": {
+          "kind": "rocq",
+          "name": "vectordb_params_validated",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+          "statement": "P6: exactly the VectorDB families hashmap:vectordb and vector:vectordb take capacity, dimensions, metric and mirror, and they require capacity and dimensions; every other family refuses the four names. capacity accepts exactly the GInt values in [1, 1000000], dimensions the GInt values in [1, 4096], metric the six metric names and mirror the name chroma. A missing capacity, then a missing dimensions, fails with MissingParam. Gate 9 runs on the canonical params and accepts a mirror exactly with the default qualifier and a metric (cosine without the param) that ChromaDB indexes: cosine, dot or euclidean.",
+          "tests": [
+            "prop_vectordb_params_validated"
+          ]
+        },
+        "R131": {
+          "kind": "rocq",
+          "name": "capped_writes_soft_bound",
+          "file": "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+          "statement": "Decision 71: two branches of capped stores (a VectorDB collection) that both pass from one base merge without a race in check #1. The merge holds the base records and both branches' stores, so it can exceed the capacity, by at most the stores of the branch with fewer stores. The serial order passes exactly when the stores of both fit, and a store fails exactly on a collection that holds the capacity or more.",
+          "tests": [
+            "prop_vectordb_capacity_soft_bound"
           ]
         }
       },
@@ -5443,6 +5462,30 @@
           "covers": [
             "R129"
           ]
+        },
+        {
+          "number": 146,
+          "test": "prop_vectordb_params_validated",
+          "file": "rholang/tests/reified_families.rs",
+          "covers": [
+            "R130"
+          ]
+        },
+        {
+          "number": 147,
+          "test": "prop_vectordb_writes_commute",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R66"
+          ]
+        },
+        {
+          "number": 148,
+          "test": "prop_vectordb_capacity_soft_bound",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R131"
+          ]
         }
       ],
       "witness_tests": [
@@ -5555,21 +5598,24 @@
           "test": "space_factory_kwargs_invalid_param",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
-            "R21"
+            "R21",
+            "R130"
           ]
         },
         {
           "test": "space_factory_kwargs_missing_param",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
-            "R22"
+            "R22",
+            "R130"
           ]
         },
         {
           "test": "space_factory_kwargs_are_stored_canonical",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
-            "R22"
+            "R22",
+            "R130"
           ]
         },
         {
@@ -6706,6 +6752,20 @@
           "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
             "R107"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_vectordb_writes_merge",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R66"
+          ]
+        },
+        {
+          "test": "space_collection_conflicts_vectordb_capacity_soft_bound",
+          "file": "rholang/tests/reified_merge_p5.rs",
+          "covers": [
+            "R131"
           ]
         }
       ]

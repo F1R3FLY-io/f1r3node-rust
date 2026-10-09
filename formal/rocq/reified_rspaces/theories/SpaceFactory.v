@@ -832,11 +832,14 @@ Print Assumptions persistent_op_call_aborts.
 Print Assumptions space_already_exists_is_deterministic_abort.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   P5 — registration, the FIPS alias and the constructor params
+   P5 and P6 — registration, the FIPS aliases and the constructor params
 
-   This section extends the module for phase P5. It comes after the P4
-   module, so no line of P4 moves: documents cite those lines. Its
-   headlines are 9 to 13.
+   This section extends the module for the phases P5 and P6. It comes after
+   the P4 module, so no line of P4 moves: documents cite those lines. Its
+   headlines are 9 to 14. P6 step 8 adds the six PathMap rows and the alias
+   PathMapSpace of P5 wave W3, which the model of wave W2 did not have, the
+   two VectorDB families, the three processes of P6, the VectorDB params
+   and gate 9.
 
    Sources
    - Design: P5 design v3 A.7 (the FACTORY row: registration, the alias
@@ -845,8 +848,12 @@ Print Assumptions space_already_exists_is_deterministic_abort.
      families, size and cyclic of F7) and A.13 (SpaceFactory.v: three
      headlines in P5a, one in P5b, one in P5d); P5 design v2 §2.5 (families,
      aliases and getSpaceAgent) and §2.8.1 (F26 to F28).
-   - Plan: decisions 7, 9.4 and 33, I-10 and the P5 choice F7.
-   - Code: the tree of the P5 FACTORY batch (wave W2).
+   - Design (P6): design v3 4.2 (the VectorDB families, their schema, the
+     value rules of capacity, dimensions, metric and mirror, and gate 9),
+     4.7 (rho:lang:vector) and 4.9 (rho:vectordb:embed and
+     rho:vectordb:ann).
+   - Plan: decisions 7, 9.4, 33, 52, 57 and 58, I-10 and the P5 choice F7.
+   - Code: the tree of P6 step 8. The line numbers below are its lines.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -865,54 +872,82 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    alias_rows               rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:158-167 (P5_ALIAS_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:305-309, 340-366
-   schema_of, required_of   rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:105-136, 140-142, 147-149
+                            system_channels.rs:305-309, 313-317, 340-366
+   p6_rows, p6_others       rholang/src/rust/interpreter/spaces/factory/
+                            urn.rs:145-154 (P6_FAMILY_ROWS),
+                            rholang/src/rust/interpreter/reified/
+                            system_channels.rs:288-292, 295-299, 378-379
+                            (the VectorDB factories, P6_SYSTEM_CHANNELS),
+                            384-388, 392-396, 407-411, 421 (P6_PROCESSES)
+   schema_of, required_of, vectordb_params, vectordb_required
+                            rholang/src/rust/interpreter/spaces/factory/
+                            defaults.rs:97, 100, 105-136, 140-142, 147-149
    wired                    families::Family::of_urn, through
                             rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:170 (is_wired)
    registered, is_registered, registered_aliases
                             rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:174-178, 190-195, 199-203, 206-210
+                            urn.rs:174-178, 182-186, 190-195, 199-203,
+                            206-210
    definitions, binds       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:94-150 (definitions),
+                            reified/system_processes.rs:95-151 (definitions),
                             rholang/src/rust/
-                            interpreter/system_processes.rs:495-503 (to_urn_map)
+                            interpreter/system_processes.rs:493-501 (to_urn_map)
    get_space_agent_of       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:221-257 (get_space_agent),
+                            reified/system_processes.rs:222-258 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:208-226 (family_of), urn.rs:221-223
                             (factory_capability)
-   rule, rule_of, canonical rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:153-168, 172-183, 188-228 (ParamRule)
+   rule, rule_of, canonical, max_capacity, max_dimensions
+                            rholang/src/rust/interpreter/spaces/factory/
+                            defaults.rs:61-79 (the names and the bounds),
+                            153-168, 172-183, 188-228 (ParamRule)
+   metric_names             rholang/src/rust/interpreter/tensor/exact.rs:
+                            77-84, 87-89, 92-101 (Metric::ALL, parse, name)
    suggest, least, within, suggestion_bound
                             rholang/src/rust/interpreter/spaces/factory/
                             defaults.rs:49, 248-257, 262-289
    validate_params, canonical_all
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:68-122 (validate), 146-160
+                            constructor.rs:68-122 (validate), 191-205
                             (canonical_params)
+   lookup, mirror_metric, indexed_metrics, check_mirror, validate_factory
+                            rholang/src/rust/interpreter/spaces/factory/
+                            constructor.rs:116 (the call of gate 9 in
+                            validate), 158-189 (check_mirror)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
    ─────────────────────────────────────────────────────────────────────────
    - The dispatch arms are the section variable wired, with the hypothesis
-     that hashmap:queue is wired (S1). The corollaries registration_today and
-     registration_all_wired compute the registration for the arms of today
-     and for every row wired, so the theorems of the section are not
-     vacuous.
+     that hashmap:queue is wired (S1). The corollaries registration_s1 and
+     registration_all_wired compute the registration for the arms of S1 and
+     for every row wired, so the theorems of the section are not vacuous.
+     Since P6 the dispatch wires every row (families.rs Family::WIRED holds
+     the 26 families of the rows), so registration_all_wired is the
+     registration of the code.
    - A definition is its system channel and the family that its factory
-     creates (None for getSpaceAgent, assertEqual and the handle process).
+     creates (None for getSpaceAgent, assertEqual and the handle process of
+     P4, and for rho:lang:vector, rho:vectordb:embed and rho:vectordb:ann of
+     P6).
      The URN map is the relation binds over the definitions:
      Definition::to_urn_map binds the URN to the write bundle of the op
      channel, so to the op. all_definitions_functional shows that one URN
      binds one op for every wiring.
-   - A param value is its shape: a GInt (VInt), a GBool (VBool), another
-     value (VOther: a string, Nil, two expressions or a process) or a value
-     with the connective flag (VFlagged). The bit sets are not modeled:
-     ParamRule::canonical ignores them, and the canonical value has none. A
-     GInt is an i64, so the rule [1, i64_max] accepts every GInt of at
-     least 1.
+   - A param value is its shape: a GInt (VInt), a GBool (VBool), a GString
+     (VStr, P6: the values of metric and mirror), another value (VOther:
+     Nil, two expressions or a process) or a value with the connective flag
+     (VFlagged). The bit sets are not modeled: ParamRule::canonical ignores
+     them, and the canonical value has none. A GInt is an i64, so the rule
+     [1, i64_max] accepts every GInt of at least 1.
+   - Gate 9 is the definition check_mirror over the qualifier and the
+     canonical params. validate_factory runs it after the gates of
+     validate_params, as validate does. Its qualifier is the one that the
+     gates 2 to 4 accepted (the P4 model: validate_qualifier). Gate 3
+     refuses temp and seq until P7, so today gate 9 refuses a mirror only
+     for its metric. The model states the qualifier part as the code does.
+     The params of gate 9 are canonical, so their keys are distinct, and
+     lookup reads the value of a key.
    - The Levenshtein distance is the section variable dist, so the
      suggestion headline holds for every distance function.
      distance_within computes it over chars, and its unit tests pin it.
@@ -936,6 +971,10 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    13. array_size_validated              F7: the required size of an Array,
                                           a GInt in [1, i64_max], and the
                                           optional cyclic GBool
+   14. vectordb_params_validated         P6: the VectorDB params capacity
+                                          and dimensions (required, GInt
+                                          ranges), metric and mirror
+                                          (names), and gate 9
 
    ─────────────────────────────────────────────────────────────────────────
    Failed strategies (do not try them again)
@@ -959,6 +998,26 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    - The bullets of a split over the four cases of schema_cases do not
      follow the order of the open goals once try closes some of them. Use
      one `first [...]` over the alternatives.
+   - `first [...]` accepts an alternative that makes progress without
+     closing the goal: `destruct Hx` on a disjunction splits it and leaves
+     both goals open. With the fifth case of schema_cases (VectorDB) such
+     an alternative matches before the one that closes the goal. Use
+     `solve [...]`.
+   - `cbn` on `mem m indexed_metrics = true` unfolds mem and the byte
+     strings, so `apply mem_spec` no longer matches. Reduce the matches of
+     check_mirror with `cbv beta iota` or by `destruct`, never by `cbn`.
+   - `rewrite !in_app_iff in Hc' |- *` stops when Hc' has no more parts,
+     so the goal keeps a part unsplit, and `left` then fails with "Not an
+     inductive definition". Apply in_app3 or in_app6 to each side instead.
+   - With the six PathMap rows, a full `cbn in Hreg` on the registration
+     unfolds every row and used more than 8 GB. Reduce with `cbn [snd]`.
+   - Without the Strategy of the section Registration, the Qed of
+     definitions_incl and of headline 9 took about 33 seconds each. Applying
+     in_app6 instead of the setoid rewrite and a generic lemma for the
+     filtered parts did not change it (measured).
+   - `t; split; [a | b]` after a tactic that makes n goals applies the list
+     [a | b] to all 2n goals ("Incorrect number of goals"). Group it:
+     `t; (split; [a | b])`.
    ═══════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import ZArith.
@@ -975,6 +1034,26 @@ Module StrP5.
   Definition handle_op := Str.b "rho:reified:internal:handleOp".
 End StrP5.
 
+(* The ASCII bytes of the names of P6. *)
+Module StrP6.
+  Import (notations) Stdlib.Strings.String.
+  Local Open Scope string_scope.
+  Definition capacity := Str.b "capacity".
+  Definition dimensions := Str.b "dimensions".
+  Definition metric := Str.b "metric".
+  Definition mirror := Str.b "mirror".
+  Definition chroma := Str.b "chroma".
+  Definition cosine := Str.b "cosine".
+  Definition dot := Str.b "dot".
+  Definition euclidean := Str.b "euclidean".
+  Definition manhattan := Str.b "manhattan".
+  Definition hamming := Str.b "hamming".
+  Definition jaccard := Str.b "jaccard".
+  Definition lang_vector := Str.b "rho:lang:vector".
+  Definition vectordb_embed := Str.b "rho:vectordb:embed".
+  Definition vectordb_ann := Str.b "rho:vectordb:ann".
+End StrP6.
+
 (* ── 8. Helpers: byte lists, families and lists ───────────────────────── *)
 
 Lemma bytes_eqb_true : forall a b, bytes_eqb a b = true -> a = b.
@@ -989,6 +1068,23 @@ Proof.
   - intros [x [Hin Heq]]. apply bytes_eqb_true in Heq. subst x. exact Hin.
   - intros Hin. exists k. split; [exact Hin | apply bytes_eqb_refl].
 Qed.
+
+Lemma not_in_mem : forall k l, mem k l = false -> ~ In k l.
+Proof. intros k l Hm Hin. apply mem_spec in Hin. rewrite Hin in Hm. discriminate Hm. Qed.
+
+(* The membership in a list of three or six parts, by part. The proofs
+   below apply these lemmas instead of rewriting with in_app_iff: a setoid
+   rewrite over the six parts of the definitions makes Qed slow, and
+   `rewrite ! ... in H |- *` stops when H has no more parts. *)
+Lemma in_app3 :
+  forall (A : Type) (x : A) l1 l2 l3, In x (l1 ++ l2 ++ l3) <-> In x l1 \/ In x l2 \/ In x l3.
+Proof. intros A x l1 l2 l3. rewrite !in_app_iff. tauto. Qed.
+
+Lemma in_app6 :
+  forall (A : Type) (x : A) l1 l2 l3 l4 l5 l6,
+    In x (l1 ++ l2 ++ l3 ++ l4 ++ l5 ++ l6) <->
+    In x l1 \/ In x l2 \/ In x l3 \/ In x l4 \/ In x l5 \/ In x l6.
+Proof. intros A x l1 l2 l3 l4 l5 l6. rewrite !in_app_iff. tauto. Qed.
 
 Definition outer_eqb (a b : outer) : bool :=
   match a, b with
@@ -1068,6 +1164,7 @@ Definition row (o : outer) (i : inner) (op : nat) : family * sys_channel :=
 
 Definition queue_family : family := mkFamily HashMap Queue.
 Definition hashmap_bag : family := mkFamily HashMap Bag.
+Definition pathmap_bag : family := mkFamily PathMap Bag.
 
 (* REGISTERED_FAMILIES: the row of P4. *)
 Definition p4_rows : list (family * sys_channel) := [row HashMap Queue 1].
@@ -1080,29 +1177,48 @@ Definition p4_others : list sys_channel :=
 Definition p5_rows : list (family * sys_channel) :=
   [row HashMap Bag 0; row HashMap Stack 2; row HashMap SetC 3; row HashMap Cell 4;
    row HashMap PriorityQueue 5;
+   row PathMap Bag 7; row PathMap Queue 8; row PathMap Stack 9; row PathMap SetC 10;
+   row PathMap Cell 11; row PathMap PriorityQueue 12;
    row Array Bag 13; row Array Queue 14; row Array Stack 15; row Array SetC 16;
    row Array Cell 17; row Array PriorityQueue 18;
    row Vector Bag 19; row Vector Queue 20; row Vector Stack 21; row Vector SetC 22;
    row Vector Cell 23; row Vector PriorityQueue 24].
 
-(* P5_ALIAS_ROWS: the channel of the alias and the family that it names. *)
-Definition alias_rows : list (sys_channel * family) := [(mkChan Str.hashmap_bag_alias 0 2, hashmap_bag)].
+(* P5_ALIAS_ROWS: the channel of each alias and the family that it names. *)
+Definition alias_rows : list (sys_channel * family) :=
+  [(mkChan Str.hashmap_bag_alias 0 2, hashmap_bag); (mkChan Str.pathmap_bag_alias 7 2, pathmap_bag)].
+
+(* P6_FAMILY_ROWS, in family-index order. Their definitions come after the
+   rows and the aliases of P5. *)
+Definition p6_rows : list (family * sys_channel) := [row HashMap VectorDb 6; row Vector VectorDb 25].
+
+(* P6_PROCESSES: rho:lang:vector (arity 2: the packed call of I-18),
+   rho:vectordb:embed (arity 2) and rho:vectordb:ann (arity 5). Their ops
+   are the call ops of headline 7. *)
+Definition p6_others : list sys_channel :=
+  [mkChan StrP6.lang_vector vector_op 2; mkChan StrP6.vectordb_embed embed_op 2;
+   mkChan StrP6.vectordb_ann ann_op 5].
+
+(* VECTORDB_PARAMS and VECTORDB_REQUIRED. *)
+Definition vectordb_params : list bytes := [StrP6.capacity; StrP6.dimensions; StrP6.metric; StrP6.mirror].
+Definition vectordb_required : list bytes := [StrP6.capacity; StrP6.dimensions].
 
 (* defaults.rs schema: the named params of the factory of f in bytewise
    order, and the params that it requires. *)
 Definition schema_of (f : family) : option (list bytes * list bytes) :=
   match f_outer f, f_inner f with
-  | (HashMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])
-  | (HashMap | Vector), PriorityQueue => Some ([StrP5.priorities], [])
+  | (HashMap | PathMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])
+  | (HashMap | PathMap | Vector), PriorityQueue => Some ([StrP5.priorities], [])
   | Array, (Bag | Queue | Stack | SetC | Cell) => Some ([StrP5.cyclic; StrP5.size], [StrP5.size])
   | Array, PriorityQueue => Some ([StrP5.cyclic; StrP5.priorities; StrP5.size], [StrP5.size])
+  | (HashMap | Vector), VectorDb => Some (vectordb_params, vectordb_required)
   | _, _ => None
   end.
 
 (* Every row has the URN of its family, the op of its index, the body ref
    200 + op, arity 2 and a constructor schema. *)
 Lemma rows_facts :
-  forall f c, In (f, c) (p4_rows ++ p5_rows) ->
+  forall f c, In (f, c) (p4_rows ++ p5_rows ++ p6_rows) ->
     ch_urn c = urn_of f /\ family_index f = Some (ch_op c) /\ body_ref c = 200 + ch_op c /\
     ch_arity c = 2 /\ schema_of f <> None.
 Proof.
@@ -1117,17 +1233,20 @@ Lemma alias_rows_facts :
     parse_urn (ch_urn c) = UrnOk f /\ family_index f = Some (ch_op c) /\ ch_arity c = 2 /\
     ch_urn c <> urn_of f.
 Proof.
-  intros c f H. cbn in H. destruct H as [H | H]; [| destruct H].
-  injection H as <- <-. repeat split; try reflexivity. vm_compute. discriminate.
+  intros c f H. cbn in H.
+  repeat (destruct H as [H | H];
+          [injection H as <- <-; repeat split; try reflexivity; vm_compute; discriminate |]).
+  destruct H.
 Qed.
 
-Lemma rows_ops_distinct : NoDup (map (fun r => ch_op (snd r)) (p4_rows ++ p5_rows)).
+Lemma rows_ops_distinct : NoDup (map (fun r => ch_op (snd r)) (p4_rows ++ p5_rows ++ p6_rows)).
 Proof. apply nodupb_NoDup. vm_compute. reflexivity. Qed.
 
 (* Every definition of the tables, as if every row were registered. *)
 Definition all_definitions : list (sys_channel * option family) :=
   map (fun r => (snd r, Some (fst r))) p4_rows ++ map (fun c => (c, None)) p4_others ++
-  map (fun r => (snd r, Some (fst r))) p5_rows ++ map (fun a => (fst a, Some (snd a))) alias_rows.
+  map (fun r => (snd r, Some (fst r))) p5_rows ++ map (fun a => (fst a, Some (snd a))) alias_rows ++
+  map (fun r => (snd r, Some (fst r))) p6_rows ++ map (fun c => (c, None)) p6_others.
 
 Definition functional_b (l : list (sys_channel * option family)) : bool :=
   forallb (fun d1 => forallb (fun d2 =>
@@ -1155,8 +1274,9 @@ Section Registration.
   Hypothesis queue_wired : wired queue_family = true.
 
   (* urn.rs registered_families: the row of P4, then the rows of P5 whose
-     family is wired. *)
-  Definition registered : list (family * sys_channel) := p4_rows ++ filter (fun r => wired (fst r)) p5_rows.
+     family is wired, then the rows of P6 whose family is wired. *)
+  Definition registered : list (family * sys_channel) :=
+    p4_rows ++ filter (fun r => wired (fst r)) p5_rows ++ filter (fun r => wired (fst r)) p6_rows.
 
   Definition is_registered (f : family) : bool := existsb (fun r => family_eqb (fst r) f) registered.
 
@@ -1166,11 +1286,13 @@ Section Registration.
 
   (* system_processes.rs definitions: the channel of each definition and the
      family that its factory creates (None for the three other processes of
-     P4), in the order of the code. *)
+     P4 and the three processes of P6), in the order of the code. *)
   Definition definitions : list (sys_channel * option family) :=
     map (fun r => (snd r, Some (fst r))) p4_rows ++ map (fun c => (c, None)) p4_others ++
     map (fun r => (snd r, Some (fst r))) (filter (fun r => wired (fst r)) p5_rows) ++
-    map (fun a => (fst a, Some (snd a))) registered_aliases.
+    map (fun a => (fst a, Some (snd a))) registered_aliases ++
+    map (fun r => (snd r, Some (fst r))) (filter (fun r => wired (fst r)) p6_rows) ++
+    map (fun c => (c, None)) p6_others.
 
   (* Definition::to_urn_map: the URN of a definition binds the write bundle
      of its channel, so the op of its channel. *)
@@ -1178,12 +1300,13 @@ Section Registration.
     exists d, In d definitions /\ ch_urn (fst d) = urn /\ ch_op (fst d) = op.
 
   Lemma registered_rows :
-    forall f c, In (f, c) registered -> In (f, c) (p4_rows ++ p5_rows) /\ wired f = true.
+    forall f c, In (f, c) registered -> In (f, c) (p4_rows ++ p5_rows ++ p6_rows) /\ wired f = true.
   Proof.
-    intros f c H. unfold registered in H. apply in_app_iff in H as [H | H].
-    - split; [apply in_app_iff; left; exact H |].
+    intros f c H. unfold registered in H. apply in_app3 in H. destruct H as [H | [H | H]].
+    - split; [apply in_app3; left; exact H |].
       cbn in H. destruct H as [H | H]; [| destruct H]. injection H as <- _. exact queue_wired.
-    - apply filter_In in H as [Hin Hw]. split; [apply in_app_iff; right; exact Hin | exact Hw].
+    - apply filter_In in H as [Hin Hw]. split; [apply in_app3; right; left; exact Hin | exact Hw].
+    - apply filter_In in H as [Hin Hw]. split; [apply in_app3; right; right; exact Hin | exact Hw].
   Qed.
 
   Lemma is_registered_spec : forall f, is_registered f = true <-> exists c, In (f, c) registered.
@@ -1193,15 +1316,31 @@ Section Registration.
     - intros [c Hin]. exists (f, c). split; [exact Hin | apply family_eqb_eq; reflexivity].
   Qed.
 
+  (* The kernel checks of the proofs below compare the definitions with the
+     row tables, and the default order of the conversion unfolds the tables
+     first. With the 23 rows of P5 the Qed of definitions_incl and of
+     headline 9 then took about 33 seconds each (measured, P6 step 8: 0.5
+     seconds without the six PathMap rows). With the tables unfolded last,
+     each Qed takes milliseconds. A strategy changes only the order of the
+     unfolding, never what the kernel accepts. *)
+  Strategy opaque [p4_rows p5_rows p6_rows alias_rows p4_others p6_others].
+
   Lemma definitions_incl : forall d, In d definitions -> In d all_definitions.
   Proof.
     intros d H. unfold definitions in H. unfold all_definitions.
-    rewrite !in_app_iff in *. destruct H as [H | [H | [H | H]]]; [left | right; left | right; right; left | right; right; right];
-      try exact H.
-    - apply in_map_iff in H as [r [<- Hin]]. apply filter_In in Hin as [Hin _].
+    apply in_app6 in H. apply in_app6. destruct H as [H | [H | [H | [H | [H | H]]]]].
+    - left. exact H.
+    - right. left. exact H.
+    - right. right. left.
+      apply in_map_iff in H as [r [<- Hin]]. apply filter_In in Hin as [Hin _].
       apply in_map_iff. exists r. split; [reflexivity | exact Hin].
-    - apply in_map_iff in H as [a [<- Hin]]. apply filter_In in Hin as [Hin _].
+    - right. right. right. left.
+      apply in_map_iff in H as [a [<- Hin]]. apply filter_In in Hin as [Hin _].
       apply in_map_iff. exists a. split; [reflexivity | exact Hin].
+    - right. right. right. right. left.
+      apply in_map_iff in H as [r [<- Hin]]. apply filter_In in Hin as [Hin _].
+      apply in_map_iff. exists r. split; [reflexivity | exact Hin].
+    - right. right. right. right. right. exact H.
   Qed.
 
   (* Headline 9 (F26). A registered family has the URN of its family, the op
@@ -1211,51 +1350,64 @@ Section Registration.
      definition, an alias included, creates a registered family whose index
      is its op, so the dispatch table, keyed by the body ref, is a function.
      Nothing else is defined: the other definitions are the three other
-     processes of P4. *)
+     processes of P4 and the three processes of P6. *)
   Theorem registered_families_complete :
     (forall f c, In (f, c) registered ->
        ch_urn c = urn_of f /\ family_index f = Some (ch_op c) /\ body_ref c = 200 + ch_op c /\
        ch_arity c = 2 /\ schema_of f <> None /\ wired f = true) /\
     (forall f, (exists c, In (f, c) registered) <->
-       ((exists c, In (f, c) (p4_rows ++ p5_rows)) /\ wired f = true)) /\
+       ((exists c, In (f, c) (p4_rows ++ p5_rows ++ p6_rows)) /\ wired f = true)) /\
     NoDup (map (fun r => ch_op (snd r)) registered) /\
     (forall c f, In (c, Some f) definitions ->
        family_index f = Some (ch_op c) /\ exists c', In (f, c') registered /\ ch_op c' = ch_op c) /\
-    (forall c, In (c, None) definitions -> In c p4_others).
+    (forall c, In (c, None) definitions -> In c (p4_others ++ p6_others)).
   Proof.
     split; [| split; [| split; [| split]]].
     - intros f c H. destruct (registered_rows f c H) as [Hrow Hw].
       destruct (rows_facts f c Hrow) as [Hu [Hi [Hb [Ha Hs]]]]. repeat split; assumption.
     - intros f. split.
       + intros [c H]. destruct (registered_rows f c H) as [Hrow Hw]. split; [exists c; exact Hrow | exact Hw].
-      + intros [[c Hrow] Hw]. exists c. unfold registered. apply in_app_iff in Hrow as [H | H].
-        * apply in_app_iff. left. exact H.
-        * apply in_app_iff. right. apply filter_In. split; [exact H | exact Hw].
-    - unfold registered. apply nodup_map_app_filter. exact rows_ops_distinct.
-    - intros c f H. unfold definitions in H. rewrite !in_app_iff in H.
-      destruct H as [H | [H | [H | H]]].
+      + intros [[c Hrow] Hw]. exists c. unfold registered. apply in_app3 in Hrow. apply in_app3.
+        destruct Hrow as [H | [H | H]].
+        * left. exact H.
+        * right. left. apply filter_In. split; [exact H | exact Hw].
+        * right. right. apply filter_In. split; [exact H | exact Hw].
+    - unfold registered. rewrite <- filter_app. apply nodup_map_app_filter. exact rows_ops_distinct.
+    - intros c f H. unfold definitions in H. apply in_app6 in H.
+      destruct H as [H | [H | [H | [H | [H | H]]]]].
       + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
-        destruct (rows_facts f c (proj2 (in_app_iff _ _ _) (or_introl Hin))) as [_ [Hi _]].
-        split; [exact Hi |]. exists c. split; [| reflexivity]. unfold registered. apply in_app_iff. left. exact Hin.
+        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows)) by (apply in_app3; left; exact Hin).
+        destruct (rows_facts f c Hrow) as [_ [Hi _]].
+        split; [exact Hi |]. exists c. split; [| reflexivity]. unfold registered. apply in_app3. left. exact Hin.
       + apply in_map_iff in H as [c0 [Heq _]]. discriminate Heq.
       + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
         apply filter_In in Hin as [Hin Hw].
-        destruct (rows_facts f c (proj2 (in_app_iff _ _ _) (or_intror Hin))) as [_ [Hi _]].
+        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows)) by (apply in_app3; right; left; exact Hin).
+        destruct (rows_facts f c Hrow) as [_ [Hi _]].
         split; [exact Hi |]. exists c. split; [| reflexivity].
-        unfold registered. apply in_app_iff. right. apply filter_In. split; [exact Hin | exact Hw].
+        unfold registered. apply in_app3. right. left. apply filter_In. split; [exact Hin | exact Hw].
       + apply in_map_iff in H as [[c0 g] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
-        apply filter_In in Hin as [Hin Hreg]. cbn in Hreg.
+        apply filter_In in Hin as [Hin Hreg]. cbn [snd] in Hreg.
         destruct (alias_rows_facts c f Hin) as [_ [Hi _]]. split; [exact Hi |].
         apply is_registered_spec in Hreg as [c' Hc'].
         destruct (registered_rows f c' Hc') as [Hrow _].
         destruct (rows_facts f c' Hrow) as [_ [Hi' _]].
         exists c'. split; [exact Hc' | congruence].
-    - intros c H. unfold definitions in H. rewrite !in_app_iff in H.
-      destruct H as [H | [H | [H | H]]]; apply in_map_iff in H as [x [Heq Hin]].
+      + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
+        apply filter_In in Hin as [Hin Hw].
+        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows)) by (apply in_app3; right; right; exact Hin).
+        destruct (rows_facts f c Hrow) as [_ [Hi _]].
+        split; [exact Hi |]. exists c. split; [| reflexivity].
+        unfold registered. apply in_app3. right. right. apply filter_In. split; [exact Hin | exact Hw].
+      + apply in_map_iff in H as [c0 [Heq _]]. discriminate Heq.
+    - intros c H. unfold definitions in H. apply in_app6 in H.
+      destruct H as [H | [H | [H | [H | [H | H]]]]]; apply in_map_iff in H as [x [Heq Hin]].
       + discriminate Heq.
-      + injection Heq as ->. exact Hin.
+      + injection Heq as ->. apply in_app_iff. left. exact Hin.
       + discriminate Heq.
       + discriminate Heq.
+      + discriminate Heq.
+      + injection Heq as ->. apply in_app_iff. right. exact Hin.
   Qed.
 
   (* get_space_agent: the capability of the family that a config names
@@ -1295,17 +1447,19 @@ Section Registration.
       apply all_definitions_functional; [apply definitions_incl; exact H1 | apply definitions_incl; exact H2 | congruence].
     - intros c f H.
       assert (Hdef_alias : In (c, Some f) definitions).
-      { unfold definitions. rewrite !in_app_iff. right. right. right.
+      { unfold definitions. apply in_app6. right. right. right. left.
         apply in_map_iff. exists (c, f). split; [reflexivity | exact H]. }
       destruct (Hdef c f Hdef_alias) as [Hi [c' [Hc' Hop]]].
       destruct (Hreg f c' Hc') as [Hu' _].
       split; [exists (c, Some f); split; [exact Hdef_alias | split; reflexivity] |].
       split; [| exact Hi].
       assert (Hdef_family : In (c', Some f) definitions).
-      { unfold registered in Hc'. unfold definitions. rewrite !in_app_iff.
-        apply in_app_iff in Hc' as [Hc' | Hc'].
+      { unfold registered in Hc'. unfold definitions. apply in_app3 in Hc'. apply in_app6.
+        destruct Hc' as [Hc' | [Hc' | Hc']].
         - left. apply in_map_iff. exists (f, c'). split; [reflexivity | exact Hc'].
-        - right. right. left. apply in_map_iff. exists (f, c'). split; [reflexivity | exact Hc']. }
+        - right. right. left. apply in_map_iff. exists (f, c'). split; [reflexivity | exact Hc'].
+        - right. right. right. right. left. apply in_map_iff. exists (f, c').
+          split; [reflexivity | exact Hc']. }
       exists (c', Some f). split; [exact Hdef_family |]. split; [exact Hu' | exact Hop].
     - intros c f H. destruct (Hdef c f H) as [Hi _].
       assert (Hsup : is_supported_pair f = true).
@@ -1315,16 +1469,19 @@ Section Registration.
   Qed.
 End Registration.
 
-(* The registration of today (S1 wires only hashmap:queue) and the
+(* The registration of S1, which wires only hashmap:queue, and the
    registration when every row is wired: the theorems of the section hold
-   for both, so they are not vacuous. *)
-Corollary registration_today :
+   for both, so they are not vacuous. Since P6 the dispatch wires every row
+   (families.rs Family::WIRED: the 26 families of the rows), so the second
+   one is the registration of the code. *)
+Corollary registration_s1 :
   registered (fun f => family_eqb f queue_family) = p4_rows /\
   registered_aliases (fun f => family_eqb f queue_family) = [].
 Proof. split; vm_compute; reflexivity. Qed.
 
 Corollary registration_all_wired :
-  registered (fun _ => true) = p4_rows ++ p5_rows /\ registered_aliases (fun _ => true) = alias_rows.
+  registered (fun _ => true) = p4_rows ++ p5_rows ++ p6_rows /\
+  registered_aliases (fun _ => true) = alias_rows.
 Proof. split; vm_compute; reflexivity. Qed.
 
 (* ── 10. The constructor params (defaults.rs, constructor.rs) ──────────── *)
@@ -1333,34 +1490,87 @@ Proof. split; vm_compute; reflexivity. Qed.
    [1, i64_max] exactly when they accept every value of at least 1. *)
 Definition i64_max : Z := 9223372036854775807%Z.
 
-(* A param value: a GInt, a GBool, another value (a string, Nil, several
-   expressions or a process), or a value with a connective flag. The bit
-   sets of a value are not modeled: the rules ignore them, and the canonical
-   form has none. *)
+(* A param value: a GInt, a GBool, a GString (the values of metric and
+   mirror, P6), another value (Nil, several expressions or a process), or a
+   value with a connective flag. The bit sets of a value are not modeled:
+   the rules ignore them, and the canonical form has none. *)
 Inductive pvalue : Type :=
 | VInt : Z -> pvalue
 | VBool : bool -> pvalue
+| VStr : bytes -> pvalue
 | VOther : nat -> pvalue
 | VFlagged : pvalue -> pvalue.
 
 (* ParamRule. *)
-Inductive rule : Type := RSize | RCyclic | RPriorities.
+Inductive rule : Type := RSize | RCyclic | RPriorities | RCapacity | RDimensions | RMetric | RMirror.
 
 (* ParamRule::of. *)
 Definition rule_of (k : bytes) : option rule :=
   if bytes_eqb k StrP5.size then Some RSize
   else if bytes_eqb k StrP5.cyclic then Some RCyclic
   else if bytes_eqb k StrP5.priorities then Some RPriorities
+  else if bytes_eqb k StrP6.capacity then Some RCapacity
+  else if bytes_eqb k StrP6.dimensions then Some RDimensions
+  else if bytes_eqb k StrP6.metric then Some RMetric
+  else if bytes_eqb k StrP6.mirror then Some RMirror
   else None.
 
+(* MAX_CAPACITY and MAX_DIMENSIONS (design v3 4.2). *)
+Definition max_capacity : Z := 1000000%Z.
+Definition max_dimensions : Z := 4096%Z.
+
+(* Metric::ALL by name: the six metrics of a VectorDB space. *)
+Definition metric_names : list bytes :=
+  [StrP6.cosine; StrP6.dot; StrP6.euclidean; StrP6.manhattan; StrP6.hamming; StrP6.jaccard].
+
 (* ParamRule::canonical: size is a GInt in [1, i64_max] (F7), priorities is
-   a GInt of at least 1 (I-10), cyclic is a GBool (F7). *)
+   a GInt of at least 1 (I-10), cyclic is a GBool (F7). capacity is a GInt
+   in [1, max_capacity], dimensions a GInt in [1, max_dimensions], metric a
+   GString that names one of the six metrics, and mirror the GString
+   "chroma" (P6, design v3 4.2). *)
 Definition canonical (r : rule) (v : pvalue) : option pvalue :=
   match r, v with
   | RSize, VInt z => if (1 <=? z)%Z && (z <=? i64_max)%Z then Some (VInt z) else None
   | RPriorities, VInt z => if (1 <=? z)%Z && (z <=? i64_max)%Z then Some (VInt z) else None
   | RCyclic, VBool b => Some (VBool b)
+  | RCapacity, VInt z => if (1 <=? z)%Z && (z <=? max_capacity)%Z then Some (VInt z) else None
+  | RDimensions, VInt z => if (1 <=? z)%Z && (z <=? max_dimensions)%Z then Some (VInt z) else None
+  | RMetric, VStr s => if mem s metric_names then Some (VStr s) else None
+  | RMirror, VStr s => if bytes_eqb s StrP6.chroma then Some (VStr s) else None
   | _, _ => None
+  end.
+
+(* The value of the key k in canonical params, whose keys are distinct. *)
+Fixpoint lookup (k : bytes) (ps : list (bytes * pvalue)) : option pvalue :=
+  match ps with
+  | [] => None
+  | (k', v) :: rest => if bytes_eqb k k' then Some v else lookup k rest
+  end.
+
+(* The metric of gate 9: the name of the canonical metric value, or cosine
+   without the metric param. A canonical metric value is a VStr, so the
+   None case is the value of another shape, which gate 9 refuses. *)
+Definition mirror_metric (ps : list (bytes * pvalue)) : option bytes :=
+  match lookup StrP6.metric ps with
+  | None => Some StrP6.cosine
+  | Some (VStr m) => Some m
+  | Some _ => None
+  end.
+
+(* The metrics that a ChromaDB mirror indexes. *)
+Definition indexed_metrics : list bytes := [StrP6.cosine; StrP6.dot; StrP6.euclidean].
+
+(* constructor.rs check_mirror, gate 9: without mirror the gate passes. With
+   mirror, the qualifier is default and the metric of the space is one that
+   ChromaDB indexes. *)
+Definition check_mirror (q : qualifier) (ps : list (bytes * pvalue)) : bool :=
+  match lookup StrP6.mirror ps with
+  | None => true
+  | Some _ =>
+      match q, mirror_metric ps with
+      | QDefault, Some m => mem m indexed_metrics
+      | _, _ => false
+      end
   end.
 
 (* The required params of a family (defaults.rs required_params). *)
@@ -1667,7 +1877,7 @@ Section Params.
     forall r, r = RSize \/ r = RPriorities ->
       forall v v', canonical r v = Some v' <-> exists z, v = VInt z /\ (1 <= z <= i64_max)%Z /\ v' = VInt z.
   Proof.
-    intros r Hr v v'. destruct Hr as [-> | ->]; destruct v as [z | b | n | v0]; cbn;
+    intros r Hr v v'. destruct Hr as [-> | ->]; destruct v as [z | b | s | n | v0]; cbn;
       try (split; [discriminate | intros [z' [Hz _]]; discriminate Hz]).
     - destruct ((1 <=? z)%Z && (z <=? i64_max)%Z) eqn:E.
       + apply andb_true_iff in E as [E1 E2]. apply Z.leb_le in E1, E2. split.
@@ -1721,29 +1931,35 @@ Section Params.
       (f_outer f = Array /\ f_inner f <> PriorityQueue /\ s = [StrP5.cyclic; StrP5.size] /\ r = [StrP5.size]) \/
       (f_outer f = Array /\ f_inner f = PriorityQueue /\
        s = [StrP5.cyclic; StrP5.priorities; StrP5.size] /\ r = [StrP5.size]) \/
-      (f_outer f <> Array /\ f_inner f <> PriorityQueue /\ s = [] /\ r = []) \/
-      (f_outer f <> Array /\ f_inner f = PriorityQueue /\ s = [StrP5.priorities] /\ r = []).
+      (f_outer f <> Array /\ f_inner f <> PriorityQueue /\ f_inner f <> VectorDb /\ s = [] /\ r = []) \/
+      (f_outer f <> Array /\ f_inner f = PriorityQueue /\ s = [StrP5.priorities] /\ r = []) \/
+      (f_outer f <> Array /\ f_inner f = VectorDb /\ s = vectordb_params /\ r = vectordb_required).
   Proof.
     intros [[] []] s r H; cbn [schema_of f_outer f_inner] in H; try discriminate H; injection H as <- <-;
       cbn [f_outer f_inner];
       first [ left; repeat split; solve [reflexivity | discriminate]
             | right; left; repeat split; solve [reflexivity | discriminate]
             | right; right; left; repeat split; solve [reflexivity | discriminate]
-            | right; right; right; repeat split; solve [reflexivity | discriminate] ].
+            | right; right; right; left; repeat split; solve [reflexivity | discriminate]
+            | right; right; right; right; repeat split; solve [reflexivity | discriminate] ].
   Qed.
 
   Lemma priorities_in_schema :
     forall f s r, schema_of f = Some (s, r) -> (In StrP5.priorities s <-> f_inner f = PriorityQueue).
   Proof.
     destruct param_names_distinct as [_ [Hsp Hcp]].
-    intros f s r H. destruct (schema_cases f s r H) as [[_ [Hi [-> _]]] | [[_ [Hi [-> _]]] | [[_ [Hi [-> _]]] | [_ [Hi [-> _]]]]]];
+    intros f s r H.
+    destruct (schema_cases f s r H)
+      as [[_ [Hi [-> _]]] | [[_ [Hi [-> _]]] | [[_ [Hi [_ [-> _]]]] | [[_ [Hi [-> _]]] | [_ [Hi [-> _]]]]]]];
       split; intros Hx;
-      first [ exact Hi
+      solve [ exact Hi
             | exfalso; apply Hi; exact Hx
             | left; reflexivity
             | right; left; reflexivity
             | exfalso; destruct Hx as [Hx | [Hx | []]]; [exact (Hcp Hx) | exact (Hsp Hx)]
-            | destruct Hx ].
+            | destruct Hx
+            | exfalso; rewrite Hi in Hx; discriminate Hx
+            | exfalso; revert Hx; apply not_in_mem; vm_compute; reflexivity ].
   Qed.
 
   (* Headline 12 (I-10). Exactly the priority queue families take the
@@ -1777,9 +1993,12 @@ Section Params.
   Proof.
     split; [exact priorities_in_schema |].
     split.
-    { destruct param_names_distinct as [Hsc [Hsp Hcp]].
-      intros f s r H Hin. destruct (schema_cases f s r H) as [[_ [_ [_ ->]]] | [[_ [_ [_ ->]]] | [[_ [_ [_ ->]]] | [_ [_ [_ ->]]]]]];
-        cbn [In] in Hin; [destruct Hin as [Hin | []]; exact (Hsp Hin) .. | destruct Hin | destruct Hin]. }
+    { intros f s r H Hin.
+      assert (Hm : mem StrP5.priorities r = false).
+      { destruct (schema_cases f s r H)
+          as [[_ [_ [_ ->]]] | [[_ [_ [_ ->]]] | [[_ [_ [_ [_ ->]]]] | [[_ [_ [_ ->]]] | [_ [_ [_ ->]]]]]]];
+          vm_compute; reflexivity. }
+      exact (not_in_mem _ _ Hm Hin). }
     split; [exact rule_of_priorities |].
     split; [apply canonical_int_rule; right; reflexivity |].
     split.
@@ -1790,8 +2009,8 @@ Section Params.
       - intros kv [<- | []]. cbn [fst]. apply (priorities_in_schema f s [] H). exact Hi. }
     split.
     { intros f s r v z H Hi Ho Hz.
-      destruct (schema_cases f s r H) as [[_ [Hi' _]] | [[_ [_ [-> ->]]] | [[Ho' _] | [Ho' _]]]];
-        [exfalso; exact (Hi' Hi) | | exfalso; exact (Ho' Ho) | exfalso; exact (Ho' Ho)].
+      destruct (schema_cases f s r H) as [[_ [Hi' _]] | [[_ [_ [-> ->]]] | [[Ho' _] | [[Ho' _] | [Ho' _]]]]];
+        [exfalso; exact (Hi' Hi) | | exfalso; exact (Ho' Ho) | exfalso; exact (Ho' Ho) | exfalso; exact (Ho' Ho)].
       unfold validate_params. rewrite H.
       rewrite find_unknown_none, find_required_none.
       - cbn [canonical_all]. rewrite rule_of_priorities.
@@ -1815,37 +2034,48 @@ Section Params.
       In StrP5.size s /\ In StrP5.cyclic s /\ r = [StrP5.size].
   Proof.
     intros f s r Ho H.
-    destruct (schema_cases f s r H) as [[_ [_ [-> ->]]] | [[_ [_ [-> ->]]] | [[Ho' _] | [Ho' _]]]];
+    destruct (schema_cases f s r H) as [[_ [_ [-> ->]]] | [[_ [_ [-> ->]]] | [[Ho' _] | [[Ho' _] | [Ho' _]]]]];
       try (exfalso; exact (Ho' Ho)).
     - split; [right; left; reflexivity | split; [left; reflexivity | reflexivity]].
     - split; [right; right; left; reflexivity | split; [left; reflexivity | reflexivity]].
   Qed.
 
+  (* The other families take neither size nor cyclic. The families of P5
+     require nothing, and the VectorDB families require capacity and
+     dimensions (headline 14). *)
   Lemma other_schema :
     forall f s r, f_outer f <> Array -> schema_of f = Some (s, r) ->
-      ~ In StrP5.size s /\ ~ In StrP5.cyclic s /\ r = [].
+      ~ In StrP5.size s /\ ~ In StrP5.cyclic s /\
+      ((f_inner f <> VectorDb /\ r = []) \/ (f_inner f = VectorDb /\ r = vectordb_required)).
   Proof.
-    destruct param_names_distinct as [Hsc [Hsp Hcp]].
     intros f s r Ho H.
-    destruct (schema_cases f s r H) as [[Ho' _] | [[Ho' _] | [[_ [_ [-> ->]]] | [_ [_ [-> ->]]]]]];
+    destruct (schema_cases f s r H)
+      as [[Ho' _] | [[Ho' _] | [[_ [_ [Hv [-> ->]]]] | [[_ [Hi [-> ->]]] | [_ [Hv [-> ->]]]]]]];
       try (exfalso; exact (Ho Ho')).
     - split; [intros Hx; cbn [In] in Hx; destruct Hx |].
-      split; [intros Hx; cbn [In] in Hx; destruct Hx | reflexivity].
-    - split; [intros Hx; cbn [In] in Hx; destruct Hx as [Hx | []]; exact (Hsp (eq_sym Hx)) |].
-      split; [intros Hx; cbn [In] in Hx; destruct Hx as [Hx | []]; exact (Hcp (eq_sym Hx)) | reflexivity].
+      split; [intros Hx; cbn [In] in Hx; destruct Hx |].
+      left. split; [exact Hv | reflexivity].
+    - split; [apply not_in_mem; vm_compute; reflexivity |].
+      split; [apply not_in_mem; vm_compute; reflexivity |].
+      left. split; [rewrite Hi; discriminate | reflexivity].
+    - split; [apply not_in_mem; vm_compute; reflexivity |].
+      split; [apply not_in_mem; vm_compute; reflexivity |].
+      right. split; [exact Hv | reflexivity].
   Qed.
 
   Lemma canonical_cyclic_rule :
     forall v v', canonical RCyclic v = Some v' <-> exists b, v = VBool b /\ v' = VBool b.
   Proof.
-    intros [z | b | n | v0] v'; cbn [canonical];
+    intros [z | b | s | n | v0] v'; cbn [canonical];
       try (split; [discriminate | intros [b' [Hb _]]; discriminate Hb]).
     split; [intros H; injection H as <-; exists b; split; reflexivity |].
     intros [b' [Hb ->]]. injection Hb as <-. reflexivity.
   Qed.
 
   (* Headline 13 (F7). Every Array family requires size and takes the
-     optional cyclic, and every other family takes neither. size accepts
+     optional cyclic, and every other family takes neither: the families of
+     P5 require nothing, and the VectorDB families require their own two
+     params (headline 14). size accepts
      exactly the GInt values in [1, i64_max], and cyclic exactly the GBool
      values. A call without size fails with MissingParam after the key
      check. A call with a valid size and no cyclic flag is valid, and the
@@ -1855,7 +2085,8 @@ Section Params.
     (forall f s r, f_outer f = Array -> schema_of f = Some (s, r) ->
        In StrP5.size s /\ In StrP5.cyclic s /\ r = [StrP5.size]) /\
     (forall f s r, f_outer f <> Array -> schema_of f = Some (s, r) ->
-       ~ In StrP5.size s /\ ~ In StrP5.cyclic s /\ r = []) /\
+       ~ In StrP5.size s /\ ~ In StrP5.cyclic s /\
+       ((f_inner f <> VectorDb /\ r = []) \/ (f_inner f = VectorDb /\ r = vectordb_required))) /\
     rule_of StrP5.size = Some RSize /\ rule_of StrP5.cyclic = Some RCyclic /\
     (forall v v', canonical RSize v = Some v' <-> exists z, v = VInt z /\ (1 <= z <= i64_max)%Z /\ v' = VInt z) /\
     (forall v v', canonical RCyclic v = Some v' <-> exists b, v = VBool b /\ v' = VBool b) /\
@@ -1896,6 +2127,239 @@ Section Params.
       - intros k [<- | []]. cbn [map fst]. right. left. reflexivity.
       - intros kv [<- | [<- | []]]; cbn [fst]; [exact Hcs | exact Hs]. }
   Qed.
+
+  (* constructor.rs validate, the gates 1 and 5 to 9: the gates of
+     validate_params, then gate 9 on the canonical params. The qualifier q
+     is the one that the gates 2 to 4 accepted (the P4 model:
+     parse_elements, validate_qualifier). *)
+  Definition validate_factory (f : family) (q : qualifier) (positional : list pvalue)
+      (named : list (bytes * pvalue)) : presult :=
+    match validate_params f positional named with
+    | POk ps => if check_mirror q ps then POk ps else PErr (EInvalid StrP6.mirror)
+    | PErr e => PErr e
+    end.
+
+  (* The schema of a VectorDB family. *)
+  Lemma vectordb_schema :
+    forall f s r, schema_of f = Some (s, r) -> f_inner f = VectorDb ->
+      s = [StrP6.capacity; StrP6.dimensions; StrP6.metric; StrP6.mirror] /\
+      r = [StrP6.capacity; StrP6.dimensions] /\ (f_outer f = HashMap \/ f_outer f = Vector).
+  Proof.
+    intros [[] []] s r H Hi; cbn [f_inner] in Hi; try discriminate Hi;
+      cbn [schema_of f_outer f_inner] in H; try discriminate H; injection H as <- <-;
+      cbn [f_outer]; (split; [reflexivity | split; [reflexivity | first [left; reflexivity | right; reflexivity]]]).
+  Qed.
+
+  (* The VectorDB names are unknown to every other family. *)
+  Lemma vectordb_keys_unknown_elsewhere :
+    forall f s r k, schema_of f = Some (s, r) -> f_inner f <> VectorDb -> In k vectordb_params -> ~ In k s.
+  Proof.
+    intros f s r k H Hv Hk Hs.
+    destruct (schema_cases f s r H)
+      as [[_ [_ [-> _]]] | [[_ [_ [-> _]]] | [[_ [_ [_ [-> _]]]] | [[_ [_ [-> _]]] | [_ [Hv' _]]]]]];
+      [| | | | exact (Hv Hv')];
+      cbn [vectordb_params In] in Hk;
+      repeat (destruct Hk as [<- | Hk]; [revert Hs; apply not_in_mem; vm_compute; reflexivity |]);
+      destruct Hk.
+  Qed.
+
+  Lemma rule_of_capacity : rule_of StrP6.capacity = Some RCapacity.
+  Proof. vm_compute. reflexivity. Qed.
+
+  Lemma rule_of_dimensions : rule_of StrP6.dimensions = Some RDimensions.
+  Proof. vm_compute. reflexivity. Qed.
+
+  Lemma rule_of_metric : rule_of StrP6.metric = Some RMetric.
+  Proof. vm_compute. reflexivity. Qed.
+
+  Lemma rule_of_mirror : rule_of StrP6.mirror = Some RMirror.
+  Proof. vm_compute. reflexivity. Qed.
+
+  (* The rule of a bounded GInt: exactly the GInt values in [1, hi]. *)
+  Lemma bounded_int_iff :
+    forall hi z v', (if (1 <=? z)%Z && (z <=? hi)%Z then Some (VInt z) else None) = Some v' <->
+      exists z', VInt z = VInt z' /\ (1 <= z' <= hi)%Z /\ v' = VInt z'.
+  Proof.
+    intros hi z v'. destruct ((1 <=? z)%Z && (z <=? hi)%Z) eqn:E.
+    - apply andb_true_iff in E as [E1 E2]. apply Z.leb_le in E1, E2. split.
+      + intros H. injection H as <-. exists z. repeat split; assumption.
+      + intros [z' [Hz [_ ->]]]. injection Hz as <-. reflexivity.
+    - split; [discriminate |]. intros [z' [Hz [[H1 H2] _]]]. injection Hz as <-.
+      apply Z.leb_le in H1, H2. rewrite H1, H2 in E. discriminate E.
+  Qed.
+
+  Lemma canonical_capacity_rule :
+    forall v v', canonical RCapacity v = Some v' <->
+      exists z, v = VInt z /\ (1 <= z <= max_capacity)%Z /\ v' = VInt z.
+  Proof.
+    intros [z | b | s | n | v0] v'; cbn [canonical];
+      solve [ apply bounded_int_iff | split; [discriminate | intros [z' [Hz _]]; discriminate Hz] ].
+  Qed.
+
+  Lemma canonical_dimensions_rule :
+    forall v v', canonical RDimensions v = Some v' <->
+      exists z, v = VInt z /\ (1 <= z <= max_dimensions)%Z /\ v' = VInt z.
+  Proof.
+    intros [z | b | s | n | v0] v'; cbn [canonical];
+      solve [ apply bounded_int_iff | split; [discriminate | intros [z' [Hz _]]; discriminate Hz] ].
+  Qed.
+
+  Lemma canonical_metric_rule :
+    forall v v', canonical RMetric v = Some v' <-> exists m, v = VStr m /\ In m metric_names /\ v' = VStr m.
+  Proof.
+    intros [z | b | m | n | v0] v'; cbn [canonical];
+      try (split; [discriminate | intros [m' [Hm _]]; discriminate Hm]).
+    destruct (mem m metric_names) eqn:E.
+    - apply mem_spec in E. split.
+      + intros H. injection H as <-. exists m. repeat split; assumption.
+      + intros [m' [Hm [_ ->]]]. injection Hm as <-. reflexivity.
+    - split; [discriminate |]. intros [m' [Hm [Hin _]]]. injection Hm as <-.
+      apply mem_spec in Hin. rewrite Hin in E. discriminate E.
+  Qed.
+
+  Lemma canonical_mirror_rule :
+    forall v v', canonical RMirror v = Some v' <-> v = VStr StrP6.chroma /\ v' = VStr StrP6.chroma.
+  Proof.
+    intros [z | b | m | n | v0] v'; cbn [canonical];
+      try (split; [discriminate | intros [Hm _]; discriminate Hm]).
+    destruct (bytes_eqb m StrP6.chroma) eqn:E.
+    - apply bytes_eqb_true in E. subst m. split.
+      + intros H. injection H as <-. split; reflexivity.
+      + intros [_ ->]. reflexivity.
+    - split; [discriminate |]. intros [Hm _]. injection Hm as ->.
+      rewrite bytes_eqb_refl in E. discriminate E.
+  Qed.
+
+  Lemma canonical_capacity_in_range :
+    forall z, (1 <= z <= max_capacity)%Z -> canonical RCapacity (VInt z) = Some (VInt z).
+  Proof.
+    intros z Hz. apply canonical_capacity_rule. exists z. split; [reflexivity | split; [exact Hz | reflexivity]].
+  Qed.
+
+  Lemma canonical_dimensions_in_range :
+    forall z, (1 <= z <= max_dimensions)%Z -> canonical RDimensions (VInt z) = Some (VInt z).
+  Proof.
+    intros z Hz. apply canonical_dimensions_rule. exists z. split; [reflexivity | split; [exact Hz | reflexivity]].
+  Qed.
+
+  (* Gate 9 accepts the canonical params exactly when they have no mirror,
+     or the qualifier is default and the metric of the space is one that
+     ChromaDB indexes. *)
+  Lemma check_mirror_spec :
+    forall q ps, check_mirror q ps = true <->
+      (lookup StrP6.mirror ps = None \/
+       (q = QDefault /\ exists m, mirror_metric ps = Some m /\ In m indexed_metrics)).
+  Proof.
+    intros q ps. unfold check_mirror. split.
+    - destruct (lookup StrP6.mirror ps) as [vm |]; [| intros _; left; reflexivity].
+      destruct q; [| intros H; cbv beta iota in H; discriminate H | intros H; cbv beta iota in H; discriminate H].
+      destruct (mirror_metric ps) as [m |]; [| intros H; cbv beta iota in H; discriminate H].
+      intros H. right. split; [reflexivity |]. exists m. split; [reflexivity | apply mem_spec; exact H].
+    - intros [Hn | [-> [m [Hm Hin]]]].
+      + rewrite Hn. reflexivity.
+      + destruct (lookup StrP6.mirror ps); [| reflexivity]. rewrite Hm. apply mem_spec. exact Hin.
+  Qed.
+
+  Lemma mirror_metric_default : forall ps, lookup StrP6.metric ps = None -> mirror_metric ps = Some StrP6.cosine.
+  Proof. intros ps H. unfold mirror_metric. rewrite H. reflexivity. Qed.
+
+  Lemma check_mirror_absent : forall q ps, lookup StrP6.mirror ps = None -> check_mirror q ps = true.
+  Proof. intros q ps H. apply check_mirror_spec. left. exact H. Qed.
+
+  (* Headline 14 (P6, design v3 4.2). Exactly the VectorDB families
+     hashmap:vectordb and vector:vectordb take the VectorDB params capacity,
+     dimensions, metric and mirror, in bytewise order, and they require
+     capacity and dimensions. The PathMap and Array VectorDB pairs have no
+     schema, and every other family refuses the four names as unknown keys.
+     capacity accepts exactly the GInt values in [1, 1000000], dimensions
+     the GInt values in [1, 4096], metric the GString names of the six
+     metrics, and mirror the GString "chroma". A call without capacity, or
+     with capacity and without dimensions, fails with MissingParam on the
+     first missing key in bytewise order. Gate 9 runs after the gates of
+     validate_params, on the canonical params: it accepts them exactly when
+     they have no mirror, or the qualifier is default and the metric,
+     cosine without the param, is one of the three that ChromaDB indexes. A
+     call with a valid capacity and dimensions and no other key is valid. *)
+  Theorem vectordb_params_validated :
+    (forall f s r, schema_of f = Some (s, r) -> f_inner f = VectorDb ->
+       s = [StrP6.capacity; StrP6.dimensions; StrP6.metric; StrP6.mirror] /\
+       r = [StrP6.capacity; StrP6.dimensions] /\ (f_outer f = HashMap \/ f_outer f = Vector)) /\
+    schema_of (mkFamily PathMap VectorDb) = None /\ schema_of (mkFamily Array VectorDb) = None /\
+    (forall f s r k, schema_of f = Some (s, r) -> f_inner f <> VectorDb -> In k vectordb_params -> ~ In k s) /\
+    rule_of StrP6.capacity = Some RCapacity /\ rule_of StrP6.dimensions = Some RDimensions /\
+    rule_of StrP6.metric = Some RMetric /\ rule_of StrP6.mirror = Some RMirror /\
+    (forall v v', canonical RCapacity v = Some v' <->
+       exists z, v = VInt z /\ (1 <= z <= 1000000)%Z /\ v' = VInt z) /\
+    (forall v v', canonical RDimensions v = Some v' <->
+       exists z, v = VInt z /\ (1 <= z <= 4096)%Z /\ v' = VInt z) /\
+    (forall v v', canonical RMetric v = Some v' <-> exists m, v = VStr m /\ In m metric_names /\ v' = VStr m) /\
+    metric_names = [StrP6.cosine; StrP6.dot; StrP6.euclidean; StrP6.manhattan; StrP6.hamming; StrP6.jaccard] /\
+    (forall v v', canonical RMirror v = Some v' <-> v = VStr StrP6.chroma /\ v' = VStr StrP6.chroma) /\
+    (forall f s r named, schema_of f = Some (s, r) -> f_inner f = VectorDb ->
+       (forall kv, In kv named -> In (fst kv) s) -> ~ In StrP6.capacity (map fst named) ->
+       validate_params f [] named = PErr (EMissing StrP6.capacity)) /\
+    (forall f s r named, schema_of f = Some (s, r) -> f_inner f = VectorDb ->
+       (forall kv, In kv named -> In (fst kv) s) -> In StrP6.capacity (map fst named) ->
+       ~ In StrP6.dimensions (map fst named) ->
+       validate_params f [] named = PErr (EMissing StrP6.dimensions)) /\
+    (forall ps, lookup StrP6.metric ps = None -> mirror_metric ps = Some StrP6.cosine) /\
+    indexed_metrics = [StrP6.cosine; StrP6.dot; StrP6.euclidean] /\
+    (forall q ps, check_mirror q ps = true <->
+       (lookup StrP6.mirror ps = None \/
+        (q = QDefault /\ exists m, mirror_metric ps = Some m /\ In m indexed_metrics))) /\
+    (forall f q pos named, validate_factory f q pos named =
+       match validate_params f pos named with
+       | POk ps => if check_mirror q ps then POk ps else PErr (EInvalid StrP6.mirror)
+       | PErr e => PErr e
+       end) /\
+    (forall f s r c d, schema_of f = Some (s, r) -> f_inner f = VectorDb ->
+       (1 <= c <= 1000000)%Z -> (1 <= d <= 4096)%Z ->
+       validate_factory f QDefault [] [(StrP6.capacity, VInt c); (StrP6.dimensions, VInt d)] =
+       POk [(StrP6.capacity, VInt c); (StrP6.dimensions, VInt d)]).
+  Proof.
+    split; [exact vectordb_schema |].
+    split; [reflexivity |].
+    split; [reflexivity |].
+    split; [exact vectordb_keys_unknown_elsewhere |].
+    split; [exact rule_of_capacity |].
+    split; [exact rule_of_dimensions |].
+    split; [exact rule_of_metric |].
+    split; [exact rule_of_mirror |].
+    split; [exact canonical_capacity_rule |].
+    split; [exact canonical_dimensions_rule |].
+    split; [exact canonical_metric_rule |].
+    split; [reflexivity |].
+    split; [exact canonical_mirror_rule |].
+    split.
+    { intros f s r named H Hv Hkeys Hc. destruct (vectordb_schema f s r H Hv) as [-> [-> _]].
+      unfold validate_params. rewrite H.
+      rewrite (find_unknown_none _ named Hkeys).
+      cbn [find].
+      replace (mem StrP6.capacity (map fst named)) with false
+        by (symmetry; apply not_true_iff_false; rewrite mem_spec; exact Hc).
+      reflexivity. }
+    split.
+    { intros f s r named H Hv Hkeys Hc Hd. destruct (vectordb_schema f s r H Hv) as [-> [-> _]].
+      unfold validate_params. rewrite H.
+      rewrite (find_unknown_none _ named Hkeys).
+      cbn [find].
+      replace (mem StrP6.capacity (map fst named)) with true by (symmetry; apply mem_spec; exact Hc).
+      replace (mem StrP6.dimensions (map fst named)) with false
+        by (symmetry; apply not_true_iff_false; rewrite mem_spec; exact Hd).
+      reflexivity. }
+    split; [exact mirror_metric_default |].
+    split; [reflexivity |].
+    split; [exact check_mirror_spec |].
+    split; [intros f q pos named; reflexivity |].
+    intros f s r c d H Hv Hc Hd. destruct (vectordb_schema f s r H Hv) as [-> [-> _]].
+    unfold validate_factory, validate_params. rewrite H.
+    rewrite find_unknown_none, find_required_none.
+    - cbn [canonical_all]. rewrite rule_of_capacity, (canonical_capacity_in_range c Hc).
+      cbn [canonical_all]. rewrite rule_of_dimensions, (canonical_dimensions_in_range d Hd).
+      cbn [canonical_all]. rewrite check_mirror_absent; [reflexivity |]. vm_compute. reflexivity.
+    - intros k [<- | [<- | []]]; cbn [map fst]; [left | right; left]; reflexivity.
+    - intros kv [<- | [<- | []]]; cbn [fst]; [left | right; left]; reflexivity.
+  Qed.
 End Params.
 
 (* ── Headline assumptions (P5) ───────────────────────────────────────── *)
@@ -1904,3 +2368,6 @@ Print Assumptions aliases_bind_family_capability.
 Print Assumptions constructor_params_validated.
 Print Assumptions priorities_validated.
 Print Assumptions array_size_validated.
+
+(* ── Headline assumptions (P6) ───────────────────────────────────────── *)
+Print Assumptions vectordb_params_validated.

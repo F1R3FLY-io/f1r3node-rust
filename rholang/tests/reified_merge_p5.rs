@@ -17,7 +17,9 @@
 //! merge, so the counters are necessary (M-1).
 //!
 //! Scope of wave W2: the families `hashmap:{queue,bag,stack,cell}`, `array:queue` and
-//! `vector:queue`. Wave W3 adds these rows:
+//! `vector:queue`. P6 adds the VectorDB rows in native execution (decision 69): writes merge
+//! with no counter, and `capacity` is a soft bound under merges (decision 71). Wave W3 adds
+//! these rows:
 //!
 //! * the set rows (F24 `set_retirements_race`, F25 `unordered_set_writes_commute`),
 //! * the priority-queue rows, and item 18 for the class fire `[D; n]`,
@@ -157,41 +159,84 @@ impl Deployed {
     fn ok(&self) -> bool { self.result.errors.is_empty() }
 }
 
+/// The execution model of the deploys of a node: the legacy model of the P5 cases, or the
+/// native funded model (protocol v6) at the v6 host-work limits, which the P6 cases use
+/// (decision 69).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Execution {
+    Legacy,
+    Native,
+}
+
 /// A play runtime and the history of one in-memory store, as a validator evaluates a block.
 struct Node {
     play: RhoRuntimeImpl,
     history: RhoHistoryRepository,
+    execution: Execution,
 }
 
 impl Node {
-    /// A node over a fresh in-memory store, with a funded deploy signature.
-    async fn new() -> Node {
+    /// A node of the legacy model over a fresh in-memory store, with a funded deploy signature.
+    async fn new() -> Node { Node::with(Execution::Legacy).await }
+
+    /// A node of the model `execution` over a fresh in-memory store, with the funded deploy
+    /// signature of that model.
+    async fn with(execution: Execution) -> Node {
         let mut manager = InMemoryStoreManager::new();
         let stores = manager
             .r_space_stores()
             .await
             .expect("create the in-memory RSpace stores");
         let (play, _replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
-        play.cost
-            .set_deploy_signature_funded(DEPLOY_SIGNATURE, Sig::Ground(FUNDING_SIGNATURE.to_vec()));
-        Node { play, history }
+        match execution {
+            Execution::Legacy => play.cost.set_deploy_signature_funded(
+                DEPLOY_SIGNATURE,
+                Sig::Ground(FUNDING_SIGNATURE.to_vec()),
+            ),
+            Execution::Native => play
+                .cost
+                .set_deploy_signature_funded(support::native::DEPLOY, support::native::funding()),
+        }
+        Node {
+            play,
+            history,
+            execution,
+        }
     }
 
     /// Evaluates one deploy as Casper processes a user deploy. It takes a soft checkpoint,
-    /// evaluates `source`, takes the event log, and reverts a failed deploy. The label seeds the
-    /// random state, so one label gives the same deploy in every run.
+    /// evaluates `source` in the model of the node, takes the event log, and reverts a failed
+    /// deploy. The label seeds the random state, so one label gives the same deploy in every run.
     async fn deploy(&mut self, source: &str, label: &str) -> Deployed {
         let fallback = self.play.create_soft_checkpoint().await;
-        let result = self
-            .play
-            .evaluate(
-                source,
-                Cost::create(PHLO, label.to_owned()),
-                HashMap::new(),
-                Blake2b512Random::create_from_bytes(label.as_bytes()),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
+        let random = Blake2b512Random::create_from_bytes(label.as_bytes());
+        let result = match self.execution {
+            Execution::Legacy => {
+                self.play
+                    .evaluate(
+                        source,
+                        Cost::create(PHLO, label.to_owned()),
+                        HashMap::new(),
+                        random,
+                    )
+                    .await
+            }
+            Execution::Native => {
+                self.play
+                    .evaluate_with_native_phlo(
+                        source,
+                        HashMap::new(),
+                        random,
+                        None,
+                        support::native::config(
+                            support::native::AMPLE_LIMIT,
+                            support::native::host_work(),
+                        ),
+                    )
+                    .await
+            }
+        }
+        .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
         let log = self.play.take_event_log().await;
         if !result.errors.is_empty() {
             self.play.revert_to_soft_checkpoint(fallback).await;
@@ -378,9 +423,20 @@ struct Rig {
 impl Rig {
     /// Creates a space with the factory `urn` and the constructor arguments `ctor`. Then it runs
     /// the seed `seed` on the names, if the seed is not empty, and checkpoints the pre-state.
-    /// The label `label` seeds the random states of the setup and of the seed.
+    /// The label `label` seeds the random states of the setup and of the seed. The deploys run
+    /// in the legacy model.
     async fn new(urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
-        let mut node = Node::new().await;
+        Rig::with(Execution::Legacy, urn, ctor, seed, label).await
+    }
+
+    /// [`Rig::new`] with the deploys in the native funded model (decision 69).
+    async fn native(urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
+        Rig::with(Execution::Native, urn, ctor, seed, label).await
+    }
+
+    /// [`Rig::new`] with the deploys in the model `execution`.
+    async fn with(execution: Execution, urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
+        let mut node = Node::with(execution).await;
         let mut setup_logs = Vec::with_capacity(2);
         setup_logs.push(
             node.run(&setup_program(urn, ctor), &format!("{label}-setup"))
@@ -2457,5 +2513,331 @@ async fn pathmap_token_race_case(
         .is_empty(),
         "without the token the branches merge"
     );
+    Ok(())
+}
+
+// ─── VectorDB: no counter, so writes merge as on a host channel (P6, decision 69) ────────────
+
+/// The factory of the VectorDB family (P6).
+const HASHMAP_VECTORDB: &str = "rho:space:hashmap:vectordb";
+
+/// The constructor arguments of a VectorDB space of two dimensions with room for eight records
+/// in each collection.
+const VECTORDB: &str = "\"default\"; capacity=8, dimensions=2";
+
+/// Two branches that store records in one VectorDB collection merge, in native execution
+/// (decision 69). A VectorDB collection uses no counter (design v3 4.3), so its writes merge as
+/// on a host channel (M-1). The merged collection holds the records of both branches, and it is
+/// the state of each serial order. Two queries that take the one pre-state record still race on
+/// the record, as two takes on a host channel do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_vectordb_writes_merge() {
+    let label = "rrs-p6-merge-vectordb";
+    let mut rig = Rig::native(HASHMAP_VECTORDB, VECTORDB, "a!([1.0, 0.0])", label).await;
+    let (left_body, right_body) = ("a!([0.6, 0.8])", "a!([0.0, 1.0])");
+    let (left_label, right_label) = (format!("{label}-left"), format!("{label}-right"));
+    let left = rig.branch_ok(left_body, &left_label).await;
+    let right = rig.branch_ok(right_body, &right_label).await;
+    for branch in [&left, &right] {
+        for counter in rig.counters() {
+            assert_eq!(
+                touching(branch.log(), &counter),
+                0,
+                "a VectorDB operation touches no counter"
+            );
+        }
+    }
+    assert!(
+        rig.conflicts(left.log(), right.log()).is_empty(),
+        "VectorDB writes conflict: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let (left_index, right_index) = (rig.index(left.log()), rig.index(right.log()));
+    assert!(!depends(&left_index, &right_index));
+    assert!(!depends(&right_index, &left_index));
+    let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
+    let (_, serial, _) = rig
+        .serial(&[(left_body, &left_label), (right_body, &right_label)])
+        .await;
+    let (_, reversed, _) = rig
+        .serial(&[(right_body, &right_label), (left_body, &left_label)])
+        .await;
+    assert_eq!(merged, serial, "the merge is the serial state");
+    assert_eq!(merged, reversed, "the merge is the reversed serial state");
+    assert_eq!(
+        rig.node.data_at(&merged, &rig.data(0)).len(),
+        3,
+        "the merged collection holds the seed record and both writes"
+    );
+    // The control: both queries take the one pre-state record, so check #1 sees the race on the
+    // data channel.
+    let take_left = rig
+        .branch_ok(
+            "for (@x <- a ~ ([1.0, 0.0])) { Nil }",
+            &format!("{label}-take-left"),
+        )
+        .await;
+    let take_right = rig
+        .branch_ok(
+            "for (@y <- a ~ ([1.0, 0.0]; threshold=0.5)) { Nil }",
+            &format!("{label}-take-right"),
+        )
+        .await;
+    assert_eq!(
+        rig.conflicts(take_left.log(), take_right.log()),
+        BTreeSet::from([rig.data(0)]),
+        "two takes of one record race on the record"
+    );
+}
+
+/// The soft bound of `capacity` under merges (decision 71). A store checks `capacity` against
+/// the view of its own transaction, and a VectorDB collection has no counter. So two branches
+/// that each add a record to a collection one record below its capacity merge without a
+/// conflict, and the merged collection holds one record more than its capacity. A serial order
+/// holds `capacity` records: its second deploy fails with `CapacityExceeded`, and the merge
+/// drops a failed deploy (`block_index.rs`). On the merged state every store fails until the
+/// removals bring the count below `capacity`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_collection_conflicts_vectordb_capacity_soft_bound() {
+    let label = "rrs-p6-merge-vectordb-capacity";
+    let mut rig = Rig::native(
+        HASHMAP_VECTORDB,
+        "\"default\"; capacity=2, dimensions=2",
+        "a!([1.0, 0.0])",
+        label,
+    )
+    .await;
+    let (left_body, right_body) = ("a!([0.6, 0.8])", "a!([0.0, 1.0])");
+    let (left_label, right_label) = (format!("{label}-left"), format!("{label}-right"));
+    let left = rig.branch_ok(left_body, &left_label).await;
+    let right = rig.branch_ok(right_body, &right_label).await;
+    assert!(
+        rig.conflicts(left.log(), right.log()).is_empty(),
+        "the stores of two branches do not conflict: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
+    assert_eq!(
+        rig.node.data_at(&merged, &rig.data(0)).len(),
+        3,
+        "the merged collection holds one record more than its capacity"
+    );
+    let (serial, serial_root, _) = rig
+        .serial(&[(left_body, &left_label), (right_body, &right_label)])
+        .await;
+    assert_eq!(
+        serial.iter().map(Deployed::codes).collect::<Vec<_>>(),
+        vec![Vec::new(), vec!["CapacityExceeded".to_string()]],
+        "the second deploy of a serial order exceeds the capacity"
+    );
+    assert_eq!(
+        rig.node.data_at(&serial_root, &rig.data(0)).len(),
+        2,
+        "a serial order holds the capacity"
+    );
+    rig.node.reset(&merged).await;
+    let store = "a!([0.8, 0.6])";
+    let take = "for (@x <- a ~ ([1.0, 0.0])) { Nil }";
+    let steps = [
+        (store, vec!["CapacityExceeded".to_string()], 3),
+        (take, Vec::new(), 2),
+        (store, vec!["CapacityExceeded".to_string()], 2),
+        (take, Vec::new(), 1),
+        (store, Vec::new(), 2),
+    ];
+    for (index, (body, codes, records)) in steps.into_iter().enumerate() {
+        let step_label = format!("{label}-after-{index}");
+        let deployed = rig.node.deploy(&with_names(body), &step_label).await;
+        assert_eq!(deployed.codes(), codes, "{step_label}: {body}");
+        let root = rig.node.checkpoint().await;
+        assert_eq!(
+            rig.node.data_at(&root, &rig.data(0)).len(),
+            records,
+            "{step_label}: the records after {body}"
+        );
+    }
+}
+
+/// The records of a seed deploy: `[x.0, y.0]` vectors on the slots `a` and `b`.
+fn vectordb_seed(records: &[(usize, (i64, i64))]) -> String {
+    records
+        .iter()
+        .map(|(slot, (x, y))| format!("{}!([{x}.0, {y}.0])", NAMES[*slot]))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// The cases of `prop_vectordb_writes_commute` that compared a merge with the serial states.
+static VECTORDB_MERGES_COMPARED: AtomicUsize = AtomicUsize::new(0);
+
+/// `unordered_writes_commute` (R66) for the VectorDB family, in native execution (decision 69):
+/// two branches of stores on the VectorDB collections `a` and `b` touch no counter and do not
+/// conflict, and the merged state is the state of both serial orders. Every case stays below the
+/// capacity, so the soft bound of decision 71 does not apply.
+#[test]
+fn prop_vectordb_writes_commute() {
+    let point = || (0i64..4, 0i64..4);
+    check(
+        runtime_config(),
+        (
+            vec((0usize..2, point()), 0..3),
+            vec((0usize..2, point()), 1..4),
+            vec((0usize..2, point()), 1..4),
+            vec(any::<u8>(), 4),
+        ),
+        |(seeded, first, second, seed)| {
+            tokio_runtime().block_on(vectordb_writes_commute_case(seeded, first, second, seed))
+        },
+    );
+    assert_eq!(
+        VECTORDB_MERGES_COMPARED.load(Ordering::SeqCst),
+        RUNTIME_CASES as usize,
+        "every case compares the merge with the serial states"
+    );
+}
+
+/// One case of `prop_vectordb_writes_commute`.
+async fn vectordb_writes_commute_case(
+    seeded: Vec<(usize, (i64, i64))>,
+    first: Vec<(usize, (i64, i64))>,
+    second: Vec<(usize, (i64, i64))>,
+    seed_bytes: Vec<u8>,
+) -> Result<(), TestCaseError> {
+    let label = case_label("rrs-p6-prop-vectordb", &seed_bytes);
+    let mut rig = Rig::native(HASHMAP_VECTORDB, VECTORDB, &vectordb_seed(&seeded), &label).await;
+    let (first_body, second_body) = (vectordb_seed(&first), vectordb_seed(&second));
+    let (first_label, second_label) = (format!("{label}-left"), format!("{label}-right"));
+    let left = rig.branch(&first_body, &first_label).await;
+    let right = rig.branch(&second_body, &second_label).await;
+    for branch in [&left, &right] {
+        prop_assert!(branch.deployed.ok(), "{:?}", branch.deployed.result.errors);
+        for counter in rig.counters() {
+            prop_assert_eq!(touching(branch.log(), &counter), 0);
+        }
+    }
+    prop_assert!(
+        rig.conflicts(left.log(), right.log()).is_empty(),
+        "VectorDB writes conflict: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
+    let (_, serial, _) = rig
+        .serial(&[(&first_body, &first_label), (&second_body, &second_label)])
+        .await;
+    let (_, reversed, _) = rig
+        .serial(&[(&second_body, &second_label), (&first_body, &first_label)])
+        .await;
+    prop_assert_eq!(&merged, &serial);
+    prop_assert_eq!(&merged, &reversed);
+    for slot in 0..2 {
+        let expected = [&seeded, &first, &second]
+            .iter()
+            .flat_map(|records| records.iter())
+            .filter(|(record_slot, _)| *record_slot == slot)
+            .count();
+        prop_assert_eq!(rig.node.data_at(&merged, &rig.data(slot)).len(), expected);
+    }
+    VECTORDB_MERGES_COMPARED.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+/// The cases of `prop_vectordb_capacity_soft_bound` whose stores fit the capacity.
+static VECTORDB_FITS: AtomicUsize = AtomicUsize::new(0);
+
+/// The cases of `prop_vectordb_capacity_soft_bound` whose merge exceeds the capacity.
+static VECTORDB_OVERFLOWS: AtomicUsize = AtomicUsize::new(0);
+
+/// `capped_writes_soft_bound` (decision 71), in native execution: a collection of a space of
+/// capacity `c` holds `n` records, and two branches each store `a` and `b` records, each within
+/// the capacity. The branches merge without a conflict, and the merged collection holds
+/// `n + a + b` records, at most `c + min(a, b)`. The serial order passes exactly when
+/// `n + a + b <= c`, and then the merge is its state. Otherwise the second deploy of the serial
+/// order fails with `CapacityExceeded`, and the merge holds more records than the capacity.
+#[test]
+fn prop_vectordb_capacity_soft_bound() {
+    let cases = (1usize..=3).prop_flat_map(|capacity| {
+        (0..capacity).prop_flat_map(move |seeded| {
+            (
+                Just(capacity),
+                Just(seeded),
+                1..=capacity - seeded,
+                1..=capacity - seeded,
+                vec(any::<u8>(), 4),
+            )
+        })
+    });
+    check(
+        runtime_config(),
+        cases,
+        |(capacity, seeded, first, second, seed)| {
+            tokio_runtime().block_on(vectordb_capacity_case(
+                capacity, seeded, first, second, seed,
+            ))
+        },
+    );
+    let (fits, overflows) = (
+        VECTORDB_FITS.load(Ordering::SeqCst),
+        VECTORDB_OVERFLOWS.load(Ordering::SeqCst),
+    );
+    assert!(
+        fits >= 1 && overflows >= 1 && fits + overflows == RUNTIME_CASES as usize,
+        "both sides of the bound ran: {fits} fits, {overflows} overflows"
+    );
+}
+
+/// One case of `prop_vectordb_capacity_soft_bound`.
+async fn vectordb_capacity_case(
+    capacity: usize,
+    seeded: usize,
+    first: usize,
+    second: usize,
+    seed_bytes: Vec<u8>,
+) -> Result<(), TestCaseError> {
+    let label = case_label("rrs-p6-prop-capacity", &seed_bytes);
+    let stores = |count: usize, y: usize| -> String {
+        (0..count)
+            .map(|index| format!("a!([{index}.0, {y}.0])"))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let ctor = format!("\"default\"; capacity={capacity}, dimensions=2");
+    let mut rig = Rig::native(HASHMAP_VECTORDB, &ctor, &stores(seeded, 1), &label).await;
+    let (first_body, second_body) = (stores(first, 2), stores(second, 3));
+    let (first_label, second_label) = (format!("{label}-left"), format!("{label}-right"));
+    let left = rig.branch(&first_body, &first_label).await;
+    let right = rig.branch(&second_body, &second_label).await;
+    for branch in [&left, &right] {
+        prop_assert!(branch.deployed.ok(), "{:?}", branch.deployed.result.errors);
+    }
+    prop_assert!(
+        rig.conflicts(left.log(), right.log()).is_empty(),
+        "capped stores conflict: {:?}",
+        rig.reason(left.log(), right.log())
+    );
+    let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
+    let records = rig.node.data_at(&merged, &rig.data(0)).len();
+    prop_assert_eq!(records, seeded + first + second);
+    prop_assert!(records <= capacity + first.min(second));
+    let (serial, serial_root, _) = rig
+        .serial(&[(&first_body, &first_label), (&second_body, &second_label)])
+        .await;
+    prop_assert!(serial[0].ok(), "{:?}", serial[0].result.errors);
+    match seeded + first + second <= capacity {
+        true => {
+            prop_assert!(serial[1].ok(), "{:?}", serial[1].result.errors);
+            prop_assert_eq!(&merged, &serial_root);
+            VECTORDB_FITS.fetch_add(1, Ordering::SeqCst);
+        }
+        false => {
+            let codes = serial[1].codes();
+            prop_assert!(
+                !codes.is_empty() && codes.iter().all(|code| code == "CapacityExceeded"),
+                "{:?}",
+                codes
+            );
+            prop_assert!(records > capacity);
+            VECTORDB_OVERFLOWS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     Ok(())
 }

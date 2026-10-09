@@ -13,6 +13,8 @@
 # SpaceRefs.v (10, and 1 of decision 46) and SpaceFactory.v (8). Decision 42
 # adds AgentReadCoverage.v (8). Option P of decision 45 adds
 # LegacyCharges.v (2: Q79 and Q80). P6 step 2 adds Similarity.v (20: S1-S20).
+# P6 step 8 adds headline 14 of SpaceFactory.v (vectordb_params_validated) and
+# headline 16 of CounterConflict.v (capped_writes_soft_bound, decision 71).
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -46,7 +48,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 266: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 268: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -73,8 +75,10 @@
 #                        and 1 for the PathMap source of W3 Phase 2: the
 #                        token race pathmap_token_race of
 #                        CounterConflict.v, 4 for decision 47: H24 to
-#                        H27 of EventCorrelation.v, and 20 for P6 step 2:
-#                        S1 to S20 of Similarity.v)
+#                        H27 of EventCorrelation.v, 20 for P6 step 2:
+#                        S1 to S20 of Similarity.v, and 2 for P6 step 8:
+#                        vectordb_params_validated of SpaceFactory.v and
+#                        capped_writes_soft_bound of CounterConflict.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -93,7 +97,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-266}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-268}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -105,10 +109,10 @@ declare -A EXPECTED_PER_MODULE=(
   [Encoding]=15
   [Namespace]=11
   [RecordEnvelope]=11
-  [CounterConflict]=15
+  [CounterConflict]=16
   [HeadOnlyDisciplines]=20
   [SpaceRefs]=12
-  [SpaceFactory]=13
+  [SpaceFactory]=14
   [AgentReadCoverage]=9
   [LegacyCharges]=2
   [CellDiscipline]=3
