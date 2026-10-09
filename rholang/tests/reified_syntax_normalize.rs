@@ -899,3 +899,135 @@ fn normalize_receive_query_recheck_rejects_what_the_parser_rejects() {
             if matches!(procs.as_slice(), [AnnProc { proc: Proc::ForComprehension { .. }, .. }])
     ));
 }
+
+// ─── Native numeric vectors (P6, tracker leaf rrs-normalizers-native-vector) ───────────────
+
+/// The expression of each element of `par`, which must hold exactly one list expression whose
+/// elements each hold exactly one expression.
+fn list_elements(par: &Par) -> Vec<ExprInstance> {
+    match par.exprs.as_slice() {
+        [Expr {
+            expr_instance: Some(ExprInstance::EListBody(list)),
+        }] => list
+            .ps
+            .iter()
+            .map(|element| match element.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(instance),
+                }] => instance.clone(),
+                other => panic!("expected one expression for each element, found {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected one list expression, found {other:?}"),
+    }
+}
+
+/// The sole datum of the sole send of `par`.
+fn sole_datum(par: &Par) -> &Par {
+    match sole_send(par).data.as_slice() {
+        [datum] => datum,
+        other => panic!("expected exactly one datum, found {other:?}"),
+    }
+}
+
+/// The elements of every numeric kind of the core (P6, decision 54) in the order of
+/// [`NATIVE_VECTOR_SOURCE`].
+fn native_vector_elements() -> Vec<ExprInstance> {
+    vec![
+        ExprInstance::GInt(3),
+        ExprInstance::GBigInt(vec![0xFC]),
+        ExprInstance::GBigRat(models::rhoapi::GBigRational {
+            numerator: vec![5],
+            denominator: vec![1],
+        }),
+        ExprInstance::GDouble(0.5f64.to_bits()),
+        ExprInstance::GFloat32((-2.5f32).to_bits()),
+        ExprInstance::GFixedPoint(models::rhoapi::GFixedPoint {
+            unscaled: vec![0x7D],
+            scale: 2,
+        }),
+        ExprInstance::GBool(true),
+        ExprInstance::GDouble(1000f64.to_bits()),
+    ]
+}
+
+/// A vector with one element of each numeric kind of the source language: a long, a big
+/// integer, a big rational, a bare decimal float, a suffixed `f32`, a fixed-point number, a
+/// Boolean and a bare exponent float.
+const NATIVE_VECTOR_SOURCE: &str = r#"@"v"!([3, -4n, 5r, 0.5, -2.5f32, 1.25p2, true, 1e3])"#;
+
+/// A source vector normalizes to one list whose elements keep their numeric arm and their
+/// source order (P6, design v3 4.1). No new protobuf arm exists for a vector, and the bytes
+/// round-trip through prost.
+#[test]
+fn normalizer_native_vector_keeps_the_kind_and_order_of_each_element() {
+    let par = compile(NATIVE_VECTOR_SOURCE);
+    assert_eq!(list_elements(sole_datum(&par)), native_vector_elements());
+    let bytes = par.encode_to_vec();
+    assert_eq!(
+        Par::decode(bytes.as_slice()).expect("the bytes decode"),
+        par
+    );
+    let reversed = compile(r#"@"v"!([1e3, true, 1.25p2, -2.5f32, 0.5, 5r, -4n, 3])"#);
+    let mut expected = native_vector_elements();
+    expected.reverse();
+    assert_eq!(list_elements(sole_datum(&reversed)), expected);
+}
+
+/// A vector in the send param `embedding` and in the payload of a receive query keeps the arm
+/// and the order of each element inside the marker tuples (decision 21).
+#[test]
+fn normalizer_native_vector_in_params_and_queries_keeps_its_elements() {
+    let par = compile(r#"@"v"!("doc"; embedding=[3, -4n, 5r, 0.5, -2.5f32, 1.25p2, true, 1e3])"#);
+    let trailing = split_trailing_params(&sole_send(&par).data)
+        .expect("canonical params")
+        .expect("the params of the send");
+    assert!(trailing.positional.is_empty());
+    let embedding = trailing
+        .named
+        .get("embedding")
+        .expect("the embedding param");
+    assert_eq!(list_elements(embedding), native_vector_elements());
+
+    let par = compile(
+        r#"for (y <- @"v" ~ ([3, -4n, 5r, 0.5, -2.5f32, 1.25p2, true, 1e3]; k=2)) { Nil }"#,
+    );
+    let spec = models::rust::reified::encoding::decode_query_source(sole_bind_source(&par))
+        .expect("a canonical query")
+        .expect("the query of the receive");
+    match spec.payload.as_slice() {
+        [vector] => assert_eq!(list_elements(vector), native_vector_elements()),
+        other => panic!("expected one query payload, found {other:?}"),
+    }
+}
+
+/// The normalizer reads no vector from text: a string stays a string, and a list with an
+/// element that is not a number stays a list. The space decides at run time whether a payload
+/// is a vector (decision 66). A float with an unsupported width, or an `f32` out of range, fails
+/// in the normalizer.
+#[test]
+fn normalizer_native_vector_parses_no_string_and_rejects_malformed_floats() {
+    assert_eq!(sole_datum(&compile(r#"@"v"!("3,4")"#)), &gstring("3,4"));
+    assert_eq!(
+        list_elements(sole_datum(&compile(r#"@"v"!([1, "a"])"#))),
+        vec![ExprInstance::GInt(1), ExprInstance::GString("a".to_owned())]
+    );
+    for (source, width) in [
+        (r#"@"v"!([1.0f128])"#, "f128"),
+        (r#"@"v"!([2.5f256])"#, "f256"),
+    ] {
+        match compile_error(source) {
+            InterpreterError::NormalizerError(message) => {
+                assert!(message.contains(width), "{source}: {message}")
+            }
+            other => panic!("{source}: expected a normalizer error, found {other:?}"),
+        }
+    }
+    assert!(
+        matches!(
+            compile_error(r#"@"v"!([1e39f32])"#),
+            InterpreterError::NormalizerError(_)
+        ),
+        "an f32 literal out of range fails in the normalizer"
+    );
+}

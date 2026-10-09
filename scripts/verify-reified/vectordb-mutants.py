@@ -13,6 +13,14 @@ and 5: `cap-allows-one-more` (prop_vectordb_transactions_are_bounded),
 `driver-lift-not-owed` and `engine-rule-e-dropped` (prop_vectordb_records_are_conserved, with
 the existing `driver-rule-e-dropped`).
 
+The mutants of step 8f are the controls of the tests that the P6 tracker leaves name:
+`list-single-derived` and `list-merge-reversed` (the random state of a list delivery,
+rspace_list_random_state_*), `cosine-threshold-strict` (the reference cases through a space,
+space_similarity_topk_*), `fixed-point-scale-off-by-one` (space_native_vectors_*) and
+`canonical-order-is-the-view-order` (space_hash_collision_tie_* and
+space_vector_discipline_*). The last three change the numeric core and the order of DR-75
+(rspace++), so the tests of the space find them through the whole driver.
+
 Rules of the harness:
   * The harness reads the source files first and restores them after every mutant, also on an
     error or an interrupt. It prints whether the restored files equal the originals.
@@ -39,6 +47,9 @@ SPACES = REPO_ROOT / "rholang/src/rust/interpreter/spaces"
 DRIVER = SPACES / "disciplines/vectordb.rs"
 ENGINE = SPACES / "join.rs"
 COSTS = REPO_ROOT / "rholang/src/rust/interpreter/reified/costs.rs"
+EXACT = REPO_ROOT / "rholang/src/rust/interpreter/tensor/exact.rs"
+NUM = REPO_ROOT / "rholang/src/rust/interpreter/tensor/num.rs"
+ORDER = REPO_ROOT / "rspace++/src/rspace/space_store_handle.rs"
 
 # (name, file, old text, new text): each mutant reverts one rule of the discipline.
 MUTANTS = (
@@ -111,6 +122,30 @@ MUTANTS = (
     ("engine-rule-e-dropped", ENGINE,
      "                true => self.second_sends(cx, &w.colls, &bound, None, None)?,",
      "                true => Vec::new(),"),
+    # A list of one member delivers a random state derived from its own, not its own.
+    ("list-single-derived", DRIVER,
+     "        [single] => meter.copy(&single.payload.random_state)?,",
+     "        [single] => Blake2b512Random::from_bytes(&single.payload.random_state)\n"
+     "            .split_byte(0)\n"
+     "            .to_bytes(),"),
+    # A longer list merges the random states of its members in reverse delivery order.
+    ("list-merge-reversed", DRIVER,
+     "            for member in members {\n"
+     "                let random = Blake2b512Random::from_bytes(&member.payload.random_state);",
+     "            for member in members.iter().rev() {\n"
+     "                let random = Blake2b512Random::from_bytes(&member.payload.random_state);"),
+    # A non-negative cosine passes a non-negative threshold only when it is greater.
+    ("cosine-threshold-strict", EXACT,
+     "                        false => order != Ordering::Less,",
+     "                        false => order == Ordering::Greater,"),
+    # A fixed-point number divides by one more power of ten than its scale.
+    ("fixed-point-scale-off-by-one", NUM,
+     "            let denominator = num_traits::pow::pow(BigInt::from(10u8), scale);",
+     "            let denominator = num_traits::pow::pow(BigInt::from(10u8), scale + 1);"),
+    # The canonical order of DR-75 is the order of the view (decision 41).
+    ("canonical-order-is-the-view-order", ORDER,
+     "    canonical_view_order(data, meter)\n}",
+     "    let _ = meter;\n    Ok((0..data.len()).collect())\n}"),
 )
 
 

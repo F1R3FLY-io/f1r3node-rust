@@ -3665,7 +3665,7 @@ The engine runs LIST-CASCADE for its list waiters, and a settle job of a VectorD
 #### N15.5 The factory, the config and merges
 
 The factory rows of both families take `capacity`, `dimensions`, `metric` and `mirror` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
-Gate 9 of `FactoryConstructor::validate` refuses `mirror` unless the qualifier is the default one and the metric is `cosine`, `dot` or `euclidean` (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:158-189`).
+Gate 9 of `FactoryConstructor::validate` refuses `mirror` unless the qualifier is the default one and the metric is `cosine`, `dot` or `euclidean` (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:155-186`).
 `vdb_config` reads the params of each operation from the config record, with each read reserved first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:293-307`).
 
 The family has no counter (`USES_COUNTER = false`), so two branches that write one collection merge with no conflict ([M-1](decision-register.md#m-1)).

@@ -939,7 +939,7 @@ Section [N15 of the design](design.md#n15-phase-p6-the-vectordb-family) explains
 
 **Rule VD-1: factory params.** The factory takes `capacity` (required, an `Int` in $`[1, 1\,000\,000]`$) and `dimensions` (required, an `Int` in $`[1, 4\,096]`$).
 It also takes `metric` (default `cosine`), one of `cosine`, `dot`, `euclidean`, `manhattan`, `hamming` and `jaccard`, and `mirror`, which must be `"chroma"` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
-A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:158-189`).
+A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:155-186`).
 
 **Rule VD-2: records.** A send stores its payload with an optional vector (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657`).
 The vector is the param `embedding`, or else the payload itself when the payload is exactly one non-empty list of numbers ([decision 66](decision-register.md#decision-66)).
@@ -986,6 +986,9 @@ The payload value of a send with $`n`$ data is the list of the $`n`$ data.
 
 The receive fires when the list is not empty, its pattern binds the list, and its guard admits the list. The guard is checked once.
 The fire is one COMM over $`[D; m]`$ for the $`m`$ records of the list. Otherwise the receive parks on $`[D]`$ with its query (LM-b, [decision 66](decision-register.md#decision-66)).
+
+A list of one member keeps the random state of that member.
+A longer list merges the random states of its members in delivery order (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:810-850`).
 
 **Rule VD-7: sends.** A send offers its datum $`x`$ to the parked waiters in the canonical order (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1422-1471`):
 
@@ -1191,19 +1194,19 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
 | NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
 | VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2283`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
-| VD-2 | None | `space_vectordb_payload_is_the_vector_by_default`, `space_vectordb_peek_restores_records_with_their_embedding` |
+| VD-2 | None | `space_vectordb_payload_is_the_vector_by_default`, `space_vectordb_peek_restores_records_with_their_embedding`, `space_native_vectors_every_kind_enters_exactly` |
 | VD-3 | None | `space_vectordb_errors_have_their_codes`, `space_vectordb_source_errors_have_their_codes`, `space_vectordb_fixed_point_and_rational_thresholds` |
-| VD-4 | `cosine_squared_form_iff` (`Similarity.v:412`), `cosine_order_squared_form` (`Similarity.v:471`), `euclidean_radius_squared_form` (`Similarity.v:545`), `binary_laws` (`Similarity.v:1042`), `selection_total_order` (`Similarity.v:1169`) | `prop_selection_order_is_a_strict_total_order`, `space_vectordb_bounds_select_the_eligible_records`, `space_vectordb_ids_keep_only_the_listed_records`, `space_vectordb_binary_metrics_read_binary_vectors_only`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order` |
-| VD-5 | `topk_deterministic` (`Similarity.v:1199`) | `prop_topk_is_deterministic`, `space_vectordb_single_mode_takes_the_best_record`, `space_vectordb_guard_refusal_parks_until_a_worse_record_passes` |
-| VD-6 | `list_selection_deterministic` (`Similarity.v:1278`) | `prop_vectordb_list_is_ordered_and_complete`, `space_vectordb_list_mode_delivers_one_list_in_selection_order` |
+| VD-4 | `cosine_squared_form_iff` (`Similarity.v:412`), `cosine_order_squared_form` (`Similarity.v:471`), `euclidean_radius_squared_form` (`Similarity.v:545`), `binary_laws` (`Similarity.v:1042`), `selection_total_order` (`Similarity.v:1169`) | `prop_selection_order_is_a_strict_total_order`, `space_vectordb_bounds_select_the_eligible_records`, `space_vectordb_ids_keep_only_the_listed_records`, `space_vectordb_binary_metrics_read_binary_vectors_only`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order`, `space_similarity_topk_reference_cases_through_the_space`, `space_hash_collision_tie_duplicates_are_interchangeable`, `space_hash_collision_tie_forced_equal_source_hashes_select_one_value` |
+| VD-5 | `topk_deterministic` (`Similarity.v:1199`) | `prop_topk_is_deterministic`, `space_vectordb_single_mode_takes_the_best_record`, `space_vectordb_guard_refusal_parks_until_a_worse_record_passes`, `space_vector_discipline_restart_keeps_values_ties_and_order` |
+| VD-6 | `list_selection_deterministic` (`Similarity.v:1278`) | `prop_vectordb_list_is_ordered_and_complete`, `space_vectordb_list_mode_delivers_one_list_in_selection_order`, `rspace_list_random_state_zero_one_and_two_members`, `rspace_list_random_state_replay_reproduces_the_merged_states` |
 | VD-7 | the TLA+ invariant `ListAtomic` (W2) | `prop_vectordb_list_fires_are_atomic`, `space_vectordb_ce1_list_waiter_fires_with_the_incoming_datum` |
 | VD-8 | `vdb_txn_bounded` (`VectorDbDiscipline.v:924`), the TLA+ invariant `CascadeTerminates` (W4) | `prop_vectordb_transactions_are_bounded`, `space_vectordb_list_cascade_carries_at_the_cap` |
 | VD-9 | `vdb_no_record_lost` (`VectorDbDiscipline.v:1082`), the TLA+ invariant `PeekConservation` (W3) | `prop_vectordb_records_are_conserved`, `space_vectordb_cascade_peek_restores_the_lifted_member` |
 | VD-10 | `vdb_no_pending_match` (`VectorDbDiscipline.v:662`), `vdb_list_needs_cascade` (`VectorDbDiscipline.v:1311`), the TLA+ invariant `QuiescentNoPendingMatch` (U1) | `prop_vectordb_no_pending_match`, `space_vectordb_ce2_removal_cascade_fires_the_list_waiter` |
 | VD-11 | `vdb_join_removal_exposes_nothing` (`VectorDbDiscipline.v:781`) | `prop_vectordb_driver_and_engine_agree`, `space_vectordb_join_binds_each_position_by_its_query`, `space_vectordb_list_mode_in_a_join_fails`, `space_vectordb_join_waiter_fires_on_an_eligible_send` |
 | VD-12 | `capped_writes_soft_bound` (`CounterConflict.v:2383`) | `prop_vectordb_capacity_soft_bound`, `space_collection_conflicts_vectordb_capacity_soft_bound`, `prop_vectordb_writes_commute`, `space_vectordb_capacity_bounds_records_not_waiters` |
-| VD-13 | `squared_forms_embed` (`Similarity.v:1000`), `root_midpoint_nearest` (`VectorOps.v:367`) | `prop_dyadic_and_rational_kernels_agree`, `space_vectordb_scores_are_the_correctly_rounded_exact_scores`, `tensor_square_roots_are_correctly_rounded` |
-| VD-14 | None | `space_native_vectordb_errors_reproduce`, `space_native_vectordb_cascade_carries_at_the_cap`, `space_native_vectordb_denial_replay`, `space_vectordb_reservation_cut_rejects_without_effect` |
+| VD-13 | `squared_forms_embed` (`Similarity.v:1000`), `root_midpoint_nearest` (`VectorOps.v:367`) | `prop_dyadic_and_rational_kernels_agree`, `space_vectordb_scores_are_the_correctly_rounded_exact_scores`, `tensor_square_roots_are_correctly_rounded`, `space_similarity_topk_reference_cases_through_the_space` |
+| VD-14 | None | `space_native_vectordb_errors_reproduce`, `space_native_vectordb_cascade_carries_at_the_cap`, `space_native_vectordb_denial_replay`, `space_vectordb_reservation_cut_rejects_without_effect`, `reducer_query_costs_of_a_query_follow_its_records_and_dimensions`, `reducer_query_costs_follow_the_table_of_the_module` |
 | SP-1 | None | `vector_ops_params_and_persistent_sends_abort`, `vectordb_embed_and_ann_reject_params_and_persistent_sends` |
 | SP-2 | `vector_replies_exact` (`VectorOps.v:264`), `root_midpoint_nearest` (`VectorOps.v:367`), `dot_laws` (`Similarity.v:658`), `distance_laws` (`Similarity.v:745`) | `prop_vector_ops_agree_with_an_exact_oracle`, `prop_vector_ops_float_inputs_give_floats`, `prop_vector_ops_roots_are_correctly_rounded`, `vector_ops_failures_reply_their_codes` |
 | SP-3 | None | `vectordb_embed_replies_and_codes` |

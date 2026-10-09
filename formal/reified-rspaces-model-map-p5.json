@@ -2768,7 +2768,7 @@
       "scope": "FactoryConstructor",
       "kind": "fn",
       "name": "validate",
-      "line": 60,
+      "line": 68,
       "role": "The gates of a constructor, in order.",
       "rocq": [
         "validate_params",
@@ -2788,7 +2788,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
       "kind": "fn",
       "name": "canonical_params",
-      "line": 146,
+      "line": 191,
       "role": "The canonical named params of a config.",
       "rocq": [
         "canonical_all"
@@ -6714,7 +6714,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
       "kind": "fn",
       "name": "check_mirror",
-      "line": 158,
+      "line": 155,
       "role": "Gate 9: a mirror needs the default qualifier and a metric that ChromaDB indexes.",
       "rocq": [
         "check_mirror",

@@ -77,8 +77,18 @@ MUTANTS = (
      "            vec![expr_par(ExprInstance::GBool(true)), value]",
      "            vec![value]"),
     # The process meters nothing: it ignores the host-work budget of the deploy (decision 42).
+    # The anchor holds the lines above the meter of `vector`, because the checks of an `ann`
+    # request (P6 step 7a) open with the same meter.
     ("process-unmetered", PROCESSES,
+     "    let [ret, call] = args.as_slice() else {\n"
+     "        return Err(illegal_argument_error(VECTOR_PROCESS.urn));\n"
+     "    };\n"
+     "    let meter = ScanMeter::new(\n"
      "        deterministic_reduction::current().and_then(|context| context.host_work_budget()),",
+     "    let [ret, call] = args.as_slice() else {\n"
+     "        return Err(illegal_argument_error(VECTOR_PROCESS.urn));\n"
+     "    };\n"
+     "    let meter = ScanMeter::new(\n"
      "        deterministic_reduction::current().and_then(|_| None),"),
 )
 

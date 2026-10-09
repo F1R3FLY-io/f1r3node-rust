@@ -2960,7 +2960,7 @@
       "scope": "FactoryConstructor",
       "kind": "fn",
       "name": "validate",
-      "line": 60,
+      "line": 68,
       "role": "The gates of a factory call in P4.",
       "rocq": [
         "validate_qualifier"
@@ -2976,7 +2976,7 @@
       "scope": "FactoryConstructor",
       "kind": "fn",
       "name": "durability",
-      "line": 115,
+      "line": 125,
       "role": "Durable for default.",
       "rocq": [
         "durability_of"
@@ -2992,7 +2992,7 @@
       "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
       "kind": "fn",
       "name": "family_of",
-      "line": 163,
+      "line": 208,
       "role": "The family of a stored config.",
       "rocq": [
         "family_of_names"

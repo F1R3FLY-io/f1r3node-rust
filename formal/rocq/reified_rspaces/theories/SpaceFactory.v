@@ -914,7 +914,7 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    lookup, mirror_metric, indexed_metrics, check_mirror, validate_factory
                             rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:116 (the call of gate 9 in
-                            validate), 158-189 (check_mirror)
+                            validate), 155-186 (check_mirror)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction

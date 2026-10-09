@@ -28,7 +28,13 @@ The [decision register](decision-register.md) is normative, and the [design](des
 18. [Phase P6, step 7a: the recorded processes `embed` and `ann`](#18-phase-p6-step-7a-the-recorded-processes-embed-and-ann)
 19. [Phase P6, step 7b: the mirror journal and its publication](#19-phase-p6-step-7b-the-mirror-journal-and-its-publication)
 20. [Phase P6, step 7c: the mirror reconciler, the docker pin and the live leg](#20-phase-p6-step-7c-the-mirror-reconciler-the-docker-pin-and-the-live-leg)
-21. [References](#references)
+21. [Phase P6, step 8a: the factory model, the VectorDB merges and the f64 mutant](#21-phase-p6-step-8a-the-factory-model-the-vectordb-merges-and-the-f64-mutant)
+22. [Phase P6, step 8b: the model of the VectorDB discipline and its properties](#22-phase-p6-step-8b-the-model-of-the-vectordb-discipline-and-its-properties)
+23. [Phase P6, step 8c: the TLA+ model of the VectorDB discipline](#23-phase-p6-step-8c-the-tla-model-of-the-vectordb-discipline)
+24. [Phase P6, step 8d: the model of the mirror and the replies of `rho:lang:vector`](#24-phase-p6-step-8d-the-model-of-the-mirror-and-the-replies-of-rholangvector)
+25. [Phase P6, step 8e: the documents of the VectorDB family](#25-phase-p6-step-8e-the-documents-of-the-vectordb-family)
+26. [Phase P6, step 8f: the full gate set of the phase](#26-phase-p6-step-8f-the-full-gate-set-of-the-phase)
+27. [References](#references)
 
 ## 1. Purpose and scope
 
@@ -4876,6 +4882,222 @@ To run the checks of step 8e, do these steps from the repository root:
 1. Run `python3 scripts/verify-reified/doc_lint.py`, which must report no violation.
 2. Run `bash docs/rspace/reified-rspaces/diagrams/render.sh --check`.
 3. Run `cargo test -p rholang --test reified_syntax_corpus`.
+
+## 26. Phase P6, step 8f: the full gate set of the phase
+
+Step 8f runs the one full gate set of phase P6 (decision 48, design v3 section 8, item 8).
+The gate set takes the legs G1 to G17 of the full gate set of P5 and adds the legs of P6.
+The legs of P6 are the five mutant harnesses, the Z3 and Sage legs, the live leg, and the release builds of `node`.
+The gate ran on commit `fd0341afa` with the local parser patch of decision 4.
+The step also found that P6 had not built the tests that its tracker leaves name, and it adds them (section [26.4](#264-the-tests-that-the-p6-leaves-name)).
+
+### 26.1 The legs
+
+*Table 138. The legs of the full gate set of P6.*
+
+| Leg | Check | Result |
+|---|---|---|
+| Format and lint | `cargo fmt --all -- --check`. `cargo clippy` with `-D warnings` of `rspace_plus_plus`, `rholang` and `models` (library and tests), of `rholang` with the feature `chromadb` (the live suite included), and of `node` with `rholang/chromadb`. | pass |
+| G1 | `cargo check --workspace --all-targets`, and `cargo check -p node --all-targets --features rholang/chromadb` | 0 warnings |
+| G2 to G6 | The `rholang` library and the 42 suites `rholang/tests/reified_*.rs`. They hold the parity suite and the ordinary regression suites. | 3,215 passed, 0 failed, 3 ignored |
+| G2 to G6 | Every `rspace_plus_plus` test. They hold `legacy_golden_corpus` and the HEAD peek, join and replay suites. | 853 passed, 0 failed, 7 ignored |
+| G2 to G6 | The `models` suites `reified_encoding` and `space_factory_urn` | 17 passed, 0 failed |
+| G7 | I-14: the two empty-state-hash tests of `casper` | 2 passed |
+| G8 | `scripts/check-reified-rspaces-proofs.sh` | `PASS=117 FAIL=0 SKIP=0`, 275 closed headlines, 396 negative checks |
+| G9 | `scripts/check-reified-rspaces-tla-invariants.sh` with 4 TLC workers | `PASS=432 FAIL=0 SKIP=0`. `MC_VectorDb_Plain` explores 1,677,464 states and `MC_ChromaMirror` 1,722,212. |
+| G10 to G15 | The 30 checkers of the phase. `doc_lint.py` includes the render check and the Rust citations. | 30 of 30 pass before and after the mutant harnesses. |
+| G16 | The protected paths against the base `4d67b5ccc` | Only the accessor of decision 47 differs. No file is untracked under the protected paths, and Reified code holds no `0xF3`. |
+| G17 | The release tests of each crate, as `scripts/run_rust_tests.sh` runs them | Table 139 |
+| Release builds | `cargo build --release -p node`, without and with `rholang/chromadb` | Both succeed, in 127 s and 263 s. |
+| Z3 | The three scripts of `formal/z3/reified_rspaces` | 12, 10 and 17 checks pass. |
+| Sage and receipt | `similarity_metrics.sage` and `numeric_reference_receipt.py` | 182 of 182 cases agree, and 200 random cases satisfy the metric laws. |
+| Mutants | The five Rust mutant harnesses of P6 | 68 of 69 mutants fail tests, and every file is restored. One stale control is fixed (Table 140) |
+| Live leg | `scripts/verify-reified/chroma-live.sh` with the pinned server | 3 passed |
+
+The 3 ignored `rholang` tests and the 7 ignored `rspace_plus_plus` tests are tests of the base that carry `#[ignore]`.
+G17 and the release builds ran in an export of the tree under `target/`, with their own target directory.
+A sha256 manifest showed that each of the 4,995 tracked files of the export equals its file in the worktree.
+The mutant harnesses change sources in place, so the export kept them away from the release builds.
+Only a release build finds the layout-depth error of P5 W5, because `cargo check` computes no layout of an async state machine.
+
+### 26.2 The release regression
+
+*Table 139. The release tests of each crate (G17).*
+
+| Crate | Passed | Failed | Ignored | Seconds |
+|---|---|---|---|---|
+| `rspace++` | 853 | 0 | 7 | 140 |
+| `rholang` | 4,098 | 0 | 6 | 1,066 |
+| `casper` | 1,505 | 3 | 14 | 1,339 |
+| `models` | 466 | 0 | 0 | 51 |
+| `crypto` | 121 | 0 | 0 | 19 |
+| `shared` | 142 | 0 | 0 | 20 |
+| `graphz` | 48 | 0 | 0 | 5 |
+| `block-storage` | 165 | 0 | 0 | 20 |
+| `comm` | 401 | 0 | 0 | 61 |
+| `node` | 260 | 0 | 0 | 246 |
+| Total | 8,059 | 3 | 27 | |
+
+The three failures of `casper` are the failures of the base `4d67b5ccc`, which holds no Reified code.
+They have the tests, the panic sites and the values of the run of the base in P5 W5 (`target/verification/reified-rspaces/p5/w5-dry/base-casper3.log`):
+
+- `offered_gateway_call_draws_funded_private_purses_across_validators` fails at `casper/tests/api/offered_gateway_slot_api_test.rs:147` with `NoNewDeploys`.
+- `replay_should_match_in_case_of_user_execution_error` fails at `casper/tests/util/rholang/interpreter_util_test.rs:2014`, with 236,560 of 300,000 phlo.
+- `compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing` fails at `casper/tests/util/rholang/runtime_manager_test.rs:780`.
+
+They belong to the cost-accounting work, and the campaign does not change them ([decision 70](decision-register.md#decision-70)).
+The 27 ignored tests are the tests of the base that carry `#[ignore]` ([decision 13](decision-register.md#decision-13)).
+
+### 26.3 The mutant harnesses
+
+*Table 140. The run of the five mutant harnesses of P6 in step 8f.*
+
+| Harness | Mutants | Fail tests | Stale | Seconds |
+|---|---|---|---|---|
+| `tensor-mutants.py` | 6 | 6 | 0 | 472 |
+| `vectordb-mutants.py` | 9 | 9 | 0 | 1,012 |
+| `vector-ops-mutants.py` | 8 | 7 | 1 | 485 |
+| `vectordb-services-mutants.py` | 12 | 12 | 0 | 1,724 |
+| `mirror-mutants.py` | 34 | 34 | 0 | 3,118 |
+
+The control `process-unmetered` of `vector-ops-mutants.py` was stale.
+Its text occurs twice since step 7a, which opens the checks of an `ann` request with the same metered line.
+The harness refuses a stale control, so this control has been unverified since step 7a.
+Its anchor now holds the lines above the meter of `vector`, so it changes the same line as before.
+The fixed harness ran on the tree of the step: 8 of 8 mutants fail tests, and `process-unmetered` fails `space_system_ops_vector_ops_reserve_on_the_deploy_budget`.
+A check of every control of the five harnesses against the sources finds no other stale control.
+
+Each harness applies one mutant at a time, runs its tests, and restores the sources.
+After each harness, the gate required `restored=True` and an unchanged worktree.
+The `rholang` leg of Table 138 is the baseline of the harnesses, because it holds every test that a harness selects.
+
+### 26.4 The tests that the P6 leaves name
+
+The P6 row of the phase plan names the tests `space_native_vectors`, `space_similarity_topk`, `rspace_list_random_state`, `matrix_equals_fallback_bitwise` and `vector_ops_`.
+Before step 8f, only `vector_ops_` existed.
+The leaves of P6 also name `space_vector_discipline`, `normalizer_native_vector`, `reducer_query_costs` and `space_hash_collision_tie`.
+P4 and P5 built the named tests of their rows, so step 8f audited each P6 leaf against the tests of P6.
+
+Table 141 gives the result.
+A test of another name covers a requirement, a recorded decision supersedes it, or a new test of this step covers it.
+The freeze of [decision 35](decision-register.md#decision-35) binds each criterion to its evidence and amends the names that the leaves use.
+
+*Table 141. The evidence of each P6 leaf. "New" marks a test of step 8f.*
+
+| Leaf | The leaf names | Evidence |
+|---|---|---|
+| `rrs-spaces-port-vectordb` | `space_similarity_topk`, `matrix_equals_fallback_bitwise`, the VectorDB and similarity suites | New: `space_similarity_topk_reference_cases_through_the_space`. The suite `reified_vectordb`, the tests of `tensor/`, and `prop_topk_is_deterministic`. P6 builds no derived matrix. The design that decision 52 approves states that the claim of `matrix_equals_fallback_bitwise` holds by construction, because an exact kernel does not depend on the order of its terms: `prop_exact_kernels_are_permutation_invariant` and `prop_dyadic_and_rational_kernels_agree`. |
+| `rrs-spaces-port-core-vector-discipline` | Native values, top-k ties, peek, rebuild and restart | New: `space_vector_discipline_restart_keeps_values_ties_and_order`. |
+| `rrs-spaces-determinism-native-vectors` | Parse, store, query and protobuf round trip of valid and invalid vectors | New: `space_native_vectors_every_kind_enters_exactly`. The invalid vectors: `space_vectordb_errors_have_their_codes`. |
+| `rrs-spaces-determinism-similarity-topk` | Results against the reference math, stable in every process | New: `space_similarity_topk_reference_cases_through_the_space`. Also `tensor_numeric_reference_vectors_agree`. |
+| `rrs-spaces-determinism-collision-ties` | A forced hash collision, orders, duplicates, restart and replay | New: `space_hash_collision_tie_duplicates_are_interchangeable` and `space_hash_collision_tie_forced_equal_source_hashes_select_one_value`. Also `canonical_data_order_is_the_order_of_play`. |
+| `rrs-rspace-interface-list-random-state` | Zero, one and two members, and replay | New: `rspace_list_random_state_zero_one_and_two_members` and `rspace_list_random_state_replay_reproduces_the_merged_states`. |
+| `rrs-normalizers-native-vector` | `normalizer_native_vector` | New: the three tests `normalizer_native_vector_*`. |
+| `rrs-reducer-query-costs` | Boundary and overflow tests of the charges | New: the three tests `reducer_query_costs_*` of `tensor/costs.rs` and `reducer_query_costs_of_a_query_follow_its_records_and_dimensions`. Decision 40 replaces the precharge by `n`, `d` and `k` with a reservation before each step. |
+| `rrs-vdb-exact-numeric-core` | `prop_squared_form_matches_reference`, `prop_tl_permutation_invariant` | The properties of Table 97, the NaN tests, and the mutant `dot-f64-accumulation` (Table 124). |
+| `rrs-tl-correct-rounding` | `tensor/cr.rs` and the suite `tl_cr_` | P6 needs only the square root: `sqrt_to_f64`, S28 and the 15 square-root cases. The other functions follow tensor logic to P12 (decision 65). |
+| `rrs-system-processes-vector-ops` | `vector_ops_` and N8 | The 14 tests `vector_ops_*` and the reference vectors. |
+| `rrs-fv-similarity`, `rrs-fv-cross-sage-numeric` | `Similarity.v`, Z3, Sage and a script `check.sh` | Tables 95 and 97 and section 14.4. The Sage leg runs `similarity_metrics.sage` directly (section [14.7](#147-running-the-step-2-checks)). |
+| `rrs-tests-verification-n8` | The suite `rrs_n8`: permutation invariance, matrix and fallback, NaN ingress | `prop_exact_kernels_are_permutation_invariant`, `prop_dyadic_and_rational_kernels_agree` and the NaN tests. |
+| `rrs-chroma-mirror` | Six tests `mirror_*` | The six tests exist with these names. |
+| `rrs-chroma-recorded-embeddings`, `rrs-chroma-advisory-queries` | `recorded_embedding_*`, `ann_*` and `native_execution_forbids_embed_and_ann` | `vectordb_embed_replay_equal`, `vectordb_embed_out_of_phlo_rejects_output`, `vectordb_ann_replay_equal` and `vectordb_ann_ids_feed_the_exact_query`. Decision 68 replaces the ban in native execution. |
+| `rrs-chroma-live-tests`, `rrs-doc-vectordb-tensor-chroma` | The live leg and the documents | Sections 20.7 and 25. |
+
+*Table 142. The tests of step 8f.*
+
+| Test | File | What it checks |
+|---|---|---|
+| `space_native_vectors_every_kind_enters_exactly` | `reified_vectordb.rs` | Five kinds of the values 3 and 4 tie with bitwise equal scores in the canonical order. Each payload keeps the kind and the order of its elements, `-0` scores as `+0`, a string is no vector, and each record round-trips through its prost bytes. |
+| `space_similarity_topk_reference_cases_through_the_space` | `reified_vectordb.rs` | The 143 metric cases of the reference vectors through a space: 136 delivered scores bit for bit, 5 undefined scores, `ZeroQueryVector`, `ValueOutOfRange`, 118 bounds in range (43 select, 75 do not), and 24 bounds out of range with `InvalidParam`. |
+| `space_vector_discipline_restart_keeps_values_ties_and_order` | `reified_vectordb.rs` | After a peek, two rigs select from their hot stores in two orders of the sends, and a third rig selects after a checkpoint and a reset. All three select the same records, ties included, and reach the same root. The history keeps each value and embedding. |
+| `space_hash_collision_tie_duplicates_are_interchangeable` | `reified_vectordb.rs` | Two byte-identical sends and a tied record, in three orders: the same value, COMM and roots, the same selection after a restart, equal host work on the records of the history, and replay equal to play. |
+| `space_hash_collision_tie_forced_equal_source_hashes_select_one_value` | `reified_vectordb.rs` | Records with one forced source hash: every order of the view selects one value through the canonical order and the ranks. |
+| `rspace_list_random_state_zero_one_and_two_members` | `reified_vectordb.rs` | No member parks with no datum. One member keeps its random state. Two members merge in delivery order, also when a send completes a parked list. |
+| `rspace_list_random_state_replay_reproduces_the_merged_states` | `reified_vectordb.rs` | Replay reproduces the outcomes of play with their random states, pairs every COMM and reaches the root of play. |
+| `reducer_query_costs_of_a_query_follow_its_records_and_dimensions` | `reified_vectordb.rs` | A query reserves equal amounts for equal inputs, and more for more records or more dimensions. |
+| `reducer_query_costs_follow_the_table_of_the_module`, `reducer_query_costs_accept_at_the_limit_and_reject_below_it`, `reducer_query_costs_reject_amounts_that_overflow` | `tensor/costs.rs` | Each step reserves the amounts of the table of the module. A limit equal to an amount accepts, one unit lower rejects, and an amount that overflows a `usize` rejects with no reservation. |
+| `normalizer_native_vector_keeps_the_kind_and_order_of_each_element`, `normalizer_native_vector_in_params_and_queries_keeps_its_elements`, `normalizer_native_vector_parses_no_string_and_rejects_malformed_floats` | `reified_syntax_normalize.rs` | A source vector of eight numeric literals keeps the arm and the order of each element in a send, in the param `embedding` and in a query. A string stays a string, and `f128`, `f256` and an `f32` out of range fail in the normalizer. |
+
+The duplicates test compares the host work of the history views only.
+The history keeps the records of a channel in the order of their bytes (`rspace++/src/rspace/serializers/serializers.rs:18-26`).
+So every order of the sends gives one view of the history.
+
+On the hot store, the sort of DR-75 reserves each comparison that it makes.
+So the work of a query can depend on the order of the view.
+Play and replay of one state see one view, so their work is equal.
+So the equal costs that the leaf asks for hold on the history, and [decision 40](decision-register.md#decision-40) settles the charge on the hot store.
+
+*Table 143. The negative controls of the tests of step 8f.*
+
+| Control | What it changes | Tests that fail |
+|---|---|---|
+| `list-single-derived` | A list of one member delivers a random state derived from its own. | `rspace_list_random_state_zero_one_and_two_members` |
+| `list-merge-reversed` | A longer list merges the random states of its members in reverse delivery order. | `rspace_list_random_state_zero_one_and_two_members` |
+| `cosine-threshold-strict` | A non-negative cosine passes a non-negative threshold only when it is greater. | `space_similarity_topk_reference_cases_through_the_space`, `space_vectordb_capacity_bounds_records_not_waiters` |
+| `fixed-point-scale-off-by-one` | A fixed-point number divides by one more power of ten than its scale. | `space_native_vectors_every_kind_enters_exactly`, `space_vectordb_fixed_point_and_rational_thresholds` |
+| `canonical-order-is-the-view-order` | The canonical order of DR-75 is the order of the view. | `space_hash_collision_tie_duplicates_are_interchangeable`, `space_hash_collision_tie_forced_equal_source_hashes_select_one_value`, `space_native_vectors_every_kind_enters_exactly`, `space_vector_discipline_restart_keeps_values_ties_and_order`, `space_vectordb_list_peek_restores_carry_at_the_cap`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order` |
+
+The five controls are mutants of `scripts/verify-reified/vectordb-mutants.py`, which now holds 14 mutants.
+On the tree of the step, 14 of 14 mutants fail tests, and the harness restores the files.
+A merge of one random state panics in `Blake2b512Random::merge`.
+So the control of one member derives a random state, and the test finds it by its value.
+
+The first versions of the restart test and of the duplicates test selected only after a checkpoint.
+The history sorts the records of a channel by their bytes, so the control `canonical-order-is-the-view-order` did not fail them.
+Each test now also selects from a hot store, in two orders of the sends, and the control fails both.
+
+The step also corrects two doc comments of `rholang/src/rust/interpreter/spaces/factory/constructor.rs`.
+`FactoryConstructor::validate` now names the gates 1 to 9, and the paragraph of gate 8 moves from `check_mirror` to `canonical_params`.
+The change touches no code, and the citations of `check_mirror` move by three lines.
+
+*Table 144. The legs on the tree of the step.*
+
+| Leg | Result |
+|---|---|
+| `cargo fmt --all -- --check`, and the clippy commands of Table 138 without `node` | pass |
+| `cargo check --workspace --all-targets` | 0 warnings |
+| The `rholang` library and the 42 suites `rholang/tests/reified_*.rs` | 3,229 passed, 0 failed, 3 ignored |
+| I-14 | 2 passed |
+| `scripts/check-reified-rspaces-proofs.sh` | `PASS=117 FAIL=0 SKIP=0` |
+| `vectordb-mutants.py` and the fixed `vector-ops-mutants.py` | 14 of 14 and 8 of 8 |
+| The 30 checkers and G16 | 30 of 30 pass, and G16 holds |
+
+The formal gate and the two harnesses ran in a copy of the tree under `target/`.
+The harnesses of Table 140 changed the worktree at that time.
+A sha256 manifest showed that the copy equals the worktree file for file.
+
+### 26.5 Acceptance categories in P6
+
+Table 145 gives the evidence of each [acceptance category](glossary.md#acceptance-category) in P6 and its local gate, as Table 24 does for P4.
+The pgmcp runs of the P6 leaves take place in the freeze of [decision 35](decision-register.md#decision-35), so the table names only the local gates.
+
+*Table 145. The six acceptance categories in P6.*
+
+| Category | Evidence in P6 | Local gate |
+|---|---|---|
+| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p6.json` checks the 68 items of the P6 model map and its 40 headlines. S1 to S20 are in `Similarity.v`, S21 to S25 in `VectorDbDiscipline.v`, S26 in `EventCorrelation.v`, and S27 and S28 in `VectorOps.v`. W1 to W4 are in `VectorDb.tla`, and W5 to W12 in `ChromaMirror.tla`. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json` |
+| Formal verification passes | The proofs gate closes 275 headlines, the P6 headlines included, and runs 396 negative checks. TLC explores the 4 safe P6 configurations completely, and each of the 14 P6 Unsafe configurations refutes exactly its invariant, with a clean complement. The Z3 scripts pass 39 checks, and the Sage leg and the receipt agree on 182 cases. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh`, and the steps of section [14.7](#147-running-the-step-2-checks) |
+| Every invariant extracted as a property-based test | The phase P6 of the [invariant map](glossary.md#invariant-map) names a property for each of the 40 ids: 35 properties in 7 files, and 24 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P6` |
+| Implementation complete | `check-complete.py --phase p6` finds every entry point of P6 and no forbidden token, and the production scan finds no consensus token. `check-footprint.py --policy p6` approves every edit outside the campaign files, and `check-consensus-checklist.py --milestone p6` confirms the 22 items. | The checkers of section [10.4](#104-python-checkers) |
+| Thoroughly tested | The P6 suites and unit tests in the `rholang` leg of Table 138, the tests of Table 142 and their controls in Table 143, the 69 mutants of Table 140, the live leg, and the release regression of Table 139. | The legs of Table 138 |
+| Documented per the pgmcp guidelines | `doc_lint.py` passes every rule on every campaign document and on chapter 21, and `render.sh --check` reproduces each SVG byte for byte. Sections 14 to 26 record the evidence of P6. | `python3 scripts/verify-reified/doc_lint.py` |
+
+### 26.6 Running the step-8f checks
+
+To run the full gate set of P6, do these steps from the repository root, after the preparation of section [10.1](#101-preparation):
+
+1. Run `cargo fmt --all -- --check` and the three `cargo clippy` commands of Table 138.
+2. Run `cargo check --workspace --all-targets`, which must report no warning.
+3. Run `cargo test -p rspace_plus_plus`, and the two `models` suites of Table 138.
+4. Run `cargo test -p rholang --lib` with `--test` for each file `rholang/tests/reified_*.rs`.
+5. Run the I-14 tests: `cargo test -p casper --test mod -- util::rholang::runtime_spec`.
+6. Run `scripts/check-reified-rspaces-proofs.sh` and `scripts/check-reified-rspaces-tla-invariants.sh`.
+7. Run the Z3, Sage and receipt steps of section [14.7](#147-running-the-step-2-checks).
+8. Run the five mutant harnesses of Table 140 one after the other, and build nothing else meanwhile.
+9. Run `bash scripts/verify-reified/chroma-live.sh`.
+10. Run the checkers of section [10.4](#104-python-checkers) for the milestone, policy and phase `p6`, and `doc_lint.py`.
+11. In a copy of the tree with its own target directory, run `scripts/run_rust_tests.sh`.
+12. In the same copy, run `cargo build --release -p node`, also with `--features rholang/chromadb`.
 
 ## References
 

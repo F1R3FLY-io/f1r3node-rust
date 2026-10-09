@@ -64,7 +64,7 @@ pub struct FactoryConstructor {
 
 impl FactoryConstructor {
     /// Validates the constructor list `ctor` of a call to the factory of `family` with the gates
-    /// 1 to 8 of this module, in order.
+    /// 1 to 9 of this module, in order.
     pub fn validate(family: SpaceFactoryUrn, ctor: &Par) -> Result<FactoryConstructor, SpaceError> {
         let schema = constructor_schema(family).ok_or_else(|| SpaceError::FamilyUnavailable {
             outer: family.outer.as_str().to_string(),
@@ -150,9 +150,6 @@ const fn config_qualifier(qualifier: SpaceQualifier) -> ConfigQualifier {
     }
 }
 
-/// Gate 8: each named param in the canonical form of its rule, in bytewise key order. The first
-/// value that its rule refuses fails with `InvalidParam`. Gate 6 has checked every key against
-/// the schema, and every schema key has a rule, so a key without a rule is inconsistent.
 /// Gate 9 (P6, design v3 4.2): a `mirror` needs the `default` qualifier and a metric that
 /// ChromaDB indexes. The params are canonical, so `metric` is one of the six names.
 fn check_mirror(
@@ -188,6 +185,9 @@ fn check_mirror(
     }
 }
 
+/// Gate 8: each named param in the canonical form of its rule, in bytewise key order. The first
+/// value that its rule refuses fails with `InvalidParam`. Gate 6 has checked every key against
+/// the schema, and every schema key has a rule, so a key without a rule is inconsistent.
 fn canonical_params(named: BTreeMap<String, Par>) -> Result<BTreeMap<String, Par>, SpaceError> {
     let mut params = BTreeMap::new();
     for (key, value) in named {

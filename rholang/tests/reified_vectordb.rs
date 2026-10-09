@@ -2621,3 +2621,872 @@ fn prop_vectordb_list_fires_are_atomic() {
         })
     });
 }
+
+// ─── The named tests of the P6 tracker leaves ────────────────────────────────────────────
+//
+// Each test carries the name of the leaf filter that it serves, as the named tests of P4 and P5
+// do: `space_native_vectors`, `space_similarity_topk`, `space_vector_discipline`,
+// `space_hash_collision_tie`, `rspace_list_random_state` and `reducer_query_costs`.
+
+/// The `Par` of the one expression `instance`.
+fn number(instance: ExprInstance) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(instance),
+    }])
+}
+
+/// The rational `value` as a `GBigRat`.
+fn rational_of(value: &num_rational::BigRational) -> Par {
+    number(ExprInstance::GBigRat(models::rhoapi::GBigRational {
+        numerator: value.numer().to_signed_bytes_be(),
+        denominator: value.denom().to_signed_bytes_be(),
+    }))
+}
+
+/// The rational `numerator / denominator` as a `GBigRat`, unreduced.
+fn rational(numerator: i64, denominator: i64) -> Par {
+    number(ExprInstance::GBigRat(models::rhoapi::GBigRational {
+        numerator: num_bigint::BigInt::from(numerator).to_signed_bytes_be(),
+        denominator: num_bigint::BigInt::from(denominator).to_signed_bytes_be(),
+    }))
+}
+
+/// The `Par` of one element of a vector of `test-vectors/numeric-reference-v1.json`: an integer,
+/// a rational `p/q`, `f64:<bits>` or `bool:<value>`.
+fn reference_par(text: &str) -> Par {
+    if let Some(bits) = text.strip_prefix("f64:") {
+        let bits = u64::from_str_radix(bits, 16).expect("the hex bits of an f64");
+        return double(f64::from_bits(bits));
+    }
+    if let Some(value) = text.strip_prefix("bool:") {
+        return boolean(value == "true");
+    }
+    let value: num_rational::BigRational = text.parse().expect("an integer or a rational p/q");
+    match (value.is_integer(), i64::try_from(value.numer())) {
+        (true, Ok(integer)) => int(integer),
+        _ => rational_of(&value),
+    }
+}
+
+/// The vector of the reference elements `elements`.
+fn reference_vector(elements: &serde_json::Value) -> Par {
+    list(
+        elements
+            .as_array()
+            .expect("a list of elements")
+            .iter()
+            .map(|element| reference_par(element.as_str().expect("an element")))
+            .collect(),
+    )
+}
+
+/// The value of a delivered entry `[score, value]`.
+fn value_of(entry: &Par) -> Par {
+    match entry.exprs.as_slice() {
+        [Expr {
+            expr_instance: Some(ExprInstance::EListBody(pair)),
+        }] => pair.ps[1].clone(),
+        _ => panic!("an entry [score, value]: {entry:?}"),
+    }
+}
+
+/// The checkpoint root of `rig`.
+async fn root_of(rig: &Rig) -> Blake2b256Hash {
+    rig.host
+        .create_checkpoint()
+        .await
+        .expect("a checkpoint")
+        .root
+}
+
+/// Every numeric kind of the core enters a VectorDB space exactly (decision 54; tracker leaf
+/// `rrs-spaces-determinism-native-vectors`). Equal values of different kinds have bitwise equal
+/// scores and tie, the delivered payload keeps the kind and the order of its elements, `-0`
+/// scores as `+0`, a string is no vector, and each stored record round-trips through its prost
+/// bytes with its embedding.
+#[tokio::test]
+async fn space_native_vectors_every_kind_enters_exactly() {
+    use prost::Message;
+
+    let rig = Rig::new(Shape {
+        capacity: 16,
+        dimensions: 2,
+        metric: "dot",
+    })
+    .await;
+    let three_and_four = [
+        ints(&[3, 4]),
+        list(vec![
+            number(ExprInstance::GBigInt(vec![3])),
+            number(ExprInstance::GBigInt(vec![4])),
+        ]),
+        list(vec![rational(6, 2), rational(4, 1)]),
+        list(vec![
+            number(ExprInstance::GFixedPoint(models::rhoapi::GFixedPoint {
+                unscaled: vec![30],
+                scale: 1,
+            })),
+            number(ExprInstance::GFixedPoint(models::rhoapi::GFixedPoint {
+                unscaled: vec![0x01, 0x90],
+                scale: 2,
+            })),
+        ]),
+        list(vec![
+            double(3.0),
+            number(ExprInstance::GFloat32(4.0f32.to_bits())),
+        ]),
+    ];
+    for (index, vector) in three_and_four.iter().enumerate() {
+        rig.send(send(vector.clone(), &[], &format!("kind {index}"), false))
+            .await;
+    }
+    let swapped = ints(&[4, 3]);
+    let binary = list(vec![boolean(true), boolean(false)]);
+    let signed_zero = list(vec![double(-0.0), double(0.0)]);
+    rig.send(send(swapped.clone(), &[], "swapped", false)).await;
+    rig.send(send(binary.clone(), &[], "binary", false)).await;
+    rig.send(send(signed_zero.clone(), &[], "signed zero", false))
+        .await;
+    rig.send(send(string("3,4"), &[], "text", false)).await;
+
+    let all = query(Some(ints(&[1, 2])), &[
+        ("results", string("all")),
+        ("scores", boolean(true)),
+    ]);
+    let fires = fired(&rig.receive(peeking(receive("all", any(), Some(all)))).await);
+    let [(name, values)] = fires.as_slice() else {
+        panic!("one fire: {fires:?}");
+    };
+    assert_eq!(name, "all");
+    let entries = match values.as_slice() {
+        [Par { exprs, .. }] => match exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::EListBody(entries)),
+            }] => entries.ps.clone(),
+            _ => panic!("one list: {values:?}"),
+        },
+        _ => panic!("one value: {values:?}"),
+    };
+    let scores: Vec<u64> = entries
+        .iter()
+        .map(|entry| score_of(entry).to_bits())
+        .collect();
+    assert_eq!(
+        scores,
+        [11.0, 11.0, 11.0, 11.0, 11.0, 10.0, 1.0, 0.0].map(f64::to_bits),
+        "3 + 2·4 for each kind, 4 + 2·3 for the swapped order, 1 for [true, false], and +0 for \
+         [-0, 0]; the string has no vector"
+    );
+    let canonical: Vec<Par> = rig
+        .sourced_records()
+        .await
+        .into_iter()
+        .filter_map(|(_, (payload, _, _))| {
+            three_and_four
+                .contains(&payload[0])
+                .then(|| payload[0].clone())
+        })
+        .collect();
+    let tied: Vec<Par> = entries[..5].iter().map(value_of).collect();
+    assert_eq!(
+        tied, canonical,
+        "the five equal values tie, and their order is the canonical order of the records"
+    );
+    assert_eq!(
+        entries[5..].iter().map(value_of).collect::<Vec<_>>(),
+        vec![swapped, binary, signed_zero],
+        "each payload keeps the kind and the order of its elements"
+    );
+
+    let datums = rig.host.get_data(&data()).await;
+    assert_eq!(datums.len(), 9, "the peek restores every record");
+    for datum in &datums {
+        let bytes = datum.a.encode_to_vec();
+        let decoded = ListParWithRandom::decode(bytes.as_slice()).expect("the record decodes");
+        assert_eq!(decoded, datum.a);
+        let record = record::unwrap_vdb_datum(&decoded).expect("a VectorDB record");
+        let payload = &record.datum.pars[0];
+        match payload == &string("3,4") {
+            true => assert_eq!(record.embedding, None, "a string is no vector"),
+            false => assert_eq!(
+                record.embedding.as_ref(),
+                Some(payload),
+                "the payload is the vector"
+            ),
+        }
+    }
+}
+
+/// The 143 metric cases of the Sage reference vectors run through a VectorDB space (tracker leaf
+/// `rrs-spaces-determinism-similarity-topk`): the space stores the record, a peek with
+/// `scores=true` delivers the score of the reference bit for bit, an undefined score leaves the
+/// record ineligible, the zero cosine query fails with `ZeroQueryVector`, and a score outside the
+/// `f64` range fails with `ValueOutOfRange`. A bound inside the range of its param selects the
+/// record exactly when the reference says `within`, and a bound outside that range (a `dot`
+/// threshold outside `[0, 1]`, a negative radius) fails with `InvalidParam` (decision 66). The
+/// values are fixed, so every process run must reproduce them.
+#[tokio::test]
+async fn space_similarity_topk_reference_cases_through_the_space() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test-vectors/numeric-reference-v1.json"
+    );
+    let text = std::fs::read_to_string(path).expect("the reference vectors");
+    let document: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    let zero = num_rational::BigRational::from_integer(0.into());
+    let one = num_rational::BigRational::from_integer(1.into());
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for case in document["metric_cases"]
+        .as_array()
+        .expect("the metric cases")
+    {
+        let name = case["name"].as_str().expect("a name");
+        let metric: &'static str = match case["metric"].as_str().expect("a metric") {
+            "cosine" => "cosine",
+            "dot" => "dot",
+            "euclidean" => "euclidean",
+            "manhattan" => "manhattan",
+            "hamming" => "hamming",
+            "jaccard" => "jaccard",
+            other => panic!("{name}: the metric {other} is not a metric of the contract"),
+        };
+        let q = reference_vector(&case["query"]);
+        let record = reference_vector(&case["record"]);
+        let dimensions = case["query"].as_array().expect("a query").len();
+        let rig = Rig::new(Shape {
+            capacity: 4,
+            dimensions: i64::try_from(dimensions).expect("a small dimension"),
+            metric,
+        })
+        .await;
+        rig.send(send(record.clone(), &[], name, false)).await;
+        let scored = || {
+            SpaceOp::Consume(peeking(receive(
+                "scored",
+                any(),
+                Some(query(Some(q.clone()), &[("scores", boolean(true))])),
+            )))
+        };
+        if case["query_refused"] == serde_json::json!(true) {
+            assert_eq!(code_of(&rig, scored()).await, "ZeroQueryVector", "{name}");
+            *counts.entry("refused").or_default() += 1;
+            continue;
+        }
+        match (case["score_defined"].as_bool(), case["delivered"].as_str()) {
+            (Some(false), _) => {
+                let outcome = rig.run(scored()).await.expect("the receive parks");
+                assert!(
+                    outcome.fires.is_empty(),
+                    "{name}: an undefined score is ineligible"
+                );
+                *counts.entry("undefined").or_default() += 1;
+            }
+            (Some(true), Some("ValueOutOfRange")) => {
+                assert_eq!(code_of(&rig, scored()).await, "ValueOutOfRange", "{name}");
+                *counts.entry("out of the f64 range").or_default() += 1;
+            }
+            (Some(true), Some(bits)) => {
+                let bits = u64::from_str_radix(bits.trim_start_matches("0x"), 16)
+                    .expect("the bits of a delivered score");
+                let outcome = rig.run(scored()).await.expect("the peek commits");
+                let fires = fired(&outcome);
+                let [(_, values)] = fires.as_slice() else {
+                    panic!("{name}: one fire, found {fires:?}");
+                };
+                let [entry] = values.as_slice() else {
+                    panic!("{name}: one value [score, value], found {values:?}");
+                };
+                assert_eq!(
+                    score_of(entry).to_bits(),
+                    bits,
+                    "{name}: the delivered score"
+                );
+                assert_eq!(value_of(entry), record, "{name}: the delivered record");
+                *counts.entry("scored").or_default() += 1;
+            }
+            other => panic!("{name}: an unexpected reference outcome {other:?}"),
+        }
+        let bound = case["bound"].as_object().expect("a bound");
+        assert_eq!(bound.len(), 1, "{name}: one bound");
+        let (key, value) = bound.iter().next().expect("the bound");
+        let value: num_rational::BigRational = value
+            .as_str()
+            .expect("a bound value")
+            .parse()
+            .expect("a rational bound");
+        let in_range = match key.as_str() {
+            "threshold" => zero <= value && value <= one,
+            "radius" => zero <= value,
+            other => panic!("{name}: the bound {other} is not a bound of the contract"),
+        };
+        let bounded = SpaceOp::Consume(receive(
+            "bounded",
+            any(),
+            Some(query(Some(q.clone()), &[(
+                key.as_str(),
+                rational_of(&value),
+            )])),
+        ));
+        if !in_range {
+            assert_eq!(code_of(&rig, bounded).await, "InvalidParam", "{name}");
+            *counts.entry("bound out of range").or_default() += 1;
+            continue;
+        }
+        let within = case["within"].as_bool().unwrap_or(false);
+        let outcome = rig.run(bounded).await.expect("the bounded receive commits");
+        assert_eq!(
+            fired(&outcome),
+            match within {
+                true => vec![delivery("bounded", vec![record.clone()])],
+                false => Vec::new(),
+            },
+            "{name}: the bound {key} {value} selects the record exactly when it holds"
+        );
+        *counts
+            .entry(match within {
+                true => "within",
+                false => "not within",
+            })
+            .or_default() += 1;
+    }
+    assert_eq!(
+        counts,
+        BTreeMap::from([
+            ("bound out of range", 24),
+            ("not within", 75),
+            ("out of the f64 range", 1),
+            ("refused", 1),
+            ("scored", 136),
+            ("undefined", 5),
+            ("within", 43),
+        ]),
+        "every class of the reference cases is checked"
+    );
+}
+
+/// The selection of a fresh store and the selection after a restart agree (tracker leaf
+/// `rrs-spaces-port-core-vector-discipline`: native values, top-k ties, peek, rebuild in
+/// canonical order, restart). Two rigs select from the records of their hot stores, one in the
+/// order of the sends and one in the reverse order. A third rig makes the sends, makes a
+/// checkpoint, resets to it as a restarted node does, and selects from the records of the
+/// history, which keeps them in the order of their bytes. All three make the same selection,
+/// ties included, and reach the same root, and the history keeps each record with its value,
+/// its embedding and its persist flag.
+#[tokio::test]
+async fn space_vector_discipline_restart_keeps_values_ties_and_order() {
+    let shape = Shape {
+        capacity: 16,
+        dimensions: 2,
+        metric: "dot",
+    };
+    let sends = || {
+        vec![
+            send(ints(&[2, 7]), &[], "tie a", false),
+            send(
+                list(vec![rational(4, 2), double(-1.0)]),
+                &[],
+                "tie b",
+                false,
+            ),
+            send(
+                list(vec![
+                    number(ExprInstance::GFloat32(2.0f32.to_bits())),
+                    number(ExprInstance::GBigInt(vec![5])),
+                ]),
+                &[],
+                "tie c",
+                true,
+            ),
+            send(ints(&[3, 0]), &[], "best", false),
+            send(ints(&[1, 1]), &[], "worst", false),
+        ]
+    };
+    let peek = || {
+        peeking(receive(
+            "peek",
+            any(),
+            Some(query(Some(ints(&[1, 0])), &[("results", string("all"))])),
+        ))
+    };
+    let top = || {
+        receive(
+            "top",
+            any(),
+            Some(query(Some(ints(&[1, 0])), &[
+                ("k", int(3)),
+                ("scores", boolean(true)),
+            ])),
+        )
+    };
+    let fresh = Rig::new(shape).await;
+    let reversed = Rig::new(shape).await;
+    let restarted = Rig::new(shape).await;
+    for (rig, reverse) in [(&fresh, false), (&reversed, true), (&restarted, false)] {
+        let mut ops = sends();
+        if reverse {
+            ops.reverse();
+        }
+        for op in ops {
+            rig.send(op).await;
+        }
+        assert_eq!(
+            fired(&rig.receive(peek()).await).len(),
+            1,
+            "the peek restores every record"
+        );
+    }
+    let records = fresh.sourced_records().await;
+    assert_eq!(reversed.sourced_records().await, records);
+    let first = fired(&fresh.receive(top()).await);
+    let after = root_of(&fresh).await;
+    assert_eq!(
+        fired(&reversed.receive(top()).await),
+        first,
+        "the order of the sends does not matter"
+    );
+    assert_eq!(root_of(&reversed).await, after);
+    let start = root_of(&restarted).await;
+    restarted
+        .host
+        .reset(&start)
+        .await
+        .expect("the reset to the checkpoint");
+    assert_eq!(
+        restarted.sourced_records().await,
+        records,
+        "the history holds each record with its value, its embedding and its persist flag"
+    );
+    let again = fired(&restarted.receive(top()).await);
+    assert_eq!(
+        again, first,
+        "the selection does not depend on the order of the view"
+    );
+    assert_eq!(root_of(&restarted).await, after);
+    let [(_, values)] = first.as_slice() else {
+        panic!("one fire: {first:?}");
+    };
+    let entries = match values.as_slice() {
+        [Par { exprs, .. }] => match exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::EListBody(entries)),
+            }] => entries.ps.clone(),
+            _ => panic!("one list: {values:?}"),
+        },
+        _ => panic!("one value: {values:?}"),
+    };
+    assert_eq!(
+        entries.iter().map(score_of).collect::<Vec<_>>(),
+        vec![3.0, 2.0, 2.0],
+        "the best record, then two of the three tied records"
+    );
+}
+
+/// Two byte-identical sends store two records with one source hash and one digest, so the order
+/// of DR-75 keeps them by index, and a third record ties with them on its score (tracker leaf
+/// `rrs-spaces-determinism-collision-ties`). In each of three orders of the sends, one rig
+/// selects from its hot store, in the order of the sends, and a second rig selects after a
+/// checkpoint and a reset, from the history. Every order and both views select the same value
+/// and log the same COMM, the roots are equal, the history views reserve equal host work, and
+/// replay reproduces play.
+#[tokio::test]
+async fn space_hash_collision_tie_duplicates_are_interchangeable() {
+    let shape = Shape {
+        capacity: 8,
+        dimensions: 2,
+        metric: "dot",
+    };
+    let duplicate = || send(ints(&[1, 5]), &[], "duplicate", false);
+    let other = || send(ints(&[1, -5]), &[], "other", false);
+    let orders: [[fn() -> ProduceOp; 3]; 3] = [
+        [duplicate, duplicate, other],
+        [duplicate, other, duplicate],
+        [other, duplicate, duplicate],
+    ];
+    let take = || receive("take", any(), Some(query(Some(ints(&[1, 0])), &[])));
+    let mut results = Vec::new();
+    for order in orders {
+        let hot = Rig::new(shape).await;
+        let cold = Rig::new(shape).await;
+        for op in order {
+            hot.send(op()).await;
+            cold.send(op()).await;
+        }
+        hot.log().await;
+        let first = fired(&hot.receive(take()).await);
+        let comm = comms(&hot.log().await);
+        let after = root_of(&hot).await;
+        let stored = root_of(&cold).await;
+        cold.host
+            .reset(&stored)
+            .await
+            .expect("the reset to the checkpoint");
+        cold.log().await;
+        let measured = unbounded_host_work();
+        let cold = cold.metered(&measured);
+        let again = fired(&cold.receive(take()).await);
+        assert_eq!(
+            again, first,
+            "the view of the history selects as the hot store does"
+        );
+        assert_eq!(comms(&cold.log().await), comm);
+        assert_eq!(root_of(&cold).await, after);
+        let usage = AGENT_DIMENSIONS.map(|dimension| measured.usage(dimension).get());
+        results.push((stored, first, comm, after, usage));
+    }
+    for result in &results[1..] {
+        assert_eq!(
+            result, &results[0],
+            "the order of the sends does not matter"
+        );
+    }
+    let winner = match record_id(&duplicate()) < record_id(&other()) {
+        true => ints(&[1, 5]),
+        false => ints(&[1, -5]),
+    };
+    assert_eq!(
+        results[0].1,
+        vec![delivery("take", vec![winner])],
+        "the tie goes to the lower source hash"
+    );
+
+    let (play, replay) = play_and_replay().await;
+    let play_rig = Rig::over(play.clone(), shape).await;
+    let start = play
+        .create_checkpoint()
+        .await
+        .expect("a checkpoint after the creation")
+        .root;
+    let script = || {
+        vec![
+            SpaceOp::Produce(duplicate()),
+            SpaceOp::Produce(other()),
+            SpaceOp::Produce(duplicate()),
+            SpaceOp::Consume(take()),
+            SpaceOp::Consume(take()),
+        ]
+    };
+    let mut played = Vec::new();
+    for op in script() {
+        played.push(play_rig.run(op).await.expect("the script plays"));
+    }
+    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+    replay
+        .rig_and_reset(start, log)
+        .await
+        .expect("the replay rigs the play log");
+    let replay_rig = Rig {
+        host: play.clone(),
+        env: env_over(replay.clone(), &budget()),
+    };
+    let mut replayed = Vec::new();
+    for op in script() {
+        replayed.push(replay_rig.run(op).await.expect("the script replays"));
+    }
+    assert_eq!(replayed, played);
+    replay
+        .check_replay_data()
+        .await
+        .expect("every recorded COMM is paired");
+    assert_eq!(
+        replay.create_checkpoint().await.expect("a checkpoint").root,
+        root
+    );
+}
+
+/// Forced equal source hashes (tracker leaf `rrs-spaces-determinism-collision-ties`): the hash
+/// of a source produce cannot collide in a test, so the records are built with one forced
+/// source hash. Records with distinct digests are ordered by digest, byte-identical records are
+/// kept by index, and with equal scores the selection order of design v3 4.4 (score, then the
+/// canonical rank) picks the same value from every order of the view.
+#[test]
+fn space_hash_collision_tie_forced_equal_source_hashes_select_one_value() {
+    use rholang::rust::interpreter::tensor::exact::{self, Candidate, Metric, Query};
+    use rholang::rust::interpreter::tensor::num::vector_of;
+    use rspace_plus_plus::rspace::internal::Datum;
+    use rspace_plus_plus::rspace::space_store_handle::canonical_data_order;
+
+    let meter = ScanMeter::new(None);
+    let forced = Blake2b256Hash::new(b"rrs-forced-source-hash");
+    let record = |payload: Par, salt: &str| Datum {
+        a: record::wrap_vdb_datum(
+            0,
+            Some(&ints(&[1, 0])),
+            &send(payload, &[], salt, false).data,
+        )
+        .expect("a VectorDB record"),
+        persist: false,
+        source: Produce::new(Blake2b256Hash::new(b"rrs-channel"), forced.clone(), false),
+    };
+    let views = [
+        record(string("first"), "a"),
+        record(string("second"), "b"),
+        record(string("first"), "a"),
+    ];
+    let q = Query::new(
+        vector_of(&ints(&[1, 0]), Some(2), &meter).expect("a query vector"),
+        Metric::Dot,
+        &meter,
+    )
+    .expect("an unmetered query")
+    .expect("a query with a direction");
+    let score = exact::score(
+        &q,
+        &vector_of(&ints(&[1, 0]), Some(2), &meter).expect("a vector"),
+        &meter,
+    )
+    .expect("an unmetered score")
+    .expect("a defined score");
+    let selected = |view: &[Datum<ListParWithRandom>]| -> Par {
+        let order = canonical_data_order(view, &meter).expect("an unmetered order");
+        let mut candidates: Vec<Candidate> = order
+            .iter()
+            .enumerate()
+            .map(|(rank, _)| Candidate {
+                score: score.clone(),
+                rank,
+            })
+            .collect();
+        exact::rank(&mut candidates, &meter).expect("an unmetered rank");
+        let best = order[candidates[0].rank];
+        record::unwrap_vdb_datum(&view[best].a)
+            .expect("a VectorDB record")
+            .datum
+            .pars[0]
+            .clone()
+    };
+    let mut values = Vec::new();
+    for permutation in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
+        2, 1, 0,
+    ]] {
+        let view: Vec<Datum<ListParWithRandom>> = permutation
+            .iter()
+            .map(|index| views[*index].clone())
+            .collect();
+        values.push(selected(&view));
+    }
+    assert!(
+        values.iter().all(|value| value == &values[0]),
+        "every order of the view selects one value: {values:?}"
+    );
+}
+
+/// The random state of a list delivery (tracker leaf `rrs-rspace-interface-list-random-state`,
+/// design v3 4.4 and arbitration A11): with no eligible record a list waiter parks and the
+/// space makes no datum, one member keeps its random state byte for byte, and two or more members
+/// merge their random states in delivery order, also when the send of the last member fires a
+/// parked list waiter.
+#[tokio::test]
+async fn rspace_list_random_state_zero_one_and_two_members() {
+    let list_of_two = || {
+        receive(
+            "list",
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+        )
+    };
+    let random_of = |op: &ProduceOp| op.data.random_state.clone();
+    let delivered_random = |outcome: &SpaceOutcome| -> Vec<u8> {
+        match outcome.fires.as_slice() {
+            [fire] => match fire.results.as_slice() {
+                [result] => result.matched_datum.random_state.clone(),
+                other => panic!("one result: {other:?}"),
+            },
+            other => panic!("one fire: {other:?}"),
+        }
+    };
+    let merged = |states: &[Vec<u8>]| -> Vec<u8> {
+        Blake2b512Random::merge(
+            states
+                .iter()
+                .map(|state| Blake2b512Random::from_bytes(state))
+                .collect(),
+        )
+        .to_bytes()
+    };
+
+    // Zero: the waiter parks, and the log holds its consume and no datum.
+    let rig = Rig::new(COSINE).await;
+    let outcome = rig.receive(list_of_two()).await;
+    assert!(outcome.fires.is_empty());
+    assert!(rig.records().await.is_empty(), "no datum is synthesized");
+    let log = rig.log().await;
+    assert!(comms(&log).is_empty());
+    assert!(
+        log.iter().all(|event| !matches!(event, Event::IoEvent(io) if matches!(io, rspace_plus_plus::rspace::trace::event::IOEvent::Produce(_)))),
+        "no produce is logged: {log:?}"
+    );
+
+    // One: the member keeps its random state.
+    let rig = Rig::new(COSINE).await;
+    let only = vector_send(&[1.0, 0.0], "only");
+    rig.send(only.clone()).await;
+    let outcome = rig.receive(list_of_two()).await;
+    assert_eq!(delivered_random(&outcome), random_of(&only));
+
+    // Two: the random states merge in delivery order.
+    let rig = Rig::new(COSINE).await;
+    let near = vector_send(&[1.0, 0.0], "near");
+    let far = vector_send(&[1.0, 1.0], "far");
+    rig.send(far.clone()).await;
+    rig.send(near.clone()).await;
+    let outcome = rig.receive(list_of_two()).await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("list", vec![list(vec![
+            vector(&[1.0, 0.0]),
+            vector(&[1.0, 1.0])
+        ])])],
+        "the delivery order is the selection order"
+    );
+    assert_eq!(
+        delivered_random(&outcome),
+        merged(&[random_of(&near), random_of(&far)])
+    );
+    assert_ne!(
+        delivered_random(&outcome),
+        merged(&[random_of(&far), random_of(&near)]),
+        "the merge follows the delivery order"
+    );
+
+    // Two, on the side of a send: the pattern refuses a list of one, so the waiter parks; the
+    // second send completes the list and fires it with a stored and an incoming member.
+    let rig = Rig::new(COSINE).await;
+    rig.send(far.clone()).await;
+    let waiting = receive(
+        "pair",
+        literal(list(vec![vector(&[1.0, 0.0]), vector(&[1.0, 1.0])])),
+        Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+    );
+    assert!(
+        rig.receive(waiting).await.fires.is_empty(),
+        "a list of one parks"
+    );
+    let outcome = rig.send(near.clone()).await;
+    assert_eq!(
+        delivered_random(&outcome),
+        merged(&[random_of(&near), random_of(&far)])
+    );
+}
+
+/// Replay reproduces the list deliveries of play with their random states (tracker leaf
+/// `rrs-rspace-interface-list-random-state`, the replay case): a parked list waiter, a list of
+/// one and a list of two, with equal outcomes, every COMM paired and the root of play.
+#[tokio::test]
+async fn rspace_list_random_state_replay_reproduces_the_merged_states() {
+    let (play, replay) = play_and_replay().await;
+    let play_rig = Rig::over(play.clone(), COSINE).await;
+    let start = play
+        .create_checkpoint()
+        .await
+        .expect("a checkpoint after the creation")
+        .root;
+    let list_of_two = |name: &str| {
+        receive(
+            name,
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+        )
+    };
+    let script = || {
+        vec![
+            SpaceOp::Consume(list_of_two("zero")),
+            SpaceOp::Produce(vector_send(&[1.0, 0.0], "one")),
+            SpaceOp::Produce(vector_send(&[1.0, 1.0], "far")),
+            SpaceOp::Produce(vector_send(&[1.0, 0.5], "near")),
+            SpaceOp::Consume(list_of_two("two")),
+        ]
+    };
+    let mut played = Vec::new();
+    for op in script() {
+        played.push(play_rig.run(op).await.expect("the script plays"));
+    }
+    assert_eq!(
+        played
+            .iter()
+            .map(|outcome| outcome.fires.len())
+            .collect::<Vec<_>>(),
+        vec![0, 1, 0, 0, 1],
+        "the first send fires the parked waiter with one member, the last receive takes two"
+    );
+    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+    replay
+        .rig_and_reset(start, log)
+        .await
+        .expect("the replay rigs the play log");
+    let replay_rig = Rig {
+        host: play.clone(),
+        env: env_over(replay.clone(), &budget()),
+    };
+    let mut replayed = Vec::new();
+    for op in script() {
+        replayed.push(replay_rig.run(op).await.expect("the script replays"));
+    }
+    assert_eq!(
+        replayed, played,
+        "the outcomes hold the random states of the deliveries"
+    );
+    replay
+        .check_replay_data()
+        .await
+        .expect("every recorded COMM is paired");
+    assert_eq!(
+        replay.create_checkpoint().await.expect("a checkpoint").root,
+        root
+    );
+}
+
+/// The host work of a query is a function of the records and the query (tracker leaf
+/// `rrs-reducer-query-costs`; decision 40 replaces the precharge by `n`, `d` and `k` of the
+/// leaf with a reservation before each step): equal inputs reserve equal amounts, and more
+/// records or more dimensions reserve more. `space_vectordb_reservation_cut_rejects_without_effect`
+/// shows that a budget one unit short rejects without effect.
+#[tokio::test]
+async fn reducer_query_costs_of_a_query_follow_its_records_and_dimensions() {
+    let usage = |records: usize, dimensions: usize| async move {
+        let rig = Rig::new(Shape {
+            capacity: 16,
+            dimensions: i64::try_from(dimensions).expect("a small dimension"),
+            metric: "cosine",
+        })
+        .await;
+        for index in 0..records {
+            let mut values = vec![1.0; dimensions];
+            values[0] = 2.0 + index as f64;
+            rig.send(vector_send(&values, &format!("record {index}")))
+                .await;
+        }
+        let measured = unbounded_host_work();
+        let rig = rig.metered(&measured);
+        let mut q = vec![0.0; dimensions];
+        q[0] = 1.0;
+        let outcome = rig
+            .receive(receive(
+                "best",
+                any(),
+                Some(query(Some(vector(&q)), &[("scores", boolean(true))])),
+            ))
+            .await;
+        assert_eq!(outcome.fires.len(), 1);
+        AGENT_DIMENSIONS.map(|dimension| measured.usage(dimension).get())
+    };
+    let base = usage(2, 2).await;
+    assert_eq!(
+        usage(2, 2).await,
+        base,
+        "equal inputs reserve equal amounts"
+    );
+    let more_records = usage(4, 2).await;
+    let more_dimensions = usage(2, 4).await;
+    for index in 0..3 {
+        assert!(
+            more_records[index] > base[index],
+            "{:?}: 4 records reserve more than 2",
+            AGENT_DIMENSIONS[index]
+        );
+        assert!(
+            more_dimensions[index] > base[index],
+            "{:?}: 4 dimensions reserve more than 2",
+            AGENT_DIMENSIONS[index]
+        );
+    }
+}

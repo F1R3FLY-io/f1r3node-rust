@@ -255,3 +255,210 @@ pub fn reserve_square_root(
         ))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    //! The reservations of the numeric core against the table of this module (P6, tracker leaf
+    //! `rrs-reducer-query-costs`; decisions 40 and 42). The leaf asks for boundary and overflow
+    //! tests that keep the charges deterministic: each step reserves the amounts of the table,
+    //! a limit equal to an amount accepts it, a limit one unit lower rejects it, and an amount
+    //! that does not fit in a `usize` rejects without a reservation.
+
+    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+    use num_bigint::BigInt;
+    use num_rational::BigRational;
+    use rspace_plus_plus::rspace::errors::RSpaceError;
+
+    use super::*;
+    use crate::rust::interpreter::host_work::HostWorkBudget;
+
+    /// The dimensions of `ScanMeter::charge`, in the order of the amounts of the table.
+    const DIMENSIONS: [HostWorkDimension; 3] = [
+        HostWorkDimension::VerificationOperations,
+        HostWorkDimension::VerificationBytes,
+        HostWorkDimension::SearchStateBytes,
+    ];
+
+    /// A step of the core on `meter`.
+    type Step = Box<dyn Fn(&ScanMeter) -> Result<(), RSpaceError>>;
+
+    /// A budget with the limits `limits` on the three dimensions of the table, and no limit on
+    /// the others.
+    fn budget(limits: [u64; 3]) -> HostWorkBudget {
+        let mut all = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+        for (dimension, limit) in DIMENSIONS.into_iter().zip(limits) {
+            all.set(dimension, HostWorkLimit::new(limit));
+        }
+        HostWorkBudget::new(all)
+    }
+
+    /// The amounts that `step` reserves on a budget without limits.
+    fn reserved(step: &Step) -> [u64; 3] {
+        let budget = budget([u64::MAX; 3]);
+        step(&ScanMeter::new(Some(budget.clone()))).expect("a budget without limits accepts");
+        DIMENSIONS.map(|dimension| budget.usage(dimension).get())
+    }
+
+    fn int(value: i64) -> BigInt { BigInt::from(value) }
+
+    /// `2^64 + 1`, an integer of two limbs.
+    fn two_limbs() -> BigInt { (BigInt::from(1) << 64) + 1 }
+
+    fn ratio(numerator: i64, denominator: i64) -> BigRational {
+        BigRational::new(int(numerator), int(denominator))
+    }
+
+    /// Each step of the core with operands of one and two limbs, and its amounts from the table
+    /// of this module: operations, scanned bytes and backing bytes.
+    fn table() -> Vec<(&'static str, Step, [u64; 3])> {
+        vec![
+            (
+                "decode 17 bytes: 1 + ⌈17/8⌉, 17, 17",
+                Box::new(|meter: &ScanMeter| reserve_bytes_decode(17, meter)),
+                [4, 17, 17],
+            ),
+            (
+                "encode an integer of 2 limbs: 2 + 1, 16, 16 + 1",
+                Box::new(|meter: &ScanMeter| reserve_integer_encode(&two_limbs(), meter)),
+                [3, 16, 17],
+            ),
+            ("ingress of a float", Box::new(reserve_float_ingress), [
+                2, 8, 8,
+            ]),
+            (
+                "gcd of 1 and 2 limbs: L = 3, L², 8L, 8L",
+                Box::new(|meter: &ScanMeter| reserve_gcd(&int(3), &two_limbs(), meter)),
+                [9, 24, 24],
+            ),
+            (
+                "10^5: L = 1, 3 squarings, 0, 8L",
+                Box::new(|meter: &ScanMeter| reserve_power_of_ten(5, meter)),
+                [3, 0, 8],
+            ),
+            (
+                "product of 1 and 2 limbs: 1·2, 8·3, 8·3",
+                Box::new(|meter: &ScanMeter| reserve_product(&int(3), &two_limbs(), meter)),
+                [2, 24, 24],
+            ),
+            (
+                "sum of 1 and 2 limbs: 2, 8·3, 8·(2 + 1)",
+                Box::new(|meter: &ScanMeter| reserve_sum(&int(3), &two_limbs(), meter)),
+                [2, 24, 24],
+            ),
+            (
+                "shift of 1 limb by 130 bits: 1 + 3, 8, 8·4",
+                Box::new(|meter: &ScanMeter| reserve_shift(&int(3), 130, meter)),
+                [4, 8, 32],
+            ),
+            (
+                "value of 3·2^-70: 1 + 2 + 1, 8, 8·4",
+                Box::new(|meter: &ScanMeter| reserve_dyadic_value(&int(3), -70, meter)),
+                [4, 8, 32],
+            ),
+            (
+                "operation on 1/3 and 5/7: L = 4, 2L², 8L, 8L",
+                Box::new(|meter: &ScanMeter| reserve_rational(&ratio(1, 3), &ratio(5, 7), meter)),
+                [32, 32, 32],
+            ),
+            (
+                "comparison of 1/3 and 5/7: L = 4, L², 8L, 8L",
+                Box::new(|meter: &ScanMeter| {
+                    reserve_rational_compare(&ratio(1, 3), &ratio(5, 7), meter)
+                }),
+                [16, 32, 32],
+            ),
+            (
+                "⌊log₂ 1/3⌋: L = 2, L, 8L, 8L",
+                Box::new(|meter: &ScanMeter| reserve_log2(&ratio(1, 3), meter)),
+                [2, 16, 16],
+            ),
+            (
+                "rounding of 1/3 with the quantum 2^-60: L = 2 + 1 + 1, L², 8L, 16L",
+                Box::new(|meter: &ScanMeter| reserve_rounding(&ratio(1, 3), -60, meter)),
+                [16, 32, 64],
+            ),
+            (
+                "square root of 2 with the quantum 2^-52: L = 2 + 2 + 1, L²·(9 + 2), 8L, 24L",
+                Box::new(|meter: &ScanMeter| reserve_square_root(&ratio(2, 1), -52, meter)),
+                [275, 40, 120],
+            ),
+        ]
+    }
+
+    /// Each step reserves exactly the amounts of the table, twice the same, so a charge is a
+    /// function of the sizes of the operands only.
+    #[test]
+    fn reducer_query_costs_follow_the_table_of_the_module() {
+        for (label, step, expected) in table() {
+            assert_eq!(reserved(&step), expected, "{label}");
+            assert_eq!(reserved(&step), expected, "{label}: a second run");
+        }
+        let small = reserved(
+            &(Box::new(|meter: &ScanMeter| reserve_product(&int(3), &int(5), meter)) as Step),
+        );
+        let large = reserved(
+            &(Box::new(|meter: &ScanMeter| reserve_product(&two_limbs(), &two_limbs(), meter))
+                as Step),
+        );
+        assert_eq!(small, [1, 16, 16]);
+        assert_eq!(
+            large,
+            [4, 32, 32],
+            "the amounts grow with the limbs of the operands"
+        );
+    }
+
+    /// A limit equal to each amount accepts the step, and a limit one unit lower on any one
+    /// dimension rejects it with `HostWorkRejected`.
+    #[test]
+    fn reducer_query_costs_accept_at_the_limit_and_reject_below_it() {
+        for (label, step, expected) in table() {
+            let exact = budget(expected);
+            assert_eq!(step(&ScanMeter::new(Some(exact))), Ok(()), "{label}");
+            for index in 0..3 {
+                if expected[index] == 0 {
+                    continue;
+                }
+                let mut limits = [u64::MAX; 3];
+                limits[index] = expected[index] - 1;
+                assert_eq!(
+                    step(&ScanMeter::new(Some(budget(limits)))),
+                    Err(RSpaceError::HostWorkRejected),
+                    "{label}: one unit below the amount of {:?}",
+                    DIMENSIONS[index]
+                );
+            }
+        }
+    }
+
+    /// An amount that does not fit in a `usize` rejects with `HostWorkRejected` before any
+    /// reservation, also on a budget without limits. Without a budget, no amount is computed and
+    /// the step is accepted.
+    #[test]
+    fn reducer_query_costs_reject_amounts_that_overflow() {
+        let overflowing: Vec<(&str, Step)> = vec![
+            (
+                "rounding with the quantum 2^i64::MIN: L² overflows",
+                Box::new(|meter: &ScanMeter| reserve_rounding(&ratio(1, 3), i64::MIN, meter)),
+            ),
+            (
+                "square root with the quantum 2^i64::MIN: 2|quantum| overflows",
+                Box::new(|meter: &ScanMeter| reserve_square_root(&ratio(2, 1), i64::MIN, meter)),
+            ),
+        ];
+        for (label, step) in overflowing {
+            let unlimited = budget([u64::MAX; 3]);
+            assert_eq!(
+                step(&ScanMeter::new(Some(unlimited.clone()))),
+                Err(RSpaceError::HostWorkRejected),
+                "{label}"
+            );
+            assert_eq!(
+                DIMENSIONS.map(|dimension| unlimited.usage(dimension).get()),
+                [0, 0, 0],
+                "{label}: nothing is reserved"
+            );
+            assert_eq!(step(&ScanMeter::new(None)), Ok(()), "{label}: no budget");
+        }
+    }
+}
