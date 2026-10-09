@@ -1,18 +1,20 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P6",
-  "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v, and the VectorDB discipline of one collection (the driver of disciplines/vectordb.rs and the similarity paths of the join engine) and its Rocq model VectorDbDiscipline.v, and its TLA+ model VectorDb.tla.",
+  "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v, and the VectorDB discipline of one collection (the driver of disciplines/vectordb.rs and the similarity paths of the join engine) and its Rocq model VectorDbDiscipline.v, and its TLA+ model VectorDb.tla, the replies of rho:lang:vector (tensor/ops.rs) and their Rocq model VectorOps.v, and the ChromaDB mirror of a VectorDB space (the capture, the journal, the writer, the reconciler and the recorded process ann) and its TLA+ model ChromaMirror.tla.",
   "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.3 to 4.6 and 5. The headline ids are the ids of the P6 phase of formal/reified-rspaces-invariant-map.json.",
-  "code_base": "The items are in the P6 step 2 and step 8b commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
+  "code_base": "The items are in the P6 commits of steps 2, 6, 7a to 7c and 8b of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
     "rocq": [
       "formal/rocq/reified_rspaces/theories/Similarity.v",
       "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
-      "formal/rocq/reified_rspaces/theories/EventCorrelation.v"
+      "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+      "formal/rocq/reified_rspaces/theories/VectorOps.v"
     ],
     "tla": [
-      "formal/tlaplus/reified_rspaces/VectorDb.tla"
+      "formal/tlaplus/reified_rspaces/VectorDb.tla",
+      "formal/tlaplus/reified_rspaces/ChromaMirror.tla"
     ]
   },
   "headlines": {
@@ -195,6 +197,66 @@
       "name": "CascadeTerminates",
       "file": "formal/tlaplus/reified_rspaces/VectorDb.tla",
       "statement": "Each step of each tail lowers the measure 2 * (Cap - fired) + |owed| or stops the transaction, and no transaction runs out of its fuel (decision 49, I-21)."
+    },
+    "S27": {
+      "kind": "rocq",
+      "name": "vector_replies_exact",
+      "file": "formal/rocq/reified_rspaces/theories/VectorOps.v",
+      "statement": "The reply of add, scale and dot has the widest kind of the inputs. It is the exact value for the integer and the rational kinds, and one rounding of the exact value for the float kind: dot rounds its exact sum once (decisions 54 and 66)."
+    },
+    "S28": {
+      "kind": "rocq",
+      "name": "root_midpoint_nearest",
+      "file": "formal/rocq/reified_rspaces/theories/VectorOps.v",
+      "statement": "When the squares of the midpoints between a representable reply r and its neighbours bound x = s * s with s >= 0, no representable value is nearer to s than r: the check of the correctly rounded roots of norm and distance."
+    },
+    "W5": {
+      "kind": "tla",
+      "name": "ConsensusIndependentOfMirror",
+      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+      "statement": "The post-state of each deploy is a function of its pre-state and its recorded answer only: no mirror write runs in a transaction (design v3 4.9)."
+    },
+    "W6": {
+      "kind": "tla",
+      "name": "AdvisoryRecorded",
+      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+      "statement": "Replay uses the recorded answer of ann and never asks its own mirror (decision 57)."
+    },
+    "W7": {
+      "kind": "tla",
+      "name": "EqualHostWork",
+      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+      "statement": "Play and replay make the same checks of an ann call, so they reserve the same host work for them (decision 67)."
+    },
+    "W8": {
+      "kind": "tla",
+      "name": "PublishOnlyOnSuccess",
+      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+      "statement": "Every published write comes from a deploy whose final result has no errors, and the clear at the start of a root evaluation drops the journal of an exploratory evaluation (M1, decision 66)."
+    },
+    "W9": {
+      "kind": "tla",
+      "name": "NetWritesExact",
+      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+      "statement": "A published batch upserts exactly the records that its deploy added and deletes exactly the records that it removed, so a Rule E pair writes nothing."
+    },
+    "W10": {
+      "kind": "tla",
+      "name": "PublishNeverWaits",
+      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+      "statement": "A publication never waits for the writer: a full queue marks the collection dirty (decision 58)."
+    },
+    "W11": {
+      "kind": "tla",
+      "name": "ReconciledEqualsFinalizedView",
+      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+      "statement": "After a reconciler pass that finishes, the mirror holds the finalized view on every registered channel (decision 66)."
+    },
+    "W12": {
+      "kind": "tla",
+      "name": "WatermarkHonest",
+      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+      "statement": "The watermark of a collection never passes the block of the last reconciler pass that finished."
     }
   },
   "items": [
@@ -243,12 +305,14 @@
       "line": 265,
       "role": "The exact dot product, by DYADIC-SUM or by reduced rationals.",
       "rocq": [
-        "dot"
+        "dot",
+        "qsum"
       ],
       "tla": [],
       "covers": [
         "S6",
-        "S8"
+        "S8",
+        "S27"
       ]
     },
     {
@@ -472,11 +536,14 @@
       "name": "number_of",
       "line": 243,
       "role": "The exact value of every number kind: a dyadic number or a reduced rational, so every decision is a decision of the rationals.",
-      "rocq": [],
+      "rocq": [
+        "val"
+      ],
       "tla": [],
       "covers": [
         "S11",
-        "S19"
+        "S19",
+        "S27"
       ]
     },
     {
@@ -527,11 +594,12 @@
       "kind": "fn",
       "name": "sqrt_to_f64",
       "line": 484,
-      "role": "RN_53 of the square root of a rational.",
+      "role": "RN_53 of the square root of a rational. S28 states what the midpoint check of its reply proves: no f64 is nearer to the root. The IEEE quotient and square root oracles, the Sage leg and the Python receipt check the encoding.",
       "rocq": [],
       "tla": [],
-      "covers": [],
-      "unmodeled": "Rocq has no IEEE-754 model. The IEEE square root oracle, the Sage leg and the Python receipt check it."
+      "covers": [
+        "S28"
+      ]
     },
     {
       "item": "Element",
@@ -565,12 +633,14 @@
       ],
       "tla": [
         "Eligible",
-        "Order"
+        "Order",
+        "Post"
       ],
       "covers": [
         "S21",
         "S22",
-        "W1"
+        "W1",
+        "W5"
       ]
     },
     {
@@ -954,6 +1024,473 @@
       "covers": [
         "W1",
         "W4"
+      ]
+    },
+    {
+      "item": "Kind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+      "kind": "struct",
+      "name": "Kind",
+      "line": 95,
+      "role": "The kinds of a number of rho:lang:vector, ordered by width: Integer, Rational, Float.",
+      "rocq": [
+        "kind",
+        "krank"
+      ],
+      "tla": [],
+      "covers": [
+        "S27"
+      ]
+    },
+    {
+      "item": "kind_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+      "kind": "fn",
+      "name": "kind_of",
+      "line": 103,
+      "role": "The kind of a numeric Par: GInt, GBigInt and GBool are integers, GBigRat and GFixedPoint are rationals, GDouble and GFloat32 are floats.",
+      "rocq": [
+        "kind_of"
+      ],
+      "tla": [],
+      "covers": [
+        "S27"
+      ]
+    },
+    {
+      "item": "vector_operand",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+      "kind": "fn",
+      "name": "vector_operand",
+      "line": 331,
+      "role": "A vector operand and the widest kind of its elements (Integer for no element).",
+      "rocq": [
+        "widest",
+        "kjoin"
+      ],
+      "tla": [],
+      "covers": [
+        "S27"
+      ]
+    },
+    {
+      "item": "add",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+      "kind": "fn",
+      "name": "add",
+      "line": 368,
+      "role": "a + b, exact, encoded in the wider kind of the two vectors.",
+      "rocq": [
+        "add_reply",
+        "kjoin"
+      ],
+      "tla": [],
+      "covers": [
+        "S27"
+      ]
+    },
+    {
+      "item": "scale",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+      "kind": "fn",
+      "name": "scale",
+      "line": 383,
+      "role": "s * v, exact, encoded in the wider kind of the vector and the factor.",
+      "rocq": [
+        "scale_reply",
+        "kjoin"
+      ],
+      "tla": [],
+      "covers": [
+        "S27"
+      ]
+    },
+    {
+      "item": "evaluate",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+      "kind": "fn",
+      "name": "evaluate",
+      "line": 234,
+      "role": "The value of a call of rho:lang:vector: add, scale and dot in the widest kind, norm and distance as the correctly rounded root of an exact square.",
+      "rocq": [
+        "add_reply",
+        "scale_reply",
+        "dot_reply"
+      ],
+      "tla": [],
+      "covers": [
+        "S27",
+        "S28"
+      ]
+    },
+    {
+      "item": "number_par",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/tensor/ops.rs",
+      "kind": "fn",
+      "name": "number_par",
+      "line": 401,
+      "role": "The exact value encoded in a kind: GInt or GBigInt, GBigRat, or one rounding to a GDouble.",
+      "rocq": [
+        "encode"
+      ],
+      "tla": [],
+      "covers": [
+        "S27"
+      ]
+    },
+    {
+      "item": "vector",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+      "kind": "fn",
+      "name": "vector",
+      "line": 316,
+      "role": "The process rho:lang:vector: it replies the value of evaluate on the return channel.",
+      "rocq": [
+        "add_reply",
+        "scale_reply",
+        "dot_reply"
+      ],
+      "tla": [],
+      "covers": [
+        "S27",
+        "S28"
+      ]
+    },
+    {
+      "item": "MirrorCapture::writes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+      "scope": "MirrorCapture",
+      "kind": "fn",
+      "name": "writes",
+      "line": 236,
+      "role": "The net writes of one committed transaction: the first and the last event of each record id decide an upsert, a delete or nothing.",
+      "rocq": [],
+      "tla": [
+        "NetUpserts",
+        "NetDeletes",
+        "Upserts"
+      ],
+      "covers": [
+        "W9"
+      ]
+    },
+    {
+      "item": "MirrorJournal::record",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+      "scope": "MirrorJournal",
+      "kind": "fn",
+      "name": "record",
+      "line": 408,
+      "role": "Appends the net writes of a transaction to the journal of the evaluation: the last write of each record id wins.",
+      "rocq": [],
+      "tla": [
+        "Deploy"
+      ],
+      "covers": [
+        "W9"
+      ]
+    },
+    {
+      "item": "MirrorJournal::take",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+      "scope": "MirrorJournal",
+      "kind": "fn",
+      "name": "take",
+      "line": 429,
+      "role": "Removes the writes of the journal as one batch for each collection.",
+      "rocq": [],
+      "tla": [
+        "Deploy",
+        "Batch"
+      ],
+      "covers": [
+        "W8",
+        "W9"
+      ]
+    },
+    {
+      "item": "MirrorJournal::clear",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+      "scope": "MirrorJournal",
+      "kind": "fn",
+      "name": "clear",
+      "line": 460,
+      "role": "Drops the writes of the journal.",
+      "rocq": [],
+      "tla": [
+        "Explore"
+      ],
+      "covers": [
+        "W8"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::run_op",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "run_op",
+      "line": 171,
+      "role": "A space job: its transaction records the net writes in the journal and never writes the mirror.",
+      "rocq": [],
+      "tla": [
+        "Deploy"
+      ],
+      "covers": [
+        "W5",
+        "W9"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::settle_mirror_journal",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "settle_mirror_journal",
+      "line": 205,
+      "role": "M1: a final result without errors publishes the journal, and any other result drops it.",
+      "rocq": [],
+      "tla": [
+        "Deploy"
+      ],
+      "covers": [
+        "W8"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::begin_evaluation_scope",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "begin_evaluation_scope",
+      "line": 95,
+      "role": "The start of a root evaluation drops a journal that no result settled.",
+      "rocq": [],
+      "tla": [
+        "Explore",
+        "Deploy"
+      ],
+      "covers": [
+        "W8"
+      ]
+    },
+    {
+      "item": "MirrorWriter::publish",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+      "scope": "MirrorWriter",
+      "kind": "fn",
+      "name": "publish",
+      "line": 486,
+      "role": "Hands the batches to the bounded queue with try_send and never waits: a refused batch marks its collection dirty.",
+      "rocq": [],
+      "tla": [
+        "Publish"
+      ],
+      "covers": [
+        "W10"
+      ]
+    },
+    {
+      "item": "MirrorWriter::spawn_with",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+      "scope": "MirrorWriter",
+      "kind": "fn",
+      "name": "spawn_with",
+      "line": 455,
+      "role": "The writer task: it applies the batches in order with bounded attempts, and a batch that still fails marks its collection dirty.",
+      "rocq": [],
+      "tla": [
+        "Apply"
+      ],
+      "covers": [
+        "W10",
+        "W11"
+      ]
+    },
+    {
+      "item": "apply",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+      "kind": "fn",
+      "name": "apply",
+      "line": 365,
+      "role": "The writes of one batch in order: the collection, the registration of its channels, the upserts, the deletes.",
+      "rocq": [],
+      "tla": [
+        "Apply"
+      ],
+      "covers": [
+        "W11"
+      ]
+    },
+    {
+      "item": "reconcile",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+      "kind": "fn",
+      "name": "reconcile",
+      "line": 139,
+      "role": "One reconciler pass for a finalized block: it prepares the dirty collections and repairs each collection below the block or dirty.",
+      "rocq": [],
+      "tla": [
+        "Reconcile"
+      ],
+      "covers": [
+        "W11",
+        "W12"
+      ]
+    },
+    {
+      "item": "prepare_dirty",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+      "kind": "fn",
+      "name": "prepare_dirty",
+      "line": 216,
+      "role": "Makes a dirty collection and registers the channels of its unapplied batches.",
+      "rocq": [],
+      "tla": [
+        "Reconcile"
+      ],
+      "covers": [
+        "W11"
+      ]
+    },
+    {
+      "item": "remark",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+      "kind": "fn",
+      "name": "remark",
+      "line": 235,
+      "role": "Marks a dirty collection dirty again after a pass that did not repair it.",
+      "rocq": [],
+      "tla": [
+        "Reconcile"
+      ],
+      "covers": [
+        "W11"
+      ]
+    },
+    {
+      "item": "repair",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+      "kind": "fn",
+      "name": "repair",
+      "line": 253,
+      "role": "Repairs the registered channels of a collection to the finalized state, then sets the watermark to the larger of the block and the old watermark.",
+      "rocq": [],
+      "tla": [
+        "Reconcile",
+        "OnChans"
+      ],
+      "covers": [
+        "W11",
+        "W12"
+      ]
+    },
+    {
+      "item": "channel_repair",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+      "kind": "fn",
+      "name": "channel_repair",
+      "line": 300,
+      "role": "The orphans and the missing records of one registered channel at the finalized state.",
+      "rocq": [],
+      "tla": [
+        "Reconcile",
+        "OnChans"
+      ],
+      "covers": [
+        "W11"
+      ]
+    },
+    {
+      "item": "ann",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+      "kind": "fn",
+      "name": "ann",
+      "line": 436,
+      "role": "The process rho:vectordb:ann: the checks of consensus state in play and in replay, then the recorded reply in replay or the answer of the services in play.",
+      "rocq": [],
+      "tla": [
+        "Deploy",
+        "Replay"
+      ],
+      "covers": [
+        "W5",
+        "W6",
+        "W7"
+      ]
+    },
+    {
+      "item": "ann_request",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+      "kind": "fn",
+      "name": "ann_request",
+      "line": 492,
+      "role": "The checks of an ann call (decision 67): a mirrored VectorDB space, a query of its dimensions, and k in [1, capacity].",
+      "rocq": [],
+      "tla": [
+        "CheckWork",
+        "Replay"
+      ],
+      "covers": [
+        "W7"
+      ]
+    },
+    {
+      "item": "ann_answer",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+      "kind": "fn",
+      "name": "ann_answer",
+      "line": 590,
+      "role": "The answer of the services in play: the neighbours and the watermark of the mirror, which the dispatcher records.",
+      "rocq": [],
+      "tla": [
+        "Deploy"
+      ],
+      "covers": [
+        "W5",
+        "W6"
+      ]
+    },
+    {
+      "item": "produce_recorded",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+      "kind": "fn",
+      "name": "produce_recorded",
+      "line": 640,
+      "role": "Produces the output of a recorded process and keeps it on a failed produce, so the dispatcher records it.",
+      "rocq": [],
+      "tla": [
+        "Deploy"
+      ],
+      "covers": [
+        "W6"
       ]
     }
   ]

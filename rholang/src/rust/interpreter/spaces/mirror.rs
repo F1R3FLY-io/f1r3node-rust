@@ -842,4 +842,238 @@ mod tests {
         assert!(journal.is_empty());
         assert_eq!(journal.take(), Vec::new());
     }
+
+    use proptest::prelude::*;
+
+    fn property_config() -> ProptestConfig {
+        ProptestConfig {
+            cases: 64,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x0F6E_5EED_2026_1009),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    /// Where the events of a generated record happen.
+    #[derive(Clone, Copy, Debug)]
+    enum Place {
+        /// A data channel of the mirrored space.
+        Data,
+        /// The counter channel of a collection of the space: never mirrored.
+        Counter,
+        /// A data channel of another space: never mirrored.
+        OtherSpace,
+    }
+
+    /// A generated record: where it lives, whether it has an embedding, whether it is
+    /// persistent, whether the pre-state holds it, and how many times the transaction toggles
+    /// its presence (a removal of a stored record, or a store of an absent one).
+    #[derive(Clone, Debug)]
+    struct Generated {
+        place: Place,
+        embedded: bool,
+        persistent: bool,
+        before: bool,
+        toggles: usize,
+        incoming: bool,
+    }
+
+    fn generated() -> impl Strategy<Value = Generated> {
+        (
+            prop_oneof![
+                6 => Just(Place::Data),
+                1 => Just(Place::Counter),
+                1 => Just(Place::OtherSpace),
+            ],
+            proptest::bool::weighted(0.85),
+            proptest::bool::weighted(0.2),
+            proptest::bool::ANY,
+            0usize..=3,
+            proptest::bool::weighted(0.15),
+        )
+            .prop_map(|(place, embedded, persistent, before, toggles, incoming)| {
+                Generated {
+                    place,
+                    embedded,
+                    persistent,
+                    before,
+                    toggles,
+                    incoming,
+                }
+            })
+    }
+
+    proptest! {
+        #![proptest_config(property_config())]
+
+        /// The capture writes exactly the change of the record set of the mirrored data
+        /// channels (ChromaMirror.tla, NetWritesExact): an upsert of each record with an
+        /// embedding that the transaction added, and a delete of each record that it removed.
+        /// A record without an embedding is never upserted, so its delete names an id that the
+        /// mirror lacks (a no-op). A Rule E pair, a record that comes and goes, a persistent
+        /// match, a produce-triggered fire, and a record of another channel or space write
+        /// nothing.
+        #[test]
+        fn prop_mirror_capture_net_writes_are_the_change(
+            records in proptest::collection::vec(generated(), 1..7),
+            order in proptest::collection::vec(0usize..64, 0..24),
+        ) {
+            let other = NativeSpace { sid: [9; SID_LEN], durability: Durability::Durable };
+            let mut events: Vec<(usize, usize)> = Vec::with_capacity(records.len() * 4);
+            for (index, generated) in records.iter().enumerate() {
+                let count = match (generated.incoming, generated.persistent) {
+                    (true, _) => 1,
+                    (false, true) => usize::from(!generated.before) + 1,
+                    (false, false) => generated.toggles,
+                };
+                events.extend((0..count).map(|step| (index, step)));
+            }
+            // Interleave the events of the records; the events of one record keep their order.
+            let mut interleaved: Vec<(usize, usize)> = Vec::with_capacity(events.len());
+            let mut queues: Vec<Vec<(usize, usize)>> = vec![Vec::new(); records.len()];
+            for (index, step) in events {
+                queues[index].push((index, step));
+            }
+            for queue in &mut queues {
+                queue.reverse();
+            }
+            let mut picks = order.into_iter().cycle();
+            while queues.iter().any(|queue| !queue.is_empty()) {
+                let pending: Vec<usize> =
+                    (0..queues.len()).filter(|index| !queues[*index].is_empty()).collect();
+                let pick = pending[picks.next().unwrap_or(0) % pending.len()];
+                interleaved.extend(queues[pick].pop());
+            }
+            let channel_of = |generated: &Generated| match generated.place {
+                Place::Data => data(1),
+                Place::Counter => gprivate(namespace::collection_counter(space(), &key(1))),
+                Place::OtherSpace => gprivate(namespace::data_channel(other, &key(1))),
+            };
+            let record_of = |index: usize, generated: &Generated| {
+                let salt = u8::try_from(index).expect("a small index") + 1;
+                let embedding = [f64::from(salt), 1.0];
+                record(int(i64::from(salt)), generated.embedded.then_some(&embedding[..]), salt)
+            };
+            let mut capture = MirrorCapture::of(&mirrored());
+            let mut ops = Vec::with_capacity(interleaved.len());
+            for (index, step) in interleaved {
+                let generated = &records[index];
+                let channel = channel_of(generated);
+                let record = record_of(index, generated);
+                let produce = Produce::create(&channel, &record, generated.persistent);
+                let op = match (generated.incoming, generated.persistent) {
+                    // A produce-triggered fire: the incoming datum is never stored.
+                    (true, _) => fired(&channel, vec![(produce.clone(), record)], Some(produce)),
+                    // A persistent record: a store when the pre-state lacks it, then a match
+                    // that keeps it.
+                    (false, true) if !generated.before && step == 0 => {
+                        capture.store(ops.len(), &channel, &record, true);
+                        stored(&channel, &record, true)
+                    }
+                    (false, true) => fired(&channel, vec![(produce, record)], None),
+                    // The toggles of a record that is not persistent alternate from its
+                    // presence before the transaction.
+                    (false, false) => match (generated.before, step % 2) {
+                        (true, 0) | (false, 1) => fired(&channel, vec![(produce, record)], None),
+                        _ => {
+                            capture.store(ops.len(), &channel, &record, false);
+                            stored(&channel, &record, false)
+                        }
+                    },
+                };
+                ops.push(op);
+            }
+            let mut expected: Vec<MirrorWrite> = Vec::with_capacity(records.len());
+            for (index, generated) in records.iter().enumerate() {
+                let (Place::Data, false) = (generated.place, generated.incoming) else {
+                    continue;
+                };
+                let channel = channel_of(generated);
+                let record = record_of(index, generated);
+                let id = id(&Produce::create(&channel, &record, generated.persistent));
+                let after = match generated.persistent {
+                    true => true,
+                    false => generated.before ^ (generated.toggles % 2 == 1),
+                };
+                match (generated.before, after) {
+                    (false, true) if generated.embedded => expected.push(MirrorWrite::Upsert(
+                        record_of_datum(id, &record, &channel_digest(&key(1)), generated.persistent)
+                            .expect("an embedded record"),
+                    )),
+                    (true, false) => expected.push(MirrorWrite::Delete(id)),
+                    _ => {}
+                }
+            }
+            expected.sort_by_key(|write| *write.id());
+            let receipt = SpaceTxnReceipt { ops };
+            let writes = capture.writes(&receipt).map(|writes| writes.writes).unwrap_or_default();
+            prop_assert_eq!(writes, expected);
+        }
+
+        /// The journal keeps the last write of each record id of each collection, and it gives
+        /// one batch for each collection, with the union of the channels of its writes.
+        #[test]
+        fn prop_mirror_journal_keeps_the_last_write(
+            appends in proptest::collection::vec(
+                (
+                    proptest::bool::ANY,
+                    proptest::collection::vec((1u8..6, proptest::bool::ANY), 0..5),
+                    1u8..4,
+                ),
+                0..10,
+            ),
+        ) {
+            let journal = MirrorJournal::new();
+            let mut last: BTreeMap<String, BTreeMap<u8, bool>> = BTreeMap::new();
+            let mut channels: BTreeMap<String, BTreeSet<u8>> = BTreeMap::new();
+            for (first, writes_of, channel) in &appends {
+                let collection = if *first { "rrs-a" } else { "rrs-b" };
+                let batch: Vec<MirrorWrite> = writes_of
+                    .iter()
+                    .map(|(byte, insert)| match insert {
+                        true => upsert(*byte),
+                        false => MirrorWrite::Delete([*byte; ID_LEN]),
+                    })
+                    .collect();
+                journal.record(writes(collection, batch, *channel));
+                let entry = last.entry(collection.to_string()).or_default();
+                for (byte, insert) in writes_of {
+                    entry.insert(*byte, *insert);
+                }
+                channels.entry(collection.to_string()).or_default().insert(*channel);
+            }
+            let expected: Vec<MirrorBatch> = last
+                .into_iter()
+                .map(|(collection, writes_of)| {
+                    let upserts = writes_of
+                        .iter()
+                        .filter(|(_, insert)| **insert)
+                        .map(|(byte, _)| match upsert(*byte) {
+                            MirrorWrite::Upsert(record) => record,
+                            MirrorWrite::Delete(_) => unreachable!("an upsert"),
+                        })
+                        .collect();
+                    let deletes = writes_of
+                        .iter()
+                        .filter(|(_, insert)| !**insert)
+                        .map(|(byte, _)| [*byte; ID_LEN])
+                        .collect();
+                    let channels = channels[&collection]
+                        .iter()
+                        .map(|channel| (format!("digest-{channel}"), vec![*channel]))
+                        .collect();
+                    MirrorBatch {
+                        space: sid(),
+                        collection,
+                        metric: MirrorMetric::Cosine,
+                        upserts,
+                        deletes,
+                        channels,
+                    }
+                })
+                .collect();
+            prop_assert_eq!(journal.take(), expected);
+            prop_assert!(journal.is_empty());
+        }
+    }
 }

@@ -4272,6 +4272,7 @@ The run after step 7c applies all 34 mutants.
 
 All 34 mutants fail tests, the 23 mutants of step 7b among them, and the harness restores the files.
 The ChromaDB backend runs only in the live leg, so no mutant of the harness changes it.
+Table 136 of section 24.5 gives the run of step 8d, with the properties of that step.
 
 ### 20.7 Running the step-7c checks
 
@@ -4625,6 +4626,215 @@ To run the checks of step 8c, do these steps from the repository root:
 4. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P6`.
 5. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json`.
 
+
+## 24. Phase P6, step 8d: the model of the mirror and the replies of `rho:lang:vector`
+
+Step 8d adds two formal models and maps the properties of the mirror and of `rho:lang:vector` to them.
+`ChromaMirror.tla` models the ChromaDB mirror of a VectorDB space on one node, and the replay of its deploys on another node.
+`VectorOps.v` proves the kind and the rounding of the replies of `rho:lang:vector`.
+Seven new properties test the capture, the journal, the writer, the reconciler and the recorded processes.
+
+### 24.1 The model of the mirror
+
+The records of a space are consensus state, and the mirror of a node is a copy of the records outside consensus.
+Each step of the model is one action.
+The actions are a deploy, an exploratory evaluation, a batch of the writer, a finalization, a reconciler pass and a replay.
+A deploy maps the records of its pre-state to its post-state, and its block holds the post-state.
+A deploy that calls `ann` asks the mirror and records the answer.
+It then consumes the first stored record that the answer names, as the exact query `ids=` does.
+
+The mirror path of the model follows the code in this order:
+
+1. Each space job records the net writes of its transaction in the journal of the evaluation.
+2. A final result with no errors publishes the journal, and any other result drops it (M1, decision 66).
+3. The start of each root evaluation drops a journal that no result settled.
+4. A publication never waits, and a full queue marks the collection dirty.
+5. The writer applies each batch in order, and a batch that fails after its attempts marks the collection dirty.
+6. A reconciler pass repairs each registered channel of a stale or dirty collection to the view of the newest finalized block.
+
+Replay runs on another node, with a mirror in any state.
+It uses the recorded answer of `ann`, and it makes the checks of `ann` as play does (decision 67).
+The header of the module names the Rust code of each action, with 18 line ranges that `check-model-map.py` validates.
+
+A deploy of the model is one transaction.
+In the code, the journal keeps the last write of each record of a deploy.
+So a record that one transaction stores and a later transaction removes leaves a delete.
+That delete names an id that the mirror does not hold, and ChromaDB accepts it with no effect.
+
+*Table 131. The invariants of `ChromaMirror.tla`.*
+
+| Id | Invariant | Statement |
+|---|---|---|
+| W5 | `ConsensusIndependentOfMirror` | The post-state of each deploy is a function of its pre-state and its recorded answer only. |
+| W6 | `AdvisoryRecorded` | Replay uses the recorded answer of `ann` and never asks its own mirror. |
+| W7 | `EqualHostWork` | Play and replay make the same checks of an `ann` call, so they reserve the same host work for them (decision 67). |
+| W8 | `PublishOnlyOnSuccess` | Every published write comes from a deploy whose final result has no errors (M1). |
+| W9 | `NetWritesExact` | A published batch upserts exactly the records that its deploy added and deletes exactly the records that it removed. A Rule E pair writes nothing. |
+| W10 | `PublishNeverWaits` | A publication never waits for the writer. |
+| W11 | `ReconciledEqualsFinalizedView` | After a reconciler pass that finishes, the mirror holds the finalized view on every registered channel. |
+| W12 | `WatermarkHonest` | The watermark of a collection never passes the block of the last pass that finished. |
+
+### 24.2 Configuration and negative controls
+
+`MC_ChromaMirror` has two record ids on two channels, three deploys, eight steps and a queue of one batch.
+TLC explores 1,722,212 distinct states to the depth 9, and no invariant fails.
+A queue of one batch is full after one publication, so the configuration reaches the dirty path of the writer.
+
+*Table 132. The Unsafe controls of `ChromaMirror.tla`.*
+
+| Control | Rule it reverts | Refutes |
+|---|---|---|
+| `MirrorWriteInTxnUnsafe` | The deploy writes the mirror inside its transaction, and a failed write aborts the deploy. | W5 |
+| `UnrecordedAdvisoryUnsafe` | Replay asks its own mirror. | W6 |
+| `AnnChecksOnlyInPlayUnsafe` | Replay returns the recorded answer before the checks. | W7 |
+| `PublishFailedDeployUnsafe` | A deploy whose result has errors publishes its journal. | W8 |
+| `BeginScopeKeepsJournalUnsafe` | The start of a root evaluation keeps the journal of an exploratory evaluation. | W8 |
+| `RuleEUpsertUnsafe` | A peek upserts the record that it stored again. | W9 |
+| `BlockingPublishUnsafe` | A full queue makes the publication wait. | W10 |
+| `OrphansKeptUnsafe` | A pass keeps the orphans of a registered channel. | W11 |
+| `WatermarkAfterFailureUnsafe` | A failed pass sets the watermark. | W12 |
+
+Each control refutes exactly its invariant, and the complement run without that invariant finds no violation.
+
+### 24.3 The replies of `rho:lang:vector`
+
+`rho:lang:vector` computes `add`, `scale` and `dot` exactly, and it replies in the widest kind of its inputs (decision 66, design v3 section 4.7).
+An integer input gives the integer kind, a rational or a fixed-point input gives the rational kind, and a float input gives the float kind.
+`VectorOps.v` models a number as an integer, a rational, or a float with its exact value, in the rationals of the Rocq standard library.
+The rounding to nearest is an abstract function $`\mathrm{rnd}`$, so the claims hold for every rounding.
+
+*Table 133. The headlines of `VectorOps.v`.*
+
+| Id | Theorem | Statement |
+|---|---|---|
+| S27 | `vector_replies_exact` | The reply of `add`, `scale` and `dot` has the widest kind of the inputs. It is the exact value for the integer and the rational kinds. For the float kind it is $`\mathrm{rnd}`$ of the exact value, so `dot` rounds its exact sum once (decision 54). |
+| S28 | `root_midpoint_nearest` | Let $`r`$ be a representable reply with the neighbours $`l < r < h`$, and let $`s \ge 0`$ be the root of $`x`$. If the squares of the midpoints bound $`x`$, no representable value is nearer to $`s`$ than $`r`$. |
+
+The bound of S28 is:
+
+```math
+\left(\frac{l + r}{2}\right)^{2} \le x \le \left(\frac{r + h}{2}\right)^{2},
+```
+
+where the lower bound applies only when $`(l + r)/2 > 0`$.
+`prop_vector_ops_roots_are_correctly_rounded` checks these two bounds exactly for the reply of `norm`, with the adjacent `f64` values as $`l`$ and $`h`$.
+So S28 turns the check of the property into the claim that the root is correctly rounded.
+
+S27 also shows that one branch of `number_par` is unreachable.
+That branch fails with `Inconsistent` when an integer reply has a value that is not an integer.
+The invariant map adds `prop_vector_ops_dot_laws` to S6 and `prop_vector_ops_distance_laws` to S7 of `Similarity.v`.
+
+### 24.4 The properties
+
+*Table 134. The properties of step 8d.*
+
+| Property | File | Covers | What it checks |
+|---|---|---|---|
+| `prop_vector_ops_agree_with_an_exact_oracle` | `reified_vector_ops.rs` | S27 | On integers, rationals and fixed-point decimals, `add`, `scale` and `dot` equal the exact values, in the widest kind of the inputs. |
+| `prop_vector_ops_float_inputs_give_floats` | `reified_vector_ops.rs` | S27 | A float among the inputs gives float values. On dyadic inputs whose results are exact in `f64`, they equal the exact values. |
+| `prop_vector_ops_dot_laws` | `reified_vector_ops.rs` | S6 | `dot` is symmetric, and one permutation of the coordinates of both vectors keeps its value. |
+| `prop_vector_ops_distance_laws` | `reified_vector_ops.rs` | S7 | The distance is not negative, symmetric, and zero from a vector to itself. The norm of a vector is its distance from zero. |
+| `prop_vector_ops_roots_are_correctly_rounded` | `reified_vector_ops.rs` | S28 | The reply of `norm` satisfies the midpoint bounds of S28. |
+| `prop_mirror_capture_net_writes_are_the_change` | `spaces/mirror.rs` | W9 | The capture upserts each record with an embedding that a transaction added, and it deletes each record that the transaction removed. |
+| `prop_mirror_journal_keeps_the_last_write` | `spaces/mirror.rs` | W9 | The journal keeps the last write of each record id, and it gives one batch for each collection. |
+| `prop_mirror_writer_applies_the_accepted_batches` | `reified/vectordb_services.rs` | W10 | A full queue refuses a batch and never waits. The writer applies the batches that the queue took, in order, and it marks dirty each collection whose batch it did not apply. |
+| `prop_mirror_reconciler_watermarks_follow_finished_repairs` | `reified/mirror_reconciler.rs` | W12 | A watermark changes only through a repair that finishes, to the larger of the block and the old watermark. A dirty collection that a pass does not finish stays dirty. |
+| `prop_mirror_tracks_the_published_deploys` | `reified_vectordb_chroma.rs` | W8, W9 | After each step of a generated chain, the mirror holds the records that the state changes of the successful deploys give. |
+| `prop_mirror_reconcile_repairs_the_finalized_view` | `reified_vectordb_chroma.rs` | W11 | A pass that fails keeps the mirror and the watermark, and a pass that finishes holds exactly the records of the finalized state. |
+| `prop_vectordb_services_replay_reproduces_the_recorded_outputs` | `reified_vectordb_chroma.rs` | W5, W6, W7 | Native replay with other services reproduces play with a complete journal, and it asks no mirror and no embedder. |
+
+The properties of `reified_vector_ops.rs` run 64 cases, and the suite properties run 16 cases, both with the fixed seed of the P5 runner.
+The suite properties run in the latest execution model: native play and native replay certification (decision 69).
+The four in-module properties run 64 cases with a fixed seed of their own.
+The invariant map also names seven example tests of the suite as witnesses of W5, W6 and W8 to W12.
+
+Four hypotheses of the first versions failed, and each one is recorded here with its cause.
+
+1. The capture of a removed record without an embedding was expected to write nothing. It writes a delete, because the capture does not read the removed datum. The mirror never holds such a record, so the delete has no effect. The property now applies the rule of embeddings to upserts only.
+2. An exploratory evaluation was expected to succeed. It can fail with `CapacityExceeded` on a full collection, and it then publishes nothing. The property accepts that failure.
+3. The test chain plays a failed deploy without a revert, unlike the deploys of a block. So the property follows the state changes of the successful deploys only, and not the state of the chain.
+4. Play and replay were expected to reserve the same total host work. Native replay certification also verifies the committed evidence, so it reserves more. For one `embed` call, replay reserved 77,826,946 verification bytes, and play reserved 8,869,621.
+
+The fourth result does not contradict decision 67.
+The checks of an `ann` call are journaled native operations, so replay must make each check of play, or the certification finds an incomplete journal.
+`prop_vectordb_services_replay_reproduces_the_recorded_outputs` checks that completeness, and it does not compare the totals.
+
+### 24.5 Negative controls
+
+*Table 135. The Rocq controls of step 8d.*
+
+| Control | What it changes | Must fail in |
+|---|---|---|
+| `vo-kjoin-narrower` | The join of two kinds takes the narrower kind. | `kjoin_rank` |
+| `vo-dot-rounds-each-term` | `dot` rounds each product before the sum. | `vector_replies_exact` |
+| `vo-faithful-root-bound` | The check bounds $`x`$ by $`h^{2}`$ instead of the square of the midpoint, which allows a faithful rounding. | `root_midpoint_nearest` |
+
+*Table 136. The run of the mirror and services mutants in step 8d.*
+
+| Harness | Mutant | Tests that fail | New properties that fail |
+|---|---|---|---|
+| mirror | `publish-with-errors` | 2 | `prop_mirror_tracks_the_published_deploys` |
+| mirror | `publish-on-err` | 2 | `prop_mirror_tracks_the_published_deploys` |
+| mirror | `no-play-settle` | 14 | `prop_mirror_reconcile_repairs_the_finalized_view`, `prop_mirror_tracks_the_published_deploys` |
+| mirror | `no-replay-settle` | 1 | none |
+| mirror | `begin-scope-keeps-journal` | 2 | `prop_mirror_tracks_the_published_deploys` |
+| mirror | `journal-not-appended` | 14 | `prop_mirror_reconcile_repairs_the_finalized_view`, `prop_mirror_tracks_the_published_deploys` |
+| mirror | `rule-e-upserts` | 3 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `new-then-removed-deletes` | 2 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `persistent-removed` | 3 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `incoming-removed` | 3 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `foreign-channel-removed` | 2 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `non-finite-mirrored` | 1 | none |
+| mirror | `document-dropped` | 2 | none |
+| mirror | `persistence-dropped` | 2 | none |
+| mirror | `capture-without-mirror-param` | 2 | none |
+| mirror | `journal-first-write-wins` | 3 | `prop_mirror_journal_keeps_the_last_write` |
+| mirror | `dot-as-cosine` | 2 | none |
+| mirror | `capture-index-shifted` | 11 | `prop_mirror_reconcile_repairs_the_finalized_view`, `prop_mirror_tracks_the_published_deploys` |
+| mirror | `writer-no-retry` | 4 | none |
+| mirror | `failed-batch-not-dirty` | 5 | `prop_mirror_writer_applies_the_accepted_batches` |
+| mirror | `full-queue-not-dirty` | 3 | `prop_mirror_writer_applies_the_accepted_batches` |
+| mirror | `collection-not-ensured` | 19 | `prop_mirror_writer_applies_the_accepted_batches`, `prop_mirror_reconcile_repairs_the_finalized_view`, `prop_mirror_tracks_the_published_deploys` |
+| mirror | `deletes-skipped` | 10 | `prop_mirror_writer_applies_the_accepted_batches`, `prop_mirror_tracks_the_published_deploys` |
+| mirror | `registry-not-written` | 5 | `prop_mirror_reconcile_repairs_the_finalized_view` |
+| mirror | `capture-channels-dropped` | 6 | `prop_mirror_reconcile_repairs_the_finalized_view` |
+| mirror | `orphans-kept` | 3 | `prop_mirror_reconcile_repairs_the_finalized_view` |
+| mirror | `missing-not-added` | 5 | `prop_mirror_reconcile_repairs_the_finalized_view` |
+| mirror | `watermark-not-advanced` | 6 | `prop_mirror_reconciler_watermarks_follow_finished_repairs`, `prop_mirror_reconcile_repairs_the_finalized_view` |
+| mirror | `watermark-decreases` | 2 | `prop_mirror_reconciler_watermarks_follow_finished_repairs` |
+| mirror | `current-collection-repaired` | 2 | none |
+| mirror | `dirty-ignored` | 3 | `prop_mirror_reconciler_watermarks_follow_finished_repairs` |
+| mirror | `dirty-not-remarked` | 3 | `prop_mirror_reconciler_watermarks_follow_finished_repairs` |
+| mirror | `dirty-not-prepared` | 2 | `prop_mirror_reconciler_watermarks_follow_finished_repairs` |
+| mirror | `events-ignored` | 1 | none |
+| services | `embed-not-recorded` | 4 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `ann-not-recorded` | 4 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `embed-replay-recomputes` | 3 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `ann-replay-recomputes` | 4 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `ann-checks-only-in-play` | 4 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `quota-dropped` | 1 | none |
+| services | `non-finite-accepted` | 1 | none |
+| services | `mirror-check-dropped` | 1 | none |
+| services | `k-unbounded` | 1 | none |
+| services | `channel-digest-of-the-space` | 1 | none |
+| services | `malformed-id-kept` | 1 | none |
+| services | `config-entry-dropped` | 2 | none |
+
+All 34 mirror mutants and all 12 services mutants fail tests, and both harnesses restore the files.
+In 30 runs, a new property of step 8d is among the failing tests.
+Tables 118 and 122 record the runs of steps 7b and 7c, before these properties existed.
+
+### 24.6 Running the step-8d checks
+
+To run the checks of step 8d, do these steps from the repository root:
+
+1. Run `bash scripts/check-reified-rspaces-proofs.sh`, which must report `FAIL=0`.
+2. Run `bash scripts/check-reified-rspaces-tla-invariants.sh`, which must report `FAIL=0`.
+3. Run `cargo test -p rholang --lib --test reified_vectordb_chroma --test reified_vector_ops`.
+4. Run `python3 scripts/verify-reified/mirror-mutants.py`, which must report `FAIL=0`.
+5. Run `python3 scripts/verify-reified/vectordb-services-mutants.py`, which must report `FAIL=0`.
+6. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P6`.
+7. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json`.
 
 ## References
 

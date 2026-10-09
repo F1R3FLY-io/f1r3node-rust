@@ -7040,14 +7040,19 @@
       ]
     },
     "P6": {
-      "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break), the VectorDB discipline of one collection (VectorDbDiscipline.v S21-S25) the replay of its transactions (S26, the H23 theorem of EventCorrelation.v), and its TLA+ model VectorDb.tla (W1-W4: no pending match, atomic list fires, conservation of peeked records, the measure of the tail).",
-      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1 and 4.3 to 4.6, and 5 (Rocq and TLA+). witness_tests lists the deterministic tests, the reference vectors of the Sage leg included.",
+      "title": "P6 steps 2, 8b, 8c and 8d: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break), the VectorDB discipline of one collection (VectorDbDiscipline.v S21-S25) the replay of its transactions (S26, the H23 theorem of EventCorrelation.v), and its TLA+ model VectorDb.tla (W1-W4: no pending match, atomic list fires, conservation of peeked records, the measure of the tail), the replies of rho:lang:vector (VectorOps.v S27-S28: the widest kind with one rounding, the midpoint test of the nearest root), and the ChromaDB mirror of a VectorDB space (ChromaMirror.tla W5-W12: consensus independent of the mirror, recorded answers, the checks of ann in both modes, publication on success with exact net writes and no wait, and the reconciler).",
+      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.3 to 4.7 and 4.9, and 5 (Rocq and TLA+). witness_tests lists the deterministic tests, the reference vectors of the Sage leg included.",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/tensor/exact.rs",
-        "rholang/tests/reified_vectordb.rs"
+        "rholang/tests/reified_vectordb.rs",
+        "rholang/tests/reified_vector_ops.rs",
+        "rholang/src/rust/interpreter/spaces/mirror.rs",
+        "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+        "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+        "rholang/tests/reified_vectordb_chroma.rs"
       ],
-      "expected_properties": 23,
+      "expected_properties": 35,
       "formal": {
         "S1": {
           "kind": "rocq",
@@ -7100,7 +7105,8 @@
           "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
           "statement": "The dot product is symmetric, and its exact sum does not depend on the order of the coordinates.",
           "tests": [
-            "prop_exact_kernels_are_permutation_invariant"
+            "prop_exact_kernels_are_permutation_invariant",
+            "prop_vector_ops_dot_laws"
           ]
         },
         "S7": {
@@ -7109,7 +7115,8 @@
           "file": "formal/rocq/reified_rspaces/theories/Similarity.v",
           "statement": "dist2 is non-negative, symmetric and zero exactly on equal vectors; manhattan is non-negative, symmetric and satisfies the triangle inequality.",
           "tests": [
-            "prop_distance_laws_hold"
+            "prop_distance_laws_hold",
+            "prop_vector_ops_distance_laws"
           ]
         },
         "S8": {
@@ -7324,6 +7331,99 @@
           "tests": [
             "prop_vectordb_transactions_are_bounded"
           ]
+        },
+        "S27": {
+          "kind": "rocq",
+          "name": "vector_replies_exact",
+          "file": "formal/rocq/reified_rspaces/theories/VectorOps.v",
+          "statement": "The reply of add, scale and dot has the widest kind of the inputs. It is the exact value for the integer and the rational kinds, and one rounding of the exact value for the float kind: dot rounds its exact sum once (decisions 54 and 66).",
+          "tests": [
+            "prop_vector_ops_agree_with_an_exact_oracle",
+            "prop_vector_ops_float_inputs_give_floats"
+          ]
+        },
+        "S28": {
+          "kind": "rocq",
+          "name": "root_midpoint_nearest",
+          "file": "formal/rocq/reified_rspaces/theories/VectorOps.v",
+          "statement": "When the squares of the midpoints between a representable reply r and its neighbours bound x = s * s with s >= 0, no representable value is nearer to s than r: the check of the correctly rounded roots of norm and distance.",
+          "tests": [
+            "prop_vector_ops_roots_are_correctly_rounded"
+          ]
+        },
+        "W5": {
+          "kind": "tla",
+          "name": "ConsensusIndependentOfMirror",
+          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+          "statement": "The post-state of each deploy is a function of its pre-state and its recorded answer only: no mirror write runs in a transaction (design v3 4.9).",
+          "tests": [
+            "prop_vectordb_services_replay_reproduces_the_recorded_outputs"
+          ]
+        },
+        "W6": {
+          "kind": "tla",
+          "name": "AdvisoryRecorded",
+          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+          "statement": "Replay uses the recorded answer of ann and never asks its own mirror (decision 57).",
+          "tests": [
+            "prop_vectordb_services_replay_reproduces_the_recorded_outputs"
+          ]
+        },
+        "W7": {
+          "kind": "tla",
+          "name": "EqualHostWork",
+          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+          "statement": "Play and replay make the same checks of an ann call, so they reserve the same host work for them (decision 67).",
+          "tests": [
+            "prop_vectordb_services_replay_reproduces_the_recorded_outputs"
+          ]
+        },
+        "W8": {
+          "kind": "tla",
+          "name": "PublishOnlyOnSuccess",
+          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+          "statement": "Every published write comes from a deploy whose final result has no errors, and the clear at the start of a root evaluation drops the journal of an exploratory evaluation (M1, decision 66).",
+          "tests": [
+            "prop_mirror_tracks_the_published_deploys"
+          ]
+        },
+        "W9": {
+          "kind": "tla",
+          "name": "NetWritesExact",
+          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+          "statement": "A published batch upserts exactly the records that its deploy added and deletes exactly the records that it removed, so a Rule E pair writes nothing.",
+          "tests": [
+            "prop_mirror_capture_net_writes_are_the_change",
+            "prop_mirror_journal_keeps_the_last_write",
+            "prop_mirror_tracks_the_published_deploys"
+          ]
+        },
+        "W10": {
+          "kind": "tla",
+          "name": "PublishNeverWaits",
+          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+          "statement": "A publication never waits for the writer: a full queue marks the collection dirty (decision 58).",
+          "tests": [
+            "prop_mirror_writer_applies_the_accepted_batches"
+          ]
+        },
+        "W11": {
+          "kind": "tla",
+          "name": "ReconciledEqualsFinalizedView",
+          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+          "statement": "After a reconciler pass that finishes, the mirror holds the finalized view on every registered channel (decision 66).",
+          "tests": [
+            "prop_mirror_reconcile_repairs_the_finalized_view"
+          ]
+        },
+        "W12": {
+          "kind": "tla",
+          "name": "WatermarkHonest",
+          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+          "statement": "The watermark of a collection never passes the block of the last reconciler pass that finished.",
+          "tests": [
+            "prop_mirror_reconciler_watermarks_follow_finished_repairs"
+          ]
         }
       },
       "properties": [
@@ -7523,6 +7623,105 @@
           "covers": [
             "W2"
           ]
+        },
+        {
+          "number": 24,
+          "test": "prop_vector_ops_agree_with_an_exact_oracle",
+          "file": "rholang/tests/reified_vector_ops.rs",
+          "covers": [
+            "S27"
+          ]
+        },
+        {
+          "number": 25,
+          "test": "prop_vector_ops_float_inputs_give_floats",
+          "file": "rholang/tests/reified_vector_ops.rs",
+          "covers": [
+            "S27"
+          ]
+        },
+        {
+          "number": 26,
+          "test": "prop_vector_ops_dot_laws",
+          "file": "rholang/tests/reified_vector_ops.rs",
+          "covers": [
+            "S6"
+          ]
+        },
+        {
+          "number": 27,
+          "test": "prop_vector_ops_distance_laws",
+          "file": "rholang/tests/reified_vector_ops.rs",
+          "covers": [
+            "S7"
+          ]
+        },
+        {
+          "number": 28,
+          "test": "prop_vector_ops_roots_are_correctly_rounded",
+          "file": "rholang/tests/reified_vector_ops.rs",
+          "covers": [
+            "S28"
+          ]
+        },
+        {
+          "number": 29,
+          "test": "prop_mirror_capture_net_writes_are_the_change",
+          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+          "covers": [
+            "W9"
+          ]
+        },
+        {
+          "number": 30,
+          "test": "prop_mirror_journal_keeps_the_last_write",
+          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
+          "covers": [
+            "W9"
+          ]
+        },
+        {
+          "number": 31,
+          "test": "prop_mirror_writer_applies_the_accepted_batches",
+          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+          "covers": [
+            "W10"
+          ]
+        },
+        {
+          "number": 32,
+          "test": "prop_mirror_reconciler_watermarks_follow_finished_repairs",
+          "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+          "covers": [
+            "W12"
+          ]
+        },
+        {
+          "number": 33,
+          "test": "prop_mirror_tracks_the_published_deploys",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "covers": [
+            "W8",
+            "W9"
+          ]
+        },
+        {
+          "number": 34,
+          "test": "prop_mirror_reconcile_repairs_the_finalized_view",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "covers": [
+            "W11"
+          ]
+        },
+        {
+          "number": 35,
+          "test": "prop_vectordb_services_replay_reproduces_the_recorded_outputs",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "covers": [
+            "W5",
+            "W6",
+            "W7"
+          ]
         }
       ],
       "witness_tests": [
@@ -7680,6 +7879,64 @@
           "rule": "decision 37 (one guard check)",
           "covers": [],
           "unmodeled": "The headlines of VectorDbDiscipline.v are for waiters without a guard. A guard is checked once, so a waiter that its guard refused on a better record can fire later with a worse one."
+        },
+        {
+          "test": "mirror_never_blocks_deploy",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "rule": "design v3 4.9 and decision 58 (no mirror write in a transaction, publication never waits)",
+          "covers": [
+            "W5",
+            "W10"
+          ]
+        },
+        {
+          "test": "vectordb_ann_replay_equal",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "rule": "decision 57 (the answers of ann are recorded)",
+          "covers": [
+            "W6"
+          ]
+        },
+        {
+          "test": "mirror_journal_drops_failed_deploy",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "rule": "M1 (decision 66)",
+          "covers": [
+            "W8"
+          ]
+        },
+        {
+          "test": "mirror_exploratory_evaluation_publishes_nothing",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "rule": "M1 and the clear at the start of a root evaluation (FR-5')",
+          "covers": [
+            "W8"
+          ]
+        },
+        {
+          "test": "mirror_rule_e_coalesces",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "rule": "Rule E (decision 45) and the net writes of the capture (step 7b)",
+          "covers": [
+            "W9"
+          ]
+        },
+        {
+          "test": "mirror_journal_keeps_the_last_write_of_a_deploy",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "rule": "the journal keeps the last write of each record (step 7b)",
+          "covers": [
+            "W9"
+          ]
+        },
+        {
+          "test": "mirror_reconcile_removes_orphans",
+          "file": "rholang/tests/reified_vectordb_chroma.rs",
+          "rule": "the reconciler (design v3 4.9, decision 66)",
+          "covers": [
+            "W11",
+            "W12"
+          ]
         }
       ]
     }

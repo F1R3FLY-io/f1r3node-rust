@@ -263,6 +263,17 @@ of the driver of a VectorDB collection:
   vdb-offer-never-fires   OFFER-VDB fires no parked waiter:
                           first_offer_none, and so headline 2, breaks
 
+P6 step 8d (VectorOps.v) has three controls. Each reverts one rule of the
+replies of rho:lang:vector:
+  vo-kjoin-narrower       the join of two kinds takes the narrower kind:
+                          kjoin_rank breaks
+  vo-dot-rounds-each-term dot rounds each product before the sum (no
+                          single rounding, decision 54):
+                          vector_replies_exact breaks
+  vo-faithful-root-bound  the check bounds the square of the root by the
+                          square of the next float, not of the midpoint (a
+                          faithful rounding): root_midpoint_nearest breaks
+
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
   * A control has one mutation, or a tuple of mutations that the harness
@@ -1864,6 +1875,23 @@ CONTROLS = (
      "    | W :: rest => if ofires W R x then Some W else first_offer R x rest",
      "    | W :: rest => first_offer R x rest",
      ("first_offer_none",)),
+    # P6 step 8d (VectorOps.v): each control reverts one rule of the replies
+    # of rho:lang:vector.
+    ("vo-kjoin-narrower", "VectorOps",
+     "the join of two kinds takes the narrower kind, so a reply can lose the kind of a wider input",
+     "Definition kjoin (a b : kind) : kind := if Nat.ltb (krank a) (krank b) then b else a.",
+     "Definition kjoin (a b : kind) : kind := if Nat.ltb (krank a) (krank b) then a else b.",
+     ("kjoin_rank",)),
+    ("vo-dot-rounds-each-term", "VectorOps",
+     "dot rounds each product before the sum, so a float reply is not one rounding of the exact value (decision 54)",
+     "    encode k (qsum (map (fun p => val (fst p) * val (snd p)) (combine a b))).",
+     "    encode k (qsum (map (fun p => val (encode k (val (fst p) * val (snd p)))) (combine a b))).",
+     ("vector_replies_exact",)),
+    ("vo-faithful-root-bound", "VectorOps",
+     "the check bounds the square of the root by the square of the next float, so a nearer float can exist",
+     "    x <= ((r + hi) * (1 # 2)) * ((r + hi) * (1 # 2)) ->",
+     "    x <= hi * hi ->",
+     ("root_midpoint_nearest",)),
 )
 
 DECLARATION = re.compile(

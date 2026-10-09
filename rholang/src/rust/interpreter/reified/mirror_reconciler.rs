@@ -665,4 +665,267 @@ mod tests {
         ]);
         assert!(writer.dirty().is_empty());
     }
+
+    use proptest::prelude::*;
+
+    /// A mirror whose registries change with each watermark that it sets, and whose refusals
+    /// the test chooses before each pass: a set of (collection, kind of call).
+    struct PassMirror {
+        registries: Mutex<BTreeMap<String, MirrorRegistry>>,
+        refuse: Mutex<BTreeSet<(String, &'static str)>>,
+        listing_refused: Mutex<bool>,
+    }
+
+    impl PassMirror {
+        fn refused(&self, collection: &str, kind: &'static str) -> Result<(), MirrorFailure> {
+            match self
+                .refuse
+                .lock()
+                .expect("the refusals of the pass mirror")
+                .contains(&(collection.to_string(), kind))
+            {
+                true => Err(MirrorFailure::Unavailable),
+                false => Ok(()),
+            }
+        }
+
+        fn watermarks(&self) -> BTreeMap<String, u64> {
+            self.registries
+                .lock()
+                .expect("the registries of the pass mirror")
+                .iter()
+                .map(|(name, registry)| (name.clone(), registry.watermark))
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl MirrorBackend for PassMirror {
+        async fn query(
+            &self,
+            _collection: &str,
+            _channel: &str,
+            _vector: &[f32],
+            _k: usize,
+        ) -> Result<Vec<Neighbour>, MirrorFailure> {
+            Ok(Vec::new())
+        }
+
+        async fn watermark(&self, _collection: &str) -> Result<u64, MirrorFailure> { Ok(0) }
+
+        async fn ensure_collection(
+            &self,
+            collection: &str,
+            _metric: MirrorMetric,
+        ) -> Result<(), MirrorFailure> {
+            self.refused(collection, "ensure")
+        }
+
+        async fn upsert(
+            &self,
+            collection: &str,
+            _records: &[MirrorRecord],
+        ) -> Result<(), MirrorFailure> {
+            self.refused(collection, "upsert")
+        }
+
+        async fn delete(
+            &self,
+            collection: &str,
+            _ids: &[[u8; ID_LEN]],
+        ) -> Result<(), MirrorFailure> {
+            self.refused(collection, "delete")
+        }
+
+        async fn register(
+            &self,
+            collection: &str,
+            _space: &SpaceId,
+            _channels: &BTreeMap<String, Vec<u8>>,
+        ) -> Result<(), MirrorFailure> {
+            self.refused(collection, "register")
+        }
+
+        async fn collections(&self) -> Result<Vec<String>, MirrorFailure> {
+            match *self.listing_refused.lock().expect("the listing flag") {
+                true => Err(MirrorFailure::Unavailable),
+                false => Ok(self
+                    .registries
+                    .lock()
+                    .expect("the registries of the pass mirror")
+                    .keys()
+                    .cloned()
+                    .collect()),
+            }
+        }
+
+        async fn registry(&self, collection: &str) -> Result<MirrorRegistry, MirrorFailure> {
+            self.refused(collection, "registry")?;
+            Ok(self
+                .registries
+                .lock()
+                .expect("the registries of the pass mirror")
+                .get(collection)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        async fn ids(
+            &self,
+            collection: &str,
+            _channel: &str,
+        ) -> Result<BTreeSet<[u8; ID_LEN]>, MirrorFailure> {
+            self.refused(collection, "ids")?;
+            Ok(BTreeSet::new())
+        }
+
+        async fn set_watermark(
+            &self,
+            collection: &str,
+            watermark: u64,
+        ) -> Result<(), MirrorFailure> {
+            self.refused(collection, "watermark")?;
+            if let Some(registry) = self
+                .registries
+                .lock()
+                .expect("the registries of the pass mirror")
+                .get_mut(collection)
+            {
+                registry.watermark = watermark;
+            }
+            Ok(())
+        }
+    }
+
+    /// A generated pass: the finalized block, the collections that the test marks dirty
+    /// before it, the refused calls, and whether the listing of the collections fails.
+    #[derive(Clone, Debug)]
+    struct GeneratedPass {
+        block: u64,
+        dirty: BTreeSet<usize>,
+        refuse: BTreeSet<(usize, &'static str)>,
+        listing_refused: bool,
+    }
+
+    fn generated_pass(collections: usize) -> impl Strategy<Value = GeneratedPass> {
+        (
+            1u64..8,
+            proptest::collection::btree_set(0..collections, 0..=collections),
+            proptest::collection::btree_set(
+                (
+                    0..collections,
+                    proptest::sample::select(vec!["ensure", "registry", "watermark"]),
+                ),
+                0..3,
+            ),
+            proptest::bool::weighted(0.1),
+        )
+            .prop_map(|(block, dirty, refuse, listing_refused)| GeneratedPass {
+                block,
+                dirty,
+                refuse,
+                listing_refused,
+            })
+    }
+
+    fn property_config() -> ProptestConfig {
+        ProptestConfig {
+            cases: 64,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x0F6E_5EED_2026_1009),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    proptest! {
+        #![proptest_config(property_config())]
+
+        /// The watermark of a collection changes only through a repair that finishes, to the
+        /// larger of the block and the old watermark, so it never decreases and never passes
+        /// the block of the last finished repair (ChromaMirror.tla, WatermarkHonest). A failed
+        /// call leaves the watermark, and a dirty collection that a pass does not finish stays
+        /// dirty. Without a runtime, the repair of a collection with registered channels
+        /// fails, and a collection without channels finishes.
+        #[test]
+        fn prop_mirror_reconciler_watermarks_follow_finished_repairs(
+            (shapes, passes) in (2usize..4).prop_flat_map(|collections| (
+                proptest::collection::vec((0u64..4, proptest::bool::ANY), collections),
+                proptest::collection::vec(generated_pass(collections), 1..6),
+            )),
+        ) {
+            let names: Vec<String> = (0..shapes.len()).map(|index| format!("rrs-{index}")).collect();
+            let mirror = Arc::new(PassMirror {
+                registries: Mutex::new(
+                    names
+                        .iter()
+                        .zip(&shapes)
+                        .map(|(name, (watermark, channel))| (name.clone(), registry(*watermark, *channel)))
+                        .collect(),
+                ),
+                refuse: Mutex::new(BTreeSet::new()),
+                listing_refused: Mutex::new(false),
+            });
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("a runtime");
+            let backend = Arc::clone(&mirror) as Arc<dyn MirrorBackend>;
+            let (services, writer) = runtime.block_on(async {
+                let writer = MirrorWriter::spawn(Arc::clone(&backend));
+                (
+                    VectorDbServices {
+                        embedder: Arc::new(UnavailableEmbedder),
+                        mirror: backend,
+                        writer: Some(Arc::clone(&writer)),
+                    },
+                    writer,
+                )
+            });
+            let mut watermarks: BTreeMap<String, u64> = mirror.watermarks();
+            let mut dirty: BTreeSet<String> = BTreeSet::new();
+            for pass in &passes {
+                for index in &pass.dirty {
+                    writer.mark_dirty(names[*index].clone(), dirty_entry());
+                    dirty.insert(names[*index].clone());
+                }
+                *mirror.refuse.lock().expect("the refusals") = pass
+                    .refuse
+                    .iter()
+                    .map(|(index, kind)| (names[*index].clone(), *kind))
+                    .collect();
+                *mirror.listing_refused.lock().expect("the listing flag") = pass.listing_refused;
+                let before = mirror.watermarks();
+                runtime.block_on(reconcile(&services, &NoRuntime, &block(pass.block)));
+                let refused = |name: &String, kind: &'static str| {
+                    pass.refuse.iter().any(|(index, refused)| names[*index] == *name && *refused == kind)
+                };
+                if !pass.listing_refused {
+                    for (index, name) in names.iter().enumerate() {
+                        let was_dirty = dirty.contains(name);
+                        let finished = match (was_dirty && refused(name, "ensure"), refused(name, "registry")) {
+                            (true, _) | (false, true) => false,
+                            (false, false) => match (watermarks[name] >= pass.block && !was_dirty, shapes[index].1) {
+                                (true, _) => {
+                                    continue;
+                                }
+                                (false, true) => false,
+                                (false, false) => !refused(name, "watermark"),
+                            },
+                        };
+                        if finished {
+                            let old = watermarks[name];
+                            watermarks.insert(name.clone(), old.max(pass.block));
+                            dirty.remove(name);
+                        }
+                    }
+                }
+                let now = mirror.watermarks();
+                for name in &names {
+                    prop_assert!(now[name] >= before[name], "the watermark of {} decreased", name);
+                }
+                prop_assert_eq!(now, watermarks.clone());
+                prop_assert_eq!(writer.dirty(), dirty.clone());
+            }
+        }
+    }
 }

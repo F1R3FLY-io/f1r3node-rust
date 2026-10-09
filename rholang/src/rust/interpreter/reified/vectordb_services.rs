@@ -1583,4 +1583,231 @@ mod tests {
             "delete rrs-a [2]",
         ]);
     }
+
+    use proptest::prelude::*;
+
+    /// The id byte that makes [`PoisonMirror`] refuse an upsert.
+    const POISON: u8 = 0xFF;
+
+    /// A mirror that holds the ids of each collection (by their first byte), that refuses every
+    /// upsert of a record with the id byte [`POISON`], and that waits at a gate until the test
+    /// opens it.
+    struct PoisonMirror {
+        held: Mutex<BTreeMap<String, BTreeSet<u8>>>,
+        gate: tokio::sync::Semaphore,
+    }
+
+    impl PoisonMirror {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                held: Mutex::new(BTreeMap::new()),
+                gate: tokio::sync::Semaphore::new(0),
+            })
+        }
+
+        fn open(&self) {
+            self.gate
+                .add_permits(tokio::sync::Semaphore::MAX_PERMITS / 2);
+        }
+
+        async fn pass(&self) -> Result<(), MirrorFailure> {
+            self.gate
+                .acquire()
+                .await
+                .map(drop)
+                .map_err(|_| MirrorFailure::Unavailable)
+        }
+
+        fn held(&self) -> BTreeMap<String, BTreeSet<u8>> {
+            self.held
+                .lock()
+                .expect("the ids of the poison mirror")
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl MirrorBackend for PoisonMirror {
+        async fn query(
+            &self,
+            _collection: &str,
+            _channel: &str,
+            _vector: &[f32],
+            _k: usize,
+        ) -> Result<Vec<Neighbour>, MirrorFailure> {
+            Ok(Vec::new())
+        }
+
+        async fn watermark(&self, _collection: &str) -> Result<u64, MirrorFailure> { Ok(0) }
+
+        async fn ensure_collection(
+            &self,
+            collection: &str,
+            _metric: MirrorMetric,
+        ) -> Result<(), MirrorFailure> {
+            self.pass().await?;
+            self.held
+                .lock()
+                .expect("the ids of the poison mirror")
+                .entry(collection.to_string())
+                .or_default();
+            Ok(())
+        }
+
+        async fn upsert(
+            &self,
+            collection: &str,
+            records: &[MirrorRecord],
+        ) -> Result<(), MirrorFailure> {
+            self.pass().await?;
+            if records.iter().any(|record| record.id[0] == POISON) {
+                return Err(MirrorFailure::Unavailable);
+            }
+            let mut held = self.held.lock().expect("the ids of the poison mirror");
+            let ids = held.entry(collection.to_string()).or_default();
+            ids.extend(records.iter().map(|record| record.id[0]));
+            Ok(())
+        }
+
+        async fn delete(
+            &self,
+            collection: &str,
+            ids: &[[u8; ID_LEN]],
+        ) -> Result<(), MirrorFailure> {
+            self.pass().await?;
+            let mut held = self.held.lock().expect("the ids of the poison mirror");
+            let entry = held.entry(collection.to_string()).or_default();
+            for id in ids {
+                entry.remove(&id[0]);
+            }
+            Ok(())
+        }
+
+        async fn register(
+            &self,
+            _collection: &str,
+            _space: &SpaceId,
+            _channels: &BTreeMap<String, Vec<u8>>,
+        ) -> Result<(), MirrorFailure> {
+            self.pass().await
+        }
+
+        async fn collections(&self) -> Result<Vec<String>, MirrorFailure> { Ok(Vec::new()) }
+
+        async fn registry(&self, _collection: &str) -> Result<MirrorRegistry, MirrorFailure> {
+            Ok(MirrorRegistry::default())
+        }
+
+        async fn ids(
+            &self,
+            _collection: &str,
+            _channel: &str,
+        ) -> Result<BTreeSet<[u8; ID_LEN]>, MirrorFailure> {
+            Ok(BTreeSet::new())
+        }
+
+        async fn set_watermark(
+            &self,
+            _collection: &str,
+            _watermark: u64,
+        ) -> Result<(), MirrorFailure> {
+            Ok(())
+        }
+    }
+
+    /// A generated batch: its collection, the ids that it upserts and deletes, and whether the
+    /// mirror refuses it (a poisoned batch carries the id [`POISON`]).
+    fn generated_batch() -> impl Strategy<Value = (u8, Vec<u8>, Vec<u8>, bool)> {
+        (
+            0u8..3,
+            proptest::collection::vec(1u8..6, 0..3),
+            proptest::collection::vec(1u8..6, 0..3),
+            proptest::bool::weighted(0.15),
+        )
+    }
+
+    fn property_config() -> ProptestConfig {
+        ProptestConfig {
+            cases: 64,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x0F6E_5EED_2026_1009),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    proptest! {
+        #![proptest_config(property_config())]
+
+        /// The writer applies the batches that its queue takes, in publication order, and it
+        /// marks dirty the collection of each batch that the queue refuses and of each batch
+        /// that fails after its attempts (ChromaMirror.tla, PublishNeverWaits). Publication
+        /// never waits: the mirror is stalled while the program publishes, so a queue of
+        /// `capacity` batches takes the first `capacity` batches and refuses the others.
+        #[test]
+        fn prop_mirror_writer_applies_the_accepted_batches(
+            capacity in 1usize..4,
+            generated in proptest::collection::vec(generated_batch(), 0..7),
+        ) {
+            let poisoned = generated.iter().filter(|(_, _, _, poison)| *poison).count();
+            prop_assume!(poisoned <= 2);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("a runtime");
+            let batches: Vec<MirrorBatch> = generated
+                .iter()
+                .map(|(collection, upserts, deletes, poison)| {
+                    let record = |byte: u8| MirrorRecord {
+                        id: [byte; ID_LEN],
+                        embedding: vec![1.0, 0.0],
+                        channel: "c".to_string(),
+                        persistent: false,
+                        document: None,
+                    };
+                    let mut upserts: Vec<MirrorRecord> = upserts.iter().copied().map(record).collect();
+                    if *poison {
+                        upserts.push(record(POISON));
+                    }
+                    MirrorBatch {
+                        space: [9; SID_LEN],
+                        collection: format!("rrs-{collection}"),
+                        metric: MirrorMetric::Cosine,
+                        upserts,
+                        deletes: deletes.iter().map(|byte| [*byte; ID_LEN]).collect(),
+                        channels: BTreeMap::new(),
+                    }
+                })
+                .collect();
+            let (held, dirty) = runtime.block_on(async {
+                let mirror = PoisonMirror::new();
+                let writer =
+                    MirrorWriter::spawn_with(Arc::clone(&mirror) as Arc<dyn MirrorBackend>, capacity);
+                writer.publish(batches.clone());
+                mirror.open();
+                writer.flush().await;
+                (mirror.held(), writer.dirty())
+            });
+            let mut expected_held: BTreeMap<String, BTreeSet<u8>> = BTreeMap::new();
+            let mut expected_dirty: BTreeSet<String> = BTreeSet::new();
+            for (index, (batch, (_, _, _, poison))) in batches.iter().zip(&generated).enumerate() {
+                match (index < capacity, poison) {
+                    (false, _) | (true, true) => {
+                        expected_dirty.insert(batch.collection.clone());
+                        if index < capacity {
+                            expected_held.entry(batch.collection.clone()).or_default();
+                        }
+                    }
+                    (true, false) => {
+                        let ids = expected_held.entry(batch.collection.clone()).or_default();
+                        ids.extend(batch.upserts.iter().map(|record| record.id[0]));
+                        for id in &batch.deletes {
+                            ids.remove(&id[0]);
+                        }
+                    }
+                }
+            }
+            prop_assert_eq!(held, expected_held);
+            prop_assert_eq!(dirty, expected_dirty);
+        }
+    }
 }

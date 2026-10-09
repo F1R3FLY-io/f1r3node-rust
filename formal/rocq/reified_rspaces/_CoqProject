@@ -187,3 +187,4 @@ theories/PriorityQueue.v
 theories/JoinCascade.v
 theories/Similarity.v
 theories/VectorDbDiscipline.v
+theories/VectorOps.v

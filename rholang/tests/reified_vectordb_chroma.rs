@@ -37,6 +37,9 @@
 //! | `mirror_reconcile_repairs_a_dirty_collection` | A failed batch leaves its collection dirty, and the next pass repairs it at its watermark. |
 //! | `mirror_reconciler_follows_the_finalized_blocks` | The reconciler maps the `BlockFinalised` events to post-state roots, and its passes reach the newest block. |
 //! | `mirror_replay_publishes_its_own_journal` | Native replay certification publishes the journal of each replayed deploy to the mirror of the replaying node. |
+//! | `prop_mirror_tracks_the_published_deploys` | After each step of a generated chain of stores, takes, peeks, failing deploys and exploratory evaluations, the mirror holds the records of the state that a published deploy stored (ChromaMirror.tla, PublishOnlyOnSuccess and NetWritesExact). |
+//! | `prop_mirror_reconcile_repairs_the_finalized_view` | After a generated chain and a mirror with missing records and orphans, a pass that fails keeps the mirror and the watermark, and a pass that finishes holds the finalized view (ReconciledEqualsFinalizedView). |
+//! | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` | Generated `embed` and `ann` calls replay with other services: replay reproduces play with a complete journal, so it makes each check of play, and it asks no service (ConsensusIndependentOfMirror, AdvisoryRecorded, EqualHostWork). |
 //!
 //! Plan decision 67 needs no test of its own here: the config read of an `ann` call is a
 //! journaled native operation, so native replay that skips it fails the completeness check
@@ -46,12 +49,14 @@
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par};
 use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
 use models::rust::host_work::{HostWorkDimension, HostWorkLimit};
+use proptest::prelude::*;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reified::handle::MIRROR_ENTRY;
@@ -72,9 +77,10 @@ use support::backends::{
     self, services, EmbedMode, FakeMirror, MirrorCall, MockEmbedder, WriteMode,
 };
 use support::native::{
-    assert_reproduces, certify, host_work, native_play, native_play_result, native_play_with,
-    Certification, NativeChain, Played, AMPLE_LIMIT, OUT,
+    assert_reproduces, certify, certify_with, host_work, native_play, native_play_result,
+    native_play_with, Certification, NativeChain, Played, AMPLE_LIMIT, OUT,
 };
+use support::props::{check, runtime_config, tokio_runtime};
 use support::session::{config_channel, data_channel, error_codes, key, native};
 
 // ─── Values ──────────────────────────────────────────────────────────────────────────────────
@@ -1884,5 +1890,387 @@ async fn mirror_reconciler_follows_the_finalized_blocks() {
     assert_eq!(
         reached.records, records,
         "the mirror holds the state of block 2"
+    );
+}
+
+// ─── properties (step 8d) ────────────────────────────────────────────────────────────────────
+
+/// The vectors that the generated chains store and query.
+const VECTORS: [[f64; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [0.6, 0.8], [0.8, 0.6]];
+
+/// The vector `VECTORS[index]` as Rholang source.
+fn vector_source(index: usize) -> String {
+    let [a, b] = VECTORS[index];
+    format!("[{a:?}, {b:?}]")
+}
+
+/// The expected mirror record of each vector of [`VECTORS`] and of the two records of
+/// [`reconcile_setup`].
+fn vectors_expected() -> Expected {
+    VECTORS
+        .iter()
+        .map(|[a, b]| {
+            (
+                format!("{:?}", vec![vector64(&[*a, *b])]),
+                (vec![*a as f32, *b as f32], None, false),
+            )
+        })
+        .collect()
+}
+
+/// A step of a generated chain on the mirrored name of [`reconcile_setup`].
+#[derive(Clone, Copy, Debug)]
+enum ChainStep {
+    /// A deploy that stores `VECTORS[v]`.
+    Store(usize),
+    /// A deploy that takes the record nearest to `VECTORS[v]`, or parks its receive.
+    Take(usize),
+    /// A deploy that peeks a record: Rule E removes it and stores it again.
+    Peek,
+    /// A deploy that stores `VECTORS[v]` and then fails with a vector of three dimensions.
+    Fail(usize),
+    /// An exploratory evaluation (`RhoRuntime::inj`) that stores `VECTORS[v]`.
+    Explore(usize),
+}
+
+fn chain_step(explore: bool) -> BoxedStrategy<ChainStep> {
+    let index = 0..VECTORS.len();
+    match explore {
+        true => prop_oneof![
+            3 => index.clone().prop_map(ChainStep::Store),
+            2 => index.clone().prop_map(ChainStep::Take),
+            1 => Just(ChainStep::Peek),
+            1 => index.clone().prop_map(ChainStep::Fail),
+            1 => index.prop_map(ChainStep::Explore),
+        ]
+        .boxed(),
+        false => prop_oneof![
+            3 => index.clone().prop_map(ChainStep::Store),
+            2 => index.clone().prop_map(ChainStep::Take),
+            1 => Just(ChainStep::Peek),
+            1 => index.prop_map(ChainStep::Fail),
+        ]
+        .boxed(),
+    }
+}
+
+/// The source of the deploy of `step`.
+fn step_source(step: ChainStep) -> String {
+    let names = r#"for (_, mn <<- @"rrs-reconcile-names") "#;
+    match step {
+        ChainStep::Store(v) | ChainStep::Explore(v) => {
+            format!("{names}{{ mn!({}) }}", vector_source(v))
+        }
+        ChainStep::Take(v) => {
+            format!(
+                "{names}{{ for (@x <- mn ~ ({})) {{ Nil }} }}",
+                vector_source(v)
+            )
+        }
+        ChainStep::Peek => format!("{names}{{ for (@x <<- mn) {{ Nil }} }}"),
+        ChainStep::Fail(v) => format!(
+            "{names}{{ mn!({}) | for (@x <<- mn) {{ mn!([1.0, 2.0, 3.0]) }} }}",
+            vector_source(v)
+        ),
+    }
+}
+
+/// The ids of the records on the name `name` of `space` in the state of `chain`.
+async fn state_ids(chain: &NativeChain, space: NativeSpace, name: &Par) -> BTreeSet<[u8; 32]> {
+    chain
+        .data(&data_channel(space, name))
+        .await
+        .into_iter()
+        .map(|datum| {
+            <[u8; 32]>::try_from(datum.source.hash.bytes().as_slice()).expect("a 32-byte record id")
+        })
+        .collect()
+}
+
+/// The ids of the records of `collection` in `mirror`.
+fn mirror_ids(mirror: &FakeMirror, collection: &str) -> BTreeSet<[u8; 32]> {
+    mirror
+        .collection(collection)
+        .map(|held| held.records.keys().copied().collect())
+        .unwrap_or_default()
+}
+
+/// The mirror follows the published deploys and nothing else (ChromaMirror.tla,
+/// PublishOnlyOnSuccess and NetWritesExact). After each step of a generated chain, the mirror
+/// holds the records that the state changes of the successful deploys give: a failed deploy
+/// publishes nothing, a peek writes nothing, a take deletes, and an exploratory evaluation
+/// publishes nothing. The test chain keeps the state changes of a failed deploy and of an
+/// exploratory evaluation (it reverts nothing, unlike the deploys of a block), so the oracle
+/// applies only the state changes of the successful deploys.
+#[test]
+fn prop_mirror_tracks_the_published_deploys() {
+    check(
+        runtime_config(),
+        proptest::collection::vec(chain_step(true), 1..6),
+        |steps| {
+            tokio_runtime().block_on(async {
+                let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+                let mirror = FakeMirror::new(Vec::new(), 0);
+                let _lock = backends::install(services(&embedder, &mirror)).await;
+                let mut chain = NativeChain::new().await;
+                let played = chain
+                    .play(&reconcile_setup(), "rrs-track-setup", AMPLE_LIMIT)
+                    .await;
+                assert_played("track setup", &played);
+                let [m, mn] = <[Par; 2]>::try_from(handles(&chain, "rrs-reconcile-names").await)
+                    .expect("a handle and a name");
+                let space = native(&m);
+                let collection = collection_name(&space.sid);
+                backends::writer().flush().await;
+                let mut expected = state_ids(&chain, space, &mn).await;
+                for (index, step) in steps.iter().enumerate() {
+                    let before = state_ids(&chain, space, &mn).await;
+                    let published = match step {
+                        ChainStep::Explore(_) => {
+                            // An exploratory evaluation publishes nothing, also when it fails (a
+                            // full collection refuses its store).
+                            if let Err(error) = chain.explore(&step_source(*step)).await {
+                                drop(error);
+                            }
+                            false
+                        }
+                        _ => {
+                            let label = format!("rrs-track-{index}");
+                            let played = chain.play(&step_source(*step), &label, AMPLE_LIMIT).await;
+                            played.result.errors.is_empty()
+                        }
+                    };
+                    backends::writer().flush().await;
+                    let after = state_ids(&chain, space, &mn).await;
+                    if published {
+                        expected.extend(after.difference(&before).copied());
+                        expected.retain(|id| after.contains(id) || !before.contains(id));
+                    }
+                    let held = mirror_ids(&mirror, &collection);
+                    prop_assert_eq!(held, expected.clone(), "step {} {:?}", index, step);
+                }
+                Ok(())
+            })
+        },
+    );
+}
+
+/// A reconciler pass repairs the mirror to the finalized view (ChromaMirror.tla,
+/// ReconciledEqualsFinalizedView). After a generated chain, the test removes some records of
+/// the mirror and adds orphans on the registered channel. A pass whose writes fail keeps the
+/// mirror and the watermark; a pass that finishes holds exactly the records of the finalized
+/// state and sets the watermark.
+#[test]
+fn prop_mirror_reconcile_repairs_the_finalized_view() {
+    let strategy = (
+        proptest::collection::vec(chain_step(false), 0..4),
+        proptest::collection::vec(proptest::bool::ANY, 6),
+        0usize..3,
+        proptest::bool::ANY,
+    );
+    check(
+        runtime_config(),
+        strategy,
+        |(steps, keep, orphans, refuse_first)| {
+            tokio_runtime().block_on(async {
+                let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+                let mirror = FakeMirror::new(Vec::new(), 0);
+                let _lock = backends::install(services(&embedder, &mirror)).await;
+                let mut chain = NativeChain::new().await;
+                let mut played = chain
+                    .play(&reconcile_setup(), "rrs-repair-setup", AMPLE_LIMIT)
+                    .await;
+                assert_played("repair setup", &played);
+                let [m, mn] = <[Par; 2]>::try_from(handles(&chain, "rrs-reconcile-names").await)
+                    .expect("a handle and a name");
+                let space = native(&m);
+                let collection = collection_name(&space.sid);
+                let digest = channel_digest(&key(&mn));
+                for (index, step) in steps.iter().enumerate() {
+                    played = chain
+                        .play(
+                            &step_source(*step),
+                            &format!("rrs-repair-{index}"),
+                            AMPLE_LIMIT,
+                        )
+                        .await;
+                }
+                backends::writer().flush().await;
+                let finalized = mirror_records(&chain, space, &mn, &vectors_expected()).await;
+                let mut diverged = mirror
+                    .collection(&collection)
+                    .expect("the setup made the collection");
+                let ids: Vec<[u8; 32]> = diverged.records.keys().copied().collect();
+                for (id, kept) in ids.iter().zip(keep.iter().cycle()) {
+                    if !kept {
+                        diverged.records.remove(id);
+                    }
+                }
+                for orphan_index in 0..orphans {
+                    let mut record = orphan(&digest);
+                    record.id = [0xE0 + u8::try_from(orphan_index).expect("a small index"); 32];
+                    diverged.records.insert(record.id, record);
+                }
+                let watermark = diverged.watermark;
+                mirror.put(&collection, diverged.clone());
+                let state = chain.finalized_state();
+                if refuse_first {
+                    mirror.set_writes(WriteMode::Refuse);
+                    let block = Finalized {
+                        block_number: 1,
+                        root: played.root.clone(),
+                    };
+                    reconcile(&current_services(), state.as_ref(), &block).await;
+                    let kept = mirror.collection(&collection).expect("the collection");
+                    // A refused write may leave the deletes or the upserts applied, never the
+                    // watermark (MirrorBackend::set_watermark is a write of the registry).
+                    prop_assert_eq!(
+                        kept.watermark,
+                        watermark,
+                        "a failed pass keeps the watermark"
+                    );
+                    mirror.set_writes(WriteMode::Apply);
+                }
+                let block = Finalized {
+                    block_number: 2,
+                    root: played.root.clone(),
+                };
+                reconcile(&current_services(), state.as_ref(), &block).await;
+                let repaired = mirror.collection(&collection).expect("the collection");
+                prop_assert_eq!(
+                    &repaired.records,
+                    &finalized,
+                    "the mirror holds the finalized view"
+                );
+                prop_assert_eq!(repaired.watermark, 2);
+                Ok(())
+            })
+        },
+    );
+}
+
+/// A generated call of `embed` or `ann`.
+#[derive(Clone, Debug)]
+enum ServiceCall {
+    /// `embed` of the texts.
+    Embed(Vec<String>),
+    /// `ann` of the vector `VECTORS[v]` with `k`.
+    AnnVector(usize, u8),
+    /// `ann` of a text with `k`.
+    AnnText(String, u8),
+    /// `ann` of a vector of three dimensions (DimensionMismatch).
+    AnnWrongDimensions(u8),
+}
+
+fn service_call() -> impl Strategy<Value = ServiceCall> {
+    let text = "[a-z]{1,8}";
+    let k = proptest::sample::select(vec![0u8, 1, 2, 5]);
+    prop_oneof![
+        proptest::collection::vec(text, 0..3).prop_map(ServiceCall::Embed),
+        (0..VECTORS.len(), k.clone()).prop_map(|(v, k)| ServiceCall::AnnVector(v, k)),
+        (text, k.clone()).prop_map(|(text, k)| ServiceCall::AnnText(text, k)),
+        k.prop_map(ServiceCall::AnnWrongDimensions),
+    ]
+}
+
+/// A deploy that creates a mirrored VectorDB space `m` with a name `mn`, and then makes `calls`,
+/// each sending `[label, reply]` on [`OUT`].
+fn services_program(service_calls: &[ServiceCall]) -> String {
+    let parts: Vec<String> = service_calls
+        .iter()
+        .enumerate()
+        .map(|(index, call)| {
+            let (process, arguments) = match call {
+                ServiceCall::Embed(texts) => ("embed", quoted_list(texts)),
+                ServiceCall::AnnVector(v, k) => (
+                    "ann",
+                    format!(r#"*m, *mn, {}, {{"k": {k}}}"#, vector_source(*v)),
+                ),
+                ServiceCall::AnnText(text, k) => {
+                    ("ann", format!(r#"*m, *mn, {}, {{"k": {k}}}"#, quoted(text)))
+                }
+                ServiceCall::AnnWrongDimensions(k) => {
+                    ("ann", format!(r#"*m, *mn, [1.0, 2.0, 3.0], {{"k": {k}}}"#))
+                }
+            };
+            format!(r#"for (@r <- {process}!?({arguments})) {{ @"{OUT}"!(["c{index}", r]) }}"#)
+        })
+        .collect();
+    format!(
+        r#"new embed(`rho:vectordb:embed`), ann(`rho:vectordb:ann`), vdb(`{VDB_URN}`) in {{
+  for (m <- vdb!?({MIRRORED})) {{
+    for (mn <- m!?("gensym")) {{
+      @"{OUT}"!(["m", *m]) | @"{OUT}"!(["mn", *mn]){}{}
+    }}
+  }}
+}}"#,
+        if parts.is_empty() { "" } else { " |\n      " },
+        parts.join(" |\n      ")
+    )
+}
+
+/// The services of a node: its embedder and its mirror, with the neighbours of `answer` or down.
+fn played_services(answer: &[u8], down: bool) -> (Arc<MockEmbedder>, Arc<FakeMirror>) {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = match down {
+        true => FakeMirror::down(),
+        false => FakeMirror::new(
+            answer
+                .iter()
+                .zip([0.125f32, 0.25, 0.375])
+                .map(|(byte, distance)| neighbour(&[*byte; 32], distance))
+                .collect(),
+            u64::try_from(answer.len()).expect("a short answer"),
+        ),
+    };
+    (embedder, mirror)
+}
+
+/// The recorded outputs of `embed` and `ann` make consensus independent of the services of a
+/// node (ChromaMirror.tla, ConsensusIndependentOfMirror, AdvisoryRecorded and EqualHostWork).
+/// Generated calls play with one embedder and one mirror (or a mirror that is down), and native
+/// replay certifies the play with another embedder and another mirror: replay reproduces the
+/// result, the phlo and the root of play, and asks no service. The checks of an `ann` call are
+/// journaled native operations, so replay makes each check of play: otherwise the journal of
+/// play is incomplete (decision 67). The total host work differs by design, because replay
+/// certification also verifies the committed evidence.
+#[test]
+fn prop_vectordb_services_replay_reproduces_the_recorded_outputs() {
+    let strategy = (
+        proptest::collection::vec(service_call(), 1..4),
+        proptest::collection::vec(1u8..9, 0..3),
+        proptest::bool::weighted(0.25),
+    );
+    check(
+        runtime_config(),
+        strategy,
+        |(service_calls, answer, down)| {
+            tokio_runtime().block_on(async {
+                let term = services_program(&service_calls);
+                let (embedder, mirror) = played_services(&answer, down);
+                let lock = backends::install(services(&embedder, &mirror)).await;
+                let played = native_play_with(&term, LARGE_LIMIT, host_work()).await;
+                let replayed_embedder = MockEmbedder::new("mock-b", 2, 9.0, EmbedMode::Vectors);
+                let replayed_with = FakeMirror::new(vec![neighbour(&[0xAA; 32], 0.5)], 99);
+                lock.replace(services(&replayed_embedder, &replayed_with));
+                let certification = tokio::time::timeout(
+                    CERTIFY_TIMEOUT,
+                    certify_with(&played, &term, LARGE_LIMIT, host_work()),
+                )
+                .await
+                .map_err(|_| TestCaseError::fail("native replay does not finish"))?;
+                assert_reproduces("services replay", &played, &certification);
+                prop_assert!(
+                    replayed_with.queries().is_empty(),
+                    "native replay asks no mirror"
+                );
+                prop_assert_eq!(
+                    replayed_embedder.calls(),
+                    0,
+                    "native replay asks no embedder"
+                );
+                Ok(())
+            })
+        },
     );
 }

@@ -15,6 +15,8 @@
 # LegacyCharges.v (2: Q79 and Q80). P6 step 2 adds Similarity.v (20: S1-S20).
 # P6 step 8 adds headline 14 of SpaceFactory.v (vectordb_params_validated) and
 # headline 16 of CounterConflict.v (capped_writes_soft_bound, decision 71).
+# P6 step 8b adds VectorDbDiscipline.v (5: S21-S25), and step 8d adds
+# VectorOps.v (2: S27 and S28).
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -48,7 +50,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 273: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 275: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -79,8 +81,9 @@
 #                        S1 to S20 of Similarity.v, and 2 for P6 step 8:
 #                        vectordb_params_validated of SpaceFactory.v and
 #                        capped_writes_soft_bound of CounterConflict.v,
-#                        and 5 for P6 step 8b: the headlines of
-#                        VectorDbDiscipline.v)
+#                        5 for P6 step 8b: the headlines of
+#                        VectorDbDiscipline.v, and 2 for P6 step 8d:
+#                        the headlines of VectorOps.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -99,7 +102,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-273}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-275}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -132,6 +135,7 @@ declare -A EXPECTED_PER_MODULE=(
   [JoinCascade]=17
   [Similarity]=20
   [VectorDbDiscipline]=5
+  [VectorOps]=2
 )
 
 PASS=0

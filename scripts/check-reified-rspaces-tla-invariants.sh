@@ -42,6 +42,11 @@
 # pending match at a quiescent state under LM-b, atomic list fires, Rule E
 # conservation of peeked records, and the measure of the tail, with the
 # settle jobs and re-issues at the round cap).
+# P6 step 8d: ChromaMirror.tla (the ChromaDB mirror of a VectorDB space:
+# consensus does not depend on the mirror, replay uses the recorded answers
+# and makes the checks of play, a deploy publishes its exact net writes only
+# when its result has no errors, publication never waits, and a reconciler
+# pass repairs to the finalized view with a watermark that never runs ahead).
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -132,6 +137,7 @@ SAFE_CONFIGS=(
   "VectorDb MC_VectorDb_List.cfg"
   "VectorDb MC_VectorDb_Persist.cfg"
   "VectorDb MC_VectorDb_Plain.cfg"
+  "ChromaMirror MC_ChromaMirror.cfg"
 )
 # <module> <config> <the one invariant that it must refute>
 UNSAFE_CONFIGS=(
@@ -195,6 +201,15 @@ UNSAFE_CONFIGS=(
   "VectorDb VdbNoRetireUnsafe.cfg ListAtomic"
   "VectorDb VdbDropOwedUnsafe.cfg PeekConservation"
   "VectorDb VdbUncountedCascadeUnsafe.cfg CascadeTerminates"
+  "ChromaMirror MirrorWriteInTxnUnsafe.cfg ConsensusIndependentOfMirror"
+  "ChromaMirror UnrecordedAdvisoryUnsafe.cfg AdvisoryRecorded"
+  "ChromaMirror AnnChecksOnlyInPlayUnsafe.cfg EqualHostWork"
+  "ChromaMirror PublishFailedDeployUnsafe.cfg PublishOnlyOnSuccess"
+  "ChromaMirror BeginScopeKeepsJournalUnsafe.cfg PublishOnlyOnSuccess"
+  "ChromaMirror RuleEUpsertUnsafe.cfg NetWritesExact"
+  "ChromaMirror BlockingPublishUnsafe.cfg PublishNeverWaits"
+  "ChromaMirror OrphansKeptUnsafe.cfg ReconciledEqualsFinalizedView"
+  "ChromaMirror WatermarkAfterFailureUnsafe.cfg WatermarkHonest"
 )
 # <name>|<module>|<config>|<length>|<expected outcome>|<marker in the violated formula>
 APALACHE_CHECKS=(
@@ -245,7 +260,7 @@ if [[ ! "$APALACHE_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue, PathMapPrefix, JoinCascade, NativeReplay, VectorDb)"
+echo "== Reified RSpaces TLA+ gate (CheckpointReplay, TxnLockCoverage, HeadOnlyDiscipline, CounterConflict, NativeHandles, GenericRSpace, StackDiscipline, PriorityQueue, PathMapPrefix, JoinCascade, NativeReplay, VectorDb, ChromaMirror)"
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 tools_ok=true
