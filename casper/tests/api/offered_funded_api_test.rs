@@ -47,6 +47,7 @@ use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
 use rholang::rust::interpreter::rho_type::RhoNumber;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 
@@ -1456,4 +1457,481 @@ async fn offered_replay_usage_is_identical_across_roles_on_a_small_block() {
         "small block",
     )
     .await;
+}
+
+/// A term that completes one COMM and then fails with a classified user
+/// error (OperatorExpectedError), so the native run rolls back its user
+/// events and publishes the deploy as a charged user failure.
+const FAILING_AFTER_A_COMM: &str = "new ack in { ack!(0) | for (_ <- ack) { ack!(1 + \"a\") } }";
+
+/// Admits `offer` on `nodes[creator]` and creates its block. No node has
+/// processed the block yet, so a sibling can still be created first.
+async fn offered_block(
+    nodes: &mut [TestNode],
+    creator: usize,
+    offer: models::casper::DeployDataProto,
+) -> (
+    models::rust::casper::protocol::casper_message::BlockMessage,
+    Vec<u8>,
+) {
+    BlockAPI::deploy_offered(
+        &nodes[creator].engine_cell,
+        offer.clone(),
+        &None,
+        false,
+        "root",
+    )
+    .await
+    .expect("a well-formed offer is admitted");
+    let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
+        .expect("an offered deploy id has 32 bytes");
+    let block = match nodes[creator].create_block_unsafe(&[]).await {
+        Ok(block) => block,
+        Err(error) => {
+            let storage = nodes[creator].deploy_storage.lock();
+            panic!(
+                "the offer's block is not created ({error:?}); recorded rejection: {:?}",
+                storage
+                    .envelope_rejection(&id)
+                    .map(|rejection| rejection.reason)
+            );
+        }
+    };
+    assert_eq!(block.body.deploys.len(), 1);
+    assert!(block.body.deploys[0].as_offered().is_some());
+    (block, offer.deploy_id.to_vec())
+}
+
+/// The user event index of `deploy_id`'s merge chain in `block`, and the index
+/// that `events` alone give with the deploy's stored mergeable map.
+fn merge_chain_index(
+    node: &TestNode,
+    block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    deploy_id: &[u8],
+    events: &[models::rust::casper::protocol::casper_message::Event],
+) -> (
+    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+) {
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+    let runtime_manager = &node.runtime_manager;
+    let pre_state = Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash);
+    let post_state = Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash);
+    let mergeable = runtime_manager
+        .load_mergeable_channels(
+            &block.body.state.post_state_hash,
+            block.sender.clone(),
+            block.seq_num,
+        )
+        .expect("the block's mergeable channels are stored");
+    let index = casper::rust::merging::block_index::new(
+        &block.block_hash,
+        block.body.state.block_number,
+        &block.body.deploys,
+        &block.body.system_deploys,
+        &pre_state,
+        &post_state,
+        &runtime_manager.history_repo,
+        &mergeable,
+    )
+    .expect("the block indexes");
+    let chain = index
+        .deploy_chains
+        .iter()
+        .find(|chain| {
+            chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .any(|deploy| deploy.deploy_id.as_ref() == deploy_id)
+        })
+        .expect("the deploy has a merge chain");
+    let expected = casper::rust::merging::block_index::create_event_log_index(
+        events,
+        runtime_manager.history_repo.clone(),
+        &pre_state,
+        mergeable[0].clone(),
+    );
+    (
+        chain.user_event_log_index.clone(),
+        EventLogIndex::combine(&EventLogIndex::empty(), &expected)
+            .expect("an index combines with the empty index"),
+    )
+}
+
+/// The channels that `events` produce on, directly or inside a COMM.
+fn produced_channels(
+    events: &[models::rust::casper::protocol::casper_message::Event],
+) -> Vec<rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash> {
+    use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+    let mut channels = Vec::with_capacity(events.len());
+    for event in events {
+        match casper::rust::util::event_converter::to_rspace_event(event) {
+            Event::IoEvent(IOEvent::Produce(produce)) => channels.push(produce.channel_hash),
+            Event::IoEvent(IOEvent::Consume(_)) => {}
+            Event::Comm(comm) => channels.extend(comm.produces.into_iter().map(|p| p.channel_hash)),
+        }
+    }
+    channels.sort();
+    channels.dedup();
+    channels
+}
+
+/// DR-115 (bug 10986): block A holds a failed offered deploy, and block B is
+/// an empty sibling with more stake. The merge block M takes B as its base
+/// and merges A from scope. M's pre-state must keep A's payer debit and fee.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_offered_deploy_keeps_its_charge_when_its_block_is_a_merged_branch() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    nodes[1].allow_empty_blocks = true;
+    nodes[2].allow_empty_blocks = true;
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let fee_vault = VaultAddress::from_public_key(&genesis.validator_key_pairs[0].1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    assert_eq!(vault_balance(&nodes, &genesis_root, &fee_vault).await, 0);
+
+    let (failed, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string()),
+    )
+    .await;
+    assert!(failed.body.deploys[0].is_failed());
+    assert_eq!(failed.sender, genesis.validator_key_pairs[0].1.bytes);
+    let sibling = nodes[1]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 1 creates an empty sibling");
+    assert!(sibling.body.deploys.is_empty());
+    for node in nodes.iter_mut() {
+        for block in [&failed, &sibling] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+
+    // The merge index holds exactly the committed suffix: everything after the
+    // three user events of the term (one stored and one matched operation),
+    // with the wallet map.
+    let offered = failed.body.deploys[0]
+        .as_offered()
+        .expect("block A holds an offered deploy");
+    let evidence = offered
+        .evidence(offered_funded_v6_limits().evidence)
+        .expect("the committed evidence decodes");
+    let user_events =
+        casper::rust::util::rholang::costacc::offered_evidence::committed_user_event_count(
+            &evidence,
+            &rholang::rust::interpreter::host_work::HostWorkBudget::new(
+                models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
+            ),
+        )
+        .expect("the committed journal decodes");
+    assert_eq!(user_events, 3);
+    let suffix =
+        casper::rust::util::rholang::costacc::offered_evidence::failed_offered_committed_suffix(
+            offered,
+        )
+        .expect("the committed suffix decodes");
+    assert_eq!(suffix, &offered.deploy_log()[user_events..]);
+    assert!(!suffix.is_empty());
+    // A journal that does not decode fails closed: the index neither skips the
+    // deploy nor takes its whole log.
+    let corrupted_evidence = models::rust::native_cost_evidence::NativeCostEvidenceV1 {
+        operation_journal: &[0xff, 0xff],
+        ..evidence.clone()
+    };
+    let corrupted =
+        models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy::new(
+            offered.envelope().clone(),
+            *offered.cost(),
+            offered.deploy_log().to_vec(),
+            true,
+            casper::rust::util::rholang::costacc::offered_evidence::encode_committed_native_evidence(
+                &corrupted_evidence,
+                offered_funded_v6_limits().evidence,
+                &rholang::rust::interpreter::host_work::HostWorkBudget::new(
+                    models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
+                ),
+            )
+            .expect("the corrupted evidence encodes"),
+            offered_funded_v6_limits().evidence,
+        )
+        .expect("the envelope checks do not decode the journal");
+    assert!(
+        casper::rust::util::rholang::costacc::offered_evidence::failed_offered_committed_suffix(
+            &corrupted
+        )
+        .is_err()
+    );
+    let (indexed, expected) = merge_chain_index(&nodes[2], &failed, &id, suffix);
+    assert_eq!(
+        indexed, expected,
+        "the merge index holds exactly the committed suffix"
+    );
+
+    let merge = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates the merge block");
+    assert_eq!(merge.header.parents_hash_list, vec![
+        sibling.block_hash.clone(),
+        failed.block_hash.clone()
+    ]);
+    for node in nodes.iter_mut() {
+        assert!(matches!(
+            node.process_block(merge.clone()).await.unwrap(),
+            Either::Right(_)
+        ));
+    }
+    assert!(merge.body.rejected_deploys.is_empty());
+
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .unwrap()
+        .expect("the failed deploy carries a settlement receipt");
+    assert!(receipt.rev_spent > 0);
+    let merged_root = merge.body.state.pre_state_hash.clone();
+    let charged = vault_balance(&nodes, &merged_root, &payer_vault).await;
+    assert_eq!(
+        u128::from(charged) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state keeps the payer debit"
+    );
+    assert_eq!(charged, receipt.purses[0].post_balance);
+    let fee = vault_balance(&nodes, &merged_root, &fee_vault).await;
+    assert_eq!(
+        u128::from(fee),
+        receipt.fee_rev,
+        "the merged state keeps the fee"
+    );
+    assert_eq!(
+        fee,
+        vault_balance(&nodes, &failed.body.state.post_state_hash, &fee_vault).await
+    );
+    assert!(merge
+        .body
+        .applied_from_scope
+        .iter()
+        .any(|sig| sig.as_ref() == id.as_slice()));
+
+    // M's pre-state agrees with A's post-state on every channel that A's
+    // committed suffix produces on: the balances, the fee vault, the payer's
+    // settlement cursor and the receipts.
+    let channels = produced_channels(suffix);
+    assert!(!channels.is_empty());
+    let history = &nodes[2].runtime_manager.history_repo;
+    let after_failed = history
+        .get_history_reader(&Blake2b256Hash::from_bytes_prost(
+            &failed.body.state.post_state_hash,
+        ))
+        .expect("A's post-state is readable");
+    let merged = history
+        .get_history_reader(&Blake2b256Hash::from_bytes_prost(
+            &merge.body.state.pre_state_hash,
+        ))
+        .expect("M's pre-state is readable");
+    for channel in &channels {
+        let committed = after_failed
+            .get_data(channel)
+            .expect("A's post-state data reads");
+        let carried = merged.get_data(channel).expect("M's pre-state data reads");
+        assert_eq!(committed.len(), carried.len(), "channel {channel:?}");
+        assert!(
+            committed.iter().all(|datum| carried.contains(datum)),
+            "channel {channel:?}"
+        );
+    }
+}
+
+/// DR-115 (bug 10986): the base sibling settles an offered deploy of another
+/// payer. A failed offered deploy of the merged branch is then charged in the
+/// merged state or rejected with a record. It is never dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_dropped() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+
+    let (failed, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string()),
+    )
+    .await;
+    assert!(failed.body.deploys[0].is_failed());
+    let (sibling, sibling_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(
+            &genesis.genesis_vaults[0],
+            2,
+            "new x in { x!(0) }".to_string(),
+        ),
+    )
+    .await;
+    assert!(!sibling.body.deploys[0].is_failed());
+    let (sibling_indexed, sibling_expected) = merge_chain_index(
+        &nodes[1],
+        &sibling,
+        &sibling_id,
+        sibling.body.deploys[0].deploy_log(),
+    );
+    assert_eq!(
+        sibling_indexed, sibling_expected,
+        "a successful offered deploy keeps its whole log in the index"
+    );
+    for node in nodes.iter_mut() {
+        for block in [&failed, &sibling] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+
+    let snapshot = nodes[2]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("node 2 takes a snapshot");
+    assert_eq!(snapshot.parents.len(), 2);
+    assert_eq!(snapshot.parents[0].block_hash, sibling.block_hash);
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect();
+    let runtime_manager = nodes[2].runtime_manager.clone();
+    let merged = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &nodes[2].block_store,
+        snapshot.parents.clone(),
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("the merge over both siblings computes");
+
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .unwrap()
+        .expect("the failed deploy carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    let charged = u128::from(balance) + receipt.rev_spent == u128::from(initial);
+    let untouched = balance == initial;
+    let rejected = merged
+        .rejected_user
+        .iter()
+        .any(|record| record.sig.as_ref() == id.as_slice() && record.carrier == failed.block_hash);
+    assert!(
+        charged || untouched,
+        "the payer is charged once or not at all"
+    );
+    assert!(
+        charged ^ rejected,
+        "the failed deploy is charged or rejected with a record \
+         (charged = {charged}, rejected = {rejected})"
+    );
+}
+
+/// DR-115 (bug 10986): two validators include the same failed offer in sibling
+/// blocks. Both copies settle on the payer's cursor, so their settlements
+/// conflict and the merged state charges the payer exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_offered_deploy_in_two_sibling_blocks_is_charged_once() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+
+    let offer = owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string());
+    let (first, id) = offered_block(&mut nodes, 0, offer.clone()).await;
+    let (second, second_id) = offered_block(&mut nodes, 1, offer).await;
+    assert_eq!(id, second_id);
+    assert!(first.body.deploys[0].is_failed());
+    assert!(second.body.deploys[0].is_failed());
+    for node in nodes.iter_mut() {
+        for block in [&first, &second] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+
+    let snapshot = nodes[2]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("node 2 takes a snapshot");
+    assert_eq!(snapshot.parents.len(), 2);
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect();
+    let runtime_manager = nodes[2].runtime_manager.clone();
+    let merged = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &nodes[2].block_store,
+        snapshot.parents.clone(),
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("the merge over both copies computes");
+
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .unwrap()
+        .expect("the failed deploy carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state charges the payer exactly once"
+    );
+    assert_eq!(
+        merged
+            .rejected_user
+            .iter()
+            .filter(|record| record.sig.as_ref() == id.as_slice())
+            .count(),
+        1,
+        "the merge rejects the second copy with one record"
+    );
 }

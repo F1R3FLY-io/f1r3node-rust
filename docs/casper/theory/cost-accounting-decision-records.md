@@ -3397,6 +3397,14 @@ Lifecycle tests check failed settlement membership, restore-horizon deferral,
 and adopted-state cleanup. Floor tests check that failed-body settlement is
 settled content. Storage tests check accepted and rejected exact effects.
 
+**Amendment (DR-115, 2026-10-08).** The merge 1d325b996 restored the dev merge
+index and removed `has_committed_state_effect`. From then until DR-115, the
+merge index skipped every failed deploy. DR-115 restores the merge-index part
+of this record for protocol-6 offered deploys: a failed offered deploy indexes
+its committed settlement suffix. The metadata, containment and lifecycle parts
+of this record are not implemented at HEAD. The model
+`DeployLifecycleFinalization` that this record cites is not in the repository.
+
 **Cross-refs.** DR-43, DR-50, DR-53, CA-P-203, TM-CA-193, UC-CA-184,
 E2E-052, and finalized-floor safety invariant S34.
 
@@ -4242,6 +4250,11 @@ decisions do not change, because they are general Casper behavior.
 
 **Verification obligations.** The recovery-family tests pass on the activated
 harness. Recovery outcomes match the current outcomes for the same scenarios.
+
+**Amendment (DR-115, 2026-10-08).** DR-115 makes a failed offered deploy
+rejectable by the merge. So the recovery error that this record removes now
+also reaches failed offered deploys. By user decision, gap G6 follows DR-115
+directly.
 
 **Cross-refs.** DR-55, DR-56, DR-66. Leaf `ofp-3-recovery-offered-format`.
 
@@ -11675,3 +11688,199 @@ predicts.
 **Cross-refs.** DR-92, DR-94, DR-108, DR-109, DR-110, DR-111. Leaf
 `ofp-2-cap-d-e5-global-switch`. Bug
 `per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`.
+
+## DR-115 — A failed offered deploy keeps its committed settlement in the merge index
+
+**Status.** Implemented 2026-10-08 for bug 10986 (R1) of epic 8946. By user
+decision it lands before DR-113 and DR-114 ("Fix R1 first"). The numbers
+DR-113 and DR-114 stay reserved for the signed-limit exhaustion rule and the
+external-service ban removal.
+
+**Context.**
+
+- A protocol-6 offered deploy can end in a classified user failure. Execution
+  then rolls back its user events and keeps its settlement: the payer debit,
+  the fee, the receipts and the prepaid consumption.
+- The adopted failure policy keeps the authorized billable work and the fee
+  for such a failure (`cost-accounting-impl/economic-failure-policy-decisions.md:84`).
+  So the charge must survive every merge.
+- `block_index::new` skipped every failed user deploy. Sometimes the block of a
+  failed offered deploy was a merged branch and not the merge base. The merged
+  state then lost the settlement. Every validator computed the same merge, so
+  there was no fork, but the payer did not pay.
+- DR-57 made a failed-body settlement a merge effect. The merge 1d325b996
+  ("restore dev Casper", 2026-10-01) restored the dev merge index. That merge
+  removed the DR-57 rule together with the older Casper code.
+- Dev has the same skip for legacy deploys. That loss is a finding for the
+  Casper team and is outside this record.
+- The probe of this record reproduced the loss at 22ce46079. The merged state
+  kept the payer at its genesis balance of 9,000,000 REV. The receipt shows a
+  charge of 6,311 REV.
+
+**Decision.**
+
+1. `ProcessedIndexDeploy` gets the provided method `committed_log`. Its default
+   keeps the dev rule: the whole log of a successful deploy, nothing for a
+   failed deploy.
+2. `ProcessedUserDeploy` overrides it:
+   - A legacy deploy keeps the default.
+   - A successful offered deploy keeps its whole log.
+   - A failed offered deploy indexes the suffix `log[U..]`.
+3. U is the number of user events that the committed operation journal
+   records. A rejected operation logs 0 events, a stored one logs 1 and a
+   matched one logs 2.
+4. Replay binds the same prefix `log[..U]` to the native user trace. The
+   counting function moved unchanged from `replay.rs` to `offered_evidence.rs`,
+   so the merge and replay use one definition.
+5. The index entry uses the stored mergeable map of the deploy. For a failed
+   offered deploy, that map holds only the wallet channels.
+6. The suffix must hold at least the committed wallet settlement events
+   (`wallet_settlement_log_events`). Otherwise the index fails closed with an
+   error. A decode error also fails closed.
+7. The applied set keeps the documented meaning of `applied_from_scope`, by user
+   decision (variant M2'). A kept chain of a failed offered deploy enters it,
+   because its settlement is in the merged state.
+8. The old skip stays in the source as a comment with its reason.
+
+![The merge index of a failed offered deploy. The deploy log of block A holds
+four segments in order. They are the rolled-back user events U, the empty
+grant-issue segment G, the wallet settlement events W and the receipt events R.
+The committed evidence fixes U through its operation journal. The rule
+committed_log takes log[U..] for a failed offered deploy, the whole log for a
+success and nothing for a failed legacy deploy. The deploy index then holds
+the events W and R and the wallet map. The merge applies the kept chain, so the
+merged pre-state keeps the payer debit, the fee, the receipts and the prepaid
+consumption. A conflicting chain is rejected with a record instead.](diagrams/failed-offered-merge-index.svg)
+
+*Source: `diagrams/failed-offered-merge-index.puml` (PlantUML, shared palette).*
+
+**Algorithm (literate form).**
+
+```text
+⟨committed log of a processed deploy d⟩ ≡
+  if d succeeded: return the whole log of d
+  if d is a legacy deploy: return none                  (the dev rule)
+  return ⟨committed suffix of d⟩
+
+⟨committed suffix of d⟩ ≡
+  E ← decode the committed native cost evidence of d
+  J ← decode the operation journal of E                 (the replay limits)
+  U ← the sum of width(row) over J                      (Rejected 0, Stored 1, Matched 2)
+  require U ≤ |log(d)| and |log(d)| − U ≥ E.wallet_settlement_log_events
+  return log(d)[U..]                                    (the wallet settlement, then the receipts)
+
+⟨index entry of d⟩ ≡
+  if ⟨committed log of d⟩ is none: no entry
+  otherwise: the events of ⟨committed log of d⟩, with the stored mergeable map of d
+```
+
+The boundary is the replay boundary. With the journal width
+$`w(\mathrm{Rejected}) = 0`$, $`w(\mathrm{Stored}) = 1`$ and
+$`w(\mathrm{Matched}) = 2`$, the indexed events are
+
+```math
+\mathrm{index}(d) = \mathrm{log}(d)\left[U..\right], \qquad U = \sum_{j \in J} w(j).
+```
+
+**Soundness.** The suffix is exactly the committed part of the log.
+
+- Play builds the log as the user events, then the grant-issue events, then the
+  settlement events (`offered_candidate.rs:430-441`).
+- A user failure reverts the soft checkpoint and gives an empty grant-issue log
+  (`execution.rs:379-406`).
+- The settlement runs at the reverted root. It writes the wallet settlement
+  events, then the receipts (`producer.rs:1203-1204`).
+- Replay binds `log[..U]` to the user trace and checks the empty grant-issue
+  segment. It rigs `log[U..U+W]` for the wallet settlement and `log[U+W..]` for
+  the receipts (`replay.rs:423-449`, `acceptance.rs:107-130`).
+- Replay requires that every COMM of the rigged segments is consumed
+  (`settlement.rs:224`, `replay.rs:570`). So a validated block has exactly this
+  partition.
+- The merge applies the state change of each channel that a kept chain's events
+  touch. The index no longer holds a rolled-back user event.
+
+**Merge outcomes.** The global `costCursorLock` (bug 11004) makes any two
+cursor-bearing offered settlements in sibling blocks conflict. So the outcome
+depends on the sibling:
+
+| Failed block A is in scope, and the sibling is the base | Before DR-115 | With DR-115 |
+| --- | --- | --- |
+| The sibling is empty, legacy-only or carries a slash | The charge is lost silently. | The charge is kept. |
+| The sibling carries an offered settlement | The charge is lost silently. | A is rejected with a record. |
+| A is the base, and an offered sibling S is in scope | S is rejected. | S is rejected. |
+| A and an offered sibling S are both in scope | S is applied, and A's charge is lost. | Cost adjudication decides. |
+
+- A rejected offered deploy reaches the open G6 recovery error on its owner. By
+  user decision, G6 follows this record directly ("R1 now, G6 next").
+- DR-115 also merges an offered descendant of A on the same branch. The
+  descendant consumes the cursor datums that A's settlement produced. Before
+  DR-115 the merge rejected that descendant as unavailable.
+
+**Determinism.** The index depends only on the block bytes and the protocol-6
+limit constants. The decode uses a fresh host-work budget with the protocol-6
+limits. That budget has at least the headroom of the replay that validated the
+block. The decode reads no clock, random value or node state.
+
+**Verification.**
+
+- Probe `a_failed_offered_deploy_keeps_its_charge_when_its_block_is_a_merged_branch`:
+  - Before the fix, it failed at the payer-debit assertion: the payer kept
+    9,000,000 REV, and the receipt shows 6,311 REV.
+  - With DR-115 it passes. It also checks the boundary U = 3 of its term and
+    the merge chain index against an index of exactly `log[3..]`.
+  - It checks that a journal that does not decode fails closed.
+  - It checks the fee, the applied set, and the state of every channel that
+    the suffix produces on.
+- Probe `a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_dropped`:
+  - Before the fix, it failed with "charged = false, rejected = false".
+  - With DR-115 the merge rejects the deploy with a record. The probe also
+    checks that the successful sibling keeps its whole log in the index.
+- Probe `a_failed_offered_deploy_in_two_sibling_blocks_is_charged_once`:
+  - Two validators include the same failed offer in sibling blocks.
+  - The merged state charges the payer exactly once, and the merge rejects
+    the second copy with one record. This is the Rust test of the TLA+
+    invariant `AtMostOneSettlementPerDeploy`.
+- Unit and property tests:
+  - `committed_settlement_suffix` splits the log exactly and fails closed on
+    truncation, in 256 fixed-seed cases each.
+  - Failed and successful legacy deploys keep the dev rule.
+- Mutations: the mutation suite kills all 10 mutations of the table below, on
+  the committed caps.
+- TLA+ `FailedSettlementMergeIndex` explores 648 distinct states and holds 8
+  invariants. Nine unsafe configurations each refute their target invariant.
+- Rocq `FailedSettlementMergeIndex.v` uses the standard library only and no
+  axiom. Its 20 headline theorems and controls are closed under the global
+  context. The cost-accounting proof gate passes (273 modules, 3,089 closed
+  assumption queries).
+- Bug 11008 records a finding: native offered execution rejects `{}.xxx()`
+  (MethodNotDefined) as a non-user failure. So the probes use `1 + "a"`
+  (OperatorExpectedError) instead.
+
+| Mutation | The change | Killed by |
+| --- | --- | --- |
+| `skip` | A failed offered deploy gets no index (the old rule). | All three probes |
+| `full-log` | A failed offered deploy indexes its whole log. | Probe 1 (the index comparison) |
+| `success-suffix` | A successful offered deploy indexes no event. | Probe 2 (the sibling index) |
+| `legacy` | A failed legacy deploy gets an index. | `a_failed_legacy_deploy_keeps_no_index` |
+| `wallet-map` | The index of a failed deploy gets an empty mergeable map. | Probe 1 (the balances and the channel state) |
+| `user-prefix` | The suffix is `log[..U]`. | All three probes, both suffix unit tests and both property tests |
+| `boundary-low` | The suffix starts at $`U - 1`$. | Probe 1, both suffix unit tests and both property tests |
+| `boundary-high` | The suffix starts at $`U + 1`$. | All three probes, both suffix unit tests and one property test |
+| `wallet-only` | The suffix drops the receipts. | One suffix unit test and one property test |
+| `swallow-decode` | A decode error gives $`U = 0`$. | Probe 1 (the malformed journal) |
+
+The probes have no prepaid receipts. So only the unit and property tests kill
+`wallet-only`.
+
+**Scope.** Cost-accounting work with the smallest Casper diff, by user decision
+("Keep casper changes to an absolute minimal"). The Casper merge change is the
+`committed_log` method and its use in `block_index::new`. No proto, evidence,
+block-body or mergeable-data format changes. The dev legacy loss, the DR-57
+lifecycle projection (variant M3) and G6 stay outside this record.
+
+**Activation.** Protocol 6 is unreleased and needs a fresh offered genesis
+(DR-66). The change activates atomically with the branch binary, as A9 does.
+Dev and legacy chains are byte-identical.
+
+**Cross-refs.** DR-57, DR-64, DR-66, DR-69, DR-101, DR-113, DR-114. E2E-052,
+CA-P-203, TM-CA-193, UC-CA-184. Bugs 10986, 11004 and 11008.

@@ -1,6 +1,11 @@
 use std::mem::size_of;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
+use models::rust::casper::protocol::casper_message::Event as CasperEvent;
+use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
+use models::rust::cost_protocol_limits::{
+    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
+};
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::native_cost_evidence::{
     NativeCostEvidenceV1, NativeFundingCaseLimits, NativeFundingCaseSource, NativeFundingCaseV1,
@@ -17,9 +22,13 @@ use rholang::rust::interpreter::accounting::{
 };
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
 
 use super::prepaid_receipts::{
     CanonicalPrepaidSelection, NativeRetainedStackRecord, PrepaidReceiptChange,
+};
+use super::production_limits::{
+    offered_funded_v6_recording_limits, offered_funded_v6_replay_limits,
 };
 use crate::rust::errors::CasperError;
 
@@ -136,6 +145,90 @@ pub fn decode_committed_runtime_recording(
         ));
     }
     Ok((recording, journal))
+}
+
+// Moved by DR-115 from direct_wallet_funding/execution/replay.rs, unchanged,
+// so the merge index slices the same user-event boundary as replay.
+pub(crate) fn native_user_event_count(
+    operations: &[NativeOperationRecord],
+    maximum: usize,
+    host: &HostWorkBudget,
+) -> Result<usize, CasperError> {
+    host.reserve(
+        HostWorkDimension::VerificationOperations,
+        HostWorkUnits::new(
+            u64::try_from(operations.len())
+                .map_err(|_| invalid("native user event count overflows"))?,
+        ),
+    )
+    .map_err(|error| invalid(&error.to_string()))?;
+    operations.iter().try_fold(0usize, |count, operation| {
+        let width = match operation.completion {
+            RSpaceOperationCompletion::Rejected => 0,
+            RSpaceOperationCompletion::Stored => 1,
+            RSpaceOperationCompletion::Matched => 2,
+        };
+        count
+            .checked_add(width)
+            .filter(|count| *count <= maximum)
+            .ok_or_else(|| invalid("native user event count exceeds replay limit"))
+    })
+}
+
+/// Added by DR-115: the number of user events that the committed operation
+/// journal records. Replay binds the same prefix of the deploy log to the
+/// native user trace.
+pub fn committed_user_event_count(
+    evidence: &NativeCostEvidenceV1<'_>,
+    budget: &HostWorkBudget,
+) -> Result<usize, CasperError> {
+    let (_recording, operations) =
+        decode_committed_runtime_recording(evidence, offered_funded_v6_recording_limits(), budget)?;
+    native_user_event_count(
+        &operations,
+        offered_funded_v6_replay_limits().trace.events,
+        budget,
+    )
+}
+
+/// Added by DR-115: the settlement suffix of a deploy log after its
+/// `user_events`. Fails closed when the log cannot hold the user events and
+/// the committed wallet settlement events.
+pub(crate) fn committed_settlement_suffix<'l>(
+    log: &'l [CasperEvent],
+    user_events: usize,
+    evidence: &NativeCostEvidenceV1<'_>,
+) -> Result<&'l [CasperEvent], CasperError> {
+    let wallet_events = usize::try_from(evidence.wallet_settlement_log_events)
+        .map_err(|_| invalid("offered wallet settlement event count overflows"))?;
+    let suffix = log
+        .get(user_events..)
+        .ok_or_else(|| invalid("failed offered deploy log omits native user events"))?;
+    if suffix.len() < wallet_events {
+        return Err(invalid(
+            "failed offered settlement suffix omits wallet settlement events",
+        ));
+    }
+    Ok(suffix)
+}
+
+/// Added by DR-115: the committed part of a failed offered deploy's log. A
+/// user failure rolls back the user events, and the settlement events after
+/// them (the wallet settlement and the receipts) stay committed.
+pub fn failed_offered_committed_suffix(
+    processed: &OfferedProcessedDeploy,
+) -> Result<&[CasperEvent], CasperError> {
+    if !processed.is_failed() {
+        return Err(invalid(
+            "a committed settlement suffix belongs only to a failed offered deploy",
+        ));
+    }
+    let budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+    let evidence = processed
+        .evidence(offered_funded_v6_limits().evidence)
+        .map_err(|error| invalid(&error))?;
+    let user_events = committed_user_event_count(&evidence, &budget)?;
+    committed_settlement_suffix(processed.deploy_log(), user_events, &evidence)
 }
 
 pub fn encode_measured_funding_case(
@@ -485,5 +578,129 @@ mod tests {
         assert_eq!(source_index(0, &canonical_to_original).unwrap(), 1);
         assert_eq!(source_index(1, &canonical_to_original).unwrap(), 2);
         assert!(source_index(3, &canonical_to_original).is_err());
+    }
+
+    // DR-115: the committed settlement suffix of a failed offered deploy.
+    use models::rust::casper::protocol::casper_message::{Event as CasperEvent, ProduceEvent};
+    use models::rust::native_cost_evidence::{NativeCostEvidenceV1, NativeCostFailureClass};
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
+
+    use super::committed_settlement_suffix;
+
+    /// A log event that names its position, so slices compare by position.
+    fn event(position: usize) -> CasperEvent {
+        let name = prost::bytes::Bytes::from(position.to_be_bytes().to_vec());
+        CasperEvent::Produce(ProduceEvent {
+            channels_hash: name.clone(),
+            hash: name,
+            persistent: false,
+            times_repeated: 0,
+            is_deterministic: true,
+            output_value: Vec::new(),
+            failed: false,
+        })
+    }
+
+    /// A log of `user` rolled-back user events, then `wallet` wallet settlement
+    /// events, then `receipts` receipt events.
+    fn deploy_log(user: usize, wallet: usize, receipts: usize) -> Vec<CasperEvent> {
+        (0..user + wallet + receipts).map(event).collect()
+    }
+
+    fn evidence_with_wallet_events(wallet_events: u64) -> NativeCostEvidenceV1<'static> {
+        NativeCostEvidenceV1 {
+            envelope_commitment: [0; 32],
+            genesis_policy_commitment: [0; 32],
+            schedule_commitment: [0; 32],
+            original_funding_root: [0; 32],
+            settlement_runtime_root: [0; 32],
+            post_state_root: [0; 32],
+            phlo_used: 0,
+            fresh_phlo: 0,
+            retained_phlo: 0,
+            phlo_limit: 0,
+            phlo_price: 0,
+            fee_rev: 0,
+            failure_class: NativeCostFailureClass::UserFailure,
+            wallet_settlement_log_events: wallet_events,
+            budget_recording: &[],
+            operation_journal: &[],
+            funding_case: &[],
+            prepaid_delta: &[],
+            wallet_settlement: &[],
+        }
+    }
+
+    #[test]
+    fn committed_settlement_suffix_is_the_log_after_the_user_events() {
+        let log = deploy_log(3, 2, 1);
+        let suffix = committed_settlement_suffix(&log, 3, &evidence_with_wallet_events(2))
+            .expect("the log holds the user and wallet events");
+        assert_eq!(suffix, &log[3..]);
+        assert_eq!(suffix.len(), 3);
+    }
+
+    #[test]
+    fn committed_settlement_suffix_fails_closed_when_the_log_is_short() {
+        let log = deploy_log(3, 2, 0);
+        assert!(committed_settlement_suffix(&log, 6, &evidence_with_wallet_events(0)).is_err());
+        assert!(committed_settlement_suffix(&log, 3, &evidence_with_wallet_events(3)).is_err());
+        assert_eq!(
+            committed_settlement_suffix(&log, 5, &evidence_with_wallet_events(0))
+                .expect("an empty suffix holds zero wallet events"),
+            &log[5..]
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(115),
+            ..ProptestConfig::default()
+        })]
+
+        /// The suffix is exactly the wallet and receipt events. It shares no
+        /// event with the rolled-back user prefix, and either off-by-one
+        /// boundary gives another slice.
+        #[test]
+        fn prop_committed_settlement_suffix_splits_the_log(
+            user in 0usize..12,
+            wallet in 0usize..12,
+            receipts in 0usize..12,
+        ) {
+            let log = deploy_log(user, wallet, receipts);
+            let suffix = committed_settlement_suffix(
+                &log,
+                user,
+                &evidence_with_wallet_events(wallet as u64),
+            )
+            .expect("the log holds the user and wallet events");
+            prop_assert_eq!(suffix, &log[user..]);
+            prop_assert_eq!(suffix.len(), wallet + receipts);
+            prop_assert!(suffix.iter().all(|event| !log[..user].contains(event)));
+            if user > 0 {
+                prop_assert_ne!(&log[user - 1..], suffix);
+            }
+            if !suffix.is_empty() {
+                prop_assert_ne!(&log[user + 1..], suffix);
+            }
+        }
+
+        /// A log that cannot hold the user events, or that holds fewer events
+        /// after them than the committed wallet events, fails closed.
+        #[test]
+        fn prop_committed_settlement_suffix_fails_closed_on_truncation(
+            user in 0usize..12,
+            wallet in 1usize..12,
+            receipts in 0usize..12,
+            cut in 1usize..12,
+        ) {
+            let log = deploy_log(user, wallet, receipts);
+            let evidence = evidence_with_wallet_events(wallet as u64);
+            prop_assert!(committed_settlement_suffix(&log, log.len() + cut, &evidence).is_err());
+            let short = &log[..user + wallet - cut.min(wallet)];
+            prop_assert!(committed_settlement_suffix(short, user, &evidence).is_err());
+        }
     }
 }

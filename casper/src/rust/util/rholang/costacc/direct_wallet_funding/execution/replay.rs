@@ -39,7 +39,8 @@ use rholang::rust::interpreter::rho_runtime::{create_native_replay_env, RhoRunti
 use rholang::rust::interpreter::system_processes::DeployData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
-use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
+// Moved by DR-115 with native_user_event_count to offered_evidence.rs.
+// use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
 use rspace_plus_plus::rspace::trace::event::Event;
 use tokio::sync::RwLock;
 
@@ -67,7 +68,8 @@ use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPoli
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::costacc::offered_context::OfferedSettlementContext;
 use crate::rust::util::rholang::costacc::offered_evidence::{
-    decode_committed_runtime_recording, encode_measured_funding_case, encode_measured_prepaid_delta,
+    decode_committed_runtime_recording, encode_measured_funding_case,
+    encode_measured_prepaid_delta, native_user_event_count,
 };
 use crate::rust::util::rholang::costacc::offered_grants::{
     grant_issue_definition, offered_grant_issue_call_limits, offered_grant_transition_limits,
@@ -1145,31 +1147,33 @@ fn checked_replay_events(
     Ok(replayed.into())
 }
 
-fn native_user_event_count(
-    operations: &[NativeOperationRecord],
-    maximum: usize,
-    host: &rholang::rust::interpreter::host_work::HostWorkBudget,
-) -> Result<usize, CasperError> {
-    host.reserve(
-        HostWorkDimension::VerificationOperations,
-        HostWorkUnits::new(
-            u64::try_from(operations.len())
-                .map_err(|_| invalid("native user event count overflows"))?,
-        ),
-    )
-    .map_err(invalid)?;
-    operations.iter().try_fold(0usize, |count, operation| {
-        let width = match operation.completion {
-            RSpaceOperationCompletion::Rejected => 0,
-            RSpaceOperationCompletion::Stored => 1,
-            RSpaceOperationCompletion::Matched => 2,
-        };
-        count
-            .checked_add(width)
-            .filter(|count| *count <= maximum)
-            .ok_or_else(|| invalid("native user event count exceeds replay limit"))
-    })
-}
+// Moved by DR-115 to offered_evidence.rs, unchanged: the merge index uses the
+// same user-event boundary as replay.
+// fn native_user_event_count(
+//     operations: &[NativeOperationRecord],
+//     maximum: usize,
+//     host: &rholang::rust::interpreter::host_work::HostWorkBudget,
+// ) -> Result<usize, CasperError> {
+//     host.reserve(
+//         HostWorkDimension::VerificationOperations,
+//         HostWorkUnits::new(
+//             u64::try_from(operations.len())
+//                 .map_err(|_| invalid("native user event count overflows"))?,
+//         ),
+//     )
+//     .map_err(invalid)?;
+//     operations.iter().try_fold(0usize, |count, operation| {
+//         let width = match operation.completion {
+//             RSpaceOperationCompletion::Rejected => 0,
+//             RSpaceOperationCompletion::Stored => 1,
+//             RSpaceOperationCompletion::Matched => 2,
+//         };
+//         count
+//             .checked_add(width)
+//             .filter(|count| *count <= maximum)
+//             .ok_or_else(|| invalid("native user event count exceeds replay limit"))
+//     })
+// }
 
 fn settlement_root<T>(before: T, after: T, failed: bool) -> T {
     if failed {
