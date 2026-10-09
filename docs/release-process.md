@@ -610,7 +610,7 @@ The diagram shows how the release workflows chain in the target state:
 
 ```mermaid
 flowchart TD
-    A["push to master"] --> CI["ci.yml<br/>full CI: build, test, heavy pipeline"]
+    A["push to master"] --> CI["ci.yml<br/>full CI: build, test, integration pipeline"]
     CI -- "workflow_run:<br/>completed + success" --> CP["canary-publish.yml<br/>eligibility gate, identity gate,<br/>canary tag + prerelease + images by digest"]
     CP --> G1["oci-validation.yml<br/>exact-candidate mode"]
     CP --> G2["slashing-tests.yml<br/>exact-SHA required suite"]
@@ -628,7 +628,7 @@ The summary job requires 80% line coverage for each crate. The summary job also 
 
 A missing or malformed crate report fails the summary job. The workflow retains JSON, LCOV, and summary artifacts for 30 days.
 
-Push and workflow-dispatch runs skip both coverage jobs. On pull requests, the `Test Gate (casper)` check (required as `Test (casper)` until the ruleset switch in TASK-023-4) also requires a successful `Coverage Summary` result.
+Push and workflow-dispatch runs skip both coverage jobs. On pull requests, the `Test Gate (casper)` check (required as `Test (casper)` until the ruleset switch in TASK-023-9) also requires a successful `Coverage Summary` result.
 
 Add `Coverage Summary` directly to `devProtect` and `masterProtect` when the repository token has ruleset write access.
 
@@ -641,7 +641,7 @@ This table defines the target state after the Section 17 workflow changes are co
 | `ci.yml` | `push` (dev, master, tags), all `pull_request` bases, `workflow_dispatch` | Event + manual | Release path: 25–65 min *measured*; PR coverage duration is not measured | PR checks, PR-only coverage reports, and protected-base or exact-merge Integration Pipelines |
 | `canary-publish.yml` | `workflow_run` (CI completed, master push, success), `workflow_dispatch` (ci_run_id) | Event + manual | 10–20 min *estimated* | Publishes the immutable canary when the source is release-eligible; skips cleanly otherwise |
 | `ci-fork-pr.yml` | `pull_request_target` (dev, master) | Event | Seconds, then the gated pipeline after maintainer approval | Fork lane into the gated pipeline |
-| `_integration-pipeline.yml` | `workflow_call` | Called by ci.yml and ci-fork-pr.yml | 35–50 min *measured* | Heavy pipeline: image build, ephemeral runners, integration matrix, smoke tests |
+| `_integration-pipeline.yml` | `workflow_call` | Called by ci.yml and ci-fork-pr.yml | 35–50 min *measured* | Integration pipeline: image build, ephemeral runners, integration matrix, smoke tests |
 | `merge-recovery-soak.yml` | `schedule` 02:30 and 03:30 UTC (self-suppressing fallback; the OCI Function scheduler is the primary dispatcher. The fallback yields to a live or green dispatch of its slot, and to a failed dispatch whose integration preflight produced a test verdict on the same target. The integration suite follows the system-integration pin in the target tree's `.github/oci-validation.env`, not the pin in the workflow file), `workflow_dispatch` (`candidate_tag` selects candidate artifact mode) | Time + manual | 22 h dev integration soak; 60 h stability soak; preflight-only runs cap at about 3 h | Runs both soaks; release-eligible runs use candidate artifact mode |
 | `soak-checkpoint-publish.yml` | `workflow_dispatch` from soak tooling | Tooling | About 1 min *measured* | Mid-run checkpoint publication |
 | `soak-dashboard-pages.yml` | `push` to master (dashboard paths), `workflow_dispatch` | Event + manual | 1–2 min *measured* | Dashboard shell redeploys |
