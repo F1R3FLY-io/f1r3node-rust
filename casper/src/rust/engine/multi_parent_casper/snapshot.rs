@@ -381,6 +381,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         // `justification_follows` (validator-side) plus
         // `check_neglected_equivocations_with_update` (T-9.7 detection)
         // can both work.
+        //
+        // Two equivocating blocks with the same sender and the same seq num
+        // can reach nodes in a different order. LMM advances on
+        // `seq_num >= sequence_number`, so the block that arrives second
+        // wins, and two nodes can hold different blocks in the
+        // equivocator's slot. This is safe: `justification_follows` checks
+        // the set of validators, fork choice uses only valid latest
+        // messages, and slashing checks only that the latest message is
+        // invalid, not which invalid block it is.
         latest_msgs_hashes
             .iter()
             .filter(|(validator, _)| bonded_validators.contains_key(*validator))

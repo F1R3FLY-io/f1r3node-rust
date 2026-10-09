@@ -129,8 +129,7 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
         return Ok(true);
     }
     this.rejected_deploy_buffer
-        .lock()
-        .map_err(|error| CasperError::LockError(error.to_string()))?
+        .lock()?
         .contains_sig(deploy_id)
         .map_err(Into::into)
 }
@@ -149,10 +148,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
     }
 
     let mut deploy_storage = this.deploy_storage.lock();
-    let rejected_deploys = this
-        .rejected_deploy_buffer
-        .lock()
-        .map_err(|error| CasperError::LockError(error.to_string()))?;
+    let rejected_deploys = this.rejected_deploy_buffer.lock()?;
     if rejected_deploys.contains_sig(&deploy_id)? {
         return Ok(false);
     }
