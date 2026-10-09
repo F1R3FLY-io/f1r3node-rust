@@ -494,6 +494,7 @@ dependencies = [
  "lz4_flex",
  "metrics",
  "models",
+ "num-bigint",
  "parking_lot",
  "prost",
  "rand 0.9.5",
@@ -2316,6 +2317,7 @@ checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -3204,6 +3206,8 @@ dependencies = [
  "metrics",
  "monadic",
  "multiset",
+ "num-bigint",
+ "num-traits",
  "once_cell",
  "proptest",
  "proptest-derive",

@@ -342,8 +342,8 @@ impl EventLogIndex {
 
     pub fn combine(x: &Self, y: &Self) -> Result<Self, HistoryError> {
         // Merge number channels (combine differences according to per-channel
-        // merge strategy: IntegerAdd uses wrapping addition, BitmaskOr uses
-        // bitwise OR through u64). Both branches must agree on merge_type for
+        // merge strategy: IntegerAdd uses bounded exact addition, BitmaskOr uses
+        // bitwise OR). Both branches must agree on merge_type for
         // a given channel; disagreement yields a tagged error so callers can
         // reject the merge instead of crashing the validator.
         tracing::debug!(
@@ -379,7 +379,7 @@ impl EventLogIndex {
             .iter()
             .chain(y.number_channels_data.iter())
         {
-            let (incoming_diff, incoming_mt) = *value;
+            let (incoming_diff, incoming_mt) = (&value.0, value.1);
             match number_channels_data.get_mut(key) {
                 Some(existing) => {
                     if existing.1 != incoming_mt {
@@ -388,9 +388,9 @@ impl EventLogIndex {
                                 target: "f1r3fly.merge.step",
                                 step = "combine.NUMCHAN_MISMATCH",
                                 key = %hex::encode(key.clone().bytes()),
-                                existing_diff = existing.0,
+                                existing_diff = %existing.0,
                                 existing_merge_type = ?existing.1,
-                                incoming_diff,
+                                incoming_diff = %incoming_diff,
                                 incoming_merge_type = ?incoming_mt,
                             );
                         }
@@ -399,9 +399,9 @@ impl EventLogIndex {
                             key, existing.1, incoming_mt,
                         )));
                     }
-                    let prev_diff = existing.0;
+                    let prev_diff = existing.0.clone();
                     existing.0 =
-                        match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
+                        match combine_mergeable_value(&existing.0, incoming_diff, incoming_mt) {
                             Some(v) => v,
                             // IntegerAdd overflow in the intra-chain fold: fail loudly
                             // rather than construct a chain holding a wrapped value.
@@ -418,10 +418,10 @@ impl EventLogIndex {
                             target: "f1r3fly.merge.step",
                             step = "combine.NUMCHAN_FOLD",
                             key = %hex::encode(key.clone().bytes()),
-                            existing_diff = prev_diff,
-                            incoming_diff,
+                            existing_diff = %prev_diff,
+                            incoming_diff = %incoming_diff,
                             merge_type = ?incoming_mt,
-                            result_diff = existing.0,
+                            result_diff = %existing.0,
                         );
                     }
                 }
@@ -431,11 +431,11 @@ impl EventLogIndex {
                             target: "f1r3fly.merge.step",
                             step = "combine.NUMCHAN_INSERT",
                             key = %hex::encode(key.clone().bytes()),
-                            incoming_diff,
+                            incoming_diff = %incoming_diff,
                             merge_type = ?incoming_mt,
                         );
                     }
-                    number_channels_data.insert(key.clone(), (incoming_diff, incoming_mt));
+                    number_channels_data.insert(key.clone(), (incoming_diff.clone(), incoming_mt));
                 }
             }
         }
@@ -601,7 +601,15 @@ mod tests {
         let mut eli = EventLogIndex::empty();
         eli.number_channels_data = data
             .into_iter()
-            .map(|(k, v)| (k, (v, super::super::merging_logic::MergeType::IntegerAdd)))
+            .map(|(k, v)| {
+                (
+                    k,
+                    (
+                        num_bigint::BigInt::from(v),
+                        super::super::merging_logic::MergeType::IntegerAdd,
+                    ),
+                )
+            })
             .collect();
         eli
     }
@@ -612,7 +620,15 @@ mod tests {
         let mut eli = EventLogIndex::empty();
         eli.number_channels_data = data
             .into_iter()
-            .map(|(k, v)| (k, (v, super::super::merging_logic::MergeType::BitmaskOr)))
+            .map(|(k, v)| {
+                (
+                    k,
+                    (
+                        num_bigint::BigInt::from(v),
+                        super::super::merging_logic::MergeType::BitmaskOr,
+                    ),
+                )
+            })
             .collect();
         eli
     }
@@ -662,12 +678,19 @@ mod tests {
 
     #[test]
     fn combine_rejects_integer_add_overflow() {
-        let a = empty_with_channels(BTreeMap::from([(mk_hash(1), i64::MAX)]));
+        let mut a = empty_with_channels(BTreeMap::new());
+        a.number_channels_data.insert(
+            mk_hash(1),
+            (
+                (num_bigint::BigInt::from(1) << super::super::merging_logic::INTEGER_ADD_BITS) - 1,
+                super::super::merging_logic::MergeType::IntegerAdd,
+            ),
+        );
         let b = empty_with_channels(BTreeMap::from([(mk_hash(1), 1i64)]));
-        // i64::MAX + 1 overflows: combine must fail loudly (Err), not wrap.
+        // (2^256 - 1) + 1 leaves the IntegerAdd bound: combine must fail loudly (Err).
         assert!(
             EventLogIndex::combine(&a, &b).is_err(),
-            "IntegerAdd overflow in the intra-chain combine must Err, not wrap"
+            "IntegerAdd overflow in the intra-chain combine must Err"
         );
     }
 
@@ -676,7 +699,13 @@ mod tests {
         let a = empty_with_channels(BTreeMap::from([(mk_hash(1), 100i64)]));
         let b = empty_with_channels(BTreeMap::from([(mk_hash(1), 23i64)]));
         let combined = EventLogIndex::combine(&a, &b).unwrap();
-        assert_eq!(combined.number_channels_data.get(&mk_hash(1)).map(|v| v.0), Some(123));
+        assert_eq!(
+            combined
+                .number_channels_data
+                .get(&mk_hash(1))
+                .map(|v| v.0.clone()),
+            Some(num_bigint::BigInt::from(123))
+        );
     }
 
     // --- BitmaskOr merger property tests ----------------------------------
@@ -696,8 +725,12 @@ mod tests {
         let a = empty_with_bitmask_channels(BTreeMap::from([(ch.clone(), 0b00010001)]));
         let b = empty_with_bitmask_channels(BTreeMap::from([(ch.clone(), 0b00100010)]));
         let combined = EventLogIndex::combine(&a, &b).expect("combine must not fail");
-        let (val, mt) = combined.number_channels_data[&ch];
-        assert_eq!(val, 0b00110011, "BitmaskOr must produce OR of both diffs, not max");
+        let (val, mt) = combined.number_channels_data[&ch].clone();
+        assert_eq!(
+            val,
+            num_bigint::BigInt::from(0b00110011),
+            "BitmaskOr must produce OR of both diffs, not max"
+        );
         assert_eq!(
             mt,
             super::super::merging_logic::MergeType::BitmaskOr,
@@ -740,7 +773,7 @@ mod tests {
             let cur_val = acc
                 .number_channels_data
                 .get(&ch)
-                .map(|(v, _)| *v as u64)
+                .map(|(v, _)| num_traits::ToPrimitive::to_i64(v).unwrap() as u64)
                 .unwrap_or(0);
             assert_eq!(
                 cur_val & prev_val,
@@ -971,8 +1004,11 @@ mod event_log_index_new_tests {
         ];
 
         let mut mergeable = NumberChannelsDiff::new();
-        mergeable.insert(p_linear.channel_hash.clone(), (1, MergeType::IntegerAdd));
-        mergeable.insert(mk_hash(10), (2, MergeType::IntegerAdd));
+        mergeable.insert(
+            p_linear.channel_hash.clone(),
+            (num_bigint::BigInt::from(1), MergeType::IntegerAdd),
+        );
+        mergeable.insert(mk_hash(10), (num_bigint::BigInt::from(2), MergeType::IntegerAdd));
 
         let idx =
             EventLogIndex::new(events, |p| p == &p_pre_state, |p| p == &p_join_touch, mergeable);
@@ -1028,8 +1064,11 @@ mod event_log_index_new_tests {
         };
 
         let mut mergeable = NumberChannelsDiff::new();
-        mergeable.insert(p_comm.channel_hash.clone(), (1, MergeType::IntegerAdd));
-        mergeable.insert(mk_hash(22), (1, MergeType::IntegerAdd));
+        mergeable.insert(
+            p_comm.channel_hash.clone(),
+            (num_bigint::BigInt::from(1), MergeType::IntegerAdd),
+        );
+        mergeable.insert(mk_hash(22), (num_bigint::BigInt::from(1), MergeType::IntegerAdd));
 
         let idx = EventLogIndex::new(vec![Event::Comm(comm)], |_| false, |_| false, mergeable);
 

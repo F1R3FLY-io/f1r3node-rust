@@ -29,7 +29,8 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::string_ops::StringOps;
 use models::rust::utils::{
-    new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
+    new_elist_par, new_emap_par, new_gbigint_expr, new_gint_expr, new_gint_par, new_gstring_par,
+    union,
 };
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
@@ -59,7 +60,7 @@ use super::metrics_constants::{
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
 use super::rho_runtime::RhoISpace;
-use super::rho_type::{RhoExpression, RhoUnforgeable};
+use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
@@ -6697,6 +6698,51 @@ impl DebruijnInterpreter {
         Box::new(LengthMethod { outer: self })
     }
 
+    fn to_bigint_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ToBigIntMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for ToBigIntMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("toBigInt"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let result = match base_expr.expr_instance {
+                    Some(ExprInstance::GInt(v)) => {
+                        new_gbigint_expr(bigint_to_bytes(&num_bigint::BigInt::from(v)))
+                    }
+                    Some(ExprInstance::GBigInt(bytes)) => new_gbigint_expr(bytes),
+                    Some(other) => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("toBigInt"),
+                            other_type: get_type(other),
+                        })
+                    }
+                    None => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("toBigInt"),
+                            other_type: String::from("None"),
+                        })
+                    }
+                };
+                Ok(Par::default().with_exprs(vec![result]))
+            }
+        }
+
+        Box::new(ToBigIntMethod { outer: self })
+    }
+
     fn slice_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SliceMethod<'a> {
             outer: &'a DebruijnInterpreter,
@@ -7267,6 +7313,7 @@ impl DebruijnInterpreter {
         table.insert("toSet".to_string(), self.to_set_method());
         table.insert("toMap".to_string(), self.to_map_method());
         table.insert("toString".to_string(), self.to_string_method());
+        table.insert("toBigInt".to_string(), self.to_bigint_method());
         table
     }
 
@@ -7732,23 +7779,6 @@ fn par_contains_nan_double(par: &Par) -> bool {
         }),
         _ => false,
     })
-}
-
-fn bytes_to_bigint(bytes: &[u8]) -> num_bigint::BigInt {
-    if bytes.is_empty() {
-        num_bigint::BigInt::from(0)
-    } else {
-        num_bigint::BigInt::from_signed_bytes_be(bytes)
-    }
-}
-
-fn bigint_to_bytes(n: &num_bigint::BigInt) -> Vec<u8> {
-    use num_traits::Zero;
-    if n.is_zero() {
-        vec![0]
-    } else {
-        n.to_signed_bytes_be()
-    }
 }
 
 fn make_bigint_expr(bytes: Vec<u8>, _op: &str) -> Result<Expr, InterpreterError> {

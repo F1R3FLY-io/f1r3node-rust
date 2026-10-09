@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use models::rhoapi::ListParWithRandom;
+use num_bigint::BigInt;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{
-    combine_mergeable_value, compute_rejection_options, MergeType, NumberChannelsDiff,
+    apply_mergeable_value, combine_mergeable_value, compute_rejection_options, NumberChannelsDiff,
 };
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
@@ -234,7 +235,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // exist (legitimate, start from 0); Err(_) = invariant violation or I/O error
     // (propagate to reject the merge rather than silently substituting 0).
     for channel_hash in &all_channel_keys {
-        let value = read_number(channel_hash)?.unwrap_or(0);
+        let value = read_number(channel_hash)?.unwrap_or_default();
         base_mergeable_ch_res.insert(channel_hash.clone(), value);
     }
 
@@ -245,12 +246,15 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     .record(channel_reads_start.elapsed().as_secs_f64());
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let channel_reads: Vec<(String, i64)> = all_channel_keys
+        let channel_reads: Vec<(String, String)> = all_channel_keys
             .iter()
             .map(|h| {
                 (
                     hex::encode(h.clone().bytes()),
-                    *base_mergeable_ch_res.get(h).unwrap_or(&0),
+                    base_mergeable_ch_res
+                        .get(h)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "0".to_string()),
                 )
             })
             .collect();
@@ -539,16 +543,16 @@ where
         joins = combined_joins_count);
 
     // Combine all mergeable channels (in sorted order). Per-channel `MergeType`
-    // determines how diffs combine: integer-add uses checked addition, and an
-    // overflow is an error rather than a wrap; bitmask-OR uses bitwise OR
-    // through u64. Branches must agree on merge_type for a given channel;
-    // disagreement yields a tagged error so callers reject the merge rather
-    // than crashing the validator.
+    // determines how diffs combine: integer-add uses exact BigInt addition, and a
+    // result outside the INTEGER_ADD_BITS bound is an error rather than a wrap;
+    // bitmask-OR uses bitwise OR. Branches must agree on merge_type for a given
+    // channel; disagreement yields a tagged error so callers reject the merge
+    // rather than crashing the validator.
     let mut all_mergeable_channels = NumberChannelsDiff::new();
     for item in &to_merge_items {
         let item_channels = mergeable_channels(item);
         for (key, value) in item_channels.iter() {
-            let (incoming_diff, incoming_mt) = *value;
+            let (incoming_diff, incoming_mt) = (&value.0, value.1);
             match all_mergeable_channels.get_mut(key) {
                 Some(existing) => {
                     if existing.1 != incoming_mt {
@@ -558,7 +562,7 @@ where
                         )));
                     }
                     existing.0 =
-                        match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
+                        match combine_mergeable_value(&existing.0, incoming_diff, incoming_mt) {
                             Some(v) => v,
                             // Survivors already passed the per-branch overflow gate, so
                             // this should be unreachable; error rather than write a
@@ -572,16 +576,17 @@ where
                         };
                 }
                 None => {
-                    all_mergeable_channels.insert(key.clone(), (incoming_diff, incoming_mt));
+                    all_mergeable_channels
+                        .insert(key.clone(), (incoming_diff.clone(), incoming_mt));
                 }
             }
         }
     }
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let merged_channels: Vec<(String, i64)> = all_mergeable_channels
+        let merged_channels: Vec<(String, String)> = all_mergeable_channels
             .iter()
-            .map(|(k, v)| (hex::encode(k.clone().bytes()), v.0))
+            .map(|(k, v)| (hex::encode(k.clone().bytes()), v.0.to_string()))
             .collect();
         tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.mergeable_channels",
             n_channels = all_mergeable_channels.len(),
@@ -817,7 +822,7 @@ fn prefer_pinned_disjoint<R: Clone + Eq + std::hash::Hash + Ord>(
 fn rejection_candidates<R: Clone + Eq + std::hash::Hash + Ord>(
     branches: &HashableSet<Branch<R>>,
     conflict_map: &HashMap<Branch<R>, HashableSet<Branch<R>>>,
-    base: &HashMap<Blake2b256Hash, i64>,
+    base: &HashMap<Blake2b256Hash, BigInt>,
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
 ) -> (HashableSet<HashableSet<Branch<R>>>, usize, Duration) {
     let (options, time) = measure_time(|| compute_rejection_options(conflict_map));
@@ -830,7 +835,7 @@ fn rejection_candidates<R: Clone + Eq + std::hash::Hash + Ord>(
 fn select_rejection_exhaustive<R: Clone + Eq + std::hash::Hash + Ord>(
     branches: &HashableSet<Branch<R>>,
     conflict_map: &HashMap<Branch<R>, HashableSet<Branch<R>>>,
-    base: &HashMap<Blake2b256Hash, i64>,
+    base: &HashMap<Blake2b256Hash, BigInt>,
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
     cost: &impl Fn(&R) -> u64,
     prior_losses: &impl Fn(&R) -> u64,
@@ -864,7 +869,7 @@ fn union_roots(parent: &mut [usize], a: usize, b: usize) {
 fn select_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     branches: &HashableSet<Branch<R>>,
     conflict_map: &HashMap<Branch<R>, HashableSet<Branch<R>>>,
-    base: &HashMap<Blake2b256Hash, i64>,
+    base: &HashMap<Blake2b256Hash, BigInt>,
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
     cost: &impl Fn(&R) -> u64,
     prior_losses: &impl Fn(&R) -> u64,
@@ -1083,33 +1088,32 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
 /// concerns.
 fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
     branch: &Branch<R>,
-    origin_result: HashMap<Blake2b256Hash, i64>,
+    origin_result: HashMap<Blake2b256Hash, BigInt>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
-) -> Option<HashMap<Blake2b256Hash, i64>> {
+) -> Option<HashMap<Blake2b256Hash, BigInt>> {
     tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.ENTER",
         n_branch_items = branch.0.len(),
         n_origin_channels = origin_result.len());
 
     // Combine all channel diffs from the branch using per-channel merge strategy.
     // IntegerAdd overflow HERE means the branch's per-channel diffs sum out of
-    // i64 range: reject the branch (fail loudly, return None) rather than fold a
-    // silently-wrapped value that could then pass the apply-time
-    // `checked_add >= 0` gate below with a wrong result (the overflow-launder;
-    // see IntegerAdd.v). BitmaskOr never overflows.
+    // the INTEGER_ADD_BITS range: reject the branch (fail loudly, return None)
+    // rather than carry an out-of-range value to the apply-time gate below (the
+    // overflow-launder; see IntegerAdd.v). BitmaskOr never overflows.
     let mut diff = NumberChannelsDiff::new();
     for r in branch.0.iter() {
         for (k, v) in mergeable_channels(r) {
             let (incoming_diff, incoming_mt) = v;
             match diff.get_mut(&k) {
                 Some(existing) => {
-                    match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
+                    match combine_mergeable_value(&existing.0, &incoming_diff, incoming_mt) {
                         Some(combined) => existing.0 = combined,
                         None => {
                             tracing::debug!(target: "f1r3fly.merge.step",
                                 step = "cal_merged_result.COMBINE_OVERFLOW",
                                 channel = %hex::encode(k.clone().bytes()),
-                                existing = existing.0,
-                                incoming = incoming_diff);
+                                existing = %existing.0,
+                                incoming = %incoming_diff);
                             return None;
                         }
                     }
@@ -1122,9 +1126,9 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
     }
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let diff_channels: Vec<(String, i64)> = diff
+        let diff_channels: Vec<(String, String)> = diff
             .iter()
-            .map(|(k, v)| (hex::encode(k.clone().bytes()), v.0))
+            .map(|(k, v)| (hex::encode(k.clone().bytes()), v.0.to_string()))
             .collect();
         tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.diff",
             n_channels = diff.len(),
@@ -1136,31 +1140,23 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
         .iter()
         .fold(Some(origin_result), |ba_opt, (channel, value)| {
             ba_opt.and_then(|mut ba| {
-                let (diff_val, merge_type) = *value;
-                let current = *ba.get(channel).unwrap_or(&0);
-                match merge_type {
-                    MergeType::IntegerAdd => {
-                        // Vault balance: overflow or negative result rejects the branch
-                        match current.checked_add(diff_val) {
-                            Some(result) if result >= 0 => {
-                                ba.insert(channel.clone(), result);
-                                Some(ba)
-                            }
-                            _ => {
-                                tracing::debug!(target: "f1r3fly.merge.step",
-                                    step = "cal_merged_result.REJECT",
-                                    channel = %hex::encode(channel.clone().bytes()),
-                                    current = current,
-                                    diff = diff_val);
-                                None
-                            }
-                        }
-                    }
-                    MergeType::BitmaskOr => {
-                        // Bitmap: OR the new bits in; no overflow concern
-                        let result = ((current as u64) | (diff_val as u64)) as i64;
+                let (diff_val, merge_type) = value;
+                let current = ba.get(channel).cloned().unwrap_or_default();
+                // Vault balance: an overflow of the channel range or a negative result
+                // rejects the branch. Bitmaps OR the new bits in and never reject.
+                match apply_mergeable_value(&current, diff_val, *merge_type) {
+                    Some(result) => {
                         ba.insert(channel.clone(), result);
                         Some(ba)
+                    }
+                    None => {
+                        tracing::debug!(target: "f1r3fly.merge.step",
+                            step = "cal_merged_result.REJECT",
+                            channel = %hex::encode(channel.clone().bytes()),
+                            current = %current,
+                            diff = %diff_val,
+                            merge_type = ?merge_type);
+                        None
                     }
                 }
             })
@@ -1178,7 +1174,7 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
 /// Evaluate branches and return the set of branches that should be rejected.
 /// Fold over branches and compute rejections.
 fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
-    base_balance: HashMap<Blake2b256Hash, i64>,
+    base_balance: HashMap<Blake2b256Hash, BigInt>,
     branches: &HashableSet<Branch<R>>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
 ) -> HashableSet<Branch<R>> {
@@ -1227,7 +1223,7 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
 fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     branches: &HashableSet<Branch<R>>,
     reject_options: &HashableSet<HashableSet<Branch<R>>>,
-    base: HashMap<Blake2b256Hash, i64>,
+    base: HashMap<Blake2b256Hash, BigInt>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
 ) -> HashableSet<HashableSet<Branch<R>>> {
     tracing::debug!(target: "f1r3fly.merge.step", step = "get_merged_result_rejection.ENTER",
@@ -1304,6 +1300,7 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+    use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, INTEGER_ADD_BITS};
 
     use super::*;
     use crate::rust::metrics_constants::{
@@ -1326,6 +1323,8 @@ mod tests {
         }
         result
     }
+
+    fn integer_add_max() -> BigInt { (BigInt::from(1) << INTEGER_ADD_BITS) - 1 }
 
     fn branch(items: &[i32]) -> Branch<i32> {
         Arc::new(HashableSet(items.iter().copied().collect::<HashSet<i32>>()))
@@ -1491,7 +1490,10 @@ mod tests {
                 let mut diff = BTreeMap::new();
                 // item 1 decrements channel, item 2 increments channel
                 let delta = if *r == 1 { -1 } else { 1 };
-                diff.insert(base_channel.clone(), (delta, MergeType::IntegerAdd));
+                diff.insert(
+                    base_channel.clone(),
+                    (BigInt::from(delta), MergeType::IntegerAdd),
+                );
                 diff
             },
             |_state_change, _channels| Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new()),
@@ -1558,9 +1560,9 @@ mod tests {
 
     // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------
     // Two chains in the SAME branch contribute IntegerAdd diffs to one channel
-    // whose sum overflows i64. The intra-branch combine must REJECT the branch
-    // (return None) — "fail loudly" — rather than wrap the value and let it pass
-    // the apply-time checked_add >= 0 gate with a wrong result (the launder).
+    // whose sum leaves the INTEGER_ADD_BITS bound. The intra-branch combine must
+    // REJECT the branch (return None) — "fail loudly" — rather than carry the
+    // out-of-range value to the apply-time gate.
 
     #[test]
     fn cal_merged_result_rejects_integer_add_overflow_launder() {
@@ -1568,33 +1570,30 @@ mod tests {
         let br = branch(&[1, 2]); // both items in ONE branch
         let mergeable = |r: &i32| {
             let mut d = NumberChannelsDiff::new();
-            let v = if *r == 1 { i64::MAX } else { 1 }; // MAX + 1 overflows
+            let v = if *r == 1 {
+                integer_add_max()
+            } else {
+                BigInt::from(1)
+            }; // MAX + 1 overflows
             d.insert(ch.clone(), (v, MergeType::IntegerAdd));
             d
         };
         assert_eq!(
             cal_merged_result(&br, HashMap::new(), mergeable),
             None,
-            "combine overflow must reject the branch (no silent wrap / launder)"
+            "combine overflow must reject the branch"
         );
     }
 
     #[test]
-    fn cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative() {
-        // A DISCRIMINATING launder witness: three IntegerAdd diffs whose sum is 2^64,
-        // which wraps to 0 — a NON-NEGATIVE value that would sail through the apply-time
-        // `checked_add >= 0` gate if the combine used wrapping. Only the checked_add in
-        // the combine fold (which overflows on MAX + MAX) rejects it. Contrast the
-        // [MAX, 1] case above, whose wrap to i64::MIN is caught by the `>= 0` gate anyway
-        // and so does NOT isolate the overflow check.
+    fn cal_merged_result_rejects_integer_add_sum_above_bound() {
         let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
         let br = branch(&[1, 2, 3]); // three chains in ONE branch
         let mergeable = |r: &i32| {
             let mut d = NumberChannelsDiff::new();
             let v = match *r {
-                1 => i64::MAX,
-                2 => i64::MAX,
-                _ => 2, // MAX + MAX + 2 == 2^64 ≡ 0 (mod 2^64): wraps NON-NEGATIVE
+                1 | 2 => integer_add_max(),
+                _ => BigInt::from(2), // MAX + MAX + 2 == 2^257
             };
             d.insert(ch.clone(), (v, MergeType::IntegerAdd));
             d
@@ -1602,8 +1601,7 @@ mod tests {
         assert_eq!(
             cal_merged_result(&br, HashMap::new(), mergeable),
             None,
-            "a sum that wraps to a NON-NEGATIVE value must still be rejected by checked_add \
-             in the combine (the >= 0 gate alone would not catch it)"
+            "a sum above the IntegerAdd bound must be rejected in the combine"
         );
     }
 
@@ -1614,13 +1612,13 @@ mod tests {
         let mergeable = |r: &i32| {
             let mut d = NumberChannelsDiff::new();
             let v = if *r == 1 { 100 } else { 23 };
-            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d.insert(ch.clone(), (BigInt::from(v), MergeType::IntegerAdd));
             d
         };
         // 100 + 23 = 123, applied to base 0, >= 0 -> accepted with the TRUE sum.
         assert_eq!(
             cal_merged_result(&br, HashMap::new(), mergeable),
-            Some(HashMap::from([(ch, 123)]))
+            Some(HashMap::from([(ch, BigInt::from(123))]))
         );
     }
 
@@ -1631,11 +1629,43 @@ mod tests {
         let mergeable = |r: &i32| {
             let mut d = NumberChannelsDiff::new();
             let v = if *r == 1 { i64::MAX } else { 1 };
-            d.insert(ch.clone(), (v, MergeType::BitmaskOr)); // OR never overflows
+            d.insert(ch.clone(), (BigInt::from(v), MergeType::BitmaskOr)); // OR never overflows
             d
         };
         let out = cal_merged_result(&br, HashMap::new(), mergeable);
-        assert_eq!(out, Some(HashMap::from([(ch, i64::MAX)])));
+        assert_eq!(out, Some(HashMap::from([(ch, BigInt::from(i64::MAX))])));
+    }
+
+    #[test]
+    fn cal_merged_result_integer_add_accepts_sum_past_i64() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2]);
+        let mergeable = |_r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            d.insert(ch.clone(), (BigInt::from(i64::MAX), MergeType::IntegerAdd));
+            d
+        };
+        assert_eq!(
+            cal_merged_result(&br, HashMap::new(), mergeable),
+            Some(HashMap::from([(ch, BigInt::from(i64::MAX) * 2)]))
+        );
+    }
+
+    #[test]
+    fn cal_merged_result_integer_add_rejects_negative_balance() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1]);
+        let base = BigInt::parse_bytes(b"1000000000000000000000000000000", 10).unwrap();
+        let spend: BigInt = -(&base + BigInt::from(1));
+        let mergeable = |_r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            d.insert(ch.clone(), (spend.clone(), MergeType::IntegerAdd));
+            d
+        };
+        assert_eq!(
+            cal_merged_result(&br, HashMap::from([(ch.clone(), base.clone())]), mergeable),
+            None
+        );
     }
 
     // ---- Finding-A order-dependence guard (merge-algebra-verification.md §6) ----
@@ -1728,6 +1758,7 @@ mod component_selection_tests {
     use std::sync::Arc;
 
     use proptest::prelude::*;
+    use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
     use super::*;
 
@@ -1770,11 +1801,12 @@ mod component_selection_tests {
                     diffs
                         .entry((b * 10) as i32)
                         .or_default()
-                        .insert(channel(ch), (delta, MergeType::IntegerAdd));
+                        .insert(channel(ch), (BigInt::from(delta), MergeType::IntegerAdd));
                 }
             }
-            let base: HashMap<Blake2b256Hash, i64> =
-                (0..3u8).map(|k| (channel(k), base_values[k as usize])).collect();
+            let base: HashMap<Blake2b256Hash, BigInt> = (0..3u8)
+                .map(|k| (channel(k), BigInt::from(base_values[k as usize])))
+                .collect();
             let mergeable_channels = |item: &i32| diffs.get(item).cloned().unwrap_or_default();
             let cost = |item: &i32| costs[(*item / 10) as usize];
             let prior_losses = |item: &i32| losses[(*item / 10) as usize];
