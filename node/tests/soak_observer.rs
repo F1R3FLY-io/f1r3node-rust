@@ -116,8 +116,10 @@ fn runtime_source_returns_before_observer_cleanup_and_exit() {
     let host = source.split_once("async fn node_program").unwrap().1;
     assert!(host.contains("consensus.shutdown().await"));
     let adapter = include_str!("../src/rust/consensus/casper/mod.rs");
-    let stopped = adapter.find("observer.stop().await;").unwrap();
-    let stores_closed = adapter.find("store_manager.shutdown().await").unwrap();
+    assert!(adapter.contains("shutdown::cleanup("));
+    let cleanup = include_str!("../src/rust/consensus/casper/shutdown.rs");
+    let stopped = cleanup.find("observer.stop().await;").unwrap();
+    let stores_closed = cleanup.find("store_manager.shutdown().await").unwrap();
     assert!(stopped < stores_closed);
 }
 

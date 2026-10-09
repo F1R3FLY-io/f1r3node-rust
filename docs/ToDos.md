@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-09-21
+last_updated: 2026-10-06
 mr_status:
   ready: false
   target_branch: master
@@ -71,6 +71,139 @@ mr_status:
 
 ---
 
+### EPIC-023: Disk Admission Test Flake and the Lint Job Scope
+
+```yaml
+---
+epic_id: EPIC-023
+title: "Disk Admission Test Flake and the Lint Job Scope"
+status: in_progress
+priority: p0
+user_story: null
+issues: []
+blocked_by: []
+created_at: 2026-10-08
+updated_at: 2026-10-08
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-08T14:00:00Z
+branch: fix/lint-flake-resolution
+pr_base_branch: dev
+origin: "On 2026-10-08 the dev merge queue returned PRs #665, #670, and #671 with a Lint failure in the step Verify isolated disk admission and emergency scenarios. The user asked if the failure is a flake, and then asked why a static analysis job can fail on a timeout."
+execution_contract:
+  base_branch: dev
+  scope: "Remove the timing flake of scripts/bench/test-soak-disk-admission.sh and make its fixture failures diagnosable from the CI log. Then reorganize the CI jobs by purpose and relabel each job and step so that its name states what it runs."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent. Branch creation belongs to the user."
+  language_policy: "Bash only for new scripts (repository rule)."
+evidence:
+  rate: "From 2026-10-03 to 2026-10-08 the step failed in 6 of 119 Lint runs (about 5%) and passed in 113. Four failures came before the FileIO Wave 5 merges, so the FileIO changes did not cause it."
+  signature: "Each failure is a different scenario with the same result: The fixture did not complete the required driver path (exit 2), so the scenario gave no behavioral verdict. The six scenarios are cleanup-sufficient, log-within-budget, log-sudo-fallback, log-budget-disabled, log-probe-vanished, and benchmark-disabled. Each one runs a full iteration. No refusal scenario failed."
+  reproduction: "Local runs on 2026-10-08 (12 CPUs): all 48 runs of the six scenarios passed without load. With all host CPUs saturated, log-probe-vanished failed once in 4 runs with driver exit 124: the 50 s driver timeout killed it at 52 s. It needs about 28 s without load, which leaves less than 2x margin. The other five scenarios need 3 to 4 s against a 20 s driver cap, even under the local load."
+  failing_log: "The killed driver log ends at The boundary workload fixture completed., so the scenario waits and does not compute."
+  stress_finding: "2026-10-08: with 10 of 12 CPUs saturated and six scenarios in parallel, 25 of 60 runs gave no pass. The runs are bimodal: a pass needs 3 to 4 s, and a failure hangs until the driver timeout (exit 124, Summary: missing). In each hung run the driver log ends at The boundary workload fixture completed. and output/signal is not consumed, so the driver stalls before its signal check (run-merge-recovery-soak.sh line 1917). The CI flake is most likely this stall, not a tight timeout."
+  lint_scope: "The Lint job of ci.yml has 32 steps. Only cargo fmt, clippy, the workflow invariants, and the supply-chain controls are static checks. The other steps run behavioral tests of the CI and soak scripts. The disk admission step builds an image and the soak harness and runs the real soak driver in about 60 containers under wall-clock timeouts. PR #668 adds five more script tests to this job."
+tasks:
+  - id: TASK-023-1
+    title: "Remove the wait that keeps log-probe-vanished near its driver timeout"
+    status: review
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T17:00:00Z
+    blocked_by: []
+    progress: "B3 and B4 are done (abffaba3b, 8fa26ea27): log-probe-vanished needs 11 to 12 s instead of 27 s. The saturated-CPU criterion waits for the stall fix in TASK-023-8."
+    acceptance:
+      - "The analysis names the wait in the log-probe-vanished path (fixture or driver) that takes most of its 28 s, with the evidence."
+      - "After the fix, the scenario takes less than one third of its driver timeout without load. Decision 2026-10-08: the guardian samples every 5 s (cbc=mandatory driver), so 12 s is the floor without a driver change. The timing test is not a hard CI gate."
+      - "The saturated-CPU reproduction loop gives 0 fixture failures of the six scenarios in at least 10 rounds."
+      - "No scenario changes its behavioral verdict, and the driver timeouts stay unchanged unless a measurement justifies a change."
+  - id: TASK-023-2
+    title: "Make a disk admission fixture failure diagnosable from the CI log"
+    status: review
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T15:10:00Z
+    progress: "The report (2da04d374) prints the scenario, the driver exit code, the summary state, and the last 20 driver log lines after an exit 2. The test (0791e99a6) shows no host path or key value. The Lint job runs scripts/bench/test-soak-disk-admission-timing.sh with SOAK_DISK_TEST_SKIP_TIMING=1 (6 s), so the scenario timing checks stay out of the CI gate."
+    blocked_by: []
+    acceptance:
+      - "When a scenario exits 2, the CI log shows the driver exit code, the summary.json degraded field or its absence, and the last lines of the driver log."
+      - "A test proves the diagnostic output for a forced fixture failure."
+      - "The output contains no secret and no host path outside the evidence directory."
+  - id: TASK-023-3
+    title: "Measure the 20 s driver cap of the short full-iteration scenarios under CI load"
+    status: review
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    resolution: "2026-10-08: TASK-023-7 showed that the failing runs stall in session_bounded and do not exceed a correct cap. A stalled run needs the full 60 s watchdog budget, so no driver cap is too short. Decision for review: no cap change. The CI driver exit codes come from the TASK-023-2 report during the TASK-023-5 measurement."
+    acceptance:
+      - "The diagnostic output of TASK-023-2 shows the driver exit code for each CI failure of the five 3 to 4 s scenarios."
+      - "If a CI failure shows driver exit 124, a measured driver duration on the CI runner sets any new cap. Without a measurement the cap stays."
+  - id: TASK-023-4
+    title: "Reorganize the CI jobs by purpose"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    branch_note: "Separate branch, because the change moves jobs that the merge queue and the branch rulesets require."
+    acceptance:
+      - "An inventory lists every job and step of ci.yml and _integration-pipeline.yml with what it runs: static check, unit test, script behavioral test, Docker soak harness test, build, integration test, or gate. The inventory is recorded in docs/ci.md."
+      - "Each job holds one purpose. Lint keeps only static checks: cargo fmt, clippy, the workflow invariants, and the supply-chain controls."
+      - "The script behavioral tests run in their own job. The Docker soak harness tests (fail-closed driver, disk admission) run in a separate job."
+      - "The required checks of the dev and master rulesets and the CI aggregators name the new jobs. A merge group with the change passes the queue."
+      - "check-workflow-invariants.sh passes, and the change does not increase the total CI time by more than the measured cost of one extra job setup."
+  - id: TASK-023-6
+    title: "Relabel the CI jobs and steps so that each name states what it runs"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: [TASK-023-4]
+    branch_note: "Same branch as TASK-023-4, so that the rulesets change once."
+    acceptance:
+      - "No job or step name describes a different kind of work than it runs. For example, no behavioral test runs under a name that says lint or check."
+      - "Each name tells a reader which category failed when it is red: static check, unit test, script test, soak harness test, build, or integration test."
+      - "The required-check names in the rulesets, the aggregator jobs that match job names (for example the per-arch integration aggregators), and docs/ci.md use the new names."
+      - "docs/ci.md maps each old name to its new name, so that old PR checks and run links stay readable."
+  - id: TASK-023-7
+    title: "Name the command that stalls the soak driver after the first iteration"
+    status: complete
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    finding: "2026-10-08: a process snapshot 3 s before the driver timeout, in 7 hung runs, showed the driver in anon_pipe_read on a command substitution. Its subshell waited in do_wait on the session_bounded watchdog (sleep 60), and the bounded command had already exited. Cause: session_bounded runs kill -KILL -- -$watchdog before the watchdog process calls setsid, so the group kill fails silently and wait blocks for the full watchdog budget. CPU saturation makes the bounded command win that race. The stall is in run-merge-recovery-soak.sh, not in a fixture command. The watchdog ran in a scratch copy of the fixture; the repository fixture has no permanent watchdog."
+    blocked_by: []
+    acceptance:
+      - "A fixture watchdog writes the process tree of the scenario container shortly before the driver timeout. The watchdog changes no scenario verdict."
+      - "The SOAK_DISK_TEST_STRESS_ROUNDS stage keeps the evidence of each hung run, and at least three hung runs name the blocked command with its parent chain."
+      - "The analysis states whether the stall is in run-merge-recovery-soak.sh or in a fixture command, with the evidence."
+  - id: TASK-023-8
+    title: "Update CLAIM-SOAK-001 and fix the driver stall"
+    status: review
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T19:00:00Z
+    progress: "Claim updated first (bounded-command liveness statement, session_bounded surface, timing test, check row). Fix: kill the watchdog by PID when its process group does not exist yet. Late-watchdog check: 9.5 s RED, 1 ms GREEN. SOAK_DISK_TEST_STRESS_ROUNDS=10: 60 of 60 pass in 160 s (was 25 failures in 505 s). Disk suite: 54 of 54. test-run-merge-recovery-soak.sh cannot run faithfully on this workstation: macOS has no setsid, and the Docker VM disk is inside the admission band, where the HEAD and fixed drivers fail at the same band step. Committed in 8f657a9d2. Remaining: the CI Lint run, and CbC evidence records for scripts/run-merge-recovery-soak.sh and scripts/bench/test-soak-disk-admission-timing.sh. The evidence records are deferred by user decision (2026-10-08) until the CbC acceptance policy and the updated /cbc command are settled."
+    blocked_by: [TASK-023-7]
+    cbc_policy: "scripts/run-merge-recovery-soak.sh is cbc=mandatory. The claim update comes before any driver change."
+    acceptance:
+      - "If the stall is in the driver, docs/claims/soak-disk-protection.md (CLAIM-SOAK-001) states the liveness property that the fix restores: after an iteration completes, the driver reaches its signal check and its admission checks within a bounded time, also under CPU saturation."
+      - "The claim lists scripts/bench/test-soak-disk-admission-timing.sh in its tests."
+      - "The driver fix keeps every verdict of the 54 disk admission scenarios."
+      - "SOAK_DISK_TEST_STRESS_ROUNDS=10 gives 0 runs without a pass."
+      - "The CbC evidence record for scripts/run-merge-recovery-soak.sh is updated for the new commit, or a maintainer waiver records why not."
+      - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
+  - id: TASK-023-5
+    title: "Measure the disk admission failure rate after the fix"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: [TASK-023-1, TASK-023-8]
+    acceptance:
+      - "Over at least 100 CI runs after the merge, the disk admission step has 0 fixture failures, or each failure has a diagnosed cause."
+---
+```
+
+**Current state:** TASK-023-1, -2, -3, and -8 are in review on fix/lint-flake-resolution. TASK-023-8 CbC evidence records wait for the CbC acceptance policy decision. TASK-023-4 and TASK-023-6 need their own branch. TASK-023-5 runs after the merge.
+
+---
+
 ### EPIC-021: Issue #24 Replay Throughput Root Cause Under the CbC Harness
 
 ```yaml
@@ -83,7 +216,7 @@ user_story: null
 issues: [24]
 blocked_by: []
 created_at: 2026-10-03
-updated_at: 2026-10-05
+updated_at: 2026-10-06
 claimed_by: claude-session-aa467dea
 claimed_at: 2026-10-03T21:10:00Z
 branch: fix/issue-24
@@ -150,6 +283,7 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: [TASK-021-3, TASK-021-4, TASK-021-8]
+    fix_decision_2026_10_06: "The one-transaction checkpoint commit of TASK-021-10 is contention reduction, not the issue #24 fix. The full run of soak 37343966570 (issue #24 comment 6016872961) shows no per-node stage that separates failing iterations from passing ones: root commit about 1.2 ms (AUC 0.60, the area under the receiver operating characteristic curve), roots lock wait AUC 0.57. The open cause is the finality round length and the blocks that wait for missing parents. The soak does not measure these yet."
     candidate_fix: "0ef0966c6 on fix/issue-24-root-cause-fix (PR #620): reset() validates the root with a read and no longer writes current-root, the roots lock is released before the history lock, and record_root writes in one LMDB transaction. 2cd9790f9 removes the unused validate_and_set_current_root path. The code review of 2026-10-05 found no correctness defect. After a restart, history opens at the last checkpointed root, not at the last reset root. Soak 37343966570 tests the candidate. The acceptance items still apply: the maintainer chooses the fix, and the TASK-021-8 findings do not yet show that the roots lock is the root cause."
     acceptance:
       - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
@@ -158,7 +292,7 @@ tasks:
       - "A new branch off dev carries the claim, the profile, the fix, and the cited evidence. PR #580 merges first with TASK-021-6 and the EPIC-021 plan only (decision of 2026-10-04)."
   - id: TASK-021-6
     title: "Stop the soak failure-evidence copy from duplicating earlier harness sessions"
-    status: done
+    status: complete
     claimed_by: claude-session-aa467dea
     claimed_at: 2026-10-04T03:20:00Z
     completed_at: 2026-10-04
@@ -294,184 +428,103 @@ tasks:
       - "masterProtect keeps protected-branch-image-publish and drops casper-campaign and ephemeral-launch from required deployments."
       - "The release process documents that a promotion PR carries the exact soaked SHA, and that a later dev commit voids the verdict."
       - "The changed workflow and claim artifacts have a review package and maintainer acceptance under their claims."
+  - id: TASK-021-10
+    title: "Write the checkpoint nodes and root in one LMDB transaction (contention reduction)"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr: 653
+    merge_hold: "Draft PR #653 with label awaiting-soak-evidence. Do not merge it until a soak of dev after PR #622 and PR #620 merge, and a soak of this branch, are compared. TASK-021-11 must also discharge CLAIM-RSPACE-002."
+    pr_base_branch: dev
+    discovered_in: docs/discoveries/architecture-review-2026-10-06T114619Z.md
+    design: docs/casper/design/history-checkpoint-commit.md
+    glossary_terms:
+      - docs/Glossary.md#finalization-latency-p95
+    dependency_category: local-substitutable
+    tdd_plan: docs/tdd-plans/history-checkpoint-commit-2026-10-06.md
+    decision: "On 2026-10-06 the user chose the one-transaction write (F2) over F1 as contention reduction, not as the issue #24 fix. Maintainer approval is pending. rspace-history and rspace-roots share the LMDB environment rspace/history, so each checkpoint takes the single writer lock twice and fsyncs twice. The root commit also holds the global roots mutex. F1 alone would move the wait to the LMDB writer lock. F2 writes the nodes and the root in one transaction, outside the roots mutex."
+    plan:
+      step_1: "Checkpoint writer for the most common caller: History::stage, RadixTreeImpl::take_pending_writes, CheckpointWriter with KvCheckpointWriter over batched_put, roots_store::root_record_kvs. do_checkpoint stages under the current-history mutex and writes after it releases the mutex. No trait signature changes for callers in casper or rspace."
+      step_2: "Deferred until the soak of step 1 shows a measurable gain. One CheckpointCommit module (open, commit, contains_root) replaces RootRepository. The global roots mutex is deleted, and the collision check moves into the write transaction. A separate PR after step 1 has soak evidence."
+    rejected:
+      - "C2, an immutable History for issue #24: in production, checkpoints run on spawned repositories with their own mutex, so readers never wait for a checkpoint fsync. See the design record, section 3."
+      - "The flexible StateCommit interface with sync policies: three variants have no caller, and group commit weakens the durability of finalized state."
+    files:
+      - rspace++/src/rspace/history/history_repository_impl.rs
+      - rspace++/src/rspace/history/history.rs
+      - rspace++/src/rspace/history/instances/radix_history.rs
+      - rspace++/src/rspace/history/radix_tree.rs
+      - rspace++/src/rspace/history/roots_store.rs
+      - rspace++/src/rspace/history/root_repository.rs
+      - rspace++/src/rspace/history/history_repository.rs
+      - rspace++/tests/history/roots_lock_contention_tests.rs
+    acceptance:
+      - "A checkpoint advances the last_txn_id of the rspace/history LMDB environment by exactly 1, in a real-LMDB test through the history repository interface."
+      - "A checkpoint with actions makes exactly one CheckpointWriter write, an empty checkpoint makes none, and the written root equals the root of the new history, in tests through the repository interface with a recording adapter."
+      - "No CheckpointWriter write occurs while the roots mutex is held, asserted on one thread without timing."
+      - "A failing CheckpointWriter leaves the history store and current-root unchanged."
+      - "A key with a different stored value still fails with the collision error, and a key with an equal stored value is still skipped."
+      - "A process call with cache_r bounded to one entry completes without a missing-node error, which confirms or rejects the eviction defect in the design record."
+      - "Mocks sit only at the CheckpointWriter seam. No internal collaborator of the history repository is mocked."
+      - "The ignored roots_lock_contention_probe and its helpers are deleted. The remaining LMDB shape tests use the last_txn_id difference."
+      - "A soak of this branch, compared with a soak of dev after PR #622 and PR #620 merge, shows lower root commit and roots lock times and a sustained finalization p95 that is not worse."
+  - id: TASK-021-11
+    title: "Apply the CbC method to the checkpoint commit of TASK-021-10"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr: 653
+    origin: "On 2026-10-06 the user asked for a /cbc task for the checkpoint commit enhancements. The EPIC-021 cbc_policy requires a pending claim before any code change. The step-1 code of TASK-021-10 (74ab85dd2) was written without a claim, so this task closes that gap before PR #653 leaves draft."
+    method: "/cbc identify, then /cbc verify, then /cbc discharge. Follow the pattern of CLAIM-FINALITY-001 (docs/claims/settled-effect-probe-equivalence.md): specification first, a mechanized model, and a property test against the previous code path as the oracle."
+    files:
+      - docs/claims/rspace-history-checkpoint-commit.md
+      - rspace++/src/rspace/history/checkpoint_writer.rs
+      - rspace++/src/rspace/history/history_repository_impl.rs
+      - rspace++/src/rspace/history/instances/radix_history.rs
+      - rspace++/src/rspace/history/radix_tree.rs
+      - rspace++/src/rspace/history/roots_store.rs
+      - shared/src/rust/store/lmdb_key_value_store.rs
+    acceptance:
+      - "/cbc identify classifies each step-1 artifact. Each one is cbc=mandatory, or a maintainer decision records why it stays untagged."
+      - "docs/claims/rspace-history-checkpoint-commit.md registers CLAIM-RSPACE-002 with status pending before any further code change."
+      - "The claim states four properties. Atomicity: a recorded root always has all of its nodes in the history store. State equivalence: for every action list, stage and write produce the same root and the same store contents as the previous process and record_root path. Collision: a stored node with a different value fails the checkpoint and records no root. Write shape: one checkpoint with actions makes one write transaction on the history environment."
+      - "A bounded model checks atomicity over every crash point of the write sequence, both for one shared environment and for the fallback with separate stores. A negative control shows that root-before-nodes ordering violates atomicity."
+      - "A property test checks state equivalence on random action batches, with the previous process and record_root path as the oracle. The state root is consensus data, so any difference fails the test."
+      - "/cbc verify writes an evidence record for CLAIM-RSPACE-002, and /cbc discharge passes for the step-1 diff. The claims audit of CLAIM-CASPER-SOAK-001 to -008 still exits 0."
+      - "The maintainer accepts the evidence before PR #653 leaves draft."
+  - id: TASK-021-12
+    title: "Release parked blocks without queue, scan, and stale-link delays (issue #24)"
+    status: in_progress
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T00:40:00Z
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr: 653
+    tdd_plan: docs/tdd-plans/issue-24-parked-block-release-2026-10-07.md
+    origin: "On 2026-10-07 the user chose to fix issue #24 on the #653 branch. Soak 37469364217 on dev 778cc6754 failed 8 of 49 iterations with test_load 'N deploy(s) not finalized within 45s'. The 2026-09-25 issue breakdown shows that 56% of blocks park on missing parents, 7.1 s median and 39.6 s p90. A code trace found three release-path causes."
+    scope: "Release priority, the stale-link defect, and an incremental release scan, plus the round-length metrics. The recovery re-request for parents that the node already holds is out of scope."
+    files:
+      - docs/claims/casper-buffer-release.md
+      - casper/src/rust/blocks/block_processor.rs
+      - casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs
+      - node/src/rust/instances/block_processor_instance.rs
+      - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
+      - scripts/bench/extend-issue24-metrics.sh
+    acceptance:
+      - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 as pending before any code change (EPIC-021 cbc_policy)."
+      - "Each plan behavior has a test that fails before its change and passes after it. B5 reproduces the stale-link hold on the current code."
+      - "The soak records park time, release queue wait, release scan duration, and recovery re-requests."
+      - "A comparison soak against the scheduled dev soak on the same base reports sustained finalization p95, the test_load failure count, and the new metrics."
+      - "The maintainer accepts the soak and CbC evidence before PR #653 leaves draft."
 ---
 ```
 
 **Current state:** Created on 2026-10-03 after soak 37090117438 failed. Soak 37153082817 runs weekend-60h on master f93b72699 with the stage metrics. TASK-021-1 starts from the failed run, and TASK-021-4 waits for the new run.
-
----
-
-### EPIC-020: Node Log and Accept-Path Self-Limits
-
-```yaml
----
-epic_id: EPIC-020
-title: "Node Log and Accept-Path Self-Limits"
-status: in_progress
-priority: p0
-user_story: US-009
-user_flow: FLOW-002
-blocked_by: []
-created_at: 2026-09-23
-updated_at: 2026-09-30
-claimed_by: null
-branch: fix/node-log-and-accept-backoff
-pr_base_branch: dev
-stack_order: "Branches from dev and merges to dev before PR #447. PR #447 then merges dev. The soak branch inherits the fix through its next merge of the observation branch."
-origin: "On 2026-09-23 a nine-day compose network from a system-integration checkout filled 2.7 TB in one day. Its bootstrap ran out of file descriptors, the transport accept loop retried with no backoff and logged one ERROR line per attempt, the node wrote every line to its data volume and to stdout, and the container's json-file log had no size cap."
-execution_contract:
-  base_branch: dev
-  scope: "Make the node self-limiting under an error storm: backoff and rate-limited logging on accept failures, a byte-bounded file log, one sink per deployment, and a repository check that every node compose service caps its container log. Harness enforcement belongs to EPIC-017 on the soak branch."
-  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
-  cbc_policy: "The transport server and the logging module carry no cbc tag today. Propose cbc=mandatory for the accept path with a pending claim before the fix lands, or record the maintainer decision that the change stays untagged."
-  cbc_decision: "The maintainer decided on 2026-09-30 that the accept path stays untagged for TASK-020-1. The regression tests in f1r3fly_server_resource_tests.rs are the verification."
-tasks:
-  - id: TASK-020-1
-    title: "Back off and rate-limit the transport accept-error path"
-    status: complete
-    claimed_by: claude-session-f3cbc961
-    claimed_at: 2026-09-30T00:40:00Z
-    verification_claimed_by: 01a0ab62-71b3-7248-a800-37a6fde2e4fa
-    verification_claimed_at: 2026-09-30T01:03:01Z
-    verification_status: in_progress
-    blocked_by: []
-    work_log: docs/work-logs/transport-accept-resource-review-20260923.md
-    implementation_status: "Hosted Test (comm) passed all 400 tests, including all seven resource regressions and the Linux descriptor-exhaustion test. The approved story and flow repair now links EPIC-020 to US-009 and FLOW-002."
-    hosted_verification: docs/work-logs/evidence/task-020-1-hosted-20260930-01/report.json
-    hosted_run: 36651370411
-    hosted_job: 109688126217
-    unit_tests: [comm/src/rust/transport/f1r3fly_server_resource_tests.rs]
-    completion_blocker: null
-    remaining: []
-    files:
-      - comm/src/rust/transport/f1r3fly_server.rs
-    acceptance:
-      - "On an accept error the listener sleeps with exponential backoff, capped at one second, before the next accept."
-      - "Under sustained descriptor exhaustion the listener emits at most one ERROR line per backoff window and one summary line per minute with the suppressed count."
-      - "A test injects descriptor exhaustion against the listener and asserts the bounded line count and the recovery once descriptors return."
-      - "Ordinary accept throughput is unchanged. No backoff applies to a successful accept."
-    implementation_plan:
-      - "Step 1. Add a backoff state to the listener task: reset on success, double on error from 10 ms to 1 s."
-      - "Step 2. Route accept errors through a rate limiter that logs the first error, suppresses repeats inside the window, and logs a periodic summary with the suppressed count."
-      - "Step 3. Add the descriptor-exhaustion test with a lowered RLIMIT_NOFILE in a child process or a socket-pair fixture, and a regression that the current code fails."
-    completion_gaps: []
-    completed_date: 2026-09-30
-  - id: TASK-020-2
-    title: "Bound the file log by bytes, not only by time"
-    status: complete
-    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
-    claimed_at: 2026-09-30T01:20:37Z
-    blocked_by: []
-    work_log: docs/work-logs/task-020-2-byte-bounded-logging-20260930.md
-    files:
-      - shared/src/rust/tracing_init/mod.rs
-      - shared/src/rust/tracing_init/bounded_file.rs
-      - node/src/main/resources/defaults.conf
-      - node/src/rust/configuration/mod.rs
-    acceptance:
-      - "logging.file accepts a maximum size per file and a maximum total size for the log directory, with defaults that bound a node to a few gigabytes."
-      - "When the total bound is reached the oldest rotated file is removed before the appender writes further."
-      - "A test drives a hot error loop through the appender and asserts the directory never exceeds the bound."
-      - "The defaults comment no longer describes minutely rotation as the only way to bound disk use."
-    implementation_plan:
-      - "Step 1. Extend the rotation configuration with size-based rolling alongside the existing period."
-      - "Step 2. Enforce the total directory bound in the appender with an oldest-first eviction."
-      - "Step 3. Add the appender test and update the configuration test that pins daily rotation."
-    unit_tests: [shared/src/rust/tracing_init/mod.rs, shared/src/rust/tracing_init/bounded_file.rs, node/src/rust/configuration/mod.rs]
-    completion_gaps: []
-    completed_date: 2026-09-30
-  - id: TASK-020-3
-    title: "One sink per deployment and a container log cap check"
-    status: complete
-    completed_on: "2026-09-30"
-    recorded_by: claude-session-f3cbc961
-    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
-    claimed_at: 2026-09-30T02:23:57Z
-    claimed_at_source: clock_checkpoint_after_claim
-    blocked_by: []
-    work_log: docs/work-logs/task-020-3-deployment-log-caps-20260930.md
-    implementation_status: "The node deployment commands and repository guards pass at 7d64c9d03. The external single-sink change merged into system-integration dev on 2026-09-30. Its main promotion is pending and is appended when it lands."
-    external_handoff: docs/handoffs/task-020-3-system-integration-20260930.md
-    external_main_revision: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
-    external_single_sink_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
-    external_change:
-      repository: F1R3FLY-io/system-integration
-      pull_request: 146
-      branch: fix/single-log-sink-per-deployment
-      base_revision: ef9844893f19df3e7523bb97e9e0da0ca241bb10
-      receiver: claude-session-fbb1f4d0
-      dev_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
-      dev_merged_at: 2026-09-30T22:10:44Z
-      main_promotion_revision: null
-      request_record: "system-integration docs/ToDos.md, section REQUEST: one node log sink per deployment (SI-TASK-020-3)"
-    sink_contract:
-      compose_and_smoke_test: "stdout through sink = stdout in conf/rust.conf and conf/standalone-dev.conf, bounded by json-file 100m x 3, read by docker logs and shardctl"
-      integration_docker_provider: "file through --log-sink=file before run at 6 launch sites (NODE_LOG_SINK_ARGS in integration-tests/test/infra/compose.py), read from /var/lib/rnode/logs/node.log*"
-      integration_subprocess_provider: "stdout through the conf, read from the captured process output"
-      development_override: "both only through an explicit --log-sink=both before run"
-    external_verification:
-      - "unit-tests/test_log_sink_policy.py at ccd717195: 34 passed (run from a git archive export with the repository Poetry environment)."
-      - "poetry run pytest unit-tests at the PR head: 355 passed. ruff 0.16.0 check and format clean."
-      - "docker compose config for the 5 node variants: 11 node services, all json-file 100m and 3 files, Compose files unchanged."
-      - "Live suites (system-integration commit e7163d57): test_heartbeat passed in PR CI. test_token_metadata standalone and shared, and test_shard_degradation: 15 of 15 passed locally with F1R3FLY_NODE_DEFAULTS_CONF set."
-    node_verification_at_7d64c9d03:
-      - "scripts/ci/test-compose-log-policy.sh: shard-vps2 3, ci-shard 5, ci-standalone 1 node services passed."
-      - "cargo nextest run -p node --test log_sink_cli: 3 passed."
-      - "scripts/supply-chain cargo test --test repository: 18 passed."
-      - "Pre-commit fmt, clippy, test, and deny passed at the merge commit 7d64c9d03 (dev ccd4a4823 merged)."
-    remaining_outside_this_task:
-      - "The byte limits of node commit 6e1c8833a reach system-integration runs through the next node repin of SYSTEM_INTEGRATION_REF. TASK-020-4 on formal/soak-casper-consensus enforces them in the harness."
-      - "Append the system-integration main promotion revision to external_change when it lands."
-    unit_tests: [scripts/supply-chain/tests/repository.rs, scripts/supply-chain/tests/support/compose_logging.rs, node/tests/log_sink_cli.rs]
-    files:
-      - Cargo.lock
-      - scripts/supply-chain/Cargo.toml
-      - scripts/supply-chain/tests/repository.rs
-      - scripts/supply-chain/tests/support/compose_logging.rs
-      - scripts/ci/test-compose-log-policy.sh
-      - node/tests/log_sink_cli.rs
-      - docker/shard.yml
-      - docker/standalone.yml
-      - docker/observer.yml
-      - docker/validator4.yml
-      - docker/shard.vps1.yml
-      - docker/shard.vps2.yml
-      - docs/node/README.md
-    acceptance:
-      - "Every compose service in this repository that runs a node image sets logging.options.max-size and max-file."
-      - "A repository test fails when a node compose service lacks the cap, in the same style as the workflow cache-write test."
-      - "Deployment defaults use one sink. The sink both is documented as a development setting that doubles disk use."
-      - "The system-integration compose file receives the same cap through a coordinated change in that repository, recorded here with its merge revision."
-    notes:
-      - "The six base Compose files already cap at 100m and three files. The CI port overlays inherit these limits."
-      - "The monitoring Compose file has no blockchain node service. Its storage policy is outside this task."
-      - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
-  - id: TASK-020-4
-    title: "Harness enforcement of node log growth under EPIC-017"
-    status: done
-    completed_at: 2026-10-05
-    reopened_at: 2026-10-05
-    reopened_reason: "The PR #622 review of 2026-10-05 found two probe defects. A container that stopped during a sample caused a false breach. An unreadable rotated container log was skipped without a report. The fix changes the driver and the disk fixture, so the acceptance of 2026-10-04 does not cover the new bytes."
-    resolution: "First version implemented in 83a41b564 (PR #622). Review package casper-soak-log-budget-guardian-20261004-01 at 6ea45dc8f, accepted by jltatbeach in PR #622 comment 5983133741. The acceptance package casper-soak-log-budget-guardian-acceptance-20261004-01 and the ledger records of the driver and the disk fixture carry the new digests. The probe fix 82fe22a0a has review package casper-soak-log-budget-guardian-20261005-01 at 1a04095da, accepted by jltatbeach in PR #622 comment 6005866151. The acceptance package casper-soak-log-budget-guardian-acceptance-20261005-01 and the two ledger records carry the new digests."
-    claimed_by: claude-session-aa467dea
-    claimed_at: 2026-10-04T14:36:28Z
-    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
-    mirrored_as: TASK-017-17
-    design: docs/casper/design/soak-log-budget-guardian.md
-    implementation_status: "Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04. The driver samples the container json-file log and the node log directory of each owned container, refuses admission on an unreadable probe, and breaches on 3 strikes or one sample at two times the budget. Ten log scenarios in scripts/bench/test-soak-disk-admission.sh pass in the disposable container, and the breach and refusal scenarios fail against the previous driver. CLAIM-SOAK-001 records the log caps as enforced. The 2026-10-05 fix skips a container that stops during a sample and fails the probe on a rotated log that exists but cannot be read. Scenarios log-probe-vanished and log-rotated-unreadable pass, and both fail against the driver at 514eb3026. All 12 log scenarios pass. The maintainer accepted the fix on 2026-10-05."
-    owner_branch: formal/soak-casper-consensus
-    blocked_by: []
-    blockers_cleared: "TASK-020-1 and TASK-020-2 are complete. The implementation runs as TASK-017-17 on the soak branch."
-    acceptance:
-      - "The soak guardian samples the node log directory and the container json-file size, not only free space, and stops the run when either exceeds its budget."
-      - "A soak fixture injects descriptor exhaustion into a node and asserts the guardian and the node limits hold."
-      - "CLAIM-SOAK-001 records the log cap as an enforced check instead of an assumption."
-    notes:
-      - "This task is tracked here for ordering only. The downstream agent mirrors it into EPIC-017 on the soak branch, where the claim and the driver live."
----
-```
-
-**Current state:** TASK-020-1, TASK-020-2, and TASK-020-3 merged to dev through PR #451 on 2026-10-03 and reached master with the soak stack. TASK-020-4 is implemented on PR #622: the soak guardian samples the node log directory and the container json-file size, and CLAIM-SOAK-001 records the log caps as enforced. The maintainer accepted the first version on 2026-10-04 and the probe fix on 2026-10-05. Soak 37343966570 runs the guardian for the first time. Also open: the TASK-020-1 verification status and the system-integration main promotion revision of TASK-020-3.
 
 ---
 
@@ -1997,7 +2050,7 @@ tasks:
 
   - id: TASK-017-17
     title: "Enforce the node log budgets in the soak guardian"
-    status: done
+    status: complete
     completed_at: 2026-10-05
     reopened_at: 2026-10-05
     resolution: "See TASK-020-4. Accepted in PR #622 comment 5983133741, and the probe fix in comment 6005866151."
@@ -3720,7 +3773,7 @@ PR #390 meeting record + PR #216 candidate ─> EPIC-017 pre-merge plan and base
 PR #430 ─> PR #431 ─> PR #432 ─> PR #433 ─> EPIC-017 harness prerequisites
 EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixtures
 EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
-EPIC-020 (node log and accept-path limits, fix branch -> dev) ─> merges before PR #447
+EPIC-020 (node log and accept-path limits, complete 2026-10-06) ─> merged to dev before PR #447
 EPIC-017 harness + PR #441 stage metrics ─> EPIC-021 (issue #24 root cause, fix/issue-24 -> dev)
 EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22

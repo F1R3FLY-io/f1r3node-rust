@@ -64,9 +64,10 @@ use super::substitute::Substitute;
 use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
 use crate::rust::interpreter::accounting::costs::{
-    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
-    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
-    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
+    add_cost, bytes_to_hex_cost, concat_bytes_cost, decode_utf8_cost, diff_cost, hex_to_bytes_cost,
+    interpolate_cost, keys_method_cost, length_method_cost, lookup_cost, match_eval_cost,
+    nth_method_call_cost, remove_cost, size_method_cost, slice_cost, take_cost, to_byte_array_cost,
+    to_list_cost, union_cost, valid_utf8_prefix_len_cost,
 };
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
@@ -134,6 +135,20 @@ pub struct DebruijnInterpreter {
     pub(crate) single_term_evaluations: Arc<AtomicU64>,
     pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
     pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
+    /// Slice 31: phase-scoped URN visibility.  When `true` (the
+    /// default), `eval_new` refuses to resolve any URN whose
+    /// string starts with `FS_NATIVE_URN_PREFIX`
+    /// (`rho:io:fs:native:1.0.0/`).  Genesis composition needs
+    /// those URNs to bind the raw fs primitives into FsGenesis's
+    /// new-scope; user deploys must not, because that would bypass
+    /// Fs.rho's sandbox / mode-cap / bundle checks.  A yet-to-land
+    /// runtime slice will toggle the flag off before running
+    /// genesis-time deploys and back on afterwards; state-execution
+    /// deploys leave it at the default.
+    ///
+    /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
+    /// system-process closures that clone the reducer.
+    pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
 }
 
 type Application = Option<(
@@ -1322,6 +1337,29 @@ impl DebruijnInterpreter {
         env: Env<Par>,
         mut rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        // Slice 31: phase-scoped URN visibility.  Reject fs-native
+        // URNs during state-execution deploys so user code cannot
+        // bypass Fs.rho's sandbox by binding the raw primitives.
+        // Genesis composition toggles the flag off (yet-to-land
+        // runtime slice) so FsGenesis can bind `fsRead`/`fsWrite`/...
+        // directly in its outer new-scope.
+        if self
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            for urn in &new.uri {
+                if urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
+                    return Err(InterpreterError::ReduceError(format!(
+                        "urn `{urn}` is not resolvable in this phase; \
+                         rho:io:fs:native:* URNs are reserved for the \
+                         genesis-blessed FsGenesis deploy — user code \
+                         must instead go through the Fs cap published \
+                         at genesis"
+                    )));
+                }
+            }
+        }
+
         let mut alloc = |count: usize, urns: Vec<String>| {
             let simple_news =
                 (0..(count - urns.len()))
@@ -3035,6 +3073,175 @@ impl DebruijnInterpreter {
         }
 
         Box::new(BytesToHexMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // concatBytes (on List of ByteArrays) — spec §Native buffer helpers.
+    // Concatenates elements in order.  Empty list → zero-length ByteArray.
+    // Non-List receiver or non-ByteArray element raises MethodNotDefined.
+    // Ported from fileio (Wave 5 PR 5.73).
+    // -------------------------------------------------------------------
+    fn concat_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ConcatBytesMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for ConcatBytesMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("concatBytes"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::EListBody(elist) => {
+                            // Two-pass: total length, then a single allocation.
+                            let mut segments: Vec<Vec<u8>> = Vec::with_capacity(elist.ps.len());
+                            for elem in &elist.ps {
+                                match single_expr(elem) {
+                                    Some(Expr {
+                                        expr_instance: Some(ExprInstance::GByteArray(bytes)),
+                                    }) => segments.push(bytes),
+                                    _ => {
+                                        return Err(InterpreterError::MethodNotDefined {
+                                            method: String::from("concatBytes"),
+                                            other_type: String::from("non-ByteArray element"),
+                                        });
+                                    }
+                                }
+                            }
+                            let total: usize = segments.iter().map(|s| s.len()).sum();
+                            self.outer.cost.charge(concat_bytes_cost(total))?;
+                            let mut out = Vec::with_capacity(total);
+                            for s in segments {
+                                out.extend_from_slice(&s);
+                            }
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GByteArray(out)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("concatBytes"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(ConcatBytesMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // validUtf8PrefixLen (on ByteArray) — spec §Native buffer helpers.
+    // Total on ByteArray; never raises.  Returns the length of the
+    // longest valid-UTF-8 prefix of the receiver.
+    // Ported from fileio (Wave 5 PR 5.89).
+    // -------------------------------------------------------------------
+    fn valid_utf8_prefix_len_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ValidUtf8PrefixLenMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for ValidUtf8PrefixLenMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("validUtf8PrefixLen"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::GByteArray(bytes) => {
+                            self.outer.cost.charge(valid_utf8_prefix_len_cost(&bytes))?;
+                            let prefix = match std::str::from_utf8(&bytes) {
+                                Ok(_) => bytes.len(),
+                                Err(e) => e.valid_up_to(),
+                            };
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GInt(prefix as i64)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("validUtf8PrefixLen"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(ValidUtf8PrefixLenMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // decodeUtf8 (on ByteArray) — spec §Native buffer helpers.  Total on
+    // ByteArray; ill-formed sequences substituted with U+FFFD, per Unicode
+    // §3.9 (matches Rust `String::from_utf8_lossy`).
+    // Ported from fileio (Wave 5 PR 5.89).
+    // -------------------------------------------------------------------
+    fn decode_utf8_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct DecodeUtf8Method<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for DecodeUtf8Method<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("decodeUtf8"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::GByteArray(bytes) => {
+                            self.outer.cost.charge(decode_utf8_cost(&bytes))?;
+                            let decoded = String::from_utf8_lossy(&bytes).into_owned();
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GString(decoded)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("decodeUtf8"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(DecodeUtf8Method { outer: self })
     }
 
     fn to_utf8_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
@@ -7002,6 +7209,12 @@ impl DebruijnInterpreter {
         table.insert("toByteArray".to_string(), self.to_byte_array_method());
         table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
         table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
+        table.insert("concatBytes".to_string(), self.concat_bytes_method());
+        table.insert(
+            "validUtf8PrefixLen".to_string(),
+            self.valid_utf8_prefix_len_method(),
+        );
+        table.insert("decodeUtf8".to_string(), self.decode_utf8_method());
         table.insert("toUtf8Bytes".to_string(), self.to_utf8_bytes_method());
         table.insert("union".to_string(), self.union_method());
         table.insert("diff".to_string(), self.diff_method());
@@ -7327,6 +7540,9 @@ impl DebruijnInterpreter {
             single_term_evaluations: Arc::new(AtomicU64::new(0)),
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+            // Default: reject fs native URNs.  Genesis composition
+            // flips the flag off via a yet-to-land runtime slice.
+            filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

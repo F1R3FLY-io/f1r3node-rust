@@ -975,6 +975,12 @@ impl RadixTreeImpl {
      * If detected collision with older KVDB data - execute Exception
      */
     pub fn commit(&self) -> Result<(), RadixTreeError> {
+        let pending = self.pending_writes()?;
+        self.store.put(pending)?;
+        Ok(())
+    }
+
+    pub fn pending_writes(&self) -> Result<Vec<(ByteVector, ByteVector)>, RadixTreeError> {
         fn collision_panic(collisions: Vec<(ByteVector, ByteVector)>) -> RadixTreeError {
             RadixTreeError::CollisionError(format!(
                 "{} collisions in KVDB (first collision with key = {}.",
@@ -1030,13 +1036,7 @@ impl RadixTreeImpl {
             .map(|(kv, _)| kv)
             .collect();
 
-        let serialized_kv_absent = kv_absent
-            .into_iter()
-            .map(|(key, value)| (key, value))
-            .collect();
-
-        self.store.put(serialized_kv_absent)?;
-        Ok(())
+        Ok(kv_absent)
     }
 
     /**

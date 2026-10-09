@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark,
-    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING, MAX_PARALLEL_BLOCKS,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -20,9 +20,10 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use tokio::sync::mpsc;
 
-/// Pipeline width; replay itself is serialized by the runtime's ReplayLock.
-const MAX_PARALLEL_BLOCKS: usize = 2;
+use super::release_queue::{run_scheduler, ReleaseQueue};
+
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
+const RELEASED_BLOCKS_BEFORE_GOSSIP_TURN: usize = 4;
 
 struct ActiveBlockProcessingGuard;
 
@@ -91,6 +92,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 block_processor,
                 blocks_in_processing,
             } = self;
+            drop(block_queue_tx);
 
             tracing::info!(
                 max_parallel_blocks = MAX_PARALLEL_BLOCKS,
@@ -101,11 +103,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 "source" => BLOCK_PROCESSOR_METRICS_SOURCE
             )
             .set(MAX_PARALLEL_BLOCKS as f64);
-            run_block_tasks(blocks_queue_rx, shutdown, move |(casper, block, in_flight_guard)| {
+            let release_processor = block_processor.clone();
+            run_block_tasks(blocks_queue_rx, shutdown, move |(casper, block, in_flight_guard): BlockQueueItem| {
                 let block_processor = block_processor.clone();
-                let blocks_in_processing = blocks_in_processing.clone();
-                let block_queue_tx = block_queue_tx.clone();
-                let casper = casper.clone();
                 let result_tx = result_tx.clone();
 
                 async move {
@@ -180,7 +180,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     // This avoids suppressing re-enqueue when another task resolves a dependency
                     // while this task is still in post-processing.
                     drop(in_flight_guard);
-
+                    (casper, block_str)
+                }
+            },
+            move |(casper, block_str): (Arc<dyn MultiParentCasper + Send + Sync>, String)| {
+                let block_processor = release_processor.clone();
+                let blocks_in_processing = blocks_in_processing.clone();
+                async move {
+                    let mut released = Vec::new();
                     // Step 6 (from Scala): Get dependency-free blocks from buffer and enqueue them
                     // Equivalent to: c.getDependencyFreeFromBuffer
                     match casper.get_dependency_free_from_buffer() {
@@ -214,24 +221,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                 }
                                 match mark_in_flight(&blocks_in_processing, pendant_hash.clone()) {
                                     InFlightMark::Marked(guard) => {
-                                        if block_queue_tx
-                                            .send((casper.clone(), pendant.clone(), guard))
-                                            .await
-                                            .is_err()
-                                        {
-                                            tracing::warn!(
-                                                "Dropping dependency-free pendant {} because block \
-                                                 queue is closed",
-                                                PrettyPrinter::build_string_bytes(&pendant.block_hash)
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                "Enqueued dependency-free pendant {}",
-                                                PrettyPrinter::build_string_bytes(
-                                                    &pendant.block_hash
-                                                )
-                                            );
-                                        }
+                                        tracing::info!(
+                                            "Enqueued dependency-free pendant {}",
+                                            PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                        );
+                                        released.push((casper.clone(), pendant.clone(), guard));
                                     }
                                     InFlightMark::CapReached => {
                                         block_processor.note_local_backpressure_drop(
@@ -260,8 +254,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         }
                     }
 
+                    released
                 }
             }).await?;
+
             tracing::info!("Block processing queue closed, stopping processor");
 
             Result::<(), CasperError>::Ok(())
@@ -270,46 +266,59 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     }
 }
 
-async fn run_block_tasks<Item, Process, Task>(
-    mut queue: mpsc::Receiver<Item>,
+async fn run_block_tasks<Item, Context, Process, Task, Release, Scan>(
+    mut input: mpsc::Receiver<Item>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     process: Process,
+    release: Release,
 ) -> Result<(), CasperError>
 where
     Item: Send + 'static,
-    Process: Fn(Item) -> Task,
-    Task: Future<Output = ()> + Send + 'static,
+    Context: Send + 'static,
+    Process: Fn(Item) -> Task + Send + Sync + 'static,
+    Task: Future<Output = Context> + Send + 'static,
+    Release: Fn(Context) -> Scan + Send + Sync + 'static,
+    Scan: Future<Output = Vec<Item>> + Send + 'static,
 {
-    let mut tasks = tokio::task::JoinSet::new();
-    let result = async {
+    let queue = Arc::new(ReleaseQueue::new(
+        RELEASED_BLOCKS_BEFORE_GOSSIP_TURN,
+        MAX_PARALLEL_BLOCKS,
+    ));
+    let gossip_queue = queue.clone();
+    let forward = async move {
         let mut stopping = false;
         loop {
             tokio::select! {
                 biased;
-                Some(result) = tasks.join_next(), if !tasks.is_empty() => {
-                    result.map_err(block_task_error)?;
-                }
-                _ = shutdown.wait_for(|stopping| *stopping), if !stopping => {
+                _ = async { let _ = shutdown.wait_for(|stopping| *stopping).await; }, if !stopping => {
                     stopping = true;
-                    queue.close();
+                    input.close();
                 }
-                item = queue.recv(), if tasks.len() < MAX_PARALLEL_BLOCKS => {
-                    match item {
-                        Some(item) => { tasks.spawn(process(item)); }
-                        None => break,
+                item = input.recv() => {
+                    let Some(item) = item else { break };
+                    let push = gossip_queue.push_gossip_wait(item);
+                    tokio::pin!(push);
+                    tokio::select! {
+                        biased;
+                        _ = async { let _ = shutdown.wait_for(|stopping| *stopping).await; }, if !stopping => {
+                            stopping = true;
+                            input.close();
+                            push.await;
+                        }
+                        _ = &mut push => {}
                     }
                 }
             }
         }
-        while let Some(result) = tasks.join_next().await {
-            result.map_err(block_task_error)?;
-        }
+        gossip_queue.close();
         Ok(())
-    }
-    .await;
-    queue.close();
-    tasks.shutdown().await;
-    result
+    };
+    tokio::try_join!(
+        forward,
+        run_scheduler(queue, MAX_PARALLEL_BLOCKS, process, release),
+    )
+    .map_err(block_task_error)?;
+    Ok(())
 }
 
 fn block_task_error(error: tokio::task::JoinError) -> CasperError {

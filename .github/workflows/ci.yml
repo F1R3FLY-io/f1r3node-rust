@@ -328,6 +328,9 @@ jobs:
     needs: build_base
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -344,6 +347,55 @@ jobs:
       - name: Verify workflow security invariants
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
+
+      - name: Verify commit trailer check
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-check-commit-trailers.sh
+
+      # Every commit author and Co-authored-by trailer in the pull request must
+      # be ratified: an email that already authored a commit in the base
+      # history, which only accepted pull requests reach (CLAUDE.md "Commit
+      # Messages"). A trailer never ratifies an identity, and a pull request
+      # cannot ratify its own identities. Commits that GitHub attributes to
+      # the pull request author skip the author check, so an outside
+      # contributor can open a pull request; maintainer review decides
+      # acceptance. The fetch takes commit objects only.
+      - name: Verify commit identities in pull request commits
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        shell: bash -euo pipefail {0}
+        run: |
+          unshallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
+          git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
+          count="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")"
+          if [ "$count" -gt 250 ]; then
+            echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"
+          fi
+          # Only a human account (type User) exempts its own commits. A bot or
+          # app account that opens a pull request gets no exemption.
+          exempt="$RUNNER_TEMP/exempt-authors.txt"
+          : > "$exempt"
+          if [ "$PR_AUTHOR_TYPE" = User ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" --paginate \
+              --jq '.[] | select(.author.login == env.PR_AUTHOR) | .sha' > "$exempt"
+          else
+            echo "Pull request author ${PR_AUTHOR} is a ${PR_AUTHOR_TYPE} account; no author exemption."
+          fi
+          # The base commit's denied list applies, so a pull request cannot
+          # remove its own block. Before the list reaches the base branch,
+          # the pull request's copy applies.
+          denied="$RUNNER_TEMP/denied-identities.txt"
+          git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied" 2>/dev/null ||
+            cp .github/denied-identities.txt "$denied"
+          .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}" \
+            --ratified-from "$BASE_SHA" --exempt-authors "$exempt" --denied "$denied"
 
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}
@@ -451,6 +503,12 @@ jobs:
       - name: Verify isolated disk admission and emergency scenarios
         shell: bash -euo pipefail {0}
         run: bash scripts/bench/test-soak-disk-admission.sh
+
+      - name: Verify the disk admission failure report and bounded-command liveness
+        shell: bash -euo pipefail {0}
+        env:
+          SOAK_DISK_TEST_SKIP_TIMING: "1"
+        run: bash scripts/bench/test-soak-disk-admission-timing.sh
 
       - name: Check formatting
         run: cargo fmt --all -- --check
