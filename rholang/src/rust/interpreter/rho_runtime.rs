@@ -692,21 +692,43 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
             )?,
             None => super::accounting::byte_accounting::produce_introduction_identity(source),
         };
-        let authority = self
+        // Changed by D-F2 (DR-118): the record also carries the reducer's
+        // measurement, which the metered observation reuses.
+        // let authority = self
+        //     .budget
+        //     .introduction_authority(
+        //         identity,
+        //         super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+        //     )
+        //     .map_err(RSpaceError::from)?;
+        // let observed = match host.as_ref() {
+        //     Some(_) => {
+        //         super::accounting::observation_construction::produce_introduction_metered_with_identity(
+        //             identity, channel, data, &authority, &meter,
+        //         )?
+        //     }
+        //     None => super::accounting::observation_construction::produce_introduction(
+        //         source, channel, data, &authority,
+        //     )?,
+        // };
+        let record = self
             .budget
-            .introduction_authority(
+            .introduction(
                 identity,
                 super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
             )
             .map_err(RSpaceError::from)?;
         let observed = match host.as_ref() {
             Some(_) => {
-                super::accounting::observation_construction::produce_introduction_metered_with_identity(
-                    identity, channel, data, &authority, &meter,
+                super::accounting::observation_construction::produce_introduction_recorded_metered_with_identity(
+                    identity, channel, data, &record, &meter,
                 )?
             }
             None => super::accounting::observation_construction::produce_introduction(
-                source, channel, data, &authority,
+                source,
+                channel,
+                data,
+                &record.authority,
             )?,
         };
         self.budget
@@ -749,21 +771,44 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
             )?,
             None => super::accounting::byte_accounting::consume_introduction_identity(source),
         };
-        let authority = self
+        // Changed by D-F2 (DR-118): the record also carries the reducer's
+        // measurement, which the metered observation reuses.
+        // let authority = self
+        //     .budget
+        //     .introduction_authority(
+        //         identity,
+        //         super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+        //     )
+        //     .map_err(RSpaceError::from)?;
+        // let observed = match host.as_ref() {
+        //     Some(_) => {
+        //         super::accounting::observation_construction::consume_introduction_metered_with_identity(
+        //             identity, channels, patterns, continuation, &authority, &meter,
+        //         )?
+        //     }
+        //     None => super::accounting::observation_construction::consume_introduction(
+        //         source, channels, patterns, continuation, &authority,
+        //     )?,
+        // };
+        let record = self
             .budget
-            .introduction_authority(
+            .introduction(
                 identity,
                 super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
             )
             .map_err(RSpaceError::from)?;
         let observed = match host.as_ref() {
             Some(_) => {
-                super::accounting::observation_construction::consume_introduction_metered_with_identity(
-                    identity, channels, patterns, continuation, &authority, &meter,
+                super::accounting::observation_construction::consume_introduction_recorded_metered_with_identity(
+                    identity, channels, patterns, continuation, &record, &meter,
                 )?
             }
             None => super::accounting::observation_construction::consume_introduction(
-                source, channels, patterns, continuation, &authority,
+                source,
+                channels,
+                patterns,
+                continuation,
+                &record.authority,
             )?,
         };
         self.budget

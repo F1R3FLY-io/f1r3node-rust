@@ -47,6 +47,9 @@ use super::accounting::authority::{
     resolve_system_residue, sig_to_cost_signature, sig_to_cost_signature_metered,
     system_residue_authority, AuthorityError, ResidueContext,
 };
+use super::accounting::byte_accounting::{
+    message_field_bytes, par_with_random_bytes, IntroductionMeasurement,
+};
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
@@ -575,6 +578,7 @@ impl ReducerCore {
         data: ListParWithRandom,
         persistent: bool,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -583,7 +587,7 @@ impl ReducerCore {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.produce_inner(chan, data, persistent, introduction_authority),
+            inner: self.produce_inner(chan, data, persistent, introduction_authority, measurement),
         })
     }
 
@@ -593,13 +597,22 @@ impl ReducerCore {
         data: ListParWithRandom,
         persistent: bool,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
         let source = Produce::create(&chan, &data, persistent);
-        self.metering.budget().register_introduction_authority(
+        // Changed by D-F2 (DR-118): the registration also carries the
+        // measurement of the datum, which the observers reuse.
+        // self.metering.budget().register_introduction_authority(
+        //     super::accounting::byte_accounting::produce_introduction_identity(&source),
+        //     super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+        //     &introduction_authority,
+        // )?;
+        self.metering.budget().register_introduction(
             super::accounting::byte_accounting::produce_introduction_identity(&source),
             super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
             &introduction_authority,
+            measurement,
         )?;
         let produce_result = self
             .space
@@ -619,6 +632,7 @@ impl ReducerCore {
                         produce_event.clone().output_value,
                         produce_event.failed,
                         introduction_authority,
+                        measurement,
                     )
                     .await?;
 
@@ -683,6 +697,7 @@ impl ReducerCore {
         guard: Option<Par>,
         authority: CostAuthority,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -699,6 +714,7 @@ impl ReducerCore {
                 guard,
                 authority,
                 introduction_authority,
+                measurement,
             ),
         })
     }
@@ -712,6 +728,7 @@ impl ReducerCore {
         guard: Option<Par>,
         authority: CostAuthority,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
 
@@ -726,10 +743,18 @@ impl ReducerCore {
             cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
         };
         let source = Consume::create(&sources, &patterns, &continuation, persistent);
-        self.metering.budget().register_introduction_authority(
+        // Changed by D-F2 (DR-118): the registration also carries the
+        // measurement of the body and the guard, which the observers reuse.
+        // self.metering.budget().register_introduction_authority(
+        //     super::accounting::byte_accounting::consume_introduction_identity(&source),
+        //     super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+        //     &introduction_authority,
+        // )?;
+        self.metering.budget().register_introduction(
             super::accounting::byte_accounting::consume_introduction_identity(&source),
             super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
             &introduction_authority,
+            measurement,
         )?;
         let consume_result = self
             .space
@@ -758,6 +783,7 @@ impl ReducerCore {
             guard,
             authority,
             introduction_authority,
+            measurement,
         )
         .await
     }
@@ -772,6 +798,7 @@ impl ReducerCore {
         previous_output: Vec<Vec<u8>>,
         trace_failed: bool,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         // During replay, if the trace shows a failed non-deterministic process,
         // we cannot replay it - the external service call failed during original execution
@@ -852,6 +879,7 @@ impl ReducerCore {
                                 data_clone,
                                 persistent_flag,
                                 introduction_authority_clone,
+                                measurement,
                             )
                             .await
                     })
@@ -920,6 +948,7 @@ impl ReducerCore {
         guard: Option<Par>,
         authority: CostAuthority,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -984,6 +1013,7 @@ impl ReducerCore {
                                 guard_clone,
                                 authority_clone,
                                 introduction_authority_clone,
+                                measurement,
                             )
                             .await
                     })
@@ -1106,8 +1136,11 @@ impl ReducerCore {
                         }
                         None => CostAuthority::default(),
                     };
+                    // D-F2 (DR-118): a restored datum passes no measurement. A
+                    // datum that this deployment produced keeps its first
+                    // registration, and the observer walks any other one.
                     self_clone
-                        .produce(chan, removed_data, false, introduction_authority)
+                        .produce(chan, removed_data, false, introduction_authority, None)
                         .await
                 })
                     as Pin<
@@ -1421,14 +1454,33 @@ impl ReducerCore {
             None => sub_chan,
         };
 
-        let subst_data = send
+        // Changed by D-F2 (DR-118): the substitution also returns the prost
+        // length of each datum, and the produce introduction reuses it.
+        // let subst_data = send
+        //     .data
+        //     .iter()
+        //     .map(|expr| {
+        //         let evaluated = self.eval_expr(expr, env)?;
+        //         self.substitute.substitute_and_charge(&evaluated, 0, env)
+        //     })
+        //     .collect::<Result<Vec<_>, InterpreterError>>()?;
+        let measured_data = send
             .data
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
-                self.substitute.substitute_and_charge(&evaluated, 0, env)
+                self.substitute.substitute_and_measure(&evaluated, 0, env)
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
+        let pars = measured_data.iter().try_fold(0_u64, |total, (_, bytes)| {
+            message_field_bytes(1, *bytes)
+                .ok()
+                .and_then(|field| total.checked_add(field))
+        });
+        let subst_data = measured_data
+            .into_iter()
+            .map(|(par, _)| par)
+            .collect::<Vec<_>>();
 
         self.produce(
             unbundled,
@@ -1440,6 +1492,7 @@ impl ReducerCore {
             },
             send.persistent,
             authority,
+            pars.map(|pars| IntroductionMeasurement::Produce { pars }),
         )
         .await?;
         Ok(())
@@ -1515,11 +1568,20 @@ impl ReducerCore {
         // stay as free vars for the matcher to fill in. Stored once on
         // the TaggedContinuation so it sees every bound variable across
         // every bind. Plan §7.12.
-        let subst_guard = match receive.condition.as_ref() {
+        // Changed by D-F2 (DR-118): the substitution also returns the guard's
+        // prost length, and the consume introduction reuses it.
+        // let subst_guard = match receive.condition.as_ref() {
+        //     Some(c) if c != &Par::default() => {
+        //         Some(self.substitute.substitute_and_charge(c, 1, env)?)
+        //     }
+        //     _ => None,
+        // };
+        let (subst_guard, guard_bytes) = match receive.condition.as_ref() {
             Some(c) if c != &Par::default() => {
-                Some(self.substitute.substitute_and_charge(c, 1, env)?)
+                let (guard, bytes) = self.substitute.substitute_and_measure(c, 1, env)?;
+                (Some(guard), Some(bytes))
             }
-            _ => None,
+            _ => (None, None),
         };
 
         let binds = receive
@@ -1546,23 +1608,52 @@ impl ReducerCore {
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
-        let subst_body = self.substitute.substitute_no_sort_and_charge(
+        // Changed by D-F2 (DR-118): the substitution also returns the body's
+        // prost length, and the consume introduction reuses it.
+        // let subst_body = self.substitute.substitute_no_sort_and_charge(
+        //     receive.body.as_ref().unwrap(),
+        //     0,
+        //     &env.shift(receive.bind_count),
+        // )?;
+        //
+        // self.consume(
+        //     binds,
+        //     ParWithRandom {
+        //         body: Some(subst_body),
+        //         random_state: rand.to_bytes(),
+        //     },
+        //     receive.persistent,
+        //     receive.peek,
+        //     subst_guard,
+        //     receive_authority,
+        //     introduction_authority,
+        // )
+        // .await?;
+        let (subst_body, body_bytes) = self.substitute.substitute_no_sort_and_measure(
             receive.body.as_ref().unwrap(),
             0,
             &env.shift(receive.bind_count),
         )?;
+        let body = ParWithRandom {
+            body: Some(subst_body),
+            random_state: rand.to_bytes(),
+        };
+        let measurement = par_with_random_bytes(body_bytes, &body.random_state)
+            .ok()
+            .map(|body| IntroductionMeasurement::Consume {
+                body,
+                guard: guard_bytes,
+            });
 
         self.consume(
             binds,
-            ParWithRandom {
-                body: Some(subst_body),
-                random_state: rand.to_bytes(),
-            },
+            body,
             receive.persistent,
             receive.peek,
             subst_guard,
             receive_authority,
             introduction_authority,
+            measurement,
         )
         .await?;
         Ok(())
@@ -2081,7 +2172,7 @@ impl ReducerCore {
             cells,
             &authority,
         )?;
-        self.produce(channel, datum, false, authority).await?;
+        self.produce(channel, datum, false, authority, None).await?;
         reservation.commit();
         Ok(())
     }

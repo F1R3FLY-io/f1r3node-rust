@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f700a4cda72d03f8d9836a58a11f86427c2e4af32eaa73f95d3181e8ca9478c7 # shrinks to channel = Par { sends: [], receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: [], connective_used: false, cost_signed_terms: [], cost_stacks: [] }, pars = [], random_state = [], cost_authority = None, cost_stack = None
+cc 38d31444a54e713a1c80ab515ba0a8746344406afe1b012148728077bfa2c1c2 # shrinks to body = Par { sends: [], receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: [], connective_used: false, cost_signed_terms: [], cost_stacks: [] }, random_state = []
+cc f06bebde434fd6f59ce8b7981521fa9c1ada6f583dc93c53b5f36b6697c57514 # shrinks to channel = Par { sends: [], receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: [], connective_used: false, cost_signed_terms: [], cost_stacks: [] }, pars = [], random_state = [], cost_authority = None, cost_stack = None

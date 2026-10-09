@@ -506,6 +506,7 @@ theories/FailedSettlementMergeIndex.v
 theories/SignedLimitExhaustion.v
 theories/RecordedExternalReplay.v
 theories/CanonicalAuthorityWitness.v
+theories/IntroductionMeasurementReuse.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v
 theories/OrderedStackMaterialization.v

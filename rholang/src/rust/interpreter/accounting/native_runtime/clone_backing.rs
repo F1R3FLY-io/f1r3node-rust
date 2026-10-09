@@ -178,6 +178,25 @@ impl CloneBacking for AuthorityByteEventKind {
     }
     fn inline() -> bool { true }
 }
+impl CloneBacking
+    for crate::rust::interpreter::accounting::byte_accounting::IntroductionMeasurement
+{
+    fn children<'a>(&'a self, _: &mut Walker<'a>) -> Result<(), BackingError> {
+        let _: Self = *self;
+        Ok(())
+    }
+    fn inline() -> bool { true }
+}
+impl CloneBacking for crate::rust::interpreter::accounting::IntroductionRecord {
+    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
+        let Self {
+            authority,
+            measurement,
+        } = self;
+        walker.push(authority)?;
+        walker.push(measurement)
+    }
+}
 impl CloneBacking for AuthorityRuntimeEvent {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
         let Self {

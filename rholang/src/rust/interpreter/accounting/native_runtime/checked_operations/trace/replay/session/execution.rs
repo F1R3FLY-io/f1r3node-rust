@@ -51,9 +51,19 @@ impl ExecutionBackend for NativeExecution {
                 continuation,
                 persistent,
                 peeks,
+                // Changed by D-F2 (DR-118): the resolved introduction is the
+                // record, so the observer can reuse the reducer's measurement.
+                // |source| {
+                //     self.budget
+                //         .introduction_authority(
+                //             consume_introduction_identity(source),
+                //             AuthorityByteEventKind::ConsumeIntroduction,
+                //         )
+                //         .map_err(Into::into)
+                // },
                 |source| {
                     self.budget
-                        .introduction_authority(
+                        .introduction(
                             consume_introduction_identity(source),
                             AuthorityByteEventKind::ConsumeIntroduction,
                         )
@@ -73,9 +83,19 @@ impl ExecutionBackend for NativeExecution {
         let result = self
             .session
             .inner
+            // Changed by D-F2 (DR-118): the resolved introduction is the record,
+            // so the observer can reuse the reducer's measurement.
+            // .produce_with_authority(channel, data, persistent, |source| {
+            //     self.budget
+            //         .introduction_authority(
+            //             produce_introduction_identity(source),
+            //             AuthorityByteEventKind::ProduceIntroduction,
+            //         )
+            //         .map_err(Into::into)
+            // })
             .produce_with_authority(channel, data, persistent, |source| {
                 self.budget
-                    .introduction_authority(
+                    .introduction(
                         produce_introduction_identity(source),
                         AuthorityByteEventKind::ProduceIntroduction,
                     )

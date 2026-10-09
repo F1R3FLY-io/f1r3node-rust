@@ -10,7 +10,16 @@ use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
 use super::*;
 use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use crate::rust::interpreter::accounting::native_phlo_rules::NativeBudgetReplayDecision;
-use crate::rust::interpreter::accounting::{byte_accounting, observation_construction as build};
+use crate::rust::interpreter::accounting::{
+    byte_accounting, observation_construction as build, IntroductionRecord,
+};
+
+fn unmeasured(authority: &models::rhoapi::CostAuthority) -> IntroductionRecord {
+    IntroductionRecord {
+        authority: authority.clone(),
+        measurement: None,
+    }
+}
 
 fn inputs(size: usize) -> (Par, ListParWithRandom, TaggedContinuation, COMM) {
     let channel = Par::default();
@@ -606,7 +615,7 @@ async fn native_typed_replay_preserves_denied_comm_and_accepted_introduction_usa
             let mut ticket = replay.reserve_current(source).unwrap();
             ticket.authenticate_footprint(&channels, &[]).unwrap();
             let decision = if produce {
-                ticket.observe_rho_produce(&comm.produces[0], &channel, &data, &auth)
+                ticket.observe_rho_produce(&comm.produces[0], &channel, &data, &unmeasured(&auth))
             } else {
                 ticket.observe_rho_consume(
                     &comm.consume,
@@ -614,7 +623,7 @@ async fn native_typed_replay_preserves_denied_comm_and_accepted_introduction_usa
                     &patterns,
                     &continuation,
                     &std::collections::BTreeSet::new(),
-                    &auth,
+                    &unmeasured(&auth),
                 )
             }
             .unwrap();
@@ -1061,4 +1070,404 @@ fn introduction_channel_inspections_are_single_block_traversals() {
             walk_charge(|meter| walks::inspect_blocks(&continuation, meter)),
         ])
     );
+}
+
+/// D-F2 (DR-118): a datum with one `pars` entry of `pars_bytes` text bytes,
+/// as `eval_send` builds it.
+fn datum_with(pars_bytes: usize, random_state: usize) -> ListParWithRandom {
+    ListParWithRandom {
+        pars: vec![models::rust::utils::new_gstring_par(
+            "p".repeat(pars_bytes),
+            Vec::new(),
+            false,
+        )],
+        random_state: vec![5; random_state],
+        cost_authority: Some(authority(1)),
+        cost_stack: None,
+    }
+}
+
+/// D-F2 (DR-118): a random-state size that is zero in a fixed share of the
+/// cases, because prost omits an empty random state.
+fn random_state_size() -> impl Strategy<Value = usize> { prop_oneof![Just(0usize), 1usize..256] }
+
+/// D-F2 (DR-118): the `pars` measurement that `eval_send` composes.
+fn measured_pars(data: &ListParWithRandom) -> u64 {
+    data.pars
+        .iter()
+        .map(|par| {
+            byte_accounting::message_field_bytes(1, u64::try_from(par.encoded_len()).unwrap())
+                .unwrap()
+        })
+        .sum()
+}
+
+/// D-F2 (DR-118): the body and guard measurement that `eval_receive`
+/// composes.
+fn measured_continuation(continuation: &TaggedContinuation) -> (u64, Option<u64>) {
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    let body = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => byte_accounting::par_with_random_bytes(
+            u64::try_from(body.body.as_ref().map_or(0, Message::encoded_len)).unwrap(),
+            &body.random_state,
+        )
+        .unwrap(),
+        _ => 0,
+    };
+    let guard = continuation
+        .guard
+        .as_ref()
+        .map(|guard| u64::try_from(guard.encoded_len()).unwrap());
+    (body, guard)
+}
+
+/// Reserved units of one premeasured observation, under an unlimited meter.
+fn premeasured_charge(
+    action: impl FnOnce(
+        &dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter,
+    ) -> Result<(), RSpaceError>,
+) -> [usize; 3] {
+    let totals = std::cell::Cell::new([0usize; 3]);
+    let meter = |operations: usize, scanned: usize, backing: usize| {
+        let [o, s, b] = totals.get();
+        totals.set([o + operations, s + scanned, b + backing]);
+        Ok(())
+    };
+    action(&meter).expect("an unlimited meter");
+    totals.get()
+}
+
+fn premeasured_produce_charge(channel: &Par, data: &ListParWithRandom) -> [usize; 3] {
+    let introduction = authority(1);
+    premeasured_charge(|meter| {
+        build::produce_introduction_premeasured_metered_with_identity(
+            [1; 32],
+            channel,
+            data,
+            measured_pars(data),
+            &introduction,
+            meter,
+        )
+        .map(drop)
+    })
+}
+
+fn premeasured_consume_charge(continuation: &TaggedContinuation) -> [usize; 3] {
+    let introduction = authority(1);
+    let (channel, _, _, _) = inputs(0);
+    let (body, guard) = measured_continuation(continuation);
+    premeasured_charge(|meter| {
+        build::consume_introduction_premeasured_metered_with_identity(
+            [2; 32],
+            std::slice::from_ref(&channel),
+            &[BindPattern::default()],
+            continuation,
+            body,
+            guard,
+            &introduction,
+            meter,
+        )
+        .map(drop)
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-F2 (DR-118): the premeasured observations have the walked event,
+    /// authority and measurement, so receipts and cost traces are unchanged.
+    #[test]
+    fn measured_introduction_observation_equals_walked_observation(
+        pars in 0usize..4096, random_state in random_state_size(),
+        body in 0usize..4096, guard in 0usize..512,
+    ) {
+        let (channel, _, _, _) = inputs(0);
+        let data = datum_with(pars, random_state);
+        let introduction = authority(1);
+        let unlimited = |_: usize, _: usize, _: usize| Ok(());
+        let walked = build::produce_introduction_metered_with_identity(
+            [1; 32], &channel, &data, &introduction, &unlimited,
+        ).unwrap();
+        let premeasured = build::produce_introduction_premeasured_metered_with_identity(
+            [1; 32], &channel, &data, measured_pars(&data), &introduction, &unlimited,
+        ).unwrap();
+        prop_assert_eq!(premeasured.event_id, walked.event_id);
+        prop_assert_eq!(premeasured.kind, walked.kind);
+        prop_assert_eq!(&premeasured.authority, &walked.authority);
+        prop_assert_eq!(premeasured.measurement, walked.measurement);
+
+        let continuation = continuation_with(body, guard);
+        let (body, guard) = measured_continuation(&continuation);
+        let channels = vec![channel];
+        let patterns = vec![BindPattern::default()];
+        let walked = build::consume_introduction_metered_with_identity(
+            [2; 32], &channels, &patterns, &continuation, &introduction, &unlimited,
+        ).unwrap();
+        let premeasured = build::consume_introduction_premeasured_metered_with_identity(
+            [2; 32], &channels, &patterns, &continuation, body, guard, &introduction, &unlimited,
+        ).unwrap();
+        prop_assert_eq!(premeasured.event_id, walked.event_id);
+        prop_assert_eq!(premeasured.kind, walked.kind);
+        prop_assert_eq!(&premeasured.authority, &walked.authority);
+        prop_assert_eq!(premeasured.measurement, walked.measurement);
+    }
+
+    /// D-F2 (DR-118): `IntroductionMeasurementReuse.premeasured_charge_independent_of_body`.
+    /// The premeasured observations charge the same units for every size of
+    /// the measured `pars`, body and guard.
+    #[test]
+    fn premeasured_introduction_charge_is_independent_of_body_and_pars(
+        first_pars in 0usize..4096, second_pars in 0usize..4096,
+        first_body in 0usize..4096, second_body in 0usize..4096,
+        first_guard in 1usize..512, second_guard in 1usize..512,
+        random_state in random_state_size(),
+    ) {
+        let (channel, _, _, _) = inputs(0);
+        prop_assert_eq!(
+            premeasured_produce_charge(&channel, &datum_with(first_pars, random_state)),
+            premeasured_produce_charge(&channel, &datum_with(second_pars, random_state))
+        );
+        prop_assert_eq!(
+            premeasured_consume_charge(&continuation_with(first_body, first_guard)),
+            premeasured_consume_charge(&continuation_with(second_body, second_guard))
+        );
+    }
+
+    /// D-F2 (DR-118): `IntroductionMeasurementReuse.premeasured_trace_covered`.
+    /// The premeasured observations succeed with their exact charge and
+    /// reject when any dimension has one unit less.
+    #[test]
+    fn premeasured_introductions_accept_exact_credit_and_reject_each_smaller_dimension(
+        pars in 0usize..2048, body in 0usize..2048, guard in 0usize..256,
+        random_state in random_state_size(), dimension in 0usize..3, consume in any::<bool>(),
+    ) {
+        let (channel, _, _, _) = inputs(0);
+        let data = datum_with(pars, random_state);
+        let continuation = continuation_with(body, guard);
+        let (body, guard) = measured_continuation(&continuation);
+        let introduction = authority(1);
+        let channels = vec![channel.clone()];
+        let patterns = vec![BindPattern::default()];
+        let exact = if consume {
+            premeasured_consume_charge(&continuation)
+        } else {
+            premeasured_produce_charge(&channel, &data)
+        };
+        let run = |limit: [usize; 3]| {
+            let used = std::cell::Cell::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let [o, s, b] = used.get();
+                let next = [o + operations, s + scanned, b + backing];
+                if (0..3).any(|i| next[i] > limit[i]) {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                used.set(next);
+                Ok(())
+            };
+            if consume {
+                build::consume_introduction_premeasured_metered_with_identity(
+                    [2; 32], &channels, &patterns, &continuation, body, guard, &introduction, &meter,
+                ).map(drop)
+            } else {
+                build::produce_introduction_premeasured_metered_with_identity(
+                    [1; 32], &channel, &data, measured_pars(&data), &introduction, &meter,
+                ).map(drop)
+            }
+        };
+        prop_assert!(run(exact).is_ok());
+        if exact[dimension] > 0 {
+            let mut smaller = exact;
+            smaller[dimension] -= 1;
+            prop_assert!(matches!(run(smaller), Err(RSpaceError::HostWorkRejected)));
+        }
+    }
+
+    /// D-F2 (DR-118), negative control:
+    /// `IntroductionMeasurementReuse.walked_charge_grows_with_premeasured_body`.
+    /// The walked observations charge every extra body and datum byte, while
+    /// the premeasured charge stays equal.
+    #[test]
+    fn walked_introduction_charge_grew_with_the_premeasured_body(
+        small in 0usize..1024, extra in 1usize..4096, random_state in random_state_size(),
+    ) {
+        let (channel, _, _, _) = inputs(0);
+        let introduction = authority(1);
+        let walked_produce = |pars: usize| premeasured_charge(|meter| {
+            build::produce_introduction_metered_with_identity(
+                [1; 32], &channel, &datum_with(pars, random_state), &introduction, meter,
+            ).map(drop)
+        });
+        let walked_consume = |body: usize| premeasured_charge(|meter| {
+            build::consume_introduction_metered_with_identity(
+                [2; 32],
+                std::slice::from_ref(&channel),
+                &[BindPattern::default()],
+                &continuation_with(body, 0),
+                &introduction,
+                meter,
+            ).map(drop)
+        });
+        prop_assert!(walked_produce(small + extra)[1] >= walked_produce(small)[1] + extra);
+        prop_assert!(walked_consume(small + extra)[1] >= walked_consume(small)[1] + extra);
+        prop_assert_eq!(
+            premeasured_produce_charge(&channel, &datum_with(small, random_state)),
+            premeasured_produce_charge(&channel, &datum_with(small + extra, random_state))
+        );
+        prop_assert_eq!(
+            premeasured_consume_charge(&continuation_with(small, 0)),
+            premeasured_consume_charge(&continuation_with(small + extra, 0))
+        );
+    }
+}
+
+/// D-F2 (DR-118): a premeasured produce introduction charges one block
+/// inspection of the channel, the seal and the stack, and one inline field
+/// read for the random state. A premeasured consume introduction charges two
+/// inline field reads (the body variant and the guard presence) and one block
+/// inspection of the channels, the patterns and the authority.
+#[test]
+fn premeasured_introductions_inspect_only_unmeasured_parts() {
+    use shared::rust::clone_backing as walks;
+
+    let field = [3, walks::BLOCK_FIELD_SCANNED, 0];
+    let add = |parts: &[[usize; 3]]| {
+        parts
+            .iter()
+            .fold([0; 3], |[o, s, b], [operations, scanned, backing]| {
+                [o + operations, s + scanned, b + backing]
+            })
+    };
+    let channel = models::rust::utils::new_gstring_par("c".repeat(4_096), Vec::new(), false);
+    let mut data = datum_with(8_192, 64);
+    data.cost_stack = Some(models::rhoapi::CostStack {
+        cells: vec![models::rhoapi::CostSignature::default(); 2],
+    });
+    assert_eq!(
+        premeasured_produce_charge(&channel, &data),
+        add(&[
+            walk_charge(|meter| walks::inspect_blocks(&channel, meter)),
+            walk_charge(|meter| walks::inspect_blocks(&data.cost_authority, meter)),
+            walk_charge(|meter| walks::inspect_blocks(&data.cost_stack, meter)),
+            field,
+        ])
+    );
+    let continuation = continuation_with(8_192, 256);
+    let (channel, _, _, _) = inputs(0);
+    let channels = vec![channel];
+    let patterns = vec![BindPattern::default()];
+    assert_eq!(
+        premeasured_consume_charge(&continuation),
+        add(&[
+            field,
+            field,
+            walk_charge(|meter| walks::inspect_blocks_slice(&channels, meter)),
+            walk_charge(|meter| walks::inspect_blocks_slice(&patterns, meter)),
+            walk_charge(|meter| walks::inspect_blocks(&continuation.cost_authority, meter)),
+        ])
+    );
+}
+
+/// D-F2 (DR-118): a continuation whose shape differs from its measurement,
+/// and a record without a measurement, are walked: the charge is the walked
+/// charge (plus the two field reads of the shape check), and the measurement
+/// is the walked one.
+#[test]
+fn unmeasured_or_mismatched_introductions_fall_back_to_the_walk() {
+    use shared::rust::clone_backing as walks;
+
+    let introduction = authority(1);
+    let (channel, _, _, _) = inputs(0);
+    let channels = vec![channel.clone()];
+    let patterns = vec![BindPattern::default()];
+    let continuation = continuation_with(1_024, 0);
+    let (body, _) = measured_continuation(&continuation);
+    let walked = premeasured_charge(|meter| {
+        build::consume_introduction_metered_with_identity(
+            [2; 32],
+            &channels,
+            &patterns,
+            &continuation,
+            &introduction,
+            meter,
+        )
+        .map(drop)
+    });
+    let mismatched = premeasured_charge(|meter| {
+        build::consume_introduction_premeasured_metered_with_identity(
+            [2; 32],
+            &channels,
+            &patterns,
+            &continuation,
+            body,
+            Some(0),
+            &introduction,
+            meter,
+        )
+        .map(drop)
+    });
+    let field = [3, walks::BLOCK_FIELD_SCANNED, 0];
+    assert_eq!(mismatched, [
+        walked[0] + 2 * field[0],
+        walked[1] + 2 * field[1],
+        walked[2]
+    ]);
+    let unlimited = |_: usize, _: usize, _: usize| Ok(());
+    assert_eq!(
+        build::consume_introduction_premeasured_metered_with_identity(
+            [2; 32],
+            &channels,
+            &patterns,
+            &continuation,
+            body,
+            Some(0),
+            &introduction,
+            &unlimited,
+        )
+        .unwrap()
+        .measurement,
+        byte_accounting::consume_introduction_charge(&channels, &patterns, &continuation).unwrap()
+    );
+
+    let record = unmeasured(&introduction);
+    let data = datum_with(1_024, 64);
+    let recorded = premeasured_charge(|meter| {
+        build::produce_introduction_recorded_metered_with_identity(
+            [1; 32], &channel, &data, &record, meter,
+        )
+        .map(drop)
+    });
+    let walked = premeasured_charge(|meter| {
+        build::produce_introduction_metered_with_identity(
+            [1; 32],
+            &channel,
+            &data,
+            &introduction,
+            meter,
+        )
+        .map(drop)
+    });
+    assert_eq!(recorded, walked);
+    let recorded = premeasured_charge(|meter| {
+        build::consume_introduction_recorded_metered_with_identity(
+            [2; 32],
+            &channels,
+            &patterns,
+            &continuation,
+            &record,
+            meter,
+        )
+        .map(drop)
+    });
+    let walked = premeasured_charge(|meter| {
+        build::consume_introduction_metered_with_identity(
+            [2; 32],
+            &channels,
+            &patterns,
+            &continuation,
+            &introduction,
+            meter,
+        )
+        .map(drop)
+    });
+    assert_eq!(recorded, walked);
 }

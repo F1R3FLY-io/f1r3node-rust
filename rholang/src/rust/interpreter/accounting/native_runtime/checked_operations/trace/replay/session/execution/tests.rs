@@ -619,6 +619,35 @@ async fn native_replay_authority_state_matches_recorded_execution() {
     .await;
 }
 
+/// D-F2 (DR-118): every introduction shape that the reducer measures replays
+/// with the played observations: a send with several data, a receive with a
+/// guard, a join, a peek, a persistent send, a persistent receive and a send
+/// on a `bundle+` name. In test builds each premeasured observation also
+/// checks that it equals the walked observation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn premeasured_introductions_replay_for_every_measured_shape() {
+    replay_process_with_context(
+        r#"
+        new a, b, c, d, e, f, g, out in {
+          a!(1, "two", [3]) |
+          for (@x, @y, @z <- a where x == 1) { out!(y) } |
+          for (@p <- b & @q <- c) { out!(p + q) } |
+          b!(4) | c!(5) |
+          for (@v <<- d) { out!(v) } | d!(6) |
+          e!!(7) | for (@w <- e) { out!(w) } |
+          for (@u <= f) { out!(u) } | f!(8) | f!(9) |
+          @"bundled"!(bundle+{*g}) | for (@h <- @"bundled") { @h!(10) } |
+          for (@t <- g) { out!(t) }
+        }
+        "#,
+        1_000_000,
+        false,
+        true,
+        Interruption::None,
+    )
+    .await;
+}
+
 /// Host-work use of the native replay of `term`: play records the native
 /// journal, the checked journal binds the trace, and the replay runs it
 /// (C14, DR-79).

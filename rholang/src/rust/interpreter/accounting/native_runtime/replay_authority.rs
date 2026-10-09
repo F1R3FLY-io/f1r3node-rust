@@ -9,7 +9,7 @@ use crate::rust::interpreter::accounting::authority::{
     self, AuthorityByteEventKind, ResourceMultiset,
 };
 use crate::rust::interpreter::accounting::byte_receipts::ByteObservationLog;
-use crate::rust::interpreter::accounting::AuthorityRuntimeEvent;
+use crate::rust::interpreter::accounting::{AuthorityRuntimeEvent, IntroductionRecord};
 
 mod sparse_ledger;
 mod backing;
@@ -43,7 +43,9 @@ pub(crate) struct NativeAuthorityCheckpoint {
     reserved: ResourceMultiset<[u8; 32]>,
     frontier: BTreeMap<[u8; 32], CostAuthority>,
     births: BTreeMap<[u8; 32], authority::AuthorityStackBirth>,
-    introductions: BTreeMap<([u8; 32], AuthorityByteEventKind), CostAuthority>,
+    // Changed by D-F2 (DR-118): a registry entry is an introduction record.
+    // introductions: BTreeMap<([u8; 32], AuthorityByteEventKind), CostAuthority>,
+    introductions: BTreeMap<([u8; 32], AuthorityByteEventKind), IntroductionRecord>,
 }
 
 fn invalid() -> InterpreterError {

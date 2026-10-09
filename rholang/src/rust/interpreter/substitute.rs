@@ -99,6 +99,70 @@ impl Substitute {
         Ok(())
     }
 
+    /// Added by D-F2 (DR-118): the charged substitution, which also returns
+    /// the prost length of the substituted term. The phlo charge measures
+    /// that length, so the reducer can reuse it for the introduction bytes.
+    fn substitute_measured<A>(
+        &self,
+        term: &A,
+        env: &Env<Par>,
+        substitute: impl FnOnce(A) -> Result<A, InterpreterError>,
+    ) -> Result<(A, u64), InterpreterError>
+    where
+        A: Clone + prost::Message,
+    {
+        Self::reserve_host_work(term, env)?;
+        // scala 'charge' function built in here
+        match substitute(term.clone()) {
+            Ok(subst_term) => {
+                let measured = subst_term.encoded_len();
+                self.metering.reserve_substitution(Cost::create(
+                    (measured as i64).max(i64::from(!self.metering.budget().is_legacy())),
+                    "substitution",
+                ))?;
+                let measured = u64::try_from(measured).map_err(|_| {
+                    InterpreterError::BugFoundError(
+                        "substitution byte count does not fit in u64".to_string(),
+                    )
+                })?;
+                Ok((subst_term, measured))
+            }
+            Err(th) => {
+                self.metering.reserve_substitution(Cost::create(
+                    (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
+                    "substitution",
+                ))?;
+                Err(th)
+            }
+        }
+    }
+
+    pub(crate) fn substitute_and_measure<A>(
+        &self,
+        term: &A,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<(A, u64), InterpreterError>
+    where
+        Self: SubstituteTrait<A>,
+        A: Clone + prost::Message,
+    {
+        self.substitute_measured(term, env, |term| self.substitute(term, depth, env))
+    }
+
+    pub(crate) fn substitute_no_sort_and_measure<A>(
+        &self,
+        term: &A,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<(A, u64), InterpreterError>
+    where
+        Self: SubstituteTrait<A>,
+        A: Clone + prost::Message,
+    {
+        self.substitute_measured(term, env, |term| self.substitute_no_sort(term, depth, env))
+    }
+
     pub fn substitute_and_charge<A>(
         &self,
         term: &A,
@@ -109,25 +173,29 @@ impl Substitute {
         Self: SubstituteTrait<A>,
         A: Clone + prost::Message,
     {
-        Self::reserve_host_work(term, env)?;
-        // scala 'charge' function built in here
-        match self.substitute(term.clone(), depth, env) {
-            Ok(subst_term) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (subst_term.encoded_len() as i64)
-                        .max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
-                Ok(subst_term)
-            }
-            Err(th) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
-                Err(th)
-            }
-        }
+        // Changed by D-F2 (DR-118): the body moved to `substitute_measured`,
+        // which also returns the prost length that the phlo charge measures.
+        // Self::reserve_host_work(term, env)?;
+        // // scala 'charge' function built in here
+        // match self.substitute(term.clone(), depth, env) {
+        //     Ok(subst_term) => {
+        //         self.metering.reserve_substitution(Cost::create(
+        //             (subst_term.encoded_len() as i64)
+        //                 .max(i64::from(!self.metering.budget().is_legacy())),
+        //             "substitution",
+        //         ))?;
+        //         Ok(subst_term)
+        //     }
+        //     Err(th) => {
+        //         self.metering.reserve_substitution(Cost::create(
+        //             (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
+        //             "substitution",
+        //         ))?;
+        //         Err(th)
+        //     }
+        // }
+        self.substitute_and_measure(term, depth, env)
+            .map(|(subst_term, _)| subst_term)
     }
 
     pub fn substitute_no_sort_and_charge<A>(
@@ -140,25 +208,29 @@ impl Substitute {
         Self: SubstituteTrait<A>,
         A: Clone + prost::Message,
     {
-        Self::reserve_host_work(term, env)?;
-        // scala 'charge' function built in here
-        match self.substitute_no_sort(term.clone(), depth, env) {
-            Ok(subst_term) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (subst_term.encoded_len() as i64)
-                        .max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
-                Ok(subst_term)
-            }
-            Err(th) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
-                Err(th)
-            }
-        }
+        // Changed by D-F2 (DR-118): the body moved to `substitute_measured`,
+        // which also returns the prost length that the phlo charge measures.
+        // Self::reserve_host_work(term, env)?;
+        // // scala 'charge' function built in here
+        // match self.substitute_no_sort(term.clone(), depth, env) {
+        //     Ok(subst_term) => {
+        //         self.metering.reserve_substitution(Cost::create(
+        //             (subst_term.encoded_len() as i64)
+        //                 .max(i64::from(!self.metering.budget().is_legacy())),
+        //             "substitution",
+        //         ))?;
+        //         Ok(subst_term)
+        //     }
+        //     Err(th) => {
+        //         self.metering.reserve_substitution(Cost::create(
+        //             (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
+        //             "substitution",
+        //         ))?;
+        //         Err(th)
+        //     }
+        // }
+        self.substitute_no_sort_and_measure(term, depth, env)
+            .map(|(subst_term, _)| subst_term)
     }
 
     // pub here for testing purposes
@@ -1471,6 +1543,7 @@ fn set_bits_until(bits: Vec<u8>, until: i32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use models::rust::utils::{new_boundvar_par, new_freevar_par, new_gint_par};
+    use prost::Message;
 
     use super::*;
     use crate::rust::interpreter::accounting::RuntimeBudget;
@@ -2094,6 +2167,50 @@ mod tests {
         assert!(substitute
             .substitute_no_sort_and_charge(&free, 0, &env)
             .is_err());
+    }
+
+    /// D-F2 (DR-118): the measuring forms return the prost length of the
+    /// substituted term, and they charge exactly what the charging forms
+    /// charge, on success and on error.
+    #[test]
+    fn measure_wrappers_return_the_charged_prost_length() {
+        let env = env_with(gint(42));
+        for term in [bound(0), gint(7), new_freevar_par(0, Vec::new())] {
+            let measuring = substitute_instance();
+            let charging = substitute_instance();
+            let measured: Result<(Par, u64), _> = measuring.substitute_and_measure(&term, 0, &env);
+            let charged: Result<Par, _> = charging.substitute_and_charge(&term, 0, &env);
+            match (measured, charged) {
+                (Ok((measured, bytes)), Ok(charged)) => {
+                    assert_eq!(measured, charged);
+                    assert_eq!(bytes, u64::try_from(measured.encoded_len()).unwrap());
+                }
+                (Err(measured), Err(charged)) => assert_eq!(measured, charged),
+                other => panic!("the wrappers disagree: {other:?}"),
+            }
+            assert_eq!(
+                measuring.metering.budget().remaining(),
+                charging.metering.budget().remaining()
+            );
+
+            let measuring = substitute_instance();
+            let charging = substitute_instance();
+            let measured: Result<(Par, u64), _> =
+                measuring.substitute_no_sort_and_measure(&term, 0, &env);
+            let charged: Result<Par, _> = charging.substitute_no_sort_and_charge(&term, 0, &env);
+            match (measured, charged) {
+                (Ok((measured, bytes)), Ok(charged)) => {
+                    assert_eq!(measured, charged);
+                    assert_eq!(bytes, u64::try_from(measured.encoded_len()).unwrap());
+                }
+                (Err(measured), Err(charged)) => assert_eq!(measured, charged),
+                other => panic!("the wrappers disagree: {other:?}"),
+            }
+            assert_eq!(
+                measuring.metering.budget().remaining(),
+                charging.metering.budget().remaining()
+            );
+        }
     }
 
     #[test]

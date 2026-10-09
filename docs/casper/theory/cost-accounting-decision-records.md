@@ -12627,3 +12627,166 @@ Validations of one region of a granted COMM:
 - `prepare_authority_stack_transfer` canonicalizes twice.
 
 **Cross-refs.** DR-94, DR-101, DR-110, DR-112. Phase D (`ofp-2-cap-phase-d`).
+
+## DR-118 — An introduction reuses the reducer's measurement of its value
+
+**Status.** Implemented 2026-10-09 for Phase D item D-F2 of epic 8946
+(`ofp-2-cap-d-f2-introduction-measurement`). The user approved the design
+changes of the implementation map ("Approve all four (Recommended)") and one
+commit for D-F2a and D-F2b ("One commit (Recommended)").
+
+**Context.**
+
+- An introduction charges the prost length of its channels, its patterns and
+  its value, plus fixed event bytes (`produce_introduction_charge`,
+  `consume_introduction_charge`). This length feeds the cost trace and the
+  receipts.
+- The observer walked the whole value to compute that length: the producer
+  observer in play, and the replay observer in native replay. Each walk was a
+  block inspection that prepaid the prost length computation.
+- The reducer had already computed the lengths of the datum's terms, of the
+  body and of the guard. The phlo charge of the substitution measures each
+  substituted term (`substitute_and_charge`), and the reducer then dropped the
+  length.
+- The D-F1 probes measured the walks that D-F2 can remove on the gateway
+  funding block. They cost 33.2 ± 3.4 MB of VerificationBytes per validator
+  and 36.0 ± 3.5 MB in producer execution.
+
+**Decision.**
+
+1. The substitution returns its measured length (`substitute_and_measure`,
+   `substitute_no_sort_and_measure`). The charging forms delegate to them, so
+   the phlo charge does not change.
+2. The reducer composes the measurement:
+   - `eval_send` frames the length of each substituted datum term.
+   - `eval_receive` composes the length of the continuation's `ParWithRandom`
+     from the substituted body's length, and it measures the guard.
+   - The composition uses the helpers of prost. It follows the prost rule for
+     default fields: an empty bytes field and an absent optional message add
+     no bytes.
+3. The introduction registry stores an `IntroductionRecord`: the authority and
+   an optional `IntroductionMeasurement` (`Produce { pars }` or
+   `Consume { body, guard }`).
+   - A repeated registration of one identity must have the same authority.
+     When both registrations carry a measurement, the measurements must be
+     equal. Otherwise the registration fails with `EventIdentityConflict`.
+   - In every other case the first record stays. A later `None` keeps a
+     measurement, and a later measurement keeps a `None`.
+4. The observers read the record.
+   - With a measurement, they walk only the unmeasured parts. For a datum
+     these are the channel, the seal and the stack. For a continuation they
+     are the channels, the patterns and the authority.
+   - They also reserve the inline field reads: the length of the random
+     state, or the body variant and the guard presence.
+   - Without a measurement, or when the continuation does not have the
+     measured shape, they walk the whole value as before.
+5. Three kinds of site pass no measurement, because the reducer does not build
+   their value from substituted terms. They are the peek re-produce, the
+   cost-stack datum, and every value that reaches RSpace without the reducer.
+6. The user approved four changes to the planned design:
+   - The record carries component lengths, not a full `ByteCharge`. A full
+     charge needs the authority lengths, and the reducer does not compute
+     them.
+   - A send to a `bundle+` name keeps the measured data. Only its channel is
+     walked, as every channel is.
+   - Channels and patterns stay walked. Measuring them would save only 2 to
+     3 MB more, and it would add code.
+   - No new TLA+ model. Registry updates of different identities commute
+     (proved in Rocq), and `IntroductionAuthorityRegistry.tla` already models
+     the race of a lookup before its registration.
+
+**Why the results are unchanged.**
+
+- Each measured length is the prost length of the exact value that the
+  reducer moves into the datum or the continuation. The composition follows
+  the framing of prost, so the composed length equals the walked length.
+- The event identity hashes a value with `locally_free` written as empty
+  (`models/build.rs:93-99`), but prost counts `locally_free`. So the identity
+  does not bind the measured length.
+- Reuse is still sound, because a repeated introduction of one identity in a
+  deployment is a clone of the same value. A persistent re-introduction
+  clones its data or its body, and a peek re-produce restores the stored
+  clone.
+- The conflict check rejects two different measurements of one identity. Test
+  builds also compare every premeasured charge with the walked charge.
+- The reducer registers an introduction before it submits the operation, so
+  the observer of that operation finds the record. An unregistered
+  introduction has no measurement, and its observer walks.
+- Play and replay run the same code. A deployment that fitted its host-work
+  budget before still fits, with the same values, errors, receipts and cost
+  trace.
+
+**Verification.**
+
+- Rocq `IntroductionMeasurementReuse.v` uses the standard library only and no
+  axiom. It proves 18 theorems:
+  - Framing: `premeasured_datum_eq_walked`,
+    `premeasured_continuation_eq_walked`,
+    `premeasured_continuation_none_iff_mismatch`,
+    `premeasured_observation_eq_walked` and `varint_len_boundaries`.
+  - Read coverage: `walked_trace_covered`, `premeasured_trace_covered`,
+    `fallback_trace_covered`, `premeasured_charge_independent_of_body` and
+    `premeasured_reserves_le_walked`.
+  - Registry: `registry_conflict_rejects_in_both_orders`,
+    `registry_equal_measurements_accepted`,
+    `registry_first_measurement_persists`,
+    `registry_unmeasured_entry_stays_unmeasured` and
+    `registry_updates_on_distinct_identities_commute`.
+  - Three negative controls: `naive_framing_differs_from_prost`,
+    `walked_charge_grows_with_premeasured_body` and
+    `unchecked_registry_accepts_two_lengths`.
+- The proof gate passes in cost-accounting mode: 277 modules and 3145 closed
+  assumption queries.
+- Rust tests:
+  - `byte_accounting.rs`:
+    - property tests of the produce, body and consume measurements against
+      prost (256 cases each, with the empty random state in a fixed share);
+    - the framing at every varint boundary and the overflow rejection;
+    - the negative control `naive_framing_differs_from_prost_on_default_fields`.
+  - `substitute.rs`: `measure_wrappers_return_the_charged_prost_length`.
+  - `accounting/mod.rs`: `conflicting_measurement_registration_rejects_in_both_orders`
+    and `registrations_of_distinct_identities_commute`.
+  - Observation tests: equal observations, a charge independent of the
+    measured sizes, the exact credit, the inspected parts and the fallback
+    walk. The negative control is
+    `walked_introduction_charge_grew_with_the_premeasured_body`.
+  - `premeasured_introductions_replay_for_every_measured_shape` replays a
+    term with several data, a guard, a join, a peek, a persistent send, a
+    persistent receive and a `bundle+` send.
+- Mutation controls, each run once and then restored:
+  - Without the empty-field rule, 7 tests fail.
+  - Without the stack inspection, the test of the inspected parts fails.
+  - With conflicting measurements accepted, the registry test fails.
+- The exact-usage A/B on the gateway funding block ran three times for each
+  arm. Arm A is HEAD `03bdaaffc` (the D-F1 arm B runs,
+  `target/verification/d-f1/probe-B1` to `probe-B3`). Arm B adds this record
+  (`target/verification/d-f2/probe-B1` to `probe-B3`). The table gives the
+  mean of the three runs:
+
+  | Role | Dimension | Arm A | Arm B | Change |
+  | --- | --- | --- | --- | --- |
+  | Validator replay | VerificationBytes | 579.81 MB | 552.23 MB | −27.6 MB |
+  | Validator replay | SearchStateBytes | 112.57 MB | 111.64 MB | −0.9 MB |
+  | Validator replay | VerificationOperations | 58.44 M | 56.59 M | −1.9 M |
+  | Producer execution | VerificationBytes | 134.73 MB | 104.59 MB | −30.1 MB |
+  | Producer execution | SearchStateBytes | 52.98 MB | 51.91 MB | −1.1 MB |
+  | Producer execution | VerificationOperations | 40.05 M | 38.08 M | −2.0 M |
+
+  No dimension rises for any role. In every run all validator replays agree
+  exactly, and the producer self-replay equals the validator replay. The test
+  outcome is unchanged: the known gateway failure of gap G3. The implementation
+  map predicted about −29 MB and −30.5 MB, within its error of ±3.4 MB.
+- Suites: rholang and rspace++ pass 4135 of 4135, with the 16 new tests. On
+  casper, block-storage and the node HTTP handlers, the provisional caps pass
+  1940 of 1944 and the committed caps pass 1938 of 1944. All failures are the
+  known ones of DR-116 and DR-117.
+
+**Side findings, not in scope.**
+
+- In native replay the consume source preparation walks each continuation
+  twice (`session/operations.rs:67` and `:71`). That costs about 59 MB per
+  validator.
+- The COMM datum inspection (`observation_construction.rs:377`, about 4.2 MB
+  per role) walks data that the produce introduction already measured.
+
+**Cross-refs.** DR-76, DR-94, DR-110, DR-117. Phase D (`ofp-2-cap-phase-d`).

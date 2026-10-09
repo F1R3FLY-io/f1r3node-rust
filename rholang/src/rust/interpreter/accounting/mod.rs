@@ -101,6 +101,16 @@ const SIGNATURE_LANE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:signature-lan
 pub const MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES: usize = 512;
 pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
 
+/// Added by D-F2 (DR-118): an entry of the introduction registry. The
+/// reducer registers the authority and, when it built the value itself, the
+/// prost lengths that it measured. The observers reuse the measurement
+/// instead of walking the value again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntroductionRecord {
+    pub authority: CostAuthority,
+    pub measurement: Option<byte_accounting::IntroductionMeasurement>,
+}
+
 #[derive(Clone)]
 pub struct RuntimeBudget {
     initial_tokens: Arc<AtomicI64>,
@@ -132,8 +142,11 @@ pub struct RuntimeBudget {
     canonical_consensus_attempts: Arc<Mutex<CanonicalAttemptWindow>>,
     persistent_introductions:
         Arc<Mutex<BTreeMap<([u8; 32], BillableKind), Arc<byte_receipts::ByteObservation>>>>,
+    // Changed by D-F2 (DR-118): an entry also carries the reducer's measurement.
+    // introduction_authorities:
+    //     Arc<Mutex<BTreeMap<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>>>,
     introduction_authorities:
-        Arc<Mutex<BTreeMap<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>>>,
+        Arc<Mutex<BTreeMap<([u8; 32], authority::AuthorityByteEventKind), IntroductionRecord>>>,
     attempt_generation: Arc<AtomicU64>,
     reconciled_generation: Arc<AtomicU64>,
     // Internal reconciliation accumulator. Drained-into from
@@ -563,6 +576,34 @@ fn reserve_authority_clone(
     Ok(())
 }
 
+/// Added by D-F2 (DR-118): a lookup clones the whole record, the authority and
+/// the measurement.
+fn reserve_record_clone(
+    record: &IntroductionRecord,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let backing =
+            |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
+        shared_clone_backing::reserve_blocks_copy_and_cleanup(record, &backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+/// Added by D-F2 (DR-118): a repeated registration compares the registered
+/// measurement with the new one, so it reads both.
+fn reserve_measurement_comparison(host: Option<&HostWorkBudget>) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let scanned = std::mem::size_of::<Option<byte_accounting::IntroductionMeasurement>>()
+            .checked_mul(2)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_native_backing(host, 1, scanned, 0)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
 fn inspect_authority(
     authority: &CostAuthority,
     host: Option<&HostWorkBudget>,
@@ -654,9 +695,15 @@ fn reserve_registry_insert(
         // let (operations, bytes) =
         //     tree_backing::<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>(next)
         //         .ok_or(InterpreterError::HostWorkRejected)?;
-        let (operations, bytes) =
-            tree_growth::<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>(entries, 1)
-                .ok_or(InterpreterError::HostWorkRejected)?;
+        // Changed by D-F2 (DR-118): a registry entry is an introduction record.
+        // let (operations, bytes) =
+        //     tree_growth::<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>(entries, 1)
+        //         .ok_or(InterpreterError::HostWorkRejected)?;
+        let (operations, bytes) = tree_growth::<
+            ([u8; 32], authority::AuthorityByteEventKind),
+            IntroductionRecord,
+        >(entries, 1)
+        .ok_or(InterpreterError::HostWorkRejected)?;
         reserve_owned_backing(host, operations, 0, bytes)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
     }
@@ -1097,6 +1144,67 @@ impl RuntimeBudget {
         kind: authority::AuthorityByteEventKind,
         cost_authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
+        // Changed by D-F2 (DR-118): the body moved to `register_introduction`,
+        // which also registers the reducer's measurement.
+        // if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
+        //     return Ok(());
+        // }
+        // let host = self.native_host_work();
+        // let canonical = canonical_authority_with_host(cost_authority, host.as_ref())?;
+        // let canonical = if canonical.regions.is_empty() {
+        //     self.fallback_introduction_authority(identity, kind)?
+        // } else {
+        //     canonical
+        // };
+        // let mut authorities = self
+        //     .introduction_authorities
+        //     .lock()
+        //     .expect("introduction authority map");
+        // reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+        //     authorities.len(),
+        //     host.as_ref(),
+        // )?;
+        // match authorities.get(&(identity, kind)) {
+        //     Some(existing) => {
+        //         inspect_authority(existing, host.as_ref())?;
+        //         // D-O1 (DR-94, DR-110): `canonical` is dropped here. The helper
+        //         // inspects it for the comparison and for the release.
+        //         inspect_owned_authority(&canonical, host.as_ref())?;
+        //         if existing == &canonical {
+        //             Ok(())
+        //         } else {
+        //             Err(InterpreterError::ReduceError(
+        //                 authority::AuthorityError::EventIdentityConflict.to_string(),
+        //             ))
+        //         }
+        //     }
+        //     None => {
+        //         // C13 (DR-80): the insert searches the registry again.
+        //         reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+        //             authorities.len(),
+        //             host.as_ref(),
+        //         )?;
+        //         reserve_registry_insert(authorities.len(), host.as_ref())?;
+        //         authorities.insert((identity, kind), canonical);
+        //         Ok(())
+        //     }
+        // }
+        self.register_introduction(identity, kind, cost_authority, None)
+    }
+
+    /// Added by D-F2 (DR-118): registers an introduction's authority and the
+    /// reducer's measurement of its value. A second registration of one
+    /// identity must have the same authority and, when both registrations
+    /// carry a measurement, the same measurement. Otherwise the first record
+    /// stays: a later `None` does not remove a measurement, and a later
+    /// measurement does not replace a `None`.
+    pub fn register_introduction(
+        &self,
+        identity: [u8; 32],
+        kind: authority::AuthorityByteEventKind,
+        cost_authority: &CostAuthority,
+        measurement: Option<byte_accounting::IntroductionMeasurement>,
+    ) -> Result<(), InterpreterError> {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
             return Ok(());
         }
@@ -1117,11 +1225,16 @@ impl RuntimeBudget {
         )?;
         match authorities.get(&(identity, kind)) {
             Some(existing) => {
-                inspect_authority(existing, host.as_ref())?;
+                inspect_authority(&existing.authority, host.as_ref())?;
                 // D-O1 (DR-94, DR-110): `canonical` is dropped here. The helper
                 // inspects it for the comparison and for the release.
                 inspect_owned_authority(&canonical, host.as_ref())?;
-                if existing == &canonical {
+                reserve_measurement_comparison(host.as_ref())?;
+                let measurements_agree = match (existing.measurement, measurement) {
+                    (Some(recorded), Some(measured)) => recorded == measured,
+                    _ => true,
+                };
+                if existing.authority == canonical && measurements_agree {
                     Ok(())
                 } else {
                     Err(InterpreterError::ReduceError(
@@ -1136,7 +1249,10 @@ impl RuntimeBudget {
                     host.as_ref(),
                 )?;
                 reserve_registry_insert(authorities.len(), host.as_ref())?;
-                authorities.insert((identity, kind), canonical);
+                authorities.insert((identity, kind), IntroductionRecord {
+                    authority: canonical,
+                    measurement,
+                });
                 Ok(())
             }
         }
@@ -1147,6 +1263,57 @@ impl RuntimeBudget {
         identity: [u8; 32],
         kind: authority::AuthorityByteEventKind,
     ) -> Result<CostAuthority, InterpreterError> {
+        // Changed by D-F2 (DR-118): the body moved to `introduction`, which
+        // returns the whole record.
+        // let host = self.native_host_work();
+        // let authorities = self
+        //     .introduction_authorities
+        //     .lock()
+        //     .expect("introduction authority map");
+        // reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+        //     authorities.len(),
+        //     host.as_ref(),
+        // )?;
+        // if let Some(authority) = authorities.get(&(identity, kind)) {
+        //     reserve_authority_clone(authority, host.as_ref())?;
+        //     return Ok(authority.clone());
+        // }
+        // drop(authorities);
+        // let fallback = self.fallback_introduction_authority(identity, kind)?;
+        // let mut authorities = self
+        //     .introduction_authorities
+        //     .lock()
+        //     .expect("introduction authority map");
+        // reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+        //     authorities.len(),
+        //     host.as_ref(),
+        // )?;
+        // if let Some(authority) = authorities.get(&(identity, kind)) {
+        //     reserve_authority_clone(authority, host.as_ref())?;
+        //     return Ok(authority.clone());
+        // }
+        // reserve_authority_clone(&fallback, host.as_ref())?;
+        // // C13 (DR-80): the insert searches the registry again.
+        // reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+        //     authorities.len(),
+        //     host.as_ref(),
+        // )?;
+        // reserve_registry_insert(authorities.len(), host.as_ref())?;
+        // let result = fallback.clone();
+        // authorities.insert((identity, kind), fallback);
+        // Ok(result)
+        self.introduction(identity, kind)
+            .map(|record| record.authority)
+    }
+
+    /// Added by D-F2 (DR-118): the registered record of an introduction. An
+    /// unregistered introduction gets the fallback authority and no
+    /// measurement, so its observer walks the value.
+    pub fn introduction(
+        &self,
+        identity: [u8; 32],
+        kind: authority::AuthorityByteEventKind,
+    ) -> Result<IntroductionRecord, InterpreterError> {
         let host = self.native_host_work();
         let authorities = self
             .introduction_authorities
@@ -1156,12 +1323,15 @@ impl RuntimeBudget {
             authorities.len(),
             host.as_ref(),
         )?;
-        if let Some(authority) = authorities.get(&(identity, kind)) {
-            reserve_authority_clone(authority, host.as_ref())?;
-            return Ok(authority.clone());
+        if let Some(record) = authorities.get(&(identity, kind)) {
+            reserve_record_clone(record, host.as_ref())?;
+            return Ok(record.clone());
         }
         drop(authorities);
-        let fallback = self.fallback_introduction_authority(identity, kind)?;
+        let fallback = IntroductionRecord {
+            authority: self.fallback_introduction_authority(identity, kind)?,
+            measurement: None,
+        };
         let mut authorities = self
             .introduction_authorities
             .lock()
@@ -1170,11 +1340,11 @@ impl RuntimeBudget {
             authorities.len(),
             host.as_ref(),
         )?;
-        if let Some(authority) = authorities.get(&(identity, kind)) {
-            reserve_authority_clone(authority, host.as_ref())?;
-            return Ok(authority.clone());
+        if let Some(record) = authorities.get(&(identity, kind)) {
+            reserve_record_clone(record, host.as_ref())?;
+            return Ok(record.clone());
         }
-        reserve_authority_clone(&fallback, host.as_ref())?;
+        reserve_record_clone(&fallback, host.as_ref())?;
         // C13 (DR-80): the insert searches the registry again.
         reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
             authorities.len(),
@@ -4942,6 +5112,133 @@ mod runtime_budget_tests {
                 authority::authority_demand(&after_reset).unwrap(),
                 authority::ResourceMultiset::singleton(replacement.lane_hash(), 1)
             );
+        }
+
+        /// D-F2 (DR-118): two different measurements of one identity conflict
+        /// in either registration order. Otherwise the first record stays: a
+        /// later `None` keeps a measurement, a later measurement keeps a
+        /// `None`, and a reset clears the record.
+        #[test]
+        fn conflicting_measurement_registration_rejects_in_both_orders(
+            payer_bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..65),
+            identity in proptest::array::uniform32(proptest::prelude::any::<u8>()),
+            first_bytes in proptest::prelude::any::<u64>(),
+            second_bytes in proptest::prelude::any::<u64>(),
+            consume_kind in proptest::prelude::any::<bool>(),
+        ) {
+            use byte_accounting::IntroductionMeasurement;
+            use models::rhoapi::CostAuthority;
+
+            let payer = Sig::Ground(payer_bytes);
+            let kind = if consume_kind {
+                authority::AuthorityByteEventKind::ConsumeIntroduction
+            } else {
+                authority::AuthorityByteEventKind::ProduceIntroduction
+            };
+            let measurement = |bytes: u64| {
+                if consume_kind {
+                    IntroductionMeasurement::Consume { body: bytes, guard: None }
+                } else {
+                    IntroductionMeasurement::Produce { pars: bytes }
+                }
+            };
+            let fresh = || {
+                let budget = RuntimeBudget::new(Cost::create(1_000, "introduction measurement property"));
+                budget.set_deploy_signature_funded(b"measured introduction deploy", payer.clone());
+                budget
+            };
+            let conflict = Err(InterpreterError::ReduceError(
+                authority::AuthorityError::EventIdentityConflict.to_string(),
+            ));
+            let unmeasured = CostAuthority::default();
+
+            for (first, second) in [(first_bytes, second_bytes), (second_bytes, first_bytes)] {
+                let budget = fresh();
+                let _scope = budget.enter_comm_accounting_scope();
+                budget
+                    .register_introduction(identity, kind, &unmeasured, Some(measurement(first)))
+                    .unwrap();
+                let repeated =
+                    budget.register_introduction(identity, kind, &unmeasured, Some(measurement(second)));
+                if first == second {
+                    proptest::prop_assert_eq!(repeated, Ok(()));
+                } else {
+                    proptest::prop_assert_eq!(repeated, conflict.clone());
+                }
+                budget.register_introduction(identity, kind, &unmeasured, None).unwrap();
+                proptest::prop_assert_eq!(
+                    budget.introduction(identity, kind).unwrap().measurement,
+                    Some(measurement(first))
+                );
+            }
+
+            let budget = fresh();
+            let _scope = budget.enter_comm_accounting_scope();
+            budget.register_introduction(identity, kind, &unmeasured, None).unwrap();
+            budget
+                .register_introduction(identity, kind, &unmeasured, Some(measurement(first_bytes)))
+                .unwrap();
+            proptest::prop_assert_eq!(budget.introduction(identity, kind).unwrap().measurement, None);
+
+            let budget = fresh();
+            let _scope = budget.enter_comm_accounting_scope();
+            budget
+                .register_introduction(identity, kind, &unmeasured, Some(measurement(first_bytes)))
+                .unwrap();
+            budget.reset_from_token(&Token::coalesced(payer.clone(), 1_000));
+            proptest::prop_assert!(budget
+                .introduction_authorities
+                .lock()
+                .expect("introduction authority map")
+                .is_empty());
+            proptest::prop_assert_eq!(budget.introduction(identity, kind).unwrap().measurement, None);
+        }
+
+        /// D-F2 (DR-118): registrations of different identities commute, so
+        /// the registry does not depend on the order of the reducer's tasks.
+        #[test]
+        fn registrations_of_distinct_identities_commute(
+            payer_bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..65),
+            first_identity in proptest::array::uniform32(proptest::prelude::any::<u8>()),
+            second_identity in proptest::array::uniform32(proptest::prelude::any::<u8>()),
+            first_pars in proptest::prelude::any::<u64>(),
+            second_body in proptest::prelude::any::<u64>(),
+            second_guard in proptest::option::of(proptest::prelude::any::<u64>()),
+        ) {
+            use byte_accounting::IntroductionMeasurement;
+            use models::rhoapi::CostAuthority;
+
+            let payer = Sig::Ground(payer_bytes);
+            let registrations = [
+                (
+                    first_identity,
+                    authority::AuthorityByteEventKind::ProduceIntroduction,
+                    IntroductionMeasurement::Produce { pars: first_pars },
+                ),
+                (
+                    second_identity,
+                    authority::AuthorityByteEventKind::ConsumeIntroduction,
+                    IntroductionMeasurement::Consume { body: second_body, guard: second_guard },
+                ),
+            ];
+            let registry = |order: [usize; 2]| {
+                let budget = RuntimeBudget::new(Cost::create(1_000, "introduction order property"));
+                budget.set_deploy_signature_funded(b"ordered introduction deploy", payer.clone());
+                let _scope = budget.enter_comm_accounting_scope();
+                for index in order {
+                    let (identity, kind, measurement) = registrations[index];
+                    budget
+                        .register_introduction(identity, kind, &CostAuthority::default(), Some(measurement))
+                        .unwrap();
+                }
+                let registry = budget
+                    .introduction_authorities
+                    .lock()
+                    .expect("introduction authority map")
+                    .clone();
+                registry
+            };
+            proptest::prop_assert_eq!(registry([0, 1]), registry([1, 0]));
         }
     }
 

@@ -10,6 +10,7 @@ use rspace_plus_plus::rspace::rspace_interface::{MaybeConsumeResult, MaybeProduc
 use rspace_plus_plus::rspace::trace::event::{Consume, IOEvent, Produce};
 
 use super::*;
+use crate::rust::interpreter::accounting::IntroductionRecord;
 
 fn decision(
     result: Result<NativeBudgetReplayDecision, NativeReplayError>,
@@ -113,7 +114,10 @@ impl NativeOperationPublication for NativeReplayPublication {
 impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuation>
     for NativeReplayReservation
 {
-    type Authority = CostAuthority;
+    // Changed by D-F2 (DR-118): the resolved introduction is the whole record,
+    // so the observers can reuse the reducer's measurement.
+    // type Authority = CostAuthority;
+    type Authority = IntroductionRecord;
     type Publication = NativeReplayPublication;
 
     fn outcome(&self) -> NativeReplayOutcome { self.expected_outcome() }
@@ -138,7 +142,9 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
         source: &Produce,
         channel: &Par,
         data: &ListParWithRandom,
-        authority: &CostAuthority,
+        // Changed by D-F2 (DR-118): the resolved introduction record.
+        // authority: &CostAuthority,
+        authority: &IntroductionRecord,
     ) -> Result<NativeReplayDecision, RSpaceError> {
         decision(self.observe_rho_produce(source, channel, data, authority))
     }
@@ -150,7 +156,9 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
         patterns: &[BindPattern],
         continuation: &TaggedContinuation,
         peeks: &BTreeSet<i32>,
-        authority: &CostAuthority,
+        // Changed by D-F2 (DR-118): the resolved introduction record.
+        // authority: &CostAuthority,
+        authority: &IntroductionRecord,
     ) -> Result<NativeReplayDecision, RSpaceError> {
         decision(self.observe_rho_consume(
             source,
@@ -238,9 +246,17 @@ impl NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedConti
         MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         RSpaceError,
     > {
-        self.inner
-            .produce(channel, data, persistent, authority)
-            .await
+        // Changed by D-F2 (DR-118): the session resolves a record. This entry
+        // takes only an authority, so its record has no measurement and the
+        // observer walks the datum.
+        // self.inner
+        //     .produce(channel, data, persistent, authority)
+        //     .await
+        let record = IntroductionRecord {
+            authority: authority.clone(),
+            measurement: None,
+        };
+        self.inner.produce(channel, data, persistent, &record).await
     }
 
     pub async fn consume(
@@ -255,15 +271,25 @@ impl NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedConti
         MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         RSpaceError,
     > {
+        // Changed by D-F2 (DR-118): the session resolves a record. This entry
+        // takes only an authority, so its record has no measurement and the
+        // observer walks the continuation.
+        // self.inner
+        //     .consume(
+        //         channels,
+        //         patterns,
+        //         continuation,
+        //         persistent,
+        //         peeks,
+        //         authority,
+        //     )
+        //     .await
+        let record = IntroductionRecord {
+            authority: authority.clone(),
+            measurement: None,
+        };
         self.inner
-            .consume(
-                channels,
-                patterns,
-                continuation,
-                persistent,
-                peeks,
-                authority,
-            )
+            .consume(channels, patterns, continuation, persistent, peeks, &record)
             .await
     }
 }

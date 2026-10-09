@@ -18,6 +18,13 @@ use crate::rust::interpreter::rho_runtime::test_accounting_observer;
 mod histories;
 mod joins;
 
+fn unmeasured(authority: &CostAuthority) -> IntroductionRecord {
+    IntroductionRecord {
+        authority: authority.clone(),
+        measurement: None,
+    }
+}
+
 #[tokio::test]
 async fn live_observer_preserves_host_rejection_without_mutating_tuples() {
     for produce in [false, true] {
@@ -266,7 +273,7 @@ async fn exercise(
                 .inner
                 .produce_with_authority(channel.clone(), data.clone(), data_persistent, |source| {
                     assert_eq!(source.hash, producer.hash);
-                    Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                    Err::<IntroductionRecord, _>(RSpaceError::HostWorkRejected)
                 })
                 .await
                 .map(|_| ())
@@ -281,7 +288,7 @@ async fn exercise(
                     BTreeSet::new(),
                     |source| {
                         assert_eq!(source, &consumer);
-                        Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                        Err::<IntroductionRecord, _>(RSpaceError::HostWorkRejected)
                     },
                 )
                 .await
@@ -307,7 +314,7 @@ async fn exercise(
                                 bincode::serialize(source).unwrap(),
                                 bincode::serialize(&producer).unwrap()
                             );
-                            Ok(auth.clone())
+                            Ok(unmeasured(&auth))
                         },
                     )
                     .await
@@ -324,7 +331,7 @@ async fn exercise(
                         |source| {
                             resolutions.set(resolutions.get() + 1);
                             assert_eq!(source, &consumer);
-                            Ok(auth.clone())
+                            Ok(unmeasured(&auth))
                         },
                     )
                     .await

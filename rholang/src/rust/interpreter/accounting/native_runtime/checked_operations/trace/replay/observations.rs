@@ -1,8 +1,10 @@
-use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
+// Changed by D-F2 (DR-118): the introduction observers take a record.
+// use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
 use super::*;
-use crate::rust::interpreter::accounting::observation_construction;
+use crate::rust::interpreter::accounting::{observation_construction, IntroductionRecord};
 
 fn construction_error(error: RSpaceError) -> NativeReplayError {
     match error {
@@ -35,22 +37,47 @@ impl NativeReplayReservation {
         Ok(())
     }
 
+    // Changed by D-F2 (DR-118): the observer receives the introduction record
+    // and reuses the reducer's measurement when the record has one.
+    // pub fn observe_rho_produce(
+    //     &mut self,
+    //     source: &Produce,
+    //     channel: &Par,
+    //     data: &ListParWithRandom,
+    //     introduction_authority: &CostAuthority,
+    // ) -> Result<NativeBudgetReplayDecision, NativeReplayError> {
+    //     self.authenticate_introduction_source(RSpaceOperationSource::Produce(source))?;
+    //     let meter = |operations, scanned, backing| {
+    //         reserve_source(&self.replay.inner.host, operations, scanned, backing)
+    //     };
+    //     let observed = observation_construction::produce_introduction_metered(
+    //         source,
+    //         channel,
+    //         data,
+    //         introduction_authority,
+    //         &meter,
+    //     )
+    //     .map_err(construction_error)?
+    //     .into_native_metered(&meter)
+    //     .map_err(construction_error)?;
+    //     self.observe_introduction(&observed)
+    // }
     pub fn observe_rho_produce(
         &mut self,
         source: &Produce,
         channel: &Par,
         data: &ListParWithRandom,
-        introduction_authority: &CostAuthority,
+        introduction: &IntroductionRecord,
     ) -> Result<NativeBudgetReplayDecision, NativeReplayError> {
         self.authenticate_introduction_source(RSpaceOperationSource::Produce(source))?;
         let meter = |operations, scanned, backing| {
             reserve_source(&self.replay.inner.host, operations, scanned, backing)
         };
-        let observed = observation_construction::produce_introduction_metered(
+        let observed = observation_construction::produce_introduction_recorded_metered(
             source,
             channel,
             data,
-            introduction_authority,
+            introduction,
             &meter,
         )
         .map_err(construction_error)?
@@ -66,7 +93,10 @@ impl NativeReplayReservation {
         patterns: &[BindPattern],
         continuation: &TaggedContinuation,
         peeks: &std::collections::BTreeSet<i32>,
-        introduction_authority: &CostAuthority,
+        // Changed by D-F2 (DR-118): the observer receives the introduction
+        // record and reuses the reducer's measurement when it has one.
+        // introduction_authority: &CostAuthority,
+        introduction: &IntroductionRecord,
     ) -> Result<NativeBudgetReplayDecision, NativeReplayError> {
         self.authenticate_introduction_source(RSpaceOperationSource::Consume(source))?;
         let expected = self
@@ -90,12 +120,21 @@ impl NativeReplayReservation {
         let meter = |operations, scanned, backing| {
             reserve_source(&self.replay.inner.host, operations, scanned, backing)
         };
-        let observed = observation_construction::consume_introduction_metered(
+        // Changed by D-F2 (DR-118): the recorded form reuses the measurement.
+        // let observed = observation_construction::consume_introduction_metered(
+        //     source,
+        //     channels,
+        //     patterns,
+        //     continuation,
+        //     introduction_authority,
+        //     &meter,
+        // )
+        let observed = observation_construction::consume_introduction_recorded_metered(
             source,
             channels,
             patterns,
             continuation,
-            introduction_authority,
+            introduction,
             &meter,
         )
         .map_err(construction_error)?

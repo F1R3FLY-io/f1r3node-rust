@@ -1,4 +1,5 @@
 use crypto::rust::hash::blake2b256::Blake2b256;
+use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use prost::Message;
 use rspace_plus_plus::rspace::errors::RSpaceError;
@@ -163,6 +164,133 @@ pub fn consume_introduction_charge(
         introduction_bytes,
         ..ByteCharge::default()
     })
+}
+
+/// Added by D-F2 (DR-118): the prost lengths that the reducer measured when it
+/// built an introduction. `pars` is the framed length of the datum's `pars`
+/// field. `body` is the length of the continuation's `ParWithRandom`, and
+/// `guard` is the length of its guard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntroductionMeasurement {
+    Produce { pars: u64 },
+    Consume { body: u64, guard: Option<u64> },
+}
+
+fn checked_sum<const N: usize>(parts: [u64; N]) -> Result<u64, ByteAccountingError> {
+    parts.into_iter().try_fold(0_u64, |total, part| {
+        total.checked_add(part).ok_or(ByteAccountingError::Overflow)
+    })
+}
+
+/// Added by D-F2 (DR-118): the prost length of a length-delimited field with
+/// `len` content bytes: its key, its length prefix and the content.
+pub(crate) fn message_field_bytes(tag: u32, len: u64) -> Result<u64, ByteAccountingError> {
+    let key =
+        u64::try_from(prost::encoding::key_len(tag)).map_err(|_| ByteAccountingError::Overflow)?;
+    let delimiter = u64::try_from(prost::encoding::encoded_len_varint(len))
+        .map_err(|_| ByteAccountingError::Overflow)?;
+    checked_sum([key, delimiter, len])
+}
+
+fn bytes_field_bytes(tag: u32, bytes: &[u8]) -> Result<u64, ByteAccountingError> {
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    message_field_bytes(
+        tag,
+        u64::try_from(bytes.len()).map_err(|_| ByteAccountingError::Overflow)?,
+    )
+}
+
+fn optional_message_field_bytes<M: Message>(
+    tag: u32,
+    message: Option<&M>,
+) -> Result<u64, ByteAccountingError> {
+    message.map_or(Ok(0), |message| {
+        u64::try_from(prost::encoding::message::encoded_len(tag, message))
+            .map_err(|_| ByteAccountingError::Overflow)
+    })
+}
+
+/// Added by D-F2 (DR-118): the prost length of `ParWithRandom { body:
+/// Some(b), random_state }` when `b` has `body` bytes.
+pub(crate) fn par_with_random_bytes(
+    body: u64,
+    random_state: &[u8],
+) -> Result<u64, ByteAccountingError> {
+    checked_sum([
+        message_field_bytes(1, body)?,
+        bytes_field_bytes(2, random_state)?,
+    ])
+}
+
+/// Added by D-F2 (DR-118): `produce_introduction_charge` with the framed
+/// length of `data.pars` measured by the reducer. It reads the channel, the
+/// random state, the seal and the stack.
+pub fn produce_introduction_charge_premeasured(
+    channel: &Par,
+    data: &ListParWithRandom,
+    pars: u64,
+) -> Result<ByteCharge, ByteAccountingError> {
+    let data_bytes = checked_sum([
+        pars,
+        bytes_field_bytes(2, &data.random_state)?,
+        optional_message_field_bytes(3, data.cost_authority.as_ref())?,
+        optional_message_field_bytes(4, data.cost_stack.as_ref())?,
+    ])?;
+    let introduction_bytes = checked_sum([
+        message_bytes(channel)?,
+        data_bytes,
+        HASH_BYTES
+            .checked_mul(2)
+            .ok_or(ByteAccountingError::Overflow)?,
+    ])?;
+    Ok(ByteCharge {
+        introduction_bytes,
+        ..ByteCharge::default()
+    })
+}
+
+/// Added by D-F2 (DR-118): true when `continuation` has the shape that the
+/// reducer measured: a `ParBody` and a guard exactly when the measurement has
+/// one. It reads only the body variant and the guard presence.
+pub(crate) fn consume_premeasurement_applies(
+    continuation: &TaggedContinuation,
+    guard: Option<u64>,
+) -> bool {
+    matches!(continuation.tagged_cont, Some(TaggedCont::ParBody(_)))
+        && guard.is_some() == continuation.guard.is_some()
+}
+
+/// Added by D-F2 (DR-118): `consume_introduction_charge` with the body and
+/// guard lengths measured by the reducer. It returns `None` when the
+/// continuation does not have the shape of a reducer-built continuation, and
+/// the caller then walks it.
+pub fn consume_introduction_charge_premeasured(
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
+    body: u64,
+    guard: Option<u64>,
+) -> Result<Option<ByteCharge>, ByteAccountingError> {
+    if !consume_premeasurement_applies(continuation, guard) {
+        return Ok(None);
+    }
+    let continuation_bytes = checked_sum([
+        message_field_bytes(1, body)?,
+        guard.map_or(Ok(0), |guard| message_field_bytes(3, guard))?,
+        optional_message_field_bytes(4, continuation.cost_authority.as_ref())?,
+    ])?;
+    let introduction_bytes = checked_sum([
+        sum_message_bytes(channels)?,
+        sum_message_bytes(patterns)?,
+        continuation_bytes,
+        event_storage_bytes(channels.len())?,
+    ])?;
+    Ok(Some(ByteCharge {
+        introduction_bytes,
+        ..ByteCharge::default()
+    }))
 }
 
 pub fn comm_charge(
@@ -360,5 +488,226 @@ mod tests {
                 .unwrap();
             prop_assert_eq!(producer_first, consumer_first);
         }
+    }
+
+    fn ground(bytes: Vec<u8>) -> models::rhoapi::CostSignature {
+        models::rhoapi::CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Ground(bytes)),
+        }
+    }
+
+    fn optional_authority() -> impl Strategy<Value = Option<models::rhoapi::CostAuthority>> {
+        prop_oneof![
+            Just(None),
+            Just(Some(models::rhoapi::CostAuthority::default())),
+            prop::collection::vec(
+                (
+                    prop::collection::vec(any::<u8>(), 0..64),
+                    prop::collection::vec(any::<u8>(), 0..64)
+                ),
+                1..4
+            )
+            .prop_map(|regions| Some(models::rhoapi::CostAuthority {
+                regions: regions
+                    .into_iter()
+                    .map(|(signature, instance_id)| models::rhoapi::CostRegion {
+                        instance_id,
+                        signature: Some(ground(signature)),
+                    })
+                    .collect(),
+            })),
+        ]
+    }
+
+    fn optional_stack() -> impl Strategy<Value = Option<models::rhoapi::CostStack>> {
+        prop_oneof![
+            Just(None),
+            Just(Some(models::rhoapi::CostStack::default())),
+            prop::collection::vec(prop::collection::vec(any::<u8>(), 0..64), 1..4).prop_map(
+                |cells| Some(models::rhoapi::CostStack {
+                    cells: cells.into_iter().map(ground).collect(),
+                })
+            ),
+        ]
+    }
+
+    fn term() -> impl Strategy<Value = Par> {
+        prop_oneof![
+            Just(Par::default()),
+            (120_usize..17_000).prop_map(|size| models::rust::utils::new_gstring_par(
+                "d".repeat(size),
+                Vec::new(),
+                false
+            )),
+            crate::rust::interpreter::accounting::random_par_term(),
+        ]
+    }
+
+    fn bind_pattern() -> impl Strategy<Value = BindPattern> {
+        use models::rhoapi::var::{VarInstance, WildcardMsg};
+        use models::rhoapi::Var;
+        (
+            prop::collection::vec(term(), 0..3),
+            prop_oneof![
+                Just(None),
+                Just(Some(Var { var_instance: None })),
+                any::<i32>().prop_map(|index| Some(Var {
+                    var_instance: Some(VarInstance::FreeVar(index))
+                })),
+                any::<i32>().prop_map(|index| Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(index))
+                })),
+                Just(Some(Var {
+                    var_instance: Some(VarInstance::Wildcard(WildcardMsg {}))
+                })),
+            ],
+            any::<i32>(),
+        )
+            .prop_map(|(patterns, remainder, free_count)| BindPattern {
+                patterns,
+                remainder,
+                free_count,
+            })
+    }
+
+    /// A random state that is empty in a fixed share of the cases, because
+    /// prost omits an empty one (the default-field rule).
+    fn random_state() -> impl Strategy<Value = Vec<u8>> {
+        prop_oneof![Just(Vec::new()), prop::collection::vec(any::<u8>(), 1..300),]
+    }
+
+    /// The `pars` measurement as the reducer composes it from the substituted
+    /// data.
+    fn reducer_pars(pars: &[Par]) -> u64 {
+        pars.iter()
+            .map(|par| message_field_bytes(1, u64::try_from(par.encoded_len()).unwrap()).unwrap())
+            .sum()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// D-F2 (DR-118): a produce introduction charged from the reducer's
+        /// measurement equals the walked charge on every datum shape.
+        #[test]
+        fn measured_produce_introduction_bytes_equal_prost_encoded_len(
+            channel in term(),
+            pars in prop::collection::vec(term(), 0..4),
+            random_state in random_state(),
+            cost_authority in optional_authority(),
+            cost_stack in optional_stack(),
+        ) {
+            let data = ListParWithRandom { pars, random_state, cost_authority, cost_stack };
+            prop_assert_eq!(
+                produce_introduction_charge_premeasured(&channel, &data, reducer_pars(&data.pars)),
+                produce_introduction_charge(&channel, &data)
+            );
+        }
+
+        /// D-F2 (DR-118): the reducer composes the length of the
+        /// continuation's `ParWithRandom` from the substituted body's length.
+        #[test]
+        fn measured_body_bytes_equal_prost_encoded_len(
+            body in term(),
+            random_state in random_state(),
+        ) {
+            let composed = par_with_random_bytes(
+                u64::try_from(body.encoded_len()).unwrap(),
+                &random_state,
+            );
+            let body = models::rhoapi::ParWithRandom { body: Some(body), random_state };
+            prop_assert_eq!(composed, Ok(u64::try_from(body.encoded_len()).unwrap()));
+        }
+
+        /// D-F2 (DR-118): a consume introduction charged from the reducer's
+        /// measurement equals the walked charge on every reducer shape, and
+        /// it asks for the walk on every other shape.
+        #[test]
+        fn measured_consume_introduction_bytes_equal_prost_encoded_len(
+            channels in prop::collection::vec(term(), 1..4),
+            patterns in prop::collection::vec(bind_pattern(), 1..4),
+            shape in 0_u8..3,
+            body in proptest::option::of(term()),
+            random_state in random_state(),
+            body_ref in any::<i64>(),
+            guard in prop_oneof![Just(None), Just(Some(Par::default())), term().prop_map(Some)],
+            measure_guard in any::<bool>(),
+            cost_authority in optional_authority(),
+        ) {
+            let tagged_cont = match shape {
+                0 => Some(TaggedCont::ParBody(models::rhoapi::ParWithRandom { body, random_state })),
+                1 => Some(TaggedCont::ScalaBodyRef(body_ref)),
+                _ => None,
+            };
+            let body = match &tagged_cont {
+                Some(TaggedCont::ParBody(body)) => u64::try_from(body.encoded_len()).unwrap(),
+                _ => 0,
+            };
+            let guard_bytes = measure_guard
+                .then(|| guard.as_ref().map_or(0, |guard| u64::try_from(guard.encoded_len()).unwrap()));
+            let continuation = TaggedContinuation { tagged_cont, guard, cost_authority };
+            let reducer_shape = matches!(continuation.tagged_cont, Some(TaggedCont::ParBody(_)))
+                && guard_bytes.is_some() == continuation.guard.is_some();
+            let expected = reducer_shape
+                .then(|| consume_introduction_charge(&channels, &patterns, &continuation).unwrap());
+            prop_assert_eq!(
+                consume_introduction_charge_premeasured(&channels, &patterns, &continuation, body, guard_bytes),
+                Ok(expected)
+            );
+        }
+    }
+
+    /// D-F2 (DR-118): the field framing equals prost's own length-delimited
+    /// framing at every varint width boundary.
+    #[test]
+    fn framing_matches_prost_at_varint_boundaries() {
+        for len in [0_usize, 1, 127, 128, 16_383, 16_384, 2_097_151, 2_097_152] {
+            let bytes = vec![0_u8; len];
+            for tag in [1_u32, 2, 3, 4, 15, 16] {
+                assert_eq!(
+                    message_field_bytes(tag, u64::try_from(len).unwrap()),
+                    Ok(u64::try_from(prost::encoding::bytes::encoded_len(tag, &bytes)).unwrap())
+                );
+            }
+        }
+    }
+
+    /// D-F2 (DR-118), negative control: prost omits a default field, so a
+    /// composition that frames every field counts bytes that the walk does
+    /// not count.
+    #[test]
+    fn naive_framing_differs_from_prost_on_default_fields() {
+        let channel = Par::default();
+        let empty = ListParWithRandom::default();
+        let walked = produce_introduction_charge(&channel, &empty).unwrap();
+        let naive = message_bytes(&channel).unwrap() + message_field_bytes(2, 0).unwrap() + 64;
+        assert_eq!(empty.encoded_len(), 0);
+        assert_ne!(naive, walked.introduction_bytes);
+        assert_eq!(
+            produce_introduction_charge_premeasured(&channel, &empty, 0),
+            Ok(walked)
+        );
+    }
+
+    #[test]
+    fn premeasured_charges_reject_overflow() {
+        let channel = Par::default();
+        let data = ListParWithRandom::default();
+        assert_eq!(
+            produce_introduction_charge_premeasured(&channel, &data, u64::MAX),
+            Err(ByteAccountingError::Overflow)
+        );
+        let continuation = TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(models::rhoapi::ParWithRandom::default())),
+            ..TaggedContinuation::default()
+        };
+        assert_eq!(
+            consume_introduction_charge_premeasured(&[channel], &[], &continuation, u64::MAX, None),
+            Err(ByteAccountingError::Overflow)
+        );
+        assert_eq!(
+            message_field_bytes(1, u64::MAX),
+            Err(ByteAccountingError::Overflow)
+        );
     }
 }

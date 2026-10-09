@@ -10,10 +10,11 @@ use shared::rust::clone_backing::{self, BackingError, BackingMeter, CloneBacking
 use shared::rust::collection_backing::tree_backing;
 
 use super::authority::{self, AuthorityByteEventKind, AuthorityError};
-use super::byte_accounting::{self, ByteCharge};
+use super::byte_accounting::{self, ByteCharge, IntroductionMeasurement};
 use super::byte_receipts::ByteObservation;
 #[cfg(test)]
 use super::InterpreterError;
+use super::IntroductionRecord;
 
 pub(crate) struct MeasuredRSpaceObservation<'a> {
     pub(crate) event_id: [u8; 32],
@@ -225,6 +226,10 @@ pub(crate) fn produce_introduction<'a>(
     })
 }
 
+// Test-only by D-F2 (DR-118): the replay observer uses
+// `produce_introduction_recorded_metered`. The tests keep this walked form as
+// the reference.
+#[cfg(test)]
 pub(crate) fn produce_introduction_metered<'a>(
     source: &Produce,
     channel: &Par,
@@ -282,6 +287,10 @@ pub(crate) fn consume_introduction<'a>(
     })
 }
 
+// Test-only by D-F2 (DR-118): the replay observer uses
+// `consume_introduction_recorded_metered`. The tests keep this walked form as
+// the reference.
+#[cfg(test)]
 pub(crate) fn consume_introduction_metered<'a>(
     source: &Consume,
     channels: &[Par],
@@ -327,6 +336,187 @@ pub(crate) fn consume_introduction_metered_with_identity<'a>(
         measurement: byte_accounting::consume_introduction_charge(channels, patterns, continuation)
             .map_err(construction_error)?,
     })
+}
+
+/// Added by D-F2 (DR-118): the produce introduction of a datum whose `pars`
+/// length the reducer measured. It walks the channel, the seal and the stack,
+/// and it reads the length of the random state. It does not walk `pars`.
+pub(crate) fn produce_introduction_premeasured_metered_with_identity<'a>(
+    identity: [u8; 32],
+    channel: &Par,
+    data: &ListParWithRandom,
+    pars: u64,
+    introduction_authority: &'a CostAuthority,
+    meter: &dyn SourceMeter,
+) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
+    inspect_value_blocks(channel, meter)?;
+    inspect_value_blocks(&data.cost_authority, meter)?;
+    inspect_value_blocks(&data.cost_stack, meter)?;
+    meter.reserve(3, clone_backing::BLOCK_FIELD_SCANNED, 0)?;
+    let measurement = byte_accounting::produce_introduction_charge_premeasured(channel, data, pars)
+        .map_err(construction_error)?;
+    #[cfg(any(test, debug_assertions))]
+    assert_eq!(
+        Ok(measurement),
+        byte_accounting::produce_introduction_charge(channel, data),
+        "a premeasured produce introduction differs from the walked one"
+    );
+    Ok(MeasuredRSpaceObservation {
+        event_id: identity,
+        kind: AuthorityByteEventKind::ProduceIntroduction,
+        authority: Cow::Borrowed(introduction_authority),
+        measurement,
+    })
+}
+
+/// Added by D-F2 (DR-118): the consume introduction of a continuation whose
+/// body and guard lengths the reducer measured. It reads the continuation's
+/// body variant and guard presence. When they match the measurement, it walks
+/// the channels, the patterns and the authority, but not the body or the
+/// guard. Otherwise it walks the whole continuation.
+pub(crate) fn consume_introduction_premeasured_metered_with_identity<'a>(
+    identity: [u8; 32],
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
+    body: u64,
+    guard: Option<u64>,
+    introduction_authority: &'a CostAuthority,
+    meter: &dyn SourceMeter,
+) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
+    meter.reserve(6, 2 * clone_backing::BLOCK_FIELD_SCANNED, 0)?;
+    if !byte_accounting::consume_premeasurement_applies(continuation, guard) {
+        return consume_introduction_metered_with_identity(
+            identity,
+            channels,
+            patterns,
+            continuation,
+            introduction_authority,
+            meter,
+        );
+    }
+    inspect_slice_blocks(channels, meter)?;
+    inspect_slice_blocks(patterns, meter)?;
+    inspect_value_blocks(&continuation.cost_authority, meter)?;
+    let measurement = byte_accounting::consume_introduction_charge_premeasured(
+        channels,
+        patterns,
+        continuation,
+        body,
+        guard,
+    )
+    .map_err(construction_error)?
+    .ok_or_else(|| {
+        RSpaceError::BugFoundError("premeasured continuation lost its shape".to_owned())
+    })?;
+    #[cfg(any(test, debug_assertions))]
+    assert_eq!(
+        Ok(measurement),
+        byte_accounting::consume_introduction_charge(channels, patterns, continuation),
+        "a premeasured consume introduction differs from the walked one"
+    );
+    Ok(MeasuredRSpaceObservation {
+        event_id: identity,
+        kind: AuthorityByteEventKind::ConsumeIntroduction,
+        authority: Cow::Borrowed(introduction_authority),
+        measurement,
+    })
+}
+
+/// Added by D-F2 (DR-118): the produce introduction of a registered record. It
+/// reuses the reducer's measurement when the record has one, and it walks the
+/// datum otherwise.
+pub(crate) fn produce_introduction_recorded_metered_with_identity<'a>(
+    identity: [u8; 32],
+    channel: &Par,
+    data: &ListParWithRandom,
+    record: &'a IntroductionRecord,
+    meter: &dyn SourceMeter,
+) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
+    match record.measurement {
+        Some(IntroductionMeasurement::Produce { pars }) => {
+            produce_introduction_premeasured_metered_with_identity(
+                identity,
+                channel,
+                data,
+                pars,
+                &record.authority,
+                meter,
+            )
+        }
+        _ => produce_introduction_metered_with_identity(
+            identity,
+            channel,
+            data,
+            &record.authority,
+            meter,
+        ),
+    }
+}
+
+pub(crate) fn produce_introduction_recorded_metered<'a>(
+    source: &Produce,
+    channel: &Par,
+    data: &ListParWithRandom,
+    record: &'a IntroductionRecord,
+    meter: &dyn SourceMeter,
+) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
+    let identity = byte_accounting::produce_introduction_identity_metered(source, meter)?;
+    produce_introduction_recorded_metered_with_identity(identity, channel, data, record, meter)
+}
+
+/// Added by D-F2 (DR-118): the consume introduction of a registered record. It
+/// reuses the reducer's measurement when the record has one, and it walks the
+/// continuation otherwise.
+pub(crate) fn consume_introduction_recorded_metered_with_identity<'a>(
+    identity: [u8; 32],
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
+    record: &'a IntroductionRecord,
+    meter: &dyn SourceMeter,
+) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
+    match record.measurement {
+        Some(IntroductionMeasurement::Consume { body, guard }) => {
+            consume_introduction_premeasured_metered_with_identity(
+                identity,
+                channels,
+                patterns,
+                continuation,
+                body,
+                guard,
+                &record.authority,
+                meter,
+            )
+        }
+        _ => consume_introduction_metered_with_identity(
+            identity,
+            channels,
+            patterns,
+            continuation,
+            &record.authority,
+            meter,
+        ),
+    }
+}
+
+pub(crate) fn consume_introduction_recorded_metered<'a>(
+    source: &Consume,
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
+    record: &'a IntroductionRecord,
+    meter: &dyn SourceMeter,
+) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
+    let identity = byte_accounting::consume_introduction_identity_metered(source, meter)?;
+    consume_introduction_recorded_metered_with_identity(
+        identity,
+        channels,
+        patterns,
+        continuation,
+        record,
+        meter,
+    )
 }
 
 pub(crate) fn comm(
