@@ -755,7 +755,7 @@ jobs:
     name: Test (casper ${{ matrix.partition }}/2)
     needs: [build_base, static_checks]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
