@@ -19,6 +19,12 @@
 // the optional `metric` and `mirror`. Gate 9 then refuses a `mirror` whose metric ChromaDB does
 // not index. The oracles of this file restate these rules, and `prop_vectordb_params_validated`
 // restates the P6 headline `vectordb_params_validated` of `SpaceFactory.v`.
+//
+// P7 registers the six HashSet families after the processes of P6 (design v3 HS-7). A HashSet
+// factory takes only `seq`, which legacy execution refuses (QT-5). So the constructor checks give
+// a HashSet family the qualifier `seq` (`family_ctor`), and the deploys of this file, which run
+// in legacy execution, create no HashSet space: each HashSet factory fails closed with
+// `QualifierUnavailable`. `reified_hashset.rs` creates HashSet spaces in native execution.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -32,7 +38,8 @@ use models::rust::reified::builders;
 use models::rust::reified::params::SendParam;
 use models::rust::reified::validation::is_param_key;
 use models::rust::space_factory_urn::{
-    SpaceFactoryUrn, SpaceInner, SpaceOuter, HASHMAP_BAG_ALIAS, PATHMAP_BAG_ALIAS,
+    SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier as UrnQualifier, HASHMAP_BAG_ALIAS,
+    PATHMAP_BAG_ALIAS,
 };
 use models::rust::utils::{
     new_bundle_par, new_elist_par, new_gbool_par, new_gint_par, new_gstring_par,
@@ -46,6 +53,7 @@ use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::runtime::unavailable;
 use rholang::rust::interpreter::reified::system_channels::{
     SystemChannel, P4_SYSTEM_CHANNELS, P5_SYSTEM_CHANNELS, P6_PROCESSES, P6_SYSTEM_CHANNELS,
+    P7_SYSTEM_CHANNELS,
 };
 use rholang::rust::interpreter::reified::system_processes::definitions;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
@@ -58,8 +66,8 @@ use rholang::rust::interpreter::spaces::factory::defaults::{
 };
 use rholang::rust::interpreter::spaces::factory::urn::{
     factory_capability, factory_channel, is_wired, registered_aliases, registered_channel,
-    registered_families, registered_p5_families, registered_p6_families, P5_ALIAS_ROWS,
-    P5_FAMILY_ROWS, P6_FAMILY_ROWS, REGISTERED_FAMILIES,
+    registered_families, registered_p5_families, registered_p6_families, registered_p7_families,
+    P5_ALIAS_ROWS, P5_FAMILY_ROWS, P6_FAMILY_ROWS, P7_FAMILY_ROWS, REGISTERED_FAMILIES,
 };
 use rholang::rust::interpreter::spaces::families::{query_params, send_params, Family};
 use rholang::rust::interpreter::spaces::namespace::{NativeSpace, SID_LEN};
@@ -105,17 +113,44 @@ fn named(pairs: &[(&str, Par)]) -> BTreeMap<String, Par> {
         .collect()
 }
 
+/// The qualifier element of a constructor of `family` in native execution: none for a family
+/// that takes `default`, and `"seq"` for a HashSet family, which takes only `seq` (P7, HS-6).
+fn qualifier_of(family: SpaceFactoryUrn) -> Option<Par> {
+    match family.supports_qualifier(UrnQualifier::Default) {
+        true => None,
+        false => Some(string("seq")),
+    }
+}
+
+/// The constructor list `[q?][PARAMS?]` of a factory of `family`: the qualifier of
+/// [`qualifier_of`], then the params `positional` and `named` of [`ctor`].
+fn family_ctor(family: SpaceFactoryUrn, positional: &[Par], named: &BTreeMap<String, Par>) -> Par {
+    list(
+        qualifier_of(family)
+            .into_iter()
+            .chain(params_tuple(positional, named))
+            .collect(),
+    )
+}
+
+/// True when legacy execution creates a space of `family`: the family takes `default`. A HashSet
+/// family takes only `seq`, which legacy execution refuses (QT-5).
+fn legacy_creates(family: SpaceFactoryUrn) -> bool {
+    family.supports_qualifier(UrnQualifier::Default)
+}
+
 /// The family `outer:inner`.
 fn family(outer: SpaceOuter, inner: SpaceInner) -> SpaceFactoryUrn {
     SpaceFactoryUrn { outer, inner }
 }
 
-/// The row of `family` in the tables of P4, P5 and P6, registered or not.
+/// The row of `family` in the tables of P4 to P7, registered or not.
 fn row_of(family: SpaceFactoryUrn) -> Option<SystemChannel> {
     REGISTERED_FAMILIES
         .iter()
         .chain(P5_FAMILY_ROWS.iter())
         .chain(P6_FAMILY_ROWS.iter())
+        .chain(P7_FAMILY_ROWS.iter())
         .find(|(candidate, _)| *candidate == family)
         .map(|(_, channel)| *channel)
 }
@@ -201,7 +236,7 @@ async fn stored_config(session: &Session, space: NativeSpace) -> SpaceConfig {
     SpaceConfig::from_par(map).expect("the config map decodes")
 }
 
-/// The families of P5 and P6 that have a constructor schema.
+/// The families of P5 to P7 that have a constructor schema.
 fn schema_families() -> Vec<SpaceFactoryUrn> {
     SpaceFactoryUrn::all()
         .filter(|family| constructor_schema(*family).is_some())
@@ -491,7 +526,7 @@ async fn space_factory_families_registered() {
     }
     // The definitions: the four of P4, then the registered families of P5 in family-index
     // order, then the registered aliases, then the registered families of P6 in family-index
-    // order, then the processes of P6 (`rho:lang:vector`).
+    // order, then the processes of P6 (`rho:lang:vector`), then the registered families of P7.
     let expected: Vec<(String, i64)> = P4_SYSTEM_CHANNELS
         .iter()
         .copied()
@@ -499,6 +534,7 @@ async fn space_factory_families_registered() {
         .chain(registered_aliases().map(|(channel, _)| channel))
         .chain(registered_p6_families().map(|(_, channel)| channel))
         .chain(P6_PROCESSES)
+        .chain(registered_p7_families().map(|(_, channel)| channel))
         .map(|channel| (channel.urn.to_string(), channel.body_ref()))
         .collect();
     let defined: Vec<(String, i64)> = definitions(&unavailable())
@@ -519,6 +555,13 @@ async fn space_factory_families_registered() {
     assert!(
         indices.windows(2).all(|pair| pair[0] < pair[1]),
         "the P6 rows are in family-index order"
+    );
+    let indices: Vec<u8> = registered_p7_families()
+        .map(|(_, channel)| channel.op)
+        .collect();
+    assert!(
+        indices.windows(2).all(|pair| pair[0] < pair[1]),
+        "the P7 rows are in family-index order"
     );
     // A runtime binds each registered family to its capability and installs one factory
     // continuation on its channel. An unregistered family has neither.
@@ -564,7 +607,8 @@ async fn space_factory_families_registered() {
         }
     }
     println!(
-        "registered P5 families: {:?}; registered aliases: {:?}; registered P6 families: {:?}",
+        "registered P5 families: {:?}; registered aliases: {:?}; registered P6 families: {:?}; \
+         registered P7 families: {:?}",
         registered_p5_families()
             .map(|(family, _)| family.to_string())
             .collect::<Vec<_>>(),
@@ -573,17 +617,35 @@ async fn space_factory_families_registered() {
             .collect::<Vec<_>>(),
         registered_p6_families()
             .map(|(family, _)| family.to_string())
+            .collect::<Vec<_>>(),
+        registered_p7_families()
+            .map(|(family, _)| family.to_string())
             .collect::<Vec<_>>()
     );
 }
 
 /// Each registered factory creates a space whose config names its family, with the canonical
 /// required params, and `getSpaceAgent` replies the capability of the family (decision 9.4).
+/// Legacy execution refuses the only qualifier of a HashSet factory, so it creates nothing
+/// (QT-5).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_factory_registered_families_create_their_spaces() {
     let mut session = Session::new().await;
     let urn_map = session.play.reducer.urn_map.clone();
     for (index, (family, _)) in registered_families().enumerate() {
+        if !legacy_creates(family) {
+            session
+                .fail_with(
+                    &format!(
+                        "new factory(`{family}`) in {{ for (space <- factory!?(\"seq\")) {{ Nil }} }}"
+                    ),
+                    &format!("rrs-p7-legacy {family}"),
+                    &Injections::new(),
+                    &["QualifierUnavailable"],
+                )
+                .await;
+            continue;
+        }
         let params = minimal_params(family);
         let out = format!("rrs-p5-created-{index}");
         let source = format!(
@@ -846,7 +908,7 @@ async fn space_factory_kwargs_unknown_param_with_suggestion() {
             let mut pairs = required.clone();
             pairs.insert(near.to_string(), int(1));
             assert_eq!(
-                FactoryConstructor::validate(family, &ctor(&[], &pairs)),
+                FactoryConstructor::validate(family, &family_ctor(family, &[], &pairs)),
                 Err(SpaceError::UnknownParam {
                     key: near.to_string(),
                     suggestion: Some((*key).to_string()),
@@ -857,7 +919,7 @@ async fn space_factory_kwargs_unknown_param_with_suggestion() {
         let mut far = required.clone();
         far.insert("zeta".to_string(), int(1));
         assert_eq!(
-            FactoryConstructor::validate(family, &ctor(&[], &far)),
+            FactoryConstructor::validate(family, &family_ctor(family, &[], &far)),
             Err(SpaceError::UnknownParam {
                 key: "zeta".to_string(),
                 suggestion: None,
@@ -865,8 +927,10 @@ async fn space_factory_kwargs_unknown_param_with_suggestion() {
             "{family}"
         );
     }
+    // Legacy execution refuses the qualifier of a HashSet factory before its params
+    // (`reified_hashset.rs` checks the params natively).
     let mut session = Session::new().await;
-    for (family, _) in registered_families() {
+    for (family, _) in registered_families().filter(|(family, _)| legacy_creates(*family)) {
         let schema = constructor_schema(family).expect("a registered family has a schema");
         let mut cases = vec![("zeta".to_string(), None)];
         cases.extend(
@@ -986,7 +1050,7 @@ async fn space_factory_kwargs_missing_param() {
     {
         assert!(required_params(family).is_empty(), "{family}");
         assert!(
-            FactoryConstructor::validate(family, &list(Vec::new())).is_ok(),
+            FactoryConstructor::validate(family, &family_ctor(family, &[], &named(&[]))).is_ok(),
             "{family}"
         );
     }
@@ -1081,7 +1145,7 @@ async fn space_factory_kwargs_invalid_param() {
                 let mut pairs = minimal_params(family);
                 pairs.insert((*key).to_string(), value.clone());
                 assert_eq!(
-                    FactoryConstructor::validate(family, &ctor(&[], &pairs)),
+                    FactoryConstructor::validate(family, &family_ctor(family, &[], &pairs)),
                     Err(SpaceError::InvalidParam {
                         key: (*key).to_string(),
                     }),
@@ -1116,7 +1180,7 @@ async fn space_factory_kwargs_invalid_param() {
         }
     }
     let mut session = Session::new().await;
-    for (family, _) in registered_families() {
+    for (family, _) in registered_families().filter(|(family, _)| legacy_creates(*family)) {
         let schema = constructor_schema(family).expect("a registered family has a schema");
         for key in schema {
             // The normalizer refuses a literal metric that is not a metric name, so the bad
@@ -1203,11 +1267,14 @@ async fn space_factory_kwargs_are_stored_canonical() {
             given.insert((*key).to_string(), value);
             stored.insert((*key).to_string(), canonical);
         }
-        let validated = FactoryConstructor::validate(family, &ctor(&[], &given))
+        let validated = FactoryConstructor::validate(family, &family_ctor(family, &[], &given))
             .unwrap_or_else(|error| panic!("{family}: {error:?}"));
         assert_eq!(validated.params, stored, "{family}");
-        let minimal = FactoryConstructor::validate(family, &ctor(&[], &minimal_params(family)))
-            .unwrap_or_else(|error| panic!("{family}: {error:?}"));
+        let minimal = FactoryConstructor::validate(
+            family,
+            &family_ctor(family, &[], &minimal_params(family)),
+        )
+        .unwrap_or_else(|error| panic!("{family}: {error:?}"));
         assert_eq!(minimal.params, minimal_params(family), "{family}");
         for optional in [CYCLIC_PARAM, PRIORITIES_PARAM, METRIC_PARAM, MIRROR_PARAM] {
             assert!(
@@ -1217,7 +1284,10 @@ async fn space_factory_kwargs_are_stored_canonical() {
         }
     }
     let mut session = Session::new().await;
-    for (index, (family, _)) in registered_families().enumerate() {
+    for (index, (family, _)) in registered_families()
+        .filter(|(family, _)| legacy_creates(*family))
+        .enumerate()
+    {
         let schema = constructor_schema(family).expect("a registered family has a schema");
         let pairs: BTreeMap<String, Par> = schema
             .iter()
@@ -1256,9 +1326,9 @@ async fn space_factory_kwargs_are_stored_canonical() {
 /// `registered_families_complete` (F26): a family is registered exactly when it has a row and
 /// its dispatch arm. A registered family has the op of its index, the body ref `200 + op`, its
 /// URN, a constructor schema and a send schema. The definitions are the four of P4, the
-/// registered P5 rows in row order, the registered aliases, the registered P6 rows in row order
-/// and the processes of P6, and nothing else: each factory definition names a registered family
-/// by its op.
+/// registered P5 rows in row order, the registered aliases, the registered P6 rows in row order,
+/// the processes of P6 and the registered P7 rows in row order, and nothing else: each factory
+/// definition names a registered family by its op.
 #[test]
 fn prop_registered_families_complete() {
     let defined: Vec<(String, i64)> = definitions(&unavailable())
@@ -1307,8 +1377,22 @@ fn prop_registered_families_complete() {
                 .iter()
                 .map(|channel| (channel.urn.to_string(), channel.body_ref())),
         );
+        expected.extend(
+            P7_SYSTEM_CHANNELS
+                .iter()
+                .filter(|channel| {
+                    registered_p7_families().any(|(_, registered)| registered == **channel)
+                })
+                .map(|channel| (channel.urn.to_string(), channel.body_ref())),
+        );
         prop_assert_eq!(&defined, &expected);
-        let factories = &defined[P4_SYSTEM_CHANNELS.len()..defined.len() - P6_PROCESSES.len()];
+        // Changed by P7 step 3: the P7 factories follow the processes of P6.
+        // let factories = &defined[P4_SYSTEM_CHANNELS.len()..defined.len() - P6_PROCESSES.len()];
+        let p7 = registered_p7_families().count();
+        let p6_processes = defined.len() - p7 - P6_PROCESSES.len();
+        let factories = defined[P4_SYSTEM_CHANNELS.len()..p6_processes]
+            .iter()
+            .chain(defined[defined.len() - p7..].iter());
         for (urn, body) in factories {
             let named = SpaceFactoryUrn::parse(urn).map_err(|error| {
                 TestCaseError::fail(format!("{urn} is not a factory URN: {error}"))
@@ -1368,7 +1452,8 @@ fn prop_constructor_params_validated() {
         pure_config(),
         (arb_any_family(), arb_positional(), arb_named()),
         |(family, positional, named)| {
-            let validated = FactoryConstructor::validate(family, &ctor(&positional, &named));
+            let validated =
+                FactoryConstructor::validate(family, &family_ctor(family, &positional, &named));
             match constructor_schema(family) {
                 None => prop_assert_eq!(
                     validated,
@@ -1416,7 +1501,7 @@ fn prop_priorities_validated() {
             if let Some(value) = &value {
                 pairs.insert(PRIORITIES_PARAM.to_string(), value.clone());
             }
-            let validated = FactoryConstructor::validate(family, &ctor(&[], &pairs));
+            let validated = FactoryConstructor::validate(family, &family_ctor(family, &[], &pairs));
             let takes = family.inner == SpaceInner::PriorityQueue;
             prop_assert_eq!(
                 constructor_schema(family)
@@ -1600,10 +1685,14 @@ fn prop_vectordb_params_validated() {
 /// The factory of a registered family creates a space whose config names the family and holds
 /// the canonical params of the constructor, for random valid params of the schema. A VectorDB
 /// constructor takes `capacity` and `dimensions`, any metric, and a mirror only with a metric
-/// that ChromaDB indexes.
+/// that ChromaDB indexes. The deploys run in legacy execution, which creates no HashSet space
+/// (QT-5).
 #[test]
 fn prop_factory_config_names_its_family() {
-    let families: Vec<SpaceFactoryUrn> = registered_families().map(|(family, _)| family).collect();
+    let families: Vec<SpaceFactoryUrn> = registered_families()
+        .map(|(family, _)| family)
+        .filter(|family| legacy_creates(*family))
+        .collect();
     check(
         runtime_config(),
         (

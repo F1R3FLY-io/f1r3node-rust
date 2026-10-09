@@ -120,7 +120,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 70](#decision-70) | Reified RSpaces only | 2026-10-08 | In force |
 | [Decision 71](#decision-71) | `capacity` is a soft bound under merges | 2026-10-08 | In force |
 | [Decision 72](#decision-72) | The P7 design process | 2026-10-09 | In force |
-| [Decision 73](#decision-73) | P7 design v2, Seq claims per channel, HashSet on units | 2026-10-09 | In force |
+| [Decision 73](#decision-73) | P7 design v2, Seq claims per channel, HashSet on units | 2026-10-09 | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store) |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -2046,7 +2046,7 @@ Their main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-09 |
-| Status | In force |
+| Status | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store) |
 | Amends | The plan sentence "the atomic Seq guard enforces exclusive use" (exclusive use holds for each channel) |
 | Related | [I-4](#i-4), [decision 39](#decision-39) (F1, F17), [decision 47](#decision-47), [decision 69](#decision-69) |
 
@@ -2069,6 +2069,13 @@ Their main terms are these:
 - The FIPS restricts each seq channel ("you cannot use it in a concurrent process"), and the channels of the default space are independent.
 - Legacy host operations bypass the scheduler, so a causal-lineage claim is deterministic only in native execution.
 - An empty pattern already matches exactly an empty message in the default space, so the HashSet store needs no change to matching.
+
+**Implementation.** P7 step 3 records the two codes of HS-8 exactly as design v3 states them ([specification 2.7](specification.md#27-hashset)):
+
+- `PayloadNotEmpty`: a send with any value to a HashSet collection, `x!(Nil)` included (HS-2).
+- `PatternNotEmpty`: a bind on a HashSet collection with a pattern, a binder or a remainder (HS-3). A wildcard or a literal pattern is a pattern too, because the FIPS allows only the empty pattern.
+
+Both checks run before any staging, in the driver and in the join engine.
 
 ## Minimal-footprint revision: M-1 to M-5
 

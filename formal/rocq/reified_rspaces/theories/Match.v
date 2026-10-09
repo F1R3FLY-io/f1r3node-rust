@@ -48,21 +48,21 @@
                             check_commit_metered, or get and check_commit)
    matches                  spaces/matching.rs:105-120 (SpaceMatcher::matches:
                             bind, then the guard) and spaces/generic.rs:
-                            794-830 (Cx::bind, Cx::admits, Cx::matches)
+                            815-851 (Cx::bind, Cx::admits, Cx::matches)
    first_spatial,           the RECEIVE-SCAN step of A.7: the first record
      scan_receive           of canonical_data_order with a spatial match,
                             then admits once (spaces/disciplines/scan.rs,
                             batch BAG); the order is Cx::canonical_data_order
-                            (spaces/generic.rs:779-784)
+                            (spaces/generic.rs:800-805)
    first_unrefused,         the OFFER-SCAN step of A.7: the first waiter of
      scan_offer_loop,       canonical_waiter_order outside the refused set
      scan_offer             with a spatial match; a refusal joins the
                             refused set (spaces/disciplines/scan.rs, batch
                             BAG); the order is Cx::canonical_waiter_order
-                            (spaces/generic.rs:786-792)
+                            (spaces/generic.rs:807-813)
    head_receive, head_offer the head driver of S1: receive_head and
                             offer_head match the head with Cx::matches
-                            (spaces/generic.rs:1556-1623, 1632-1716)
+                            (spaces/generic.rs:1577-1644, 1653-1737)
    host_consume             the host consume (rspace++/src/rspace/rspace/
                             ops_consume.rs:95-151): extract_data_candidates
                             takes the first datum of the bind that matches

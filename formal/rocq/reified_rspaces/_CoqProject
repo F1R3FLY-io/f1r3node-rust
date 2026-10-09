@@ -96,7 +96,9 @@
 #   VectorStore       P5d (3 headlines): the Vector store grows without a
 #                     bound and keeps its indices.
 #   HashMapStore      P5d (2 headlines): the HashMap store keys a collection
-#                     by its canonical channel (A5).
+#                     by its canonical channel (A5). P7 step 3 (1
+#                     headline): the HashSet store takes units only
+#                     (HS-2, HS-3).
 #   PathMapPrefix     P5e (6 headlines): path keys order paths by prefix,
 #                     the re-rooting laws, the FIPS example, and a total
 #                     candidate order. Wave W3 (11 headlines): the marker

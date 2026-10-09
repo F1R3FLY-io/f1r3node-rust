@@ -1,12 +1,13 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P7",
-  "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2) and the Seq rules (W3): the book of a root evaluation, the sweep at each root entry, the dangling ids of ended deploys, the claims and the send rule of seq spaces, and the qualifier gate.",
-  "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3, 4, 5 and 9. The headline ids are the ids of the P7 phase of formal/reified-rspaces-invariant-map.json.",
+  "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2), the Seq rules (W3) and the HashSet store (W4): the book of a root evaluation, the sweep at each root entry, the dangling ids of ended deploys, the claims and the send rule of seq spaces, the qualifier gate, and the unit rules of a HashSet collection.",
+  "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3, 4, 5, 6 and 9. The headline ids are the ids of the P7 phase of formal/reified-rspaces-invariant-map.json.",
   "code_base": "The items are in the P7 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
     "rocq": [
+      "formal/rocq/reified_rspaces/theories/HashMapStore.v",
       "formal/rocq/reified_rspaces/theories/Namespace.v",
       "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
       "formal/rocq/reified_rspaces/theories/VolatileSweep.v"
@@ -63,6 +64,12 @@
       "name": "ClaimTracksLastUse",
       "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
       "statement": "The claim of a channel of a seq space is its last admitted use, and a channel has a claim exactly when it has an admitted use (design v3 SQ-4)."
+    },
+    "V9": {
+      "kind": "rocq",
+      "name": "hashset_unit_rules",
+      "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+      "statement": "The payload check of a HashSet collection accepts exactly the empty payload and its pattern check exactly the empty pattern list with no binder and no remainder. An empty pattern list matches exactly the empty payload, a rejected send or receive stages nothing, and so every record of a HashSet store is a unit (design v3 HS-2, HS-3, HS-5)."
     }
   },
   "items": [
@@ -588,6 +595,57 @@
       ],
       "covers": [
         "V7"
+      ]
+    },
+    {
+      "item": "HashSetOuter",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+      "kind": "struct",
+      "name": "HashSetOuter",
+      "role": "The HashSet store: the key, the channels and the names of the HashMap store, with the unit rules (HS-1).",
+      "rocq": [
+        "hs_send",
+        "hs_receive"
+      ],
+      "tla": [],
+      "covers": [
+        "V9"
+      ]
+    },
+    {
+      "item": "HashSetOuter::check_payload",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+      "scope": "HashSetOuter",
+      "kind": "fn",
+      "name": "check_payload",
+      "role": "HS-2: a send to a HashSet collection carries the empty payload, before any staging.",
+      "rocq": [
+        "check_payload",
+        "hs_send"
+      ],
+      "tla": [],
+      "covers": [
+        "V9"
+      ]
+    },
+    {
+      "item": "HashSetOuter::check_patterns",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+      "scope": "HashSetOuter",
+      "kind": "fn",
+      "name": "check_patterns",
+      "role": "HS-3: a bind on a HashSet collection has no pattern, no binder and no remainder, before any staging.",
+      "rocq": [
+        "check_patterns",
+        "hs_receive",
+        "match_list"
+      ],
+      "tla": [],
+      "covers": [
+        "V9"
       ]
     }
   ]

@@ -1,5 +1,5 @@
 (* ═══════════════════════════════════════════════════════════════════════════
-   HashMapStore.v — the collections of a HashMap-keyed store (P5d)
+   HashMapStore.v — the collections of a HashMap-keyed store (P5d, P7)
 
    The HashMap, Array and Vector outer stores keep each collection of a
    space on its own data channel D(sid, k), where the key k is the canonical
@@ -13,6 +13,16 @@
      depend on the order of the stores, and an iteration over the keys in a
      canonical order sees the same collections (hashmap_iteration_permutation_
      invariant).
+
+   The HashSet store of P7 keys its collections as the HashMap store does,
+   and it restricts the operations to units (design v3, section 6, HS-A of
+   decision 73). Section 5 proves its unit rules (hashset_unit_rules): the
+   payload check accepts exactly the empty payload (HS-2), the pattern check
+   accepts exactly the empty pattern list with no remainder and no binder
+   (HS-3), an empty pattern list matches exactly the empty payload (the
+   fold_match rule), both checks fail before any staging, and so every record
+   of a HashSet store is a unit. The qualifier rule of HashSet (seq only,
+   HS-6) is headline 3 of SpaceFactory.v, qualifier_matrix.
 
    The legacy HashMap store (f1r3node-reified-rspaces, ChannelStore/
    HashMapStore.v and hash_map_bag_channel_store.rs) iterated a Rust HashMap
@@ -29,7 +39,10 @@
      without restating Namespace.v Q2 and Q11).
    - Plan: decision 32 (A5: the key is the bincode of the sorted Par),
      decision 41 (bag and set order candidates by source hash, an order-free
-     view of a collection).
+     view of a collection), decision 73 (HashSet keeps bag semantics on
+     units, HS-A).
+   - Design (P7): design v3 section 6 (HS-1 to HS-8) and section 9 (the
+     HashSet model, with a negative check).
    - Code: the P5 W2 tree of this repository. The paths below are relative
      to rholang/src/rust/interpreter.
 
@@ -51,6 +64,18 @@
    order_free, iterate      the canonical orders of the readers: the ord of
                             an envelope (Cx::head_datum) and the source-hash
                             order of DR-75 (Cx::canonical_data_order)
+   check_payload            spaces/outer/hashset.rs, HashSetOuter::
+                            check_payload (HS-2)
+   check_patterns, bind     spaces/outer/hashset.rs, HashSetOuter::
+                            check_patterns, over models::rhoapi::BindPattern
+                            (patterns, remainder, free_count) (HS-3)
+   match_list               matcher/fold_match.rs, FoldMatch::fold_match
+                            for Par, through matcher/match.rs,
+                            Matcher::get_with_context
+   hs_send, hs_receive      spaces/generic.rs, the checks of run_with and
+                            spaces/join.rs, validate: the hooks run after
+                            check_key and before any staging; a take of the
+                            first matching record stands for a fire
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -72,6 +97,11 @@
     2. hashmap_get_put_other     a store or a removal on one key leaves
                                  every other key as it was, and a store
                                  adds its record to its own key
+    3. hashset_unit_rules        the HashSet checks accept exactly units and
+                                 empty binds, an empty bind matches exactly
+                                 a unit, a rejected operation stages
+                                 nothing, and every record of a HashSet
+                                 store is a unit (P7, HS-2 and HS-3)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -83,6 +113,19 @@
    - The legacy model represented the store as a function from channels to
      lists and proved store equalities with functional extensionality. That
      is an axiom. Pointwise statements over every key replace it.
+
+   ─────────────────────────────────────────────────────────────────────────
+   Abstraction of section 5 (the HashSet store)
+   ─────────────────────────────────────────────────────────────────────────
+   - A record of a HashSet collection is its payload, a list of values: the
+     envelope of a record is the same for every store (RecordEnvelope.v), so
+     the model leaves it out.
+   - A pattern, a value, a remainder and the match of one pattern against one
+     value are section variables (match_one), as the spatial matcher is. A
+     remainder absorbs the surplus values when absorb says so: a free
+     variable runs free_check and a wildcard absorbs every list.
+   - A waiter is not a record. A receive that matches no record changes no
+     record of the store, so the model leaves the store as it is.
    ═══════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import List Bool Lia PeanoNat.
@@ -224,6 +267,155 @@ Section Store.
 
 End Store.
 
+(* ── 5. The HashSet store (P7, HS-1 to HS-5) ────────────────────────────── *)
+
+Section HashSetStore.
+  Variable K : Type.
+  Variable key_eq_dec : forall x y : K, {x = y} + {x <> y}.
+  (* A value of a payload, a pattern, and a remainder variable. *)
+  Variables V Pat Rem : Type.
+  (* The spatial match of one pattern against one value. *)
+  Variable match_one : Pat -> V -> bool.
+  (* A remainder that absorbs the surplus values: free_check for a free
+     variable, every list for a wildcard. *)
+  Variable absorb : Rem -> list V -> bool.
+
+  (* A record of a HashSet collection: its payload. *)
+  Definition payload : Type := list V.
+
+  (* models::rhoapi::BindPattern: the patterns, the remainder and the number
+     of binders (free_count). *)
+  Record bind : Type := mkBind { patterns : list Pat; remainder : option Rem; binders : nat }.
+
+  (* The two codes of HS-8. *)
+  Inductive hs_error : Type := PayloadNotEmpty | PatternNotEmpty.
+
+  (* HS-2: HashSetOuter::check_payload. *)
+  Definition check_payload (p : payload) : bool :=
+    match p with [] => true | _ :: _ => false end.
+
+  (* HS-3: HashSetOuter::check_patterns. *)
+  Definition check_patterns (b : bind) : bool :=
+    match patterns b, remainder b, binders b with
+    | [], None, 0 => true
+    | _, _, _ => false
+    end.
+
+  (* fold_match for Par: the patterns meet the values in order. Surplus
+     values need a remainder that absorbs them, and surplus patterns never
+     match. *)
+  Fixpoint match_list (ps : list Pat) (rem : option Rem) (vs : list V) : bool :=
+    match ps, vs with
+    | [], [] => true
+    | [], _ :: _ => match rem with None => false | Some r => absorb r vs end
+    | _ :: _, [] => false
+    | p :: ps', v :: vs' => match_one p v && match_list ps' rem vs'
+    end.
+
+  (* A send on the collection k: the payload check before any staging, then
+     the store of the unit. *)
+  Definition hs_send (k : K) (p : payload) (s : store K payload) : store K payload + hs_error :=
+    if check_payload p then inl (put K payload k p s) else inr PayloadNotEmpty.
+
+  (* A receive on the collection k: the pattern check before any staging,
+     then the take of the first record that the bind matches. A receive that
+     matches no record leaves every record in place. *)
+  Definition hs_receive (k : K) (b : bind) (s : store K payload) : store K payload + hs_error :=
+    if check_patterns b
+    then inl (take K key_eq_dec payload k (match_list (patterns b) (remainder b)) s)
+    else inr PatternNotEmpty.
+
+  Inductive hs_op : Type := Send (k : K) (p : payload) | Receive (k : K) (b : bind).
+
+  (* A sequence of operations from the store s. The first rejected
+     operation ends the sequence with its error. *)
+  Fixpoint hs_run (ops : list hs_op) (s : store K payload) : store K payload + hs_error :=
+    match ops with
+    | [] => inl s
+    | Send k p :: rest => match hs_send k p s with inl s' => hs_run rest s' | inr e => inr e end
+    | Receive k b :: rest =>
+        match hs_receive k b s with inl s' => hs_run rest s' | inr e => inr e end
+    end.
+
+  (* Every record of the store s is a unit. *)
+  Definition units_only (s : store K payload) : Prop := forall e, In e s -> snd e = [].
+
+  Lemma take_incl : forall k p s e, In e (take K key_eq_dec payload k p s) -> In e s.
+  Proof.
+    intros k p s e. induction s as [| [k0 r] rest IH]; [intros H; exact H |].
+    simpl. destruct (key_eq_dec k0 k) as [_ | _].
+    - destruct (p r); intros H; [right; exact H |].
+      destruct H as [H | H]; [left; exact H | right; exact (IH H)].
+    - intros H. destruct H as [H | H]; [left; exact H | right; exact (IH H)].
+  Qed.
+
+  Lemma get_in : forall k s r, In r (get K key_eq_dec payload k s) -> In (k, r) s.
+  Proof.
+    intros k s r H. unfold get in H. apply in_map_iff in H as [[k' r'] [Hr Hin]].
+    cbn in Hr. subst r'. apply filter_In in Hin as [Hin Hkey].
+    unfold is_key in Hkey. cbn in Hkey.
+    destruct (key_eq_dec k' k) as [-> | _]; [exact Hin | discriminate].
+  Qed.
+
+  Lemma hs_run_units : forall ops s s', units_only s -> hs_run ops s = inl s' -> units_only s'.
+  Proof.
+    intros ops. induction ops as [| op rest IH]; intros s s' units ran.
+    - cbn in ran. injection ran as <-. exact units.
+    - destruct op as [k p | k b]; cbn [hs_run] in ran.
+      + unfold hs_send in ran. destruct p as [| v vs]; cbn in ran; [| discriminate].
+        refine (IH _ _ _ ran). intros e He. cbn in He.
+        destruct He as [He | He]; [subst e; reflexivity | exact (units e He)].
+      + unfold hs_receive in ran. destruct (check_patterns b); cbn in ran; [| discriminate].
+        refine (IH _ _ _ ran). intros e He. exact (units e (take_incl _ _ _ _ He)).
+  Qed.
+
+  (* Headline 3 (P7, HS-2 and HS-3). The payload check accepts exactly the
+     empty payload, and the pattern check accepts exactly the empty pattern
+     list with no remainder and no binder. An empty bind matches exactly the
+     empty payload. A rejected send or receive stages nothing: it ends with
+     its code and no store. So every store that accepted operations make from
+     the empty store holds units only, in every collection. *)
+  Theorem hashset_unit_rules :
+    (forall p, check_payload p = true <-> p = []) /\
+    (forall b, check_patterns b = true <-> patterns b = [] /\ remainder b = None /\ binders b = 0) /\
+    (forall b vs, check_patterns b = true -> (match_list (patterns b) (remainder b) vs = true <-> vs = [])) /\
+    (forall k p s, check_payload p = false -> hs_send k p s = inr PayloadNotEmpty) /\
+    (forall k b s, check_patterns b = false -> hs_receive k b s = inr PatternNotEmpty) /\
+    (forall ops s k r, hs_run ops [] = inl s -> In r (get K key_eq_dec payload k s) -> r = []).
+  Proof.
+    split; [| split; [| split; [| split; [| split]]]].
+    - intros [| v vs]; cbn; split; intros H; solve [reflexivity | discriminate].
+    - intros [ps rem n]. unfold check_patterns. cbn.
+      destruct ps as [| p ps], rem as [r |], n as [| n]; cbn; split;
+        solve [ intros H; discriminate H
+              | intros [H1 [H2 H3]]; discriminate
+              | intros _; repeat split
+              | intros _; reflexivity ].
+    - intros [ps rem n] vs H. unfold check_patterns in H. cbn in H |- *.
+      destruct ps as [| p ps], rem as [r |], n as [| n]; try discriminate.
+      destruct vs as [| v vs]; cbn; split; intros H'; solve [reflexivity | discriminate].
+    - intros k p s H. unfold hs_send. rewrite H. reflexivity.
+    - intros k b s H. unfold hs_receive. rewrite H. reflexivity.
+    - intros ops s k r ran Hr.
+      assert (units : units_only s).
+      { apply (hs_run_units ops [] s); [intros e [] | exact ran]. }
+      exact (units (k, r) (get_in k s r Hr)).
+  Qed.
+End HashSetStore.
+
+(* A computed example: a unit is stored and taken, and a payload or a
+   binder fails with its code. Keys and values are numbers, and every value
+   matches every pattern. *)
+Example hashset_example :
+  let m := fun (_ : nat) (_ : nat) => true in
+  let a := fun (_ : nat) (_ : list nat) => true in
+  hs_run nat Nat.eq_dec nat nat nat m a
+    [Send nat nat nat nat 1 []; Receive nat nat nat nat 1 (mkBind nat nat [] None 0)] [] = inl [] /\
+  hs_run nat Nat.eq_dec nat nat nat m a [Send nat nat nat nat 1 [7]] [] = inr PayloadNotEmpty /\
+  hs_run nat Nat.eq_dec nat nat nat m a
+    [Receive nat nat nat nat 1 (mkBind nat nat [3] None 1)] [] = inr PatternNotEmpty.
+Proof. repeat split; reflexivity. Qed.
+
 (* A computed example over keys and records that are numbers: two orders of
    three stores give one sorted view of each collection. *)
 Example hashmap_example :
@@ -237,3 +429,4 @@ Proof. split; reflexivity. Qed.
 
 Print Assumptions hashmap_iteration_permutation_invariant.
 Print Assumptions hashmap_get_put_other.
+Print Assumptions hashset_unit_rules.

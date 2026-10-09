@@ -5453,7 +5453,7 @@
       ]
     },
     "p7": {
-      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). It extends campaign and restates the edits and the new files of p6, as p6 restates d47. Step 1 (temp spaces, the volatile sweep and the dangling checks) replaces the three counted begin_evaluation_scope lines of reduce.rs. Each root entry (inj, inj_with_observation, inj_with_host_work) now calls begin_root_evaluation before its evaluation and the sweep call after it. Step 1 also makes ReductionCoordinator::enter_boundary pub(crate) in deterministic_reduction.rs, so the sweep runs under the boundary guard. Its new files are the volatile registry, the temp suite, the sweep-scope suite, the shared family programs and the P7 model map. Step 2 (the Seq rules) edits only campaign files. Its new files are the send rule of seq names, the Seq suite, and the TLA+ model SpaceCoordination.tla with its safe configuration and its four Unsafe controls.",
+      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). It extends campaign and restates the edits and the new files of p6, as p6 restates d47. Step 1 (temp spaces, the volatile sweep and the dangling checks) replaces the three counted begin_evaluation_scope lines of reduce.rs. Each root entry (inj, inj_with_observation, inj_with_host_work) now calls begin_root_evaluation before its evaluation and the sweep call after it. Step 1 also makes ReductionCoordinator::enter_boundary pub(crate) in deterministic_reduction.rs, so the sweep runs under the boundary guard. Its new files are the volatile registry, the temp suite, the sweep-scope suite, the shared family programs and the P7 model map. Step 2 (the Seq rules) edits only campaign files. Its new files are the send rule of seq names, the Seq suite, and the TLA+ model SpaceCoordination.tla with its safe configuration and its four Unsafe controls. Step 3 (the HashSet store) edits only campaign files. Its new files are the HashSet outer store and the HashSet suite.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -7002,6 +7002,7 @@
         "rholang/src/rust/interpreter/spaces/namespace.rs",
         "rholang/src/rust/interpreter/spaces/outer/array.rs",
         "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
+        "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
         "rholang/src/rust/interpreter/spaces/outer/mod.rs",
         "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
         "rholang/src/rust/interpreter/spaces/outer/vector.rs",
@@ -7031,6 +7032,7 @@
         "rholang/tests/reified_factory.rs",
         "rholang/tests/reified_families.rs",
         "rholang/tests/reified_handle.rs",
+        "rholang/tests/reified_hashset.rs",
         "rholang/tests/reified_hooks_p5.rs",
         "rholang/tests/reified_join_props.rs",
         "rholang/tests/reified_joins.rs",

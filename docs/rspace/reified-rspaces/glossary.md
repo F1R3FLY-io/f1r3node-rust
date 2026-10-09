@@ -15,63 +15,63 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Namespace tag](#namespace-tag) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Native backend](#native-backend) | 2 |
-| [Admission verdict](#admission-verdict) | 2 | [Native play](#native-play) | 2 |
-| [Advisory query](#advisory-query) | 2 | [Native replay](#native-replay) | 2 |
-| [Agent](#agent) | 1 | [Native space](#native-space) | 2 |
-| [Allocation job](#allocation-job) | 2 | [Negative control](#negative-control) | 2 |
-| [Allocator](#allocator) | 2 | [Net write](#net-write) | 2 |
-| [Binding](#binding) | 2 | [Op channel](#op-channel) | 2 |
-| [Block](#block) | 1 | [Operation order](#operation-order) | 2 |
-| [Body channel](#body-channel) | 2 | [Outcome](#outcome) | 2 |
-| [Bundle](#bundle) | 1 | [Outer store](#outer-store) | 2 |
-| [Canonical form](#canonical-form) | 2 | [Pairing](#pairing) | 2 |
-| [Canonical group](#canonical-group) | 2 | [Par](#par) | 1 |
-| [Canonical order](#canonical-order) | 2 | [Param rule](#param-rule) | 2 |
-| [Capacity](#capacity) | 2 | [Path](#path) | 2 |
-| [Cascade](#cascade) | 2 | [Path marker](#path-marker) | 2 |
-| [Cell](#cell) | 2 | [Pattern](#pattern) | 1 |
-| [Channel](#channel) | 1 | [Peek](#peek) | 1 |
-| [Checkpoint](#checkpoint) | 1 | [Persistent](#persistent) | 1 |
-| [Class fire](#class-fire) | 2 | [pgmcp](#pgmcp) | 1 |
-| [Class key](#class-key) | 2 | [Phlo](#phlo) | 1 |
-| [Collection](#collection) | 2 | [Play](#play) | 1 |
-| [Collection counter](#collection-counter) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Collection key](#collection-key) | 2 | [Prefix source](#prefix-source) | 2 |
-| [COMM event](#comm-event) | 1 | [Process](#process) | 1 |
-| [Config record](#config-record) | 2 | [Produce counter](#produce-counter) | 2 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Property-based test](#property-based-test) | 1 |
-| [Conservative extension](#conservative-extension) | 2 | [Qualifier](#qualifier) | 2 |
-| [Constructor schema](#constructor-schema) | 2 | [Random state](#random-state) | 1 |
-| [Continuation](#continuation) | 1 | [Re-issue](#re-issue) | 2 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Re-offer](#re-offer) | 2 |
-| [Crossed stacks](#crossed-stacks) | 2 | [Re-rooting](#re-rooting) | 2 |
-| [Datum](#datum) | 1 | [Re-store](#re-store) | 2 |
-| [Deploy](#deploy) | 1 | [Receive](#receive) | 1 |
-| [Dirty collection](#dirty-collection) | 2 | [Recognized position](#recognized-position) | 2 |
-| [Dyadic number](#dyadic-number) | 2 | [Reconciler](#reconciler) | 2 |
-| [Eligible set](#eligible-set) | 2 | [Record envelope](#record-envelope) | 2 |
-| [Embedding](#embedding) | 2 | [Record id](#record-id) | 2 |
-| [Epoch closure](#epoch-closure) | 2 | [Recorded process](#recorded-process) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Reduction participant](#reduction-participant) | 2 |
-| [Event log](#event-log) | 1 | [Registered family](#registered-family) | 2 |
-| [Exact cut](#exact-cut) | 2 | [Regression corpus](#regression-corpus) | 2 |
-| [Exact value](#exact-value) | 2 | [Reified RSpace](#reified-rspace) | 2 |
-| [F1r3lang](#f1r3lang) | 1 | [Replay](#replay) | 1 |
-| [Factory](#factory) | 2 | [Reporting](#reporting) | 1 |
-| [Factory capability](#factory-capability) | 2 | [Representative](#representative) | 2 |
-| [Factory row](#factory-row) | 2 | [Retention](#retention) | 2 |
-| [FIPS](#fips) | 1 | [Rholang](#rholang) | 1 |
-| [Fire count](#fire-count) | 2 | [Rocq](#rocq) | 1 |
-| [Fire round](#fire-round) | 2 | [Rounding to nearest](#rounding-to-nearest) | 2 |
-| [First admitting waiter](#first-admitting-waiter) | 2 | [Routing class](#routing-class) | 2 |
-| [Footprint policy](#footprint-policy) | 2 | [RSpace](#rspace) | 1 |
-| [Frontend](#frontend) | 1 | [Scan discipline](#scan-discipline) | 2 |
-| [Gate](#gate) | 2 | [Scan driver](#scan-driver) | 2 |
-| [getSpaceAgent](#getspaceagent) | 2 | [Second send](#second-send) | 2 |
-| [Handle](#handle) | 2 | [Selection order](#selection-order) | 2 |
-| [Handle capability](#handle-capability) | 2 | [Send](#send) | 1 |
+| [Acceptance category](#acceptance-category) | 2 | [Native backend](#native-backend) | 2 |
+| [Accounting observer](#accounting-observer) | 1 | [Native play](#native-play) | 2 |
+| [Admission verdict](#admission-verdict) | 2 | [Native replay](#native-replay) | 2 |
+| [Advisory query](#advisory-query) | 2 | [Native space](#native-space) | 2 |
+| [Agent](#agent) | 1 | [Negative control](#negative-control) | 2 |
+| [Allocation job](#allocation-job) | 2 | [Net write](#net-write) | 2 |
+| [Allocator](#allocator) | 2 | [Op channel](#op-channel) | 2 |
+| [Binding](#binding) | 2 | [Operation order](#operation-order) | 2 |
+| [Block](#block) | 1 | [Outcome](#outcome) | 2 |
+| [Body channel](#body-channel) | 2 | [Outer store](#outer-store) | 2 |
+| [Bundle](#bundle) | 1 | [Pairing](#pairing) | 2 |
+| [Canonical form](#canonical-form) | 2 | [Par](#par) | 1 |
+| [Canonical group](#canonical-group) | 2 | [Param rule](#param-rule) | 2 |
+| [Canonical order](#canonical-order) | 2 | [Path](#path) | 2 |
+| [Capacity](#capacity) | 2 | [Path marker](#path-marker) | 2 |
+| [Cascade](#cascade) | 2 | [Pattern](#pattern) | 1 |
+| [Cell](#cell) | 2 | [Peek](#peek) | 1 |
+| [Channel](#channel) | 1 | [Persistent](#persistent) | 1 |
+| [Checkpoint](#checkpoint) | 1 | [pgmcp](#pgmcp) | 1 |
+| [Class fire](#class-fire) | 2 | [Phlo](#phlo) | 1 |
+| [Class key](#class-key) | 2 | [Play](#play) | 1 |
+| [Collection](#collection) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [Collection counter](#collection-counter) | 2 | [Prefix source](#prefix-source) | 2 |
+| [Collection key](#collection-key) | 2 | [Process](#process) | 1 |
+| [COMM event](#comm-event) | 1 | [Produce counter](#produce-counter) | 2 |
+| [Config record](#config-record) | 2 | [Property-based test](#property-based-test) | 1 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Qualifier](#qualifier) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Random state](#random-state) | 1 |
+| [Constructor schema](#constructor-schema) | 2 | [Re-issue](#re-issue) | 2 |
+| [Continuation](#continuation) | 1 | [Re-offer](#re-offer) | 2 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Re-rooting](#re-rooting) | 2 |
+| [Crossed stacks](#crossed-stacks) | 2 | [Re-store](#re-store) | 2 |
+| [Datum](#datum) | 1 | [Receive](#receive) | 1 |
+| [Deploy](#deploy) | 1 | [Recognized position](#recognized-position) | 2 |
+| [Dirty collection](#dirty-collection) | 2 | [Reconciler](#reconciler) | 2 |
+| [Dyadic number](#dyadic-number) | 2 | [Record envelope](#record-envelope) | 2 |
+| [Eligible set](#eligible-set) | 2 | [Record id](#record-id) | 2 |
+| [Embedding](#embedding) | 2 | [Recorded process](#recorded-process) | 2 |
+| [Epoch closure](#epoch-closure) | 2 | [Reduction participant](#reduction-participant) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Registered family](#registered-family) | 2 |
+| [Event log](#event-log) | 1 | [Regression corpus](#regression-corpus) | 2 |
+| [Exact cut](#exact-cut) | 2 | [Reified RSpace](#reified-rspace) | 2 |
+| [Exact value](#exact-value) | 2 | [Replay](#replay) | 1 |
+| [F1r3lang](#f1r3lang) | 1 | [Reporting](#reporting) | 1 |
+| [Factory](#factory) | 2 | [Representative](#representative) | 2 |
+| [Factory capability](#factory-capability) | 2 | [Retention](#retention) | 2 |
+| [Factory row](#factory-row) | 2 | [Rholang](#rholang) | 1 |
+| [FIPS](#fips) | 1 | [Rocq](#rocq) | 1 |
+| [Fire count](#fire-count) | 2 | [Rounding to nearest](#rounding-to-nearest) | 2 |
+| [Fire round](#fire-round) | 2 | [Routing class](#routing-class) | 2 |
+| [First admitting waiter](#first-admitting-waiter) | 2 | [RSpace](#rspace) | 1 |
+| [Footprint policy](#footprint-policy) | 2 | [Scan discipline](#scan-discipline) | 2 |
+| [Frontend](#frontend) | 1 | [Scan driver](#scan-driver) | 2 |
+| [Gate](#gate) | 2 | [Second send](#second-send) | 2 |
+| [getSpaceAgent](#getspaceagent) | 2 | [Selection order](#selection-order) | 2 |
+| [Handle](#handle) | 2 | [Send](#send) | 1 |
+| [Handle capability](#handle-capability) | 2 | [Seq claim](#seq-claim) | 2 |
 | [Head record](#head-record) | 2 | [Settle](#settle) | 2 |
 | [Head waiter](#head-waiter) | 2 | [Space](#space) | 2 |
 | [Head-only matching](#head-only-matching) | 2 | [Space agent](#space-agent) | 2 |
@@ -99,20 +99,21 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [LFS](#lfs) | 2 | [Tuple space](#tuple-space) | 1 |
 | [Lift](#lift) | 2 | [Typed reply](#typed-reply) | 2 |
 | [List mode](#list-mode) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
-| [List order](#list-order) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
-| [LIST-CASCADE](#list-cascade) | 2 | [URN](#urn) | 1 |
-| [Lock coverage](#lock-coverage) | 2 | [Use context](#use-context) | 2 |
-| [Lock stripe](#lock-stripe) | 1 | [User agent-backed space](#user-agent-backed-space) | 2 |
-| [Marker](#marker) | 2 | [VectorDB collection](#vectordb-collection) | 2 |
-| [Marker tuple](#marker-tuple) | 2 | [Vehicle](#vehicle) | 2 |
-| [Matcher](#matcher) | 2 | [Verification recipe](#verification-recipe) | 2 |
-| [Merge](#merge) | 1 | [Volatile channel](#volatile-channel) | 2 |
-| [Metered view read](#metered-view-read) | 2 | [Waiter](#waiter) | 2 |
-| [Mirror](#mirror) | 2 | [Watermark](#watermark) | 2 |
-| [Mirror journal](#mirror-journal) | 2 | [Widest kind](#widest-kind) | 2 |
-| [Mirror writer](#mirror-writer) | 2 | [Witness test](#witness-test) | 2 |
-| [Model map](#model-map) | 2 | [Write skew](#write-skew) | 2 |
-| [Name](#name) | 1 |  |  |
+| [List order](#list-order) | 2 | [Unit](#unit) | 2 |
+| [LIST-CASCADE](#list-cascade) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
+| [Lock coverage](#lock-coverage) | 2 | [URN](#urn) | 1 |
+| [Lock stripe](#lock-stripe) | 1 | [Use context](#use-context) | 2 |
+| [Marker](#marker) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Marker tuple](#marker-tuple) | 2 | [VectorDB collection](#vectordb-collection) | 2 |
+| [Matcher](#matcher) | 2 | [Vehicle](#vehicle) | 2 |
+| [Merge](#merge) | 1 | [Verification recipe](#verification-recipe) | 2 |
+| [Metered view read](#metered-view-read) | 2 | [Volatile channel](#volatile-channel) | 2 |
+| [Mirror](#mirror) | 2 | [Waiter](#waiter) | 2 |
+| [Mirror journal](#mirror-journal) | 2 | [Watermark](#watermark) | 2 |
+| [Mirror writer](#mirror-writer) | 2 | [Widest kind](#widest-kind) | 2 |
+| [Model map](#model-map) | 2 | [Witness test](#witness-test) | 2 |
+| [Name](#name) | 1 | [Write skew](#write-skew) | 2 |
+| [Namespace tag](#namespace-tag) | 2 |  |  |
 
 ## Part 1: background terms
 
@@ -442,7 +443,14 @@ The FIPS outer stores are HashMap, PathMap, Array, Vector, and HashSet ([decisio
 - PathMap treats each channel as a sequence of values, and a send on a sequence also reaches each prefix of the sequence.
 - Array gives out a fixed number of names. The maximum form aborts with `OutOfNames` after the last name, and the cyclic form reuses its names.
 - Vector gives out an unbounded number of names.
-- HashSet stores channel names only, and it requires the seq qualifier.
+- HashSet stores [units](#unit) on its channels: a send carries no value, and a receive binds no value. It requires the seq qualifier.
+
+### Unit
+
+A unit is a record whose payload is empty: the message of `x!()`.
+The collections of a HashSet space hold units only ([decision 73](decision-register.md#decision-73)).
+A send with a value aborts with `PayloadNotEmpty`, and a receive with a pattern, a binder or a remainder aborts with `PatternNotEmpty`.
+An empty receive `for ( <- x)` takes one unit or waits, as a receive of the default space does.
 
 ### Path
 

@@ -43,7 +43,7 @@
    family_of_names          rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:251-269 (family_of)
    factory_op               rholang/src/rust/interpreter/spaces/factory/urn.rs:
-                            213-217, 221-223 (the factory channel and the
+                            255-259, 263-265 (the factory channel and the
                             capability that getSpaceAgent replies)
    validate_qualifier, durability_of
                             rholang/src/rust/interpreter/spaces/factory/
@@ -59,7 +59,7 @@
    check_persistent_send    rholang/src/rust/interpreter/reified/
                             system_channels.rs:103, 107, 112-124
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
-                            2677-2795
+                            2703-2821
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -872,7 +872,9 @@ Print Assumptions space_already_exists_is_deterministic_abort.
      4.7 (rho:lang:vector) and 4.9 (rho:vectordb:embed and
      rho:vectordb:ann).
    - Plan: decisions 7, 9.4, 33, 52, 57 and 58, I-10 and the P5 choice F7.
-   - Code: the tree of P6 step 8. The line numbers below are its lines.
+   - Design (P7): design v3 section 6, HS-7 (the HashSet families, their
+     schemas and their factories).
+   - Code: the tree of P7 step 3. The line numbers below are its lines.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -880,52 +882,57 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    sys_channel, body_ref    rholang/src/rust/interpreter/reified/
                             system_channels.rs:32, 36-40, 44
    p4_rows, p4_others       rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:35-36 (REGISTERED_FAMILIES),
+                            urn.rs:38-39 (REGISTERED_FAMILIES),
                             rholang/src/rust/interpreter/reified/
                             system_channels.rs:51-55, 58-62, 65-69, 72-76,
                             79-84 (P4_SYSTEM_CHANNELS)
    p5_rows                  rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:47-140 (P5_FAMILY_ROWS),
+                            urn.rs:50-143 (P5_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
                             system_channels.rs:127-285 (the factories)
    alias_rows               rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:158-167 (P5_ALIAS_ROWS),
+                            urn.rs:191-200 (P5_ALIAS_ROWS),
                             rholang/src/rust/interpreter/reified/
                             system_channels.rs:305-309, 313-317, 340-366
    p6_rows, p6_others       rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:145-154 (P6_FAMILY_ROWS),
+                            urn.rs:148-157 (P6_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
                             system_channels.rs:288-292, 295-299, 378-379
                             (the VectorDB factories, P6_SYSTEM_CHANNELS),
                             384-388, 392-396, 407-411, 421 (P6_PROCESSES)
+   p7_rows                  rholang/src/rust/interpreter/spaces/factory/
+                            urn.rs:162-187 (P7_FAMILY_ROWS),
+                            rholang/src/rust/interpreter/reified/
+                            system_channels.rs:424-463 (the HashSet
+                            factories), 479-486 (P7_SYSTEM_CHANNELS)
    schema_of, required_of, vectordb_params, vectordb_required
                             rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:97, 100, 105-136, 140-142, 147-149
+                            defaults.rs:99, 102, 107-156, 160-162, 167-169
    wired                    families::Family::of_urn, through
                             rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:170 (is_wired)
+                            urn.rs:203 (is_wired)
    registered, is_registered, registered_aliases
                             rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:174-178, 182-186, 190-195, 199-203,
-                            206-210
+                            urn.rs:207-211, 215-219, 223-227, 231-237,
+                            241-245, 248-252
    definitions, binds       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:95-151 (definitions),
+                            reified/system_processes.rs:96-157 (definitions),
                             rholang/src/rust/
                             interpreter/system_processes.rs:493-501 (to_urn_map)
    get_space_agent_of       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:222-260 (get_space_agent),
+                            reified/system_processes.rs:228-266 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:251-269 (family_of), urn.rs:221-223
+                            constructor.rs:251-269 (family_of), urn.rs:263-265
                             (factory_capability)
    rule, rule_of, canonical, max_capacity, max_dimensions
                             rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:61-79 (the names and the bounds),
+                            defaults.rs:63-81 (the names and the bounds),
                             153-168, 172-183, 188-228 (ParamRule)
    metric_names             rholang/src/rust/interpreter/tensor/exact.rs:
                             77-84, 87-89, 92-101 (Metric::ALL, parse, name)
    suggest, least, within, suggestion_bound
                             rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:49, 248-257, 262-289
+                            defaults.rs:51, 268-277, 282-309
    validate_params, canonical_all
                             rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:80-165 (validate), 191-205
@@ -942,8 +949,8 @@ Print Assumptions space_already_exists_is_deterministic_abort.
      that hashmap:queue is wired (S1). The corollaries registration_s1 and
      registration_all_wired compute the registration for the arms of S1 and
      for every row wired, so the theorems of the section are not vacuous.
-     Since P6 the dispatch wires every row (families.rs Family::WIRED holds
-     the 26 families of the rows), so registration_all_wired is the
+     Since P7 the dispatch wires every row (families.rs Family::WIRED holds
+     the 32 families of the rows), so registration_all_wired is the
      registration of the code.
    - A definition is its system channel and the family that its factory
      creates (None for getSpaceAgent, assertEqual and the handle process of
@@ -1028,7 +1035,8 @@ Print Assumptions space_already_exists_is_deterministic_abort.
      check_mirror with `cbv beta iota` or by `destruct`, never by `cbn`.
    - `rewrite !in_app_iff in Hc' |- *` stops when Hc' has no more parts,
      so the goal keeps a part unsplit, and `left` then fails with "Not an
-     inductive definition". Apply in_app3 or in_app6 to each side instead.
+     inductive definition". Apply in_app4 or in_app7 (in_app3 or in_app6
+     before P7) to each side instead.
    - With the six PathMap rows, a full `cbn in Hreg` on the registration
      unfolds every row and used more than 8 GB. Reduce with `cbn [snd]`.
    - Without the Strategy of the section Registration, the Qed of
@@ -1096,6 +1104,8 @@ Proof. intros k l Hm Hin. apply mem_spec in Hin. rewrite Hin in Hm. discriminate
    below apply these lemmas instead of rewriting with in_app_iff: a setoid
    rewrite over the six parts of the definitions makes Qed slow, and
    `rewrite ! ... in H |- *` stops when H has no more parts. *)
+(* Changed by P7 step 3 (design v3 HS-7): the rows have four parts and the
+   definitions seven, so the proofs apply in_app4 and in_app7 below.
 Lemma in_app3 :
   forall (A : Type) (x : A) l1 l2 l3, In x (l1 ++ l2 ++ l3) <-> In x l1 \/ In x l2 \/ In x l3.
 Proof. intros A x l1 l2 l3. rewrite !in_app_iff. tauto. Qed.
@@ -1105,6 +1115,20 @@ Lemma in_app6 :
     In x (l1 ++ l2 ++ l3 ++ l4 ++ l5 ++ l6) <->
     In x l1 \/ In x l2 \/ In x l3 \/ In x l4 \/ In x l5 \/ In x l6.
 Proof. intros A x l1 l2 l3 l4 l5 l6. rewrite !in_app_iff. tauto. Qed.
+*)
+
+(* The membership in the four parts of the rows and the seven parts of the
+   definitions (P7), by part. *)
+Lemma in_app4 :
+  forall (A : Type) (x : A) l1 l2 l3 l4,
+    In x (l1 ++ l2 ++ l3 ++ l4) <-> In x l1 \/ In x l2 \/ In x l3 \/ In x l4.
+Proof. intros A x l1 l2 l3 l4. rewrite !in_app_iff. tauto. Qed.
+
+Lemma in_app7 :
+  forall (A : Type) (x : A) l1 l2 l3 l4 l5 l6 l7,
+    In x (l1 ++ l2 ++ l3 ++ l4 ++ l5 ++ l6 ++ l7) <->
+    In x l1 \/ In x l2 \/ In x l3 \/ In x l4 \/ In x l5 \/ In x l6 \/ In x l7.
+Proof. intros A x l1 l2 l3 l4 l5 l6 l7. rewrite !in_app_iff. tauto. Qed.
 
 Definition outer_eqb (a b : outer) : bool :=
   match a, b with
@@ -1219,6 +1243,12 @@ Definition p6_others : list sys_channel :=
   [mkChan StrP6.lang_vector vector_op 2; mkChan StrP6.vectordb_embed embed_op 2;
    mkChan StrP6.vectordb_ann ann_op 5].
 
+(* P7_FAMILY_ROWS, in family-index order: the six HashSet families (P7,
+   design v3 HS-7). Their definitions come after the processes of P6. *)
+Definition p7_rows : list (family * sys_channel) :=
+  [row HashSet Bag 26; row HashSet Queue 27; row HashSet Stack 28; row HashSet SetC 29;
+   row HashSet Cell 30; row HashSet PriorityQueue 31].
+
 (* VECTORDB_PARAMS and VECTORDB_REQUIRED. *)
 Definition vectordb_params : list bytes := [StrP6.capacity; StrP6.dimensions; StrP6.metric; StrP6.mirror].
 Definition vectordb_required : list bytes := [StrP6.capacity; StrP6.dimensions].
@@ -1227,8 +1257,8 @@ Definition vectordb_required : list bytes := [StrP6.capacity; StrP6.dimensions].
    order, and the params that it requires. *)
 Definition schema_of (f : family) : option (list bytes * list bytes) :=
   match f_outer f, f_inner f with
-  | (HashMap | PathMap | Vector), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])
-  | (HashMap | PathMap | Vector), PriorityQueue => Some ([StrP5.priorities], [])
+  | (HashMap | PathMap | Vector | HashSet), (Bag | Queue | Stack | SetC | Cell) => Some ([], [])
+  | (HashMap | PathMap | Vector | HashSet), PriorityQueue => Some ([StrP5.priorities], [])
   | Array, (Bag | Queue | Stack | SetC | Cell) => Some ([StrP5.cyclic; StrP5.size], [StrP5.size])
   | Array, PriorityQueue => Some ([StrP5.cyclic; StrP5.priorities; StrP5.size], [StrP5.size])
   | (HashMap | Vector), VectorDb => Some (vectordb_params, vectordb_required)
@@ -1238,7 +1268,7 @@ Definition schema_of (f : family) : option (list bytes * list bytes) :=
 (* Every row has the URN of its family, the op of its index, the body ref
    200 + op, arity 2 and a constructor schema. *)
 Lemma rows_facts :
-  forall f c, In (f, c) (p4_rows ++ p5_rows ++ p6_rows) ->
+  forall f c, In (f, c) (p4_rows ++ p5_rows ++ p6_rows ++ p7_rows) ->
     ch_urn c = urn_of f /\ family_index f = Some (ch_op c) /\ body_ref c = 200 + ch_op c /\
     ch_arity c = 2 /\ schema_of f <> None.
 Proof.
@@ -1259,14 +1289,16 @@ Proof.
   destruct H.
 Qed.
 
-Lemma rows_ops_distinct : NoDup (map (fun r => ch_op (snd r)) (p4_rows ++ p5_rows ++ p6_rows)).
+Lemma rows_ops_distinct :
+  NoDup (map (fun r => ch_op (snd r)) (p4_rows ++ p5_rows ++ p6_rows ++ p7_rows)).
 Proof. apply nodupb_NoDup. vm_compute. reflexivity. Qed.
 
 (* Every definition of the tables, as if every row were registered. *)
 Definition all_definitions : list (sys_channel * option family) :=
   map (fun r => (snd r, Some (fst r))) p4_rows ++ map (fun c => (c, None)) p4_others ++
   map (fun r => (snd r, Some (fst r))) p5_rows ++ map (fun a => (fst a, Some (snd a))) alias_rows ++
-  map (fun r => (snd r, Some (fst r))) p6_rows ++ map (fun c => (c, None)) p6_others.
+  map (fun r => (snd r, Some (fst r))) p6_rows ++ map (fun c => (c, None)) p6_others ++
+  map (fun r => (snd r, Some (fst r))) p7_rows.
 
 Definition functional_b (l : list (sys_channel * option family)) : bool :=
   forallb (fun d1 => forallb (fun d2 =>
@@ -1293,10 +1325,11 @@ Section Registration.
   (* S1 wires hashmap:queue, the family of P4. *)
   Hypothesis queue_wired : wired queue_family = true.
 
-  (* urn.rs registered_families: the row of P4, then the rows of P5 whose
-     family is wired, then the rows of P6 whose family is wired. *)
+  (* urn.rs registered_families: the row of P4, then the rows of P5, P6 and
+     P7 whose family is wired. *)
   Definition registered : list (family * sys_channel) :=
-    p4_rows ++ filter (fun r => wired (fst r)) p5_rows ++ filter (fun r => wired (fst r)) p6_rows.
+    p4_rows ++ filter (fun r => wired (fst r)) p5_rows ++ filter (fun r => wired (fst r)) p6_rows ++
+    filter (fun r => wired (fst r)) p7_rows.
 
   Definition is_registered (f : family) : bool := existsb (fun r => family_eqb (fst r) f) registered.
 
@@ -1306,13 +1339,15 @@ Section Registration.
 
   (* system_processes.rs definitions: the channel of each definition and the
      family that its factory creates (None for the three other processes of
-     P4 and the three processes of P6), in the order of the code. *)
+     P4 and the three processes of P6), in the order of the code. The
+     HashSet factories of P7 come last. *)
   Definition definitions : list (sys_channel * option family) :=
     map (fun r => (snd r, Some (fst r))) p4_rows ++ map (fun c => (c, None)) p4_others ++
     map (fun r => (snd r, Some (fst r))) (filter (fun r => wired (fst r)) p5_rows) ++
     map (fun a => (fst a, Some (snd a))) registered_aliases ++
     map (fun r => (snd r, Some (fst r))) (filter (fun r => wired (fst r)) p6_rows) ++
-    map (fun c => (c, None)) p6_others.
+    map (fun c => (c, None)) p6_others ++
+    map (fun r => (snd r, Some (fst r))) (filter (fun r => wired (fst r)) p7_rows).
 
   (* Definition::to_urn_map: the URN of a definition binds the write bundle
      of its channel, so the op of its channel. *)
@@ -1320,13 +1355,17 @@ Section Registration.
     exists d, In d definitions /\ ch_urn (fst d) = urn /\ ch_op (fst d) = op.
 
   Lemma registered_rows :
-    forall f c, In (f, c) registered -> In (f, c) (p4_rows ++ p5_rows ++ p6_rows) /\ wired f = true.
+    forall f c, In (f, c) registered ->
+      In (f, c) (p4_rows ++ p5_rows ++ p6_rows ++ p7_rows) /\ wired f = true.
   Proof.
-    intros f c H. unfold registered in H. apply in_app3 in H. destruct H as [H | [H | H]].
-    - split; [apply in_app3; left; exact H |].
+    intros f c H. unfold registered in H. apply in_app4 in H. destruct H as [H | [H | [H | H]]].
+    - split; [apply in_app4; left; exact H |].
       cbn in H. destruct H as [H | H]; [| destruct H]. injection H as <- _. exact queue_wired.
-    - apply filter_In in H as [Hin Hw]. split; [apply in_app3; right; left; exact Hin | exact Hw].
-    - apply filter_In in H as [Hin Hw]. split; [apply in_app3; right; right; exact Hin | exact Hw].
+    - apply filter_In in H as [Hin Hw]. split; [apply in_app4; right; left; exact Hin | exact Hw].
+    - apply filter_In in H as [Hin Hw].
+      split; [apply in_app4; right; right; left; exact Hin | exact Hw].
+    - apply filter_In in H as [Hin Hw].
+      split; [apply in_app4; right; right; right; exact Hin | exact Hw].
   Qed.
 
   Lemma is_registered_spec : forall f, is_registered f = true <-> exists c, In (f, c) registered.
@@ -1343,12 +1382,12 @@ Section Registration.
      seconds without the six PathMap rows). With the tables unfolded last,
      each Qed takes milliseconds. A strategy changes only the order of the
      unfolding, never what the kernel accepts. *)
-  Strategy opaque [p4_rows p5_rows p6_rows alias_rows p4_others p6_others].
+  Strategy opaque [p4_rows p5_rows p6_rows p7_rows alias_rows p4_others p6_others].
 
   Lemma definitions_incl : forall d, In d definitions -> In d all_definitions.
   Proof.
     intros d H. unfold definitions in H. unfold all_definitions.
-    apply in_app6 in H. apply in_app6. destruct H as [H | [H | [H | [H | [H | H]]]]].
+    apply in_app7 in H. apply in_app7. destruct H as [H | [H | [H | [H | [H | [H | H]]]]]].
     - left. exact H.
     - right. left. exact H.
     - right. right. left.
@@ -1360,7 +1399,10 @@ Section Registration.
     - right. right. right. right. left.
       apply in_map_iff in H as [r [<- Hin]]. apply filter_In in Hin as [Hin _].
       apply in_map_iff. exists r. split; [reflexivity | exact Hin].
-    - right. right. right. right. right. exact H.
+    - right. right. right. right. right. left. exact H.
+    - right. right. right. right. right. right.
+      apply in_map_iff in H as [r [<- Hin]]. apply filter_In in Hin as [Hin _].
+      apply in_map_iff. exists r. split; [reflexivity | exact Hin].
   Qed.
 
   (* Headline 9 (F26). A registered family has the URN of its family, the op
@@ -1376,7 +1418,7 @@ Section Registration.
        ch_urn c = urn_of f /\ family_index f = Some (ch_op c) /\ body_ref c = 200 + ch_op c /\
        ch_arity c = 2 /\ schema_of f <> None /\ wired f = true) /\
     (forall f, (exists c, In (f, c) registered) <->
-       ((exists c, In (f, c) (p4_rows ++ p5_rows ++ p6_rows)) /\ wired f = true)) /\
+       ((exists c, In (f, c) (p4_rows ++ p5_rows ++ p6_rows ++ p7_rows)) /\ wired f = true)) /\
     NoDup (map (fun r => ch_op (snd r)) registered) /\
     (forall c f, In (c, Some f) definitions ->
        family_index f = Some (ch_op c) /\ exists c', In (f, c') registered /\ ch_op c' = ch_op c) /\
@@ -1387,25 +1429,28 @@ Section Registration.
       destruct (rows_facts f c Hrow) as [Hu [Hi [Hb [Ha Hs]]]]. repeat split; assumption.
     - intros f. split.
       + intros [c H]. destruct (registered_rows f c H) as [Hrow Hw]. split; [exists c; exact Hrow | exact Hw].
-      + intros [[c Hrow] Hw]. exists c. unfold registered. apply in_app3 in Hrow. apply in_app3.
-        destruct Hrow as [H | [H | H]].
+      + intros [[c Hrow] Hw]. exists c. unfold registered. apply in_app4 in Hrow. apply in_app4.
+        destruct Hrow as [H | [H | [H | H]]].
         * left. exact H.
         * right. left. apply filter_In. split; [exact H | exact Hw].
-        * right. right. apply filter_In. split; [exact H | exact Hw].
-    - unfold registered. rewrite <- filter_app. apply nodup_map_app_filter. exact rows_ops_distinct.
-    - intros c f H. unfold definitions in H. apply in_app6 in H.
-      destruct H as [H | [H | [H | [H | [H | H]]]]].
+        * right. right. left. apply filter_In. split; [exact H | exact Hw].
+        * right. right. right. apply filter_In. split; [exact H | exact Hw].
+    - unfold registered. rewrite <- !filter_app. apply nodup_map_app_filter. exact rows_ops_distinct.
+    - intros c f H. unfold definitions in H. apply in_app7 in H.
+      destruct H as [H | [H | [H | [H | [H | [H | H]]]]]].
       + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
-        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows)) by (apply in_app3; left; exact Hin).
+        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows ++ p7_rows))
+          by (apply in_app4; left; exact Hin).
         destruct (rows_facts f c Hrow) as [_ [Hi _]].
-        split; [exact Hi |]. exists c. split; [| reflexivity]. unfold registered. apply in_app3. left. exact Hin.
+        split; [exact Hi |]. exists c. split; [| reflexivity]. unfold registered. apply in_app4. left. exact Hin.
       + apply in_map_iff in H as [c0 [Heq _]]. discriminate Heq.
       + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
         apply filter_In in Hin as [Hin Hw].
-        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows)) by (apply in_app3; right; left; exact Hin).
+        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows ++ p7_rows))
+          by (apply in_app4; right; left; exact Hin).
         destruct (rows_facts f c Hrow) as [_ [Hi _]].
         split; [exact Hi |]. exists c. split; [| reflexivity].
-        unfold registered. apply in_app3. right. left. apply filter_In. split; [exact Hin | exact Hw].
+        unfold registered. apply in_app4. right. left. apply filter_In. split; [exact Hin | exact Hw].
       + apply in_map_iff in H as [[c0 g] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
         apply filter_In in Hin as [Hin Hreg]. cbn [snd] in Hreg.
         destruct (alias_rows_facts c f Hin) as [_ [Hi _]]. split; [exact Hi |].
@@ -1415,19 +1460,28 @@ Section Registration.
         exists c'. split; [exact Hc' | congruence].
       + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
         apply filter_In in Hin as [Hin Hw].
-        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows)) by (apply in_app3; right; right; exact Hin).
+        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows ++ p7_rows))
+          by (apply in_app4; right; right; left; exact Hin).
         destruct (rows_facts f c Hrow) as [_ [Hi _]].
         split; [exact Hi |]. exists c. split; [| reflexivity].
-        unfold registered. apply in_app3. right. right. apply filter_In. split; [exact Hin | exact Hw].
+        unfold registered. apply in_app4. right. right. left. apply filter_In. split; [exact Hin | exact Hw].
       + apply in_map_iff in H as [c0 [Heq _]]. discriminate Heq.
-    - intros c H. unfold definitions in H. apply in_app6 in H.
-      destruct H as [H | [H | [H | [H | [H | H]]]]]; apply in_map_iff in H as [x [Heq Hin]].
+      + apply in_map_iff in H as [[g c0] [Heq Hin]]. cbn in Heq. injection Heq as -> ->.
+        apply filter_In in Hin as [Hin Hw].
+        assert (Hrow : In (f, c) (p4_rows ++ p5_rows ++ p6_rows ++ p7_rows))
+          by (apply in_app4; right; right; right; exact Hin).
+        destruct (rows_facts f c Hrow) as [_ [Hi _]].
+        split; [exact Hi |]. exists c. split; [| reflexivity].
+        unfold registered. apply in_app4. right. right. right. apply filter_In. split; [exact Hin | exact Hw].
+    - intros c H. unfold definitions in H. apply in_app7 in H.
+      destruct H as [H | [H | [H | [H | [H | [H | H]]]]]]; apply in_map_iff in H as [x [Heq Hin]].
       + discriminate Heq.
       + injection Heq as ->. apply in_app_iff. left. exact Hin.
       + discriminate Heq.
       + discriminate Heq.
       + discriminate Heq.
       + injection Heq as ->. apply in_app_iff. right. exact Hin.
+      + discriminate Heq.
   Qed.
 
   (* get_space_agent: the capability of the family that a config names
@@ -1467,18 +1521,20 @@ Section Registration.
       apply all_definitions_functional; [apply definitions_incl; exact H1 | apply definitions_incl; exact H2 | congruence].
     - intros c f H.
       assert (Hdef_alias : In (c, Some f) definitions).
-      { unfold definitions. apply in_app6. right. right. right. left.
+      { unfold definitions. apply in_app7. right. right. right. left.
         apply in_map_iff. exists (c, f). split; [reflexivity | exact H]. }
       destruct (Hdef c f Hdef_alias) as [Hi [c' [Hc' Hop]]].
       destruct (Hreg f c' Hc') as [Hu' _].
       split; [exists (c, Some f); split; [exact Hdef_alias | split; reflexivity] |].
       split; [| exact Hi].
       assert (Hdef_family : In (c', Some f) definitions).
-      { unfold registered in Hc'. unfold definitions. apply in_app3 in Hc'. apply in_app6.
-        destruct Hc' as [Hc' | [Hc' | Hc']].
+      { unfold registered in Hc'. unfold definitions. apply in_app4 in Hc'. apply in_app7.
+        destruct Hc' as [Hc' | [Hc' | [Hc' | Hc']]].
         - left. apply in_map_iff. exists (f, c'). split; [reflexivity | exact Hc'].
         - right. right. left. apply in_map_iff. exists (f, c'). split; [reflexivity | exact Hc'].
         - right. right. right. right. left. apply in_map_iff. exists (f, c').
+          split; [reflexivity | exact Hc'].
+        - right. right. right. right. right. right. apply in_map_iff. exists (f, c').
           split; [reflexivity | exact Hc']. }
       exists (c', Some f). split; [exact Hdef_family |]. split; [exact Hu' | exact Hop].
     - intros c f H. destruct (Hdef c f H) as [Hi _].
@@ -1491,8 +1547,8 @@ End Registration.
 
 (* The registration of S1, which wires only hashmap:queue, and the
    registration when every row is wired: the theorems of the section hold
-   for both, so they are not vacuous. Since P6 the dispatch wires every row
-   (families.rs Family::WIRED: the 26 families of the rows), so the second
+   for both, so they are not vacuous. Since P7 the dispatch wires every row
+   (families.rs Family::WIRED: the 32 families of the rows), so the second
    one is the registration of the code. *)
 Corollary registration_s1 :
   registered (fun f => family_eqb f queue_family) = p4_rows /\
@@ -1500,7 +1556,7 @@ Corollary registration_s1 :
 Proof. split; vm_compute; reflexivity. Qed.
 
 Corollary registration_all_wired :
-  registered (fun _ => true) = p4_rows ++ p5_rows ++ p6_rows /\
+  registered (fun _ => true) = p4_rows ++ p5_rows ++ p6_rows ++ p7_rows /\
   registered_aliases (fun _ => true) = alias_rows.
 Proof. split; vm_compute; reflexivity. Qed.
 

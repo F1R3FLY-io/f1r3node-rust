@@ -9,12 +9,13 @@
 //!
 //! P5 gives a constructor schema to the 24 families of the HashMap, PathMap, Array and Vector
 //! stores whose inner collection is a bag, a queue, a stack, a set, a cell or a priority queue.
-//! P6 adds the two VectorDB families (design v3 4.2):
+//! P6 adds the two VectorDB families (design v3 4.2). P7 adds the six HashSet families, which
+//! take the params of their discipline only (design v3 HS-7):
 //!
 //! | Families                                         | Params                         | Required |
 //! |--------------------------------------------------|--------------------------------|----------|
-//! | `hashmap`, `pathmap` and `vector`: bag, queue, stack, set, cell | none            | none     |
-//! | `hashmap`, `pathmap` and `vector`: `priorityqueue` | `priorities`                 | none     |
+//! | `hashmap`, `pathmap`, `vector` and `hashset`: bag, queue, stack, set, cell | none | none     |
+//! | `hashmap`, `pathmap`, `vector` and `hashset`: `priorityqueue` | `priorities`      | none     |
 //! | `array`: bag, queue, stack, set, cell            | `cyclic`, `size`               | `size`   |
 //! | `array`: `priorityqueue`                         | `cyclic`, `priorities`, `size` | `size`   |
 //! | `hashmap` and `vector`: `vectordb`               | `capacity`, `dimensions`, `metric`, `mirror` | `capacity`, `dimensions` |
@@ -32,7 +33,8 @@
 //! * `mirror` is the `GString` `"chroma"`: the space keeps a ChromaDB search backend (P6,
 //!   decision 58). Without it the space has no mirror.
 //!
-//! The PathMap and Array VectorDB families and the HashSet families (P7) have no schema.
+//! The pairs `pathmap:vectordb`, `array:vectordb` and `hashset:vectordb` are no families, so they
+//! have no schema.
 //!
 //! The suggestion for an unknown name is the candidate with the least Levenshtein distance,
 //! when that distance is at most [`SUGGESTION_DISTANCE`]. A tie goes to the bytewise least
@@ -104,8 +106,22 @@ const VECTORDB_REQUIRED: &[&str] = &[CAPACITY_PARAM, DIMENSIONS_PARAM];
 /// [`required_params`] are its two views.
 fn schema(family: SpaceFactoryUrn) -> Option<(&'static [&'static str], &'static [&'static str])> {
     match (family.outer, family.inner) {
+        // Changed by P7 step 3 (design v3 HS-7): the HashSet families take the params of their
+        // discipline, as the HashMap families do.
+        // (
+        //     SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector,
+        //     SpaceInner::Bag
+        //     | SpaceInner::Queue
+        //     | SpaceInner::Stack
+        //     | SpaceInner::Set
+        //     | SpaceInner::Cell,
+        // ) => Some((NO_PARAMS, NO_PARAMS)),
+        // (
+        //     SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector,
+        //     SpaceInner::PriorityQueue,
+        // ) => Some((PRIORITY_QUEUE_PARAMS, NO_PARAMS)),
         (
-            SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector,
+            SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector | SpaceOuter::HashSet,
             SpaceInner::Bag
             | SpaceInner::Queue
             | SpaceInner::Stack
@@ -113,7 +129,7 @@ fn schema(family: SpaceFactoryUrn) -> Option<(&'static [&'static str], &'static 
             | SpaceInner::Cell,
         ) => Some((NO_PARAMS, NO_PARAMS)),
         (
-            SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector,
+            SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector | SpaceOuter::HashSet,
             SpaceInner::PriorityQueue,
         ) => Some((PRIORITY_QUEUE_PARAMS, NO_PARAMS)),
         (
@@ -130,8 +146,12 @@ fn schema(family: SpaceFactoryUrn) -> Option<(&'static [&'static str], &'static 
         (SpaceOuter::HashMap | SpaceOuter::Vector, SpaceInner::VectorDb) => {
             Some((VECTORDB_PARAMS, VECTORDB_REQUIRED))
         }
-        (SpaceOuter::PathMap | SpaceOuter::Array, SpaceInner::VectorDb)
-        | (SpaceOuter::HashSet, _) => None,
+        // Changed by P7 step 3 (design v3 HS-7): only the pairs that are no families remain.
+        // (SpaceOuter::PathMap | SpaceOuter::Array, SpaceInner::VectorDb)
+        // | (SpaceOuter::HashSet, _) => None,
+        (SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::HashSet, SpaceInner::VectorDb) => {
+            None
+        }
     }
 }
 
@@ -297,7 +317,8 @@ mod tests {
     use crate::rust::interpreter::spaces::families::send_params;
 
     /// The families with a constructor schema: HashMap, PathMap, Array and Vector with the inner
-    /// collections bag to priority queue (P5), and HashMap and Vector with the VectorDB (P6).
+    /// collections bag to priority queue (P5), HashMap and Vector with the VectorDB (P6), and
+    /// HashSet with the inner collections bag to priority queue (P7). So every family has one.
     fn has_schema(family: SpaceFactoryUrn) -> bool {
         match family.inner {
             SpaceInner::VectorDb => {
@@ -305,7 +326,11 @@ mod tests {
             }
             _ => matches!(
                 family.outer,
-                SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::Vector
+                SpaceOuter::HashMap
+                    | SpaceOuter::PathMap
+                    | SpaceOuter::Array
+                    | SpaceOuter::Vector
+                    | SpaceOuter::HashSet
             ),
         }
     }
@@ -360,7 +385,7 @@ mod tests {
             assert_eq!(params, expected_params, "{family}");
             assert_eq!(required, expected_required, "{family}");
         }
-        assert_eq!(covered, 26);
+        assert_eq!(covered, 32);
         assert_eq!(
             constructor_schema(SpaceFactoryUrn::HASHMAP_QUEUE),
             Some(&[][..])

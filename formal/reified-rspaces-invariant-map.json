@@ -7941,16 +7941,18 @@
       ]
     },
     "P7": {
-      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8).",
-      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs and reified_seq.rs and of the reducer hooks.",
+      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8); and the HashSet store (W4): the unit rules of a HashSet collection (HashMapStore.v V9).",
+      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ), 6 (HS) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs, reified_seq.rs and reified_hashset.rs and of the reducer hooks.",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/src/rust/interpreter/spaces/generic.rs",
+        "rholang/tests/reified_hashset.rs",
         "rholang/tests/reified_seq.rs",
         "rholang/tests/reified_temp_seq.rs",
         "rholang/tests/reified_volatile_sweep.rs"
       ],
-      "expected_properties": 6,
+      "expected_properties": 7,
       "formal": {
         "V1": {
           "kind": "rocq",
@@ -8023,6 +8025,15 @@
           "tests": [
             "prop_seq_claim_chain"
           ]
+        },
+        "V9": {
+          "kind": "rocq",
+          "name": "hashset_unit_rules",
+          "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+          "statement": "The payload check of a HashSet collection accepts exactly the empty payload and its pattern check exactly the empty pattern list with no binder and no remainder. An empty pattern list matches exactly the empty payload, a rejected send or receive stages nothing, and so every record of a HashSet store is a unit (design v3 HS-2, HS-3, HS-5).",
+          "tests": [
+            "prop_hashset_unit_rules"
+          ]
         }
       },
       "properties": [
@@ -8074,6 +8085,14 @@
           "file": "rholang/tests/reified_seq.rs",
           "covers": [
             "V7"
+          ]
+        },
+        {
+          "number": 7,
+          "test": "prop_hashset_unit_rules",
+          "file": "rholang/tests/reified_hashset.rs",
+          "covers": [
+            "V9"
           ]
         }
       ],
@@ -8182,6 +8201,79 @@
           "rule": "QT-1, QT-4 and QT-5 (native execution accepts seq, legacy execution refuses it)",
           "covers": [
             "V6"
+          ]
+        },
+        {
+          "test": "space_engine_hashset_families_take_units_only",
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "rule": "HS-2 to HS-5 (the checks stage nothing, and units follow the discipline)",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "reified_hashset_unit_sends",
+          "file": "rholang/tests/reified_hashset.rs",
+          "rule": "HS-1 to HS-5 (units on the six families)",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "reified_hashset_payload_not_empty",
+          "file": "rholang/tests/reified_hashset.rs",
+          "rule": "HS-2 (PayloadNotEmpty)",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "reified_hashset_pattern_not_empty",
+          "file": "rholang/tests/reified_hashset.rs",
+          "rule": "HS-3 (PatternNotEmpty)",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "reified_hashset_guards",
+          "file": "rholang/tests/reified_hashset.rs",
+          "rule": "HS-3 (the guard of an empty bind names only outer variables)",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "reified_hashset_disciplines",
+          "file": "rholang/tests/reified_hashset.rs",
+          "rule": "HS-5 (set, bag, cell and the ordered collections)",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "reified_hashset_head_order",
+          "file": "rholang/tests/reified_hashset.rs",
+          "rule": "HS-5 (the head of a queue, a stack and a priority queue of units)",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "reified_hashset_seq_only",
+          "file": "rholang/tests/reified_hashset.rs",
+          "rule": "HS-6 (a HashSet factory takes only seq)",
+          "covers": [
+            "V6"
+          ]
+        },
+        {
+          "test": "reified_hashset_absent_unit_waits",
+          "file": "rholang/tests/reified_hashset.rs",
+          "rule": "SQ-6 (d) (an absent unit is never observable)",
+          "covers": [
+            "V4",
+            "V9"
           ]
         }
       ]

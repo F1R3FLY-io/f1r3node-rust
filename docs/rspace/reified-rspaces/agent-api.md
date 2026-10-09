@@ -67,7 +67,7 @@ Figure 1 shows the creation of a space and one handle call, from the send of the
 
 ## 2. System processes
 
-P4 installs four system processes (`reified/system_processes.rs:94-150`).
+P4 installs four system processes (`reified/system_processes.rs:96-157`).
 Each one listens on an [op channel](glossary.md#op-channel) $`[\mathtt{0xE0}, \mathit{op}]`$ and has the body reference $`200 + \mathit{op}`$.
 The URN map binds each URN to the write bundle of its op channel. So a program can call each process, but it cannot receive on its channel.
 
@@ -301,7 +301,7 @@ The reply is one datum, the tuple of three elements that `typed_error` builds (`
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:270-282`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:281-293`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|
@@ -351,7 +351,7 @@ A typed reply never changes a space: a `produce` call with a typed reply stores 
 
 ## 8. getSpaceAgent
 
-The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:221-259`).
+The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:227-265`).
 The process classifies `s` with the five rules of `classify_space_ref` (`reified/scope.rs:106-129`):
 
 1. The empty `Par` gives the typed reply `EmptySpaceRef`.
@@ -371,7 +371,7 @@ Like the factories and `assertEqual`, the process applies no name rule to `ret`.
 ## 9. assertEqual
 
 The call `assertEqual!(ret, a, b)` has the arity 3 ([decision 33](decision-register.md#decision-33)).
-It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:307-321`).
+It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:313-327`).
 The sort is the one of `ParSortMatcher`, so the order of parallel processes, of map entries, and of set elements does not count.
 The order of list elements and of tuple elements counts.
 
@@ -403,6 +403,8 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 | `DanglingHandle` | A handle | The space has no config record, or it is a temp space of an ended deploy. The message names the space id. |
 | `SeqSent` | Every call, and every send | The data of the send holds a name of a seq space of the evaluation. The channel argument of the own `produce` of a seq space is exempt ([specification 4.3](specification.md#43-seq), rule QF-14). The message names the space id. |
 | `SeqConcurrent` | `produce` | The call uses a channel of a seq space whose last use is not an ancestor of the call (rule QF-15). The message names the space id. |
+| `PayloadNotEmpty` | `produce`, and every send | The message of a send to a collection of a HashSet space is not empty ([specification 2.7](specification.md#27-hashset), rule HS-2). |
+| `PatternNotEmpty` | Every receive | A bind on a collection of a HashSet space has a pattern, a binder or a remainder (rule HS-3). |
 | `AgentSpacesUnavailable` | `consume` | Matchers of user agents, until P8 |
 | `Inconsistent` | Every call that reads a space | A record that is not well formed |
 | `CounterOverflow` | `produce` | A counter at its greatest value |

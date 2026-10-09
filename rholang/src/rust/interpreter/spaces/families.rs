@@ -18,9 +18,9 @@
 //! Each arm of the dispatch reserves the comparison of the config names with its family before
 //! it compares them. So `hashmap:queue`, the first arm, reserves exactly the one comparison of
 //! the P4 agent, and the host work of a queue operation does not change. The other arms follow
-//! in ascending family index, then the PathMap arms of P5e, then the VectorDB arms of P6. So
-//! the arm at dispatch position `i` reserves `i + 1` comparisons, and a later phase changes the
-//! dispatch of no earlier family.
+//! in ascending family index, then the PathMap arms of P5e, then the VectorDB arms of P6, then
+//! the HashSet arms of P7. So the arm at dispatch position `i` reserves `i + 1` comparisons, and
+//! a later phase changes the dispatch of no earlier family.
 
 use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -47,6 +47,7 @@ use super::generic::{
 use super::namespace::NativeSpace;
 use super::outer::array::ArrayOuter;
 use super::outer::hashmap::HashMapOuter;
+use super::outer::hashset::HashSetOuter;
 use super::outer::pathmap::PathMapOuter;
 use super::outer::vector::VectorOuter;
 use super::types::config::SpaceConfig;
@@ -156,6 +157,30 @@ static HASHMAP_VECTORDB: GenericSpace<HashMapOuter, VectorDbDiscipline> =
 static VECTOR_VECTORDB: GenericSpace<VectorOuter, VectorDbDiscipline> =
     GenericSpace::new(VectorOuter, VectorDbDiscipline);
 
+/// The agent of the family `hashset:bag` (P7).
+static HASHSET_BAG: GenericSpace<HashSetOuter, BagDiscipline> =
+    GenericSpace::new(HashSetOuter, BagDiscipline);
+
+/// The agent of the family `hashset:queue` (P7).
+static HASHSET_QUEUE: GenericSpace<HashSetOuter, QueueDiscipline> =
+    GenericSpace::new(HashSetOuter, QueueDiscipline);
+
+/// The agent of the family `hashset:stack` (P7).
+static HASHSET_STACK: GenericSpace<HashSetOuter, StackDiscipline> =
+    GenericSpace::new(HashSetOuter, StackDiscipline);
+
+/// The agent of the family `hashset:set` (P7).
+static HASHSET_SET: GenericSpace<HashSetOuter, SetDiscipline> =
+    GenericSpace::new(HashSetOuter, SetDiscipline);
+
+/// The agent of the family `hashset:cell` (P7).
+static HASHSET_CELL: GenericSpace<HashSetOuter, CellDiscipline> =
+    GenericSpace::new(HashSetOuter, CellDiscipline);
+
+/// The agent of the family `hashset:priorityqueue` (P7).
+static HASHSET_PRIORITY_QUEUE: GenericSpace<HashSetOuter, PriorityQueueDiscipline> =
+    GenericSpace::new(HashSetOuter, PriorityQueueDiscipline);
+
 /// A wired family of native spaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Family {
@@ -211,14 +236,26 @@ pub enum Family {
     HashMapVectorDb,
     /// `vector:vectordb` (P6).
     VectorVectorDb,
+    /// `hashset:bag` (P7).
+    HashSetBag,
+    /// `hashset:queue` (P7).
+    HashSetQueue,
+    /// `hashset:stack` (P7).
+    HashSetStack,
+    /// `hashset:set` (P7).
+    HashSetSet,
+    /// `hashset:cell` (P7).
+    HashSetCell,
+    /// `hashset:priorityqueue` (P7).
+    HashSetPriorityQueue,
 }
 
 impl Family {
     /// The wired families, in dispatch order: `hashmap:queue` first, then ascending family index,
-    /// then the PathMap families of P5e, and the VectorDB families of P6 last. So the dispatch of
-    /// each family that a later phase found wired reserves the comparisons that it reserved
-    /// before.
-    pub const WIRED: [Family; 26] = [
+    /// then the PathMap families of P5e, the VectorDB families of P6, and the HashSet families of
+    /// P7 last. So the dispatch of each family that a later phase found wired reserves the
+    /// comparisons that it reserved before.
+    pub const WIRED: [Family; 32] = [
         Family::HashMapQueue,
         Family::HashMapBag,
         Family::HashMapStack,
@@ -245,6 +282,12 @@ impl Family {
         Family::PathMapPriorityQueue,
         Family::HashMapVectorDb,
         Family::VectorVectorDb,
+        Family::HashSetBag,
+        Family::HashSetQueue,
+        Family::HashSetStack,
+        Family::HashSetSet,
+        Family::HashSetCell,
+        Family::HashSetPriorityQueue,
     ];
 
     /// The family of the factory URN `urn`, or `None` when it is not wired.
@@ -276,10 +319,23 @@ impl Family {
             (SpaceOuter::PathMap, SpaceInner::PriorityQueue) => Some(Family::PathMapPriorityQueue),
             (SpaceOuter::HashMap, SpaceInner::VectorDb) => Some(Family::HashMapVectorDb),
             (SpaceOuter::Vector, SpaceInner::VectorDb) => Some(Family::VectorVectorDb),
-            // Every inner collection of the HashMap and Vector stores is wired since P6. The
-            // PathMap and Array stores have no VectorDB family (design v3 4.2), and HashSet is
-            // wired in P7 (F1).
-            (SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::HashSet, _) => None,
+            (SpaceOuter::HashSet, SpaceInner::Bag) => Some(Family::HashSetBag),
+            (SpaceOuter::HashSet, SpaceInner::Queue) => Some(Family::HashSetQueue),
+            (SpaceOuter::HashSet, SpaceInner::Stack) => Some(Family::HashSetStack),
+            (SpaceOuter::HashSet, SpaceInner::Set) => Some(Family::HashSetSet),
+            (SpaceOuter::HashSet, SpaceInner::Cell) => Some(Family::HashSetCell),
+            (SpaceOuter::HashSet, SpaceInner::PriorityQueue) => Some(Family::HashSetPriorityQueue),
+            // Changed by P7 step 3 (design v3 HS-7): the six HashSet families are wired. Every
+            // pair that remains is not a family: the PathMap, Array and HashSet stores hold no
+            // VectorDB collection (`SpaceFactoryUrn::is_supported_pair`).
+            // // Every inner collection of the HashMap and Vector stores is wired since P6. The
+            // // PathMap and Array stores have no VectorDB family (design v3 4.2), and HashSet is
+            // // wired in P7 (F1).
+            // (SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::HashSet, _) => None,
+            (
+                SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::HashSet,
+                SpaceInner::VectorDb,
+            ) => None,
         }
     }
 
@@ -338,6 +394,14 @@ impl Family {
             Family::VectorVectorDb => {
                 family_matches::<VectorOuter, VectorDbDiscipline>(config, meter)
             }
+            Family::HashSetBag => family_matches::<HashSetOuter, BagDiscipline>(config, meter),
+            Family::HashSetQueue => family_matches::<HashSetOuter, QueueDiscipline>(config, meter),
+            Family::HashSetStack => family_matches::<HashSetOuter, StackDiscipline>(config, meter),
+            Family::HashSetSet => family_matches::<HashSetOuter, SetDiscipline>(config, meter),
+            Family::HashSetCell => family_matches::<HashSetOuter, CellDiscipline>(config, meter),
+            Family::HashSetPriorityQueue => {
+                family_matches::<HashSetOuter, PriorityQueueDiscipline>(config, meter)
+            }
         }
     }
 
@@ -370,6 +434,12 @@ impl Family {
             Family::PathMapPriorityQueue => &PATHMAP_PRIORITY_QUEUE,
             Family::HashMapVectorDb => &HASHMAP_VECTORDB,
             Family::VectorVectorDb => &VECTOR_VECTORDB,
+            Family::HashSetBag => &HASHSET_BAG,
+            Family::HashSetQueue => &HASHSET_QUEUE,
+            Family::HashSetStack => &HASHSET_STACK,
+            Family::HashSetSet => &HASHSET_SET,
+            Family::HashSetCell => &HASHSET_CELL,
+            Family::HashSetPriorityQueue => &HASHSET_PRIORITY_QUEUE,
         }
     }
 
@@ -379,24 +449,33 @@ impl Family {
             Family::HashMapQueue
             | Family::ArrayQueue
             | Family::VectorQueue
-            | Family::PathMapQueue => QueueDiscipline::SEND_PARAMS,
-            Family::HashMapBag | Family::ArrayBag | Family::VectorBag | Family::PathMapBag => {
-                BagDiscipline::SEND_PARAMS
-            }
+            | Family::PathMapQueue
+            | Family::HashSetQueue => QueueDiscipline::SEND_PARAMS,
+            Family::HashMapBag
+            | Family::ArrayBag
+            | Family::VectorBag
+            | Family::PathMapBag
+            | Family::HashSetBag => BagDiscipline::SEND_PARAMS,
             Family::HashMapStack
             | Family::ArrayStack
             | Family::VectorStack
-            | Family::PathMapStack => StackDiscipline::SEND_PARAMS,
-            Family::HashMapCell | Family::ArrayCell | Family::VectorCell | Family::PathMapCell => {
-                CellDiscipline::SEND_PARAMS
-            }
-            Family::HashMapSet | Family::ArraySet | Family::VectorSet | Family::PathMapSet => {
-                SetDiscipline::SEND_PARAMS
-            }
+            | Family::PathMapStack
+            | Family::HashSetStack => StackDiscipline::SEND_PARAMS,
+            Family::HashMapCell
+            | Family::ArrayCell
+            | Family::VectorCell
+            | Family::PathMapCell
+            | Family::HashSetCell => CellDiscipline::SEND_PARAMS,
+            Family::HashMapSet
+            | Family::ArraySet
+            | Family::VectorSet
+            | Family::PathMapSet
+            | Family::HashSetSet => SetDiscipline::SEND_PARAMS,
             Family::HashMapPriorityQueue
             | Family::ArrayPriorityQueue
             | Family::VectorPriorityQueue
-            | Family::PathMapPriorityQueue => PriorityQueueDiscipline::SEND_PARAMS,
+            | Family::PathMapPriorityQueue
+            | Family::HashSetPriorityQueue => PriorityQueueDiscipline::SEND_PARAMS,
             Family::HashMapVectorDb | Family::VectorVectorDb => VectorDbDiscipline::SEND_PARAMS,
         }
     }
@@ -407,24 +486,33 @@ impl Family {
             Family::HashMapQueue
             | Family::ArrayQueue
             | Family::VectorQueue
-            | Family::PathMapQueue => QueueDiscipline::QUERY_PARAMS,
-            Family::HashMapBag | Family::ArrayBag | Family::VectorBag | Family::PathMapBag => {
-                BagDiscipline::QUERY_PARAMS
-            }
+            | Family::PathMapQueue
+            | Family::HashSetQueue => QueueDiscipline::QUERY_PARAMS,
+            Family::HashMapBag
+            | Family::ArrayBag
+            | Family::VectorBag
+            | Family::PathMapBag
+            | Family::HashSetBag => BagDiscipline::QUERY_PARAMS,
             Family::HashMapStack
             | Family::ArrayStack
             | Family::VectorStack
-            | Family::PathMapStack => StackDiscipline::QUERY_PARAMS,
-            Family::HashMapCell | Family::ArrayCell | Family::VectorCell | Family::PathMapCell => {
-                CellDiscipline::QUERY_PARAMS
-            }
-            Family::HashMapSet | Family::ArraySet | Family::VectorSet | Family::PathMapSet => {
-                SetDiscipline::QUERY_PARAMS
-            }
+            | Family::PathMapStack
+            | Family::HashSetStack => StackDiscipline::QUERY_PARAMS,
+            Family::HashMapCell
+            | Family::ArrayCell
+            | Family::VectorCell
+            | Family::PathMapCell
+            | Family::HashSetCell => CellDiscipline::QUERY_PARAMS,
+            Family::HashMapSet
+            | Family::ArraySet
+            | Family::VectorSet
+            | Family::PathMapSet
+            | Family::HashSetSet => SetDiscipline::QUERY_PARAMS,
             Family::HashMapPriorityQueue
             | Family::ArrayPriorityQueue
             | Family::VectorPriorityQueue
-            | Family::PathMapPriorityQueue => PriorityQueueDiscipline::QUERY_PARAMS,
+            | Family::PathMapPriorityQueue
+            | Family::HashSetPriorityQueue => PriorityQueueDiscipline::QUERY_PARAMS,
             Family::HashMapVectorDb | Family::VectorVectorDb => VectorDbDiscipline::QUERY_PARAMS,
         }
     }
@@ -560,7 +648,7 @@ mod tests {
     }
 
     /// The wired families in dispatch order, with the names of their configs.
-    const WIRED_NAMES: [(Family, &str, &str); 26] = [
+    const WIRED_NAMES: [(Family, &str, &str); 32] = [
         (Family::HashMapQueue, "hashmap", "queue"),
         (Family::HashMapBag, "hashmap", "bag"),
         (Family::HashMapStack, "hashmap", "stack"),
@@ -587,6 +675,12 @@ mod tests {
         (Family::PathMapPriorityQueue, "pathmap", "priorityqueue"),
         (Family::HashMapVectorDb, "hashmap", "vectordb"),
         (Family::VectorVectorDb, "vector", "vectordb"),
+        (Family::HashSetBag, "hashset", "bag"),
+        (Family::HashSetQueue, "hashset", "queue"),
+        (Family::HashSetStack, "hashset", "stack"),
+        (Family::HashSetSet, "hashset", "set"),
+        (Family::HashSetCell, "hashset", "cell"),
+        (Family::HashSetPriorityQueue, "hashset", "priorityqueue"),
     ];
 
     #[test]
@@ -738,6 +832,36 @@ mod tests {
                 VectorDbDiscipline::SEND_PARAMS,
                 VectorDbDiscipline::QUERY_PARAMS,
             ),
+            (
+                Family::HashSetBag,
+                BagDiscipline::SEND_PARAMS,
+                BagDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::HashSetQueue,
+                QueueDiscipline::SEND_PARAMS,
+                QueueDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::HashSetStack,
+                StackDiscipline::SEND_PARAMS,
+                StackDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::HashSetSet,
+                SetDiscipline::SEND_PARAMS,
+                SetDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::HashSetCell,
+                CellDiscipline::SEND_PARAMS,
+                CellDiscipline::QUERY_PARAMS,
+            ),
+            (
+                Family::HashSetPriorityQueue,
+                PriorityQueueDiscipline::SEND_PARAMS,
+                PriorityQueueDiscipline::QUERY_PARAMS,
+            ),
         ] {
             assert_eq!(family.send_params(), send, "{family:?}");
             assert_eq!(family.query_params(), query, "{family:?}");
@@ -752,11 +876,19 @@ mod tests {
                 .map(|(_, outer, inner)| (outer.len() + inner.len()) as u64)
                 .sum()
         };
+        // Changed by P7 step 3 (design v3 HS-7): `hashset:set` is wired. The unsupported pair
+        // `hashset:vectordb` takes its place.
+        // let unwired = [
+        //     ("hashmap", "deque"),
+        //     ("pathmap", "vectordb"),
+        //     ("array", "vectordb"),
+        //     ("hashset", "set"),
+        // ];
         let unwired = [
             ("hashmap", "deque"),
             ("pathmap", "vectordb"),
             ("array", "vectordb"),
-            ("hashset", "set"),
+            ("hashset", "vectordb"),
         ];
         let mut cases = Vec::with_capacity(WIRED_NAMES.len() + unwired.len());
         for (position, (family, outer, inner)) in WIRED_NAMES.into_iter().enumerate() {
@@ -766,7 +898,11 @@ mod tests {
             cases.push((outer, inner, None, WIRED_NAMES.len()));
         }
         for (outer, inner, expected, arms) in cases {
-            let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000)));
+            // Changed by P7 step 3: the 32 arms of the HashSet families need more than 1,000
+            // bytes. The budget bounds nothing that the test checks.
+            // let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000)));
+            let host_work =
+                HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000)));
             let meter = ScanMeter::new(Some(host_work.clone()));
             assert_eq!(
                 Family::of_config(&config(outer, inner), &meter),

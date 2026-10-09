@@ -147,9 +147,10 @@ pub(crate) fn run_join<D: Discipline>(
 }
 
 /// The checks of a PathMap operation before any staging: the path rules of each channel
-/// (`PathMapOuter::check_key`), and the params and the query with the schema of the discipline.
-/// A join needs two or more binds, one arrow, and one carried order for each bind when it carries
-/// orders. They are the checks that the keyed engine makes (`spaces::join`).
+/// (`PathMapOuter::check_key`), the payload and pattern hooks of the outer store (which accept
+/// everything in a PathMap store), and the params and the query with the schema of the
+/// discipline. A join needs two or more binds, one arrow, and one carried order for each bind
+/// when it carries orders. They are the checks that the keyed engine makes (`spaces::join`).
 fn validate<D: Discipline>(
     agent: &GenericSpace<PathMapOuter, D>,
     config: &SpaceConfig,
@@ -162,12 +163,14 @@ fn validate<D: Discipline>(
             agent
                 .outer()
                 .check_key(config, &op.channel, &op.key, meter)?;
+            agent.outer().check_payload(&op.data, meter)?;
             agent.check_params(config, &op.params, None, meter)
         }
         SpaceOp::Consume(op) => {
             agent
                 .outer()
                 .check_key(config, &op.channel, &op.key, meter)?;
+            agent.outer().check_patterns(&op.pattern, meter)?;
             agent.check_params(config, &no_params, op.query.as_ref(), meter)
         }
         SpaceOp::Settle(op) => {
@@ -194,6 +197,7 @@ fn validate<D: Discipline>(
                 agent
                     .outer()
                     .check_key(config, &bind.channel, &bind.key, meter)?;
+                agent.outer().check_patterns(&bind.pattern, meter)?;
                 agent.check_params(config, &no_params, bind.query.as_ref(), meter)?;
             }
             Ok(())

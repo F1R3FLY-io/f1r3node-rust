@@ -41,10 +41,10 @@ Each new section must state the items that its extension point lists, so that a 
 
 | Phase | Section | Content |
 |---|---|---|
-| P5 | [2.2](#22-array) to [2.7](#27-outer-stores-of-later-phases) | The Array and Vector outer stores with their allocator, the PathMap paths, the [PathMap store](#26-the-pathmap-store), and the HashSet store of a later phase |
+| P5 | [2.2](#22-array) to [2.6](#26-the-pathmap-store) | The Array and Vector outer stores with their allocator, the PathMap paths, and the [PathMap store](#26-the-pathmap-store) |
 | P5 | [3.2](#32-bag) to [3.8](#38-joins) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and the [joins of one space](#38-joins) ([decision 29](decision-register.md#decision-29)) |
 | P6 | [3.9](#39-vectordb), [9](#9-system-processes-of-the-vectordb-family) and [10](#10-the-chromadb-mirror) | The VectorDB discipline, its query, and its bounds, the system processes of the family, and the ChromaDB mirror |
-| P7 | [2.7](#27-outer-stores-of-later-phases), [4.2](#42-temp), [4.3](#43-seq) and [5](#5-theories) | The HashSet store, the `temp` and `seq` qualifiers, the sweep of their state, the dangling ids of ended deploys, and the theories |
+| P7 | [2.7](#27-hashset), [4.2](#42-temp), [4.3](#43-seq) and [5](#5-theories) | The HashSet store, the `temp` and `seq` qualifiers, the sweep of their state, the dangling ids of ended deploys, and the theories |
 | P8 | [6](#6-constructs-that-fail-closed) | Spaces that user agents implement |
 
 ## Terms and notation
@@ -164,12 +164,12 @@ A program that uses no Reified syntax and holds no space name must route every c
 A family pairs one outer store with one inner collection, for example `hashmap:queue`.
 Its factory creates the spaces of the family, and its agent runs their operations.
 
-**Rule FA-1: registration.** A family is registered exactly when it has a factory row and the family dispatch has its arm (`rholang/src/rust/interpreter/spaces/factory/urn.rs:170`, `rholang/src/rust/interpreter/spaces/factory/urn.rs:190-195`).
+**Rule FA-1: registration.** A family is registered exactly when it has a factory row and the family dispatch has its arm (`rholang/src/rust/interpreter/spaces/factory/urn.rs:203`, `rholang/src/rust/interpreter/spaces/factory/urn.rs:231-237`).
 A registered family with the index $`i`$ binds its URN to `bundle+{[0xE0, i]}`, and it installs its factory with the body reference $`200 + i`$.
 An unregistered family has no URN binding, so a program that names it fails before any space work.
 
-**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:452-461`).
-The dispatch tries the arms in a fixed order: `hashmap:queue`, ascending family index, the PathMap families, then the VectorDB families (`rholang/src/rust/interpreter/spaces/families.rs:221-248`).
+**Rule FA-2: dispatch.** The family agent reads the config of the space once and runs the agent of the family that the config names (`rholang/src/rust/interpreter/spaces/families.rs:540-549`).
+The dispatch tries the arms in a fixed order: `hashmap:queue`, ascending family index, the PathMap families, the VectorDB families, then the HashSet families (`rholang/src/rust/interpreter/spaces/families.rs:258-291`).
 Each arm that it tries reserves one comparison of the names, so a queue operation keeps the host work of P4.
 New arms come after the old ones, so the dispatch of an earlier family reserves the comparisons that it reserved before.
 A config that names no wired family fails with `FamilyUnavailable`.
@@ -179,22 +179,23 @@ The FIPS alias `rho:space:PathMapSpace` names the channel of `pathmap:bag` (`rho
 An alias is registered exactly when its family is registered, and both URNs bind the same capability.
 `getSpaceAgent` replies that capability for every space of the family ([decision 33](decision-register.md#decision-33)).
 
-**Rule FA-4: constructor schemas.** Table 1a lists the named params that the factory of each family accepts and requires (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:105-136`).
+**Rule FA-4: constructor schemas.** Table 1a lists the named params that the factory of each family accepts and requires (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:107-156`).
 
-*Table 1a. The constructor schemas of the P5 families.*
+*Table 1a. The constructor schemas of the families of P5 and P7.*
 
 | Families | Params | Required |
 |---|---|---|
-| `hashmap`, `pathmap`, `vector`: bag, queue, stack, set, cell | none | none |
-| `hashmap`, `pathmap`, `vector`: `priorityqueue` | `priorities` | none |
+| `hashmap`, `pathmap`, `vector`, `hashset`: bag, queue, stack, set, cell | none | none |
+| `hashmap`, `pathmap`, `vector`, `hashset`: `priorityqueue` | `priorities` | none |
 | `array`: bag, queue, stack, set, cell | `cyclic`, `size` | `size` |
 | `array`: `priorityqueue` | `cyclic`, `priorities`, `size` | `size` |
 
-The VectorDB and HashSet families have no schema yet.
+The VectorDB families of P6 have the schema of section [3.9](#39-vectordb).
+The HashSet families take the params of their discipline only (rule HS-7).
 
 **Rule FA-5: param values.** `size` is a `GInt` in $`[1, 2^{63}-1]`$, and `cyclic` is a `GBool` (F7).
 `priorities` is a `GInt` of at least 1 ([decision I-10](decision-register.md#i-10)).
-The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:153-168`).
+The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:173-188`).
 
 **Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:80-165`):
 
@@ -407,14 +408,45 @@ A peek of a bag or a set bumps the token only when its second send changes the s
 **Rule PS-10: merges.** A new datum on $`p`$ and a new waiter on a prefix $`q \preceq p`$ meet on $`I(q)`$, so merge check #2 sees the contact.
 Two branches that change one PathMap space race on its token under merge check #1 (`pathmap_token_race`, headline 15 of `CounterConflict.v`).
 
-### 2.7 Outer stores of later phases
+### 2.7 HashSet
 
-Phase P7 adds the HashSet store.
-The section of each store must state these items:
+A HashSet space is the default space restricted to empty messages (FIPS 213-215, [decision 73](decision-register.md#decision-73)).
+Each of its collections holds [units](glossary.md#unit): records whose payload is empty.
+The HashSet store implements this restriction (`rholang/src/rust/interpreter/spaces/outer/hashset.rs:38-76`).
 
-- the key function of the store, and the channels that share a key
-- the names that the store makes, with their lengths and their random purposes
-- the rules HM-1 to HM-4 that the store keeps, and the rules that it changes, with the reason for each change
+**Rule HS-1: keys and names.** The HashSet store keeps the rules HM-1 to HM-4 of the HashMap store.
+It keys a channel, makes the data and counter channels, and draws the names of `gensym` as the HashMap store does.
+It changes none of these rules.
+
+**Rule HS-2: sends.** A send to a HashSet collection carries the empty payload: `x!()`, or the handle call `S!?("produce", c, [])`.
+A send with any value, `x!(Nil)` included, must abort the deploy with `PayloadNotEmpty` before any staging.
+The named params of the discipline still apply, for example `priority` on `hashset:priorityqueue`.
+
+**Rule HS-3: receives.** Every bind on a HashSet collection has the empty pattern list: `for ( <- x)`.
+A pattern, a binder or a remainder must abort the deploy with `PatternNotEmpty` before any staging.
+The arrows `<-`, `<=` and `<<-` keep their meaning.
+A bind has no variable, so a `where` guard can name only the variables around the receive.
+
+**Rule HS-4: joins.** A join of empty binds on collections of one HashSet space runs in the join engine of section [3.8](#38-joins).
+A join across spaces must abort with `CrossSpaceJoin`.
+
+**Rule HS-5: inner collections.** An empty pattern list matches exactly the empty payload, so every waiter matches every unit.
+The discipline then orders the units and the waiters as in every other store:
+
+- `set` keeps one unit class for each channel: two adds and one take leave the collection empty.
+- `bag` counts the units, `cell` holds one unit (`CellOccupied`), and `queue`, `stack` and `priorityqueue` take their head unit.
+
+**Rule HS-6: qualifier.** Every HashSet space has the qualifier `"seq"` (rule [QF-4](#41-default)), so the Seq rules of section [4.3](#43-seq) apply.
+A receive of an absent unit waits for the rest of the deploy.
+So a process never observes that a unit is absent (SQ-6 (d) of the P7 design).
+
+**Rule HS-7: families.** The six HashSet families have the indices 26 to 31 and the body references 226 to 231.
+Their factories take the params of their discipline only (Table 1a), after the qualifier `"seq"`.
+
+The checks of HS-2 and HS-3 are hooks of the outer store.
+They run after the key check and before the params, in the driver and in the join engine (`rholang/src/rust/interpreter/spaces/generic.rs:2391-2396`, `rholang/src/rust/interpreter/spaces/join.rs:412-471`).
+Each check reserves one operation on the meter of the job before it reads.
+Headline `hashset_unit_rules` of `HashMapStore.v` proves the unit rules.
 
 ## 3. Inner collections
 
@@ -650,7 +682,7 @@ A divergent pair or the cap re-issues the element in flight, and every read and 
 A cell collection holds at most one record and at most one waiting continuation (F15).
 The family `hashmap:cell` runs `CellDiscipline` (`rholang/src/rust/interpreter/spaces/disciplines/cell.rs:53-88`) on the head driver of the engine.
 
-**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:951-968`).
+**Rule CL-1: capacity.** A store or a park on a full side fails with `CellOccupied` before the plan stages it (`rholang/src/rust/interpreter/spaces/generic.rs:972-989`).
 The job drops the transaction, so the failed operation logs no event, bumps no counter, and makes no legacy charge.
 
 **Rule CL-2: both sides meet.** A fresh send always meets the waiting continuation of the cell, and a fresh receive always meets the record of the cell.
@@ -686,7 +718,7 @@ The settle fires the top pair. It lifts a stored record that is not persistent w
 **Rule SK-4: peeks in a settle.** A record that a peek waiter did not spend stays in flight, and it lands at its order when the settle ends (Rule E).
 
 **Rule SK-5: fire count.** One transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21)).
-The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1535-1548`).
+The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:1556-1569`).
 A plan whose transaction is full after the settle before it stages nothing, and its operation re-issues.
 
 **Rule SK-6: re-issues.** At the cap or at a divergent pair, the settle before the plan re-issues the operation, which it has not inserted yet.
@@ -938,7 +970,7 @@ Section [N15 of the design](design.md#n15-phase-p6-the-vectordb-family) explains
 | The rules QD-1 to QD-9 | QD-4 and QD-5 hold. Rules VD-4 to VD-7 replace QD-1 to QD-3 and QD-7, rules VD-2, VD-3 and VD-11 replace QD-8, rule VD-10 replaces QD-6, and QD-9 holds trivially with the order 0. |
 
 **Rule VD-1: factory params.** The factory takes `capacity` (required, an `Int` in $`[1, 1\,000\,000]`$) and `dimensions` (required, an `Int` in $`[1, 4\,096]`$).
-It also takes `metric` (default `cosine`), one of `cosine`, `dot`, `euclidean`, `manhattan`, `hamming` and `jaccard`, and `mirror`, which must be `"chroma"` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
+It also takes `metric` (default `cosine`), one of `cosine`, `dot`, `euclidean`, `manhattan`, `hamming` and `jaccard`, and `mirror`, which must be `"chroma"` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:63-102`).
 A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:198-229`).
 
 **Rule VD-2: records.** A send stores its payload with an optional vector (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657`).
@@ -1021,11 +1053,11 @@ A waiter that its guard refused on a better record can still fire later on a wor
 **Rule VD-11: joins.** A join of the space can name a VectorDB collection in single mode ([section 3.8](#38-joins)).
 Each bind sees its own eligible records in its own order, and the engine fires the join over one record of each bind (`JoinWindow::Similarity`).
 A removal never makes a single-mode join waiter without a guard fireable, so single-mode joins need no cascade.
-A bind in list mode fails the join with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:410-466`).
+A bind in list mode fails the join with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:412-471`).
 Without a query, a VectorDB bind of a join reads the canonical order.
 
 **Rule VD-12: capacity and merges.** A VectorDB collection has no counter, so every record and every waiter has the order 0.
-A store fails with `CapacityExceeded` when the collection holds `capacity` records, before anything is staged (`rholang/src/rust/interpreter/spaces/generic.rs:951-968`).
+A store fails with `CapacityExceeded` when the collection holds `capacity` records, before anything is staged (`rholang/src/rust/interpreter/spaces/generic.rs:972-989`).
 A store of Rule E never exceeds the capacity, because its COMM removed the record in the same transaction.
 
 Two concurrent branches that write one collection merge with no conflict, as on a host channel.
@@ -1061,7 +1093,7 @@ A checkpoint and a restart must keep its config record, its counters, its record
 The scheduler orders the operations of one space, and it runs the operations of different spaces in parallel.
 
 **Rule QF-4: families.** Every outer store takes the qualifiers `"default"`, `"temp"` and `"seq"`, except the HashSet store, which takes only `"seq"`.
-When a HashSet family is available, a constructor with another qualifier must abort with `BadConstructorArgument`.
+A HashSet constructor with another qualifier must abort with `BadConstructorArgument`, in native and in legacy execution.
 
 ### 4.2 Temp
 
@@ -1193,14 +1225,14 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QF-13, QF-14 | `seq_name_iff` (`Namespace.v:1150`), the TLA+ invariant `SeqNotSent` (V5) | `prop_seq_scan_finds_every_seq_name`, `reducer_seq_payload` |
 | QF-15, QF-16, QF-17 | The TLA+ invariants `SeqExclusive` (V4) and `ClaimTracksLastUse` (V8) | `prop_seq_claim_chain`, `reducer_seq_atomic_guard` |
 | QF-18 | The TLA+ invariant `SeqExclusive` (V4) | `reducer_seq_atomic_guard` |
-| FA-1 | `registered_families_complete` (`SpaceFactory.v:1374`) | `prop_registered_families_complete`, `space_factory_families_registered` |
+| FA-1 | `registered_families_complete` (`SpaceFactory.v:1416`) | `prop_registered_families_complete`, `space_factory_families_registered` |
 | FA-2 | `space_match_is_injected_match` (`Match.v:615`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
-| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1451`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
-| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1854`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
-| FA-5 | `priorities_validated` (`SpaceFactory.v:1991`), `array_size_validated` (`SpaceFactory.v:2104`) | `prop_priorities_validated`, `prop_array_size_validated` |
-| FA-7 | `array_size_validated` (`SpaceFactory.v:2104`) | `space_factory_kwargs_are_stored_canonical` |
+| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1505`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
+| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1910`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
+| FA-5 | `priorities_validated` (`SpaceFactory.v:2047`), `array_size_validated` (`SpaceFactory.v:2160`) | `prop_priorities_validated`, `prop_array_size_validated` |
+| FA-7 | `array_size_validated` (`SpaceFactory.v:2160`) | `space_factory_kwargs_are_stored_canonical` |
 | AR-1, AR-3, VE-1, VE-3 | `fixed_array_allocates_at_most_size` (`OuterStorage.v:313`), `vector_index_is_counter` (`VectorStore.v:184`) | `prop_fixed_array_allocates_at_most_size`, `prop_vector_index_is_counter` |
-| AR-2, VE-2 | `hashmap_get_put_other` (`HashMapStore.v:213`), `hashmap_iteration_permutation_invariant` (`HashMapStore.v:168`) | `prop_hashmap_get_put_other`, `prop_hashmap_iteration_permutation_invariant` |
+| AR-2, VE-2 | `hashmap_get_put_other` (`HashMapStore.v:256`), `hashmap_iteration_permutation_invariant` (`HashMapStore.v:211`) | `prop_hashmap_get_put_other`, `prop_hashmap_iteration_permutation_invariant` |
 | AR-4, VE-4, AL-2 | `fixed_array_indices_sequential` (`OuterStorage.v:345`), `cyclic_array_index_mod_size` (`OuterStorage.v:376`), `vector_gensym_monotonic` (`VectorStore.v:219`) | `prop_fixed_array_indices_sequential`, `prop_cyclic_array_index_mod_size`, `prop_vector_gensym_monotonic` |
 | AL-3 | `allocation_batch_atomic` (`OuterStorage.v:402`), `fixed_array_out_of_names_exact` (`OuterStorage.v:330`) | `prop_allocation_batch_atomic`, `prop_fixed_array_out_of_names_exact` |
 | AL-4 | `allocator_identities_unique` (`OuterStorage.v:555`) | `prop_allocator_identities_unique` |
@@ -1221,6 +1253,12 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | PS-8 | `peek_restores_delivered_marker` (`PathMapPrefix.v:2010`) | `prop_marker_invariant_preserved` |
 | PS-9 | `token_ord_reentry` (`PathMapPrefix.v:3126`) | `the_token_is_the_space_counter_and_the_counter_of_every_path` |
 | PS-10 | `prefix_contact_anchored` (`PathMapPrefix.v:1948`), the TLA+ invariant `MergeDetectsPrefixContact` (V25) | `the_path_channels_are_storage_channels_of_the_space` |
+| HS-1 | `hashmap_get_put_other` (`HashMapStore.v:256`) | `space_hashset_keys_channels_and_names_are_those_of_the_hashmap_store` |
+| HS-2, HS-3 | `hashset_unit_rules` (`HashMapStore.v:378`) | `prop_hashset_unit_rules`, `reified_hashset_payload_not_empty`, `reified_hashset_pattern_not_empty`, `reified_hashset_guards`, `space_engine_hashset_families_take_units_only`, `space_hashset_accepts_exactly_the_empty_payload`, `space_hashset_accepts_exactly_the_empty_pattern_list` |
+| HS-4 | None | `reified_hashset_joins`, `reified_hashset_pattern_not_empty` |
+| HS-5 | `hashset_unit_rules` (`HashMapStore.v:378`) | `reified_hashset_unit_sends`, `reified_hashset_disciplines`, `reified_hashset_head_order`, `space_engine_hashset_families_take_units_only` |
+| HS-6 | `qualifier_matrix` (`SpaceFactory.v:383`), the TLA+ invariant `QualifierSupport` (V6) | `reified_hashset_seq_only`, `reified_hashset_absent_unit_waits`, `reducer_qualifier_matrix`, `reified_factory_hashset_takes_only_seq_in_native_execution` |
+| HS-7 | `registered_families_complete` (`SpaceFactory.v:1416`) | `reified_hashset_factory_params`, `space_factory_families_registered`, `p7_system_channels_have_the_table_values` |
 | BG-1 | `bag_visit_order_canonical` (`DataCollection.v:243`), `waiter_visit_order_canonical` (`ContinuationCollection.v:337`) | `prop_bag_visit_order_canonical`, `prop_bag_waiter_visit_order_canonical` |
 | BG-2, BG-3 | `bag_consume_first_spatial_match` (`DataCollection.v:445`), `guard_once_greedy_like_head` (`Match.v:658`) | `prop_bag_consume_first_spatial_match`, `prop_engine_guard_checked_once_as_the_host_checks_it` |
 | BG-4 | `bag_multiplicity_preserved` (`DataCollection.v:559`), `bag_removal_keeps_equal_duplicate` (`DataCollection.v:578`), `bag_persistent_match_not_removed` (`DataCollection.v:536`) | `prop_bag_multiplicity_preserved`, `prop_bag_removal_keeps_equal_duplicate` |
@@ -1271,7 +1309,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play` |
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
 | NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
-| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2303`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
+| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2359`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
 | VD-2 | None | `space_vectordb_payload_is_the_vector_by_default`, `space_vectordb_peek_restores_records_with_their_embedding`, `space_native_vectors_every_kind_enters_exactly` |
 | VD-3 | None | `space_vectordb_errors_have_their_codes`, `space_vectordb_source_errors_have_their_codes`, `space_vectordb_fixed_point_and_rational_thresholds` |
 | VD-4 | `cosine_squared_form_iff` (`Similarity.v:412`), `cosine_order_squared_form` (`Similarity.v:471`), `euclidean_radius_squared_form` (`Similarity.v:545`), `binary_laws` (`Similarity.v:1042`), `selection_total_order` (`Similarity.v:1169`) | `prop_selection_order_is_a_strict_total_order`, `space_vectordb_bounds_select_the_eligible_records`, `space_vectordb_ids_keep_only_the_listed_records`, `space_vectordb_binary_metrics_read_binary_vectors_only`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order`, `space_similarity_topk_reference_cases_through_the_space`, `space_hash_collision_tie_duplicates_are_interchangeable`, `space_hash_collision_tie_forced_equal_source_hashes_select_one_value` |
@@ -1364,21 +1402,21 @@ So `dot` rounds its exact sum once, and never a partial sum ([decision 54](decis
 The reply of `norm` and `distance` is correctly rounded (`root_midpoint_nearest`, S28 of `VectorOps.v`).
 
 The failure codes are `UnknownMethod`, `BadArgument`, `NotAVector`, `NotANumber`, `NonFiniteValue`, `MalformedNumber`, `DimensionMismatch` and `ValueOutOfRange`.
-The process reserves its work on the host-work budget of the deploy, and a rejection fails the deploy (`rholang/src/rust/interpreter/reified/system_processes.rs:327-351`).
+The process reserves its work on the host-work budget of the deploy, and a rejection fails the deploy (`rholang/src/rust/interpreter/reified/system_processes.rs:333-357`).
 
-**Rule SP-3: `embed`.** The argument is one text, or a non-empty list of texts (`rholang/src/rust/interpreter/reified/system_processes.rs:377-420`).
+**Rule SP-3: `embed`.** The argument is one text, or a non-empty list of texts (`rholang/src/rust/interpreter/reified/system_processes.rs:383-426`).
 A call holds at most 64 texts and at most 64 KiB of text. Otherwise the reply is `EmbeddingRateLimited`.
 
 Play asks the embedder of the node, and it replies `[true, vector, model]` for one text or `[true, [vector…], model]` for a list.
 Each vector is a list of `GFloat32` values. The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
 
-**Rule SP-4: `ann`.** Play and replay both make the checks of the call against consensus state, in this order ([decision 67](decision-register.md#decision-67), `rholang/src/rust/interpreter/reified/system_processes.rs:503-548`):
+**Rule SP-4: `ann`.** Play and replay both make the checks of the call against consensus state, in this order ([decision 67](decision-register.md#decision-67), `rholang/src/rust/interpreter/reified/system_processes.rs:509-554`):
 
 1. `space` is a native VectorDB space (`NotAVectorDbSpace`) with a mirror (`MirrorDisabled`).
 2. `query` is a text, or a numeric vector of the dimensions of the space whose elements are finite as `f32` values (`DimensionMismatch`, `BadArgument`).
 3. `options` is a map of the one key `k`, an `Int` in $`[1, \mathit{capacity}]`$ (`InvalidOption`).
 
-In play, the embedder of the node embeds a text query, and the mirror of the node answers the nearest records of `channel` (`rholang/src/rust/interpreter/reified/system_processes.rs:603-648`).
+In play, the embedder of the node embeds a text query, and the mirror of the node answers the nearest records of `channel` (`rholang/src/rust/interpreter/reified/system_processes.rs:609-654`).
 The reply is `[true, ids, distances, watermark]`.
 It holds at most $`k`$ record ids as 32-byte byte arrays, their distances as `GFloat32` values, and the watermark as an `Int`.
 A mirror that does not answer gives the reply `MirrorUnavailable`.

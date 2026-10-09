@@ -1,7 +1,7 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P5",
-  "title": "P5 wave W2: the engine, the bag, the cell and the stack, the Array and Vector stores with the allocator, the pure PathMap layer, the P5 families and the routing of receive queries, and for P5 wave W3 the PathMap engine of Phase 1 (markers, delivery plans, store), and for P5 wave W3 the join engine (spaces/join.rs and the v2 record of record.rs) and the set merges (F24, F25), and for P6 step 8 the VectorDB params and gate 9 of SpaceFactory.v (R130) and the soft bound of capacity of CounterConflict.v (R131, decision 71)",
+  "title": "P5 wave W2: the engine, the bag, the cell and the stack, the Array and Vector stores with the allocator, the pure PathMap layer, the P5 families and the routing of receive queries, and for P5 wave W3 the PathMap engine of Phase 1 (markers, delivery plans, store), and for P5 wave W3 the join engine (spaces/join.rs and the v2 record of record.rs) and the set merges (F24, F25), and for P6 step 8 the VectorDB params and gate 9 of SpaceFactory.v (R130) and the soft bound of capacity of CounterConflict.v (R131, decision 71), and for P7 step 3 the six HashSet rows of the registration (R18)",
   "design": "P5 design v3 (decision 48) and the W2 batch reports. The headline ids are the ids of the P5 phase of formal/reified-rspaces-invariant-map.json. The stack items come from the STACK and STACK-I21 batches, with one fire count for each transaction (decision 49). The PathMap items of wave W3 come from the PATHMAP-ENGINE report (Phase 1). The join items come from the JOINS-FORMAL batch (fragments/JOINS-FORMAL/model-map-rows.json), with headline names mapped to the ids R108-R126 and V26-V34. R127 and R128 (F24, F25) are modeled by retires and bag_run of CounterConflict.v.",
   "code_base": "The items are in the P5 W2 commit of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
@@ -6595,6 +6595,36 @@
       "name": "registered_p6_families",
       "line": 182,
       "role": "The P6 rows of the wired families.",
+      "rocq": [
+        "registered"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "P7_FAMILY_ROWS",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "const",
+      "name": "P7_FAMILY_ROWS",
+      "line": 162,
+      "role": "The P7 factory rows: the six HashSet families.",
+      "rocq": [
+        "p7_rows"
+      ],
+      "covers": [
+        "R18"
+      ]
+    },
+    {
+      "item": "registered_p7_families",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+      "kind": "fn",
+      "name": "registered_p7_families",
+      "line": 223,
+      "role": "The P7 rows of the wired families.",
       "rocq": [
         "registered"
       ],

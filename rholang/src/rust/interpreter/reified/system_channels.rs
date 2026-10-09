@@ -7,7 +7,7 @@
 //! | `rho:space:getSpaceAgent`       | `[E0, 21]`  | 2     | 233     | P4         |
 //! | `rho:assert:assertEqual`        | `[E0, 22]`  | 3     | 234     | P4         |
 //! | `rho:reified:internal:handleOp` | `[E0, 30]`  | 2     | 248     | P4         |
-//! | the other families              | `[E0, 00..1F]` | 2  | 200 + op | P5 and P6 |
+//! | the other families              | `[E0, 00..1F]` | 2  | 200 + op | P5 to P7  |
 //! | `rho:lang:vector`               | `[E0, 23]`  | 2     | 235     | P6         |
 //! | `rho:vectordb:embed`            | `[E0, 24]`  | 2     | 236     | P6         |
 //! | `rho:vectordb:ann`              | `[E0, 25]`  | 5     | 237     | P6         |
@@ -334,8 +334,8 @@ pub const PATHMAP_SPACE_ALIAS: SystemChannel = SystemChannel {
 ///
 /// The inner collections of a PathMap, an Array or a Vector store are bag, queue, stack, set,
 /// cell and priority queue, in this order. The VectorDB families (6 and 25) are in
-/// [`P6_SYSTEM_CHANNELS`], and the HashSet families (26 to 31) arrive in P7. A process of this
-/// list is installed only when the family dispatch wires its family
+/// [`P6_SYSTEM_CHANNELS`], and the HashSet families (26 to 31) are in [`P7_SYSTEM_CHANNELS`]. A
+/// process of this list is installed only when the family dispatch wires its family
 /// (`spaces::factory::urn::registered_families`).
 pub const P5_SYSTEM_CHANNELS: [SystemChannel; 25] = [
     HASHMAP_BAG_FACTORY,
@@ -419,6 +419,71 @@ pub const ANN_PROCESS: SystemChannel = SystemChannel {
 /// | `rho:vectordb:embed` | `[E0, 24]` | 2     | 236     |
 /// | `rho:vectordb:ann`   | `[E0, 25]` | 5     | 237     |
 pub const P6_PROCESSES: [SystemChannel; 3] = [VECTOR_PROCESS, EMBED_PROCESS, ANN_PROCESS];
+
+/// The factory of the family `hashset:bag`: family index 26, `(ret, ctor)` (P7).
+pub const HASHSET_BAG_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashset:bag",
+    op: 0x1A,
+    arity: 2,
+};
+
+/// The factory of the family `hashset:queue`: family index 27 (P7).
+pub const HASHSET_QUEUE_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashset:queue",
+    op: 0x1B,
+    arity: 2,
+};
+
+/// The factory of the family `hashset:stack`: family index 28 (P7).
+pub const HASHSET_STACK_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashset:stack",
+    op: 0x1C,
+    arity: 2,
+};
+
+/// The factory of the family `hashset:set`: family index 29 (P7).
+pub const HASHSET_SET_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashset:set",
+    op: 0x1D,
+    arity: 2,
+};
+
+/// The factory of the family `hashset:cell`: family index 30 (P7).
+pub const HASHSET_CELL_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashset:cell",
+    op: 0x1E,
+    arity: 2,
+};
+
+/// The factory of the family `hashset:priorityqueue`: family index 31 (P7).
+pub const HASHSET_PRIORITY_QUEUE_FACTORY: SystemChannel = SystemChannel {
+    urn: "rho:space:hashset:priorityqueue",
+    op: 0x1F,
+    arity: 2,
+};
+
+/// The system processes that P7 adds after the processes of P6: the factories of the six HashSet
+/// families in family-index order (design v3 HS-7).
+///
+/// | URN                               | Channel    | Arity | BodyRef |
+/// |-----------------------------------|------------|-------|---------|
+/// | `rho:space:hashset:bag`           | `[E0, 1A]` | 2     | 226     |
+/// | `rho:space:hashset:queue`         | `[E0, 1B]` | 2     | 227     |
+/// | `rho:space:hashset:stack`         | `[E0, 1C]` | 2     | 228     |
+/// | `rho:space:hashset:set`           | `[E0, 1D]` | 2     | 229     |
+/// | `rho:space:hashset:cell`          | `[E0, 1E]` | 2     | 230     |
+/// | `rho:space:hashset:priorityqueue` | `[E0, 1F]` | 2     | 231     |
+///
+/// They come after every process of P4 to P6, so every earlier definition keeps its place. A
+/// process of this list is installed only when the family dispatch wires its family.
+pub const P7_SYSTEM_CHANNELS: [SystemChannel; 6] = [
+    HASHSET_BAG_FACTORY,
+    HASHSET_QUEUE_FACTORY,
+    HASHSET_STACK_FACTORY,
+    HASHSET_SET_FACTORY,
+    HASHSET_CELL_FACTORY,
+    HASHSET_PRIORITY_QUEUE_FACTORY,
+];
 
 /// True for an op whose call the reducer packs into `[ret, [x…]]` (I-18): every factory, and
 /// `rho:lang:vector`.
@@ -573,6 +638,62 @@ mod tests {
                 .all(|channel| !earlier.contains(&channel.op)),
             "a VectorDB factory has an op of its own"
         );
+    }
+
+    #[test]
+    fn p7_system_channels_have_the_table_values() {
+        let expected = [
+            ("rho:space:hashset:bag", 0x1A, 2, 226),
+            ("rho:space:hashset:queue", 0x1B, 2, 227),
+            ("rho:space:hashset:stack", 0x1C, 2, 228),
+            ("rho:space:hashset:set", 0x1D, 2, 229),
+            ("rho:space:hashset:cell", 0x1E, 2, 230),
+            ("rho:space:hashset:priorityqueue", 0x1F, 2, 231),
+        ];
+        assert_eq!(P7_SYSTEM_CHANNELS.len(), expected.len());
+        for (channel, (urn, op, arity, body)) in P7_SYSTEM_CHANNELS.iter().zip(expected) {
+            assert_eq!(
+                (channel.urn, channel.op, channel.arity, channel.body_ref()),
+                (urn, op, arity, body)
+            );
+            assert_eq!(op_of(&channel.channel()), Some(op));
+            assert!(is_factory_op(channel.op), "{}", channel.urn);
+            assert!(is_call_op(channel.op), "{}", channel.urn);
+            assert!(packs_arguments(channel.op), "{}", channel.urn);
+        }
+        let earlier: Vec<&SystemChannel> = P4_SYSTEM_CHANNELS
+            .iter()
+            .chain(P5_SYSTEM_CHANNELS.iter())
+            .chain(P6_SYSTEM_CHANNELS.iter())
+            .chain(P6_PROCESSES.iter())
+            .collect();
+        let urns: BTreeSet<&str> = earlier
+            .iter()
+            .map(|channel| channel.urn)
+            .chain(P7_SYSTEM_CHANNELS.iter().map(|channel| channel.urn))
+            .collect();
+        assert_eq!(
+            urns.len(),
+            earlier.len() + P7_SYSTEM_CHANNELS.len(),
+            "every URN names one process"
+        );
+        let ops: BTreeSet<u8> = earlier.iter().map(|channel| channel.op).collect();
+        assert!(
+            P7_SYSTEM_CHANNELS
+                .iter()
+                .all(|channel| !ops.contains(&channel.op)),
+            "a HashSet factory has an op of its own"
+        );
+        // The 32 families now cover every factory op below the engine factory.
+        let families: BTreeSet<u8> = P4_SYSTEM_CHANNELS
+            .iter()
+            .chain(P5_SYSTEM_CHANNELS.iter())
+            .chain(P6_SYSTEM_CHANNELS.iter())
+            .chain(P7_SYSTEM_CHANNELS.iter())
+            .map(|channel| channel.op)
+            .filter(|op| is_factory_op(*op))
+            .collect();
+        assert_eq!(families, (0x00..=0x1F).collect::<BTreeSet<u8>>());
     }
 
     #[test]

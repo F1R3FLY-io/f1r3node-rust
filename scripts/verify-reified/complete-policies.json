@@ -1251,7 +1251,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/families.rs",
-          "pattern": "    pub const WIRED: [Family; 26] = ["
+          "pattern": "    pub const WIRED: [Family; 32] = ["
         },
         {
           "file": "rholang/tests/reified_pathmap.rs",
@@ -1848,7 +1848,7 @@
       ]
     },
     "p7": {
-      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call. Step 2 adds the Seq rules: gate 3 in the execution model of the deploy (QT-5), the send rule of seq names (SQ-1, SQ-2), the claims of each channel of a seq space with their store after a successful commit (SQ-3, SQ-4), the internal origin of re-issues (A3), and the charges of the checks (SQ-8).",
+      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call. Step 2 adds the Seq rules: gate 3 in the execution model of the deploy (QT-5), the send rule of seq names (SQ-1, SQ-2), the claims of each channel of a seq space with their store after a successful commit (SQ-3, SQ-4), the internal origin of re-issues (A3), and the charges of the checks (SQ-8). Step 3 adds the HashSet store (HS-1 to HS-8): the HashSet outer store with the key, the channels and the names of the HashMap store, the payload and pattern hooks of the outer stores before any staging (PayloadNotEmpty, PatternNotEmpty), and the six HashSet families with their schemas, dispatch arms, factory rows and system channels.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/ephemeral.rs",
         "rholang/src/rust/interpreter/spaces/agent.rs",
@@ -1861,7 +1861,13 @@
         "rholang/src/rust/interpreter/reified/system_processes.rs",
         "rholang/src/rust/interpreter/reified/seq.rs",
         "rholang/src/rust/interpreter/spaces/join.rs",
-        "rholang/src/rust/interpreter/reified/execution.rs"
+        "rholang/src/rust/interpreter/reified/execution.rs",
+        "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+        "rholang/src/rust/interpreter/spaces/families.rs",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+        "rholang/src/rust/interpreter/reified/system_channels.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/join.rs"
       ],
       "entry_points": [
         {
@@ -2007,6 +2013,62 @@
         {
           "file": "rholang/src/rust/interpreter/spaces/errors.rs",
           "pattern": "SeqConcurrent { space: SpaceId },"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+          "pattern": "pub struct HashSetOuter;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+          "pattern": "fn check_payload(&self, data: &ListParWithRandom, meter: &ScanMeter) -> Result<(), SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+          "pattern": "fn check_patterns(&self, pattern: &BindPattern, meter: &ScanMeter) -> Result<(), SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "SpaceOp::Produce(op) => self.outer.check_payload(&op.data, meter)?,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "pattern": "SpaceOp::Consume(op) => self.outer.check_patterns(&op.pattern, meter)?,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "agent.outer().check_patterns(&bind.pattern, meter)?;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/join.rs",
+          "pattern": "agent.outer().check_payload(&op.data, meter)?;"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "PayloadNotEmpty,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "PatternNotEmpty,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/families.rs",
+          "pattern": "Family::HashSetPriorityQueue => &HASHSET_PRIORITY_QUEUE,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+          "pattern": "pub const P7_FAMILY_ROWS: [(SpaceFactoryUrn, SystemChannel); 6] = ["
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const P7_SYSTEM_CHANNELS: [SystemChannel; 6] = ["
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+          "pattern": "SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector | SpaceOuter::HashSet,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+          "pattern": "for (family, channel) in p7_families {"
         }
       ],
       "tests": [
@@ -2019,7 +2081,8 @@
         "rholang/tests/support/family_programs.rs",
         "rholang/tests/support/props.rs",
         "rholang/tests/reified_seq.rs",
-        "rholang/src/rust/interpreter/reified/seq.rs"
+        "rholang/src/rust/interpreter/reified/seq.rs",
+        "rholang/tests/reified_hashset.rs"
       ],
       "property_files": [
         "rholang/src/rust/interpreter/reified/runtime.rs",

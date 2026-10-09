@@ -309,6 +309,11 @@ fn quoted_list(texts: &[String]) -> String {
 /// One text, a list, the boundaries of the quota and each reply code of `embed`. The quota and
 /// the argument checks refuse a call before the model runs. Native replay reproduces every reply
 /// with an embedder that it never asks.
+///
+/// The calls within the quota and the refused calls run as two deploys. As one deploy, its
+/// certification used 260,960,438 `VerificationBytes` of the v6 limit 2^28 (measured in P7
+/// step 3). Each installed system process adds about 1.28 * 10^6 units to the build of the native
+/// replay environment, so the six HashSet factories of P7 took the one deploy over the limit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vectordb_embed_replies_and_codes() {
     let embedder = MockEmbedder::new("mock-a", 3, 0.5, EmbedMode::Vectors);
@@ -317,19 +322,39 @@ async fn vectordb_embed_replies_and_codes() {
     let over_count: Vec<String> = (0..=MAX_TEXTS).map(|index| format!("t{index}")).collect();
     let at_bytes = "x".repeat(MAX_TEXT_BYTES);
     let over_bytes = "x".repeat(MAX_TEXT_BYTES + 1);
-    let term = embed_program(&[
+    // Changed by P7 step 3: two deploys, see the comment of the test.
+    // let term = embed_program(&[
+    //     ("one", quoted("hello")),
+    //     ("list", r#"["a", "bc"]"#.to_string()),
+    //     ("at-count", quoted_list(&at_count)),
+    //     ("at-bytes", quoted(&at_bytes)),
+    //     ("over-count", quoted_list(&over_count)),
+    //     ("over-bytes", quoted(&over_bytes)),
+    //     ("empty-list", "[]".to_string()),
+    //     ("number", "42".to_string()),
+    //     ("mixed", r#"["a", 1]"#.to_string()),
+    // ]);
+    // let played = native_play(&term, LARGE_LIMIT).await;
+    // assert_played("embed codes", &played);
+    let within = embed_program(&[
         ("one", quoted("hello")),
         ("list", r#"["a", "bc"]"#.to_string()),
         ("at-count", quoted_list(&at_count)),
         ("at-bytes", quoted(&at_bytes)),
+    ]);
+    let refused = embed_program(&[
         ("over-count", quoted_list(&over_count)),
         ("over-bytes", quoted(&over_bytes)),
         ("empty-list", "[]".to_string()),
         ("number", "42".to_string()),
         ("mixed", r#"["a", 1]"#.to_string()),
     ]);
-    let played = native_play(&term, LARGE_LIMIT).await;
-    assert_played("embed codes", &played);
+    let mut played = Vec::with_capacity(2);
+    for (label, term) in [("embed calls", within), ("embed codes", refused)] {
+        let deploy = native_play(&term, LARGE_LIMIT).await;
+        assert_played(label, &deploy);
+        played.push((label, term, deploy));
+    }
     let model = string("mock-a");
     let at_count_vectors = list(
         at_count
@@ -366,7 +391,12 @@ async fn vectordb_embed_replies_and_codes() {
     .into_iter()
     .map(|(label, reply)| (label.to_string(), reply))
     .collect();
-    assert_eq!(replies(&played), expected);
+    // assert_eq!(replies(&played), expected);
+    let mut replied = BTreeMap::new();
+    for (_, _, deploy) in &played {
+        replied.extend(replies(deploy));
+    }
+    assert_eq!(replied, expected);
     assert_eq!(
         embedder.calls(),
         4,
@@ -374,7 +404,10 @@ async fn vectordb_embed_replies_and_codes() {
     );
     let replayed_with = MockEmbedder::new("mock-b", 3, 9.0, EmbedMode::Vectors);
     lock.replace(services(&replayed_with, &FakeMirror::down()));
-    assert_certifies("embed codes", &played, &term, LARGE_LIMIT).await;
+    // assert_certifies("embed codes", &played, &term, LARGE_LIMIT).await;
+    for (label, term, deploy) in &played {
+        assert_certifies(label, deploy, term, LARGE_LIMIT).await;
+    }
     assert_eq!(replayed_with.calls(), 0, "native replay asks no embedder");
 
     // The failures of the model, and a node without services.

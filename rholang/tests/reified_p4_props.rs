@@ -6852,7 +6852,8 @@ fn prop_aliases_map_to_family() {
 /// `default`, `temp` and `seq` (P7 steps 1 and 2, design v3 QT-1). Legacy execution refuses `seq`
 /// with `QualifierUnavailable` before the params, because the Seq rules need the job order of
 /// native execution (QT-5). An Array factory then also needs its `size` (F7, P5 design v3 A.10).
-/// Every family without a schema is unavailable.
+/// Every family without a schema is unavailable. Since P7 the HashSet families have a schema, so
+/// a HashSet factory refuses `default` and `temp` with `BadConstructorArgument` (HS-6).
 #[test]
 fn prop_qualifier_matrix() {
     check(
@@ -6872,6 +6873,24 @@ fn prop_qualifier_matrix() {
             // Changed by P7 step 2 (design v3 QT-5): `seq` passes gate 3 in native execution.
             // let validated = FactoryConstructor::validate(family, &ctor);
             let passes_gate_3 = qualifier != SpaceQualifier::Seq || native;
+            // Changed by P7 step 3 (design v3 HS-7): a HashSet family has a schema, so the store
+            // check of gate 3 decides before the execution check.
+            // match (
+            //     constructor_schema(family).is_some(),
+            //     required_params(family),
+            //     passes_gate_3,
+            // ) {
+            if constructor_schema(family).is_some() && !family.supports_qualifier(qualifier) {
+                prop_assert_eq!(
+                    validated,
+                    Err(SpaceError::BadConstructorArgument(format!(
+                        "the {} outer store does not take the {} qualifier",
+                        family.outer.as_str(),
+                        qualifier.as_str()
+                    )))
+                );
+                return Ok(());
+            }
             match (
                 constructor_schema(family).is_some(),
                 required_params(family),

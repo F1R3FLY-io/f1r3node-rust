@@ -38,7 +38,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::spaces::errors::SpaceReplyCode;
 use rholang::rust::interpreter::spaces::factory::urn::{
     factory_capability, registered_aliases, registered_channel, registered_p5_families,
-    registered_p6_families,
+    registered_p6_families, registered_p7_families,
 };
 use rholang::rust::interpreter::spaces::namespace::{
     self, CollectionKey, Durability, Kind, Marker, NameTail, NativeSpace, ReifiedId, AGENT_TAG,
@@ -443,6 +443,37 @@ fn registered_p6_pins() -> Vec<(&'static str, u8, i32, i64)> {
         .collect()
 }
 
+/// The system processes of P7 (design v3 HS-7) as `(urn, op, arity, body ref)`, in the order
+/// of the definitions: the six HashSet families in family-index order, after the processes of
+/// P6.
+const P7_PINNED: [(&str, u8, i32, i64); 6] = [
+    ("rho:space:hashset:bag", 0x1A, 2, 226),
+    ("rho:space:hashset:queue", 0x1B, 2, 227),
+    ("rho:space:hashset:stack", 0x1C, 2, 228),
+    ("rho:space:hashset:set", 0x1D, 2, 229),
+    ("rho:space:hashset:cell", 0x1E, 2, 230),
+    ("rho:space:hashset:priorityqueue", 0x1F, 2, 231),
+];
+
+/// The system channels of the registered families of P7, in the order of the definitions.
+fn registered_p7_channels() -> Vec<SystemChannel> {
+    registered_p7_families()
+        .map(|(_, channel)| channel)
+        .collect()
+}
+
+/// The rows of [`P7_PINNED`] that are registered.
+fn registered_p7_pins() -> Vec<(&'static str, u8, i32, i64)> {
+    let registered: BTreeSet<&str> = registered_p7_channels()
+        .into_iter()
+        .map(|channel| channel.urn)
+        .collect();
+    P7_PINNED
+        .into_iter()
+        .filter(|(urn, ..)| registered.contains(urn))
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_private_channels_unique() {
     let mut session = Session::new().await;
@@ -466,7 +497,13 @@ async fn space_private_channels_unique() {
     // op channel of its family (P5 design v3, A.7).
     let p5 = registered_p5_channels();
     let p6 = registered_p6_channels();
-    for channel in p5.iter().chain(p6.iter()).chain(P6_PROCESSES.iter()) {
+    let p7 = registered_p7_channels();
+    for channel in p5
+        .iter()
+        .chain(p6.iter())
+        .chain(P6_PROCESSES.iter())
+        .chain(p7.iter())
+    {
         assert_eq!(
             urn_map.get(channel.urn),
             Some(&write_bundle(channel.channel())),
@@ -484,6 +521,7 @@ async fn space_private_channels_unique() {
         .chain(p5.iter())
         .chain(p6.iter())
         .chain(P6_PROCESSES.iter())
+        .chain(p7.iter())
         .map(|channel| channel.urn)
         .collect();
     let mut owners: BTreeMap<Vec<u8>, &str> = BTreeMap::new();
@@ -570,9 +608,10 @@ async fn space_private_channels_body_refs_disjoint() {
     expected.extend(registered_p5_pins().into_iter().map(|(.., body)| body));
     expected.extend(registered_p6_pins().into_iter().map(|(.., body)| body));
     expected.extend(P6_PROCESS_PINS.into_iter().map(|(.., body)| body));
+    expected.extend(registered_p7_pins().into_iter().map(|(.., body)| body));
     assert_eq!(
         refs, expected,
-        "the P4 body refs are 200 + op, and the registered P5 and P6 rows follow"
+        "the P4 body refs are 200 + op, and the registered P5, P6 and P7 rows follow"
     );
     for (definition, channel) in defined.iter().zip(P4_SYSTEM_CHANNELS) {
         assert_eq!(definition.body_ref, body_ref(channel.op));
@@ -1361,7 +1400,7 @@ async fn space_system_ops_get_space_agent_not_native() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_system_ops_arity_and_body_refs_stable() {
     // The four processes of P4 first, then the registered rows of P5 in the order of the table,
-    // then the registered rows of P6, then the processes of P6.
+    // then the registered rows of P6, then the processes of P6, then the registered rows of P7.
     let mut pinned = vec![
         ("rho:space:hashmap:queue", 0x01_u8, 2, 201),
         ("rho:space:getSpaceAgent", 0x21, 2, 233),
@@ -1371,6 +1410,7 @@ async fn space_system_ops_arity_and_body_refs_stable() {
     pinned.extend(registered_p5_pins());
     pinned.extend(registered_p6_pins());
     pinned.extend(P6_PROCESS_PINS);
+    pinned.extend(registered_p7_pins());
     let defined = definitions(&unavailable());
     assert_eq!(defined.len(), pinned.len());
     for (definition, (urn, op, arity, body)) in defined.iter().zip(pinned) {

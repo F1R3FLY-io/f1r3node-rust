@@ -404,7 +404,9 @@ pub(crate) fn classify<S: OuterStore, D: Discipline>(
 }
 
 /// The checks of an operation before any staging: the routed key of each bind with the outer
-/// store (`OuterStore::check_key`), and the params and the query with the schema of the
+/// store (`OuterStore::check_key`), the payload of a send and the pattern of each bind with the
+/// outer store (`OuterStore::check_payload`, `OuterStore::check_patterns`: the unit rules of a
+/// HashSet store, P7 HS-2 and HS-3), and the params and the query with the schema of the
 /// discipline. A join needs two or more binds, one arrow, and one carried order for each bind
 /// when it carries orders.
 fn validate<S: OuterStore, D: Discipline>(
@@ -419,12 +421,14 @@ fn validate<S: OuterStore, D: Discipline>(
             agent
                 .outer()
                 .check_key(config, &op.channel, &op.key, meter)?;
+            agent.outer().check_payload(&op.data, meter)?;
             agent.check_params(config, &op.params, None, meter)
         }
         SpaceOp::Consume(op) => {
             agent
                 .outer()
                 .check_key(config, &op.channel, &op.key, meter)?;
+            agent.outer().check_patterns(&op.pattern, meter)?;
             agent.check_params(config, &no_params, op.query.as_ref(), meter)
         }
         SpaceOp::Settle(op) => {
@@ -451,6 +455,7 @@ fn validate<S: OuterStore, D: Discipline>(
                 agent
                     .outer()
                     .check_key(config, &bind.channel, &bind.key, meter)?;
+                agent.outer().check_patterns(&bind.pattern, meter)?;
                 agent.check_params(config, &no_params, bind.query.as_ref(), meter)?;
                 // A list is one value of one bind (decision 66): a VectorDB bind of a join is in
                 // single mode.

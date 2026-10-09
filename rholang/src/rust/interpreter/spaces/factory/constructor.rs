@@ -388,19 +388,112 @@ mod tests {
                 suggestion: None,
             })
         );
-        for family in SpaceFactoryUrn::all() {
-            if constructor_schema(family).is_some() {
-                continue;
-            }
+        // Changed by P7 step 3 (design v3 HS-7): every family has a schema, so the loop below
+        // would check nothing. Gate 1 now refuses only a pair that is no family, which no
+        // factory channel names.
+        // for family in SpaceFactoryUrn::all() {
+        //     if constructor_schema(family).is_some() {
+        //         continue;
+        //     }
+        //     assert_eq!(
+        //         FactoryConstructor::validate(family, &list(Vec::new())),
+        //         Err(SpaceError::FamilyUnavailable {
+        //             outer: family.outer.as_str().to_string(),
+        //             inner: family.inner.as_str().to_string(),
+        //         }),
+        //         "{family}"
+        //     );
+        // }
+        assert!(SpaceFactoryUrn::all().all(|family| constructor_schema(family).is_some()));
+        for outer in [SpaceOuter::PathMap, SpaceOuter::Array, SpaceOuter::HashSet] {
+            let pair = family(outer, SpaceInner::VectorDb);
+            assert!(!pair.is_supported_pair(), "{pair:?}");
             assert_eq!(
-                FactoryConstructor::validate(family, &list(Vec::new())),
+                FactoryConstructor::validate(pair, &list(Vec::new())),
                 Err(SpaceError::FamilyUnavailable {
-                    outer: family.outer.as_str().to_string(),
-                    inner: family.inner.as_str().to_string(),
+                    outer: outer.as_str().to_string(),
+                    inner: "vectordb".to_string(),
                 }),
-                "{family}"
+                "{pair:?}"
             );
         }
+    }
+
+    /// HS-6 and QT-5: a HashSet factory takes only `seq`, and only in native execution. Gate 3
+    /// refuses `default` and `temp` with `BadConstructorArgument` in both execution models, and
+    /// legacy execution refuses `seq` with `QualifierUnavailable`. Every gate runs before the
+    /// params, so an unknown param does not change the error.
+    #[test]
+    fn reified_factory_hashset_takes_only_seq_in_native_execution() {
+        let unknown = params(vec![SendParam::Named("zeta".to_string(), int(1))]);
+        for inner in [
+            SpaceInner::Bag,
+            SpaceInner::Queue,
+            SpaceInner::Stack,
+            SpaceInner::Set,
+            SpaceInner::Cell,
+            SpaceInner::PriorityQueue,
+        ] {
+            let hashset = family(SpaceOuter::HashSet, inner);
+            for execution in [Execution::Native, Execution::Legacy] {
+                for (ctor, qualifier) in [
+                    (Vec::new(), "default"),
+                    (vec![string("default")], "default"),
+                    (vec![string("temp")], "temp"),
+                    (vec![string("temp"), unknown.clone()], "temp"),
+                ] {
+                    assert_eq!(
+                        FactoryConstructor::validate_in(hashset, &list(ctor), execution),
+                        Err(SpaceError::BadConstructorArgument(format!(
+                            "the hashset outer store does not take the {qualifier} qualifier"
+                        ))),
+                        "{hashset} {execution:?} {qualifier}"
+                    );
+                }
+            }
+            for ctor in [vec![string("seq")], vec![string("seq"), unknown.clone()]] {
+                assert_eq!(
+                    FactoryConstructor::validate_in(hashset, &list(ctor), Execution::Legacy),
+                    Err(SpaceError::QualifierUnavailable("seq".to_string())),
+                    "{hashset}"
+                );
+            }
+            let seq = FactoryConstructor::validate(hashset, &list(vec![string("seq")]))
+                .expect("a seq HashSet constructor is valid natively");
+            assert_eq!(seq.qualifier, SpaceQualifier::Seq);
+            assert_eq!(seq.durability(), Durability::Ephemeral);
+            assert!(seq.params.is_empty());
+            assert_eq!(
+                FactoryConstructor::validate(hashset, &list(vec![string("seq"), unknown.clone()])),
+                Err(SpaceError::UnknownParam {
+                    key: "zeta".to_string(),
+                    suggestion: None,
+                }),
+                "{hashset}"
+            );
+        }
+        let levels = FactoryConstructor::validate(
+            family(SpaceOuter::HashSet, SpaceInner::PriorityQueue),
+            &list(vec![
+                string("seq"),
+                params(vec![SendParam::Named("priorities".to_string(), int(3))]),
+            ]),
+        )
+        .expect("a HashSet priority queue takes the params of its discipline");
+        assert_eq!(levels.params.get("priorities"), Some(&int(3)));
+        assert_eq!(
+            FactoryConstructor::validate(
+                family(SpaceOuter::HashSet, SpaceInner::Set),
+                &list(vec![
+                    string("seq"),
+                    params(vec![SendParam::Named("priorities".to_string(), int(3))]),
+                ]),
+            ),
+            Err(SpaceError::UnknownParam {
+                key: "priorities".to_string(),
+                suggestion: None,
+            })
+        );
     }
 
     fn family(outer: SpaceOuter, inner: SpaceInner) -> SpaceFactoryUrn {
@@ -603,15 +696,31 @@ mod tests {
                 .iter()
                 .map(|key| (*key, int(2)))
                 .collect();
-            let ctor = match required.is_empty() {
-                true => Vec::new(),
-                false => vec![named(required.clone())],
-            };
+            // Changed by P7 step 3 (design v3 HS-6): a HashSet family takes only `seq`, so its
+            // minimal constructor names it.
+            // let ctor = match required.is_empty() {
+            //     true => Vec::new(),
+            //     false => vec![named(required.clone())],
+            // };
+            let (mut ctor, qualifier, durability) =
+                match family.supports_qualifier(SpaceQualifier::Default) {
+                    true => (Vec::new(), SpaceQualifier::Default, Durability::Durable),
+                    false => (
+                        vec![string("seq")],
+                        SpaceQualifier::Seq,
+                        Durability::Ephemeral,
+                    ),
+                };
+            if !required.is_empty() {
+                ctor.push(named(required.clone()));
+            }
             let minimal = FactoryConstructor::validate(family, &list(ctor))
                 .unwrap_or_else(|error| panic!("{family}: {error:?}"));
             assert_eq!(minimal.family, family);
-            assert_eq!(minimal.qualifier, SpaceQualifier::Default);
-            assert_eq!(minimal.durability(), Durability::Durable);
+            // assert_eq!(minimal.qualifier, SpaceQualifier::Default);
+            // assert_eq!(minimal.durability(), Durability::Durable);
+            assert_eq!(minimal.qualifier, qualifier, "{family}");
+            assert_eq!(minimal.durability(), durability, "{family}");
             assert_eq!(minimal.params.len(), required.len(), "{family}");
             assert!(minimal
                 .params

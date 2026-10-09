@@ -1754,23 +1754,23 @@ The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConfli
 
 ### N4. GenericSpace and the queue discipline
 
-`GenericSpace<S, D>` (`spaces/generic.rs:535-538`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
+`GenericSpace<S, D>` (`spaces/generic.rs:556-559`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
 The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:83`).
-The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:288-298`, `447-538`).
+The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:344-354`, `535-626`).
 Two traits separate the parts of a family:
 
-- `OuterStore` (`spaces/generic.rs:136-228`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`. Its P5 hooks check a routed key, stage the records of a creation, and allocate index names. The defaults of the hooks do no work.
-- `Discipline` (`spaces/generic.rs:303-480`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, which send and query params it takes, and how many entries a side can hold. It holds the plans of the operations, and the default plans are the head driver of this section.
+- `OuterStore` (`spaces/generic.rs:138-249`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`. Its P5 hooks check a routed key, stage the records of a creation, and allocate index names. The defaults of the hooks do no work.
+- `Discipline` (`spaces/generic.rs:324-501`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, which send and query params it takes, and how many entries a side can hold. It holds the plans of the operations, and the default plans are the head driver of this section.
 
 `HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:26-56`).
 It keeps the default hooks.
 `QueueDiscipline` uses a counter, takes no send or query params, and keeps every default plan (`spaces/disciplines/queue.rs:32-75`).
-The family agent runs only the wired families, and a config that names another family fails with `FamilyUnavailable` (`spaces/generic.rs:2105-2116`).
+The family agent runs only the wired families, and a config that names another family fails with `FamilyUnavailable` (`spaces/generic.rs:2126-2137`).
 [Decision 29](decision-register.md#decision-29) removes the P4 gate that ran only counter disciplines without joins, because joins into ordered collections arrive in P5c.
 Until then, a collection that is part of a join fails with `Inconsistent`.
 
-**A collection operation.** `begin_collection` (`spaces/generic.rs:1935-2101`) opens the transaction and reads the config once.
-`run_with` (`spaces/generic.rs:2328-2487`) then stages the operation in that transaction.
+**A collection operation.** `begin_collection` (`spaces/generic.rs:1956-2122`) opens the transaction and reads the config once.
+`run_with` (`spaces/generic.rs:2349-2513`) then stages the operation in that transaction.
 The job commits the transaction exactly once (`spaces/agent.rs:509-521`).
 
 ```text
@@ -1883,7 +1883,7 @@ A re-issued persistent element re-enters at its place.
 It meets the other side only when it precedes the head of its own side.
 Otherwise it is stored or parked behind the head, and it fires nothing.
 
-**The produce plan.** `offer_head` (`spaces/generic.rs:1556-1623`) is the plan of a send, as the default of `Discipline::offer`.
+**The produce plan.** `offer_head` (`spaces/generic.rs:1577-1644`) is the plan of a send, as the default of `Discipline::offer`.
 It is the OFFER of the substrate design ([S5.8](#s58-peek-re-offer-fr-10)), with the fire-round rule of A10 and of [I-21](decision-register.md#i-21).
 
 ```text
@@ -1910,7 +1910,7 @@ A head waiter that does not match blocks every waiter behind it, and the datum i
 A peek waiter leaves the datum alive, so the next round re-offers the datum with the same produce identity ([decision 30](decision-register.md#decision-30)).
 A persistent send `!!` fires the waiters one after another and stores the datum when no waiter matches.
 
-**The consume plan.** `receive_head` (`spaces/generic.rs:1632-1716`) is the plan of a receive, as the default of `Discipline::receive`, and it mirrors OFFER.
+**The consume plan.** `receive_head` (`spaces/generic.rs:1653-1737`) is the plan of a receive, as the default of `Discipline::receive`, and it mirrors OFFER.
 
 ```text
 RECEIVE(op, ord):                              ▷ receive_head
@@ -2015,7 +2015,7 @@ Then the matching heads would stay with nothing in flight.
 
 The headlines `queue_fifo` (`HeadOnlyDisciplines.v:1135`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`) prove the order of delivery and the blocking of a head.
 
-**Outcome and dispatch.** `outcome` (`spaces/generic.rs:1823-1912`) turns the receipts into a `SpaceOutcome`.
+**Outcome and dispatch.** `outcome` (`spaces/generic.rs:1844-1933`) turns the receipts into a `SpaceOutcome`.
 It checks that each receipt has the kind of its staged operation, and it drops the counter fires.
 It also drops a retirement and a lift, which P5 stages and never dispatches.
 Each other fire gives its continuation without the envelope and the results of the substrate, in staging order.
@@ -2365,7 +2365,7 @@ A second creation of one id fails with `SpaceAlreadyExists` in play and in repla
 | 6 | The params are named. | `PositionalParamsUnsupported` |
 | 7 | Each named param is in the schema of the family, in bytewise order of the keys. The schema of `hashmap:queue` is empty. | `UnknownParam`, with a suggestion |
 
-The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:248-257`). A tie goes to the bytewise least candidate.
+The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:268-277`). A tie goes to the bytewise least candidate.
 
 **The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:126-160`).
 Its pattern `[...@args]` binds the whole call as one list, and its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP`.
@@ -2423,7 +2423,7 @@ pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), Reif
 
 The factory ops are `0x00` to `0x20`, and the other ops that take calls are `0x21` to `0x25` and `0x30` to `0x32` (`reified/system_channels.rs:103`, `107`).
 
-**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:221-259`).
+**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:227-265`).
 For a native space, it reads the config record in a read-only space intent. It then replies with the capability of the factory of the family ([decision 9.4](decision-register.md#decision-9-4)).
 That capability equals the value that the URN of the factory binds, so the FIPS check `getSpaceAgent(space_1) == HMB` holds.
 `assertEqual!(ret, a, b)` replies `true` when the sorted values of `a` and `b` are equal, and `false` otherwise ([decision 33](decision-register.md#decision-33)).
@@ -2438,10 +2438,10 @@ Figure N7 shows the lifecycle of a native handle, from the factory call to a rep
 
 A Reified failure is either an abort of the deploy or a [typed reply](glossary.md#typed-reply).
 An abort is the error `InterpreterError::ReduceError` with the text `reified:<Code>: <message>`, which the soft checkpoint of the deploy then reverts.
-A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:255-262`).
+A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:266-273`).
 The message text is not consensus state, but the code names the failure for tests and for users.
 
-The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:241-249`):
+The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:252-260`):
 
 - `SpaceTxnError::Host` becomes `SpaceError::Host`, which keeps the class of the host error.
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
@@ -2463,7 +2463,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `OrderedJoinUnsupported` | Retired in P5 wave W3 ([decision 29](decision-register.md#decision-29)). A join whose binds route to one native space runs on the join engine (N12), and the code stays commented out in `reified/errors.rs`. |
 | `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. |
 
-*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:20-160`).*
+*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:20-169`).*
 
 | Code | Trigger |
 |---|---|
@@ -2483,6 +2483,8 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `DanglingHandle`, `DanglingName` | A space without its config record, reached through a handle or through a space name. From P7, also an id of a temp or seq space of an ended deploy. The message names the space id. |
 | `SeqSent` | A send whose data holds a name of a seq space of the evaluation (P7, [specification 4.3](specification.md#43-seq), rule QF-14). |
 | `SeqConcurrent` | A use of a channel of a seq space by an operation that does not descend from its last use (P7, rule QF-15). |
+| `PayloadNotEmpty` | A send with a value to a collection of a HashSet space, before any staging (P7, [specification 2.7](specification.md#27-hashset), rule HS-2). |
+| `PatternNotEmpty` | A bind with a pattern, a binder or a remainder on a collection of a HashSet space, before any staging (P7, rule HS-3). |
 | `CounterOverflow` | An `ord` counter at `i64::MAX`. |
 | `Inconsistent` | A malformed record, a second counter or config record, a persistent counter record, a collection in a join, a fire group that does not line up, or a receipt that differs from its staged operation. |
 | `ReplayDivergence` | A fire without a free recorded occurrence of its COMM in replay. |
@@ -2591,7 +2593,7 @@ The callback of operation $`i`$ wraps the registration of the introduction (`rho
 
 Every staged operation of a space job goes through the chain.
 This covers the counter bump (`counter::bump`), the plans of the queue, the [re-store](glossary.md#re-store), and the operations that create a space.
-The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:2468`, `2529`, `2778`).
+The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:2494`, `2555`, `2804`).
 
 **Out of phlo.** A charge that runs out of phlo stops the run where the host program stops.
 A carried post-charge or a pre-charge fails inside the callback of its operation.
@@ -2628,19 +2630,22 @@ Every new family runs on the engine of S1. A discipline and an outer store plug 
 
 #### N11.1 Family dispatch and registration
 
-`Family` lists the wired families, and `FamilyAgent` runs the agent of the family that the config of the space names (`spaces/families.rs:161-214`, `spaces/families.rs:452-461`).
-The dispatch tries the arms in the order of `Family::WIRED`: `hashmap:queue` first, then ascending family index, and the PathMap families of P5e last.
-Each arm that it tries reserves one comparison of the names of the config and of the arm (`spaces/families.rs:288-298`).
+`Family` lists the wired families, and `FamilyAgent` runs the agent of the family that the config of the space names (`spaces/families.rs:186-251`, `spaces/families.rs:540-549`).
+The dispatch tries the arms in the order of `Family::WIRED`: `hashmap:queue` first, then ascending family index, then the PathMap families of P5e.
+The VectorDB families of P6 and the HashSet families of P7 follow them.
+Each arm that it tries reserves one comparison of the names of the config and of the arm (`spaces/families.rs:344-354`).
 So the arm at the position $`i`$ reserves $`i + 1`$ comparisons, and a queue operation keeps the host work of P4.
 
 At the end of P5, twenty-four families are wired.
 They are the bag, queue, stack, set, cell and priority queue families of four stores: `hashmap`, `pathmap`, `array` and `vector`.
 The PathMap arms come last, so the dispatch of each family that was wired before them reserves the comparisons that it reserved before.
 
-The registration reads the family dispatch (`spaces/factory/urn.rs:170`).
+The registration reads the family dispatch (`spaces/factory/urn.rs:203`).
 A factory row is registered exactly when its family has an arm.
 So no manual step can register a family without an agent or forget a wired family.
-`definitions` installs the four P4 processes, then the factory of each registered P5 family in family-index order, then the factory of each registered alias (`reified/system_processes.rs:94-150`).
+
+`definitions` installs the four P4 processes, then the factory of each registered P5 family in family-index order, then the factory of each registered alias (`reified/system_processes.rs:96-157`).
+The VectorDB factories and the processes of P6 come next, and the HashSet factories of P7 come last.
 An alias has the channel, the arity, the body reference and the handler of its family. So the second install of a shared channel changes nothing.
 
 ```text
@@ -2735,7 +2740,7 @@ The settle after the plan and a settle job re-issue a settle job (`spaces/settle
 
 One space transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21), [decision 49](decision-register.md#decision-49)).
 `Plan` holds one `FireRounds` for each transaction.
-The settle before the plan, the plan and the settle after it count on it through `Cx::rounds` (`spaces/generic.rs:751`).
+The settle before the plan, the plan and the settle after it count on it through `Cx::rounds` (`spaces/generic.rs:772`).
 The settles of a stack once started counts of their own, so one transaction could make $`3 \times \mathrm{FIRE\_ROUND\_CAP}`$ fires.
 
 ```text
@@ -2746,7 +2751,7 @@ OPEN-PLAN(D, op):                               ▷ generic.rs, open_plan
   return none                                   ▷ the plan runs below the cap
 ```
 
-Every plan calls `open_plan` before it stages (`spaces/generic.rs:1535-1548`).
+Every plan calls `open_plan` before it stages (`spaces/generic.rs:1556-1569`).
 A plan then fires only below the cap, because `after_fire` continues an element only while the count stays below the cap.
 The settle loop checks the cap before each fire, and RESTORE-SCAN checks it before the second send (section N11.2).
 A queue, a bag and a cell have no settle, so their plans start at the count 0.
@@ -2764,7 +2769,7 @@ Their `check_key` accepts only the index names of the space, so a forged channel
 
 An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family agent reads the config once, and the agent of the family runs `run_allocate`.
 `AllocationRule::plan` gives the indices and the next value of the fixed Array, the cyclic Array and the Vector (`spaces/allocator.rs:109-162`).
-`AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2551-2599`).
+`AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2577-2625`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
 The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:639-684`).
@@ -2927,8 +2932,8 @@ Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` 
 #### N12.2 Classification and the scope
 
 A collection operation opens one transaction over its own collections and reads the config once.
-A join opens it with `begin_join`, over the distinct collections of its binds (`spaces/generic.rs:2064-2101`).
-`prepare_collection_op` then lets `classify` decide the route (`spaces/generic.rs:1967-2000`, `spaces/join.rs:371-404`).
+A join opens it with `begin_join`, over the distinct collections of its binds (`spaces/generic.rs:2085-2122`).
+`prepare_collection_op` then lets `classify` decide the route (`spaces/generic.rs:1988-2021`, `spaces/join.rs:371-404`).
 An operation that no join reaches keeps the driver of its collection.
 The classification reserves exactly the reads of the join check of P4.
 So such an operation keeps its host work, and the queue parity golden does not change.
@@ -2955,7 +2960,7 @@ JOIN-SCOPE(op):                                  ▷ join.rs, join_scope
   return the scope: the closure, own, the group order, and keys
 ```
 
-`VALIDATE` checks the key of each bind with the outer store and the query of each bind with the discipline (`spaces/join.rs:410-466`).
+`VALIDATE` checks the key of each bind with the outer store and the query of each bind with the discipline (`spaces/join.rs:412-471`).
 A join with fewer than two binds, or a join that both persists and peeks, is `Inconsistent`, because the reducer never builds one.
 When the open transaction does not cover the scope, `prepare_collection_op` drops it and begins one transaction over the lock keys of the scope.
 Nothing is staged before the drop, so the drop applies nothing.
@@ -2969,7 +2974,7 @@ Four facts make this "plan, then lock" step sound:
 
 #### N12.3 Windows and searches
 
-Each discipline declares the shape of its windows with `Discipline::JOIN_WINDOW` (`spaces/generic.rs:251-267`).
+Each discipline declares the shape of its windows with `Discipline::JOIN_WINDOW` (`spaces/generic.rs:272-288`).
 Table N12.3 gives the window of the $`m`$ positions of a waiter on one collection.
 
 *Table N12.3. The windows of the disciplines.*
@@ -3008,8 +3013,8 @@ Both searches reserve each envelope decode, each payload decode, each match and 
 
 #### N12.4 The transaction
 
-`run_join` runs the engine in one plan of the transaction (`spaces/join.rs:664-749`).
-`Engine::run` follows RUN-JOIN (`spaces/join.rs:2645-2732`).
+`run_join` runs the engine in one plan of the transaction (`spaces/join.rs:669-754`).
+`Engine::run` follows RUN-JOIN (`spaces/join.rs:2650-2737`).
 Figure N12.4 shows one transaction, from the classification to the commit.
 
 ```text
@@ -3034,12 +3039,12 @@ TOUCH(c):                                        ▷ join.rs, Engine::touch
   if the discipline has a counter and c is not bumped yet: bump S(sid, c) once, before its first staging
 ```
 
-OFFER offers the element in flight to the waiters of its collection, in the order of the source (`spaces/join.rs:3635-3792`).
+OFFER offers the element in flight to the waiters of its collection, in the order of the source (`spaces/join.rs:3640-3797`).
 A head that refuses stores the element, and on the other shapes a refusal moves on to the next waiter.
-RECEIVE parks the waiter at its places, unless it is the head of each head-only collection and its search and guard pass (`spaces/join.rs:3926-4119`).
+RECEIVE parks the waiter at its places, unless it is the head of each head-only collection and its search and guard pass (`spaces/join.rs:3931-4124`).
 A receive with one bind on a set keeps its class fire over $`[D; n]`$.
 A join with two or more binds fires one consume over its group.
-PARK checks the capacity of each cell collection before it stages anything (`spaces/join.rs:4255-4285`).
+PARK checks the capacity of each cell collection before it stages anything (`spaces/join.rs:4260-4290`).
 
 ![Activity diagram of one transaction of the join engine. PREPARE begins over the own collections of the operation and reads the config once. CLASSIFY sends an operation that no join reaches to the driver of its collection, whose reservations equal the P4 join check. Otherwise JOIN-SCOPE checks each bind and closes the collections under their join groups, and a transaction that does not cover the scope is dropped before any staging and begun once again over the lock keys of the scope. RUN-JOIN bumps each own collection once and takes the orders, or the carried orders of decision 43. A settle job puts its pending second sends on the work stack and marks every collection dirty. Another operation runs the settle before the plan when its discipline cascades, which is the queue, the stack, the cell, the priority queue and the set, and not the bag. A stopped transaction or a full fire count commits and re-issues the operation. Otherwise the plan offers the datum or receives the waiter, with the windows, the greedy search and one guard check, and a peek fire pushes its second sends. DRAIN-AND-CASCADE then loops while a second send is owed or a waiter of a dirty collection can fire: a full count stops it and carries the rest, a second send is popped and offered in receipt order with its own identity, and otherwise NEXT-FIRE picks the head, the oldest lane head or the first set waiter of the least dirty collection, and LIFT-AND-REOFFER lifts the first non-persistent bound record with K_lift, keyed by the counter and the step or by the source hash on a set, offers it to the waiter, and retires the bound set classes. COMMIT re-issues one settle job with the pending sends, the dirty seeds and the resume when the transaction stopped with owed work, and otherwise re-issues the operation only when its element is still in flight.](diagrams/26-join-engine.svg)
 
@@ -3048,7 +3053,7 @@ PARK checks the capacity of each cell collection before it stages anything (`spa
 #### N12.5 Rule E in joins: the second sends
 
 A peek fire removes each non-persistent stored record that it binds, as a host COMM does ([decision 45](decision-register.md#decision-45)).
-The same transaction sends each such record again through OFFER, with its identity and its own authority (`spaces/join.rs:3516-3557`).
+The same transaction sends each such record again through OFFER, with its identity and its own authority (`spaces/join.rs:3521-3562`).
 
 ```text
 PUSH-SECOND-SENDS(σ, x at p?):                   ▷ join.rs, second_sends; the results in receipt order
@@ -3066,7 +3071,7 @@ A second send registers the authority of its record (`Introduction::for_record`)
 
 A fire can make another waiter of the scope fireable ([decision 50](decision-register.md#decision-50)).
 A head-only collection can get a new head, or a set class can move to a new place.
-DRAIN-AND-CASCADE fires each such waiter in the same transaction (`spaces/join.rs:4362-4394`).
+DRAIN-AND-CASCADE fires each such waiter in the same transaction (`spaces/join.rs:4367-4399`).
 
 ```text
 DRAIN-AND-CASCADE():                             ▷ join.rs, drain_and_cascade
@@ -3099,7 +3104,7 @@ LIFT-AND-REOFFER(W, σ):                          ▷ join.rs, lift_and_reoffer
   if the fire count says Reissue(cause): stop with cause   ▷ a stored divergent pair (A10)
 ```
 
-A collection with a counter keys `K_lift` by the counter value of the transaction and the step, as the settle of a stack does (`spaces/join.rs:4607-4659`).
+A collection with a counter keys `K_lift` by the counter value of the transaction and the step, as the settle of a stack does (`spaces/join.rs:4612-4664`).
 A set has no counter, so its `K_lift` is keyed by the source hash of the lifted record, as `K_retire` is.
 So every lift of a set has an identity of its own, also when a re-issue repeats the random state and the step.
 
@@ -3122,13 +3127,13 @@ So their fires commute (`cascade_order_independent`).
 Strict confluence fails for a priority queue, which has two lanes for each collection, and for a set, which has many waiters for each collection.
 So NEXT-FIRE fixes an order: the oldest lane head of a priority queue, and the DR-75 order of the union for a set.
 
-RETIRE-SET-BINDS runs after every fire of a waiter that does not peek, on the consume side, on the produce side, and in the cascade (`spaces/join.rs:2218-2252`).
+RETIRE-SET-BINDS runs after every fire of a waiter that does not peek, on the consume side, on the produce side, and in the cascade (`spaces/join.rs:2223-2257`).
 It retires the other non-persistent stored members of each bound set class with single-channel `K_retire` COMMs, in canonical order.
 A peek retires nothing, and a bag has no classes, so the step does nothing there.
 
 #### N12.7 Stop, re-issue and the settle job
 
-`commit` decides the re-issue of the transaction (`spaces/join.rs:4664-4726`).
+`commit` decides the re-issue of the transaction (`spaces/join.rs:4669-4731`).
 A divergent own element does not stop the transaction: the element stays in flight, and the drain fires the other owed pairs.
 Only the fire cap and a stored divergent pair of the cascade stop a transaction.
 A stored divergent pair then fires once in each settle job (A10).
@@ -3211,9 +3216,9 @@ A fire removes the join entries of its group when no waiter of the group is left
 
 #### N12.11 The seam of a store
 
-The engine reaches the discipline, the windows and the records of a store through the trait `JoinSource` (`spaces/join.rs:878-1181`).
-`KeyedSource` implements it for the keyed stores HashMap, Array and Vector (`spaces/join.rs:1516-2211`).
-Its offer order and its cascade order for a set merge the canonical orders of the groups of a collection by source hash (`spaces/join.rs:2276-2355`).
+The engine reaches the discipline, the windows and the records of a store through the trait `JoinSource` (`spaces/join.rs:883-1186`).
+`KeyedSource` implements it for the keyed stores HashMap, Array and Vector (`spaces/join.rs:1521-2216`).
+Its offer order and its cascade order for a set merge the canonical orders of the groups of a collection by source hash (`spaces/join.rs:2281-2360`).
 
 The keyed source holds the records and the waiters of a collection on one data channel.
 The PathMap store keeps its waiters and markers on index channels and its records on data channels.
@@ -3240,7 +3245,7 @@ Table N12.11 lists these methods.
 Work items, elements in flight and pending second sends carry `restore`, the depth of the PathMap marker that a peek COMM removed.
 A keyed source always carries `None`.
 Each window also receives the pending second sends, and a keyed source ignores them.
-The outer store chooses the source: `OuterStore::classify` and `OuterStore::run_join` use the keyed functions unless a store overrides them (`spaces/generic.rs:144-169`).
+The outer store chooses the source: `OuterStore::classify` and `OuterStore::run_join` use the keyed functions unless a store overrides them (`spaces/generic.rs:146-171`).
 A store with `ALWAYS_ESCALATES` runs every join in a new transaction over the lock keys of its scope.
 The PathMap source of Phase 2 implements the same methods with the plans of N13 ([decision 51](decision-register.md#decision-51)).
 
@@ -3660,22 +3665,22 @@ The theorem `vdb_no_pending_match` (S22) proves that no parked waiter without a 
 
 A VectorDB collection that a join reaches runs on the join engine ([N12](#n12-wave-w3-of-p5-joins-of-one-space)).
 The discipline names the window shape `JoinWindow::Similarity`, so each bind of a join sees its own eligible records in its own order.
-`Engine::similarity_bind` searches them for a single-mode bind, and a bind without a query reads the canonical order (`rholang/src/rust/interpreter/spaces/join.rs:3321-3389`).
+`Engine::similarity_bind` searches them for a single-mode bind, and a bind without a query reads the canonical order (`rholang/src/rust/interpreter/spaces/join.rs:3326-3394`).
 A receive with one bind on a joined collection takes the list paths of the engine in list mode.
 
-A multi-bind join with a bind in list mode fails with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:410-466`).
+A multi-bind join with a bind in list mode fails with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:412-471`).
 A removal never makes a single-mode join waiter without a guard fireable, because eligibility is a property of each record.
 So single-mode joins need no cascade, and the theorem `vdb_join_removal_exposes_nothing` (S21) proves it.
 The engine runs LIST-CASCADE for its list waiters, and a settle job of a VectorDB collection always cascades.
 
 #### N15.5 The factory, the config and merges
 
-The factory rows of both families take `capacity`, `dimensions`, `metric` and `mirror` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
+The factory rows of both families take `capacity`, `dimensions`, `metric` and `mirror` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:63-102`).
 Gate 9 of `FactoryConstructor::validate` refuses `mirror` unless the qualifier is the default one and the metric is `cosine`, `dot` or `euclidean` (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:198-229`).
 `vdb_config` reads the params of each operation from the config record, with each read reserved first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:293-307`).
 
 The family has no counter (`USES_COUNTER = false`), so two branches that write one collection merge with no conflict ([M-1](decision-register.md#m-1)).
-`check_capacity` compares the records of the view of the transaction with `capacity` before each store (`rholang/src/rust/interpreter/spaces/generic.rs:951-968`).
+`check_capacity` compares the records of the view of the transaction with `capacity` before each store (`rholang/src/rust/interpreter/spaces/generic.rs:972-989`).
 A merge can therefore exceed `capacity`, and every store then fails until removals bring the count below it ([decision 71](decision-register.md#decision-71)).
 The test `space_collection_conflicts_vectordb_capacity_soft_bound` pins the soft bound, and `capped_writes_soft_bound` of `CounterConflict.v` proves it.
 
@@ -3771,7 +3776,7 @@ That delete names an id that the mirror never received, and ChromaDB accepts it 
 
 #### N16.3 Recorded embeddings
 
-`rho:vectordb:embed` turns texts into vectors with the embedder of the node (`rholang/src/rust/interpreter/reified/system_processes.rs:357-373`).
+`rho:vectordb:embed` turns texts into vectors with the embedder of the node (`rholang/src/rust/interpreter/reified/system_processes.rs:363-379`).
 The model can differ between nodes, so the vector of a text is never a function of consensus state.
 The dispatcher therefore records the whole reply of each call on the produce event of the reply, a failure reply included.
 Replay produces the recorded reply and asks no embedder, and Figure N16.3 shows both runs.
@@ -3783,7 +3788,7 @@ A program then sends the vector with `embedding=`, and from then on the vector i
 
 #### N16.4 The advisory query
 
-`rho:vectordb:ann` asks the mirror of the node for the records of a channel that are nearest to a query (`rholang/src/rust/interpreter/reified/system_processes.rs:447-473`).
+`rho:vectordb:ann` asks the mirror of the node for the records of a channel that are nearest to a query (`rholang/src/rust/interpreter/reified/system_processes.rs:453-479`).
 Its checks read consensus state, so play and replay both make them ([decision 67](decision-register.md#decision-67)).
 In native execution each check is a journaled operation, and a replay that skipped one would fail its certification with an incomplete journal.
 Only the answers of the services are recorded: the embedding of a text query, the neighbours and the watermark.

@@ -79,6 +79,15 @@ pub enum SpaceError {
     /// using process (P7, SQ-3). The error names the space id.
     #[error("a channel of the seq space {} is used by a concurrent process", hex::encode(.space))]
     SeqConcurrent { space: SpaceId },
+    /// A send to a collection of a HashSet space whose payload is not empty (P7, HS-2). A
+    /// HashSet collection holds units, `x!()`. The check runs before any staging.
+    #[error("a send to a HashSet collection carries a payload")]
+    PayloadNotEmpty,
+    /// A receive bind on a collection of a HashSet space with a pattern, a binder or a remainder
+    /// (P7, HS-3). A HashSet receive takes a unit, `for ( <- x)`. The check runs before any
+    /// staging.
+    #[error("a receive from a HashSet collection has a pattern")]
+    PatternNotEmpty,
     /// The `ord` counter of a collection reached `i64::MAX`.
     #[error("a space counter reached its maximum")]
     CounterOverflow,
@@ -208,6 +217,8 @@ impl SpaceError {
             SpaceError::DanglingName { .. } => "DanglingName",
             SpaceError::SeqSent { .. } => "SeqSent",
             SpaceError::SeqConcurrent { .. } => "SeqConcurrent",
+            SpaceError::PayloadNotEmpty => "PayloadNotEmpty",
+            SpaceError::PatternNotEmpty => "PatternNotEmpty",
             SpaceError::CounterOverflow => "CounterOverflow",
             SpaceError::CellOccupied => "CellOccupied",
             SpaceError::CapacityExceeded => "CapacityExceeded",
@@ -343,6 +354,8 @@ mod tests {
             SpaceError::DanglingName { space: [2; 32] },
             SpaceError::SeqSent { space: [3; 32] },
             SpaceError::SeqConcurrent { space: [4; 32] },
+            SpaceError::PayloadNotEmpty,
+            SpaceError::PatternNotEmpty,
             SpaceError::CounterOverflow,
             SpaceError::CellOccupied,
             SpaceError::CapacityExceeded,
@@ -440,6 +453,21 @@ mod tests {
                  process",
                 "cd".repeat(32)
             ))
+        );
+        // HS-2 and HS-3: a HashSet collection takes units only.
+        assert_eq!(
+            InterpreterError::from(SpaceError::PayloadNotEmpty),
+            InterpreterError::ReduceError(
+                "reified:PayloadNotEmpty: a send to a HashSet collection carries a payload"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            InterpreterError::from(SpaceError::PatternNotEmpty),
+            InterpreterError::ReduceError(
+                "reified:PatternNotEmpty: a receive from a HashSet collection has a pattern"
+                    .to_string()
+            )
         );
         // QT-5: legacy execution refuses `seq`.
         assert_eq!(

@@ -88,21 +88,24 @@ pub fn native_agent() -> Arc<dyn SpaceAgent> { Arc::new(FamilyAgent) }
 /// the handle process. Then come the factory of each registered family of P5, in family-index
 /// order, the factory of each registered alias (`urn::registered_p5_families`,
 /// `urn::registered_aliases`), and the factory of each registered family of P6
-/// (`urn::registered_p6_families`), then `rho:lang:vector` (`P6_PROCESSES`). An alias has the
-/// channel, the arity, the body ref and the handler of its family, so the second install of its
-/// channel changes nothing: the install map and the dispatch table are keyed by the channel and
-/// by the body ref.
+/// (`urn::registered_p6_families`), then the processes of P6 (`P6_PROCESSES`), and last the
+/// factory of each registered family of P7 (`urn::registered_p7_families`), so every earlier
+/// definition keeps its place. An alias has the channel, the arity, the body ref and the
+/// handler of its family, so the second install of its channel changes nothing: the install
+/// map and the dispatch table are keyed by the channel and by the body ref.
 pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     let agent = native_agent();
     let families: Vec<_> = urn::registered_p5_families().collect();
     let aliases: Vec<_> = urn::registered_aliases().collect();
     let p6_families: Vec<_> = urn::registered_p6_families().collect();
+    let p7_families: Vec<_> = urn::registered_p7_families().collect();
     let mut definitions = Vec::with_capacity(
         P4_SYSTEM_CHANNELS.len()
             + families.len()
             + aliases.len()
             + p6_families.len()
-            + P6_PROCESSES.len(),
+            + P6_PROCESSES.len()
+            + p7_families.len(),
     );
     let factory = |family, channel| {
         definition(
@@ -147,6 +150,9 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
         runtime: Arc::clone(runtime),
         agent: Arc::clone(&agent),
     }));
+    for (family, channel) in p7_families {
+        definitions.push(factory(family, channel));
+    }
     definitions
 }
 
@@ -911,7 +917,7 @@ mod tests {
     use crate::rust::interpreter::reified::factory::handle_capability;
     use crate::rust::interpreter::reified::runtime::{native_replay, unavailable};
     use crate::rust::interpreter::reified::system_channels::{
-        P5_SYSTEM_CHANNELS, P6_SYSTEM_CHANNELS,
+        P5_SYSTEM_CHANNELS, P6_SYSTEM_CHANNELS, P7_SYSTEM_CHANNELS,
     };
     use crate::rust::interpreter::spaces::namespace::{self, NameTail, GET_SPACE_AGENT};
 
@@ -933,7 +939,7 @@ mod tests {
         let defined = definitions(&runtime);
         // The four processes of P4 first, then the registered families of P5 in family-index
         // order, then the registered aliases, then the registered families of P6, then the
-        // processes of P6.
+        // processes of P6, then the registered families of P7.
         let p5: Vec<SystemChannel> = urn::registered_p5_families()
             .map(|(_, channel)| channel)
             .chain(urn::registered_aliases().map(|(channel, _)| channel))
@@ -945,11 +951,19 @@ mod tests {
             p6, P6_SYSTEM_CHANNELS,
             "both VectorDB families are registered"
         );
+        let p7: Vec<SystemChannel> = urn::registered_p7_families()
+            .map(|(_, channel)| channel)
+            .collect();
+        assert_eq!(
+            p7, P7_SYSTEM_CHANNELS,
+            "the six HashSet families are registered"
+        );
         let expected: Vec<SystemChannel> = P4_SYSTEM_CHANNELS
             .iter()
             .chain(p5.iter())
             .chain(p6.iter())
             .chain(P6_PROCESSES.iter())
+            .chain(p7.iter())
             .copied()
             .collect();
         assert_eq!(defined.len(), expected.len());

@@ -19,15 +19,16 @@
 //! bag, a set and a VectorDB collection. The records and the join waiter stay, and no COMM
 //! touches either collection. A join for 42 on two fresh names receives 42.
 //!
-//! **Unsupported pairs.** These families reject before any space exists:
+//! **Unsupported pairs.** These pairs reject before any space exists:
 //!
-//! * The six HashSet families (P7, F1), which take only the `seq` qualifier.
 //! * The pairs that the URN grammar refuses: `pathmap:vectordb`, `array:vectordb` and
-//!   `hashset:vectordb`.
-//!
-//! No factory of them is registered, so a Rholang deploy that names one fails at `new` and leaves
-//! no space data. A creation or a stored config that names one fails in the family agent with
-//! `FamilyUnavailable`.
+//!   `hashset:vectordb`. No factory of them is registered, so a Rholang deploy that names one
+//!   fails at `new` and leaves no space data. A creation or a stored config that names one fails
+//!   in the family agent with `FamilyUnavailable`.
+//! * The six HashSet families (P7 step 3, HS-6) with a qualifier other than `seq`: their factory
+//!   refuses `default` and `temp` with `BadConstructorArgument`. Legacy execution also refuses
+//!   `seq` (QT-5), so these suites create no HashSet space. The HashSet rows of the matrix run in
+//!   native execution (step 6 of P7).
 //!
 //! **Qualifiers.** These suites run in legacy execution, which refuses the `seq` qualifier with
 //! `QualifierUnavailable` on every factory of this wave, before the gates of the params (P7,
@@ -596,9 +597,18 @@ async fn pattern_enforcement_hashmap_vectordb_join() {
 
 // ─── The unsupported pairs ───────────────────────────────────────────────────────────────────
 
-/// The unsupported families of this phase: the HashSet families (P7). Their URNs parse, but no
-/// factory is registered.
-fn unsupported_families() -> Vec<SpaceFactoryUrn> {
+// Changed by P7 step 3 (design v3 HS-7): the six HashSet families are registered, so the URN
+// grammar names no unsupported family. A HashSet family refuses only its other qualifiers.
+// /// The unsupported families of this phase: the HashSet families (P7). Their URNs parse, but no
+// /// factory is registered.
+// fn unsupported_families() -> Vec<SpaceFactoryUrn> {
+//     SpaceFactoryUrn::all()
+//         .filter(|family| family.outer == SpaceOuter::HashSet)
+//         .collect()
+// }
+
+/// The six HashSet families (P7), which take only the `seq` qualifier.
+fn hashset_families() -> Vec<SpaceFactoryUrn> {
     SpaceFactoryUrn::all()
         .filter(|family| family.outer == SpaceOuter::HashSet)
         .collect()
@@ -636,20 +646,26 @@ fn unavailable(outer: SpaceOuter, inner: SpaceInner) -> SpaceError {
     }
 }
 
-/// The HashSet families and the pairs that the URN grammar refuses reject before any space
-/// exists, at every layer:
+/// The pairs that the URN grammar refuses, and the HashSet families with a qualifier other than
+/// `seq`, reject before any space exists, at every layer:
 ///
 /// * The URN parser refuses the pairs of [`REFUSED_PAIRS`] with `UnsupportedPair`.
-/// * No unsupported family has a registered factory, a dispatch arm, a send schema or a
-///   constructor schema. So its constructor fails with `FamilyUnavailable` for every qualifier.
-/// * The family agent refuses the creation of each pair with `FamilyUnavailable`, and it stores
-///   nothing. A send on a space whose stored config names the pair fails the same way.
-/// * A Rholang deploy that names the factory of the pair fails at `new`, before any space work,
-///   and leaves no space data.
+/// * Each HashSet family has a registered factory, a dispatch arm, a send schema and a
+///   constructor schema (P7 step 3). Its constructor refuses `default` and `temp` with
+///   `BadConstructorArgument` in both execution models, and legacy execution refuses `seq` with
+///   `QualifierUnavailable` (QT-5).
+/// * The family agent refuses the creation of each refused pair with `FamilyUnavailable`, and it
+///   stores nothing. A send on a space whose stored config names the pair fails the same way.
+/// * A Rholang deploy that names the factory of a refused pair fails at `new`, before any space
+///   work. A legacy deploy that calls a HashSet factory fails with the code of its qualifier. No
+///   deploy leaves space data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pattern_enforcement_unsupported_pairs_reject() {
-    let unsupported = unsupported_families();
-    assert_eq!(unsupported.len(), 6, "six HashSet families");
+    // Changed by P7 step 3 (design v3 HS-7): the HashSet families are registered.
+    // let unsupported = unsupported_families();
+    // assert_eq!(unsupported.len(), 6, "six HashSet families");
+    let hashsets = hashset_families();
+    assert_eq!(hashsets.len(), 6, "six HashSet families");
     for (outer, inner) in REFUSED_PAIRS {
         let urn = format!("rho:space:{}:{}", outer.as_str(), inner.as_str());
         assert_eq!(
@@ -661,12 +677,36 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
             "{urn}"
         );
     }
-    for family in &unsupported {
+    // Changed by P7 step 3 (design v3 HS-7): each HashSet family is registered and refuses only
+    // the qualifiers other than `seq`.
+    // for family in &unsupported {
+    //     assert_eq!(SpaceFactoryUrn::parse(&family.to_string()), Ok(*family));
+    //     assert_eq!(registered_channel(*family), None, "{family}");
+    //     assert_eq!(Family::of_urn(*family), None, "{family}");
+    //     assert_eq!(send_params(*family), None, "{family}");
+    //     assert_eq!(constructor_schema(*family), None, "{family}");
+    //     for qualifier in SpaceQualifier::ALL {
+    //         let ctor = new_elist_par(
+    //             vec![gstring(qualifier.as_str())],
+    //             Vec::new(),
+    //             false,
+    //             None,
+    //             Vec::new(),
+    //             false,
+    //         );
+    //         assert_eq!(
+    //             FactoryConstructor::validate(*family, &ctor),
+    //             Err(unavailable(family.outer, family.inner)),
+    //             "{family} {qualifier}"
+    //         );
+    //     }
+    // }
+    for family in &hashsets {
         assert_eq!(SpaceFactoryUrn::parse(&family.to_string()), Ok(*family));
-        assert_eq!(registered_channel(*family), None, "{family}");
-        assert_eq!(Family::of_urn(*family), None, "{family}");
-        assert_eq!(send_params(*family), None, "{family}");
-        assert_eq!(constructor_schema(*family), None, "{family}");
+        assert!(registered_channel(*family).is_some(), "{family}");
+        assert!(Family::of_urn(*family).is_some(), "{family}");
+        assert!(send_params(*family).is_some(), "{family}");
+        assert!(constructor_schema(*family).is_some(), "{family}");
         for qualifier in SpaceQualifier::ALL {
             let ctor = new_elist_par(
                 vec![gstring(qualifier.as_str())],
@@ -676,21 +716,38 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
                 Vec::new(),
                 false,
             );
-            assert_eq!(
-                FactoryConstructor::validate(*family, &ctor),
-                Err(unavailable(family.outer, family.inner)),
-                "{family} {qualifier}"
-            );
+            for execution in [Execution::Native, Execution::Legacy] {
+                let validated = FactoryConstructor::validate_in(*family, &ctor, execution);
+                match (qualifier, execution) {
+                    (SpaceQualifier::Seq, Execution::Native) => {
+                        assert!(validated.is_ok(), "{family} {qualifier}: {validated:?}")
+                    }
+                    (SpaceQualifier::Seq, Execution::Legacy) => assert_eq!(
+                        validated,
+                        Err(SpaceError::QualifierUnavailable("seq".to_string())),
+                        "{family}"
+                    ),
+                    (SpaceQualifier::Default | SpaceQualifier::Temp, _) => assert_eq!(
+                        validated,
+                        Err(SpaceError::BadConstructorArgument(format!(
+                            "the hashset outer store does not take the {qualifier} qualifier"
+                        ))),
+                        "{family} {qualifier} {execution:?}"
+                    ),
+                }
+            }
         }
     }
 
-    // The family agent refuses the creation of every unsupported pair, and a collection
-    // operation on a space whose stored config names one.
-    let pairs: Vec<(SpaceOuter, SpaceInner)> = unsupported
-        .iter()
-        .map(|family| (family.outer, family.inner))
-        .chain(REFUSED_PAIRS)
-        .collect();
+    // The family agent refuses the creation of every refused pair, and a collection operation on
+    // a space whose stored config names one.
+    // Changed by P7 step 3: the HashSet families have an agent, so only the refused pairs remain.
+    // let pairs: Vec<(SpaceOuter, SpaceInner)> = unsupported
+    //     .iter()
+    //     .map(|family| (family.outer, family.inner))
+    //     .chain(REFUSED_PAIRS)
+    //     .collect();
+    let pairs: Vec<(SpaceOuter, SpaceInner)> = REFUSED_PAIRS.to_vec();
     for (outer, inner) in pairs {
         let family = SpaceFactoryUrn { outer, inner };
         let config = SpaceConfig::new(
@@ -736,16 +793,21 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
         );
     }
 
-    // A Rholang deploy that names an unsupported factory fails at `new`.
+    // A Rholang deploy that names the factory of a refused pair fails at `new`.
     let mut session = Session::new().await;
-    let urns: Vec<String> = unsupported
+    // Changed by P7 step 3: the HashSet factories are registered, see the loop after this one.
+    // let urns: Vec<String> = unsupported
+    //     .iter()
+    //     .map(SpaceFactoryUrn::to_string)
+    //     .chain(
+    //         REFUSED_PAIRS
+    //             .iter()
+    //             .map(|(outer, inner)| format!("rho:space:{}:{}", outer.as_str(), inner.as_str())),
+    //     )
+    //     .collect();
+    let urns: Vec<String> = REFUSED_PAIRS
         .iter()
-        .map(SpaceFactoryUrn::to_string)
-        .chain(
-            REFUSED_PAIRS
-                .iter()
-                .map(|(outer, inner)| format!("rho:space:{}:{}", outer.as_str(), inner.as_str())),
-        )
+        .map(|(outer, inner)| format!("rho:space:{}:{}", outer.as_str(), inner.as_str()))
         .collect();
     for urn in urns {
         for qualifier in ["default", "seq"] {
@@ -765,6 +827,27 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
                 "{urn} {qualifier}: {errors}"
             );
             assert!(deploy.residue.is_empty(), "{urn} {qualifier}");
+        }
+    }
+    // A legacy deploy that calls a HashSet factory fails with the code of its qualifier and
+    // leaves no space data.
+    for family in &hashsets {
+        for (qualifier, code) in [
+            ("default", "BadConstructorArgument"),
+            ("temp", "BadConstructorArgument"),
+            ("seq", "QualifierUnavailable"),
+        ] {
+            let source = format!(
+                r#"new factory(`{family}`) in {{ for (space <- factory!?("{qualifier}")) {{ for (a <- space!?("gensym")) {{ for ( <- a) {{ @"{GOT}"!(["unsupported", 42]) }} | a!() }} }} }}"#
+            );
+            session
+                .fail_with(
+                    &source,
+                    &format!("rrs-n3 hashset {family} {qualifier}"),
+                    &Injections::new(),
+                    &[code],
+                )
+                .await;
         }
     }
     assert!(session.values(GOT).await.is_empty());

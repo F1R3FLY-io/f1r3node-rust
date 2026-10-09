@@ -51,7 +51,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 278: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 279: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -86,8 +86,9 @@
 #                        VectorDbDiscipline.v, 2 for P6 step 8d:
 #                        the headlines of VectorOps.v, 2 for P7 step 1:
 #                        sweep_complete and dead_ephemeral_dangling of
-#                        VolatileSweep.v, and 1 for P7 step 2:
-#                        seq_name_iff of Namespace.v)
+#                        VolatileSweep.v, 1 for P7 step 2:
+#                        seq_name_iff of Namespace.v, and 1 for P7 step
+#                        3: hashset_unit_rules of HashMapStore.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -106,7 +107,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-278}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-279}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -131,7 +132,7 @@ declare -A EXPECTED_PER_MODULE=(
   [GenericRSpace]=5
   [OuterStorage]=8
   [VectorStore]=3
-  [HashMapStore]=2
+  [HashMapStore]=3
   [PathMapPrefix]=17
   [StackDiscipline]=13
   [SetDiscipline]=8

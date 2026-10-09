@@ -434,6 +434,23 @@ A send to a VectorDB collection takes the named param `embedding`, a list of num
 Without it, a payload that is one non-empty list of numbers is the vector of the record ([decision 66](decision-register.md#decision-66)).
 A vector of another length fails with `DimensionMismatch`, and an element that is not finite fails with `NonFiniteValue`.
 
+### HashSet collections at run time
+
+A collection of a HashSet space holds [units](glossary.md#unit), and every HashSet space has the qualifier `"seq"` ([specification 2.7](specification.md#27-hashset)).
+The agent checks each send and each bind before any staging.
+
+| Construct | Meaning | Failure |
+|---|---|---|
+| `x!()`, `x!!()` | Adds a unit, or a persistent unit, to the collection of `x`. | None |
+| `x!(v)`, `x!(Nil)`, `x!!(v)` | None: the message is not empty. | `PayloadNotEmpty` |
+| `S!?("produce", c, [])` | Adds a unit to the collection of `c` through the handle. | None |
+| `S!?("produce", c, [v])` | None: the message is not empty. | `PayloadNotEmpty` |
+| `for ( <- x) P`, `for ( <= x) P`, `for ( <<- x) P` | Takes one unit, takes units persistently, or reads one unit, and waits while the collection holds none. | None |
+| `for (@v <- x) P`, `for (_ <- x) P`, `for (@Nil <- x) P`, `for (...@r <- x) P` | None: the bind has a pattern, a binder or a remainder. | `PatternNotEmpty` |
+| `F!?("default")`, `F!?("temp")`, `F!?()` on a HashSet factory | None: a HashSet space takes only `"seq"`. | `BadConstructorArgument` |
+
+The suite `rholang/tests/reified_hashset.rs` runs each row of the table on the six HashSet families in native execution, and it certifies each deploy by native replay.
+
 ### Queries at run time
 
 A query on a VectorDB collection holds at most one payload element, the query vector, and the named params of the table below.

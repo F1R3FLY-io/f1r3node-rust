@@ -47,7 +47,7 @@
 (* rs = rspace++/src/rspace):                                              *)
 (*   Create               reified/factory.rs:75-121 (the factory call),    *)
 (*                        spaces/types/id.rs:13-22 (derive_space_id),      *)
-(*                        spaces/generic.rs:2677-2795 (prepare_create:     *)
+(*                        spaces/generic.rs:2703-2821 (prepare_create:     *)
 (*                        SpaceAlreadyExists, config, S(sid), handle)      *)
 (*   Call                 reified/handle.rs:221-276 (HandleProcess::       *)
 (*                        call: read_config, DanglingHandle, the method)   *)

@@ -17,7 +17,9 @@
 //!    than `[D(sid,k)]` runs the steps below. Every other operation, a join and a settle with a
 //!    cascade run in the join engine of P5c (`spaces::join`), which escalates the locks to the
 //!    join closure first ([`prepare_collection_op`]).
-//! 4. Before any staging, check the routed key with the outer store (`OuterStore::check_key`).
+//! 4. Before any staging, check the routed key with the outer store (`OuterStore::check_key`),
+//!    and the payload of a send or the pattern of a receive (`OuterStore::check_payload`,
+//!    `OuterStore::check_patterns`: the unit rules of a HashSet store, P7 HS-2 and HS-3).
 //!    Then check the named params and the query with the schema of `D`: the keys
 //!    (`UnknownParam`), a query that `D` does not take (`QuerySpecUnsupported`), and the values
 //!    (`Discipline::check_values`).
@@ -186,6 +188,25 @@ pub trait OuterStore: Default + Send + Sync + 'static {
         _key: &CollectionKey,
         _meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
+        Ok(())
+    }
+
+    /// Checks the payload `data` of a send to a collection of the store, before any staging. A
+    /// HashSet collection holds units, so the HashSet store accepts only the empty payload
+    /// (`PayloadNotEmpty`, P7 HS-2). The default accepts every payload and does no work.
+    fn check_payload(
+        &self,
+        _data: &ListParWithRandom,
+        _meter: &ScanMeter,
+    ) -> Result<(), SpaceError> {
+        Ok(())
+    }
+
+    /// Checks the pattern `pattern` of a receive bind on a collection of the store, before any
+    /// staging. A HashSet receive takes a unit, so the HashSet store accepts only the empty
+    /// pattern list, with no binder and no remainder (`PatternNotEmpty`, P7 HS-3). The default
+    /// accepts every pattern and does no work.
+    fn check_patterns(&self, _pattern: &BindPattern, _meter: &ScanMeter) -> Result<(), SpaceError> {
         Ok(())
     }
 
@@ -2368,6 +2389,11 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             }
         };
         self.outer.check_key(&config, channel, key, meter)?;
+        match &op {
+            SpaceOp::Produce(op) => self.outer.check_payload(&op.data, meter)?,
+            SpaceOp::Consume(op) => self.outer.check_patterns(&op.pattern, meter)?,
+            SpaceOp::Settle(_) | SpaceOp::Join(_) => {}
+        }
         self.check_params(&config, params, query, meter)?;
         // SQ-3: a program operation on a `seq` space claims its own collection first, as the
         // home of its datum or as the channel of its waiter. A settle job is internal.
@@ -6065,6 +6091,142 @@ mod tests {
         assert_eq!(runs[0], runs[1]);
     }
 
+    /// HS-2 to HS-5 through the family agent (P7 step 3). A send with a payload fails with
+    /// `PayloadNotEmpty`, and a receive with a pattern fails with `PatternNotEmpty`. Both fail
+    /// before any staging: the store logs no event and holds no record and no waiter. Units then
+    /// follow the discipline of the family: the queue takes its oldest unit and the stack its
+    /// newest, by the `ord` of the envelopes, the bag counts its units, the set retires every
+    /// equal unit at once, and the cell holds one. The factory gives every HashSet space the
+    /// qualifier `seq`. The store rules do not depend on the qualifier, so this test uses a
+    /// durable config and needs no operation order.
+    #[tokio::test]
+    async fn space_engine_hashset_families_take_units_only() {
+        fn unit(n: i64) -> ProduceOp {
+            let sent = send(n);
+            ProduceOp {
+                data: ListParWithRandom {
+                    pars: Vec::new(),
+                    ..sent.data.clone()
+                },
+                ..sent
+            }
+        }
+        fn take(name: &str) -> ConsumeOp {
+            receive(name, BindPattern {
+                patterns: Vec::new(),
+                remainder: None,
+                free_count: 0,
+            })
+        }
+        async fn hashset(inner: SpaceInner) -> Fixture {
+            let space = play().await;
+            let env = env_over(space.clone(), &budget());
+            let family = SpaceFactoryUrn {
+                outer: SpaceOuter::HashSet,
+                inner,
+            };
+            FamilyAgent
+                .prepare_create(&env, SpaceCreation {
+                    family,
+                    ..creation(config_of("hashset", inner.as_str()))
+                })
+                .await
+                .expect("the creation stages")
+                .commit()
+                .await
+                .expect("the creation commits");
+            space.take_event_log().await;
+            Fixture { space, env }
+        }
+        let ords = |records: Vec<(i64, Vec<Par>, bool)>| -> Vec<i64> {
+            assert!(
+                records.iter().all(|(_, payload, _)| payload.is_empty()),
+                "{records:?}"
+            );
+            records.into_iter().map(|(ord, _, _)| ord).collect()
+        };
+        for inner in [
+            SpaceInner::Bag,
+            SpaceInner::Queue,
+            SpaceInner::Stack,
+            SpaceInner::Set,
+            SpaceInner::Cell,
+            SpaceInner::PriorityQueue,
+        ] {
+            let Fixture { space, env } = hashset(inner).await;
+            assert_eq!(
+                run_op(&FamilyAgent, &env, SpaceOp::Produce(send(1))).await,
+                Err(SpaceError::PayloadNotEmpty),
+                "{inner:?}"
+            );
+            for pattern in [any(), exactly(1)] {
+                assert_eq!(
+                    run_op(&FamilyAgent, &env, SpaceOp::Consume(receive("w", pattern))).await,
+                    Err(SpaceError::PatternNotEmpty),
+                    "{inner:?}"
+                );
+            }
+            assert!(space.take_event_log().await.is_empty(), "{inner:?}");
+            assert!(records(&space).await.is_empty(), "{inner:?}");
+            assert!(waiters_on(&space, &channel()).await.is_empty(), "{inner:?}");
+            // A unit receive on an empty collection waits, and a unit send fires it.
+            let parked = run_op(&FamilyAgent, &env, SpaceOp::Consume(take("t")))
+                .await
+                .expect("a unit receive parks");
+            assert!(parked.fires.is_empty(), "{inner:?}");
+            assert_eq!(waiters_on(&space, &channel()).await.len(), 1, "{inner:?}");
+            let fired = run_op(&FamilyAgent, &env, SpaceOp::Produce(unit(1)))
+                .await
+                .expect("a unit send fires the waiter");
+            assert_eq!(fired.fires.len(), 1, "{inner:?}");
+            assert!(records(&space).await.is_empty(), "{inner:?}");
+            assert!(waiters_on(&space, &channel()).await.is_empty(), "{inner:?}");
+        }
+        // The queue takes its oldest unit, and the stack its newest.
+        for (inner, taken) in [(SpaceInner::Queue, 0), (SpaceInner::Stack, 2)] {
+            let Fixture { space, env } = hashset(inner).await;
+            for n in 0..3 {
+                run_op(&FamilyAgent, &env, SpaceOp::Produce(unit(n)))
+                    .await
+                    .expect("a unit send stores");
+            }
+            let stored = ords(records(&space).await);
+            assert_eq!(stored.len(), 3, "{inner:?}");
+            let fired = run_op(&FamilyAgent, &env, SpaceOp::Consume(take("t")))
+                .await
+                .expect("a unit receive fires");
+            assert_eq!(fired.fires.len(), 1, "{inner:?}");
+            let mut rest = stored.clone();
+            rest.remove(taken);
+            assert_eq!(ords(records(&space).await), rest, "{inner:?}");
+        }
+        // The bag counts its units, and the set keeps one unit class: one receive retires both
+        // equal units.
+        for (inner, left) in [(SpaceInner::Bag, 1), (SpaceInner::Set, 0)] {
+            let Fixture { space, env } = hashset(inner).await;
+            for n in 0..2 {
+                run_op(&FamilyAgent, &env, SpaceOp::Produce(unit(n)))
+                    .await
+                    .expect("a unit send stores");
+            }
+            run_op(&FamilyAgent, &env, SpaceOp::Consume(take("t")))
+                .await
+                .expect("a unit receive fires");
+            assert_eq!(records(&space).await.len(), left, "{inner:?}");
+        }
+        // The cell holds one unit.
+        let Fixture { space, env } = hashset(SpaceInner::Cell).await;
+        run_op(&FamilyAgent, &env, SpaceOp::Produce(unit(0)))
+            .await
+            .expect("the first unit stores");
+        space.take_event_log().await;
+        assert_eq!(
+            run_op(&FamilyAgent, &env, SpaceOp::Produce(unit(1))).await,
+            Err(SpaceError::CellOccupied)
+        );
+        assert_eq!(records(&space).await.len(), 1);
+    }
+
     #[tokio::test]
     async fn space_engine_family_agent_rejects_a_family_that_is_not_wired() {
         let random = Blake2b512Random::create_from_bytes(b"config");
@@ -6095,11 +6257,30 @@ mod tests {
         // A creation goes to the agent of the family of its factory, which checks the config.
         let fresh = play().await;
         let env = env_over(fresh.clone(), &budget());
-        // HashSet is wired in P7, so its factory has no agent yet.
+        // Changed by P7 step 3 (design v3 HS-7): HashSet is wired, so every family has an
+        // agent. A creation whose family pair is no family, which no factory can send, has none.
+        // // HashSet is wired in P7, so its factory has no agent yet.
+        // let unwired_factory = SpaceCreation {
+        //     family: SpaceFactoryUrn {
+        //         outer: SpaceOuter::HashSet,
+        //         inner: SpaceInner::Set,
+        //     },
+        //     ..creation(config())
+        // };
+        // assert_eq!(
+        //     FamilyAgent
+        //         .prepare_create(&env, unwired_factory)
+        //         .await
+        //         .err(),
+        //     Some(SpaceError::FamilyUnavailable {
+        //         outer: "hashset".to_string(),
+        //         inner: "set".to_string(),
+        //     })
+        // );
         let unwired_factory = SpaceCreation {
             family: SpaceFactoryUrn {
                 outer: SpaceOuter::HashSet,
-                inner: SpaceInner::Set,
+                inner: SpaceInner::VectorDb,
             },
             ..creation(config())
         };
@@ -6110,7 +6291,7 @@ mod tests {
                 .err(),
             Some(SpaceError::FamilyUnavailable {
                 outer: "hashset".to_string(),
-                inner: "set".to_string(),
+                inner: "vectordb".to_string(),
             })
         );
         let mislabeled = SpaceCreation {

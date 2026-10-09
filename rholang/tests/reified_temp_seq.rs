@@ -15,7 +15,7 @@
 //! | `reified_ephemeral_dangling_charge_is_fixed` | The failing deploy costs the same phlo whatever the dead space held (DG-4). |
 //! | `reified_ephemeral_cost_charged` | A `temp` program pays phlo, and it emits as many produce, consume and COMM events as the same program with `default` (QT-3). |
 //! | `reified_sweep_runs_at_each_entry_point_native` | Native play, native replay and the exploratory entry `RhoRuntime::inj` sweep. The unit tests `reified_sweep_runs_at_each_entry_point_*` of the reducer hooks cover `inj`, `inj_with_observation` and `inj_with_host_work` directly. |
-//! | `reducer_qualifier_matrix` | In native execution the factories accept `default`, `temp` and `seq` on every family with a schema. Legacy execution refuses `seq` with `QualifierUnavailable` (QT-5). A `temp` or `seq` space takes no `mirror` (`InvalidParam`). The HashSet families have no factory yet (F1). |
+//! | `reducer_qualifier_matrix` | In native execution the factories accept `default`, `temp` and `seq` on every family with a schema but HashSet. A HashSet factory takes only `seq` and refuses `default` and `temp` with `BadConstructorArgument` (HS-6). Legacy execution refuses `seq` with `QualifierUnavailable` (QT-5). A `temp` or `seq` space takes no `mirror` (`InvalidParam`). |
 //! | `reified_handle_qualifier_method_temp_seq` | The handle method `qualifier` of a `temp` space replies `"temp"`, and of a `seq` space `"seq"`. |
 //! | `reified_fips_example_temp_pathmap` | The example code of the FIPS with a `temp` PathMap space: names of both spaces in one `new`, a forged name in `use`, a same-space join and a sequential receive, `getSpaceAgent` and `assertEqual`. The handles name the same spaces inside and outside the `new` block, the deploy certifies, and the sweep removes the `temp` space. |
 //! | `prop_sweep_complete` | For generated `temp` programs of every family with extra stores and waiters, the hot store holds no volatile channel after the deploy, on the `Ok` and the `Err` path, and native replay reproduces the play. The property runs with a host-work budget above the v6 limits (`sweep_host_work`). |
@@ -453,7 +453,40 @@ fn reducer_qualifier_matrix() {
             );
             continue;
         };
-        assert!(!matches!(family.outer, SpaceOuter::HashSet), "{family}");
+        // Changed by P7 step 3 (design v3 HS-6, HS-7): the HashSet families have a schema and take
+        // only `seq`, in native execution.
+        // assert!(!matches!(family.outer, SpaceOuter::HashSet), "{family}");
+        if matches!(family.outer, SpaceOuter::HashSet) {
+            let validated =
+                FactoryConstructor::validate(family, &constructor(family, "seq", Vec::new()))
+                    .unwrap_or_else(|error| panic!("{family} seq: {error:?}"));
+            assert_eq!(validated.qualifier, SpaceQualifier::Seq, "{family}");
+            for execution in [Execution::Native, Execution::Legacy] {
+                for qualifier in ["default", "temp"] {
+                    assert_eq!(
+                        FactoryConstructor::validate_in(
+                            family,
+                            &constructor(family, qualifier, Vec::new()),
+                            execution
+                        ),
+                        Err(SpaceError::BadConstructorArgument(format!(
+                            "the hashset outer store does not take the {qualifier} qualifier"
+                        ))),
+                        "{family} {qualifier} {execution:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                FactoryConstructor::validate_in(
+                    family,
+                    &constructor(family, "seq", Vec::new()),
+                    Execution::Legacy
+                ),
+                Err(SpaceError::QualifierUnavailable("seq".to_string())),
+                "{family}"
+            );
+            continue;
+        }
         // Changed by P7 step 2 (design v3 QT-5): native execution accepts `seq`.
         // for (qualifier, expected) in [
         //     ("default", SpaceQualifier::Default),

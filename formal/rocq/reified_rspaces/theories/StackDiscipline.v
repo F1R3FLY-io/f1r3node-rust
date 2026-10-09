@@ -85,7 +85,7 @@
                              and Top::challenge)
    reenter_offer,            spaces/disciplines/stack.rs:96, 99-108
    reenter_receive           (reaches_head is true, precedes is ord > head)
-                             and spaces/generic.rs:923-944 (Cx::at_head)
+                             and spaces/generic.rs:944-965 (Cx::at_head)
    after_fire, cap           reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP,
                              FireRounds::after_fire)
    next_fire                 spaces/disciplines/stack.rs:159-212
@@ -103,26 +103,26 @@
                              starts the count at 0 (the settle before the
                              plan and a settle job). settle_at continues
                              the count (the settle after the plan).
-   fires (the fire count)    spaces/generic.rs:686, 751 and 2400
+   fires (the fire count)    spaces/generic.rs:707, 772 and 2426
                              (Plan.rounds, Cx::rounds, and the new
                              FireRounds of each transaction in run_with)
-   plan_at_cap               spaces/generic.rs:1535-1548 (open_plan: the
+   plan_at_cap               spaces/generic.rs:1556-1569 (open_plan: the
                              settle before the plan, then the cap check of
                              the transaction)
-   offer_loop                spaces/generic.rs:1556-1623 (offer_head)
-   receive_loop,             spaces/generic.rs:1632-1716 and 1719-1728
+   offer_loop                spaces/generic.rs:1577-1644 (offer_head)
+   receive_loop,             spaces/generic.rs:1653-1737 and 1740-1749
    consume_fire              (receive_head and restore_peeked: the plain
                              re-store of a peeked record, Rule E)
-   with_settles              spaces/generic.rs:1535-1548, 1556-1623 and
-                             1600-1684 (open_plan and the settle hooks
+   with_settles              spaces/generic.rs:1556-1569, 1577-1644 and
+                             1621-1705 (open_plan and the settle hooks
                              around the plans) and
                              spaces/disciplines/stack.rs:112-138
    carried, next_round       spaces/settle.rs:643-675 and 681-705
                              (reissued_operation: persistent.then(first-
                              round order), and settle_operation) and
-                             spaces/generic.rs:1615, 1708 (the re-issue of
+                             spaces/generic.rs:1636, 1729 (the re-issue of
                              a plan)
-   produce, consume,         spaces/generic.rs:2328-2487 (run_with of
+   produce, consume,         spaces/generic.rs:2349-2513 (run_with of
    bumped, bump_ord          FamilySpace: the bump, then the plan) and
                              spaces/counter.rs:165-245 (bump)
    apply, run                the staged view of the substrate
@@ -138,7 +138,7 @@
                              StackDiscipline.tla (no settle hooks)
    scan, settle_round,       spaces/disciplines/stack.rs:159-212,
    settle_trace              spaces/settle.rs:404-498 and 519-563, and
-                             spaces/generic.rs:854-882 (the scans of the
+                             spaces/generic.rs:875-903 (the scans of the
                              two tops, the payload decode, the metered
                              match, the copies of the plan and of the
                              lift, the prepaid unwrap, the re-offer)
