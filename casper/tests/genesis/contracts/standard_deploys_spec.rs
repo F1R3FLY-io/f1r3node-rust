@@ -10,6 +10,8 @@ use models::rhoapi::{Expr, Par};
 use models::rust::utils::{new_etuple_par, new_gint_par};
 use prost::Message;
 
+use crate::util::genesis_builder::GenesisBuilder;
+
 #[test]
 fn should_print_public_keys_used_for_signing_standard_blessed_contracts() {
     println!("Public keys used to sign standard (blessed) contracts");
@@ -30,6 +32,34 @@ fn versioned_registry_embedded_source_compiles() {
     // invokes `CompiledRholangSource::new` and panics on a parse/normalize
     // error. A clean return here is the check.
     let _ = standard_deploys::versioned_registry("root");
+}
+
+/// Parse/normalize check on the SystemVault.rho embedded constant.
+/// Same shape as the versioned_registry sibling test: a clean return
+/// is the check; a parse/normalize error panics inside
+/// `standard_deploys::system_vault` via `embedded_source`.
+#[test]
+fn system_vault_embedded_source_compiles() { let _ = standard_deploys::system_vault("root"); }
+
+/// Parse/normalize check on the pos_generator embedded template.
+/// Threads through a default-parameters ProofOfStake so the template
+/// substitutions (validators, bonds, epoch_length, …) all land on
+/// valid Rholang terms.
+#[test]
+fn proof_of_stake_embedded_template_compiles() {
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let _ = standard_deploys::pos_generator(&parameters.2.proof_of_stake, "root");
+}
+
+/// Parse/normalize check on the slice-19 FsGenesis composed source.
+/// This runs the same compile path as genesis: assembles the library
+/// bodies, injects the deterministic signature, and normalizes.  A
+/// syntax break in File.rho / Dir.rho / Stream.rho / Buffer.rho /
+/// Stdin.rho / Stdout.rho / Fs.rho — or in the composition template
+/// itself — fails here.
+#[test]
+fn fs_generator_embedded_source_compiles() {
+    let _ = standard_deploys::fs_generator("root", &[], None);
 }
 
 /// Byte-anchor the fs_generator deploy's signed-registry signature.
