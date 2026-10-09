@@ -516,25 +516,27 @@ impl WebApi for WebApiImpl {
 
     async fn last_finalized_block(&self, view: ViewMode) -> Result<BlockInfoSerde> {
         let block_info = BlockAPI::last_finalized_block(&self.engine_cell).await?;
-        let mut serde = BlockInfoSerde::from(block_info);
-        if view == ViewMode::Full {
-            let block_hash = serde.block_info.block_hash.clone();
-            self.enrich_transfers(&mut serde, block_hash).await;
-        } else {
-            serde.deploys = None;
+        if view == ViewMode::Summary {
+            return Ok(BlockInfoSerde::from_light(
+                block_info.block_info.unwrap_or_default().into(),
+            ));
         }
+        let mut serde = BlockInfoSerde::try_from(block_info)?;
+        let block_hash = serde.block_info.block_hash.clone();
+        self.enrich_transfers(&mut serde, block_hash).await;
         Ok(serde)
     }
 
     async fn get_block(&self, hash: String, view: ViewMode) -> Result<BlockInfoSerde> {
         let block_info = BlockAPI::get_block(&self.engine_cell, &hash).await?;
-        let mut serde = BlockInfoSerde::from(block_info);
-        if view == ViewMode::Full {
-            let block_hash = serde.block_info.block_hash.clone();
-            self.enrich_transfers(&mut serde, block_hash).await;
-        } else {
-            serde.deploys = None;
+        if view == ViewMode::Summary {
+            return Ok(BlockInfoSerde::from_light(
+                block_info.block_info.unwrap_or_default().into(),
+            ));
         }
+        let mut serde = BlockInfoSerde::try_from(block_info)?;
+        let block_hash = serde.block_info.block_hash.clone();
+        self.enrich_transfers(&mut serde, block_hash).await;
         Ok(serde)
     }
 
@@ -543,7 +545,10 @@ impl WebApi for WebApiImpl {
             let blocks =
                 BlockAPI::get_blocks_full(&self.engine_cell, depth, self.api_max_blocks_limit)
                     .await?;
-            Ok(blocks.into_iter().map(BlockInfoSerde::from).collect())
+            Ok(blocks
+                .into_iter()
+                .map(BlockInfoSerde::try_from)
+                .collect::<Result<Vec<_>, _>>()?)
         } else {
             let blocks =
                 BlockAPI::get_blocks(&self.engine_cell, depth, self.api_max_blocks_limit).await?;
@@ -603,16 +608,18 @@ impl WebApi for WebApiImpl {
 
         let deploys = block_info
             .deploys
-            .as_ref()
             .ok_or_else(|| eyre!("Block {} returned without deploys", light_block.block_hash))?;
 
-        let deploy = deploys.iter().find(|d| d.sig == deploy_id).ok_or_else(|| {
-            eyre!(
-                "Deploy {} found in block {} but not in deploy list",
-                deploy_id,
-                light_block.block_hash
-            )
-        })?;
+        let deploy = deploys
+            .into_iter()
+            .find(|d| d.sig == deploy_id)
+            .ok_or_else(|| {
+                eyre!(
+                    "Deploy {} found in block {} but not in deploy list",
+                    deploy_id,
+                    light_block.block_hash
+                )
+            })?;
 
         let is_full = view == ViewMode::Full;
         let finalization = BlockAPI::deploy_finalization_status_with_known_block(
@@ -672,6 +679,11 @@ impl WebApi for WebApiImpl {
             } else {
                 None
             },
+            parameters: if is_full {
+                deploy.parameters
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -708,7 +720,10 @@ impl WebApi for WebApiImpl {
                 self.api_max_blocks_limit,
             )
             .await?;
-            Ok(blocks.into_iter().map(BlockInfoSerde::from).collect())
+            Ok(blocks
+                .into_iter()
+                .map(BlockInfoSerde::try_from)
+                .collect::<Result<Vec<_>, _>>()?)
         } else {
             let blocks = BlockAPI::get_blocks_by_heights(
                 &self.engine_cell,
@@ -1504,6 +1519,12 @@ pub struct DeployResponse {
     pub valid_after_block_number: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transfers: Option<Vec<TransferInfoSerde>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "models::rust::deploy_parameters::deserialize_parameters"
+    )]
+    pub parameters: Vec<models::rust::deploy_parameters::DeployParameter>,
 }
 
 /// View mode for deploy lookups.
@@ -2117,6 +2138,7 @@ mod tests {
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
             transfers: Some(vec![]),
+            parameters: Vec::new(),
         };
 
         let json = serde_json::to_value(&response).unwrap();
@@ -2133,6 +2155,11 @@ mod tests {
         assert!(json.get("phloPrice").is_some());
         assert!(json.get("phloLimit").is_some());
         assert!(json.get("transfers").is_some());
+        assert!(json.get("parameters").is_none());
+        assert!(serde_json::from_value::<DeployResponse>(json)
+            .unwrap()
+            .parameters
+            .is_empty());
     }
 
     #[test]
@@ -2155,6 +2182,7 @@ mod tests {
             sig_algorithm: None,
             valid_after_block_number: None,
             transfers: None,
+            parameters: Vec::new(),
         };
 
         let json = serde_json::to_value(&response).unwrap();
@@ -2175,6 +2203,7 @@ mod tests {
         assert!(json.get("sigAlgorithm").is_none());
         assert!(json.get("validAfterBlockNumber").is_none());
         assert!(json.get("transfers").is_none());
+        assert!(json.get("parameters").is_none());
     }
 
     #[test]

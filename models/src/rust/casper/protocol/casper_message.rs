@@ -1078,6 +1078,13 @@ impl ProcessedDeploy {
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
             transfers: Vec::new(),
             transfers_available: false,
+            parameters: self
+                .deploy
+                .data
+                .parameters
+                .iter()
+                .map(|p| p.to_proto())
+                .collect(),
         }
     }
 
