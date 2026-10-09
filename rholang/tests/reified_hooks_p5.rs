@@ -956,15 +956,17 @@ async fn native_replay(
 
 /// Decision 47: native execution runs the allocation job of `new` in a `use` block. The handle
 /// names a missing space, so the job fails with `DanglingHandle` in native play, after the read
-/// of the config and before any staged operation. Native replay reproduces the failure: the
-/// same error, a complete journal and the phlo usage of play. The same `use` block without
-/// `new` makes no space entry, so it plays natively without an error.
+/// of the config and before any staged operation. Since P7 (DG-3), the error names the space id
+/// of the handle. Native replay reproduces the failure: the same error, a complete journal and
+/// the phlo usage of play. The same `use` block without `new` makes no space entry, so it plays
+/// natively without an error.
 #[tokio::test]
 async fn hooks_new_in_use_native_play_and_replay_agree() {
     let played = native_play(NATIVE_NEW_IN_USE).await;
-    assert_eq!(played.result.errors, vec![InterpreterError::ReduceError(
-        "reified:DanglingHandle: the space of this handle does not exist".to_owned(),
-    )]);
+    assert_eq!(played.result.errors, vec![InterpreterError::ReduceError(format!(
+        "reified:DanglingHandle: the space {} of this handle does not exist",
+        "5a".repeat(32)
+    ))]);
     assert_eq!(
         played.space_channels, 0,
         "native play stored no record on a channel of a space"

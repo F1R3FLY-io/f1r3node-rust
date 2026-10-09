@@ -99,6 +99,7 @@ where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> +
         store: SpaceStoreHandle::new(host),
         budget: budget.clone(),
         meter: ScanMeter::new(None),
+        volatile: Default::default(),
     }
 }
 
@@ -109,6 +110,7 @@ where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> +
         store: SpaceStoreHandle::new(host),
         budget: budget.clone(),
         meter: ScanMeter::new(Some(host_work.clone())),
+        volatile: Default::default(),
     }
 }
 

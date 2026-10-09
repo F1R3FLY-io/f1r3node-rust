@@ -85,6 +85,12 @@
                               root_leaf_records
    lockstep                   the joins invariant of the hot store (H7 of
                               EventCorrelation.v)
+   Txn, covers, book          P7: spaces/agent.rs SpaceEnv::begin (the lock
+                              keys), spaces/ephemeral.rs VolatileRegistry::
+                              record_locked and take_channels
+   ephemeral                  spaces/ephemeral.rs ephemeral_space
+   check_live, Liveness       reified/runtime.rs ReifiedRuntime::check_live
+                              and check_live_space (DG-1)
 
    ─────────────────────────────────────────────────────────────────────────
    Modeling notes
@@ -154,6 +160,15 @@
                                    FR-1' the sorted list is the unique
                                    canonical member of its permutation class,
                                    also with repeated channels
+   P7-1 sweep_complete            the book of a root evaluation holds every
+                                   volatile channel that a transaction staged
+                                   (the lock keys cover the staged channels,
+                                   readiness review S2), so the sweep of the
+                                   book leaves no volatile record, join entry
+                                   or waiting continuation (design v3 VR-2)
+   P7-2 dead_ephemeral_dangling   a space of another deploy is never live in
+                                   this evaluation (I-19), so its ids fail
+                                   before any job (design v3 DG-1)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables become universally quantified parameters of the closed
@@ -1664,6 +1679,101 @@ Proof.
   exact sorted_keys_injective.
 Qed.
 
+(* ══════════ P7: the book of a root evaluation (design v3 VR-1, VR-2, DG-1) ══════════ *)
+
+(* A committed transaction of a space job: its lock keys (SpaceEnv::begin) and the channels
+   whose records, waiting continuations or join entries it stages (Prepared::commit). *)
+Record Txn := mkTxn { txn_locks : list Chan; txn_staged : list Chan }.
+
+(* Readiness review S2 and FR-4: the lock keys of a transaction hold every channel that it
+   stages. *)
+Definition covers (t : Txn) : Prop := forall c, In c (txn_staged t) -> In c (txn_locks t).
+
+(* A space-scoped id with an ephemeral KIND (spaces/ephemeral.rs, ephemeral_space). *)
+Variable ephemeral : Chan -> bool.
+
+(* SpaceEnv::begin records the volatile lock keys of each transaction of the root evaluation
+   (VolatileRegistry::record_locked), and the sweep takes them all (take_channels). *)
+Definition book (ts : list Txn) : list Chan :=
+  flat_map (fun t => filter ephemeral (txn_locks t)) ts.
+
+Lemma book_holds_staged :
+  forall ts t c,
+    Forall covers ts -> In t ts -> In c (txn_staged t) -> ephemeral c = true ->
+    In c (book ts).
+Proof.
+  intros ts t c Hcov Ht Hc He. unfold book. apply in_flat_map. exists t.
+  split; [exact Ht |]. apply filter_In. split; [| exact He].
+  rewrite Forall_forall in Hcov. exact (Hcov t Ht c Hc).
+Qed.
+
+(* P7-1 sweep_complete: when the lock keys of every transaction of the evaluation hold its
+   staged channels, the sweep of the book leaves no record and no join entry on any volatile
+   channel that a transaction staged, and no waiting continuation on any group with a channel
+   of the book. *)
+Theorem sweep_complete :
+  forall ts T installed S,
+    Forall covers ts -> lockstep S ->
+    validate T installed (nodup chan_eq_dec (book ts))
+      (groups S (nodup chan_eq_dec (book ts))) = true ->
+    exists S',
+      sweep_volatile T installed S (book ts) = Some S' /\
+      (forall t c, In t ts -> In c (txn_staged t) -> ephemeral c = true ->
+         hs_data S' c = [] /\ hs_joins S' c = []) /\
+      (forall g c, In c g -> In c (book ts) -> hs_conts S' g = []).
+Proof.
+  intros ts T installed S Hcov Hlock Hval.
+  pose proof (sweep_exact T installed S (book ts)) as Hexact. cbv zeta in Hexact.
+  destruct Hexact as [_ [Ht _]].
+  destruct (Ht Hval) as [S' [Hsw [Hdata [Hconts [_ [Hconts_out _]]]]]].
+  exists S'. split; [exact Hsw |]. split.
+  - intros t c Ht' Hc He. apply Hdata. exact (book_holds_staged ts t c Hcov Ht' Hc He).
+  - intros g c Hcg Hcb.
+    destruct (in_dec lc_eq_dec g (groups S (nodup chan_eq_dec (book ts)))) as [Hin | Hout].
+    + exact (Hconts g Hin).
+    + rewrite (Hconts_out g Hout).
+      destruct (hs_conts S g) as [| w l] eqn:E; [reflexivity |].
+      exfalso. apply Hout.
+      apply (in_groups_joins S (nodup chan_eq_dec (book ts)) c g).
+      * apply (proj2 (nodup_In chan_eq_dec (book ts) c)). exact Hcb.
+      * apply (proj2 (Hlock c g)). split; [exact Hcg |].
+        rewrite E. intro Habs. discriminate Habs.
+Qed.
+
+(* DG-1: the ephemeral spaces that the root evaluation created. The factory records a space
+   after its creation commits (VolatileRegistry::record_space). *)
+Variable Space : Type.
+Variable space_eq_dec : forall x y : Space, {x = y} + {x <> y}.
+
+Inductive Liveness := Live | Dangling.
+
+(* ReifiedRuntime::check_live_space and check_live: an ephemeral space that the book does
+   not hold fails before any job. *)
+Definition check_live (created : list Space) (s : Space) : Liveness :=
+  if in_dec space_eq_dec s created then Live else Dangling.
+
+(* P7-2 dead_ephemeral_dangling: I-19 derives a space id from the message that created the
+   space, so the spaces of two deploys are disjoint. A space of another deploy is then never
+   live in this one, and the check is live exactly for the spaces that this evaluation
+   created. *)
+Theorem dead_ephemeral_dangling :
+  forall (created other : list Space) s,
+    (forall x, In x created -> ~ In x other) ->
+    In s other ->
+    check_live created s = Dangling /\
+    (forall s', check_live created s' = Live <-> In s' created).
+Proof.
+  intros created other s Hdisj Hs. split.
+  - unfold check_live. destruct (in_dec space_eq_dec s created) as [Hin | _]; [| reflexivity].
+    exfalso. exact (Hdisj s Hin Hs).
+  - intros s'. unfold check_live.
+    destruct (in_dec space_eq_dec s' created) as [Hin | Hout]; split; intro H.
+    + exact Hin.
+    + reflexivity.
+    + discriminate H.
+    + contradiction.
+Qed.
+
 End Sweep.
 
 (* ═══════════ The premises of H15, H18 and H22 are satisfiable ════════════ *)
@@ -1750,3 +1860,5 @@ Print Assumptions sweep_root_neutral.
 Print Assumptions leaf_count_is_length.
 Print Assumptions canonical_reads_root_neutral.
 Print Assumptions checkpoint_rejects_duplicate_key_actions.
+Print Assumptions sweep_complete.
+Print Assumptions dead_ephemeral_dangling.

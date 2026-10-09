@@ -1485,12 +1485,12 @@ pub fn peek_set_all(n: usize, meter: &ScanMeter) -> Result<BTreeSet<i32>, SpaceE
 
 /// The error of a missing config record: `DanglingName` for a space name and `DanglingHandle`
 /// for every other channel. The read of the id of `channel` is reserved first.
-fn missing_config(channel: &Par, meter: &ScanMeter) -> SpaceError {
+fn missing_config(channel: &Par, space: NativeSpace, meter: &ScanMeter) -> SpaceError {
     match meter.inspect(channel) {
         Err(error) => error.into(),
         Ok(()) => match namespace::reified_id_of(channel) {
-            Some(ReifiedId::Name(..)) => SpaceError::DanglingName,
-            _ => SpaceError::DanglingHandle,
+            Some(ReifiedId::Name(..)) => SpaceError::DanglingName { space: space.sid },
+            _ => SpaceError::DanglingHandle { space: space.sid },
         },
     }
 }
@@ -1914,7 +1914,7 @@ pub async fn begin_collection<S: OuterStore>(
         &mut txn,
         channels.config(),
         space,
-        || missing_config(channel, meter),
+        || missing_config(channel, space, meter),
         meter,
     )?;
     Ok(CollectionTxn {
@@ -2050,7 +2050,7 @@ pub async fn begin_join<S: OuterStore>(
         &mut txn,
         channels.config(),
         op.space,
-        || missing_config(&first.channel, meter),
+        || missing_config(&first.channel, op.space, meter),
         meter,
     )?;
     Ok(CollectionTxn {
@@ -2116,7 +2116,7 @@ pub async fn begin_allocation(
         &mut txn,
         &config_channel,
         space,
-        || SpaceError::DanglingHandle,
+        || SpaceError::DanglingHandle { space: space.sid },
         meter,
     )?;
     Ok(AllocationTxn {
@@ -2138,7 +2138,7 @@ pub async fn read_config_map(env: &SpaceEnv, space: NativeSpace) -> Result<Par, 
         &mut txn,
         &channel,
         space,
-        || SpaceError::DanglingHandle,
+        || SpaceError::DanglingHandle { space: space.sid },
         meter,
     )?;
     Ok(meter.copy(map)?)
@@ -2805,6 +2805,7 @@ mod tests {
             store: SpaceStoreHandle::new(host),
             budget: budget.clone(),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         }
     }
 
@@ -3233,7 +3234,7 @@ mod tests {
         assert!(space.get_data(channels().config()).await.is_empty());
         assert_eq!(
             Queue::default().read_config(&env, SPACE).await,
-            Err(SpaceError::DanglingHandle)
+            Err(SpaceError::DanglingHandle { space: SPACE.sid })
         );
     }
 
@@ -4145,23 +4146,26 @@ mod tests {
         for (op, expected) in [
             (
                 SpaceOp::Produce(send_on(&name, 1, false)),
-                SpaceError::DanglingName,
+                SpaceError::DanglingName { space: SPACE.sid },
             ),
-            (SpaceOp::Produce(send(1)), SpaceError::DanglingHandle),
+            (
+                SpaceOp::Produce(send(1)),
+                SpaceError::DanglingHandle { space: SPACE.sid },
+            ),
             (
                 SpaceOp::Consume(receive_on(&name, "w", any())),
-                SpaceError::DanglingName,
+                SpaceError::DanglingName { space: SPACE.sid },
             ),
             (
                 SpaceOp::Consume(receive("w", any())),
-                SpaceError::DanglingHandle,
+                SpaceError::DanglingHandle { space: SPACE.sid },
             ),
         ] {
             assert_eq!(run(&env, op).await, Err(expected));
         }
         assert_eq!(
             Queue::default().read_config(&env, SPACE).await,
-            Err(SpaceError::DanglingHandle)
+            Err(SpaceError::DanglingHandle { space: SPACE.sid })
         );
         assert!(space.take_event_log().await.is_empty());
         assert!(space.get_data(channels().space_counter()).await.is_empty());
@@ -5891,7 +5895,7 @@ mod tests {
         for agent in [&queue as &dyn SpaceAgent, &FamilyAgent] {
             assert!(matches!(
                 agent.allocate(&env, alloc_op(1)).await,
-                Err(SpaceError::DanglingHandle)
+                Err(SpaceError::DanglingHandle { space }) if space == SPACE.sid
             ));
         }
         assert!(empty.take_event_log().await.is_empty());
@@ -5963,6 +5967,7 @@ mod tests {
                 store: SpaceStoreHandle::new(space.clone()),
                 budget: budget.clone(),
                 meter: ScanMeter::new(Some(host_work.clone())),
+                volatile: Default::default(),
             };
             agent
                 .prepare_create(&env, creation(config()))

@@ -155,6 +155,7 @@ mod tests {
             store: SpaceStoreHandle::new(host),
             budget: RuntimeBudget::new(Cost::create(1_000, "space matching test")),
             meter: ScanMeter::new(host_work),
+            volatile: Default::default(),
         }
     }
 

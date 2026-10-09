@@ -41,13 +41,13 @@
                             models/src/rust/space_factory_urn.rs:32, 35, 38,
                             225-263
    family_of_names          rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:208-226 (family_of)
+                            constructor.rs:218-236 (family_of)
    factory_op               rholang/src/rust/interpreter/spaces/factory/urn.rs:
                             213-217, 221-223 (the factory channel and the
                             capability that getSpaceAgent replies)
    validate_qualifier, durability_of
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:68-122, 125-130
+                            constructor.rs:68-132, 135-140
    parse_elements, to_elements, qual_of
                             models/src/rust/space_factory_urn.rs:368-398,
                             405-417, 428-438 (parse_elements, to_elements,
@@ -98,8 +98,9 @@
                                           0 to 31, one each
     2. aliases_map_to_family              URNs and aliases parse to their
                                           families
-    3. qualifier_matrix                   HashSet takes only seq, and P4
-                                          creates only default spaces
+    3. qualifier_matrix                   HashSet takes only seq, and P7
+                                          step 1 creates default and temp
+                                          spaces (seq is not yet available)
     4. constructor_parse_canonical        parse ∘ to_elements = id
     5. constructor_parse_sound            to_elements ∘ parse = id
     6. sid_derivation_deterministic       the sid is a 32-byte draw of the
@@ -356,10 +357,11 @@ Qed.
 Inductive qual_check : Type := QualOk | QualBadArgument | QualUnavailable.
 
 (* FactoryConstructor::validate, step 3: the family takes the qualifier,
-   and the qualifier is default (temp and seq arrive in P7). *)
+   and the qualifier is default or temp (P7 step 1, design v3 QT-1). seq stays
+   unavailable until its rules land. *)
 Definition validate_qualifier (f : family) (q : qualifier) : qual_check :=
   if negb (supports_qualifier f q) then QualBadArgument
-  else match q with QDefault => QualOk | QTemp | QSeq => QualUnavailable end.
+  else match q with QDefault | QTemp => QualOk | QSeq => QualUnavailable end.
 
 Inductive durability : Type := Durable | Ephemeral.
 
@@ -367,11 +369,13 @@ Definition durability_of (q : qualifier) : durability :=
   match q with QDefault => Durable | QTemp | QSeq => Ephemeral end.
 
 (* Headline 3. HashSet takes only seq, every other store takes every
-   qualifier. In P4 a factory accepts only default, so a HashSet family can
-   create no space, and every new space is durable. *)
+   qualifier. P7 step 1 accepts default and temp (design v3 QT-1), and seq
+   stays unavailable until its rules land, so a HashSet family can create no
+   space yet. A default space is durable and a temp space is ephemeral. *)
 Theorem qualifier_matrix :
   (forall f q, supports_qualifier f q = true <-> (f_outer f <> HashSet \/ q = QSeq)) /\
-  (forall f q, validate_qualifier f q = QualOk <-> (q = QDefault /\ f_outer f <> HashSet)) /\
+  (forall f q, validate_qualifier f q = QualOk <->
+                 ((q = QDefault \/ q = QTemp) /\ f_outer f <> HashSet)) /\
   (forall f, f_outer f = HashSet -> forall q, validate_qualifier f q <> QualOk) /\
   (forall q, durability_of q = Durable <-> q = QDefault).
 Proof.
@@ -380,8 +384,10 @@ Proof.
       solve [ reflexivity | left; discriminate | right; reflexivity | discriminate H
             | destruct H as [H | H]; [contradiction H; reflexivity | discriminate H] ].
   - intros [[] i] []; cbn; split; intros H;
-      solve [ reflexivity | split; [reflexivity | discriminate] | discriminate H
-            | destruct H as [H1 H2]; first [discriminate H1 | contradiction H2; reflexivity] ].
+      solve [ reflexivity | split; [left; reflexivity | discriminate]
+            | split; [right; reflexivity | discriminate] | discriminate H
+            | destruct H as [[H1 | H1] H2];
+              first [discriminate H1 | contradiction H2; reflexivity] ].
   - intros [o i] Ho q. cbn in Ho. subst o. destruct q; cbn; discriminate.
   - intros []; cbn; split; intros H; solve [reflexivity | discriminate H].
 Qed.
@@ -894,9 +900,9 @@ Print Assumptions space_already_exists_is_deterministic_abort.
                             rholang/src/rust/
                             interpreter/system_processes.rs:493-501 (to_urn_map)
    get_space_agent_of       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:222-258 (get_space_agent),
+                            reified/system_processes.rs:222-260 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:208-226 (family_of), urn.rs:221-223
+                            constructor.rs:218-236 (family_of), urn.rs:221-223
                             (factory_capability)
    rule, rule_of, canonical, max_capacity, max_dimensions
                             rholang/src/rust/interpreter/spaces/factory/
@@ -909,11 +915,11 @@ Print Assumptions space_already_exists_is_deterministic_abort.
                             defaults.rs:49, 248-257, 262-289
    validate_params, canonical_all
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:68-122 (validate), 191-205
+                            constructor.rs:68-132 (validate), 191-205
                             (canonical_params)
    lookup, mirror_metric, indexed_metrics, check_mirror, validate_factory
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:116 (the call of gate 9 in
+                            constructor.rs:126 (the call of gate 9 in
                             validate), 155-186 (check_mirror)
 
    ─────────────────────────────────────────────────────────────────────────
@@ -943,9 +949,9 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    - Gate 9 is the definition check_mirror over the qualifier and the
      canonical params. validate_factory runs it after the gates of
      validate_params, as validate does. Its qualifier is the one that the
-     gates 2 to 4 accepted (the P4 model: validate_qualifier). Gate 3
-     refuses temp and seq until P7, so today gate 9 refuses a mirror only
-     for its metric. The model states the qualifier part as the code does.
+     gates 2 to 4 accepted (validate_qualifier). Gate 3 accepts temp since
+     P7 step 1, so gate 9 refuses a mirror on a temp space, and for its
+     metric. The model states the qualifier part as the code does.
      The params of gate 9 are canonical, so their keys are distinct, and
      lookup reads the value of a key.
    - The Levenshtein distance is the section variable dist, so the

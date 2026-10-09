@@ -112,7 +112,7 @@ A program that names one of them fails with the baseline error `No value set for
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:989-1029`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1063-1103`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 
@@ -124,7 +124,7 @@ The constructor must be the canonical sequence $`[q?]\,[\mathrm{FREE}?]\,[\mathr
 
 ### 3.2 The gates
 
-The factory checks the constructor with seven gates, in the order of Table 3 (`spaces/factory/constructor.rs:68-122`).
+The factory checks the constructor with seven gates, in the order of Table 3 (`spaces/factory/constructor.rs:68-132`).
 The first gate that fails aborts the deploy with its code, and the later gates do not run.
 
 *Table 3. The gates of a factory call.*
@@ -134,7 +134,7 @@ The first gate that fails aborts the deploy with its code, and the later gates d
 | 1 | The family has a schema in this phase. | `FamilyUnavailable` |
 | 2 | The constructor is the canonical sequence. An unknown qualifier string, a malformed theory or params tuple, and any other element fail here. | `BadConstructorArgument` |
 | 3 | The outer store takes the qualifier. The HashSet store takes only `"seq"`. | `BadConstructorArgument` |
-| 4 | The qualifier is `"default"`. The qualifiers `"temp"` and `"seq"` arrive in P7. | `QualifierUnavailable` |
+| 4 | The qualifier is `"default"` or `"temp"` ([specification 4.2](specification.md#42-temp)). The qualifier `"seq"` arrives in a later step of P7. | `QualifierUnavailable` |
 | 5 | The constructor names no theory. Theories arrive in P7. | `TheoryUnavailable` |
 | 6 | The params are named only. The send hook already checks this rule. | `PositionalParamsUnsupported` |
 | 7 | Each named param is in the schema of the family, in the bytewise order of the keys. The schema of `hashmap:queue` is empty. | `UnknownParam` |
@@ -173,7 +173,7 @@ A program that holds the capability can call the space, and it can give the capa
 A call on a handle has the form `h!(ret, method, a…; k=v…)`.
 The reducer removes the write bundle, and the channel $`H(\mathit{sid})`$ routes to the default space (rule R1).
 The handle continuation of the space is a persistent receive on $`H(\mathit{sid})`$ with the pattern `[...@args]`, so it binds the whole call as one list.
-Its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP` (`reified/factory.rs:127-151`).
+Its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP` (`reified/factory.rs:132-156`).
 The forwarder has no guard and no cost authority, so the caller pays for each call.
 
 The send hook applies two rules to a handle call before the forward:
@@ -237,7 +237,7 @@ The arity counts the arguments after `ret` and the method name.
 | Method | Call | Arity | Named params | Reply | Effect on the space |
 |---|---|---|---|---|---|
 | `gensym` | `h!(ret, "gensym")` | 0 | None | A new [space name](glossary.md#space-name) $`N(\mathit{sid} \Vert t)`$ | One allocation job: an Array or a Vector space takes and puts its allocator, and every other store stores nothing |
-| `qualifier` | `h!(ret, "qualifier")` | 0 | None | The qualifier of the space, `"default"` in P4 | None |
+| `qualifier` | `h!(ret, "qualifier")` | 0 | None | The qualifier of the space: `"default"` or `"temp"` | None |
 | `config` | `h!(ret, "config")` | 0 | None | The config map of the space | None |
 | `produce` | `h!(ret, "produce", ch, msg)` | 2 | `persistent`: a Boolean, `false` when absent, and the send params of the discipline | `Nil`, after the operation | One produce on the collection of `ch` |
 | `consume` | `h!(ret, "consume", pairs, arrow, body)` | 3 | None | None in P4: a typed reply or an abort | None |
@@ -301,7 +301,7 @@ The reply is one datum, the tuple of three elements that `typed_error` builds (`
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:251-263`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:254-266`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|
@@ -311,7 +311,7 @@ A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 | `UnknownParam` | `HANDLE_OP` | A named param is outside the schema of the method. The first unknown key in bytewise order counts. | `{"method": String, "param": String, "suggestion": String or Nil}` |
 | `InvalidArrow` | `HANDLE_OP` | The arrow of `consume` is not `"<-"`, `"<="`, or `"<<-"`. | `{"method": String}` |
 | `ForeignMatcher` | `HANDLE_OP` | A matcher of `consume` is not a matcher id of KIND X, bare or under one bundle. | `{"index": Int, "method": String}` |
-| `DanglingHandle` | `getSpaceAgent` | The space of the handle has no config record. | `{}` |
+| `DanglingHandle` | `getSpaceAgent` | The space of the handle has no config record, or it is a temp space of an ended deploy. | `{"spaceId": ByteArray}` |
 | `NotANativeSpace` | `getSpaceAgent` | The reference is a value that no Reified id names, so a user agent would implement it. | `{}` |
 | `NotASpaceRef` | `getSpaceAgent` | The reference is a Reified id that is not a handle, for example a space name or a factory capability. | `{}` |
 | `EmptySpaceRef` | `getSpaceAgent` | The reference is `Nil`. | `{}` |
@@ -351,7 +351,7 @@ A typed reply never changes a space: a `produce` call with a typed reply stores 
 
 ## 8. getSpaceAgent
 
-The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:221-257`).
+The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:221-259`).
 The process classifies `s` with the five rules of `classify_space_ref` (`reified/scope.rs:106-129`):
 
 1. The empty `Par` gives the typed reply `EmptySpaceRef`.
@@ -363,14 +363,15 @@ The process classifies `s` with the five rules of `classify_space_ref` (`reified
 For a native space, the process reads the config record in a read-only space intent, which writes nothing.
 It replies the factory capability of the family that the record names, which is the value that the URN of the family binds ([decision 9.4](decision-register.md#decision-9-4)).
 So `getSpaceAgent!(ret, h)` gives a capability that creates new spaces of the family of `h`.
-A missing config record gives the typed reply `DanglingHandle`.
+A missing config record gives the typed reply `DanglingHandle`, with the space id in its detail map.
+A temp space of an ended deploy gives the same reply before any job ([specification 4.2](specification.md#42-temp), rule QF-9).
 
 Like the factories and `assertEqual`, the process applies no name rule to `ret`.
 
 ## 9. assertEqual
 
 The call `assertEqual!(ret, a, b)` has the arity 3 ([decision 33](decision-register.md#decision-33)).
-It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:296-310`).
+It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:307-321`).
 The sort is the one of `ParSortMatcher`, so the order of parallel processes, of map entries, and of set elements does not count.
 The order of list elements and of tuple elements counts.
 
@@ -399,7 +400,7 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 | `PositionalParamsUnsupported` | A factory, a handle | A positional param |
 | `FamilyUnavailable`, `BadConstructorArgument`, `QualifierUnavailable`, `TheoryUnavailable`, `UnknownParam` | A factory | A gate of Table 3 |
 | `SpaceAlreadyExists` | A factory | A config record on $`C(\mathit{sid})`$ |
-| `DanglingHandle` | A handle | The space has no config record |
+| `DanglingHandle` | A handle | The space has no config record, or it is a temp space of an ended deploy. The message names the space id. |
 | `AgentSpacesUnavailable` | `consume` | Matchers of user agents, until P8 |
 | `Inconsistent` | Every call that reads a space | A record that is not well formed |
 | `CounterOverflow` | `produce` | A counter at its greatest value |

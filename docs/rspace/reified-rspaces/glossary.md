@@ -1025,9 +1025,12 @@ Its operations still create events and accounting observations, so they are char
 
 The sweep removes the volatile channels of a deploy at the end of that deploy ([decision I-4](decision-register.md#i-4)).
 It removes their data, their continuations, and their join entries, and it emits no event and makes no observer call.
-Play and replay sweep at the same point, at the end of the reducer evaluation ([decision 19](decision-register.md#decision-19)).
 The sweep never touches an ordinary channel.
 It refuses a join that also names a channel that it keeps, and a channel with items in the history trie.
+
+Each root evaluation keeps a book of the temp spaces that it created and of the volatile channels that its transactions locked.
+Play and replay sweep the book at the same point, after every detached task of the root evaluation ([decision 19](decision-register.md#decision-19)).
+A nested call of the reducer neither clears the book nor sweeps.
 
 ### Re-rooting
 

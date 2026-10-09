@@ -1,0 +1,253 @@
+{
+  "schema": "reified-rspaces-model-map/2",
+  "phase": "P7",
+  "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation, the sweep at each root entry, and the dangling ids of ended deploys.",
+  "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3, 4 and 9. The headline ids are the ids of the P7 phase of formal/reified-rspaces-invariant-map.json.",
+  "code_base": "The items are in the P7 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
+  "checker": "scripts/verify-reified/check-model-map.py",
+  "formal_files": {
+    "rocq": [
+      "formal/rocq/reified_rspaces/theories/VolatileSweep.v"
+    ],
+    "tla": []
+  },
+  "headlines": {
+    "V1": {
+      "kind": "rocq",
+      "name": "sweep_complete",
+      "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+      "statement": "When the lock keys of every transaction of a root evaluation cover the channels that it stages (readiness review S2), the book of the evaluation holds every staged volatile channel, and the sweep of the book leaves no record, no join entry and no waiting continuation on them (design v3 VR-2)."
+    },
+    "V2": {
+      "kind": "rocq",
+      "name": "dead_ephemeral_dangling",
+      "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+      "statement": "The spaces of two deploys are disjoint (I-19), so a space of another deploy is never live in this evaluation, and the live check passes exactly the spaces that this evaluation created (design v3 DG-1)."
+    }
+  },
+  "items": [
+    {
+      "item": "ephemeral_space",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "kind": "fn",
+      "name": "ephemeral_space",
+      "line": 40,
+      "role": "The space of a space-scoped id with an ephemeral KIND.",
+      "rocq": [
+        "book",
+        "check_live"
+      ],
+      "tla": [],
+      "covers": [
+        "V1",
+        "V2"
+      ]
+    },
+    {
+      "item": "VolatileRegistry",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "kind": "struct",
+      "name": "VolatileRegistry",
+      "line": 63,
+      "role": "The book of one root evaluation: its ephemeral spaces and the volatile channels that its transactions locked.",
+      "rocq": [
+        "book"
+      ],
+      "tla": [],
+      "covers": [
+        "V1",
+        "V2"
+      ]
+    },
+    {
+      "item": "VolatileRegistry::record_locked",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "scope": "VolatileRegistry",
+      "kind": "fn",
+      "name": "record_locked",
+      "line": 81,
+      "role": "Records the volatile lock keys of a transaction (VR-2).",
+      "rocq": [
+        "book"
+      ],
+      "tla": [],
+      "covers": [
+        "V1"
+      ]
+    },
+    {
+      "item": "VolatileRegistry::record_space",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "scope": "VolatileRegistry",
+      "kind": "fn",
+      "name": "record_space",
+      "line": 96,
+      "role": "Records an ephemeral space after its creation commits.",
+      "rocq": [
+        "check_live"
+      ],
+      "tla": [],
+      "covers": [
+        "V2"
+      ]
+    },
+    {
+      "item": "VolatileRegistry::take_channels",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+      "scope": "VolatileRegistry",
+      "kind": "fn",
+      "name": "take_channels",
+      "line": 113,
+      "role": "Takes the volatile channels of the evaluation for its sweep.",
+      "rocq": [
+        "book"
+      ],
+      "tla": [],
+      "covers": [
+        "V1"
+      ]
+    },
+    {
+      "item": "SpaceEnv::begin",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+      "scope": "SpaceEnv",
+      "kind": "fn",
+      "name": "begin",
+      "line": 96,
+      "role": "Opens each transaction and records its volatile lock keys first.",
+      "rocq": [
+        "covers",
+        "book"
+      ],
+      "tla": [],
+      "covers": [
+        "V1"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::sweep_volatile",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "sweep_volatile",
+      "line": 168,
+      "role": "Sweeps the book under the boundary guard at the end of a root evaluation (VR-4 to VR-8).",
+      "rocq": [
+        "sweep_volatile"
+      ],
+      "tla": [],
+      "covers": [
+        "V1"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::check_live",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "check_live",
+      "line": 142,
+      "role": "DG-1 for a routed channel.",
+      "rocq": [
+        "check_live"
+      ],
+      "tla": [],
+      "covers": [
+        "V2"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::check_live_space",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "check_live_space",
+      "line": 130,
+      "role": "DG-1 for a space reference.",
+      "rocq": [
+        "check_live"
+      ],
+      "tla": [],
+      "covers": [
+        "V2"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::record_ephemeral_space",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "record_ephemeral_space",
+      "line": 121,
+      "role": "The factory records a created ephemeral space before its reply.",
+      "rocq": [
+        "check_live"
+      ],
+      "tla": [],
+      "covers": [
+        "V2"
+      ]
+    },
+    {
+      "item": "ReducerCore::begin_root_evaluation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "begin_root_evaluation",
+      "line": 189,
+      "role": "The root predicate of VR-3: only a root evaluation resets the book.",
+      "rocq": [
+        "book"
+      ],
+      "tla": [],
+      "covers": [
+        "V1"
+      ]
+    },
+    {
+      "item": "ReducerCore::end_root_evaluation_observed",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "end_root_evaluation_observed",
+      "line": 212,
+      "role": "The sweep at the end of a root evaluation, on the Ok and the Err path (VR-4, VR-8).",
+      "rocq": [
+        "sweep_volatile"
+      ],
+      "tla": [],
+      "covers": [
+        "V1"
+      ]
+    },
+    {
+      "item": "ReducerCore::check_route_live",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "check_route_live",
+      "line": 379,
+      "role": "DG-1 at the send and receive hooks.",
+      "rocq": [
+        "check_live"
+      ],
+      "tla": [],
+      "covers": [
+        "V2"
+      ]
+    }
+  ]
+}

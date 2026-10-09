@@ -46,6 +46,8 @@ use models::rust::utils::{new_elist_par, union};
 
 use super::ReducerCore;
 use crate::rust::interpreter::accounting::costs::new_bindings_cost;
+use crate::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary;
+use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
 use crate::rust::interpreter::dispatch::DispatchType;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
@@ -180,6 +182,53 @@ impl BinderGroups {
 }
 
 impl ReducerCore {
+    /// P7 (VR-3): starts an evaluation from `inj`, `inj_with_observation` or
+    /// `inj_with_host_work`, and tells whether it is a root evaluation: no reduction context
+    /// runs. Only a root evaluation resets the book of the ephemeral spaces, the mirror journal
+    /// and the committed parents, and only a root evaluation sweeps at its end.
+    pub(in crate::rust::interpreter) fn begin_root_evaluation(&self) -> bool {
+        let root = deterministic_reduction::current().is_none();
+        if root {
+            self.reified.begin_evaluation_scope();
+        }
+        root
+    }
+
+    /// P7 (VR-4, VR-8): ends an evaluation that `begin_root_evaluation` started. A root
+    /// evaluation sweeps its volatile channels on the `Ok` and the `Err` path. A sweep failure
+    /// turns an `Ok` result into that failure, and an `Err` result keeps its first error.
+    pub(in crate::rust::interpreter) async fn end_root_evaluation(
+        &self,
+        root: bool,
+        result: Result<(), InterpreterError>,
+    ) -> Result<(), InterpreterError> {
+        self.end_root_evaluation_observed(root, result, EvaluationFailureSummary::default())
+            .await
+            .0
+    }
+
+    /// `end_root_evaluation` with the failure summary of the evaluation: a sweep failure adds
+    /// the class `Platform` to the summary (VR-8), as a host-work rejection does.
+    pub(in crate::rust::interpreter) async fn end_root_evaluation_observed(
+        &self,
+        root: bool,
+        result: Result<(), InterpreterError>,
+        summary: EvaluationFailureSummary,
+    ) -> (Result<(), InterpreterError>, EvaluationFailureSummary) {
+        if !root {
+            return (result, summary);
+        }
+        match self.reified.sweep_volatile(&self.reduction_coordinator).await {
+            Ok(()) => (result, summary),
+            Err(sweep) => (
+                result.and(Err(sweep)),
+                summary.union(EvaluationFailureSummary::single(PhloFailure::Platform)),
+            ),
+        }
+    }
+}
+
+impl ReducerCore {
     /// Hook H2: evaluates a USE or NEWSPACE tuple in process position (P4 design C.3). The term
     /// filter (H1) admits no other tuple. A tuple that is not canonical after the I-20 refresh
     /// fails with `Malformed`.
@@ -218,6 +267,7 @@ impl ReducerCore {
     ) -> Result<(), InterpreterError> {
         let UseBlock { space, body } = block;
         let (space, native) = self.native_space_ref(&space, env)?;
+        self.reified.check_live_space(native)?;
         let mut scoped = self.clone();
         scoped.space_ctx = Some(Arc::new(UseTarget { space, native }));
         scoped
@@ -323,6 +373,17 @@ impl ReducerCore {
         }
     }
 
+    /// DG-1 (P7): a routed channel of an ephemeral space that an ended deploy created fails
+    /// before any job: a name with `DanglingName`, every other id with `DanglingHandle`, and a
+    /// forged channel that the use-context of such a space routes with `DanglingHandle`.
+    fn check_route_live(&self, channel: &Par, route: &Route) -> Result<(), SpaceError> {
+        self.reified.check_live(channel)?;
+        match route {
+            Route::Space { space, .. } => self.reified.check_live_space(*space),
+            Route::Default | Route::Agent => Ok(()),
+        }
+    }
+
     fn route_send(
         &self,
         chan: Par,
@@ -331,9 +392,16 @@ impl ReducerCore {
         authority: CostAuthority,
     ) -> Result<SendRoute, InterpreterError> {
         let params = trailing_params(&mut data.pars)?;
-        match self.route_channel(&chan)? {
+        let route = self.route_channel(&chan)?;
+        // A21 judges the form of the send, so it comes before the liveness check of DG-1.
+        if matches!(route, Route::Default) {
+            check_persistent_send(&chan, persistent)?;
+        }
+        self.check_route_live(&chan, &route)?;
+        match route {
             Route::Default => {
-                check_persistent_send(&chan, persistent)?;
+                // Moved by P7 step 1 before the liveness check of DG-1 (above).
+                // check_persistent_send(&chan, persistent)?;
                 let data = match (op_of(&chan), handle_of(&chan)) {
                     (Some(op), _) if is_factory_op(op) => {
                         reject_positional(params.as_ref())?;
@@ -485,6 +553,7 @@ impl ReducerCore {
         for (pattern, source) in binds {
             let (channel, query) = query_bind(source)?;
             let route = self.route_channel(&channel)?;
+            self.check_route_live(&channel, &route)?;
             routed.push(RoutedBind {
                 pattern,
                 channel,
@@ -567,6 +636,11 @@ impl ReducerCore {
     ) -> Result<Env<Par>, InterpreterError> {
         let mut bound = super::allocate_new_bindings(new, env, rand, &self.urn_map)?;
         let groups = BinderGroups::new(plain_binders(new)?, spaces)?;
+        // DG-1: an ephemeral space that an ended deploy created fails before any job, in the
+        // order of the groups.
+        for (space, _) in &groups.spaces {
+            self.reified.check_live_space(*space)?;
+        }
         let random_state = rand.to_bytes();
         let mut allocated = Vec::with_capacity(groups.spaces.len());
         for &(space, count) in &groups.spaces {
@@ -2167,6 +2241,21 @@ mod tests {
                 expected(abort)
             );
             assert!(fixture.host.get_data(&channel).await.is_empty());
+            // P7 (DG-1): the evaluation did not create the ephemeral space, so a call without
+            // persistence on its handle fails with `DanglingHandle` and stores nothing.
+            if channel == handle(ephemeral) {
+                assert_eq!(
+                    code(
+                        fixture
+                            .reducer
+                            .reified_produce(channel.clone(), call, false, authority())
+                            .await
+                    ),
+                    expected("DanglingHandle")
+                );
+                assert!(fixture.host.get_data(&channel).await.is_empty());
+                continue;
+            }
             fixture
                 .reducer
                 .reified_produce(channel.clone(), call, false, authority())
@@ -4102,6 +4191,106 @@ mod tests {
             &CollectionKey::of_channel(&name).expect("a key"),
         ));
         assert_eq!(fixture.host.get_data(&collection).await.len(), 2);
+    }
+
+    // ── P7: the volatile sweep at each root entry ──────────────────────────────────────────────
+
+    /// The volatile channels with records or waiting continuations in the hot store of `host`.
+    async fn volatile_channels(host: &ParRSpace) -> Vec<Par> {
+        use crate::rust::interpreter::spaces::ephemeral::ephemeral_space;
+
+        host.to_map()
+            .await
+            .into_iter()
+            .filter(|(_, row)| !row.data.is_empty() || !row.wks.is_empty())
+            .flat_map(|(channels, _)| channels)
+            .filter(|channel| {
+                namespace::sole_gprivate_id(channel).is_some_and(|id| ephemeral_space(id).is_some())
+            })
+            .collect()
+    }
+
+    /// The root entries of the reducer that P7 sweeps at (VR-4).
+    #[derive(Clone, Copy, Debug)]
+    enum RootEntry {
+        Inj,
+        Observation,
+        HostWork,
+    }
+
+    async fn run_root_entry(
+        reducer: &ReducerCore,
+        entry: RootEntry,
+        term: Par,
+    ) -> Result<(), InterpreterError> {
+        use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+
+        use crate::rust::interpreter::host_work::HostWorkBudget;
+
+        match entry {
+            RootEntry::Inj => reducer.inj(term, rand(b"p7-sweep")).await,
+            RootEntry::Observation => {
+                reducer
+                    .inj_with_observation(term, rand(b"p7-sweep"), None)
+                    .await
+                    .0
+            }
+            RootEntry::HostWork => {
+                let host_work =
+                    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
+                reducer
+                    .inj_with_host_work(term, rand(b"p7-sweep"), host_work)
+                    .await
+            }
+        }
+    }
+
+    /// P7 (VR-4, VR-8): each root entry of the reducer sweeps the volatile channels of its
+    /// evaluation, on the `Ok` path (records and a parked waiter of a `temp` bag) and on the
+    /// `Err` path (a `temp` cell that receives two records aborts with `CellOccupied`).
+    #[tokio::test]
+    async fn reified_sweep_runs_at_each_entry_point_of_the_reducer() {
+        use crate::rust::interpreter::compiler::compiler::Compiler;
+
+        let ok = r#"new factory(`rho:space:hashmap:bag`) in {
+  for (s <- factory!?("temp")) {
+    for (x <- s!?("gensym")) { x!(1) | x!(2) | for (@"never" <- x) { Nil } }
+  }
+}"#;
+        let err = r#"new factory(`rho:space:hashmap:cell`) in {
+  for (s <- factory!?("temp")) {
+    for (x <- s!?("gensym")) { x!(1) | x!(2) }
+  }
+}"#;
+        for entry in [RootEntry::Inj, RootEntry::Observation, RootEntry::HostWork] {
+            for (source, fails) in [(ok, false), (err, true)] {
+                let fixture = hosted().await;
+                let reducer: &ReducerCore = &fixture.reducer;
+                let term = Compiler::source_to_adt(source).expect("the program parses");
+                let result = run_root_entry(reducer, entry, term).await;
+                assert_eq!(result.is_err(), fails, "{entry:?}: {result:?}");
+                if fails {
+                    let message = format!("{result:?}");
+                    assert!(message.contains("CellOccupied"), "{entry:?}: {message}");
+                }
+                assert_eq!(
+                    volatile_channels(&fixture.host).await,
+                    Vec::<Par>::new(),
+                    "{entry:?}: the root entry sweeps (failing: {fails})"
+                );
+            }
+        }
+    }
+
+    /// P7 (VR-3): only a call with no reduction context starts a root evaluation. A nested call
+    /// neither resets the book of the ephemeral spaces nor sweeps.
+    #[tokio::test]
+    async fn reified_sweep_root_predicate_excludes_nested_calls() {
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        assert!(reducer.begin_root_evaluation(), "a call outside a reduction is a root");
+        let nested = in_root(reducer, async { reducer.begin_root_evaluation() }).await;
+        assert!(!nested, "a call inside a reduction is no root");
     }
 
     /// With a host runtime, the hooks run the operations of a space name on its collection. A

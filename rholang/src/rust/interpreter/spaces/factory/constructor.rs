@@ -8,7 +8,7 @@
 //! 1. The family has a constructor schema in this phase, else `FamilyUnavailable`.
 //! 2. The constructor parses, else `BadConstructorArgument`.
 //! 3. The family takes the qualifier, else `BadConstructorArgument`. The qualifier is
-//!    `default`, else `QualifierUnavailable` (`temp` and `seq` arrive in P7).
+//!    `default` or `temp` (P7), else `QualifierUnavailable`.
 //! 4. The constructor names no theory, else `TheoryUnavailable` (P7).
 //! 5. The params are not positional, else `PositionalParamsUnsupported`.
 //! 6. Each named param is in the schema of the family, else `UnknownParam` with a suggestion.
@@ -83,9 +83,19 @@ impl FactoryConstructor {
                 family.outer.as_str()
             )));
         }
+        // Changed by P7 (design v3 QT-1): a `temp` space lives for one deploy (I-4). `seq` stays
+        // unavailable until its rules (SQ-1 to SQ-8) are in place.
+        // match qualifier {
+        //     SpaceQualifier::Default => {}
+        //     SpaceQualifier::Temp | SpaceQualifier::Seq => {
+        //         return Err(SpaceError::QualifierUnavailable(
+        //             qualifier.as_str().to_string(),
+        //         ))
+        //     }
+        // }
         match qualifier {
-            SpaceQualifier::Default => {}
-            SpaceQualifier::Temp | SpaceQualifier::Seq => {
+            SpaceQualifier::Default | SpaceQualifier::Temp => {}
+            SpaceQualifier::Seq => {
                 return Err(SpaceError::QualifierUnavailable(
                     qualifier.as_str().to_string(),
                 ))
@@ -281,10 +291,14 @@ mod tests {
 
     #[test]
     fn reified_factory_p4_gates_fail_closed_in_order() {
-        assert_eq!(
-            validate(vec![string("temp")]),
-            Err(SpaceError::QualifierUnavailable("temp".to_string()))
-        );
+        // Changed by P7 step 1 (design v3 QT-1): `temp` creates an ephemeral space.
+        // assert_eq!(
+        //     validate(vec![string("temp")]),
+        //     Err(SpaceError::QualifierUnavailable("temp".to_string()))
+        // );
+        let temp = validate(vec![string("temp")]).expect("a temp constructor is valid");
+        assert_eq!(temp.qualifier, SpaceQualifier::Temp);
+        assert_eq!(temp.durability(), Durability::Ephemeral);
         assert_eq!(
             validate(vec![string("seq"), nat()]),
             Err(SpaceError::QualifierUnavailable("seq".to_string()))
@@ -446,9 +460,15 @@ mod tests {
             })
         );
         // The earlier gates still come first.
+        // Changed by P7 step 1 (design v3 QT-1): `temp` passes gate 3, so the gate of `seq`
+        // shows the order.
+        // assert_eq!(
+        //     check(array_queue, vec![string("temp")]),
+        //     Err(SpaceError::QualifierUnavailable("temp".to_string()))
+        // );
         assert_eq!(
-            check(array_queue, vec![string("temp")]),
-            Err(SpaceError::QualifierUnavailable("temp".to_string()))
+            check(array_queue, vec![string("seq")]),
+            Err(SpaceError::QualifierUnavailable("seq".to_string()))
         );
         assert_eq!(
             check(array_queue, vec![nat()]),

@@ -163,6 +163,7 @@ mod tests {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000_000, "bag discipline test")),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         };
         let config = SpaceConfig::new(
             SPACE.sid,

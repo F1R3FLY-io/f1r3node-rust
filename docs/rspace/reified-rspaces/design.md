@@ -169,7 +169,7 @@ Table S3.1 gives the play steps of `PlayBackend` in `rspace/space_play.rs`, over
 
 | Step | Produce | HEAD | Consume | HEAD |
 |---|---|---|---|---|
-| 1 | Run the callback `before_observe` of the agent with the produce identity. It takes the place of `register_introduction_authority` in the reducer. | `rholang/src/rust/interpreter/reduce.rs:543-547` | The same, with the consume identity. | `rholang/src/rust/interpreter/reduce.rs:655-659` |
+| 1 | Run the callback `before_observe` of the agent with the produce identity. It takes the place of `register_introduction_authority` in the reducer. | `rholang/src/rust/interpreter/reduce.rs:548-552` | The same, with the consume identity. | `rholang/src/rust/interpreter/reduce.rs:660-664` |
 | 2 | `start_accounting_operation` with the channel and its join groups. | `rspace/ops_produce.rs:44-53` | `start_accounting_operation` with the channels and no joins. | `rspace/ops_consume.rs:44-45` |
 | 3 | `observe_produce`. | `rspace/ops_produce.rs:78` | `observe_consume`. | `rspace/ops_consume.rs:73-81` |
 | 4, Store or Park | `log_produce`, which logs the event and steps the counter of a non-persistent produce. Then `store_data`, which calls `put_datum`. | `rspace/ops_produce.rs:105-106`, `212-226`, `rspace/trace_log.rs:158-172` | `log_consume`, then `store_waiting_continuation`: `put_continuation`, and then `put_join` for each channel. | `rspace/ops_consume.rs:146-147`, `179-190` |
@@ -189,7 +189,7 @@ Its HEAD columns cite `replay_rspace.rs`.
 
 | Step | Produce | HEAD | Consume | HEAD |
 |---|---|---|---|---|
-| 1 | Run `before_observe`, as in Table S3.1. | `rholang/src/rust/interpreter/reduce.rs:543-547` | The same, with the consume identity. | `rholang/src/rust/interpreter/reduce.rs:655-659` |
+| 1 | Run `before_observe`, as in Table S3.1. | `rholang/src/rust/interpreter/reduce.rs:548-552` | The same, with the consume identity. | `rholang/src/rust/interpreter/reduce.rs:660-664` |
 | 2 | `start_accounting_operation` with the channel and its join groups. | `1053-1059` | `start_accounting_operation` with the channels and no joins. | `760-761` |
 | 3 | A replay directive of the observer fails the operation with `NativeReplayDirectiveUnsupported`. The host would run the operation natively instead. | `1084-1100` | The same. | `788-805` |
 | 4 | `observe_produce`. | `1101` | `observe_consume`. | `806-814` |
@@ -1004,7 +1004,7 @@ A commit without an operation context is not tracked, because it emits no sub-or
 #### S5.8. Peek re-offer (FR-10)
 
 A peek reads a value and leaves it available to other receives.
-The host gets this effect in two steps: RSpace removes the peeked data, and the reducer produces each non-persistent result again (`produce_peeks`, `rholang/src/rust/interpreter/reduce.rs:981-1016`).
+The host gets this effect in two steps: RSpace removes the peeked data, and the reducer produces each non-persistent result again (`produce_peeks`, `rholang/src/rust/interpreter/reduce.rs:986-1021`).
 [Decision 30](decision-register.md#decision-30) gives spaces the same behavior for the incoming datum.
 [Decision 45](decision-register.md#decision-45) (Rule E) gives them the same behavior for the stored records that a peek binds.
 It replaces the [retention](glossary.md#retention) of [decision 19](decision-register.md#decision-19), under which the substrate kept these records in place.
@@ -1281,16 +1281,16 @@ Each one closes under the global context, with no axiom, no parameter, and no ad
 | H10 | `coverage_total` | `EventCorrelation.v:6082` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
 | H11 | `peek_reproduces_trace_eq_host` | `EventCorrelation.v:5836` | With the re-offer and the re-stores as the next operations, a commit makes the calls, events, status, and bindings of the host run, whose reducer sends the peeked data again. The stores are equal ([decision 45](decision-register.md#decision-45)). | `prop_space_txn_peek_restore` |
 | H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:7244` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_restore` |
-| H13 | `sweep_exact` | `VolatileSweep.v:879` | The sweep removes exactly the volatile data, continuations, and joins. Through the handle, a sweep in a task with an open transaction fails closed. | `prop_sweep_volatile_exact_and_root_neutral` |
-| H14 | `delete_absent_identity` | `VolatileSweep.v:956` | A history delete of an absent key changes nothing. | `prop_sweep_volatile_exact_and_root_neutral` |
-| H15 | `sweep_root_neutral` | `VolatileSweep.v:1251` | The checkpoint after a sweep gives the trie of the durable changes alone. | `prop_sweep_volatile_exact_and_root_neutral` |
-| H16 | `leaf_count_is_length` | `VolatileSweep.v:1314` | The root leaf record count is the length of the data list. | `prop_root_leaf_record_count_matches_history` |
+| H13 | `sweep_exact` | `VolatileSweep.v:894` | The sweep removes exactly the volatile data, continuations, and joins. Through the handle, a sweep in a task with an open transaction fails closed. | `prop_sweep_volatile_exact_and_root_neutral` |
+| H14 | `delete_absent_identity` | `VolatileSweep.v:971` | A history delete of an absent key changes nothing. | `prop_sweep_volatile_exact_and_root_neutral` |
+| H15 | `sweep_root_neutral` | `VolatileSweep.v:1266` | The checkpoint after a sweep gives the trie of the durable changes alone. | `prop_sweep_volatile_exact_and_root_neutral` |
+| H16 | `leaf_count_is_length` | `VolatileSweep.v:1329` | The root leaf record count is the length of the data list. | `prop_root_leaf_record_count_matches_history` |
 | H17 | `non_canonical_fails_closed` | `EventCorrelation.v:7101` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H18 | `canonical_reads_root_neutral` | `VolatileSweep.v:1429` | Reads of canonical keys leave the checkpoint root unchanged. | `prop_space_txn_reads_root_neutral` |
+| H18 | `canonical_reads_root_neutral` | `VolatileSweep.v:1444` | Reads of canonical keys leave the checkpoint root unchanged. | `prop_space_txn_reads_root_neutral` |
 | H19 | `directive_fails_closed` | `EventCorrelation.v:7284` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
 | H20 | `parent_order_single_txn` | `EventCorrelation.v:8331` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
 | H21 | `view_identity_is_store_identity` | `EventCorrelation.v:8452` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
-| H22 | `checkpoint_rejects_duplicate_key_actions` | `VolatileSweep.v:1613` | The checkpoint refuses two actions on one history key, and canonical cache keys have distinct history keys. | `prop_space_txn_non_canonical_inputs_fail_closed` |
+| H22 | `checkpoint_rejects_duplicate_key_actions` | `VolatileSweep.v:1628` | The checkpoint refuses two actions on one history key, and canonical cache keys have distinct history keys. | `prop_space_txn_non_canonical_inputs_fail_closed` |
 | H23 | `replay_reproduces_play_run` | `EventCorrelation.v:7834` | With the commit log of play, replay stages the operations of play, and its commit makes the observer calls, events, status, and store of play. So an operation that play rejects fails replay at the same call, after the same prefix (decision 36). | `prop_space_txn_replay_reproduces_play_rejection` |
 
 The models are [EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v), with H1 to H12, H17, H19 to H21, and H23, and [VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v), with H13 to H16, H18, and H22.
@@ -1478,14 +1478,14 @@ The paths of the rows are relative to `rholang/src/rust/interpreter/`, except th
 | Hook | Lines | Effect |
 |---|---|---|
 | Fields of `ReducerCore` | `reduce.rs:187-188` | The use context `space_ctx` and the runtime `reified`. |
-| Evaluation scope | `reduce.rs:460`, `474`, `504` | `begin_evaluation_scope` at the entry of `inj`, `inj_with_observation`, and `inj_with_host_work`. |
-| H2 | `reduce.rs:1236` | A marker tuple in process position goes to `eval_marker`. |
-| H3 | `reduce.rs:1304` | `eval_send` calls `reified_produce`. |
-| Receive | `reduce.rs:1421` | `eval_receive` calls `reified_consume`. |
-| `new` | `reduce.rs:1645` | `eval_new` calls `reified_allocate`. |
-| H4 | `reduce.rs:1662` | `unbundle_receive` calls `reject_query_source` before its bundle check. |
-| Detached runtime | `reduce.rs:7886-7887` | `ReducerCore::new` starts without a use context and with a detached runtime. |
-| Hook module | `reduce.rs:8204-8205` | `reified/reducer_hooks.rs` is the child module `reified_hooks`. |
+| Evaluation scope | `reduce.rs:460`, `475`, `507` | `begin_root_evaluation` at the entry of `inj`, `inj_with_observation`, and `inj_with_host_work`: a root evaluation calls `begin_evaluation_scope`, and it sweeps the volatile channels at its end (P7, VR-3 and VR-4). |
+| H2 | `reduce.rs:1241` | A marker tuple in process position goes to `eval_marker`. |
+| H3 | `reduce.rs:1309` | `eval_send` calls `reified_produce`. |
+| Receive | `reduce.rs:1426` | `eval_receive` calls `reified_consume`. |
+| `new` | `reduce.rs:1650` | `eval_new` calls `reified_allocate`. |
+| H4 | `reduce.rs:1667` | `unbundle_receive` calls `reject_query_source` before its bundle check. |
+| Detached runtime | `reduce.rs:7891-7892` | `ReducerCore::new` starts without a use context and with a detached runtime. |
+| Hook module | `reduce.rs:8209-8210` | `reified/reducer_hooks.rs` is the child module `reified_hooks`. |
 | Scheduler module | `deterministic_reduction.rs:41-42` | `reified/schedule.rs` is the child module `reified_schedule`. |
 | Space intents | `deterministic_reduction.rs:556`, `586`, `602`, `611`, `627` | `Intent::Space`, `Completion::Space`, and the rejection, the order, and the delivery of a space completion. |
 | Footprint and execution | `deterministic_reduction.rs:935`, `984` | The footprint and the execution of a space intent. |
@@ -1771,7 +1771,7 @@ Until then, a collection that is part of a join fails with `Inconsistent`.
 
 **A collection operation.** `begin_collection` (`spaces/generic.rs:1903-2061`) opens the transaction and reads the config once.
 `run_with` (`spaces/generic.rs:2288-2424`) then stages the operation in that transaction.
-The job commits the transaction exactly once (`spaces/agent.rs:484-496`).
+The job commits the transaction exactly once (`spaces/agent.rs:493-505`).
 
 ```text
 COLLECTION-OP(op):                             ▷ FamilyAgent, begin_collection, run_with, run_op
@@ -2139,10 +2139,10 @@ EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_sp
 ```
 
 The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
-Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:512-538`).
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:581-607`).
 The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
 
-**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:306-324`) is hook H3, with the same signature as the baseline `produce`.
+**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:356-374`) is hook H3, with the same signature as the baseline `produce`.
 
 ```text
 REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_produce and route_send
@@ -2165,7 +2165,7 @@ REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_pr
 A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
 The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
 
-**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:399-476`) takes the parameters of the baseline `consume`.
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:467-544`) takes the parameters of the baseline `consume`.
 
 ```text
 REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
@@ -2188,7 +2188,7 @@ A join with a user agent fails with `AgentSpacesUnavailable`, and every other mi
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1368-1388`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1442-1462`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2249,11 +2249,14 @@ A read, such as the config read of `getSpaceAgent`, stages nothing and drops its
 An empty commit would claim the parent order, and a later commit under the same order would fail with `ParentOrderReused`.
 The job never awaits between `begin` and `commit`, except inside `begin`, and matching is synchronous.
 
-**The evaluation scope.** `inj`, `inj_with_observation`, and `inj_with_host_work` call `begin_evaluation_scope` at their entry (`reified/runtime.rs:95-108`).
+**The evaluation scope.** `inj`, `inj_with_observation`, and `inj_with_host_work` call `begin_evaluation_scope` at their entry when no reduction context runs (`reified/runtime.rs:100-116`).
 The three interpreter entries `inj_attempt`, `inj_attempt_with_native_phlo`, and `inj_attempt_with_host_work` reach the reducer through `inj_with_observation`.
 The test `reducer_space_routing_inj_with_host_work_begins_an_evaluation_scope` runs one term twice through `inj_with_host_work` under the same operation orders.
 In the host mode, the call resets the tracker of committed parent orders, so a deploy that runs again commits under the same orders (FR-5').
 It makes no event, no charge, and no random draw.
+
+**The sweep of a root evaluation (P7).** At the end of a root evaluation, the three entries sweep the volatile channels of its book under the boundary guard.
+The rules are QF-8 and QF-9 of the [specification](specification.md#42-temp).
 
 **Host work.** The job gets the host-work budget that `submit_space` captured, because `reserve_host_work` charges nothing inside the task of a job.
 `ScanMeter` (`reified/costs.rs:48-262`) applies the rule of DR-88 of `feature/cost-accounted-rho` ([decision 42](decision-register.md#decision-42)).
@@ -2273,7 +2276,7 @@ The agent prepays at staging the work of the outcome after the commit.
 So a host-work rejection always happens before the commit, and the operation has no effect (`AgentReadCoverage.v`, `cut_rejects_before_commit`).
 Without a budget, the meter accepts every charge and skips every walk, as `reserve_host_work` does ([decision I-12](decision-register.md#i-12)).
 
-**The runtime of a reducer.** `ReifiedRuntime` (`reified/runtime.rs:73-77`) has three modes. The host mode and a bound native replay mode run space jobs.
+**The runtime of a reducer.** `ReifiedRuntime` (`reified/runtime.rs:76-82`) has three modes. The host mode and a bound native replay mode run space jobs.
 
 *Table N6.1. The modes of the runtime.*
 
@@ -2283,14 +2286,14 @@ Without a budget, the meter accepts every charge and skips every walk, as `reser
 | `Detached` | `unavailable`, in `ReducerCore::new` and `DebruijnInterpreter::new` | fails with `RuntimeUnavailable` |
 | `NativeReplay` | `native_replay`, in the native replay environment, which binds it to the store of its native replay session with `bind_native_replay` | runs one space intent over the native backend of the session once bound, and fails with `RuntimeUnavailable` before ([decision 47](decision-register.md#decision-47)) |
 
-Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:112-129, 133`).
+Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:190-207, 211`).
 `run_op`, `create_space`, and `read_config` check it before `submit_space`, so a failing check takes no operation order and makes no observer call.
 Native play and a bound native replay runtime run the same space entry, so native replay reproduces play (`SpaceRefs.v`, `native_execution_runs_spaces`).
 [Decision 46](decision-register.md#decision-46) made both modes reject a space deploy before any space work, and decision 47 replaces that rule.
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:666-718`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:740-792`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome
@@ -2321,7 +2324,7 @@ Without the branch, that operation fails with the panic `reduction participant m
 
 ### N7. Factories and handles
 
-**The factory call.** A call `F!(ret, ctor)` on the factory of a family creates a native space (`reified/factory.rs:73-112`).
+**The factory call.** A call `F!(ret, ctor)` on the factory of a family creates a native space (`reified/factory.rs:74-117`).
 The send hook packs the arguments of the program after `ret` into the constructor list `ctor`.
 
 ```text
@@ -2348,7 +2351,7 @@ The space id is a 32-byte draw of the random state of the call ([decision I-19](
 
 The random state of a call message is unique, so the id is unique to the call, and play and replay derive the same id.
 A second creation of one id fails with `SpaceAlreadyExists` in play and in replay alike.
-`FactoryConstructor::validate` (`spaces/factory/constructor.rs:68-122`) applies the gates of Table N7.1 in order, so the first failing gate gives the code.
+`FactoryConstructor::validate` (`spaces/factory/constructor.rs:68-132`) applies the gates of Table N7.1 in order, so the first failing gate gives the code.
 
 *Table N7.1. The gates of a factory constructor in P4.*
 
@@ -2364,7 +2367,7 @@ A second creation of one id fails with `SpaceAlreadyExists` in play and in repla
 
 The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:248-257`). A tie goes to the bytewise least candidate.
 
-**The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:117-151`).
+**The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:122-156`).
 Its pattern `[...@args]` binds the whole call as one list, and its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP`.
 It has no guard and no cost authority, so each call is paid by its caller.
 It is a single-channel receive, so it adds no pre-state join, and handle calls merge like contract calls (consensus checklist item 18, [decision I-16](decision-register.md#i-16)).
@@ -2420,7 +2423,7 @@ pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), Reif
 
 The factory ops are `0x00` to `0x20`, and the other ops that take calls are `0x21` to `0x25` and `0x30` to `0x32` (`reified/system_channels.rs:103`, `107`).
 
-**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:221-257`).
+**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:221-259`).
 For a native space, it reads the config record in a read-only space intent. It then replies with the capability of the factory of the family ([decision 9.4](decision-register.md#decision-9-4)).
 That capability equals the value that the URN of the factory binds, so the FIPS check `getSpaceAgent(space_1) == HMB` holds.
 `assertEqual!(ret, a, b)` replies `true` when the sorted values of `a` and `b` are equal, and `false` otherwise ([decision 33](decision-register.md#decision-33)).
@@ -2435,10 +2438,10 @@ Figure N7 shows the lifecycle of a native handle, from the factory call to a rep
 
 A Reified failure is either an abort of the deploy or a [typed reply](glossary.md#typed-reply).
 An abort is the error `InterpreterError::ReduceError` with the text `reified:<Code>: <message>`, which the soft checkpoint of the deploy then reverts.
-A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:236-243`).
+A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:239-246`).
 The message text is not consensus state, but the code names the failure for tests and for users.
 
-The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:222-230`):
+The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:225-233`):
 
 - `SpaceTxnError::Host` becomes `SpaceError::Host`, which keeps the class of the host error.
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
@@ -2460,7 +2463,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `OrderedJoinUnsupported` | Retired in P5 wave W3 ([decision 29](decision-register.md#decision-29)). A join whose binds route to one native space runs on the join engine (N12), and the code stays commented out in `reified/errors.rs`. |
 | `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. |
 
-*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:19-143`).*
+*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:20-146`).*
 
 | Code | Trigger |
 |---|---|
@@ -2761,8 +2764,8 @@ An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family
 `AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2488-2536`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
-The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:559-599`).
-Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:605-632`).
+The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:628-673`).
+Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:679-706`).
 So each allocation is paid by its caller (P4 design B.7), and the handle method `gensym` runs a job with the authority of its call.
 A store without an allocator answers `Baseline`, and the binders keep the names that HEAD draws.
 
@@ -2796,8 +2799,8 @@ Every read, copy, comparison and allocation of the layer is reserved before it i
 
 #### N11.8 Receive queries and allocation jobs in the hooks
 
-Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:740-751`, `reified/reducer_hooks.rs:780-794`).
-The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:767-769`).
+Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:814-825`, `reified/reducer_hooks.rs:854-868`).
+The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:841-843`).
 
 ```text
 REIFIED-PRODUCE: Space(n,k) → remove the PARAMS tuple from data; named ← SPACE-PARAMS(params)   ▷ positional: PositionalParamsUnsupported
@@ -2907,16 +2910,16 @@ A program never issues a settle job, and the reducer issues a join only through 
 
 | Item | Content |
 |---|---|
-| `JoinBind` (`spaces/agent.rs:176-185`) | The collection key, the channel as the program names it, the pattern, and the query of one bind. |
-| `JoinOp` (`spaces/agent.rs:190-213`) | The space, the binds in bind order, the body, the arrow flags, the guard, the two authorities, and the carried orders of a re-issued persistent join. |
-| `SpaceOp::Join` (`spaces/agent.rs:294-299`) | The fourth operation of a space job. |
-| `SettleOp::cascade` (`spaces/agent.rs:251-267`) | The rest of a cascade, or `None` for the settle of one stack or priority-queue collection. |
-| `CascadeState` (`spaces/agent.rs:235-244`) | The collections that can still owe a fire, the owed second sends in run order, and the operation to resume. |
-| `PendingProduce` (`spaces/agent.rs:219-231`) | One owed second send: its collection, its record with the envelope, and its persistence. |
-| `SpaceAgent::prepare_join` (`spaces/agent.rs:455-459`) | Stages a join: the classification, the scope, and the engine. |
+| `JoinBind` (`spaces/agent.rs:185-194`) | The collection key, the channel as the program names it, the pattern, and the query of one bind. |
+| `JoinOp` (`spaces/agent.rs:199-222`) | The space, the binds in bind order, the body, the arrow flags, the guard, the two authorities, and the carried orders of a re-issued persistent join. |
+| `SpaceOp::Join` (`spaces/agent.rs:303-308`) | The fourth operation of a space job. |
+| `SettleOp::cascade` (`spaces/agent.rs:260-276`) | The rest of a cascade, or `None` for the settle of one stack or priority-queue collection. |
+| `CascadeState` (`spaces/agent.rs:244-253`) | The collections that can still owe a fire, the owed second sends in run order, and the operation to resume. |
+| `PendingProduce` (`spaces/agent.rs:228-240`) | One owed second send: its collection, its record with the envelope, and its persistence. |
+| `SpaceAgent::prepare_join` (`spaces/agent.rs:464-468`) | Stages a join: the classification, the scope, and the engine. |
 
-The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:848-876`).
-Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:906-930`).
+The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:922-950`).
+Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:980-1004`).
 
 #### N12.2 Classification and the scope
 
@@ -3346,7 +3349,7 @@ No deploy pays for the physical read of step 2. Three bounds limit that read ins
 | `NativeViewReads` | `space_store_handle.rs:996-1080` | The three steps of a load, for data, for continuations and for joins. |
 | `history_records` | `space_store_handle.rs:1117-1147` | A cold load decodes its leaf with the native history reader in every mode. So the decode limit of depth 128 acts alike in play and in replay. |
 | The effect helpers | `space_store_handle.rs:3248-3355` | `store_data`, `remove_matched_datum_and_join`, `store_waiting_continuation` and `store_persistent_data` moved here from `space_play.rs`. Play and the native backend call the same functions. |
-| `SpaceEnv::begin` | `spaces/agent.rs:88-96` | A space job opens a metered transaction when its budget is native, and a plain transaction otherwise. |
+| `SpaceEnv::begin` | `spaces/agent.rs:96-105` | A space job opens a metered transaction when its budget is native, and a plain transaction otherwise. |
 
 Legacy execution does not change.
 A transaction of `begin` carries no metered reads, so each of its loads reads as before.
@@ -3418,9 +3421,9 @@ Phase P7 enables the temp and seq qualifiers, so P7 runs the sweep of native rep
 | Step | Code | Rule |
 |---|---|---|
 | W1, the accessor | `accounting/native_runtime/checked_operations/trace/replay/session/execution.rs:39-66` | `Session::space_store` returns a `ParSpaceStore` over `NativeSpaceHost`. Its resolver asks the budget for the introduction authority, as `NativeExecution` does for a host operation. |
-| W2, the bound state | `reified/runtime.rs:63-68`, `reified/runtime.rs:139-156` | The mode `NativeReplay` holds a slot that the environment binds once, with the store and the budget. An unbound slot fails with `RuntimeUnavailable`. |
+| W2, the bound state | `reified/runtime.rs:66-71`, `reified/runtime.rs:217-234` | The mode `NativeReplay` holds a slot that the environment binds once, with the store and the budget. An unbound slot fails with `RuntimeUnavailable`. |
 | W3, the bind call | `rho_runtime.rs:1918-1934` | `create_native_replay_env` binds the runtime right after it builds the session. |
-| N1, native play | `reified/runtime.rs:112-129` | `ReifiedRuntime::host` no longer fails for a native budget. The guard of decision 46 stays in a comment that gives the reason. |
+| N1, native play | `reified/runtime.rs:190-207` | `ReifiedRuntime::host` no longer fails for a native budget. The guard of decision 46 stays in a comment that gives the reason. |
 
 [Table N6.1](#n6-scheduling) gives the three modes of the runtime.
 `NativeReplayEnvironment::restore` keeps the same store across evaluations, so `begin_evaluation_scope` forwards to the bound store (FR-5').
@@ -3665,7 +3668,7 @@ The engine runs LIST-CASCADE for its list waiters, and a settle job of a VectorD
 #### N15.5 The factory, the config and merges
 
 The factory rows of both families take `capacity`, `dimensions`, `metric` and `mirror` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
-Gate 9 of `FactoryConstructor::validate` refuses `mirror` unless the qualifier is the default one and the metric is `cosine`, `dot` or `euclidean` (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:155-186`).
+Gate 9 of `FactoryConstructor::validate` refuses `mirror` unless the qualifier is the default one and the metric is `cosine`, `dot` or `euclidean` (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:165-196`).
 `vdb_config` reads the params of each operation from the config record, with each read reserved first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:293-307`).
 
 The family has no counter (`USES_COUNTER = false`), so two branches that write one collection merge with no conflict ([M-1](decision-register.md#m-1)).
@@ -3765,7 +3768,7 @@ That delete names an id that the mirror never received, and ChromaDB accepts it 
 
 #### N16.3 Recorded embeddings
 
-`rho:vectordb:embed` turns texts into vectors with the embedder of the node (`rholang/src/rust/interpreter/reified/system_processes.rs:346-362`).
+`rho:vectordb:embed` turns texts into vectors with the embedder of the node (`rholang/src/rust/interpreter/reified/system_processes.rs:357-373`).
 The model can differ between nodes, so the vector of a text is never a function of consensus state.
 The dispatcher therefore records the whole reply of each call on the produce event of the reply, a failure reply included.
 Replay produces the recorded reply and asks no embedder, and Figure N16.3 shows both runs.
@@ -3777,7 +3780,7 @@ A program then sends the vector with `embedding=`, and from then on the vector i
 
 #### N16.4 The advisory query
 
-`rho:vectordb:ann` asks the mirror of the node for the records of a channel that are nearest to a query (`rholang/src/rust/interpreter/reified/system_processes.rs:436-462`).
+`rho:vectordb:ann` asks the mirror of the node for the records of a channel that are nearest to a query (`rholang/src/rust/interpreter/reified/system_processes.rs:447-473`).
 Its checks read consensus state, so play and replay both make them ([decision 67](decision-register.md#decision-67)).
 In native execution each check is a journaled operation, and a replay that skipped one would fail its certification with an incomplete journal.
 Only the answers of the services are recorded: the embedding of a text query, the neighbours and the watermark.

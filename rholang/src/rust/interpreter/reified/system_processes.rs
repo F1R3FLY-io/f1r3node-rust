@@ -71,7 +71,7 @@ use crate::rust::interpreter::spaces::factory::constructor::family_of;
 use crate::rust::interpreter::spaces::factory::defaults::MIRROR_PARAM;
 use crate::rust::interpreter::spaces::factory::urn::{self, factory_capability};
 use crate::rust::interpreter::spaces::families::FamilyAgent;
-use crate::rust::interpreter::spaces::namespace::{CollectionKey, NativeSpace};
+use crate::rust::interpreter::spaces::namespace::{CollectionKey, NativeSpace, SpaceId};
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
 use crate::rust::interpreter::spaces::types::config::{map_entries, SpaceConfig};
 use crate::rust::interpreter::system_processes::{Definition, ProcessContext};
@@ -238,6 +238,10 @@ async fn get_space_agent(
     let reply = match classify_space_ref(reference) {
         Err(error) => typed_error(error.reply_code(), Vec::new()),
         Ok(SpaceRef::Agent(_)) => typed_error(SpaceReplyCode::NotANativeSpace, Vec::new()),
+        // DG-1: an ephemeral space that an ended deploy created gets the reply before any job.
+        Ok(SpaceRef::Native(space)) if runtime.check_live_space(space).is_err() => {
+            dangling_reply(space.sid)
+        }
         Ok(SpaceRef::Native(space)) => match read_config(runtime, agent, space, authority).await? {
             Ok(config) => {
                 let config = SpaceConfig::from_par(&config).map_err(SpaceError::from)?;
@@ -246,15 +250,22 @@ async fn get_space_agent(
                     "the config record names a family without a factory",
                 ))?
             }
-            Err(SpaceError::DanglingHandle) => {
-                typed_error(SpaceReplyCode::DanglingHandle, Vec::new())
-            }
+            Err(SpaceError::DanglingHandle { space }) => dangling_reply(space),
             Err(error) => return Err(error.into()),
         },
     };
     let reply = vec![reply];
     produce(&reply, ret).await?;
     Ok(reply)
+}
+
+/// The typed reply `DanglingHandle` of `getSpaceAgent` for the missing space `space` (A22). The
+/// detail map names the space id under the key of the config map (DG-3).
+fn dangling_reply(space: SpaceId) -> Par {
+    typed_error(
+        SpaceReplyCode::DanglingHandle,
+        vec![("spaceId", expr_par(ExprInstance::GByteArray(space.to_vec())))],
+    )
 }
 
 /// Reads the config map of `space` as `ReifiedRuntime::read_config` does: one read-only
@@ -504,7 +515,9 @@ async fn ann_request(
     };
     let config_map = match read_config(runtime, agent, native, authority).await? {
         Ok(config_map) => config_map,
-        Err(SpaceError::DanglingHandle) => return Ok(Err(ServiceReplyCode::NotAVectorDbSpace)),
+        Err(SpaceError::DanglingHandle { .. }) => {
+            return Ok(Err(ServiceReplyCode::NotAVectorDbSpace))
+        }
         Err(error) => return Err(error.into()),
     };
     let config = SpaceConfig::from_par(&config_map).map_err(SpaceError::from)?;
@@ -1158,7 +1171,9 @@ mod tests {
         )
         .await
         .expect("a dangling handle gets a typed reply");
-        assert_eq!(reply, vec![typed(SpaceReplyCode::DanglingHandle)]);
+        assert_eq!(reply, vec![dangling_reply(
+            space_of(b"never created").sid
+        )]);
         assert_eq!(fixture.data(&ret).await, vec![reply]);
     }
 

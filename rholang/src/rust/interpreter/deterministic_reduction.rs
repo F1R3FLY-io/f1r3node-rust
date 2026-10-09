@@ -58,7 +58,7 @@ impl ReductionCoordinator {
         self.boundary.clone().read_owned().await
     }
 
-    async fn enter_boundary(&self) -> OwnedRwLockWriteGuard<()> {
+    pub(crate) async fn enter_boundary(&self) -> OwnedRwLockWriteGuard<()> {
         self.boundary.clone().write_owned().await
     }
 }

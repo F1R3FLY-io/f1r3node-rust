@@ -11,6 +11,7 @@ use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::space_store_handle::SpaceTxnError;
 use rspace_plus_plus::rspace::trace::event::COMM;
 
+use super::namespace::SpaceId;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::tensor::num::NumError;
 
@@ -56,12 +57,14 @@ pub enum SpaceError {
     // /// by decision 46). It fails before any space work, so play and replay fail at one point.
     // #[error("native execution does not support Reified RSpaces")]
     // SpacesUnsupportedInNativeExecution,
-    /// A handle whose space has no config record.
-    #[error("the space of this handle does not exist")]
-    DanglingHandle,
-    /// A name whose space has no config record.
-    #[error("the space of this name does not exist")]
-    DanglingName,
+    /// A handle whose space has no config record, or an id of an ephemeral space that an ended
+    /// deploy created (P7, DG-1). The error names the missing space id (DG-3).
+    #[error("the space {} of this handle does not exist", hex::encode(.space))]
+    DanglingHandle { space: SpaceId },
+    /// A name whose space has no config record, or a name of an ephemeral space that an ended
+    /// deploy created (P7, DG-1). The error names the missing space id (DG-3).
+    #[error("the space {} of this name does not exist", hex::encode(.space))]
+    DanglingName { space: SpaceId },
     /// The `ord` counter of a collection reached `i64::MAX`.
     #[error("a space counter reached its maximum")]
     CounterOverflow,
@@ -187,8 +190,8 @@ impl SpaceError {
             SpaceError::RuntimeUnavailable => "RuntimeUnavailable",
             // Retired by decision 47 with its variant.
             // SpaceError::SpacesUnsupportedInNativeExecution => "SpacesUnsupportedInNativeExecution",
-            SpaceError::DanglingHandle => "DanglingHandle",
-            SpaceError::DanglingName => "DanglingName",
+            SpaceError::DanglingHandle { .. } => "DanglingHandle",
+            SpaceError::DanglingName { .. } => "DanglingName",
             SpaceError::CounterOverflow => "CounterOverflow",
             SpaceError::CellOccupied => "CellOccupied",
             SpaceError::CapacityExceeded => "CapacityExceeded",
@@ -320,8 +323,8 @@ mod tests {
             SpaceError::RuntimeUnavailable,
             // Retired by decision 47.
             // SpaceError::SpacesUnsupportedInNativeExecution,
-            SpaceError::DanglingHandle,
-            SpaceError::DanglingName,
+            SpaceError::DanglingHandle { space: [1; 32] },
+            SpaceError::DanglingName { space: [2; 32] },
             SpaceError::CounterOverflow,
             SpaceError::CellOccupied,
             SpaceError::CapacityExceeded,
@@ -390,6 +393,20 @@ mod tests {
                     .to_string()
             )
         );
+        // DG-3: a dangling handle or name names the missing space id in lowercase hex.
+        for (error, noun) in [
+            (SpaceError::DanglingHandle { space: [0xab; 32] }, "handle"),
+            (SpaceError::DanglingName { space: [0xab; 32] }, "name"),
+        ] {
+            let code = error.code();
+            assert_eq!(
+                InterpreterError::from(error),
+                InterpreterError::ReduceError(format!(
+                    "reified:{code}: the space {} of this {noun} does not exist",
+                    "ab".repeat(32)
+                ))
+            );
+        }
     }
 
     #[test]

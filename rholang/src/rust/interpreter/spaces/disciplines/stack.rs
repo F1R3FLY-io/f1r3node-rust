@@ -531,6 +531,7 @@ mod tests {
             store: SpaceStoreHandle::new(space.clone()),
             budget: budget(),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         };
         let config = SpaceConfig::new(
             SPACE.sid,

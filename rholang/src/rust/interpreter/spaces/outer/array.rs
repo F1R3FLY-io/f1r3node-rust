@@ -421,6 +421,7 @@ mod tests {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000_000, "array store test")),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         };
         (space, env)
     }

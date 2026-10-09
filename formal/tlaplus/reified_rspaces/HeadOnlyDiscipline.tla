@@ -132,7 +132,7 @@
 (*   ContRound            spaces/generic.rs:1600-1684 (receive_head)       *)
 (*   Reissued             spaces/generic.rs:1583, 1676 (the re-issue sets  *)
 (*                        reissued_ord: op.persistent.then_some(ord)) and  *)
-(*                        spaces/agent.rs:126, 169 (ProduceOp::reissued_ord *)
+(*                        spaces/agent.rs:135, 178 (ProduceOp::reissued_ord *)
 (*                        and ConsumeOp::reissued_ord)                     *)
 (*   the fire-round cap   reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP,    *)
 (*                        FireRounds::after_fire)                          *)

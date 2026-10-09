@@ -10,7 +10,8 @@
 //!    `[2]‖sid` and `H(sid)`. The agent locks `C(sid)`, `S(sid)` and `H(sid)`, fails with
 //!    `SpaceAlreadyExists` when `C(sid)` holds a record, and stages the config record, the
 //!    space counter `S(sid) = 0` and the handle continuation on `H(sid)` (steps 5 to 7).
-//! 5. After the commit, the factory replies `bundle+{H(sid)}` on `ret` (step 8).
+//! 5. After the commit, the factory records an ephemeral (`temp` or `seq`) space in the book of
+//!    the evaluation (P7, VR-2) and replies `bundle+{H(sid)}` on `ret` (step 8).
 //!
 //! Every failure aborts the deploy. The reducer aborts a persistent send to a factory before
 //! the call (A21), so no call repeats.
@@ -94,9 +95,10 @@ impl FactoryProcess {
             sid: derive_space_id(&random),
             durability: constructor.durability(),
         };
+        let config = constructor.config(space);
         let creation = SpaceCreation {
             space,
-            config: constructor.config(space).to_par(),
+            config: config.to_par(),
             handle_pattern: handle_pattern(),
             handle_continuation: handle_continuation(space, &random),
             random,
@@ -106,6 +108,9 @@ impl FactoryProcess {
         self.runtime
             .create_space(Arc::clone(&self.agent), creation)
             .await?;
+        // P7 (VR-2): an ephemeral space enters the book of the evaluation after its creation
+        // committed and before the reply, so every holder of its handle follows the record.
+        self.runtime.record_ephemeral_space(space, config.qualifier);
         let reply = vec![handle_capability(space)];
         produce(&reply, ret).await?;
         Ok(reply)
@@ -290,7 +295,8 @@ mod tests {
     async fn reified_factory_rejects_bad_constructor_before_any_effect() {
         let fixture = Fixture::new().await;
         let cases = [
-            (list(vec![string("temp")]), "QualifierUnavailable"),
+            // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
+            // (list(vec![string("temp")]), "QualifierUnavailable"),
             (list(vec![string("seq")]), "QualifierUnavailable"),
             (string("default"), "BadConstructorArgument"),
             (list(vec![int(1)]), "BadConstructorArgument"),

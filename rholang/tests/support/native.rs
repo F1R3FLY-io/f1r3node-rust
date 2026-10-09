@@ -52,7 +52,7 @@ use rholang::rust::interpreter::rho_runtime::{
     create_native_replay_env, create_rho_runtime, NativeReplayEnvironment, RhoHistoryRepository,
     RhoRuntime, RhoRuntimeImpl,
 };
-use rholang::rust::interpreter::spaces::namespace::{self, ReifiedId};
+use rholang::rust::interpreter::spaces::namespace::{self, Durability, ReifiedId};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -272,6 +272,13 @@ pub struct Played {
     pub outputs: Vec<String>,
     pub out: Vec<Vec<Par>>,
     pub random: Blake2b512Random,
+    /// The volatile channels (ids with an ephemeral KIND) that hold records or waiting
+    /// continuations in the hot store after the evaluation and before the checkpoint. The sweep
+    /// at the end of each root evaluation leaves none (P7, design v3 VR-2).
+    pub residue: Vec<Par>,
+    /// The durable space channels that hold records or waiting continuations in the hot store
+    /// after the evaluation and before the checkpoint (P7).
+    pub durable: Vec<Par>,
 }
 
 /// Plays `term` as a native deploy whose phlo limit is `limit`, on a fresh runtime.
@@ -330,6 +337,8 @@ async fn play_on(
         .collect();
     let outputs = outputs_of(runtime).await;
     let out = out_values_of(runtime).await;
+    let residue = volatile_residue(runtime).await;
+    let durable = space_residue(runtime, Durability::Durable).await;
     let root = runtime.create_checkpoint().await.root;
     Played {
         result,
@@ -339,6 +348,47 @@ async fn play_on(
         outputs,
         out,
         random,
+        residue,
+        durable,
+    }
+}
+
+/// The volatile channels that hold records or waiting continuations in the hot store of
+/// `runtime`, sorted by their Debug form (P7, design v3 VR-2).
+pub async fn volatile_residue(runtime: &RhoRuntimeImpl) -> Vec<Par> {
+    space_residue(runtime, Durability::Ephemeral).await
+}
+
+/// The space-scoped channels of the durability `durability` that hold records or waiting
+/// continuations in the hot store of `runtime`, sorted by their Debug form (P7).
+pub async fn space_residue(runtime: &RhoRuntimeImpl, durability: Durability) -> Vec<Par> {
+    let mut residue: Vec<Par> = runtime
+        .get_hot_changes()
+        .await
+        .into_iter()
+        .filter(|(_, row)| !row.data.is_empty() || !row.wks.is_empty())
+        .flat_map(|(channels, _)| channels)
+        .filter(|channel| space_durability(channel) == Some(durability))
+        .collect();
+    residue.sort_by_cached_key(|channel| format!("{channel:?}"));
+    residue.dedup();
+    residue
+}
+
+/// The durability of a space-scoped channel, or `None` for any other channel.
+fn space_durability(channel: &Par) -> Option<Durability> {
+    match namespace::reified_id_of(channel)? {
+        ReifiedId::Config(space)
+        | ReifiedId::SpaceCounter(space)
+        | ReifiedId::CollectionCounter(space, _)
+        | ReifiedId::Data(space, _)
+        | ReifiedId::PathIndex(space, _)
+        | ReifiedId::Allocator(space)
+        | ReifiedId::Handle(space)
+        | ReifiedId::Name(space, _) => Some(space.durability),
+        ReifiedId::Op(_) | ReifiedId::Matcher(..) | ReifiedId::Body(..) | ReifiedId::Reserved(..) => {
+            None
+        }
     }
 }
 
@@ -392,6 +442,9 @@ impl NativeChain {
             roots: Mutex::new(BTreeMap::new()),
         })
     }
+
+    /// The volatile channels in the hot store of the chain's runtime (P7, design v3 VR-2).
+    pub async fn residue(&self) -> Vec<Par> { volatile_residue(&self.runtime).await }
 
     /// Injects `term` into the runtime of the chain through `RhoRuntime::inj`, as the
     /// exploratory deploys of Casper do: an evaluation without a deploy result.

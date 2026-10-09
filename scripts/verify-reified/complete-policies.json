@@ -551,7 +551,7 @@
       ]
     },
     "p4": {
-      "description": "P4 hashmap:queue, the first working space (plan decisions 28 to 35, I-20 and I-21, and readiness review F2). The sources are every new P4 file and the two P2 files that P4 rewrites. Batch 4E-T writes the test files, so a missing test file is a finding until 4E-T lands.",
+      "description": "P4 hashmap:queue, the first working space (plan decisions 28 to 35, I-20 and I-21, and readiness review F2). The sources are every new P4 file and the two P2 files that P4 rewrites. Batch 4E-T writes the test files, so a missing test file is a finding until 4E-T lands. P7 step 1 moved the call self.reified.begin_evaluation_scope() of the three root entries of reduce.rs into ReducerCore::begin_root_evaluation (reified/reducer_hooks.rs), so its entry point names that file.",
       "sources": [
         "models/src/rust/space_factory_urn.rs",
         "rholang/src/rust/interpreter/reified/mod.rs",
@@ -615,7 +615,7 @@
           "pattern": "    pub(crate) reified: Arc<super::reified::runtime::ReifiedRuntime>,"
         },
         {
-          "file": "rholang/src/rust/interpreter/reduce.rs",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
           "pattern": "        self.reified.begin_evaluation_scope();"
         },
         {
@@ -1844,6 +1844,116 @@
       ],
       "property_files": [
         "rholang/src/rust/interpreter/tensor/exact.rs",
+        "rholang/tests/support/props.rs"
+      ]
+    },
+    "p7": {
+      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call.",
+      "sources": [
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+        "rholang/src/rust/interpreter/spaces/agent.rs",
+        "rholang/src/rust/interpreter/spaces/errors.rs",
+        "rholang/src/rust/interpreter/spaces/generic.rs",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/src/rust/interpreter/reified/factory.rs",
+        "rholang/src/rust/interpreter/reified/system_processes.rs"
+      ],
+      "entry_points": [
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub fn ephemeral_space(id: &[u8]) -> Option<NativeSpace> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub struct VolatileRegistry {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub fn record_locked(&self, keys: &[Par]) {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub fn record_space(&self, space: NativeSpace, qualifier: SpaceQualifier) {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+          "pattern": "pub fn take_channels(&self) -> Vec<Par> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+          "pattern": "pub volatile: Arc<VolatileRegistry>,"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+          "pattern": "self.volatile.record_locked(lock_keys);"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "DanglingHandle { space: SpaceId },"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/errors.rs",
+          "pattern": "DanglingName { space: SpaceId },"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+          "pattern": "SpaceQualifier::Default | SpaceQualifier::Temp => {}"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "pattern": "pub fn record_ephemeral_space(&self, space: NativeSpace, qualifier: SpaceQualifier) {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "pattern": "pub fn check_live_space(&self, space: NativeSpace) -> Result<(), SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "pattern": "pub fn check_live(&self, channel: &Par) -> Result<(), SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "pattern": "pub async fn sweep_volatile("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "pattern": "pub(in crate::rust::interpreter) fn begin_root_evaluation(&self) -> bool {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "pattern": "pub(in crate::rust::interpreter) async fn end_root_evaluation("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "pattern": "pub(in crate::rust::interpreter) async fn end_root_evaluation_observed("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "pattern": "fn check_route_live(&self, channel: &Par, route: &Route) -> Result<(), SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/factory.rs",
+          "pattern": "self.runtime.record_ephemeral_space(space, config.qualifier);"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
+          "pattern": "fn dangling_reply(space: SpaceId) -> Par {"
+        }
+      ],
+      "tests": [
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/tests/reified_temp_seq.rs",
+        "rholang/tests/reified_volatile_sweep.rs",
+        "rholang/tests/support/native.rs",
+        "rholang/tests/support/family_programs.rs",
+        "rholang/tests/support/props.rs"
+      ],
+      "property_files": [
+        "rholang/src/rust/interpreter/reified/runtime.rs",
         "rholang/tests/support/props.rs"
       ]
     }

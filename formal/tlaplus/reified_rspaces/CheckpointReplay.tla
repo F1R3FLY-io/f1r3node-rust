@@ -135,7 +135,7 @@
 (*   re-store (Rule E)      spaces/generic.rs:1066-1081 (Cx::restore and    *)
 (*                          Cx::restore_on), 1265-1274 (restore_peeked),   *)
 (*                          1180-1262 (receive_head)                       *)
-(*   produce_peeks          reduce.rs:981-1016, called at 780, 809, 934    *)
+(*   produce_peeks          reduce.rs:986-1021, called at 780, 809, 934    *)
 (*   peek continuation      rs/hot_store.rs:1315-1317                      *)
 (*                          (continuation_identity includes the peeks)     *)
 (*   pre-charges            storage/charging_rspace.rs:96-100              *)
@@ -726,7 +726,7 @@ PlanProduceFire(op, n, q, restore) ==
 \* A consume or a peek of op that fires the stored record p. Its COMM
 \* removes the record (store_persistent_data, ops_consume.rs:192-202), and
 \* for a peek (restore, Rule E) the re-store puts the same record back with
-\* its identity (produce_peeks, reduce.rs:981-1016). The kind "kept" is the
+\* its identity (produce_peeks, reduce.rs:986-1021). The kind "kept" is the
 \* peek fire of RetainPeek: the record stays, and no re-store follows.
 \* @type: ($op, Int, $id, Str, Bool) => $plan;
 PlanConsumeFire(op, n, p, k1, restore) ==

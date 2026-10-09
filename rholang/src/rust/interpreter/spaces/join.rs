@@ -4901,6 +4901,7 @@ mod tests {
             store: SpaceStoreHandle::new(host.clone()),
             budget: RuntimeBudget::new(Cost::create(10_000_000, "join engine test")),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         };
         let family = SpaceFactoryUrn::all()
             .find(|urn| urn.outer == SpaceOuter::HashMap && urn.inner == inner)

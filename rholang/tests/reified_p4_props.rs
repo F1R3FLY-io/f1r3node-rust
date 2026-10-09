@@ -59,7 +59,7 @@ use models::rust::space_factory_urn::{
     SpaceFactoryConstructor, SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier,
     FACTORY_FAMILY_COUNT, HASHMAP_BAG_ALIAS, PATHMAP_BAG_ALIAS, SPACE_URN_PREFIX,
 };
-use models::rust::utils::{new_bundle_par, new_freevar_par};
+use models::rust::utils::{new_bundle_par, new_freevar_par, new_gbytearray_par};
 use proptest::array::uniform32;
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -2627,6 +2627,7 @@ impl AgentRig {
             store: SpaceStoreHandle::new(host.clone()),
             budget: RuntimeBudget::new(Cost::create(RIG_PHLO, "rrs-p4-props agent rig")),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         };
         let call = random_of(&[b"rrs-p4-props factory call"]);
         let creation = SpaceCreation {
@@ -6846,9 +6847,10 @@ fn prop_aliases_map_to_family() {
 }
 
 /// `qualifier_matrix`: the HashSet store takes the `seq` qualifier only, every other store
-/// takes every qualifier. Every factory with a constructor schema accepts `default` and refuses
-/// `temp` and `seq` with `QualifierUnavailable` until P7. An Array factory then also needs its
-/// `size` (F7, P5 design v3 A.10). Every family without a schema is unavailable.
+/// takes every qualifier. Every factory with a constructor schema accepts `default` and `temp`
+/// (P7 step 1, design v3 QT-1) and refuses `seq` with `QualifierUnavailable` until the Seq rules
+/// land. An Array factory then also needs its `size` (F7, P5 design v3 A.10). Every family
+/// without a schema is unavailable.
 #[test]
 fn prop_qualifier_matrix() {
     check(
@@ -6866,20 +6868,35 @@ fn prop_qualifier_matrix() {
                 required_params(family),
                 qualifier,
             ) {
-                (true, [], SpaceQualifier::Default) => {
-                    let validated = validated.expect("a family with a schema accepts default");
-                    prop_assert_eq!(validated.qualifier, SpaceQualifier::Default);
-                    prop_assert_eq!(validated.durability(), Durability::Durable);
+                // Changed by P7 step 1 (design v3 QT-1): `temp` is accepted like `default`.
+                // (true, [], SpaceQualifier::Default) => {
+                //     let validated = validated.expect("a family with a schema accepts default");
+                //     prop_assert_eq!(validated.qualifier, SpaceQualifier::Default);
+                //     prop_assert_eq!(validated.durability(), Durability::Durable);
+                // }
+                (true, [], SpaceQualifier::Default | SpaceQualifier::Temp) => {
+                    let validated =
+                        validated.expect("a family with a schema accepts default and temp");
+                    prop_assert_eq!(validated.qualifier, qualifier);
+                    let durability = match qualifier {
+                        SpaceQualifier::Default => Durability::Durable,
+                        SpaceQualifier::Temp | SpaceQualifier::Seq => Durability::Ephemeral,
+                    };
+                    prop_assert_eq!(validated.durability(), durability);
                 }
-                (true, [required, ..], SpaceQualifier::Default) => prop_assert_eq!(
+                (true, [required, ..], SpaceQualifier::Default | SpaceQualifier::Temp) => {
+                    prop_assert_eq!(
+                        validated,
+                        Err(SpaceError::MissingParam {
+                            key: (*required).to_string(),
+                        })
+                    )
+                }
+                (true, _, SpaceQualifier::Seq) => prop_assert_eq!(
                     validated,
-                    Err(SpaceError::MissingParam {
-                        key: (*required).to_string(),
-                    })
-                ),
-                (true, _, other) => prop_assert_eq!(
-                    validated,
-                    Err(SpaceError::QualifierUnavailable(other.as_str().to_string()))
+                    Err(SpaceError::QualifierUnavailable(
+                        SpaceQualifier::Seq.as_str().to_string()
+                    ))
                 ),
                 (false, _, _) => prop_assert_eq!(
                     validated,
@@ -7821,9 +7838,14 @@ async fn dangling_deterministic_error_case(
         prop_assert!(node.play.get_data(&data).await.is_empty());
         prop_assert!(node.play.get_continuations(vec![data]).await.is_empty());
         if expected.is_none() {
+            // Changed by P7 step 1 (design v3 DG-3): the detail map names the space id.
+            // prop_assert_eq!(node.values("rrs-p4-agent").await, vec![typed_error(
+            //     SpaceReplyCode::DanglingHandle,
+            //     Vec::new()
+            // )]);
             prop_assert_eq!(node.values("rrs-p4-agent").await, vec![typed_error(
                 SpaceReplyCode::DanglingHandle,
-                Vec::new()
+                vec![("spaceId", new_gbytearray_par(sid.to_vec(), Vec::new(), false))]
             )]);
         }
         results.push((played.codes(), played.result.cost.value));

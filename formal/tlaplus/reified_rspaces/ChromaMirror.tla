@@ -87,16 +87,16 @@
 \*   NetUpserts, NetDeletes, Upserts
 \*                         spaces/mirror.rs:236-313 (MirrorCapture::writes: the first and the last event)
 \*   journal               spaces/mirror.rs:408-426, 429-457 (MirrorJournal::record, take)
-\*                         reified/runtime.rs:192-194 (a space job records its net writes)
-\*   CheckWork             reified/system_processes.rs:492-535 (ann_request: the checks of decision 67)
-\*   Deploy (M1)           reified/runtime.rs:205-210 (settle_mirror_journal), interpreter.rs:257, rho_runtime.rs:1808
-\*   Explore               reified/runtime.rs:95-108 (begin_evaluation_scope clears the journal)
+\*                         reified/runtime.rs:273-275 (a space job records its net writes)
+\*   CheckWork             reified/system_processes.rs:503-548 (ann_request: the checks of decision 67)
+\*   Deploy (M1)           reified/runtime.rs:286-291 (settle_mirror_journal), interpreter.rs:257, rho_runtime.rs:1808
+\*   Explore               reified/runtime.rs:100-116 (begin_evaluation_scope clears the journal)
 \*   Publish               reified/vectordb_services.rs:486-499 (MirrorWriter::publish: try_send, never waits)
 \*   Apply                 reified/vectordb_services.rs:365-381 (apply), 455-482 (the writer task: attempts, dirty)
 \*   Reconcile             reified/mirror_reconciler.rs:139-212 (reconcile), 216-230 (prepare_dirty), 235-248 (remark)
 \*                         reified/mirror_reconciler.rs:253-296, 300-344 (repair, channel_repair)
-\*   Replay                reified/system_processes.rs:436-462 (ann: the checks, then the recorded reply in replay)
-\*   (the answer of play)  reified/system_processes.rs:590-635, 640-652 (ann_answer, produce_recorded)
+\*   Replay                reified/system_processes.rs:447-473 (ann: the checks, then the recorded reply in replay)
+\*   (the answer of play)  reified/system_processes.rs:603-648, 653-665 (ann_answer, produce_recorded)
 
 EXTENDS Naturals, Sequences, FiniteSets
 

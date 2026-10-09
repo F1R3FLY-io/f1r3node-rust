@@ -31,6 +31,7 @@ use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
     submit_space, SpaceRequest,
 };
+use crate::rust::interpreter::deterministic_reduction::ReductionCoordinator;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::interpreter::interpreter::EvaluateResult;
@@ -38,9 +39,11 @@ use crate::rust::interpreter::spaces::agent::{
     self, AllocOp, Allocation, ParSpaceStore, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
     SpaceOutcome,
 };
+use crate::rust::interpreter::spaces::ephemeral::{ephemeral_space, VolatileRegistry};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::mirror::MirrorJournal;
-use crate::rust::interpreter::spaces::namespace::{self, NativeSpace};
+use crate::rust::interpreter::spaces::namespace::{self, NativeSpace, ReifiedId};
+use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 
 /// The mode of a [`ReifiedRuntime`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +77,8 @@ pub struct ReifiedRuntime {
     state: RuntimeState,
     /// The mirror journal of the evaluation (P6 step 7b).
     journal: Arc<MirrorJournal>,
+    /// The book of the ephemeral spaces of the root evaluation (P7, VR-1).
+    volatile: Arc<VolatileRegistry>,
 }
 
 impl ReifiedRuntime {
@@ -96,6 +101,9 @@ impl ReifiedRuntime {
         // A journal that no final result settled belongs to an evaluation that ended without
         // one (P6 step 7b), so it is dropped.
         self.journal.clear();
+        // The book of the ephemeral spaces starts empty (P7, VR-3). The sweep of the previous
+        // root evaluation drained its channels.
+        self.volatile.clear();
         match &self.state {
             RuntimeState::Host { store, .. } => store.begin_evaluation_scope(),
             RuntimeState::NativeReplay { bound } => {
@@ -105,6 +113,76 @@ impl ReifiedRuntime {
             }
             RuntimeState::Detached => {}
         }
+    }
+
+    /// Records the ephemeral space `space` that a factory created in the current root
+    /// evaluation, after its creation committed and before the factory replies (VR-2). A durable
+    /// space is not recorded.
+    pub fn record_ephemeral_space(&self, space: NativeSpace, qualifier: SpaceQualifier) {
+        if matches!(space.durability, namespace::Durability::Ephemeral) {
+            self.volatile.record_space(space, qualifier);
+        }
+    }
+
+    /// DG-1 for a space reference: an ephemeral space that the current root evaluation did not
+    /// create belongs to an ended deploy and fails with `DanglingHandle`. A durable space
+    /// passes; its first operation reads its config (DG-2).
+    pub fn check_live_space(&self, space: NativeSpace) -> Result<(), SpaceError> {
+        match space.durability {
+            namespace::Durability::Durable => Ok(()),
+            namespace::Durability::Ephemeral if self.volatile.is_live(&space.sid) => Ok(()),
+            namespace::Durability::Ephemeral => Err(SpaceError::DanglingHandle { space: space.sid }),
+        }
+    }
+
+    /// DG-1 for a routed channel: a name of an ephemeral space that the current root
+    /// evaluation did not create fails with `DanglingName`, and every other id of such a space
+    /// (its handle, or a storage id) fails with `DanglingHandle`. The check reads only the book
+    /// of the evaluation, so it costs nothing beyond the evaluation that reaches it (DG-4).
+    pub fn check_live(&self, channel: &Par) -> Result<(), SpaceError> {
+        let Some(id) = namespace::sole_gprivate_id(channel) else {
+            return Ok(());
+        };
+        match ephemeral_space(id) {
+            Some(space) if !self.volatile.is_live(&space.sid) => {
+                Err(match namespace::decode_reified_id(id) {
+                    Some(ReifiedId::Name(..)) => SpaceError::DanglingName { space: space.sid },
+                    _ => SpaceError::DanglingHandle { space: space.sid },
+                })
+            }
+            Some(_) | None => Ok(()),
+        }
+    }
+
+    /// The qualifier of the ephemeral space `sid` when the current root evaluation created it.
+    pub fn ephemeral_qualifier(&self, sid: &namespace::SpaceId) -> Option<SpaceQualifier> {
+        self.volatile.qualifier(sid)
+    }
+
+    /// Sweeps the volatile channels of the root evaluation that ends (P7, VR-4 to VR-8). It
+    /// runs after every detached task of the evaluation is done. With no volatile channel it
+    /// takes no guard and calls nothing, so ordinary execution is unchanged (VR-5). Otherwise it
+    /// takes the boundary guard of `coordinator`, as every store removal of the deterministic
+    /// space does, so no checkpoint interleaves with it (VR-6). A failure of the sweep breaks an
+    /// invariant of P7: it is a `BugFoundError`, which the evaluation classes `Platform` (VR-8).
+    pub async fn sweep_volatile(
+        &self,
+        coordinator: &ReductionCoordinator,
+    ) -> Result<(), InterpreterError> {
+        if !self.volatile.has_channels() {
+            return Ok(());
+        }
+        let channels = self.volatile.take_channels();
+        let failed = |error: String| {
+            InterpreterError::BugFoundError(format!("reified: the volatile sweep failed: {error}"))
+        };
+        let (store, _) = self.host().map_err(|error| failed(error.to_string()))?;
+        let _boundary = coordinator.enter_boundary().await;
+        store
+            .sweep_volatile(&channels)
+            .await
+            .map(drop)
+            .map_err(|error| failed(error.to_string()))
     }
 
     // The store and the budget of a runtime that runs space jobs: a host runtime, in legacy
@@ -163,6 +241,7 @@ impl ReifiedRuntime {
             store,
             budget,
             meter: ScanMeter::new(host_work),
+            volatile: Arc::clone(&self.volatile),
         })
     }
 
@@ -174,6 +253,7 @@ impl ReifiedRuntime {
         op: SpaceOp,
     ) -> Result<SpaceOutcome, InterpreterError> {
         let (store, budget) = self.host()?;
+        let volatile = Arc::clone(&self.volatile);
         let sid = op.space().sid;
         let authority = op.footprint_authority();
         let journal = Arc::clone(&self.journal);
@@ -187,6 +267,7 @@ impl ReifiedRuntime {
                         store,
                         budget,
                         meter: ScanMeter::new(host_work),
+                        volatile,
                     };
                     let mut outcome = agent::run_op(agent.as_ref(), &env, op).await?;
                     if let Some(writes) = outcome.mirror.take() {
@@ -220,6 +301,7 @@ impl ReifiedRuntime {
         creation: SpaceCreation,
     ) -> Result<(), InterpreterError> {
         let (store, budget) = self.host()?;
+        let volatile = Arc::clone(&self.volatile);
         let space = creation.space;
         let authority = match creation.authority.regions.is_empty() {
             true => None,
@@ -235,6 +317,7 @@ impl ReifiedRuntime {
                         store,
                         budget,
                         meter: ScanMeter::new(host_work),
+                        volatile,
                     };
                     let prepared = agent.prepare_create(&env, creation).await?;
                     Ok(prepared.commit().await?)
@@ -256,6 +339,7 @@ impl ReifiedRuntime {
         op: AllocOp,
     ) -> Result<Option<Vec<u64>>, InterpreterError> {
         let (store, budget) = self.host()?;
+        let volatile = Arc::clone(&self.volatile);
         let sid = op.space.sid;
         let authority = match op.authority.regions.is_empty() {
             true => None,
@@ -271,6 +355,7 @@ impl ReifiedRuntime {
                         store,
                         budget,
                         meter: ScanMeter::new(host_work),
+                        volatile,
                     };
                     match agent.allocate(&env, op).await? {
                         Allocation::Baseline => Ok(None),
@@ -292,6 +377,7 @@ impl ReifiedRuntime {
         authority: Option<CostAuthority>,
     ) -> Result<Par, InterpreterError> {
         let (store, budget) = self.host()?;
+        let volatile = Arc::clone(&self.volatile);
         submit_space(SpaceRequest {
             sid: space.sid,
             authority,
@@ -302,6 +388,7 @@ impl ReifiedRuntime {
                         store,
                         budget,
                         meter: ScanMeter::new(host_work),
+                        volatile,
                     };
                     Ok(agent.read_config(&env, space).await?)
                 })
@@ -321,6 +408,7 @@ where T: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> +
             budget,
         },
         journal: Arc::new(MirrorJournal::new()),
+        volatile: Arc::new(VolatileRegistry::default()),
     })
 }
 
@@ -329,6 +417,7 @@ pub fn unavailable() -> Arc<ReifiedRuntime> {
     Arc::new(ReifiedRuntime {
         state: RuntimeState::Detached,
         journal: Arc::new(MirrorJournal::new()),
+        volatile: Arc::new(VolatileRegistry::default()),
     })
 }
 
@@ -340,6 +429,7 @@ pub fn native_replay() -> Arc<ReifiedRuntime> {
             bound: OnceLock::new(),
         },
         journal: Arc::new(MirrorJournal::new()),
+        volatile: Arc::new(VolatileRegistry::default()),
     })
 }
 
@@ -371,7 +461,7 @@ mod tests {
         ConsumeOp, JoinOp, Prepared, ProduceOp, SettleOp,
     };
     use crate::rust::interpreter::spaces::namespace::{
-        CollectionKey, Durability, NameTail, SID_LEN,
+        CollectionKey, Durability, NameTail, SpaceId, SID_LEN,
     };
 
     type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
@@ -496,7 +586,7 @@ mod tests {
                     .first()
                     .cloned()
                     .ok_or(SpaceError::Inconsistent("an empty config datum")),
-                None => Err(SpaceError::DanglingHandle),
+                None => Err(SpaceError::DanglingHandle { space: space.sid }),
             }
         }
 
@@ -723,5 +813,91 @@ mod tests {
             }
             other => panic!("a missing config read returned {other:?}"),
         }
+    }
+
+    /// `dead_ephemeral_dangling` (P7-2 of VolatileSweep.v, design v3 DG-1): an id of an
+    /// ephemeral space that the evaluation did not create fails, a name with `DanglingName` and
+    /// every other id with `DanglingHandle`, and the ids of a created space and of every durable
+    /// space pass. A new root evaluation forgets the created spaces.
+    #[test]
+    fn prop_dead_ephemeral_dangling() {
+        use std::collections::BTreeSet;
+
+        use proptest::collection::btree_set;
+        use proptest::prelude::{any, prop_assert, prop_assert_eq};
+        use proptest::test_runner::{Config, RngSeed, TestRunner};
+
+        let sids = btree_set(any::<[u8; SID_LEN]>(), 2..6);
+        let mut runner = TestRunner::new(Config {
+            cases: 64,
+            rng_seed: RngSeed::Fixed(0x0E0D_2026_1009_0007),
+            failure_persistence: None,
+            ..Config::default()
+        });
+        runner
+            .run(&(sids, 1usize..5), |(sids, created)| {
+                let runtime = unavailable();
+                let sids: Vec<SpaceId> = sids.into_iter().collect();
+                let created = created.min(sids.len() - 1);
+                let (live, dead) = sids.split_at(created);
+                for sid in live {
+                    let space = NativeSpace {
+                        sid: *sid,
+                        durability: Durability::Ephemeral,
+                    };
+                    runtime.record_ephemeral_space(space, SpaceQualifier::Temp);
+                }
+                let live: BTreeSet<SpaceId> = live.iter().copied().collect();
+                for sid in &sids {
+                    for durability in [Durability::Ephemeral, Durability::Durable] {
+                        let space = NativeSpace {
+                            sid: *sid,
+                            durability,
+                        };
+                        let passes = durability == Durability::Durable || live.contains(sid);
+                        let ids = [
+                            (namespace::handle_channel(space), false),
+                            (namespace::config_channel(space), false),
+                            (
+                                namespace::data_channel(
+                                    space,
+                                    &CollectionKey::from_bytes(vec![7]).expect("a key"),
+                                ),
+                                false,
+                            ),
+                            (namespace::name_id(space, NameTail::Random([3; 32])), true),
+                            (namespace::name_id(space, NameTail::Index(1)), true),
+                        ];
+                        for (id, is_name) in ids {
+                            let checked = runtime.check_live(&namespace::gprivate(id));
+                            let expected = match (passes, is_name) {
+                                (true, _) => Ok(()),
+                                (false, true) => Err(SpaceError::DanglingName { space: *sid }),
+                                (false, false) => Err(SpaceError::DanglingHandle { space: *sid }),
+                            };
+                            prop_assert_eq!(checked, expected);
+                        }
+                        let expected = match passes {
+                            true => Ok(()),
+                            false => Err(SpaceError::DanglingHandle { space: *sid }),
+                        };
+                        prop_assert_eq!(runtime.check_live_space(space), expected);
+                    }
+                }
+                prop_assert!(dead.iter().all(|sid| !live.contains(sid)));
+                runtime.begin_evaluation_scope();
+                for sid in live {
+                    let space = NativeSpace {
+                        sid,
+                        durability: Durability::Ephemeral,
+                    };
+                    prop_assert_eq!(
+                        runtime.check_live_space(space),
+                        Err(SpaceError::DanglingHandle { space: sid })
+                    );
+                }
+                Ok(())
+            })
+            .expect("the live check of DG-1 holds");
     }
 }

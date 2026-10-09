@@ -1,7 +1,7 @@
 //! The shared harness of the P5 integration tests of Reified RSpaces (P5 design v3, A.3.2).
 //!
 //! Each P5 test file includes it with `#[path = "support/mod.rs"] mod support;`. The P4 files
-//! keep their inline harnesses. The harness has six parts:
+//! keep their inline harnesses. The harness has seven parts:
 //!
 //! * [`props`]: the property runner, with the fixed seed of P5 and the case counts of P4: 64
 //!   cases for a pure property or a property over the in-memory agent, and 16 cases for a
@@ -17,6 +17,7 @@
 //!   play, the committed evidence, the journal check, the trace binding and native replay.
 //! * [`backends`]: the test backends of the recorded VectorDB processes of P6 step 7, a mock
 //!   embedder and a fake mirror, and the lock of the services of the process.
+//! * [`family_programs`]: the family programs of the native suites, with a qualifier (P7).
 //!
 //! A test file uses only some of the helpers, so the harness allows dead code, as the shared
 //! encoding strategies of P2 do (`models/tests/support/reified_strategies.rs`).
@@ -25,6 +26,7 @@
 
 pub mod agent;
 pub mod backends;
+pub mod family_programs;
 pub mod legacy;
 pub mod native;
 pub mod props;

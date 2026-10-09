@@ -29,8 +29,9 @@
 //! no space data. A creation or a stored config that names one fails in the family agent with
 //! `FamilyUnavailable`.
 //!
-//! **Qualifiers.** The `temp` and `seq` qualifiers fail closed with `QualifierUnavailable` until
-//! P7 (F17 of decision 39), on every factory of this wave, before the gates of the params.
+//! **Qualifiers.** The `seq` qualifier fails closed with `QualifierUnavailable` until its rules
+//! land in P7, on every factory of this wave, before the gates of the params. P7 step 1 makes
+//! `temp` available (F17 of decision 39 puts its rows of the matrix in P7).
 //!
 //! The property `prop_pattern_enforcement_any_wired_family` restates `PatternEnforcement` (V2 of
 //! `GenericRSpace.tla`) and `wildcard_matcher_degenerate` (`Match.v`) end to end through Rholang:
@@ -770,15 +771,17 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
 
 // ─── Qualifiers ──────────────────────────────────────────────────────────────────────────────
 
-/// The `temp` and `seq` qualifiers fail closed with `QualifierUnavailable` until P7 (F17). The
-/// constructor of every family with a schema refuses them, before its params: an Array factory
+/// The `seq` qualifier fails closed with `QualifierUnavailable` until its rules land in P7. The
+/// constructor of every family with a schema refuses it, before its params: an Array factory
 /// without its required `size` reports the qualifier, not the missing param. Every factory of
-/// the rows of this wave refuses them in a Rholang deploy, which leaves no space data and runs
-/// no body.
+/// the rows of this wave refuses it in a Rholang deploy, which leaves no space data and runs
+/// no body. P7 step 1 makes `temp` available (design v3 QT-1); its rows of the matrix follow F17.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pattern_enforcement_qualifiers_fail_closed() {
     for family in SpaceFactoryUrn::all().filter(|family| constructor_schema(*family).is_some()) {
-        for qualifier in [SpaceQualifier::Temp, SpaceQualifier::Seq] {
+        // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
+        // for qualifier in [SpaceQualifier::Temp, SpaceQualifier::Seq] {
+        for qualifier in [SpaceQualifier::Seq] {
             let ctor = new_elist_par(
                 vec![gstring(qualifier.as_str())],
                 Vec::new(),
@@ -799,7 +802,9 @@ async fn pattern_enforcement_qualifiers_fail_closed() {
     let mut session = Session::new().await;
     for row in ROWS {
         let urn = row.family().to_string();
-        for qualifier in ["temp", "seq"] {
+        // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
+        // for qualifier in ["temp", "seq"] {
+        for qualifier in ["seq"] {
             let mut ctors = vec![row.constructor.replace("default", qualifier)];
             let without_params = format!(r#""{qualifier}""#);
             if !ctors.contains(&without_params) {

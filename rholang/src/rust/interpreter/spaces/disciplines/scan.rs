@@ -1182,6 +1182,7 @@ mod tests {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(10_000_000, "scan driver test")),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         };
         let config = SpaceConfig::new(
             SPACE.sid,

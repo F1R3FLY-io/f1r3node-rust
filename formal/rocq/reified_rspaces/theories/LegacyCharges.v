@@ -88,7 +88,7 @@
    call, accept, call_step  the fallible calls. CReg is
                             register_introduction_authority: the reducer
                             calls it before ChargingRSpace
-                            (reduce.rs:543-547, 655-659), and a
+                            (reduce.rs:548-552, 660-664), and a
                             callback calls it between the carry and the
                             pre-charge. CObserve is the observer calls of
                             a body

@@ -119,6 +119,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 69](#decision-69) | Only the latest execution model | 2026-10-08 | In force |
 | [Decision 70](#decision-70) | Reified RSpaces only | 2026-10-08 | In force |
 | [Decision 71](#decision-71) | `capacity` is a soft bound under merges | 2026-10-08 | In force |
+| [Decision 72](#decision-72) | The P7 design process | 2026-10-09 | In force |
+| [Decision 73](#decision-73) | P7 design v2, Seq claims per channel, HashSet on units | 2026-10-09 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -879,7 +881,7 @@ A join into an ordered collection needs an envelope with several `ord` values an
 
 **Reason.** With a peek waiter at the head of a queue, a stored copy of the datum can match the next waiter.
 That pending match breaks the no-pending-match invariant of the space.
-The re-offer equals the re-produce of the baseline reducer (`reduce.rs:981-1016`), so the events and the observer calls stay equal to those of the host.
+The re-offer equals the re-produce of the baseline reducer (`reduce.rs:986-1021`), so the events and the observer calls stay equal to those of the host.
 
 ### <a id="decision-31"></a>Decision 31: Every operation on an ordered collection bumps its counter
 
@@ -925,7 +927,7 @@ With a counter step on every operation, both cases race on the counters, and mer
 - A7: P2 implements the send hook as the same-signature swap of `self.produce(` for `self.reified_produce(`. The function `reified_produce` splits the trailing params first, and it fails closed as decision 22 says.
 - A7, continued: the H2 arm is one line without a guard, of at most 100 columns, for example `eval_marker`. The reason is that H1 admits only marker tuples into process position.
 - A21: a persistent send (`!!`) to a two-byte `0xE0` operation channel, or to an H or h handle, aborts the deploy. The two-byte channels are the factories, `getSpaceAgent`, `assertEqual`, `vector`, and the internal operations.
-- A21, continued: the baseline never cancels the re-produce sibling of a persistent send (`reduce.rs:717-783`, `1018-1039`). So the claim of I-19 that `SpaceAlreadyExists` stops the loop was wrong.
+- A21, continued: the baseline never cancels the re-produce sibling of a persistent send (`reduce.rs:722-788`, `1023-1044`). So the claim of I-19 that `SpaceAlreadyExists` stops the loop was wrong.
 
 **User's words.** "Approve all four (Recommended)"
 
@@ -1122,7 +1124,7 @@ A waiter queue for each level gives each queue one head, and the order rule deci
 - F8: a forged channel in an Array or Vector space aborts with `NotAnIndexName`.
 - F9: the PathMap depth cap is 64, with the abort `PathTooDeep`. The value is vetoable.
 - F10: at the round cap, the original operation is re-issued, as in P4.
-- F11: a `new` inside `use` of an Array or Vector space runs one allocation job. The hot line `reduce.rs:1645` gains `.await`.
+- F11: a `new` inside `use` of an Array or Vector space runs one allocation job. The hot line `reduce.rs:1650` gains `.await`.
 - F12: the tracker leaf `rrs-spaces-determinism-collision-ties` completes in P6.
 - F13: the legacy Rocq modules get the dispositions that the P5 design report lists, with the changes of its readiness review. The port drops the axiom `FunctionalExtensionality`.
 - F14: two set waiters are equal only when they are byte-identical.
@@ -2018,6 +2020,56 @@ Their main terms are these:
 - In native execution, with `capacity = 2` and one stored record, two concurrent branches that each add a record merge with no conflict. The merged collection holds 3 records.
 - An exact bound needs a counter bump on each store, and then all VectorDB writes into one collection serialize across branches. The plan keeps full merge concurrency for bag, set and VectorDB spaces.
 
+## User decisions 72 to 73
+
+### <a id="decision-72"></a>Decision 72: The P7 design process
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-09 |
+| Status | In force |
+| Amends | none |
+| Related | [Decision 47](#decision-47), [decision 65](#decision-65) |
+
+**Statement.**
+
+- The main session drafts the P7 design against the current code, as for decisions 47 and 65.
+- One fresh read-only Plan agent arbitrates the draft.
+- The main session verifies the findings in code and presents the result to the user before any P7 code.
+
+**User's words.** "Me + review agent (Recommended)"
+
+**Reason.** P7 changes consensus-visible behavior (deploy-scoped spaces, Seq rules, theory admission), so an independent arbitration precedes the code.
+
+### <a id="decision-73"></a>Decision 73: P7 design v2, Seq claims per channel, HashSet on units
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-09 |
+| Status | In force |
+| Amends | The plan sentence "the atomic Seq guard enforces exclusive use" (exclusive use holds for each channel) |
+| Related | [I-4](#i-4), [decision 39](#decision-39) (F1, F17), [decision 47](#decision-47), [decision 69](#decision-69) |
+
+**Statement.**
+
+- The user approves P7 design v2, which applies the 26 amendments of the arbitration.
+- Each channel of a seq space has its own causal-lineage claim. A use of a channel must descend from the previous use of that channel, else the deploy aborts with `SeqConcurrent`.
+- Operations that touch no channel of the space (`gensym`, `config`, `qualifier`, allocations) and internal jobs (re-issues, settle jobs) are not checked.
+- The seq qualifier, and so every HashSet family, runs only in native execution. Legacy execution keeps `QualifierUnavailable` for it.
+- The HashSet store is the default space restricted to empty messages. A send with data aborts with `PayloadNotEmpty`, and a receive with a binder aborts with `PatternNotEmpty`.
+
+**User's words.**
+
+- The design: "Approve v2 (Recommended)".
+- The Seq rule, after the request "Elaborate on each of these options, what they imply, their pros and cons, their consistency with the FIPS, and their consistency with the existing behavior of the default bag-based RSpace. Then ask this question again.": "Per-channel claim (Recommended)".
+- The HashSet store, after the request "Elaborate on the context and background of the question. Most likely, we should model this behavior after the existing behavior of the default bag-based RSpace. Ask the question again after giving me enough information to make an educated decision.": "Bag semantics on units (Recommended)".
+
+**Reason.**
+
+- The FIPS restricts each seq channel ("you cannot use it in a concurrent process"), and the channels of the default space are independent.
+- Legacy host operations bypass the scheduler, so a causal-lineage claim is deterministic only in native execution.
+- An empty pattern already matches exactly an empty message in the default space, so the HashSet store needs no change to matching.
+
 ## Minimal-footprint revision: M-1 to M-5
 
 On 2026-10-04 the user asked to "only modify what is required for reified rspaces and certainly not touch casper unless it is absolutely required … that was the purpose of the realignment".
@@ -2497,7 +2549,7 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 **Reason.**
 
 - A P2 finding: the evaluation and the substitution of the baseline keep the flag `connective_used` of a tuple, a list, or a map. They keep it also when the children of the container change.
-- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:3125-3147`, `3149-3170`, and `3135-3155`.
+- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:3130-3152`, `3154-3175`, and `3135-3155`.
 - The substitution keeps them at `rholang/src/rust/interpreter/substitute.rs:1342-1363`, `1365-1384`, and `1405-1428`.
 - Ordinary data can use connectives, as in `x!(Int)`. Without the refresh, a legal `use` body could fail closed as `NonCanonical`.
 - Only the top level of a marker tuple can hold a stale flag, so the refresh costs time linear in the width of the tuple.

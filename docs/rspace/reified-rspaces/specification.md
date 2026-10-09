@@ -44,7 +44,7 @@ Each new section must state the items that its extension point lists, so that a 
 | P5 | [2.2](#22-array) to [2.7](#27-outer-stores-of-later-phases) | The Array and Vector outer stores with their allocator, the PathMap paths, the [PathMap store](#26-the-pathmap-store), and the HashSet store of a later phase |
 | P5 | [3.2](#32-bag) to [3.8](#38-joins) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and the [joins of one space](#38-joins) ([decision 29](decision-register.md#decision-29)) |
 | P6 | [3.9](#39-vectordb), [9](#9-system-processes-of-the-vectordb-family) and [10](#10-the-chromadb-mirror) | The VectorDB discipline, its query, and its bounds, the system processes of the family, and the ChromaDB mirror |
-| P7 | [4.2](#42-qualifiers-of-later-phases) and [5](#5-theories) | The `temp` and `seq` qualifiers, the sweep of their state, and the theories |
+| P7 | [2.7](#27-outer-stores-of-later-phases), [4.2](#42-temp), [4.3](#43-seq) and [5](#5-theories) | The HashSet store, the `temp` and `seq` qualifiers, the sweep of their state, the dangling ids of ended deploys, and the theories |
 | P8 | [6](#6-constructs-that-fail-closed) | Spaces that user agents implement |
 
 ## Terms and notation
@@ -196,7 +196,7 @@ The VectorDB and HashSet families have no schema yet.
 `priorities` is a `GInt` of at least 1 ([decision I-10](decision-register.md#i-10)).
 The bit sets of a value do not count, and a value with the connective flag fails (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:153-168`).
 
-**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:68-122`):
+**Rule FA-6: gate order.** The gates of a constructor run in this order, and every gate runs before the space exists (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:68-132`):
 
 1. the schema (`FamilyUnavailable`)
 2. the parse (`BadConstructorArgument`)
@@ -207,7 +207,7 @@ The bit sets of a value do not count, and a value with the connective flag fails
 7. missing required keys (`MissingParam`)
 8. values in bytewise key order (`InvalidParam`)
 
-**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:191-205`).
+**Rule FA-7: stored params.** The config holds each named param in the canonical form of its rule, and an absent optional param stays absent (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:201-215`).
 The readers apply the defaults: an Array space without `cyclic` is fixed, and a priority queue without `priorities` has no bound on its levels.
 
 ## 2. Outer stores
@@ -300,7 +300,7 @@ This covers the names of its lock keys, the config and the shape of an Array spa
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
 In native execution, an allocation job runs as every space job does ([section 8](#8-native-execution), [decision 47](decision-register.md#decision-47)).
 
-**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:605-632`).
+**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:679-706`).
 That process evaluates the `new`, or it calls the handle method `gensym`.
 So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
 
@@ -794,14 +794,14 @@ A re-issued element takes its FIFO place in its level, and a re-entered waiter k
 
 ### 3.7 Receive queries
 
-**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:780-794`).
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:854-868`).
 The inner channel takes the read rule of a receive source.
 
-**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:811-841`).
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:885-915`).
 A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
 The default space fails with `QuerySpecUnsupported`, and a user agent fails closed until P8.
 
-**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:767-769`).
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:841-843`).
 
 ### 3.8 Joins
 
@@ -939,7 +939,7 @@ Section [N15 of the design](design.md#n15-phase-p6-the-vectordb-family) explains
 
 **Rule VD-1: factory params.** The factory takes `capacity` (required, an `Int` in $`[1, 1\,000\,000]`$) and `dimensions` (required, an `Int` in $`[1, 4\,096]`$).
 It also takes `metric` (default `cosine`), one of `cosine`, `dot`, `euclidean`, `manhattan`, `hamming` and `jaccard`, and `mirror`, which must be `"chroma"` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:61-100`).
-A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:155-186`).
+A space with `mirror` must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`. Otherwise the factory fails with `InvalidParam` on `mirror` (gate 9, `rholang/src/rust/interpreter/spaces/factory/constructor.rs:165-196`).
 
 **Rule VD-2: records.** A send stores its payload with an optional vector (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657`).
 The vector is the param `embedding`, or else the payload itself when the payload is exactly one non-empty list of numbers ([decision 66](decision-register.md#decision-66)).
@@ -1060,14 +1060,42 @@ A checkpoint and a restart must keep its config record, its counters, its record
 **Rule QF-3: concurrent.** A default space accepts operations from parallel branches of one deploy and from many deploys.
 The scheduler orders the operations of one space, and it runs the operations of different spaces in parallel.
 
-**Rule QF-4: families.** Every outer store takes the qualifier `"default"`, except the HashSet store, which takes only `"seq"`.
+**Rule QF-4: families.** Every outer store takes the qualifiers `"default"` and `"temp"`, except the HashSet store, which takes only `"seq"`.
 When a HashSet family is available, a constructor with another qualifier must abort with `BadConstructorArgument`.
 
-### 4.2 Qualifiers of later phases
+### 4.2 Temp
 
-Phase P7 adds the qualifiers `"temp"` and `"seq"`.
-Until then, a constructor with either qualifier must abort with `QualifierUnavailable`.
-The section of P7 must state the durability, the sweep of the state at the end of a deploy, and the rule of sequential access.
+A temp space lives for one deploy (FIPS 275-277, [decision I-4](decision-register.md#i-4)).
+Phase P7 adds it ([decision 73](decision-register.md#decision-73)).
+
+**Rule QF-5: one deploy.** A constructor with the qualifier `"temp"` creates a space that lives until the end of the deploy that created it.
+Its state stays in the hot store of the node and never reaches a checkpoint.
+
+**Rule QF-6: ephemeral ids.** Every id of a temp space uses the lowercase form of its [KIND](glossary.md#kind) byte, `kind | 0x20`.
+Its space id comes from the message that created it (SM-1), so two deploys never share an id.
+
+**Rule QF-7: events and charges.** An operation on a temp space emits the events and the observer calls of the same operation on a default space.
+Replay pairs these events, and the deploy pays for them.
+A send pays its introduction also when the sweep later removes its record, so no refund applies.
+
+**Rule QF-8: the sweep.** Each root evaluation keeps a book of the temp spaces that it created and of the volatile channels that its space transactions locked.
+After every detached task of a root evaluation, the node [sweeps](glossary.md#sweep) the channels of the book: it removes their records, waiting continuations and join entries.
+The sweep runs after a success and after a failure, under the boundary guard of the reducer, and it emits no event and no charge.
+Play, replay and native replay sweep at the same point, so their post-states are equal.
+A failed sweep breaks an invariant of P7, and the deploy fails with `BugFoundError` of the class `Platform`.
+
+**Rule QF-9: dangling ids.** An id of a temp space that the current root evaluation did not create belongs to a deploy that has ended.
+A send or a receive on a name of such a space aborts with `DanglingName`.
+A call on its handle, a `use` block and a `new x : s` binding abort with `DanglingHandle`.
+`getSpaceAgent` replies the typed error `DanglingHandle`.
+Each error names the space id in lowercase hex, and the check costs nothing beyond the evaluation that reaches it.
+
+**Rule QF-10: no mirror.** A temp space takes no `mirror` param, so its constructor aborts with `InvalidParam` on `mirror` (gate 9).
+
+### 4.3 Seq
+
+A later step of P7 adds the qualifier `"seq"` ([decision 73](decision-register.md#decision-73)).
+Until that step, a constructor with `"seq"` must abort with `QualifierUnavailable`.
 
 ## 5. Theories
 
@@ -1091,7 +1119,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 
 | Rule | Formal evidence | Tests |
 |---|---|---|
-| SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:650`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:797`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
+| SM-1 | `sid_derivation_deterministic` (`SpaceFactory.v:656`), `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:803`) | `prop_sid_derivation_deterministic`, `space_already_exists_aborts` |
 | SM-2 | `counter_and_config_roundtrip` (`RecordEnvelope.v:1075`), the TLA+ invariant `HandleUnique` (U5) | `prop_counter_and_config_records_roundtrip`, `space_meta_channels_config_record` |
 | SM-3 | The TLA+ invariant `DanglingIsDeterministicError` (U6) | `reified_handle_dangling_aborts`, `space_queue_dangling_name_aborts` |
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:727`), `space_and_collection_counters_distinct` (`Namespace.v:784`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
@@ -1112,15 +1140,20 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QD-7 | `queue_fifo` (`HeadOnlyDisciplines.v:1135`), `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2946`), the TLA+ invariants `FifoOrder` (U3) and `LeaveOrder` (U12) | `space_queue_head_only_fifo_delivery`, `prop_queue_fifo_with_reentries` |
 | QD-8 | None | `space_joins_queue_programs_run_as_joins`, `space_queue_send_params_rejected`, `space_queue_query_rejected` |
 | QD-9 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2373`), `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:3021`), `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2342`), the TLA+ invariants `ReissueKeepsOrd` (U10), `IntroducedOnce` (U11) and `FifoOrder` (U3) | `space_queue_reissue_reenters_ahead_of_younger_records`, `prop_queue_reissue_keeps_first_round_ord`, `prop_queue_reentry_head_blocks` |
-| QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:372`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
+| QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:375`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
 | QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay` |
 | QF-3 | The TLA+ invariant `HandleCallsMergeLikeContracts` (U8) | `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks`, `reified_handle_cross_block_merge_no_conflict` |
-| FA-1 | `registered_families_complete` (`SpaceFactory.v:1354`) | `prop_registered_families_complete`, `space_factory_families_registered` |
+| QF-5, QF-6 | `qualifier_matrix` (`SpaceFactory.v:375`), `ephemeral_durable_disjoint` (`Namespace.v:862`) | `reducer_qualifier_matrix`, `space_temp_replay_equal_hashmap` to `space_temp_replay_equal_vector` |
+| QF-7 | The P1 headlines of the substrate | `reified_ephemeral_cost_charged` |
+| QF-8 | `sweep_complete` (`VolatileSweep.v:1714`), `sweep_exact` (`VolatileSweep.v:894`), `sweep_root_neutral` (`VolatileSweep.v:1266`) | `prop_sweep_complete`, `space_temp_swept_at_deploy_end`, `space_temp_join_swept`, `space_temp_failed_deploy_reverts`, `space_temp_many_volatile_keys_export`, `reified_sweep_runs_at_each_entry_point_of_the_reducer`, `reified_sweep_runs_at_each_entry_point_native` |
+| QF-9 | `dead_ephemeral_dangling` (`VolatileSweep.v:1759`) | `prop_dead_ephemeral_dangling`, `reified_ephemeral_dangling_next_deploy`, `reified_ephemeral_dangling_charge_is_fixed` |
+| QF-10 | The gate 9 model `check_mirror` of `SpaceFactory.v` | `mirror_temp_never_mirrored`, `reducer_qualifier_matrix` |
+| FA-1 | `registered_families_complete` (`SpaceFactory.v:1360`) | `prop_registered_families_complete`, `space_factory_families_registered` |
 | FA-2 | `space_match_is_injected_match` (`Match.v:615`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
-| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1431`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
-| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1834`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
-| FA-5 | `priorities_validated` (`SpaceFactory.v:1971`), `array_size_validated` (`SpaceFactory.v:2084`) | `prop_priorities_validated`, `prop_array_size_validated` |
-| FA-7 | `array_size_validated` (`SpaceFactory.v:2084`) | `space_factory_kwargs_are_stored_canonical` |
+| FA-3 | `aliases_bind_family_capability` (`SpaceFactory.v:1437`) | `prop_aliases_bind_family_capability`, `reified_getspaceagent_alias_equal` |
+| FA-4, FA-6 | `constructor_params_validated` (`SpaceFactory.v:1840`) | `prop_constructor_params_validated`, `space_factory_kwargs_unknown_param_with_suggestion` |
+| FA-5 | `priorities_validated` (`SpaceFactory.v:1977`), `array_size_validated` (`SpaceFactory.v:2090`) | `prop_priorities_validated`, `prop_array_size_validated` |
+| FA-7 | `array_size_validated` (`SpaceFactory.v:2090`) | `space_factory_kwargs_are_stored_canonical` |
 | AR-1, AR-3, VE-1, VE-3 | `fixed_array_allocates_at_most_size` (`OuterStorage.v:313`), `vector_index_is_counter` (`VectorStore.v:184`) | `prop_fixed_array_allocates_at_most_size`, `prop_vector_index_is_counter` |
 | AR-2, VE-2 | `hashmap_get_put_other` (`HashMapStore.v:213`), `hashmap_iteration_permutation_invariant` (`HashMapStore.v:168`) | `prop_hashmap_get_put_other`, `prop_hashmap_iteration_permutation_invariant` |
 | AR-4, VE-4, AL-2 | `fixed_array_indices_sequential` (`OuterStorage.v:345`), `cyclic_array_index_mod_size` (`OuterStorage.v:376`), `vector_gensym_monotonic` (`VectorStore.v:219`) | `prop_fixed_array_indices_sequential`, `prop_cyclic_array_index_mod_size`, `prop_vector_gensym_monotonic` |
@@ -1193,7 +1226,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play` |
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:8708`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
 | NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
-| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2283`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
+| VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2289`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
 | VD-2 | None | `space_vectordb_payload_is_the_vector_by_default`, `space_vectordb_peek_restores_records_with_their_embedding`, `space_native_vectors_every_kind_enters_exactly` |
 | VD-3 | None | `space_vectordb_errors_have_their_codes`, `space_vectordb_source_errors_have_their_codes`, `space_vectordb_fixed_point_and_rational_thresholds` |
 | VD-4 | `cosine_squared_form_iff` (`Similarity.v:412`), `cosine_order_squared_form` (`Similarity.v:471`), `euclidean_radius_squared_form` (`Similarity.v:545`), `binary_laws` (`Similarity.v:1042`), `selection_total_order` (`Similarity.v:1169`) | `prop_selection_order_is_a_strict_total_order`, `space_vectordb_bounds_select_the_eligible_records`, `space_vectordb_ids_keep_only_the_listed_records`, `space_vectordb_binary_metrics_read_binary_vectors_only`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order`, `space_similarity_topk_reference_cases_through_the_space`, `space_hash_collision_tie_duplicates_are_interchangeable`, `space_hash_collision_tie_forced_equal_source_hashes_select_one_value` |
@@ -1286,21 +1319,21 @@ So `dot` rounds its exact sum once, and never a partial sum ([decision 54](decis
 The reply of `norm` and `distance` is correctly rounded (`root_midpoint_nearest`, S28 of `VectorOps.v`).
 
 The failure codes are `UnknownMethod`, `BadArgument`, `NotAVector`, `NotANumber`, `NonFiniteValue`, `MalformedNumber`, `DimensionMismatch` and `ValueOutOfRange`.
-The process reserves its work on the host-work budget of the deploy, and a rejection fails the deploy (`rholang/src/rust/interpreter/reified/system_processes.rs:316-340`).
+The process reserves its work on the host-work budget of the deploy, and a rejection fails the deploy (`rholang/src/rust/interpreter/reified/system_processes.rs:327-351`).
 
-**Rule SP-3: `embed`.** The argument is one text, or a non-empty list of texts (`rholang/src/rust/interpreter/reified/system_processes.rs:366-409`).
+**Rule SP-3: `embed`.** The argument is one text, or a non-empty list of texts (`rholang/src/rust/interpreter/reified/system_processes.rs:377-420`).
 A call holds at most 64 texts and at most 64 KiB of text. Otherwise the reply is `EmbeddingRateLimited`.
 
 Play asks the embedder of the node, and it replies `[true, vector, model]` for one text or `[true, [vector…], model]` for a list.
 Each vector is a list of `GFloat32` values. The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
 
-**Rule SP-4: `ann`.** Play and replay both make the checks of the call against consensus state, in this order ([decision 67](decision-register.md#decision-67), `rholang/src/rust/interpreter/reified/system_processes.rs:492-535`):
+**Rule SP-4: `ann`.** Play and replay both make the checks of the call against consensus state, in this order ([decision 67](decision-register.md#decision-67), `rholang/src/rust/interpreter/reified/system_processes.rs:503-548`):
 
 1. `space` is a native VectorDB space (`NotAVectorDbSpace`) with a mirror (`MirrorDisabled`).
 2. `query` is a text, or a numeric vector of the dimensions of the space whose elements are finite as `f32` values (`DimensionMismatch`, `BadArgument`).
 3. `options` is a map of the one key `k`, an `Int` in $`[1, \mathit{capacity}]`$ (`InvalidOption`).
 
-In play, the embedder of the node embeds a text query, and the mirror of the node answers the nearest records of `channel` (`rholang/src/rust/interpreter/reified/system_processes.rs:590-635`).
+In play, the embedder of the node embeds a text query, and the mirror of the node answers the nearest records of `channel` (`rholang/src/rust/interpreter/reified/system_processes.rs:603-648`).
 The reply is `[true, ids, distances, watermark]`.
 It holds at most $`k`$ record ids as 32-byte byte arrays, their distances as `GFloat32` values, and the watermark as an `Int`.
 A mirror that does not answer gives the reply `MirrorUnavailable`.
@@ -1334,10 +1367,10 @@ A delete names every removed record, also a record without a vector. The mirror 
 The computation has no meter, no error path and no wait, so it never changes the outcome, the events or the charges of a transaction.
 
 **Rule MR-2: the journal.** The journal of an evaluation keeps the last net write of each record id of each collection (`rholang/src/rust/interpreter/spaces/mirror.rs:408-457`).
-The start of each root evaluation drops a journal that no result settled (`rholang/src/rust/interpreter/reified/runtime.rs:95-108`).
+The start of each root evaluation drops a journal that no result settled (`rholang/src/rust/interpreter/reified/runtime.rs:100-116`).
 So an exploratory evaluation never publishes, and its writes never reach the next deploy.
 
-**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:205-210`, [decision 66](decision-register.md#decision-66)).
+**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:286-291`, [decision 66](decision-register.md#decision-66)).
 The two settle points are `rholang/src/rust/interpreter/interpreter.rs:257` for play and `rholang/src/rust/interpreter/rho_runtime.rs:1808` for native replay.
 Native replay publishes to the mirror of the node that replays, so a validator keeps its mirror current from the blocks that it certifies.
 A node that plays and then certifies one deploy publishes its batch twice, and the upserts by id make the second publication change nothing.

@@ -1411,6 +1411,7 @@ mod tests {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000_000, "priority queue agent test")),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         };
         PriorityQueue::default()
             .prepare_create(&env, SpaceCreation {

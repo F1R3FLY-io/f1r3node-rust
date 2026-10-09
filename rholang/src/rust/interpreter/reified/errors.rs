@@ -116,8 +116,8 @@ mod tests {
         let space_codes: BTreeSet<&str> = [
             SpaceError::SpaceAlreadyExists,
             SpaceError::PositionalParamsUnsupported,
-            SpaceError::DanglingHandle,
-            SpaceError::DanglingName,
+            SpaceError::DanglingHandle { space: [1; 32] },
+            SpaceError::DanglingName { space: [1; 32] },
             SpaceError::CounterOverflow,
             // Retired by decision 47.
             // SpaceError::SpacesUnsupportedInNativeExecution,

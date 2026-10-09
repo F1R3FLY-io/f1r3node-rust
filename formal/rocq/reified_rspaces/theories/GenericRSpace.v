@@ -100,7 +100,7 @@
                             (spaces/record.rs:2145-2158), through the produce
                             plan
    host_resend, second_send the host's second send: produce_peeks
-                            (reduce.rs:981-1016) produces the removed datum
+                            (reduce.rs:986-1021) produces the removed datum
                             of each result whose persist flag is false, not
                             persistent, and registers the datum's own cost
                             authority (design report of decision 45, A.1,

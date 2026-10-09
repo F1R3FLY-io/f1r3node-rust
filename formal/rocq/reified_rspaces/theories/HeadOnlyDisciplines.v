@@ -78,7 +78,7 @@
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
                             similarity scans every waiter, commit ff479042)
-   in_flight, flight_ord    spaces/agent.rs:126, 169
+   in_flight, flight_ord    spaces/agent.rs:135, 178
                             (ProduceOp::reissued_ord and
                             ConsumeOp::reissued_ord: the first-round ord of
                             a re-issued persistent operation)
@@ -104,7 +104,7 @@
                             spaces/generic.rs:1583, 1676 (offer_head and
                             receive_head: the re-issue sets
                             reissued_ord: op.persistent.then_some(ord))
-   round, run_rounds        reified/reducer_hooks.rs:666-718
+   round, run_rounds        reified/reducer_hooks.rs:740-792
                             (dispatch_space_outcome: a re-issue is a new
                             Intent::Space, the last dispatch branch of the
                             same deploy)

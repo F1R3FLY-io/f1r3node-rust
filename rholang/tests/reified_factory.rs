@@ -15,7 +15,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, Bundle, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, HASHMAP_BAG_ALIAS, PATHMAP_BAG_ALIAS};
-use models::rust::utils::new_bundle_par;
+use models::rust::utils::{new_bundle_par, new_gbytearray_par};
 use prost::Message;
 use reified_strategies::{gbool, gstring};
 use rholang::rust::interpreter::accounting::costs::Cost;
@@ -345,6 +345,15 @@ fn events_on(log: &[Event], channel: &Par) -> Vec<(char, bool)> {
 
 /// The typed error reply `("rho:space:error", code, {})` of `getSpaceAgent`.
 fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
+
+/// The typed reply `DanglingHandle` of `getSpaceAgent` for the space `space`: its detail map names
+/// the space id (P7, design v3 DG-3).
+fn dangling(space: NativeSpace) -> Par {
+    typed_error(
+        SpaceReplyCode::DanglingHandle,
+        vec![("spaceId", new_gbytearray_par(space.sid.to_vec(), Vec::new(), false))],
+    )
+}
 
 /// The system processes of P5 (P5 design v3, A.7, A.8 and A.10) as `(urn, op, arity, body
 /// ref)`, in the order of the definitions: the families in family-index order, then the alias.
@@ -1082,7 +1091,8 @@ async fn reified_factory_rejects_bad_constructor() {
 async fn reified_factory_p4_gates_fail_closed() {
     let mut session = Session::new().await;
     for (label, arguments, expected) in [
-        ("temp", r#""temp""#, "QualifierUnavailable"),
+        // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
+        // ("temp", r#""temp""#, "QualifierUnavailable"),
         ("seq", r#""seq""#, "QualifierUnavailable"),
         ("theory", "free Nat()", "TheoryUnavailable"),
         (
@@ -1267,10 +1277,7 @@ async fn space_system_ops_get_space_agent_dangling_handle() {
         "a dangling handle is a typed reply, not an abort: {:?}",
         deploy.result.errors
     );
-    assert_eq!(
-        session.sole("rrs-out").await,
-        typed(SpaceReplyCode::DanglingHandle)
-    );
+    assert_eq!(session.sole("rrs-out").await, dangling(missing));
     // A handle of a space whose creation was reverted is dangling too.
     let reverted = session
         .deploy(
@@ -1305,10 +1312,7 @@ new factory(`rho:space:hashmap:queue`) in {
             &injections,
         )
         .await;
-    assert_eq!(
-        session.sole("rrs-out-reverted").await,
-        typed(SpaceReplyCode::DanglingHandle)
-    );
+    assert_eq!(session.sole("rrs-out-reverted").await, dangling(created));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1633,6 +1633,7 @@ async fn last_with<D: Discipline>(script: &[Step], meter: Option<HostWorkBudget>
             store: SpaceStoreHandle::new(host.clone()),
             budget: budget.clone(),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         },
     };
     let result = run(&agent, &metered, op).await;

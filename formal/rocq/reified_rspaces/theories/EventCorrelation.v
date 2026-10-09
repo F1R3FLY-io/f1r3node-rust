@@ -108,8 +108,8 @@
                              rs/rspace/ops_produce.rs:32-78,
                              rs/rspace/ops_consume.rs:31-81,
                              rs/replay_rspace.rs:836-905, 1133-1192,
-                             rholang/src/rust/interpreter/reduce.rs:539-543,
-                             651-655 (register_introduction_authority)
+                             rholang/src/rust/interpreter/reduce.rs:544-548,
+                             656-660 (register_introduction_authority)
    host_play_produce         rs/rspace/ops_produce.rs:32-113, 163-210
    host_play_consume         rs/rspace/ops_consume.rs:31-154
    host_replay_produce       rs/replay_rspace.rs:1133-1267, 1363-1425
@@ -265,15 +265,15 @@
                              re-store registers (Introduction::for_record,
                              rholang/src/rust/interpreter/spaces/record.rs:2149)
    host_produce_peeks,       produce_peeks
-     head_reproduces,        (rholang/src/rust/interpreter/reduce.rs:981-1016)
+     head_reproduces,        (rholang/src/rust/interpreter/reduce.rs:986-1021)
      restore_reproduces      produces the removed value of each result whose
                              persist flag is false, not persistent. The
                              reducer calls it after a consume with a peek
-                             fires (rholang/src/rust/interpreter/reduce.rs:909-936),
+                             fires (rholang/src/rust/interpreter/reduce.rs:914-941),
                              after a non-persistent produce fires a peek
-                             waiter (rholang/src/rust/interpreter/reduce.rs:784-811)
+                             waiter (rholang/src/rust/interpreter/reduce.rs:789-816)
                              and after a persistent produce
-                             (rholang/src/rust/interpreter/reduce.rs:776-781).
+                             (rholang/src/rust/interpreter/reduce.rs:781-786).
                              rs/util.rs:57-70 and rs/rspace/ops_consume.rs:204-229
                              give the data_list tuples, and
                              rs/space_matcher.rs:72-90 gives removed_datum
@@ -381,7 +381,7 @@
      operation of the transaction (reoffers): a produce with the same
      channel, value and persist flag. So the re-offer has the produce
      identity, the observer calls and the counter step of HEAD's re-produce
-     (reduce.rs:981-1016). The re-offer fires the next waiter or stores the
+     (reduce.rs:986-1021). The re-offer fires the next waiter or stores the
      datum. When the fired waiter is persistent, it stays at the head, and
      the P4 plan re-issues the datum in a new transaction (p4-design-report
      A10, a divergent pair). The model does not include the authority value
@@ -1307,7 +1307,7 @@ Inductive Pre := PreStop (obs : list Obs) (st : Status) | PreGo (obs : list Obs)
 (* Host call prefix (accounting.rs:20-31, ops_produce.rs:44-78,
    ops_consume.rs:45-81 and replay_rspace.rs:851-905, 1144-1192). The first
    call is the register_introduction_authority call of the reducer
-   (reduce.rs:539-543, 651-655). The substrate calls before_observe at the
+   (reduce.rs:544-548, 656-660). The substrate calls before_observe at the
    same position. *)
 Definition host_prelude (m : Mode) (H : list Obs) (s : Src) (start observe : Obs) : Pre :=
   let o0 := ObBefore s in
@@ -3380,7 +3380,7 @@ Definition reoffer_due (op : Op) : bool :=
 (* [next] re-offers the datum of [op]: a produce with the same channel,
    value and persist flag. So it has the Produce::create identity, the
    trigger key and the counter step of HEAD's re-produce
-   (reduce.rs:977-1012). Its outcome is the agent's decision: it fires the
+   (reduce.rs:982-1017). Its outcome is the agent's decision: it fires the
    next waiter or stores the datum. *)
 Definition reoffer_of (op next : Op) : Prop :=
   match op, next with
@@ -3569,15 +3569,15 @@ Qed.
 
 (* head_reproduces lists the channel and the value of each produce that HEAD
    re-produces after a fire whose waiter peeks. The function produce_peeks
-   (rholang/src/rust/interpreter/reduce.rs:981-1016) takes each result of
+   (rholang/src/rust/interpreter/reduce.rs:986-1021) takes each result of
    wrap_result whose persist flag is false (rs/util.rs:57-70, wrap_flags).
    It re-produces the removed value of that result (rs/space_matcher.rs:72-90)
    on its channel, as a non-persistent produce. The reducer calls
    produce_peeks after a non-persistent produce fires a peek waiter
-   (rholang/src/rust/interpreter/reduce.rs:784-811) and after a consume with
-   a peek fires (rholang/src/rust/interpreter/reduce.rs:909-936). After a
+   (rholang/src/rust/interpreter/reduce.rs:789-816) and after a consume with
+   a peek fires (rholang/src/rust/interpreter/reduce.rs:914-941). After a
    persistent produce, the reducer calls it too
-   (rholang/src/rust/interpreter/reduce.rs:776-781). *)
+   (rholang/src/rust/interpreter/reduce.rs:781-786). *)
 Definition head_reproduces (cands : list Cand) : list (Chan * Val) :=
   map (fun cd => (cd_chan cd, d_val (cd_rec cd)))
       (filter (fun cd => negb (d_persist (cd_rec cd))) cands).

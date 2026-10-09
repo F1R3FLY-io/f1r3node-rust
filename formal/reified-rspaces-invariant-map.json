@@ -7939,6 +7939,129 @@
           ]
         }
       ]
+    },
+    "P7": {
+      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), and the dangling ids of ended deploys (V2).",
+      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR) and 4 (DG), and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs and reified_volatile_sweep.rs and of the reducer hooks.",
+      "test_status": "required",
+      "test_files": [
+        "rholang/tests/reified_temp_seq.rs",
+        "rholang/tests/reified_volatile_sweep.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs"
+      ],
+      "expected_properties": 2,
+      "formal": {
+        "V1": {
+          "kind": "rocq",
+          "name": "sweep_complete",
+          "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+          "statement": "When the lock keys of every transaction of a root evaluation cover the channels that it stages (readiness review S2), the book of the evaluation holds every staged volatile channel, and the sweep of the book leaves no record, no join entry and no waiting continuation on them (design v3 VR-2).",
+          "tests": [
+            "prop_sweep_complete"
+          ]
+        },
+        "V2": {
+          "kind": "rocq",
+          "name": "dead_ephemeral_dangling",
+          "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+          "statement": "The spaces of two deploys are disjoint (I-19), so a space of another deploy is never live in this evaluation, and the live check passes exactly the spaces that this evaluation created (design v3 DG-1).",
+          "tests": [
+            "prop_dead_ephemeral_dangling"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "prop_sweep_complete",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "prop_dead_ephemeral_dangling",
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "covers": [
+            "V2"
+          ]
+        }
+      ],
+      "witness_tests": [
+        {
+          "test": "space_temp_swept_at_deploy_end",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "rule": "VR-4 (the sweep at the end of the deploy, every family)",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "space_temp_join_swept",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "rule": "VR-2 and I-4 (the sweep removes the join entries of a parked join)",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "space_temp_failed_deploy_reverts",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "rule": "VR-8 (the sweep on the Err path)",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "reified_sweep_runs_at_each_entry_point_of_the_reducer",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "rule": "VR-4 (inj, inj_with_observation and inj_with_host_work)",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "reified_sweep_runs_at_each_entry_point_native",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "rule": "VR-4 (native play, native replay and RhoRuntime::inj)",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "reified_volatile_sweep_skips_ordinary_channels",
+          "file": "rholang/tests/reified_volatile_sweep.rs",
+          "rule": "VR-5 and VR-10 (the sweep leaves the ordinary channels, so the root equals the deploy without the space)",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "reified_fips_example_temp_pathmap",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "rule": "QT-1 and VR-4 (the example code of the FIPS with a temp PathMap space)",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "reified_ephemeral_dangling_next_deploy",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "rule": "DG-1 and DG-3 (every entry point, the space id in the error)",
+          "covers": [
+            "V2"
+          ]
+        },
+        {
+          "test": "reified_ephemeral_dangling_charge_is_fixed",
+          "file": "rholang/tests/reified_temp_seq.rs",
+          "rule": "DG-4 (a fixed charge)",
+          "covers": [
+            "V2"
+          ]
+        }
+      ]
     }
   }
 }

@@ -1361,7 +1361,7 @@ async fn space_allocation_job_dangling_aborts() {
     for agent in [&ARRAY_QUEUE as &dyn SpaceAgent, &VECTOR_QUEUE, &FamilyAgent] {
         assert!(matches!(
             agent.allocate(&env, alloc_op(1, 1)).await,
-            Err(SpaceError::DanglingHandle)
+            Err(SpaceError::DanglingHandle { .. })
         ));
     }
     assert!(space.take_event_log().await.is_empty());

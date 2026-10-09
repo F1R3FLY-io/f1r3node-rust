@@ -50,7 +50,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 275: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 277: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -82,8 +82,10 @@
 #                        vectordb_params_validated of SpaceFactory.v and
 #                        capped_writes_soft_bound of CounterConflict.v,
 #                        5 for P6 step 8b: the headlines of
-#                        VectorDbDiscipline.v, and 2 for P6 step 8d:
-#                        the headlines of VectorOps.v)
+#                        VectorDbDiscipline.v, 2 for P6 step 8d:
+#                        the headlines of VectorOps.v, and 2 for P7 step 1:
+#                        sweep_complete and dead_ephemeral_dangling of
+#                        VolatileSweep.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -102,7 +104,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-275}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-277}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -110,7 +112,7 @@ RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 # entry here fails the gate.
 declare -A EXPECTED_PER_MODULE=(
   [EventCorrelation]=21
-  [VolatileSweep]=6
+  [VolatileSweep]=8
   [Encoding]=15
   [Namespace]=11
   [RecordEnvelope]=11

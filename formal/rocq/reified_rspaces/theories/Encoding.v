@@ -90,8 +90,8 @@
    head_marker (§4.2)       models/src/rust/reified/encoding.rs:369-374
                             (sole_marker_tuple)
    position, recognize (§4.3, §4.4)
-                            rholang/src/rust/interpreter/reduce.rs:1219-1245,
-                            1236, 1295-1314, 1659-1678, 1661, 1662, 1664
+                            rholang/src/rust/interpreter/reduce.rs:1224-1250,
+                            1241, 1300-1319, 1664-1683, 1666, 1667, 1669
                             (H2: the tuple arm of the term match at 1255.
                             H3: the data evaluation, then reified_produce.
                             H4: at 1681, after the substitution at 1680
@@ -129,9 +129,9 @@
                             tuple_par: each flag is the disjunction over
                             the children)
    refresh, sdecode (I-20)  rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1124-1135, 1138-1146, 1231-1271,
-                            1292-1324, 1327-1329, 1363-1371, 1374-1383, 1395-1404,
-                            1421-1430, 1434-1441 (Field, marker_fields,
+                            reducer_hooks.rs:1198-1209, 1212-1220, 1305-1345,
+                            1366-1398, 1401-1403, 1437-1445, 1448-1457, 1469-1478,
+                            1495-1504, 1508-1515 (Field, marker_fields,
                             derived_flag, refresh_field,
                             derived_flag_of_new, refresh_tuple,
                             refreshed_tuple, refresh_tuple_par,
@@ -139,8 +139,8 @@
    fsubst (I-20)            rholang/src/rust/interpreter/substitute.rs:527,
                             997-1018, 1020-1039, 1062-1085, 1342-1363,
                             1365-1384, 1407-1430 and
-                            rholang/src/rust/interpreter/reduce.rs:3125-3147,
-                            3149-3170, 3195-3215 (substitution and
+                            rholang/src/rust/interpreter/reduce.rs:3130-3152,
+                            3154-3175, 3200-3220 (substitution and
                             evaluation keep the connective_used flags of
                             the Par, the list, the tuple and the map)
    name_decl, binder_order, normalize_new (§1.4)
@@ -204,7 +204,7 @@
      and that a tuple with a stale flag is accepted only after the refresh.
    - Section 8b keeps the flags only where the encoder derives them: the
      holder Par, the tuple and the container fields of marker_fields
-     (reducer_hooks.rs:1138-1146). A value keeps its own flag, which no hook
+     (reducer_hooks.rs:1212-1220). A value keeps its own flag, which no hook
      changes, so a flagged construct pairs each value with its flag. A map
      key is a GString, whose flag is false.
    - The substitution is a Section Variable. Its equations are premises of
@@ -1906,11 +1906,11 @@ Section Substitution.
      1342-1430), so a substituted marker tuple can carry stale flags. The
      hooks recompute the derived flags before the strict decode (I-20), so
      the premises need no flag. Headline 15 states the flagged form.
-     The storage substitution of a receive body (reduce.rs:1415-1419) uses
+     The storage substitution of a receive body (reduce.rs:1420-1424) uses
      substitute_no_sort_and_charge. That variant satisfies the same premises
      on USE and NEWSPACE tuples, which contain no map. It also sorts the map
      values in create_from_vec. The hooks decode a PARAMS or QUERY map only
-     after the sorting variant (reduce.rs:1300 and 1661). *)
+     after the sorting variant (reduce.rs:1305 and 1666). *)
   Variable Env : Type.
   Variable subst : Env -> par -> par.
   Variable shift : nat -> Env -> Env.
@@ -2015,7 +2015,7 @@ Section Substitution.
   Qed.
 
   (* This lemma does not use subst_new. Evaluation (eval_expr,
-     reduce.rs:3125-3215 and 7811-7830) satisfies the five equations that the
+     reduce.rs:3130-3220 and 7816-7835) satisfies the five equations that the
      proof uses. Thus PARAMS, QUERY, USE and FREE decoding also commutes with
      evaluation. *)
   Lemma subst_encode_except_newspace :
@@ -2084,7 +2084,7 @@ Section Substitution.
     end.
 
   (* HEAD substitution and evaluation keep the container flags of the
-     tuple (substitute.rs:997-1085, reduce.rs:3125-3215), so they can go
+     tuple (substitute.rs:997-1085, reduce.rs:3130-3220), so they can go
      stale. *)
   Definition fsubst (sigma : Env) (x : ftuple) : ftuple := mkFTuple (fsubst_c sigma (ft_construct x)) (ft_flags x).
 
@@ -2423,7 +2423,7 @@ Definition plan_decode_annotation (a : par) : option par :=
 
 (* nil_binding binds the variable with index 0 to Nil. A receive that gets
    Nil for s does this to its body (storage substitution,
-   reduce.rs:1415-1419). *)
+   reduce.rs:1420-1424). *)
 Definition nil_binding : concrete_env := fun i => if i =? 0 then Some PNil else None.
 
 (* Headline 12. The superseded encoding maps the annotation Nil and the

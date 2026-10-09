@@ -52,6 +52,7 @@ use rspace_plus_plus::rspace::space_store_handle::{
     BoxedSpaceTxn, NativeViewReads, SpaceStoreHandle, SpaceTxnError, SpaceTxnReceipt,
 };
 
+use super::ephemeral::VolatileRegistry;
 use super::errors::SpaceError;
 use super::mirror::MirrorWrites;
 use super::namespace::{CollectionKey, NativeSpace};
@@ -78,6 +79,9 @@ pub struct SpaceEnv {
     /// The host-work meter of the job (readiness review S5, decision 42): the matcher and the
     /// agent reserve each read and copy on it before they make it.
     pub meter: ScanMeter,
+    /// The book of the ephemeral spaces of the root evaluation (P7, VR-1). `begin` records the
+    /// volatile lock keys of each transaction in it (VR-2).
+    pub volatile: Arc<VolatileRegistry>,
 }
 
 impl SpaceEnv {
@@ -85,7 +89,12 @@ impl SpaceEnv {
     /// reads through the metered reads of the substrate on [`SpaceEnv::meter`]: each key and
     /// each value that it reads is charged, the same on a cache hit and a miss (decision 47,
     /// I-12). In legacy execution it reads as the host does.
+    ///
+    /// The lock keys with an ephemeral KIND go into the book of the evaluation first, so the
+    /// sweep at the end of the evaluation removes every volatile channel that the transaction
+    /// can write (VR-2).
     pub async fn begin(&self, lock_keys: &[Par]) -> Result<ParSpaceTxn, SpaceTxnError> {
+        self.volatile.record_locked(lock_keys);
         match self.budget.native_execution_active() {
             true => {
                 let reads = Arc::new(NativeViewReads::new(self.meter.clone()));
@@ -532,6 +541,7 @@ mod tests {
             store: SpaceStoreHandle::new(host),
             budget: RuntimeBudget::new(Cost::create(1_000, "space agent test")),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         }
     }
 
@@ -637,9 +647,9 @@ mod tests {
         async fn read_config(
             &self,
             _env: &SpaceEnv,
-            _space: NativeSpace,
+            space: NativeSpace,
         ) -> Result<Par, SpaceError> {
-            Err(SpaceError::DanglingHandle)
+            Err(SpaceError::DanglingHandle { space: space.sid })
         }
 
         fn gensym(

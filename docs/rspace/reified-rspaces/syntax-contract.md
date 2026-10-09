@@ -465,7 +465,7 @@ The table lists each construct that P4 rejects, with its code and the phase that
 |---|---|---|---|
 | A query `~` on the default space, or on a discipline without query params | `for (y <- @"x" ~ 5) { Nil }` | `QuerySpecUnsupported` | P5 for the priority queue, P6 for VectorDB |
 | A theory reference in a factory constructor | `hmq!?(free Nat())` | `TheoryUnavailable` | P7 |
-| The qualifier `"temp"` or `"seq"` | `hmq!?("temp")` | `QualifierUnavailable` | P7 |
+| The qualifier `"seq"` | `hmq!?("seq")` | `QualifierUnavailable` | P7 (a later step). P7 step 1 gives `"temp"` its meaning ([specification 4.2](specification.md#42-temp)) |
 | A space reference that names a user agent | `use @"space" { @"x"!(1) }` | `AgentSpacesUnavailable` | P8 |
 | A send or a receive on a name of a user agent | None in P4, because only a user agent makes such a name | `AgentSpacesUnavailable` | P8 |
 | The handle method `consume` | `h!(ret, "consume", pairs, "<-", body)` | `AgentSpacesUnavailable`, or a typed reply | P8 |
@@ -473,10 +473,10 @@ The table lists each construct that P4 rejects, with its code and the phase that
 | A join over two spaces, or over a space and the default space | `for (@a <- x & @b <- @"y") { Nil }`, with `x` in a space | `CrossSpaceJoin` | None: the plan keeps this abort |
 | A factory of a family that is not registered yet, or its FIPS alias | ``new f(`rho:space:pathmap:bag`) in { Nil }`` | The baseline error `No value set for <urn>` | P5 wave W3 for PathMap, P6 for VectorDB, P7 for HashSet |
 
-A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:780-794`).
+A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:854-868`).
 The inner channel takes the read rule of a receive source, with the same error text.
-A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:811-841`).
-On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:740-751`).
+A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:885-915`).
+On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:814-825`).
 A reference that names no space aborts with `EmptySpaceRef`, `HandleNotWritable`, or `NotASpaceRef` in every phase.
 
 ## Keyword rule

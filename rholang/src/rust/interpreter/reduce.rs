@@ -457,8 +457,9 @@ impl ReducerCore {
     }
 
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
-        self.reified.begin_evaluation_scope();
-        self.eval(par, &Env::new(), rand).await
+        let root = self.begin_root_evaluation();
+        let result = self.eval(par, &Env::new(), rand).await;
+        self.end_root_evaluation(root, result).await
     }
 
     pub(crate) async fn inj_with_observation(
@@ -471,7 +472,7 @@ impl ReducerCore {
         super::accounting::economic_failure::EvaluationFailureSummary,
     ) {
         let env = Env::new();
-        self.reified.begin_evaluation_scope();
+        let root = self.begin_root_evaluation();
         let (result, summary, errors) = StackGrowingFuture {
             inner: deterministic_reduction::root_with_observation(
                 self.space.clone(),
@@ -492,7 +493,9 @@ impl ReducerCore {
             ),
         }
         .await;
-        (self.finish_detached_errors(result, errors), summary)
+        let result = self.finish_detached_errors(result, errors);
+        self.end_root_evaluation_observed(root, result, summary)
+            .await
     }
 
     pub async fn inj_with_host_work(
@@ -501,9 +504,11 @@ impl ReducerCore {
         rand: Blake2b512Random,
         host_work: HostWorkBudget,
     ) -> Result<(), InterpreterError> {
-        self.reified.begin_evaluation_scope();
-        self.eval_with_host_work(par, &Env::new(), rand, host_work)
-            .await
+        let root = self.begin_root_evaluation();
+        let result = self
+            .eval_with_host_work(par, &Env::new(), rand, host_work)
+            .await;
+        self.end_root_evaluation(root, result).await
     }
 
     /**

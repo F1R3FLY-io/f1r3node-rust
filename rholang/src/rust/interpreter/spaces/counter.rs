@@ -405,6 +405,7 @@ mod tests {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000, "space counter test")),
             meter: ScanMeter::new(None),
+            volatile: Default::default(),
         };
         (space, env)
     }
