@@ -11897,7 +11897,8 @@ mismatch (W8). So the typed variant takes effect in two places:
 - a persistent send to a recorded process (P2), because a recorded call is
   one linear request with one reply.
 
-Both places follow from the approved variant. Both are flagged to the user.
+Both places follow from the approved variant. The user confirmed both on
+2026-10-09: "Confirm both (Recommended)".
 
 **Decision.**
 
