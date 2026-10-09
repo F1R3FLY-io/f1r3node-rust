@@ -156,6 +156,16 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new("rejected_deploy_buffer".to_string(), None),
             deploy_storage_env_config(),
         ),
+        // Undecodable records moved out of deploy_storage and
+        // rejected_deploy_buffer by a scan, kept byte-for-byte for diagnosis.
+        (
+            Db::new("deploy_storage_quarantine".to_string(), None),
+            deploy_storage_env_config(),
+        ),
+        (
+            Db::new("rejected_deploy_buffer_quarantine".to_string(), None),
+            deploy_storage_env_config(),
+        ),
         // Reporting (trace) cache
         (
             Db::new("reporting-cache".to_string(), None),

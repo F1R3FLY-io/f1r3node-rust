@@ -1,28 +1,44 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/KeyValueDeployStorage.scala
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
+use super::deploy_record_quarantine::DeployRecordQuarantine;
+
+pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
+pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
+
 #[derive(Clone)]
 pub struct KeyValueDeployStorage {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+    quarantine: DeployRecordQuarantine,
 }
 
 impl KeyValueDeployStorage {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
-        let deploy_storage_kv_store = kvm.store("deploy_storage".to_string()).await?;
-        let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-            KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
-        Ok(Self {
-            store: deploy_storage_db,
-        })
+        let deploy_storage_kv_store = kvm.store(DEPLOY_STORAGE_DB.to_string()).await?;
+        let quarantine_kv_store = kvm.store(DEPLOY_STORAGE_QUARANTINE_DB.to_string()).await?;
+        Self::from_stores(deploy_storage_kv_store, quarantine_kv_store)
+    }
+
+    pub fn from_stores(
+        store: Arc<dyn KeyValueStore>,
+        quarantine: Arc<dyn KeyValueStore>,
+    ) -> Result<Self, KvStoreError> {
+        let storage = Self {
+            store: KeyValueTypedStoreImpl::new(store),
+            quarantine: DeployRecordQuarantine::new(DEPLOY_STORAGE_DB, quarantine),
+        };
+        storage.quarantine.restore_readable(&storage.store)?;
+        Ok(storage)
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -72,11 +88,11 @@ impl KeyValueDeployStorage {
 
     pub fn any<F>(&self, predicate: F) -> Result<bool, KvStoreError>
     where F: FnMut(&Signed<DeployData>) -> Result<bool, KvStoreError> {
-        self.store.any_value(predicate)
+        self.quarantine.any(&self.store, predicate)
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {
-        self.store.to_map().map(|map| map.into_values().collect())
+        self.quarantine.read_all(&self.store)
     }
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
@@ -153,9 +169,9 @@ mod tests {
     #[test]
     fn add_if_absent_is_atomic_across_storage_handles() {
         let store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
-        let storage = KeyValueDeployStorage {
-            store: KeyValueTypedStoreImpl::new(store),
-        };
+        let storage =
+            KeyValueDeployStorage::from_stores(store, Arc::new(InMemoryKeyValueStore::new()))
+                .unwrap();
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),

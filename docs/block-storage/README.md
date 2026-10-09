@@ -53,7 +53,20 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
 
 ## Deploy Storage
 
-**`KeyValueDeployStorage`** -- Stores `Signed<DeployData>` indexed by deploy signature. Methods: `add()`, `remove()`, `read_all()`, `non_empty()`. Deploy index maps deploy signature to block hash.
+**`KeyValueDeployStorage`** -- Stores `Signed<DeployData>` indexed by deploy signature. Methods: `add()`, `remove()`, `read_all()`, `any()`, `non_empty()`. Deploy index maps deploy signature to block hash.
+
+**`KeyValueRejectedDeployBuffer`** -- Keeps deploys that a multi-parent merge rejected, so that this node can propose them again. It uses the same record format as `KeyValueDeployStorage`.
+
+### Undecodable records in the local deploy stores
+
+The two local deploy stores, `deploy_storage` and `rejected_deploy_buffer`, quarantine a record that they cannot decode. The other records stay available.
+
+- **Scan behavior.** When `read_all()` or `any()` finds an undecodable key or value, the node moves the raw bytes, unchanged, to a sibling LMDB database. The databases are `deploy_storage_quarantine` and `rejected_deploy_buffer_quarantine`. Both are in the `deploystorage` environment. The scan then continues with the remaining records. Block preparation, the pending-deploy check, and `list_pending_deploys` use these scans, so one damaged record does not stop them.
+- **Backend failures.** An LMDB read or write failure is not a decode failure. It stops the operation and returns the error, as before. A failure to write to the quarantine database also stops the scan and keeps the damaged record in the live store.
+- **Unsupported format versions.** A record in a format that this node version cannot read is quarantined like a damaged record. The node does not delete it.
+- **Reopen and recovery.** At each store open, the node tries to decode every quarantined record again. It moves each readable record back to the live store, unless the live store already has that key. Thus, a downgrade followed by an upgrade to a version that reads the format loses no records. A record that stays unreadable stays in quarantine and is not scanned again. The client that submitted that deploy can submit it again.
+- **Diagnostics.** Each quarantined record produces one `WARN` line from `block_storage::rust::deploy::deploy_record_quarantine`. The line contains the store name, the first 32 key bytes in hex, the key length, the value length, and an error text cut to 160 characters. It never contains the deploy contents or a private key. A scan logs at most 10 records and then one summary line. A store open that finds quarantined records logs one `WARN` line with the restored and remaining counts. The counters `deploy_store.quarantined_records` and `deploy_store.restored_records` have a `store` label.
+- **Scope.** Block storage and chain-state stores keep their present error handling.
 
 ## Tests
 
