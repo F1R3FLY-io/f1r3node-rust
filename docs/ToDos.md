@@ -139,9 +139,12 @@ tasks:
       - "If a CI failure shows driver exit 124, a measured driver duration on the CI runner sets any new cap. Without a measurement the cap stays."
   - id: TASK-023-4
     title: "Reorganize the CI jobs by purpose"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T21:00:00Z
+    branch: chore/ci-reorganize-and-relabel
+    decision: "2026-10-08: the user chose the two-step switch. Step 1 adds Static Checks, Script Tests, and Soak Harness Tests, renames the misleading jobs, and keeps temporary jobs with the old required names. TASK-023-9 is step 2."
     blocked_by: []
     branch_note: "Separate branch, because the change moves jobs that the merge queue and the branch rulesets require."
     acceptance:
@@ -152,9 +155,11 @@ tasks:
       - "check-workflow-invariants.sh passes, and the change does not increase the total CI time by more than the measured cost of one extra job setup."
   - id: TASK-023-6
     title: "Relabel the CI jobs and steps so that each name states what it runs"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T21:00:00Z
+    branch: chore/ci-reorganize-and-relabel
     blocked_by: [TASK-023-4]
     branch_note: "Same branch as TASK-023-4, so that the rulesets change once."
     acceptance:
@@ -189,6 +194,18 @@ tasks:
       - "SOAK_DISK_TEST_STRESS_ROUNDS=10 gives 0 runs without a pass."
       - "The CbC evidence record for scripts/run-merge-recovery-soak.sh is updated for the new commit, or a maintainer waiver records why not."
       - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
+  - id: TASK-023-9
+    title: "Switch the rulesets to the new check names and remove the temporary jobs (step 2)"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: [TASK-023-4, TASK-023-6]
+    owner_note: "Steps 1 and 2 of the acceptance need a repository admin. An agent does not change rulesets."
+    acceptance:
+      - "devProtect requires Static Checks, Script Tests, Soak Harness Tests, Integration Gate (amd64), and Integration Gate (arm64) instead of Lint and Integration Tests (amd64), (arm64)."
+      - "masterProtect requires Static Checks, Script Tests, Soak Harness Tests, and Test Gate (casper) instead of Lint and Test (casper)."
+      - "In one commit: the build_base heavy reuse gate and release-train.sh validate-ci-evidence read Integration Gate (amd64), (arm64); test-ci-stack-gate.sh and test-release-train.sh use the new names; the temporary jobs leave ci.yml and ci-fork-pr.yml."
+      - "A merge group with the change passes the queue. docs/ci.md describes the result without the switch section."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
