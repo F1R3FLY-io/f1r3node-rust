@@ -4484,6 +4484,62 @@ mod tests {
     }
 
     #[test]
+    fn hard_finality_backpressure_gives_cap_4_on_every_path_whatever_the_backlog_or_progress() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let backlog = FreshLocalDeployStats {
+            count: 30,
+            oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
+        };
+
+        for finality_lag in [lag(40, 32), stalled_lag(40, 32)] {
+            let non_leader = fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                backlog,
+                finality_lag,
+            );
+            assert_eq!(non_leader.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
+            assert!(non_leader.backpressure);
+
+            let recovery = in_scope_recovery_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                InScopeLocalDeployStats {
+                    count: 30,
+                    oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
+                    stranded_count: 1,
+                },
+                finality_lag,
+            );
+            assert_eq!(recovery.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
+
+            let leader = ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                true,
+                true,
+                non_leader,
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                finality_lag,
+            );
+            assert!(!leader.fallback);
+            assert_eq!(
+                leader.ordinary_cap,
+                NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+            );
+        }
+    }
+
+    #[test]
     fn a_stalled_lfb_under_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
