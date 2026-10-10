@@ -216,7 +216,9 @@ where
         empty_blocks: EmptyBlocks,
     ) -> Result<(ProposeResult, Option<BlockMessage>), CasperError> {
         // check if node is allowed to propose a block
+        let step_start = std::time::Instant::now();
         let constraint_check = self.check_propose_constraints(casper_snapshot).await?;
+        let constraints_ms = step_start.elapsed().as_millis();
 
         // The height constraint must not gate the recovery lane it exists to
         // be rescued by: past the threshold, no proposal can land, so no new
@@ -245,6 +247,7 @@ where
             CheckProposeConstraintsResult::Success => DeploySelection::StandardAllowEmpty,
         };
 
+        let step_start = std::time::Instant::now();
         let block_result = self
             .block_creator
             .create_block(
@@ -254,27 +257,35 @@ where
                 selection,
             )
             .await?;
+        let create_ms = step_start.elapsed().as_millis();
 
         match block_result {
             BlockCreatorResult::NoNewDeploys => {
+                record_propose_steps(constraints_ms, create_ms, 0, 0);
                 Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
             }
             BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
                 // Publish BlockCreated event immediately after block is created (before validation)
                 self.propose_effect_handler.publish_block_created(&block)?;
 
+                let step_start = std::time::Instant::now();
                 let validation_result = casper
                     .validate_self_created(&block, casper_snapshot, pre_state_hash, post_state_hash)
                     .await?;
+                let validate_ms = step_start.elapsed().as_millis();
 
                 match validation_result {
                     ValidBlockProcessing::Right(valid_status) => {
+                        let step_start = std::time::Instant::now();
                         self.propose_effect_handler
                             .handle_propose_effect(casper, &block)
                             .await?;
+                        let effect_ms = step_start.elapsed().as_millis();
+                        record_propose_steps(constraints_ms, create_ms, validate_ms, effect_ms);
                         Ok((ProposeResult::success(valid_status), Some(block)))
                     }
                     ValidBlockProcessing::Left(invalid_reason) => {
+                        record_propose_steps(constraints_ms, create_ms, validate_ms, 0);
                         // Some self-validation failures are recoverable races in fast, multi-parent
                         // proposing: parent selection can become stale, and safety checks can reject
                         // the candidate by the time validation runs. ContainsExpiredDeploy is in this
@@ -569,6 +580,50 @@ where
     }
 }
 
+const PROPOSE_STALL_WARN_MS: u128 = 5_000;
+
+fn record_propose_steps(constraints_ms: u128, create_ms: u128, validate_ms: u128, effect_ms: u128) {
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, PROPOSER_CONSTRAINTS_TIME_METRIC, PROPOSER_CREATE_TIME_METRIC,
+        PROPOSER_EFFECT_TIME_METRIC, PROPOSER_VALIDATE_TIME_METRIC,
+    };
+    for (name, ms) in [
+        (PROPOSER_CONSTRAINTS_TIME_METRIC, constraints_ms),
+        (PROPOSER_CREATE_TIME_METRIC, create_ms),
+        (PROPOSER_VALIDATE_TIME_METRIC, validate_ms),
+        (PROPOSER_EFFECT_TIME_METRIC, effect_ms),
+    ] {
+        metrics::histogram!(name, "source" => CASPER_METRICS_SOURCE).record(ms as f64 / 1000.0);
+    }
+    tracing::info!(
+        target: "f1r3fly.propose.timing",
+        "Propose step timing: constraints_ms={}, create_ms={}, validate_ms={}, effect_ms={}",
+        constraints_ms,
+        create_ms,
+        validate_ms,
+        effect_ms
+    );
+    let total_ms = constraints_ms + create_ms + validate_ms + effect_ms;
+    if total_ms >= PROPOSE_STALL_WARN_MS {
+        let (slowest, slowest_ms) = [
+            ("constraints", constraints_ms),
+            ("create", create_ms),
+            ("validate", validate_ms),
+            ("effect", effect_ms),
+        ]
+        .into_iter()
+        .max_by_key(|(_, ms)| *ms)
+        .unwrap_or(("none", 0));
+        tracing::warn!(
+            target: "f1r3fly.propose.timing",
+            "Propose stall: total_ms={}, slowest_step={}, slowest_ms={}",
+            total_ms,
+            slowest,
+            slowest_ms
+        );
+    }
+}
+
 pub type ProductionProposer<T> = Proposer<
     ProductionCasperSnapshotProvider,
     ProductionActiveValidatorChecker,
@@ -697,6 +752,7 @@ pub struct ProductionBlockCreator {
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
+    finality_progress: block_creator::FinalityProgress,
 }
 
 impl ProductionBlockCreator {
@@ -711,6 +767,7 @@ impl ProductionBlockCreator {
             rejected_deploy_buffer,
             runtime_manager,
             block_store,
+            finality_progress: block_creator::FinalityProgress::default(),
         }
     }
 }
@@ -727,7 +784,7 @@ impl BlockCreator for ProductionBlockCreator {
         dummy_deploy_opt: Option<(PrivateKey, String)>,
         selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError> {
-        block_creator::create(
+        block_creator::create_with_progress(
             casper_snapshot,
             validator_identity,
             dummy_deploy_opt,
@@ -736,6 +793,7 @@ impl BlockCreator for ProductionBlockCreator {
             &self.runtime_manager,
             &mut self.block_store,
             selection,
+            &mut self.finality_progress,
         )
         .await
     }
@@ -829,5 +887,46 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
         self.event_publisher
             .publish(created_event(block))
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod stage_metric_tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::*;
+    use crate::rust::metrics_constants::{
+        PROPOSER_CONSTRAINTS_TIME_METRIC, PROPOSER_CREATE_TIME_METRIC, PROPOSER_EFFECT_TIME_METRIC,
+        PROPOSER_VALIDATE_TIME_METRIC,
+    };
+
+    #[test]
+    fn each_propose_step_records_one_sample_in_seconds() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_propose_steps(5, 1_500, 250, 11_000);
+
+        let mut samples: std::collections::HashMap<String, Vec<f64>> =
+            std::collections::HashMap::new();
+        for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+            if let DebugValue::Histogram(s) = value {
+                samples
+                    .entry(key.key().name().to_owned())
+                    .or_default()
+                    .extend(s.iter().map(|v| v.into_inner()));
+            }
+        }
+        assert_eq!(
+            samples.get(PROPOSER_CONSTRAINTS_TIME_METRIC),
+            Some(&vec![0.005])
+        );
+        assert_eq!(samples.get(PROPOSER_CREATE_TIME_METRIC), Some(&vec![1.5]));
+        assert_eq!(
+            samples.get(PROPOSER_VALIDATE_TIME_METRIC),
+            Some(&vec![0.25])
+        );
+        assert_eq!(samples.get(PROPOSER_EFFECT_TIME_METRIC), Some(&vec![11.0]));
     }
 }
