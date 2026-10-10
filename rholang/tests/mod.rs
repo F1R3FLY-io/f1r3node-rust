@@ -11,6 +11,7 @@ mod fileio_stream_spec;
 mod cli_smoke_spec;
 mod crypto_channels_spec;
 mod demo_verification;
+mod deferred_dispatch_spec;
 mod deploy_data_spec;
 mod external_services;
 mod fs_native_urn_filter_spec;
