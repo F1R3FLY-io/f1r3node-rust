@@ -138,7 +138,7 @@ ruby -ryaml -e '
   doc = YAML.load_file(ARGV[0])
   names = doc["jobs"].values.map { |job| job["name"] }
   gate = doc.dig("jobs", "build_base", "steps").find { |item| item["id"] == "target" }["run"]
-  ["Integration Tests (amd64)", "Integration Tests (arm64)"].each do |name|
+  ["Integration Gate (amd64)", "Integration Gate (arm64)"].each do |name|
     abort "ci.yml has no job named #{name}" unless names.count(name) == 1
     abort "the heavy reuse gate does not read #{name}" unless gate.include?(name)
   end
@@ -157,8 +157,8 @@ WORKFLOW_RUNS='{"workflow_runs": [
 jobs_json() {
   jq -n --arg amd64 "$1" --arg arm64 "$2" '{jobs: [
     {name: "Integration Pipeline / Integration Tests (amd64-docker)", conclusion: "success"},
-    {name: "Integration Tests (amd64)", conclusion: (if $amd64 == "" then null else $amd64 end)},
-    {name: "Integration Tests (arm64)", conclusion: (if $arm64 == "" then null else $arm64 end)}
+    {name: "Integration Gate (amd64)", conclusion: (if $amd64 == "" then null else $amd64 end)},
+    {name: "Integration Gate (arm64)", conclusion: (if $arm64 == "" then null else $arm64 end)}
   ]}'
 }
 merge_group_case() {
@@ -187,7 +187,7 @@ NEWEST="$(jobs_json skipped skipped)" merge_group_case heavy-skipped true
 NEWEST="$(jobs_json skipped skipped)" OTHER="$(jobs_json success success)" merge_group_case older-run-passed-newer-skipped true
 NEWEST="$(jobs_json success failure)" merge_group_case arm64-failed true
 NEWEST="$(jobs_json success "")" merge_group_case arm64-pending true
-NEWEST='{"jobs": [{"name": "Integration Tests (amd64)", "conclusion": "success"}, {"name": "Integration Tests (amd64)", "conclusion": "success"}, {"name": "Integration Tests (arm64)", "conclusion": "success"}]}' \
+NEWEST='{"jobs": [{"name": "Integration Gate (amd64)", "conclusion": "success"}, {"name": "Integration Gate (amd64)", "conclusion": "success"}, {"name": "Integration Gate (arm64)", "conclusion": "success"}]}' \
   merge_group_case duplicate-job true
 NEWEST='{"jobs": []}' merge_group_case no-jobs true
 RUNS='{"workflow_runs": []}' merge_group_case no-ci-run true

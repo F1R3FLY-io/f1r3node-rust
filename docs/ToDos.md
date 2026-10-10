@@ -196,9 +196,13 @@ tasks:
       - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
   - id: TASK-023-9
     title: "Switch the rulesets to the new check names and remove the temporary jobs (step 2)"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T02:00:00Z
+    branch: chore/ci-ruleset-switch
+    merge_order: "Merge only after #687 is merged and a repository admin has changed devProtect and masterProtect. Merging earlier removes checks that the rulesets still require."
+    codeql_note: "2026-10-09: the commit identity check moves to a new Commit Policy job without a cache step, because the CodeQL rule actions/cache-poisoning/poisonable-step re-raised a false positive (alerts #93 to #110) each time the old job shifted lines. Commit Policy joins the required checks in the admin command."
     blocked_by: [TASK-023-4, TASK-023-6]
     owner_note: "Steps 1 and 2 of the acceptance need a repository admin. An agent does not change rulesets."
     acceptance:
@@ -206,6 +210,21 @@ tasks:
       - "masterProtect requires Static Checks, Script Tests, Soak Harness Tests, and Test Gate (casper) instead of Lint and Test (casper)."
       - "In one commit: the build_base heavy reuse gate and release-train.sh validate-ci-evidence read Integration Gate (amd64), (arm64); test-ci-stack-gate.sh and test-release-train.sh use the new names; the temporary jobs leave ci.yml and ci-fork-pr.yml."
       - "A merge group with the change passes the queue. docs/ci.md describes the result without the switch section."
+  - id: TASK-023-10
+    title: "Promote dev to master from a promote/* branch and reject promotions with head dev"
+    status: review
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T10:00:00Z
+    branch: chore/ci-ruleset-switch
+    blocked_by: []
+    finding: "The repository deletes the head branch of a merged pull request (delete_branch_on_merge). Promotions #619 (2026-10-04) and #684 (2026-10-09) had head dev, so GitHub retargeted every open dev pull request to master: 7 and then 10 AutomaticBaseChangeSucceeded events within 13 seconds of each merge. The 13 affected pull requests other than #671 and the stacked #189 were retargeted back to dev on 2026-10-09."
+    decision: "2026-10-09: the user chose a local command (just promote) over an Actions workflow, because a pull request opened with GITHUB_TOKEN does not trigger CI and the CI GitHub App has only administration permissions."
+    acceptance:
+      - "just promote creates promote/<UTC timestamp> at the origin/dev commit and opens the pull request to master. test-open-promotion-pr.sh covers the nothing-to-promote case and the created branch and pull request."
+      - "The Promotion Source job rejects a pull request from dev to master and accepts promote/* and hotfix/* heads."
+      - "masterProtect requires Promotion Source after the admin ruleset change of TASK-023-9."
+      - "The next promotion retargets no open pull request."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending

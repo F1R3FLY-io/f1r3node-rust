@@ -1,4 +1,5 @@
 Resolve Target
+Commit Policy
 Static Checks
 Script Tests
 Soak Harness Tests
