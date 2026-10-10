@@ -216,7 +216,9 @@ where
         empty_blocks: EmptyBlocks,
     ) -> Result<(ProposeResult, Option<BlockMessage>), CasperError> {
         // check if node is allowed to propose a block
+        let step_start = std::time::Instant::now();
         let constraint_check = self.check_propose_constraints(casper_snapshot).await?;
+        let constraints_ms = step_start.elapsed().as_millis();
 
         // The height constraint must not gate the recovery lane it exists to
         // be rescued by: past the threshold, no proposal can land, so no new
@@ -245,6 +247,7 @@ where
             CheckProposeConstraintsResult::Success => DeploySelection::StandardAllowEmpty,
         };
 
+        let step_start = std::time::Instant::now();
         let block_result = self
             .block_creator
             .create_block(
@@ -254,27 +257,35 @@ where
                 selection,
             )
             .await?;
+        let create_ms = step_start.elapsed().as_millis();
 
         match block_result {
             BlockCreatorResult::NoNewDeploys => {
+                record_propose_steps(constraints_ms, create_ms, 0, 0);
                 Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
             }
             BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
                 // Publish BlockCreated event immediately after block is created (before validation)
                 self.propose_effect_handler.publish_block_created(&block)?;
 
+                let step_start = std::time::Instant::now();
                 let validation_result = casper
                     .validate_self_created(&block, casper_snapshot, pre_state_hash, post_state_hash)
                     .await?;
+                let validate_ms = step_start.elapsed().as_millis();
 
                 match validation_result {
                     ValidBlockProcessing::Right(valid_status) => {
+                        let step_start = std::time::Instant::now();
                         self.propose_effect_handler
                             .handle_propose_effect(casper, &block)
                             .await?;
+                        let effect_ms = step_start.elapsed().as_millis();
+                        record_propose_steps(constraints_ms, create_ms, validate_ms, effect_ms);
                         Ok((ProposeResult::success(valid_status), Some(block)))
                     }
                     ValidBlockProcessing::Left(invalid_reason) => {
+                        record_propose_steps(constraints_ms, create_ms, validate_ms, 0);
                         // Some self-validation failures are recoverable races in fast, multi-parent
                         // proposing: parent selection can become stale, and safety checks can reject
                         // the candidate by the time validation runs. ContainsExpiredDeploy is in this
@@ -566,6 +577,38 @@ where
         tracing::debug!(target: "f1r3fly.casper.proposer", "finished-do-propose");
         tracing::info!(target: "f1r3fly.casper.proposer", "do-propose-finished");
         Ok(result)
+    }
+}
+
+const PROPOSE_STALL_WARN_MS: u128 = 5_000;
+
+fn record_propose_steps(constraints_ms: u128, create_ms: u128, validate_ms: u128, effect_ms: u128) {
+    tracing::info!(
+        target: "f1r3fly.propose.timing",
+        "Propose step timing: constraints_ms={}, create_ms={}, validate_ms={}, effect_ms={}",
+        constraints_ms,
+        create_ms,
+        validate_ms,
+        effect_ms
+    );
+    let total_ms = constraints_ms + create_ms + validate_ms + effect_ms;
+    if total_ms >= PROPOSE_STALL_WARN_MS {
+        let (slowest, slowest_ms) = [
+            ("constraints", constraints_ms),
+            ("create", create_ms),
+            ("validate", validate_ms),
+            ("effect", effect_ms),
+        ]
+        .into_iter()
+        .max_by_key(|(_, ms)| *ms)
+        .unwrap_or(("none", 0));
+        tracing::warn!(
+            target: "f1r3fly.propose.timing",
+            "Propose stall: total_ms={}, slowest_step={}, slowest_ms={}",
+            total_ms,
+            slowest,
+            slowest_ms
+        );
     }
 }
 
