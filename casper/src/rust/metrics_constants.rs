@@ -355,6 +355,8 @@ pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC: &str =
     "block-creator.deploy-admission.fallback-cap";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC: &str =
     "block-creator.deploy-admission.backpressure";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_CAP_SOURCE_METRIC: &str =
+    "block-creator.deploy-admission.cap-source";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC: &str =
     "block-creator.deploy-admission.dag-tip";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC: &str =

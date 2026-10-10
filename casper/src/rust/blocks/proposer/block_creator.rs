@@ -76,6 +76,7 @@ struct DeployAdmissionPolicy {
     reserve_tail: bool,
     fallback: bool,
     backpressure: bool,
+    ordinary_cap_source: OrdinaryCapSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,10 +118,49 @@ struct DeployInclusionStaleness {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum OrdinaryCapSource {
+    Normal,
+    #[default]
+    Base,
+    Backlog,
+    SoftBacklog,
+    SoftStalled,
+    Stale,
+    Hard,
+}
+
+impl OrdinaryCapSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Base => "base",
+            Self::Backlog => "backlog",
+            Self::SoftBacklog => "soft-backlog",
+            Self::SoftStalled => "soft-stalled",
+            Self::Stale => "stale",
+            Self::Hard => "hard",
+        }
+    }
+
+    fn code(self) -> f64 {
+        match self {
+            Self::Normal => 0.0,
+            Self::Base => 1.0,
+            Self::Backlog => 2.0,
+            Self::SoftBacklog => 3.0,
+            Self::SoftStalled => 4.0,
+            Self::Stale => 5.0,
+            Self::Hard => 6.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FreshAdmissionFallback {
     allowed: bool,
     cap: usize,
     backpressure: bool,
+    source: OrdinaryCapSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -457,6 +497,7 @@ pub async fn prepare_user_deploys(
             reserve_tail: true,
             fallback: false,
             backpressure: false,
+            ordinary_cap_source: OrdinaryCapSource::Normal,
         },
         floor_ctx.as_ref(),
     )
@@ -2389,22 +2430,49 @@ fn adaptive_normal_ordinary_deploy_cap(
     if normal_cap == 0 {
         return (0, false);
     }
-    let cap = if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS
-        || (stale_in_scope_work && deploy_inclusion_staleness.signature_stale)
-    {
-        NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
-    } else if (stale_in_scope_work && deploy_inclusion_staleness.stale)
-        || (finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS
-            && finality_lag_stats.stalled)
-    {
-        NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
-    } else if finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS {
-        SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP
-    } else {
-        normal_cap
-    };
+    let (cap, _) = normal_cap_clamp(
+        stale_in_scope_work,
+        deploy_inclusion_staleness,
+        finality_lag_stats,
+    );
     let effective = normal_cap.min(cap);
     (effective, effective < normal_cap)
+}
+
+fn normal_cap_clamp(
+    stale_in_scope_work: bool,
+    deploy_inclusion_staleness: DeployInclusionStaleness,
+    finality_lag_stats: FinalityLagStats,
+) -> (usize, OrdinaryCapSource) {
+    let soft = finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS;
+    if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+        (
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::Hard,
+        )
+    } else if stale_in_scope_work && deploy_inclusion_staleness.signature_stale {
+        (
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::Stale,
+        )
+    } else if stale_in_scope_work && deploy_inclusion_staleness.stale {
+        (
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::Stale,
+        )
+    } else if soft && finality_lag_stats.stalled {
+        (
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::SoftStalled,
+        )
+    } else if soft {
+        (
+            SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::SoftBacklog,
+        )
+    } else {
+        (usize::MAX, OrdinaryCapSource::Normal)
+    }
 }
 
 fn fresh_admission_fallback(
@@ -2422,6 +2490,7 @@ fn fresh_admission_fallback(
         fresh_local_stats,
         finality_lag_stats,
     );
+    let base_cap = cap;
     let backlog_bound = if !backpressure {
         Some(NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP)
     } else if finality_lag_stats.lag < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS
@@ -2442,6 +2511,17 @@ fn fresh_admission_fallback(
         allowed: cap > 0,
         cap,
         backpressure,
+        source: if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+            OrdinaryCapSource::Hard
+        } else if backpressure && finality_lag_stats.stalled {
+            OrdinaryCapSource::SoftStalled
+        } else if cap > base_cap && backpressure {
+            OrdinaryCapSource::SoftBacklog
+        } else if cap > base_cap {
+            OrdinaryCapSource::Backlog
+        } else {
+            OrdinaryCapSource::Base
+        },
     }
 }
 
@@ -2475,6 +2555,7 @@ fn in_scope_recovery_fallback(
         allowed: cap > 0,
         cap,
         backpressure,
+        source: OrdinaryCapSource::Base,
     }
 }
 
@@ -2506,6 +2587,7 @@ fn ordinary_admission_policy(
             reserve_tail: false,
             fallback: fallback.allowed || in_scope_recovery.allowed,
             backpressure: fallback.backpressure || in_scope_recovery.backpressure,
+            ordinary_cap_source: fallback.source,
         };
     }
 
@@ -2517,6 +2599,12 @@ fn ordinary_admission_policy(
         reserve_tail: !normal_backpressure,
         fallback: in_scope_recovery.allowed,
         backpressure: normal_backpressure || in_scope_recovery.backpressure,
+        ordinary_cap_source: normal_cap_clamp(
+            stale_in_scope_work,
+            deploy_inclusion_staleness,
+            finality_lag_stats,
+        )
+        .1,
     }
 }
 
@@ -2542,6 +2630,7 @@ fn record_deploy_admission_metrics(
         BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_BLOCK_TIME_STALE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_BYTE_CAP_HIT_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_CAP_SOURCE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_DEFERRED_USER_BYTES_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC,
@@ -2653,6 +2742,11 @@ fn record_deploy_admission_metrics(
         "source" => CASPER_METRICS_SOURCE
     )
     .set(metric_bool(admission_policy.backpressure));
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_CAP_SOURCE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(admission_policy.ordinary_cap_source.code());
     metrics::gauge!(
         BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC,
         "source" => CASPER_METRICS_SOURCE
@@ -2884,7 +2978,7 @@ pub async fn create(
         {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
-                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
+                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}, cap_source={}",
                 next_block_num,
                 admission_policy.ordinary_cap,
                 fresh_local_stats.count,
@@ -2895,7 +2989,8 @@ pub async fn create(
                 inclusion_staleness.stale,
                 inclusion_staleness.signature_stale,
                 finality_lag_stats.lag,
-                admission_policy.backpressure
+                admission_policy.backpressure,
+                admission_policy.ordinary_cap_source.as_str()
             );
         }
         if admission_policy.allow_in_scope_recovery {
@@ -3615,6 +3710,7 @@ mod tests {
             allowed,
             cap,
             backpressure: false,
+            source: OrdinaryCapSource::Base,
         }
     }
 
@@ -4537,6 +4633,97 @@ mod tests {
             ),
             (NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP, true),
             "signature-stale in-scope work still clamps the leader to 4"
+        );
+    }
+
+    #[test]
+    fn the_admission_policy_reports_the_source_of_its_ordinary_cap() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let non_leader_source = |count, finality_lag| {
+            let fallback = fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count,
+                    oldest_age_millis: 6_000,
+                },
+                finality_lag,
+            );
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                true,
+                false,
+                fallback,
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                finality_lag,
+            )
+            .ordinary_cap_source
+        };
+        assert_eq!(non_leader_source(5, lag(25, 22)), OrdinaryCapSource::Base);
+        assert_eq!(
+            non_leader_source(20, lag(25, 22)),
+            OrdinaryCapSource::Backlog
+        );
+        assert_eq!(
+            non_leader_source(20, lag(30, 26)),
+            OrdinaryCapSource::SoftBacklog
+        );
+        assert_eq!(
+            non_leader_source(20, stalled_lag(30, 26)),
+            OrdinaryCapSource::SoftStalled
+        );
+        assert_eq!(non_leader_source(20, lag(40, 32)), OrdinaryCapSource::Hard);
+
+        let leader_source = |stale_in_scope_work, staleness, finality_lag| {
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                stale_in_scope_work,
+                true,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                staleness,
+                finality_lag,
+            )
+            .ordinary_cap_source
+        };
+        let fresh = DeployInclusionStaleness::default();
+        assert_eq!(
+            leader_source(false, fresh, lag(25, 22)),
+            OrdinaryCapSource::Normal
+        );
+        assert_eq!(
+            leader_source(false, fresh, lag(30, 26)),
+            OrdinaryCapSource::SoftBacklog
+        );
+        assert_eq!(
+            leader_source(false, fresh, stalled_lag(30, 26)),
+            OrdinaryCapSource::SoftStalled
+        );
+        assert_eq!(
+            leader_source(
+                true,
+                DeployInclusionStaleness {
+                    stale: true,
+                    ..DeployInclusionStaleness::default()
+                },
+                lag(25, 22)
+            ),
+            OrdinaryCapSource::Stale
+        );
+        assert_eq!(
+            leader_source(false, fresh, lag(40, 32)),
+            OrdinaryCapSource::Hard
         );
     }
 
@@ -5490,6 +5677,7 @@ mod tests {
                 reserve_tail: false,
                 fallback: false,
                 backpressure: false,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
             },
             None,
         )
@@ -5563,6 +5751,7 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: false,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
             },
             None,
         )
@@ -5663,6 +5852,7 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: false,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
             },
             None,
         )
@@ -5751,6 +5941,7 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: true,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
             },
             None,
         )
@@ -5855,6 +6046,7 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: true,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
             },
             None,
         )
@@ -5959,6 +6151,7 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: true,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
             },
             None,
         )
@@ -6070,6 +6263,7 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: false,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
             },
             None,
         )
@@ -6160,6 +6354,7 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: true,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
             },
             None,
         )
