@@ -2263,3 +2263,411 @@ async fn a_malformed_system_call_is_published_as_a_charged_user_failure() {
         );
     }
 }
+
+/// DR-120 (gap G9): a merge of two contender siblings above a neutral base.
+/// Node 2 creates an empty sibling before it sees the contenders, every node
+/// receives the three blocks, and node 2 merges them with the empty sibling
+/// as the main parent. Both contenders are then in the merge scope, so the
+/// v6 rule, not the base, decides between them.
+async fn neutral_base_merge(
+    nodes: &mut [TestNode],
+    contenders: [&models::rust::casper::protocol::casper_message::BlockMessage; 2],
+) -> models::rust::casper::protocol::casper_message::BlockMessage {
+    let neutral = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates an empty sibling");
+    assert!(neutral.body.deploys.is_empty());
+    for block in [contenders[0], contenders[1], &neutral] {
+        for node in nodes.iter_mut() {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merge = crate::batch2::staging::mint_on_parents(
+        &mut nodes[2],
+        vec![
+            neutral.clone(),
+            contenders[0].clone(),
+            contenders[1].clone(),
+        ],
+        "neutral-base merge",
+    )
+    .await;
+    assert_eq!(
+        merge.header.parents_hash_list.first(),
+        Some(&neutral.block_hash)
+    );
+    for node in nodes.iter_mut().take(2) {
+        assert!(
+            matches!(
+                node.process_block(merge.clone())
+                    .await
+                    .expect("the node processes the merge block"),
+                Either::Right(_)
+            ),
+            "every node accepts the merge block"
+        );
+    }
+    merge
+}
+
+/// The rejection records of `merge` for the deploy ids in `ids`.
+fn records_for<'a>(
+    merge: &'a models::rust::casper::protocol::casper_message::BlockMessage,
+    ids: &[&[u8]],
+) -> Vec<&'a models::rust::casper::protocol::casper_message::RejectedDeploy> {
+    merge
+        .body
+        .rejected_deploys
+        .iter()
+        .filter(|record| ids.contains(&record.sig.as_ref()))
+        .collect()
+}
+
+/// DR-120 (gap G9): two signers' version inserts conflict on the one store
+/// datum of the versioned registry. Above a neutral base both are in the
+/// merge scope, so the order K decides. The candidates tie on the pinned
+/// flag, the prior losses and the height, so dev's branch order decides, and
+/// it puts the chain that costs more first (deploy_chain_index.rs:179-190).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_signers_on_one_registry_key_keep_one_by_k() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let padding: Vec<String> = (0..8).map(|i| format!("@\"g9-pad\"!({i})")).collect();
+    let costly = format!("{} | {}", version_insert("costly"), padding.join(" | "));
+    let (cheap_block, cheap_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&genesis.genesis_vaults[2], 1, version_insert("cheap")),
+    )
+    .await;
+    let (costly_block, costly_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&genesis.genesis_vaults[0], 2, costly),
+    )
+    .await;
+    let cheap_cost = cheap_block.body.deploys[0].cost().cost;
+    let costly_cost = costly_block.body.deploys[0].cost().cost;
+    assert!(
+        costly_cost > cheap_cost,
+        "staging precondition: the padded insert costs more ({costly_cost} > {cheap_cost})"
+    );
+    let merge = neutral_base_merge(&mut nodes, [&cheap_block, &costly_block]).await;
+    let records = records_for(&merge, &[cheap_id.as_slice(), costly_id.as_slice()]);
+    assert_eq!(records.len(), 1, "the merge keeps one contender");
+    assert_eq!(
+        records[0].sig.as_ref(),
+        cheap_id.as_slice(),
+        "K keeps the chain that costs more"
+    );
+    assert_eq!(records[0].carrier, cheap_block.block_hash);
+    assert!(!records[0].duplicate);
+}
+
+/// DR-120 (gap G9), same-signer siblings: two offers of one signer conflict
+/// on the signer's cursor cells. Above a neutral base the order K keeps one
+/// and defers the other. The owner of the rejected carrier buffers the
+/// offer; it re-proposes it once the rejection settles in the floor
+/// (`retry_gate_spec::settled_rejection_opens_the_gate_and_the_owner_retries`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_signer_siblings_keep_one_and_the_owner_buffers_the_other() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let signer = genesis.genesis_vaults[2].clone();
+    let (first, first_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&signer, 1, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    let (second, second_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&signer, 2, "new y in { y!(1) }".to_string()),
+    )
+    .await;
+    let merge = neutral_base_merge(&mut nodes, [&first, &second]).await;
+    let records = records_for(&merge, &[first_id.as_slice(), second_id.as_slice()]);
+    assert_eq!(records.len(), 1, "the merge keeps one sibling");
+    let (owner, loser_id) = match records[0].sig.as_ref() == first_id.as_slice() {
+        true => (0usize, first_id.clone()),
+        false => (1usize, second_id.clone()),
+    };
+    assert_eq!(
+        records[0].carrier,
+        [&first, &second][owner].block_hash,
+        "the record names the deferred sibling's carrier"
+    );
+    for (index, node) in nodes.iter().enumerate() {
+        match index == owner {
+            true => assert_eq!(buffered_envelope_ids(node), vec![loser_id.clone()]),
+            false => assert!(buffered_envelope_ids(node).is_empty()),
+        }
+    }
+}
+
+/// DR-120 (gap G9): the v6 merge result does not depend on the order of the
+/// secondary parents (DR-15 item 4). Two nodes merge one neutral base with
+/// the same two contenders in opposite secondary orders. Each node uses its
+/// own parents-post-state cache, and both compute one state and one
+/// rejection set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn permuted_secondary_parents_give_the_same_v6_root() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let (left, _) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&genesis.genesis_vaults[2], 1, version_insert("left")),
+    )
+    .await;
+    let (right, _) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&genesis.genesis_vaults[0], 2, version_insert("right")),
+    )
+    .await;
+    let neutral = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates an empty sibling");
+    for block in [&left, &right, &neutral] {
+        for node in nodes.iter_mut() {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let mut results = Vec::with_capacity(2);
+    for (index, parents) in [vec![neutral.clone(), left.clone(), right.clone()], vec![
+        neutral.clone(),
+        right.clone(),
+        left.clone(),
+    ]]
+    .into_iter()
+    .enumerate()
+    {
+        let snapshot = nodes[index]
+            .casper
+            .get_snapshot()
+            .await
+            .expect("the node takes a snapshot");
+        let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+            .justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect();
+        let runtime_manager = nodes[index].runtime_manager.clone();
+        let merged = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+            &nodes[index].block_store,
+            parents,
+            &snapshot,
+            &runtime_manager,
+            &latest_messages,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the merge computes");
+        let mut rejected: Vec<Vec<u8>> = merged
+            .rejected_user
+            .iter()
+            .map(|record| record.sig.to_vec())
+            .collect();
+        rejected.sort();
+        results.push((merged.state.clone(), rejected));
+    }
+    assert_eq!(
+        results[0], results[1],
+        "both secondary orders give one state and one rejection set"
+    );
+    assert_eq!(results[0].1.len(), 1, "the contenders conflict");
+}
+
+/// DR-120 (gap G9): `node` merges `parents` with its own snapshot and the
+/// latest messages of that snapshot.
+async fn merge_on(
+    node: &TestNode,
+    parents: Vec<models::rust::casper::protocol::casper_message::BlockMessage>,
+) -> casper::rust::util::rholang::runtime_manager::MergedPreState {
+    let snapshot = node
+        .casper
+        .get_snapshot()
+        .await
+        .expect("the node takes a snapshot");
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect();
+    let runtime_manager = node.runtime_manager.clone();
+    casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &node.block_store,
+        parents,
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("the merge computes")
+}
+
+/// DR-120 (gap G9), C2: one offer in two sibling blocks above a neutral base.
+/// Both copies are in the merge scope. The fast path declines on the
+/// repeated deploy id (F5). The two copies are equal chains, so dev's chain
+/// set keeps one of them (deploy_chain_index.rs:163-171), and the merge
+/// applies the offer once. The merged state charges the payer exactly once,
+/// and no record defers the offer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_offer_in_two_siblings_is_charged_once() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault =
+        VaultAddress::from_public_key(&payer.1).expect("the payer key forms a vault address");
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    let offer = owner_direct_offer(&payer, 1, "new x in { x!(0) }".to_string());
+    let (first, id) = offered_block(&mut nodes, 0, offer.clone()).await;
+    let (second, second_id) = offered_block(&mut nodes, 1, offer).await;
+    assert_eq!(id, second_id);
+    let neutral = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates an empty sibling");
+    for block in [&first, &second, &neutral] {
+        for node in nodes.iter_mut() {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![neutral, first, second]).await;
+    assert!(
+        merged
+            .applied_from_scope
+            .contains(&prost::bytes::Bytes::from(id.clone())),
+        "the merge applies the offer from its scope"
+    );
+    assert!(
+        merged
+            .rejected_user
+            .iter()
+            .all(|record| record.sig.as_ref() != id.as_slice() || record.duplicate),
+        "no record defers the offer"
+    );
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .expect("the receipt query succeeds")
+        .expect("the offer carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state charges the payer exactly once"
+    );
+}
+
+/// DR-120 (gap G9), law L7: one offer in two sibling blocks, and the merge's
+/// main parent is one of them. The other copy is a scope copy of an offer
+/// that the base settled. Its settlement consumes a fee-cursor datum that the
+/// base no longer holds, so the fast path declines
+/// (`CursorLinearity.scope_copy_of_base_deploy_fails_fast_path`). The fast
+/// path would apply every scope chain. The slow path drops the copy, so the
+/// merge does not apply the offer from its scope, and the merged state
+/// charges the payer exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scope_copy_of_a_base_offer_takes_the_slow_path() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault =
+        VaultAddress::from_public_key(&payer.1).expect("the payer key forms a vault address");
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    let offer = owner_direct_offer(&payer, 1, "new x in { x!(0) }".to_string());
+    let (first, id) = offered_block(&mut nodes, 0, offer.clone()).await;
+    let (second, _) = offered_block(&mut nodes, 1, offer).await;
+    for node in nodes.iter_mut() {
+        for block in [&first, &second] {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![first, second]).await;
+    assert!(
+        !merged
+            .applied_from_scope
+            .contains(&prost::bytes::Bytes::from(id.clone())),
+        "the merge does not apply the scope copy"
+    );
+    assert!(
+        merged
+            .rejected_user
+            .iter()
+            .all(|record| record.sig.as_ref() != id.as_slice() || record.duplicate),
+        "no record defers the offer"
+    );
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .expect("the receipt query succeeds")
+        .expect("the offer carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state charges the payer exactly once"
+    );
+}

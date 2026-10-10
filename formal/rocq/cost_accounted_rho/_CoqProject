@@ -510,6 +510,10 @@ theories/IntroductionMeasurementReuse.v
 theories/StackSafeDemandWalk.v
 theories/StackSafeLexicalResolver.v
 theories/ReceiveBodyNames.v
+theories/CursorLinearity.v
+theories/V6MergeLedger.v
+theories/V6MergeOrder.v
+theories/V6MergeOrderedPass.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v
 theories/OrderedStackMaterialization.v

@@ -37,7 +37,10 @@ fn measure_result_time<T, E, F: FnOnce() -> Result<T, E>>(f: F) -> Result<(T, Du
 
 /// Compare two branches for deterministic ordering.
 /// Ordering for branches to ensure deterministic comparison.
-fn compare_branches<R: Ord>(a: &HashableSet<R>, b: &HashableSet<R>) -> std::cmp::Ordering {
+pub(crate) fn compare_branches<R: Ord>(
+    a: &HashableSet<R>,
+    b: &HashableSet<R>,
+) -> std::cmp::Ordering {
     // Compare by sorted elements
     let mut a_sorted: Vec<_> = a.0.iter().collect();
     let mut b_sorted: Vec<_> = b.0.iter().collect();
@@ -769,7 +772,10 @@ impl LossProfile {
     }
 }
 
-fn branch_losses<R>(branch: &Branch<R>, prior_losses: &impl Fn(&R) -> u64) -> LossProfile {
+pub(crate) fn branch_losses<R>(
+    branch: &Branch<R>,
+    prior_losses: &impl Fn(&R) -> u64,
+) -> LossProfile {
     branch.0.iter().fold(LossProfile::default(), |acc, item| {
         let losses = prior_losses(item);
         acc.fold(LossProfile {

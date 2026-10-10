@@ -50,6 +50,8 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+use crate::rust::util::rholang::costacc::v6_merge::fast::{try_compose, FastPathInputs};
+use crate::rust::util::rholang::costacc::v6_merge::{self, MergeRule};
 use crate::rust::BlockProcessing;
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
@@ -1990,8 +1992,31 @@ pub async fn compute_parents_post_state(
                 settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
                 result
             };
+            // Added by DR-120 (gap G9): a conflict-free v6 scope composes without merge analysis.
+            let merge_rule = v6_merge::rule_for(&parents, &visible_blocks, block_store)?;
+            if let MergeRule::OfferedV6 = merge_rule {
+                if let Some(composed) = try_compose(&FastPathInputs {
+                    dag: &s.dag,
+                    block_store,
+                    history_repository: &runtime_manager.history_repo,
+                    base: &scope_anchor_hash,
+                    base_post_state: &base_state,
+                    base_holds_floor,
+                    scope: &visible_blocks,
+                    base_lineage_blocks: &base_lineage_blocks,
+                    floor_block_number,
+                    deploy_lifespan: s.on_chain_state.shard_conf.deploy_lifespan,
+                    index: &|hash| Ok(block_index_f(hash)?.deploy_chains),
+                    prior_rejection_counts: &prior_rejection_counts,
+                })? {
+                    let merged = composed.into_merged_pre_state(scope_anchor_hash.clone());
+                    runtime_manager.put_cached_parents_post_state(cache_key, merged.clone());
+                    return Ok(merged);
+                }
+            }
             let merge_started = std::time::Instant::now();
-            let merger_result = dag_merger::merge(
+            let merger_result = dag_merger::merge_with_rule(
+                merge_rule,
                 &s.dag,
                 &scope_anchor_hash,
                 &base_state,

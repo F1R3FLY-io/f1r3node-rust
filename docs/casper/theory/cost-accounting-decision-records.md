@@ -504,6 +504,15 @@ proof. Workstream D's removal obligations (D4.1 precharge/refund + D4.2/D4.3 mer
 discharged. The dispatcher and merge semantics are unchanged; the cache repair prevents reuse across distinct
 main-parent transitions.
 
+**Amendment (DR-120, 2026-10-10).** The outcome above overstates what the port
+realized. Dev's merger runs the whole merge analysis on every multi-parent
+merge, so no conflict-free scope was "composed without merge analysis"
+(P1:356-359). The shared-channel residual went to an exhaustive search over
+rejection options, not to "a natural serialization order" (P1:363-366). DR-120
+realizes both for offered-funded v6 merges: a conflict-free scope composes
+without the analysis, and one ordered pass in a strict total order replaces
+the search. Legacy merges keep the dispatcher and dev's merger unchanged.
+
 **Cross-refs.** DR-5 (precharge/refund removal), DR-9 (token-per-COMM cost), DR-11 (acceptance gate),
 DR-13 (Σ⟦s⟧ supply). KEEP-LIST: `MergeableChannelAccounting.v`/`.tla` (the merge path's formal anchor).
 
@@ -13026,6 +13035,284 @@ commit for D-F2a and D-F2b ("One commit (Recommended)").
   per role) walks data that the produce introduction already measured.
 
 **Cross-refs.** DR-76, DR-94, DR-110, DR-117. Phase D (`ofp-2-cap-phase-d`).
+
+## DR-120 — The interim v6 merge rule: compose a conflict-free scope, else one ordered pass (gap G9)
+
+**Status.** Implemented 2026-10-10 for gap G9 of epic 8946 (leaf
+`ofp-g9-merge-elimination`), as design v4 of `G9 and bug 11004` specifies. The
+user approved it on 2026-10-10: "Go with option 1 [build the merge rule, then
+the lock fix, with the Casper edits listed] so long as these changes are
+necessary, directly related to cost-accounting and not just nice-to-haves, and
+don't change much of Casper." Two more user decisions of 2026-10-10 apply:
+
+- The ordered pass stays as design v4 specifies it.
+- The deploy formats select the merge rule. An earlier draft read a shard flag
+  (`offered_funded_v6_active`) that three more Casper files had to carry. The
+  user dropped the flag by Occam's razor: the formats already carry the
+  information, so the flag added Casper edits and no information.
+
+**Context.**
+
+- P1 says that the results of different signatures are "composed without
+  merge analysis". Only shared data channels take "a natural serialization
+  order" (`cost-accounted-rho.tex`, P1:344-366). P1 calls merge analysis
+  "expensive, complex, and a persistent source of bugs" (P1:300-307).
+- Greg's expectation is that merge logic causes most performance problems and
+  should mostly go away.
+- Dev's merger runs the full analysis on every multi-parent merge:
+  - the settled probes
+  - the settled and base partitions
+  - the branches and the conflict map
+  - an exhaustive search over rejection options (`conflict_set_merger.rs`
+    `resolve_conflicts`).
+- DR-15 called the merge path fully realized. But no conflict-free scope
+  skipped the analysis (see the DR-15 amendment).
+- DR-119 needs a bounded resolver inside execute-then-merge.
+
+**Decision.**
+
+1. **The rule.** `v6_merge::rule_for` returns `OfferedV6` when a parent or a
+   scope block that is not the genesis block holds an offered user deploy. It
+   returns `Dev` otherwise. A `Dev` merge is dev's merger, byte for byte. The
+   dispatch reads the parents first, from memory. It reads the scope blocks
+   only when no parent decides. It reads them in sorted order, so a block
+   that the store lacks fails the same way on every node.
+   - Formats do not mix on a valid chain. v6 validation rejects a block with
+     a legacy user deploy (`validation_dispatcher.rs:76-82,124-130`), and
+     legacy replay refuses an offered term (`runtime_manager.rs:1732-1736`).
+     So the rule needs no fail-closed format check.
+   - The genesis block has no parents and stores its deploys in the legacy
+     format on every shard (`genesis.rs:280-284`), so it is exempt.
+   - On a legacy shard, `rule_for` reads each scope block from the block
+     store once. This is the cost of the rule on a legacy merge.
+2. **The fast path** (`v6_merge/fast.rs`). It composes the scope without merge
+   analysis when the predicate P holds. P is the conjunction of F1 to F13:
+
+   | Check | Condition |
+   |---|---|
+   | F1 | The base is the main parent, and its state holds the floor |
+   | F2 | The actual blocks: the scope blocks off the base's main chain |
+   | F3 (P2) | Every user deploy carries a fee-cursor transition (`fee_next_cursor`). A legacy deploy is an error |
+   | F4 | The raw chains of the actual blocks, stamped with their prior losses (`stamp_prior_rejections`), as the slow path stamps them |
+   | F5 | No user deploy id repeats in the raw list |
+   | F6 (P3) | No chain's validity window is closed at the floor |
+   | F7 (P4) | No chain conflicts with the base's own content |
+   | F8 | The branches |
+   | F9 | Every branch passes the pre-check (`ledger::branch_valid`) |
+   | F10 (P5') | No two chains conflict, with chains as units |
+   | F11 (P6) | Dev's availability walk rejects no chain |
+   | F12 (P7) | No branch mixes folded and plain changes with another, and the overfill dry run flags no channel |
+   | F13 (P8) | The full set's sign splits fit, one merge type per channel, and every contributor channel ends in $`[0, \mathrm{MAX}]`$ |
+   | F14 | Compose every chain |
+
+3. **The ordered pass** (`v6_merge/ordered.rs`). It replaces dev's
+   rejection-option search at its single call site (`dag_merger.rs`
+   `merge_with_rule`, the `OfferedV6` arm). Dev's rows before and after the
+   search stay as they are.
+   - S1 rejects the late chains and the chains that depend on them.
+   - S2 groups the other chains into branches.
+   - S3 rejects each branch that fails the pre-check. It runs dev's
+     availability walk on each other branch, and the survivors form one
+     candidate.
+   - S4 builds dev's conflict map over the candidates. The map includes dev's
+     same-user-deploy-id pass (`dag_merger.rs:1732-1760`).
+   - S5 walks the candidates once, in the order K. It keeps a candidate only
+     when all three monotone checks pass:
+     - the candidate conflicts with no kept candidate
+     - it mixes no folded and plain change with them
+     - every sign split stays in range, with one merge type per channel
+       (`PurseLedger::try_add`).
+   - S6 repeats four steps until none of them changes the kept set:
+     - lineage closure, per chain
+     - the conflict re-check after a candidate shrinks
+     - the overfill dry run
+     - the final balances.
+
+     A step that fails drops one whole candidate: the last one by K that can
+     cure the failure. The step prefers unpinned candidates.
+   - S7 returns the kept candidates and the rejected chains. Dev's later
+     lineage step then finds nothing, because S6 closed lineage over the same
+     rejected set and ancestry is transitive.
+   - Each rejected chain keeps the witness of the step that rejected it. The
+     pass logs the witnesses at debug level.
+4. **The order K** (`v6_merge/order.rs`). K compares two candidates by these
+   keys, in this order:
+   - not pinned: a settled candidate comes first (#341)
+   - the highest prior-loss count, descending (#294)
+   - the sum of the prior-loss counts, descending
+   - the lowest source height
+   - dev's `compare_branches`.
+
+   K is a strict total order on candidate sets.
+5. **The ledger** (`v6_merge/ledger.rs`). For each IntegerAdd channel, the
+   ledger keeps the sum of the positive diffs and the sum of the negative
+   diffs in `i128`. Assume that the positive sum is at most `i64::MAX` and
+   the negative sum is at least `i64::MIN`. Then every partial sum lies
+   between the two sums, in every order. So no fold overflows.
+   - The pre-check bounds the user parts and the system parts separately, and
+     then together. This covers the folds of `compute_branch_derived` and of
+     the availability walk.
+   - Only a contributor, a chain whose mergeable map holds the channel with
+     any diff, enters the ledger. A negative failure drops the last negative
+     contributor, or else the last contributor of any sign. The second case
+     covers a negative base value (HIGH-1).
+6. **Claims** (`v6_merge/claims.rs`). The number override of compose writes
+   the base value plus the folded diffs, so it loses a plain change on the
+   same channel (`rholang_merging_logic.rs:116-176`). A candidate that mixes
+   folded and plain changes with the kept set is therefore rejected.
+7. **Compose and the dry run** (`v6_merge/compose.rs`). The dry run folds the
+   kept chains' changes with `StateChange::combine` in compose's canonical
+   order. It then applies the guard of compose to each channel. So it flags
+   exactly the channels on which compose would fail.
+8. **Copy, do not move.** `compose.rs` copies these parts of dev's merge:
+   - the guarded channel action (`dag_merger.rs:1539-1576`)
+   - the multi-writer set (`:2007-2023`)
+   - the apply closure (`:1595-1601`)
+   - the reader (`:1447-1451`) and the base readers (`:1793-1800`).
+
+   Each copy cites its dev lines, and dev keeps its own code. The test
+   `fast_path_equals_dev_merge_when_dev_rejects_nothing` calls dev's `merge`
+   and fails if the originals drift.
+
+**Same-signer siblings.** Two same-signer siblings conflict on their cohort's
+cursor cells. The v6 rule keeps one, chosen by K. This defers the other. It is
+not P1's serialization. P1 rejects a second same-signer deployment only when
+funds are exhausted (P1:2245-2269). Otherwise P1 serializes both
+(P1:360-363). Under G9 only the loser's owner re-proposes it
+(interpreter_util.rs:2143). The owner waits until the rejection settles in the
+floor (validate.rs:601-717), and only while the validity window is open. A
+failed loser ends custody without a charge (interpreter_util.rs:2184-2201).
+The deferral therefore depends on the owner's liveness and on the validity
+window.
+
+**Differences from dev's resolver.**
+
+- When two candidates tie on losses, height and costs, K keeps the one that
+  `compare_branches` puts first, which has the lexicographically smaller
+  deploy id. Dev's resolver keeps the other one, because it rejects the option
+  that sorts first (`conflict_set_merger.rs:1029-1064`). No spec depends on
+  the tie.
+- Dev's resolver checks number channels with a prefix fold in branch order
+  (`conflict_set_merger.rs:1180-1223`). The fold depends on the order: with
+  base 1, the diff -3 fails before +3 and passes after it. The ledger reads
+  the sign splits and the final balance of the whole set, which no order
+  changes. In 2 of the 103 generated scenarios in which the fast path
+  composed, dev's merge rejected a chain. The drift guard therefore compares
+  the two paths only where dev rejects nothing.
+
+**Corrections found during verification.**
+
+- The chain-level conflict map alone does not empty dev's settled partition.
+  When no chain is settled, the settled log is empty. A chain then conflicts
+  with it only through its own produce that touches a base join
+  (`merging_logic.rs:262-470`). That produce also conflicts with the base
+  log, so F7 rejects the chain. The proof and the comment on
+  `has_chain_level_conflict` now name F7.
+- The chain-level map has no same-user-deploy-id pass. F5 covers repeated
+  deploy ids on the fast path.
+
+**Why the rule is sound.** Each law below is a theorem of the Rocq modules,
+and the TLA+ model checks it on bounded scenarios.
+
+- L5: under P, the ordered pass keeps every candidate and rejects nothing. So
+  the fast path and the slow path reach one state
+  (`fast_path_equals_ordered_pass`, `chain_level_p5_empties_settled_partition`,
+  `stamped_walk_matches_slow_path`).
+- L7: a scope copy of a deploy that the base settled consumes a fee-cursor
+  datum that the base no longer holds. So the fast path declines
+  (`scope_copy_of_base_deploy_fails_fast_path`).
+- The repair loop ends within one more round than the kept chains. Its
+  result has no conflict, no folded mixing, no overfill and no invalid
+  balance, and its lineage is closed (`repair_loop_terminates_valid`,
+  `lineage_recheck_restores_conflict_freedom`).
+- Every user deploy id survives at most once (`survivor_ids_exactly_once`).
+- L8: a pinned candidate is dropped only in these cases
+  (`pinned_kept_unless_forced`):
+  - by the pre-check, or by its own unavailability
+  - by an S5 check against earlier candidates, which are all pinned
+  - by the conflict re-check against an earlier pinned candidate
+  - by the repair loop, when no unpinned kept candidate can cure the failure.
+    Dev's tripwire still fires in this case.
+- L9: the first unpinned candidate in K loses in S5 only to pinned
+  candidates (`first_unpinned_in_k_not_lost_to_later`). It can still lose to
+  the pre-check, to unavailability and to S6.
+- The arrival order of the branches does not change the result
+  (`ordered_pass_perm_invariant`).
+
+**Casper footprint.** The approved footprint is `interpreter_util.rs`,
+`dag_merger.rs`, `conflict_set_merger.rs` and `costacc/mod.rs`. C1 touches no
+other Casper file.
+
+| Dev file | + | − | Edit |
+|---|---|---|---|
+| `util/rholang/interpreter_util.rs` | 26 | 1 | `rule_for` and the fast-path dispatch before the merge, and the call to `merge_with_rule` |
+| `merging/dag_merger.rs` | 69 | 10 | A dev-signature `merge` wrapper, the rename to `merge_with_rule(rule, …)`, the `OfferedV6` arm, one import, and `pub(crate)` on the availability walk and the window rule |
+| `merging/conflict_set_merger.rs` | 8 | 2 | `pub(crate)` on `compare_branches` and `branch_losses`. rustfmt wraps each signature, so each takes four lines |
+| `util/rholang/costacc/mod.rs` | 1 | 0 | `pub mod v6_merge;` |
+
+**Verification.**
+
+- Rocq, axiom-free, each registered theorem closed under the global context:
+  - `CursorLinearity.v`: L7, with three proved negative controls.
+  - `V6MergeLedger.v`: the sign splits, the pre-check, the final balance, the
+    merge types and the repair victim, with five proved negative controls.
+  - `V6MergeOrder.v`: `k_eq_iff_same_branch`, `k_strict_total`,
+    `k_pinned_first`, `ordered_pass_perm_invariant`, and the control
+    `nc_position_tiebreak_not_perm_invariant`.
+  - `V6MergeOrderedPass.v`: the fourteen laws of design v4, the two
+    hypotheses of the sort (`sort_by_k_perm`, `sort_by_k_pinned_first`), and
+    twelve proved negative controls.
+  - The proof gate passes in cost-accounting mode: 284 modules and 3235
+    closed assumption queries. The 54 new queries are closed.
+- TLA+, through `scripts/lib/tlc-run.sh`:
+  - `MCCursorDuplicateDetection`: the safe configuration passes (377
+    distinct states). The three controls violate `DuplicateNeverFastPath`
+    (twice) and `ExactlyOnceCharge`.
+  - `MCV6MergeSerialization`: the safe configuration checks Agreement,
+    NoConflictingSurvivors, NoFoldedMixing, NoOverfill, OverfillMatchesGuard,
+    ChainFoldNoOverflow, PurseValid, SettledKept, BaseWins,
+    ExactlyOncePerDeployId, FastEqualsSlow, HighestLossKeptQualified and
+    NoMergeAbort over 11,306 scenarios. Each of the eighteen controls violates
+    its named invariant.
+  - The models are registered in
+    `scripts/check-cost-accounted-rho-tla-invariants.sh` and
+    `scripts/check-tlc-source-binding.sh`. The second script fails at HEAD
+    before this record, because the merge 1d325b996 removed
+    `formal/tlaplus/uptime/`, which the script reads. The new block runs
+    before that read and passes for all 23 configurations.
+- Rust:
+  - `v6_merge/tests.rs`: 33 unit and property tests pass. The six property
+    tests run 256 cases each. In 256 generated scenarios the fast path
+    composes 103, and the ordered pass rejects a chain in 152. Every witness
+    kind occurs except the mixing and lineage-conflict witnesses, which
+    `folded_mixing_rejects_plain_change` and
+    `partial_lineage_conflict_is_rechecked` cover.
+  - `offered_funded_api_test.rs`: `two_signers_on_one_registry_key_keep_one_by_k`,
+    `same_signer_siblings_keep_one_and_the_owner_buffers_the_other`,
+    `permuted_secondary_parents_give_the_same_v6_root`,
+    `duplicate_offer_in_two_siblings_is_charged_once` and
+    `scope_copy_of_a_base_offer_takes_the_slow_path`.
+  - Two more planned API tests need DR-119, because the global cost-cursor
+    lock makes every two charged offers conflict. They land with DR-119.
+    `floor_erasure_reproduction_spec` and
+    `exactly_once_spec::floor_covered_effect_survives_a_late_record` cover
+    settled content, and they run under the v6 rule.
+- Suites:
+  - On casper, block-storage and the node HTTP handlers, the provisional caps
+    pass 1978 of 1982 and the committed caps pass 1976 of 1982. All failures
+    are the known ones of DR-116 and DR-117, the same sets as for DR-118.
+  - The 13 offered-genesis specs, all 29 offered API tests and the unchanged
+    dev suites (`multi_parent_casper_merge_spec`,
+    `compute_parents_post_state_regression_spec`, `finalized_protection_spec`,
+    `registry_key_merge`, `floor_fork_reproduction_spec`) pass.
+  - C1 changes no rholang or rspace++ code.
+  - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+    warnings`, the workspace doctests and the documentation gates pass.
+
+**Cross-refs.** DR-15 (amended), DR-115, DR-116, DR-118, DR-119, P1. Leaf
+`ofp-g9-merge-elimination`.
+
+---
 
 ## DR-121 — Names that a receive body creates are dynamic for the funding analysis
 
