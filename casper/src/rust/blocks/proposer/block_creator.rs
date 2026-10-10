@@ -2377,6 +2377,16 @@ fn rejected_buffer_has_recoverable_deploys(
         .any(|deploy| !canonical_won.contains(&deploy.sig)))
 }
 
+fn with_finality_progress(
+    finality_lag_stats: FinalityLagStats,
+    finality_progress: &mut FinalityProgress,
+) -> FinalityLagStats {
+    FinalityLagStats {
+        stalled: finality_progress.observe(finality_lag_stats.last_finalized_block),
+        ..finality_lag_stats
+    }
+}
+
 fn finality_lag_stats(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -2799,6 +2809,31 @@ pub async fn create(
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,
 ) -> Result<BlockCreatorResult, CasperError> {
+    create_with_progress(
+        casper_snapshot,
+        validator_identity,
+        dummy_deploy_opt,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        selection,
+        &mut FinalityProgress::default(),
+    )
+    .await
+}
+
+pub async fn create_with_progress(
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    dummy_deploy_opt: Option<(PrivateKey, String)>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    selection: super::proposer::DeploySelection,
+    finality_progress: &mut FinalityProgress,
+) -> Result<BlockCreatorResult, CasperError> {
     let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
@@ -2901,7 +2936,10 @@ pub async fn create(
             .unwrap_or(true);
         let inclusion_staleness =
             deploy_inclusion_progress_staleness(&inclusion_progress, next_block_num, now_millis);
-        let finality_lag_stats = finality_lag_stats(casper_snapshot, block_store)?;
+        let finality_lag_stats = with_finality_progress(
+            finality_lag_stats(casper_snapshot, block_store)?,
+            finality_progress,
+        );
         let fresh_local_stats = fresh_local_deploy_stats(
             casper_snapshot,
             next_block_num,
@@ -4634,6 +4672,19 @@ mod tests {
             (NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP, true),
             "signature-stale in-scope work still clamps the leader to 4"
         );
+    }
+
+    #[test]
+    fn a_proposers_lag_stats_report_a_stall_after_two_proposals_at_the_same_lfb() {
+        let mut progress = FinalityProgress::default();
+        let observed: Vec<bool> = [lag(30, 26), lag(31, 26), lag(32, 26), lag(33, 27)]
+            .into_iter()
+            .map(|stats| with_finality_progress(stats, &mut progress).stalled)
+            .collect();
+        assert_eq!(observed, vec![false, false, true, false]);
+
+        let stats = with_finality_progress(lag(34, 27), &mut progress);
+        assert_eq!(stats.lag, 7, "progress does not change the lag");
     }
 
     #[test]

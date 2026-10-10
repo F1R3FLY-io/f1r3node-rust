@@ -740,6 +740,7 @@ pub struct ProductionBlockCreator {
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
+    finality_progress: block_creator::FinalityProgress,
 }
 
 impl ProductionBlockCreator {
@@ -754,6 +755,7 @@ impl ProductionBlockCreator {
             rejected_deploy_buffer,
             runtime_manager,
             block_store,
+            finality_progress: block_creator::FinalityProgress::default(),
         }
     }
 }
@@ -770,7 +772,7 @@ impl BlockCreator for ProductionBlockCreator {
         dummy_deploy_opt: Option<(PrivateKey, String)>,
         selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError> {
-        block_creator::create(
+        block_creator::create_with_progress(
             casper_snapshot,
             validator_identity,
             dummy_deploy_opt,
@@ -779,6 +781,7 @@ impl BlockCreator for ProductionBlockCreator {
             &self.runtime_manager,
             &mut self.block_store,
             selection,
+            &mut self.finality_progress,
         )
         .await
     }
