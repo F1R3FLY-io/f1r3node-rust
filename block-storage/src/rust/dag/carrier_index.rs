@@ -111,6 +111,8 @@ impl CarrierIndex {
             return Ok(0);
         }
         let mut removed: u64 = 0;
+        let mut emptied: Vec<ByteString> = Vec::new();
+        let mut trimmed: Vec<(ByteString, Vec<CarrierEntry>)> = Vec::new();
         for (sig, row) in self.carriers.to_map()? {
             let kept: Vec<CarrierEntry> =
                 row.iter().filter(|e| e.height >= cutoff).cloned().collect();
@@ -119,10 +121,16 @@ impl CarrierIndex {
             }
             removed += (row.len() - kept.len()) as u64;
             if kept.is_empty() {
-                self.carriers.delete(vec![sig])?;
+                emptied.push(sig);
             } else {
-                self.carriers.put_one(sig, kept)?;
+                trimmed.push((sig, kept));
             }
+        }
+        if !emptied.is_empty() {
+            self.carriers.delete(emptied)?;
+        }
+        if !trimmed.is_empty() {
+            self.carriers.put(trimmed)?;
         }
         self.meta
             .put_one(Self::LAST_PRUNE_KEY.to_string(), cutoff)?;
@@ -158,6 +166,110 @@ mod tests {
         assert_eq!(index.set_watermark_if_absent(7).expect("set"), 7);
         assert_eq!(index.set_watermark_if_absent(99).expect("re-set"), 7);
         assert_eq!(index.watermark().expect("read"), Some(7));
+    }
+
+    #[derive(Clone)]
+    struct WriteCountingStore {
+        inner: InMemoryKeyValueStore,
+        writes: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl KeyValueStore for WriteCountingStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
+        fn get(
+            &self,
+            keys: &Vec<shared::rust::ByteBuffer>,
+        ) -> Result<Vec<Option<shared::rust::ByteBuffer>>, KvStoreError> {
+            self.inner.get(keys)
+        }
+
+        fn put(
+            &self,
+            kv_pairs: Vec<(shared::rust::ByteBuffer, shared::rust::ByteBuffer)>,
+        ) -> Result<(), KvStoreError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put(kv_pairs)
+        }
+
+        fn put_one_if_absent(
+            &self,
+            key: shared::rust::ByteBuffer,
+            value: shared::rust::ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put_one_if_absent(key, value)
+        }
+
+        fn delete(&self, keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.delete(keys)
+        }
+
+        fn iterate(
+            &self,
+            f: fn(shared::rust::ByteBuffer, shared::rust::ByteBuffer),
+        ) -> Result<(), KvStoreError> {
+            self.inner.iterate(f)
+        }
+
+        fn iterate_while(
+            &self,
+            f: &mut dyn FnMut(
+                shared::rust::ByteBuffer,
+                shared::rust::ByteBuffer,
+            ) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            self.inner.iterate_while(f)
+        }
+
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
+
+        fn to_map(
+            &self,
+        ) -> Result<
+            std::collections::BTreeMap<shared::rust::ByteBuffer, shared::rust::ByteBuffer>,
+            KvStoreError,
+        > {
+            self.inner.to_map()
+        }
+
+        fn print_store(&self) -> Result<(), KvStoreError> { self.inner.print_store() }
+
+        fn non_empty(&self) -> Result<bool, KvStoreError> { self.inner.non_empty() }
+
+        fn size_bytes(&self) -> usize { self.inner.size_bytes() }
+    }
+
+    #[test]
+    fn a_prune_walk_writes_the_carrier_table_in_a_bounded_number_of_batches() {
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let carriers = WriteCountingStore {
+            inner: InMemoryKeyValueStore::new(),
+            writes: writes.clone(),
+        };
+        let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
+        for i in 0u32..200 {
+            let sig = format!("old-{i}").into_bytes();
+            index.record_once(&sig, 10, vec![1; 32]).expect("record");
+            let sig = format!("mixed-{i}").into_bytes();
+            index.record_once(&sig, 10, vec![2; 32]).expect("record");
+            index.record_once(&sig, 500, vec![3; 32]).expect("record");
+        }
+        writes.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        let removed = index.prune_below(400).expect("prune");
+
+        assert_eq!(removed, 400);
+        assert!(
+            writes.load(std::sync::atomic::Ordering::SeqCst) <= 2,
+            "a prune walk must not commit once for each changed row"
+        );
+        assert!(index.proves_absence(b"old-7").expect("probe"));
+        assert!(!index.proves_absence(b"mixed-7").expect("probe"));
     }
 
     #[test]
