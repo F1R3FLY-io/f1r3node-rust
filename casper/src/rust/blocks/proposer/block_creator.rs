@@ -2389,11 +2389,18 @@ fn fresh_admission_fallback(
     if fresh_local_stats.count == 0 {
         return FreshAdmissionFallback::default();
     }
-    let (cap, backpressure) = adaptive_fallback_ordinary_deploy_cap(
+    let (mut cap, backpressure) = adaptive_fallback_ordinary_deploy_cap(
         casper_snapshot,
         fresh_local_stats,
         finality_lag_stats,
     );
+    if !backpressure {
+        let backlog_cap = fresh_local_stats
+            .count
+            .min(NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP)
+            .min(normal_ordinary_deploy_cap(casper_snapshot));
+        cap = cap.max(backlog_cap);
+    }
     FreshAdmissionFallback {
         allowed: cap > 0,
         cap,
@@ -4185,6 +4192,101 @@ mod tests {
                 oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
             },
             lag(10, 2),
+        );
+        assert_eq!(hard.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
+        assert!(hard.backpressure);
+    }
+
+    #[test]
+    fn non_leader_fresh_admission_cap_follows_its_backlog_without_backpressure() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+
+        let fallback = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            FreshLocalDeployStats {
+                count: 26,
+                oldest_age_millis: 7_467,
+            },
+            lag(25, 22),
+        );
+
+        assert!(fallback.allowed);
+        assert_eq!(fallback.cap, 26);
+        assert!(!fallback.backpressure);
+    }
+
+    #[test]
+    fn non_leader_fresh_admission_cap_is_bounded_by_the_fallback_maximum_and_the_shard_cap() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let large_backlog = FreshLocalDeployStats {
+            count: 50,
+            oldest_age_millis: 7_467,
+        };
+
+        let fallback = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            large_backlog,
+            lag(25, 22),
+        );
+        assert_eq!(fallback.cap, NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP);
+
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 20;
+        let fallback = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            large_backlog,
+            lag(25, 22),
+        );
+        assert_eq!(fallback.cap, 20);
+    }
+
+    #[test]
+    fn finality_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let backlog = FreshLocalDeployStats {
+            count: 26,
+            oldest_age_millis: 11_367,
+        };
+
+        let soft = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            backlog,
+            lag(29, 25),
+        );
+        assert_eq!(soft.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+        assert!(soft.backpressure);
+
+        let hard = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            backlog,
+            lag(29, 21),
         );
         assert_eq!(hard.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
         assert!(hard.backpressure);
