@@ -4541,6 +4541,38 @@ mod tests {
     }
 
     #[test]
+    fn the_soft_backpressure_backlog_cap_is_never_above_the_shard_cap() {
+        for shard_cap in [10_usize, 5] {
+            let mut snapshot =
+                crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            snapshot
+                .on_chain_state
+                .shard_conf
+                .max_user_deploys_per_block = shard_cap as u32;
+
+            let non_leader = fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count: 20,
+                    oldest_age_millis: 6_000,
+                },
+                lag(30, 26),
+            );
+            assert_eq!(non_leader.cap, shard_cap);
+
+            let (leader_cap, _) = adaptive_normal_ordinary_deploy_cap(
+                &snapshot,
+                false,
+                DeployInclusionStaleness::default(),
+                lag(30, 26),
+            );
+            assert_eq!(leader_cap, shard_cap);
+        }
+    }
+
+    #[test]
     fn hard_finality_backpressure_gives_cap_4_on_every_path_whatever_the_backlog_or_progress() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
