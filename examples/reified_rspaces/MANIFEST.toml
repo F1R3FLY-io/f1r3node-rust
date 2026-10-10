@@ -1,0 +1,11 @@
+# The example programs of Reified RSpaces.
+#
+# doc_lint.py reads this manifest (rule snippet-corpus): every rholang block of the campaign
+# documents is the text of one example file or one source row. Each example names the test that
+# runs it.
+
+[[example]]
+name = "agent-hashmap-bag"
+file = "agent_hashmap_bag.rho"
+description = "The reference user agent: an agent of the Agents FIPS whose instances are spaces with HashMap channels and bag collections."
+test = "rholang/tests/reified_agent_conformance.rs"

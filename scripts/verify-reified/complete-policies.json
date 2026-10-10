@@ -2166,7 +2166,7 @@
       ]
     },
     "p8": {
-      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5) adds the routes of user agents with the agent reference and the raw channel (AG-1), the use-context of a native space or an agent (AG-2), the write rule of an agent reference under the bundle rule of eval_send (AG-4, the generalized HandleNotWritable), the abort of a persistent send to a matcher or body capability (A13), the canonical matcher state with its strict codec (TR-5), the matcher and body ids of the namespace, the matcher process (MO-1 to MO-4) and the sink (SK-1) with their URN-bound definitions after the factories of P7 (U1). Step 2 (W2 and W7) adds the call of a send on an agent space (TS-1 to TS-3, AG-4), its sink channel (TS-2), and the R7 replies to agent-minted names (R7A-1). Step 3 (W3 and W6) adds the translation of a receive (TR-1 to TR-7: guard walk and placement, matcher and body capabilities, the call), the native consume of a handle (HC-1 to HC-3), and the codes QuerySpecUnsupportedOnAgentSpace, AgentGuardSpansJoin, AgentPatternTooDeep and the reply code MatcherSetMismatch. Step 4 (W4) adds the translation of `new` (TN-1 to TN-5): the hook reified_new, which is now the body of eval_new in reduce.rs, agent_new, translate_new and the agent-minted names. The code AgentSpacesUnavailable retires.",
+      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5) adds the routes of user agents with the agent reference and the raw channel (AG-1), the use-context of a native space or an agent (AG-2), the write rule of an agent reference under the bundle rule of eval_send (AG-4, the generalized HandleNotWritable), the abort of a persistent send to a matcher or body capability (A13), the canonical matcher state with its strict codec (TR-5), the matcher and body ids of the namespace, the matcher process (MO-1 to MO-4) and the sink (SK-1) with their URN-bound definitions after the factories of P7 (U1). Step 2 (W2 and W7) adds the call of a send on an agent space (TS-1 to TS-3, AG-4), its sink channel (TS-2), and the R7 replies to agent-minted names (R7A-1). Step 3 (W3 and W6) adds the translation of a receive (TR-1 to TR-7: guard walk and placement, matcher and body capabilities, the call), the native consume of a handle (HC-1 to HC-3), and the codes QuerySpecUnsupportedOnAgentSpace, AgentGuardSpansJoin, AgentPatternTooDeep and the reply code MatcherSetMismatch. Step 4 (W4) adds the translation of `new` (TN-1 to TN-5): the hook reified_new, which is now the body of eval_new in reduce.rs, agent_new, translate_new and the agent-minted names. The code AgentSpacesUnavailable retires. Step 5 (W8) adds the reference agent example, an agent of the Agents FIPS with HashMap channels and bag collections, and the conformance kit, which runs every case against the reference agent and a wrapper over a native handle.",
       "sources": [
         "rholang/src/rust/interpreter/reified/user_agent.rs",
         "rholang/src/rust/interpreter/reified/route.rs",
@@ -2280,6 +2280,14 @@
         {
           "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
           "pattern": "pub fn agent_minted_name(agent: Par, raw: Par) -> Par {"
+        },
+        {
+          "file": "examples/reified_rspaces/agent_hashmap_bag.rho",
+          "pattern": "agent agentHashmapBag {"
+        },
+        {
+          "file": "rholang/tests/reified_agent_conformance.rs",
+          "pattern": "struct AgentUnderTest {"
         }
       ],
       "tests": [
@@ -2295,7 +2303,8 @@
         "rholang/src/rust/interpreter/reified/execution.rs",
         "rholang/tests/reified_user_agents.rs",
         "rholang/src/rust/interpreter/reified/handle.rs",
-        "rholang/tests/reified_handle.rs"
+        "rholang/tests/reified_handle.rs",
+        "rholang/tests/reified_agent_conformance.rs"
       ],
       "property_files": [
         "rholang/tests/reified_p8_props.rs"

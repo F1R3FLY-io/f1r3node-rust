@@ -7245,7 +7245,7 @@
       ]
     },
     "p8": {
-      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). It extends campaign and restates the edits and the new files of p7, as p7 restates p6. Step 1 (W1 and W5: the routes and use-contexts of user agents, the write rule of an agent reference, the matcher state codec, the matcher process and the sink) edits only campaign files. Its new files are the user-agent module, the P8 property suite and the P8 model map. Step 1 also holds the edit of decision 78 in the accounting tests: the test of schedule-independent replay charges runs its replay at the v6 host-work limits. Step 2 (W2 and W7: the call of a send on an agent space and the R7 replies to agent-minted names) edits only campaign files, and its new file is the native suite of user agents. Step 3 (W3 and W6: the translation of a receive and the native consume of a handle) edits only campaign files, and its new file is the Rocq module AgentTranslation.v. Step 4 (W4: the translation of `new`) changes the hot file reduce.rs as design v2 section 16 approves: the body of eval_new becomes one hook call `self.reified_new(new, env, rand, authority).await`, which replaces the P5d line that called reified_allocate. Its other edits are in campaign files.",
+      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). It extends campaign and restates the edits and the new files of p7, as p7 restates p6. Step 1 (W1 and W5: the routes and use-contexts of user agents, the write rule of an agent reference, the matcher state codec, the matcher process and the sink) edits only campaign files. Its new files are the user-agent module, the P8 property suite and the P8 model map. Step 1 also holds the edit of decision 78 in the accounting tests: the test of schedule-independent replay charges runs its replay at the v6 host-work limits. Step 2 (W2 and W7: the call of a send on an agent space and the R7 replies to agent-minted names) edits only campaign files, and its new file is the native suite of user agents. Step 3 (W3 and W6: the translation of a receive and the native consume of a handle) edits only campaign files, and its new file is the Rocq module AgentTranslation.v. Step 4 (W4: the translation of `new`) changes the hot file reduce.rs as design v2 section 16 approves: the body of eval_new becomes one hook call `self.reified_new(new, env, rand, authority).await`, which replaces the P5d line that called reified_allocate. Its other edits are in campaign files. Step 5 (W8: the reference agent and the conformance kit) edits only campaign files. Its new files are the reference agent example, the manifest of the examples and the conformance kit.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -8629,6 +8629,8 @@
         "docs/rspace/reified-rspaces/syntax-contract.md",
         "docs/rspace/reified-rspaces/theory-seam.md",
         "docs/rspace/reified-rspaces/verification.md",
+        "examples/reified_rspaces/MANIFEST.toml",
+        "examples/reified_rspaces/agent_hashmap_bag.rho",
         "formal/reified-rspaces-invariant-map.json",
         "formal/reified-rspaces-model-map-d47.json",
         "formal/reified-rspaces-model-map-p4.json",
@@ -8894,6 +8896,7 @@
         "rholang/src/rust/interpreter/tensor/mod.rs",
         "rholang/src/rust/interpreter/tensor/num.rs",
         "rholang/src/rust/interpreter/tensor/ops.rs",
+        "rholang/tests/reified_agent_conformance.rs",
         "rholang/tests/reified_array_vector.rs",
         "rholang/tests/reified_bag.rs",
         "rholang/tests/reified_cell.rs",
