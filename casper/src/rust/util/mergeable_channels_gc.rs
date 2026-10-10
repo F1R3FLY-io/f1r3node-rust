@@ -870,7 +870,7 @@ mod tests {
         // that could refuse for the wrong reason. Bounded at this single
         // candidate's own height — the same rule `collect_garbage` applies
         // to a whole `pending` set collapses to "this one height" here.
-        let candidate_height = dag.lookup_unsafe(block_hash)?.block_number;
+        let candidate_height = dag.block_number_unsafe(block_hash)?;
         let common_strict_ancestors = common_strict_main_chain_ancestors(dag, candidate_height)?;
         is_safe_to_delete(
             dag,

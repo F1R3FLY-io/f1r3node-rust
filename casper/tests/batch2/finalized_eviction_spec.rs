@@ -1,26 +1,7 @@
-// Releasing the proposer's deploy-pool copy keys on the FLOOR, not on the
-// finality marker.
-//
-// Finalization marks the new LFB and its whole indirectly-finalized ancestor
-// closure, and that marker is not a statement about the floor: a marked block
-// can still be excluded from every future cone if fork choice moves off its
-// branch (ucc gate 38237bb7 — carrier #598 marked finalized as an ancestor of
-// #599, #599 orphaned three heights later, the deploy destroyed with it).
-//
-// The pool copy is the ONLY recovery net for that case. An orphaned carrier
-// was never merged, so no disposition record exists, nothing enters the
-// rejected-deploy buffer, and the record-driven recovery machinery cannot see
-// the deploy at all — orphan_reinclusion_spec is built on exactly that premise
-// ("The pool still holds the deploy, and re-inclusion under a foreign parent
-// is the ONLY path back into a live branch"). Releasing on the marker removes
-// the premise.
-//
-// So the release belongs to the deploy-lifecycle register, the one component
-// that re-evaluates as the floor advances: it happens when the register writes
-// its write-once terminal verdict. Gating the finalization edge on the floor
-// instead does not defer the release, it DROPS it — the block is already
-// marked by the next round and never reappears in a `finalized_set`. Both
-// halves are pinned below.
+// The proposer's deploy-pool copy is released when the register writes its
+// terminal verdict, which happens on the finalization advance. The derived
+// floor trails the marker by a few blocks; the first test pins that the
+// release does not wait for it.
 
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
@@ -34,7 +15,7 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// The threshold `TestNode` builds its shard conf with; the floor is a
 /// function of it, so the test must derive the floor with the same value the
 /// nodes used.
-fn test_ftt() -> FtThreshold { FtThreshold::from_f32_lossy(0.0) }
+fn test_ftt() -> FtThreshold { FtThreshold::from_f32_lossy(0.1) }
 
 fn pool_holds(node: &TestNode, sig: &Bytes) -> bool {
     node.deploy_storage
@@ -63,14 +44,11 @@ async fn drive_round(nodes: &mut [TestNode]) {
     }
 }
 
-/// THE regression. Finality lands on a block before the floor reaches it, and
-/// it sweeps in the whole indirectly-finalized ancestor closure — so a carrier
-/// is marked finalized while its contents are NOT yet represented in every
-/// future merge base and its branch can still be abandoned. Removing the pool
-/// copy there is what turns an orphaned carrier into destroyed work.
+/// The preconditions establish the window where the marker and the floor
+/// disagree: the carrier is finalized AND still above the floor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
+async fn a_finalized_carrier_releases_its_pool_copy_before_floor_coverage() {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
@@ -166,13 +144,10 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
     );
 
     assert!(
-        pool_holds(&nodes[0], &sig),
-        "the carrier is finalized but the floor has NOT reached it, so its \
-         contents are not yet in every future merge base and its branch can \
-         still be abandoned. Evicting the pool copy here destroys the deploy \
-         outright: an orphaned carrier is never merged, so no rejection record \
-         exists, nothing reaches the rejected-deploy buffer, and the pool copy \
-         is the only path back into a live branch",
+        !pool_holds(&nodes[0], &sig),
+        "the carrier is finalized, so the verdict is written on this advance \
+         and the pool copy goes with it — the release must not wait for the \
+         floor to climb over the carrier",
     );
 }
 

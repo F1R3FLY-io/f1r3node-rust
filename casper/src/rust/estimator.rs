@@ -204,7 +204,7 @@ impl Estimator {
                 };
 
                 meter.lookup()?;
-                let max_block_number = dag.lookup_unsafe(main_hash)?.block_number;
+                let max_block_number = dag.block_number_unsafe(main_hash)?;
 
                 meter.charge(
                     WorkKind::Metadata,
