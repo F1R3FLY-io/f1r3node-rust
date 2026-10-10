@@ -363,7 +363,6 @@ async fn sweep_register_after_advance(
     deploy_storage: &parking_lot::Mutex<KeyValueDeployStorage>,
     deploy_lifespan: i64,
     max_parent_depth: i32,
-    ftt: crate::rust::safety::clique_oracle::FtThreshold,
 ) -> Result<(), CasperError> {
     let dag = block_dag_storage.get_representation()?;
     let terminalized = deploy_lifecycle
@@ -373,7 +372,6 @@ async fn sweep_register_after_advance(
             None,
             deploy_lifespan,
             crate::rust::finality::deploy_lifecycle::citability_horizon(max_parent_depth),
-            ftt,
         )
         .await?;
     crate::rust::finality::deploy_lifecycle::release_terminalized(deploy_storage, &terminalized)
@@ -402,7 +400,7 @@ pub(crate) async fn compute_last_finalized_block(
     // Get current LFB hash and height
     let dag = block_dag_storage.get_representation()?;
     let last_finalized_block_hash = dag.last_finalized_block();
-    let last_finalized_block_height = dag.lookup_unsafe(&last_finalized_block_hash)?.block_number;
+    let last_finalized_block_height = dag.block_number_unsafe(&last_finalized_block_hash)?;
 
     // Keep effect closure FnMut-compatible by cloning captured state on each invocation.
     let block_dag_storage_for_effect = block_dag_storage.clone();
@@ -660,7 +658,6 @@ pub(crate) async fn compute_last_finalized_block(
             &deploy_storage,
             deploy_lifespan,
             max_parent_depth,
-            ftt,
         )
         .await
         {

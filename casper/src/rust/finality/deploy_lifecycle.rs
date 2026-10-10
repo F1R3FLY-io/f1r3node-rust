@@ -55,9 +55,7 @@ use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::block_facts::{block_facts, LineageNext};
-use super::floor::{self, in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
-use crate::rust::safety::clique_oracle::FtThreshold;
 
 /// The citability horizon: how far below the floor an admissible block can
 /// still cite. Derives from `max_parent_depth` ALONE (shard config — the
@@ -255,19 +253,42 @@ impl FloorSettledProbe {
     }
 }
 
+/// The register's clock. A separate type from `Floor` so the two cannot be
+/// substituted at a call site: they are different derived heights.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdoptedLfb {
+    hash: BlockHash,
+    block_number: i64,
+}
+
+/// True iff `hash` is the adopted LFB or one of its DAG ancestors — i.e.
+/// finalization has already decided it.
+fn in_adopted_closure(
+    dag: &KeyValueDagRepresentation,
+    hash: &BlockHash,
+    clock: &AdoptedLfb,
+) -> Result<bool, CasperError> {
+    if *hash == clock.hash {
+        return Ok(true);
+    }
+    let Some(height) = dag.block_number(hash) else {
+        return Ok(false);
+    };
+    if height > clock.block_number {
+        return Ok(false);
+    }
+    dag.is_dag_ancestor(hash, &clock.hash)
+        .map_err(CasperError::from)
+}
+
 #[derive(Default)]
 struct Schedule {
-    /// Sigs to re-evaluate once the floor-clock height reaches the key (next
-    /// floor advance for coverage re-checks; the contestability bound for
+    /// Sigs to re-evaluate once the clock height reaches the key (the next
+    /// adoption for coverage re-checks; the contestability bound for
     /// Expired/Failed).
     floor_thresholds: BTreeMap<i64, HashSet<Bytes>>,
-    /// The register's ONE clock: the derived floor of the node's adopted LFB,
-    /// monotone. Not the LFB — an effect is irreversible at the floor, not at
-    /// the marker.
-    max_floor: Option<Floor>,
-    /// The adopted LFB `max_floor` was derived from: the basis moves only when
-    /// this does, so an admission under an unchanged LFB skips the derivation.
-    basis_of: Option<BlockHash>,
+    /// The register's ONE clock, monotone per node.
+    adopted_lfb: Option<AdoptedLfb>,
     /// Per-sig coverage memo: the floor block whose lineage a previous
     /// membership check already answered FALSE for. The next check walks
     /// only the new segment above it.
@@ -321,37 +342,13 @@ impl DeployLifecycle {
         touched: Option<&BlockMessage>,
         deploy_lifespan: i64,
         citability_horizon: Option<i64>,
-        ftt: FtThreshold,
     ) -> Result<Vec<Bytes>, CasperError> {
-        // Two facts, both needed. The clock's PROVENANCE is the node's adopted
-        // LFB, never a floor read off an admitted block — that is another
-        // validator's claim about its own chain. Its HEIGHT is that LFB's
-        // derived floor, not the LFB: the LFB reaches a future block through
-        // scope, where a merge can still reject an effect, while the floor
-        // reaches it through the merge base, where nothing can.
+        // The adopted LFB, never a floor read off an admitted block: that is
+        // another validator's claim about its own chain.
         let adopted_hash = dag.last_finalized_block();
-        let known_basis = {
-            let schedule = self.schedule.lock();
-            (schedule.basis_of.as_ref() == Some(&adopted_hash))
-                .then(|| schedule.max_floor.clone())
-                .flatten()
-        };
-        let basis = match known_basis {
-            Some(basis) => basis,
-            None => match floor::floor_of_block(dag, block_store, &adopted_hash, ftt).await {
-                Ok(basis) => basis,
-                Err(CasperError::BlockNotHeld(missing, _)) => {
-                    tracing::debug!(
-                        target: "f1r3fly.casper.lifecycle",
-                        missing = %hex::encode(&missing[..8.min(missing.len())]),
-                        "register clock holds: the adopted LFB's floor needs a block \
-                         below this node's history"
-                    );
-                    return Ok(Vec::new());
-                }
-                Err(other) => return Err(other),
-            },
-        };
+        let adopted_number = dag
+            .block_number_unsafe(&adopted_hash)
+            .map_err(CasperError::from)?;
 
         let mut schedule = self.schedule.lock();
         if !schedule.rebuilt {
@@ -360,18 +357,18 @@ impl DeployLifecycle {
             schedule = self.schedule.lock();
         }
 
-        // Monotone: adoption is monotone per node and `floor_of_block` is
-        // monotone along ancestry, so the memoized FALSE answers in `checked`
-        // stay valid across advances.
-        let floor_advanced = match &schedule.max_floor {
-            Some(current) => basis.block_number > current.block_number,
+        // Monotone: adoption is monotone per node, so the memoized FALSE
+        // answers in `checked` stay valid across advances.
+        let clock_advanced = match &schedule.adopted_lfb {
+            Some(current) => adopted_number > current.block_number,
             None => true,
         };
-        // Recorded even when the floor did not move: a lagging floor is common.
-        schedule.basis_of = Some(adopted_hash);
-        if floor_advanced {
-            let prune_below = basis.block_number - deploy_lifespan;
-            schedule.max_floor = Some(basis);
+        if clock_advanced {
+            let prune_below = adopted_number - deploy_lifespan;
+            schedule.adopted_lfb = Some(AdoptedLfb {
+                hash: adopted_hash,
+                block_number: adopted_number,
+            });
             // Entries this far below the floor sit below every future scan
             // window (earliest = maxParent + 1 − lifespan, parents above the
             // floor). Retention only — never consensus input.
@@ -390,10 +387,10 @@ impl DeployLifecycle {
             }
         }
         let floor_height = schedule
-            .max_floor
+            .adopted_lfb
             .as_ref()
-            .map(|f| f.block_number)
-            .unwrap_or(0);
+            .map(|c| c.block_number)
+            .expect("the clock is set unconditionally above, before this read");
         let crossed_floor: Vec<i64> = schedule
             .floor_thresholds
             .range(..=floor_height)
@@ -438,10 +435,10 @@ fn evaluate(
     else {
         return Ok(());
     };
-    let Some(max_floor) = schedule.max_floor.clone() else {
+    let Some(clock) = schedule.adopted_lfb.clone() else {
         return Ok(());
     };
-    let floor_height = max_floor.block_number;
+    let floor_height = clock.block_number;
 
     // A record-only row (carrier never observed) has no window basis yet;
     // its inclusion event will arm it.
@@ -449,14 +446,14 @@ fn evaluate(
         return Ok(());
     };
 
-    // FINALIZED AT COVERAGE. Membership at the floor is monotone (a
-    // floor-covered effect is in every future merge base), so the first
+    // FINALIZED AT COVERAGE. Membership at or below the adopted LFB is
+    // monotone — finalization has already decided that block — so the first
     // true answer is the verdict. The memo bounds the walk to the lineage
-    // segment above the last floor already answered false.
+    // segment above the last clock already answered false.
     let checked_below = schedule.checked.get(sig).cloned();
     let member = match effect_in_state_of_above(
         block_store,
-        &max_floor.hash,
+        &clock.hash,
         sig,
         valid_after,
         checked_below.as_ref(),
@@ -494,7 +491,7 @@ fn evaluate(
         schedule.horizon_blocked.remove(sig);
         return Ok(());
     }
-    schedule.checked.insert(sig.clone(), max_floor.hash.clone());
+    schedule.checked.insert(sig.clone(), clock.hash.clone());
 
     // "Not in the state" over an unreadable segment is not established —
     // it is unknowable. Expired/Failed for a horizon-blocked sig would be
@@ -546,7 +543,7 @@ fn evaluate(
     for event in &row.events {
         if matches!(event.kind, LifecycleEventKind::Included { is_failed: true }) {
             let block = Bytes::from(event.block_hash.clone());
-            if in_floor_closure(dag, &block, &max_floor)? {
+            if in_adopted_closure(dag, &block, &clock)? {
                 ran_and_failed = true;
                 break;
             }
@@ -707,16 +704,7 @@ mod tests {
         (block_store, dag_storage)
     }
 
-    /// Adopt `block` as the LFB with its verdict basis seeded at `floor`.
-    /// Seeding is what the tests below reckon their heights against; deriving
-    /// the floor instead would drag the oracle into fixtures that are not
-    /// about it.
-    async fn adopt(dag_storage: &BlockDagKeyValueStorage, block: &BlockHash, floor: &BlockHash) {
-        dag_storage
-            .get_representation()
-            .expect("dag")
-            .put_cached_floor(block.clone(), floor.clone())
-            .expect("seed the verdict basis");
+    async fn adopt(dag_storage: &BlockDagKeyValueStorage, block: &BlockHash) {
         dag_storage
             .record_directly_finalized(block.clone(), 0.5, |_| async { Ok(()) })
             .await
@@ -773,7 +761,6 @@ mod tests {
                 Some(&b),
                 10,
                 Some(10),
-                FtThreshold::from_ppm(0),
             )
             .await
             .expect("observe b");
@@ -798,7 +785,6 @@ mod tests {
                 Some(&c),
                 10,
                 Some(10),
-                FtThreshold::from_ppm(0),
             )
             .await
             .expect("observe c");
@@ -809,11 +795,10 @@ mod tests {
         );
     }
 
-    /// Membership keys on the adopted LFB's DERIVED FLOOR, never the LFB
-    /// itself: the LFB reaches a future block through scope, where a merge can
-    /// reject the effect, while the floor reaches it through the merge base.
+    /// The carrier sits inside state(c) but above floor(c) — the window where
+    /// the adopted LFB and its derived floor give different answers.
     #[tokio::test]
-    async fn membership_keys_on_the_adopted_lfbs_floor_not_the_lfb() {
+    async fn membership_keys_on_the_adopted_lfb_not_a_lower_floor() {
         let (block_store, dag_storage) = store_and_dag().await;
         let (sig, pd) = processed(1, false);
 
@@ -824,9 +809,10 @@ mod tests {
         let c = block_at(3, vec![b.block_hash.clone()], 3);
         seed(&block_store, &dag_storage, &[&genesis, &carrier, &b, &c]);
 
-        // c's own floor still sits at genesis: the carrier is inside state(c)
-        // and above floor(c).
-        adopt(&dag_storage, &c.block_hash, &genesis.block_hash).await;
+        // c's own derived floor still sits at genesis, so the carrier is
+        // inside state(c) and ABOVE floor(c) — the window where the two
+        // candidate bases disagree.
+        adopt(&dag_storage, &c.block_hash).await;
 
         let dag = dag_storage.get_representation().expect("dag");
         assert!(
@@ -842,14 +828,14 @@ mod tests {
                 Some(&c),
                 10,
                 Some(10),
-                FtThreshold::from_ppm(0),
             )
             .await
             .expect("observe c");
         assert!(
-            terminalized.is_empty(),
-            "the carrier is inside the adopted LFB's state but above its floor, \
-             so no verdict may be written and the pool copy must stay; got {:?}",
+            terminalized.contains(&sig),
+            "the carrier's effect is inside the adopted LFB's state, so \
+             finalization has already decided it and the verdict must be \
+             written on this advance; got {:?}",
             terminalized
         );
     }
@@ -890,21 +876,15 @@ mod tests {
                 Some(&b),
                 1,
                 Some(1),
-                FtThreshold::from_ppm(0),
             )
             .await
             .expect("observe b");
         assert!(armed.is_empty(), "no verdict before a covering adoption");
 
-        // Adopt d, its floor seeded at d: past decide_at = max(window_end,
-        // last inclusion at 2) + bound = 3, so the Failed arm is LIVE, and the
-        // failed execution at `a` is inside the floor's closure.
-        dag.put_cached_floor(d.block_hash.clone(), d.block_hash.clone())
-            .expect("seed the verdict basis");
-        dag_storage
-            .record_directly_finalized(d.block_hash.clone(), 0.5, |_| async { Ok(()) })
-            .await
-            .expect("adopt d");
+        // Adopt d: past decide_at = max(window_end, last inclusion at 2) +
+        // bound = 3, so the Failed arm is LIVE, and the failed execution at
+        // `a` is inside the adopted LFB's closure.
+        adopt(&dag_storage, &d.block_hash).await;
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
             .observe(
@@ -913,7 +893,6 @@ mod tests {
                 Some(&c),
                 1,
                 Some(1),
-                FtThreshold::from_ppm(0),
             )
             .await
             .expect("observe after adoption");
@@ -1096,7 +1075,7 @@ mod tests {
         w2.body.deploys = vec![live_pd];
 
         seed(&block_store, &dag_storage, &[&w1, &w2]);
-        adopt(&dag_storage, &w2.block_hash, &w2.block_hash).await;
+        adopt(&dag_storage, &w2.block_hash).await;
 
         let dag = dag_storage.get_representation().expect("dag");
         let register = DeployLifecycle::default();
@@ -1107,7 +1086,6 @@ mod tests {
                 Some(&w2),
                 1,
                 Some(1),
-                FtThreshold::from_ppm(0),
             )
             .await
             .expect("a horizon crossing must not error block admission");
@@ -1131,7 +1109,7 @@ mod tests {
         dag_storage
             .insert(&w3, InsertMode::Normal)
             .expect("insert w3");
-        adopt(&dag_storage, &w3.block_hash, &w3.block_hash).await;
+        adopt(&dag_storage, &w3.block_hash).await;
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
             .observe(
@@ -1140,7 +1118,6 @@ mod tests {
                 Some(&w3),
                 1,
                 Some(1),
-                FtThreshold::from_ppm(0),
             )
             .await
             .expect("later observations must not re-error");
@@ -1161,7 +1138,7 @@ mod tests {
         dag_storage
             .insert(&w4, InsertMode::Normal)
             .expect("insert w4");
-        adopt(&dag_storage, &w4.block_hash, &w4.block_hash).await;
+        adopt(&dag_storage, &w4.block_hash).await;
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
             .observe(
@@ -1170,7 +1147,6 @@ mod tests {
                 Some(&w4),
                 1,
                 Some(1),
-                FtThreshold::from_ppm(0),
             )
             .await
             .expect("observe w4");
