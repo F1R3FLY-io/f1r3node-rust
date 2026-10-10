@@ -138,6 +138,7 @@ struct FinalityLagStats {
     dag_tip: i64,
     last_finalized_block: i64,
     lag: i64,
+    stalled: bool,
 }
 
 /// C15 / Smell-2: was previously a zero-arg `fn -> bool` returning a
@@ -156,6 +157,7 @@ const NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP: usize = 8;
 const NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP: usize = 4;
 const NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP: usize = 16;
 const NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP: usize = 32;
+const SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP: usize = 16;
 const DEPLOY_INCLUSION_LEASE_BLOCKS: i64 = 3;
 const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
 const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
@@ -2347,6 +2349,7 @@ fn finality_lag_stats(
         dag_tip,
         last_finalized_block,
         lag: dag_tip.saturating_sub(last_finalized_block).max(0),
+        stalled: false,
     })
 }
 
@@ -2416,10 +2419,19 @@ fn fresh_admission_fallback(
         fresh_local_stats,
         finality_lag_stats,
     );
-    if !backpressure {
+    let backlog_bound = if !backpressure {
+        Some(NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP)
+    } else if finality_lag_stats.lag < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS
+        && !finality_lag_stats.stalled
+    {
+        Some(SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP)
+    } else {
+        None
+    };
+    if let Some(bound) = backlog_bound {
         let backlog_cap = fresh_local_stats
             .count
-            .min(NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP)
+            .min(bound)
             .min(normal_ordinary_deploy_cap(casper_snapshot));
         cap = cap.max(backlog_cap);
     }
@@ -3608,6 +3620,14 @@ mod tests {
             dag_tip,
             last_finalized_block,
             lag: dag_tip.saturating_sub(last_finalized_block).max(0),
+            stalled: false,
+        }
+    }
+
+    fn stalled_lag(dag_tip: i64, last_finalized_block: i64) -> FinalityLagStats {
+        FinalityLagStats {
+            stalled: true,
+            ..lag(dag_tip, last_finalized_block)
         }
     }
 
@@ -4200,7 +4220,7 @@ mod tests {
                 count: 10,
                 oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
             },
-            lag(10, 6),
+            stalled_lag(10, 6),
         );
         assert_eq!(soft.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
         assert!(soft.backpressure);
@@ -4435,7 +4455,36 @@ mod tests {
     }
 
     #[test]
-    fn finality_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
+    fn soft_backpressure_with_an_advancing_lfb_lets_the_non_leader_cap_follow_its_backlog_up_to_16()
+    {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let cap_for = |count| {
+            fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count,
+                    oldest_age_millis: 6_000,
+                },
+                lag(30, 26),
+            )
+        };
+
+        let large = cap_for(20);
+        assert_eq!(large.cap, 16);
+        assert!(large.backpressure);
+        assert_eq!(cap_for(12).cap, 12);
+        assert_eq!(cap_for(5).cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+    }
+
+    #[test]
+    fn a_stalled_lfb_under_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot
@@ -4452,7 +4501,7 @@ mod tests {
             true,
             DeployInclusionStaleness::default(),
             backlog,
-            lag(29, 25),
+            stalled_lag(29, 25),
         );
         assert_eq!(soft.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
         assert!(soft.backpressure);
