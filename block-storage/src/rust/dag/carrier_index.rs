@@ -174,6 +174,7 @@ mod tests {
         inner: InMemoryKeyValueStore,
         writes: Arc<std::sync::atomic::AtomicUsize>,
         largest_batch: Arc<std::sync::atomic::AtomicUsize>,
+        fail_puts: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl KeyValueStore for WriteCountingStore {
@@ -190,6 +191,9 @@ mod tests {
             &self,
             kv_pairs: Vec<(shared::rust::ByteBuffer, shared::rust::ByteBuffer)>,
         ) -> Result<(), KvStoreError> {
+            if self.fail_puts.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(KvStoreError::IoError("injected put failure".to_string()));
+            }
             self.writes
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.largest_batch
@@ -257,6 +261,7 @@ mod tests {
             inner: InMemoryKeyValueStore::new(),
             writes: writes.clone(),
             largest_batch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_puts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
         for i in 0u32..200 {
@@ -287,6 +292,7 @@ mod tests {
             inner: InMemoryKeyValueStore::new(),
             writes: writes.clone(),
             largest_batch: largest_batch.clone(),
+            fail_puts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
         let rows = 2 * CarrierIndex::PRUNE_WRITE_CHUNK + 1;
@@ -308,6 +314,56 @@ mod tests {
         assert!(index
             .proves_absence(format!("old-{}", rows - 1).as_bytes())
             .expect("probe"));
+    }
+
+    #[test]
+    fn a_prune_that_fails_part_way_is_finished_by_the_next_walk() {
+        let fail_puts = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let carriers = WriteCountingStore {
+            inner: InMemoryKeyValueStore::new(),
+            writes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            largest_batch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_puts: fail_puts.clone(),
+        };
+        let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
+        for i in 0u32..50 {
+            index
+                .record_once(format!("old-{i}").as_bytes(), 10, vec![1; 32])
+                .expect("record");
+            let mixed = format!("mixed-{i}").into_bytes();
+            index.record_once(&mixed, 10, vec![2; 32]).expect("record");
+            index.record_once(&mixed, 500, vec![3; 32]).expect("record");
+        }
+
+        fail_puts.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(index.prune_below(400).is_err());
+        fail_puts.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let removed = index.prune_below(400).expect("re-run");
+
+        assert_eq!(
+            removed, 50,
+            "the re-run trims the rows the failed walk left"
+        );
+        for i in 0u32..50 {
+            assert!(index
+                .proves_absence(format!("old-{i}").as_bytes())
+                .expect("probe"));
+            let row = index
+                .carriers
+                .get_one(&format!("mixed-{i}").into_bytes())
+                .expect("read")
+                .expect("row");
+            assert_eq!(row, vec![CarrierEntry {
+                height: 500,
+                block_hash: vec![3; 32]
+            }]);
+        }
+        assert_eq!(
+            index.prune_below(401).expect("inside stride"),
+            0,
+            "a completed walk records its cutoff"
+        );
     }
 
     #[test]
