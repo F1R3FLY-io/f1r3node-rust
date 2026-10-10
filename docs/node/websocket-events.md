@@ -123,6 +123,6 @@ Events that arrive both via replay and live stream are deduplicated.
 
 - **Event bus**: `shared/src/rust/shared/f1r3fly_events.rs` — `F1r3flyEvents` struct with tokio broadcast channel (capacity 100) and startup buffer
 - **Event types**: `shared/src/rust/shared/f1r3fly_event.rs` — `F1r3flyEvent` enum with 10 variants
-- **WebSocket handler**: `node/src/rust/web/events_info.rs` — handles connection, replay, dedup, and live streaming
+- **WebSocket handler**: `node/src/rust/consensus/casper/web/events_info.rs` — handles connection, replay, dedup, and live streaming
 - **Transfer extraction**: `node/src/rust/runtime/setup.rs` — `handle_block_finalized()` extracts transfers from block report and publishes `TransfersAvailable`
 - **Startup seal**: `node/src/rust/runtime/node_runtime.rs` — calls `seal_startup()` after engine_init completes

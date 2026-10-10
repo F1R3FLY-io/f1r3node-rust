@@ -719,6 +719,7 @@ mod tests {
 
         // Create a default configuration (similar to loading from defaults.conf)
         let mut default_config = NodeConf {
+            consensus: Default::default(),
             soak_observer: None,
             standalone: false,
             autopropose: false,

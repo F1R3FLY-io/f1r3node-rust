@@ -10,6 +10,7 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::util::key_util::KeyUtil;
 use eyre::Result;
+use node::rust::api::version_info::get_version_info_str;
 use node::rust::configuration::commandline::options::{
     OptionsSubCommand, GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT,
 };
@@ -20,7 +21,6 @@ use node::rust::configuration::{NodeConf, Options, Profile};
 use node::rust::effects::console_io::{console_io, decrypt_key_from_file, ConsoleIO};
 use node::rust::effects::repl_client::GrpcReplClient;
 use node::rust::repl::ReplRuntime;
-use node::rust::web::version_info::get_version_info_str;
 use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
 
@@ -98,6 +98,8 @@ async fn start_node(options: Options) -> Result<()> {
     // <data-dir>/rnode.conf override and CLI flags layer on top.
     let (mut node_conf, profile, config_file, deferred_warnings) =
         node::rust::configuration::builder::build(options)?;
+
+    node::rust::consensus::factory::ensure_available(node_conf.consensus.protocol)?;
 
     apply_log_cli_overrides_raw(log_overrides, &mut node_conf.logging);
 

@@ -259,11 +259,25 @@ pub fn spawn<T: TransportLayer + Send + Sync + 'static>(
     importer: Arc<dyn RSpaceImporter>,
     has_root: HasRootFn,
 ) -> StateRequesterHandles {
+    let (handles, task) = prepare(transport, rp_conf, importer, has_root);
+    tokio::spawn(task);
+    handles
+}
+
+pub fn prepare<T: TransportLayer + Send + Sync + 'static>(
+    transport: Arc<T>,
+    rp_conf: RPConf,
+    importer: Arc<dyn RSpaceImporter>,
+    has_root: HasRootFn,
+) -> (
+    StateRequesterHandles,
+    impl std::future::Future<Output = ()> + Send,
+) {
     let (fetch_tx, mut fetch_rx) = mpsc::channel::<Blake2b256Hash>(256);
     let (items_tx, mut items_rx) = mpsc::channel::<StoreItemsMessage>(64);
     let sender = BootstrapChunkSender { transport, rp_conf };
 
-    tokio::spawn(async move {
+    let task = async move {
         let mut core = Core::new(importer, has_root);
         let mut resend = tokio::time::interval(RESEND_INTERVAL);
         resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -282,9 +296,9 @@ pub fn spawn<T: TransportLayer + Send + Sync + 'static>(
             }
         }
         tracing::info!("state requester: channels closed, stopping");
-    });
+    };
 
-    StateRequesterHandles { fetch_tx, items_tx }
+    (StateRequesterHandles { fetch_tx, items_tx }, task)
 }
 
 #[cfg(test)]

@@ -1147,6 +1147,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc14f565cf027a105f7a44ccf9e5b424348421a1d8952a8fc9d499d313107789"
 
 [[package]]
+name = "consensus-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "consensus-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "consensus-api",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "console"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3625,18 +3644,22 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "base64 0.22.1",
+ "bincode",
  "block-storage",
  "byte-unit",
  "casper",
  "clap",
  "colored",
  "comm",
+ "consensus-api",
+ "consensus-runtime",
  "crypto",
  "dashmap",
  "eyre",
  "futures",
  "futures-util",
  "graphz",
+ "heed",
  "hex",
  "hocon",
  "humantime",
@@ -3662,6 +3685,7 @@ dependencies = [
  "serial_test",
  "shared",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-stream",

@@ -45,7 +45,7 @@
 (*     pending()), the count-bounded queue (`queued` here, FIFO). The      *)
 (*     count cap remains in force in EVERY mode: byte-gating is an         *)
 (*     additional conjunct, not a replacement for the mpsc capacity.       *)
-(*   node/src/rust/instances/block_processor_instance.rs                   *)
+(*   node/src/rust/consensus/casper/instances/block_processor_instance.rs                   *)
 (*     create/run — drain loop holding a Semaphore(max_parallel_blocks)    *)
 (*     (`processing` here, |processing| <= MaxParallel); a dequeued        *)
 (*     BlockMessage stays resident until its replay completes, so the      *)

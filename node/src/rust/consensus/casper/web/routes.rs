@@ -1,0 +1,143 @@
+use axum::extract::DefaultBodyLimit;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Json, Response};
+use axum::routing::get;
+use axum::Router;
+use serde_json::json;
+use tower_http::cors::{Any, CorsLayer};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
+
+use crate::rust::api::version_info;
+use crate::rust::consensus::casper::web::admin_web_api_routes::AdminWebApiRoutes;
+use crate::rust::consensus::casper::web::reporting_routes::ReportingRoutes;
+use crate::rust::consensus::casper::web::shared_handlers::AppState;
+use crate::rust::consensus::casper::web::web_api_docs::{AdminApi, PublicApi};
+use crate::rust::consensus::casper::web::web_api_routes::WebApiRoutes;
+use crate::rust::consensus::casper::web::web_api_routes_v1::WebApiRoutesV1;
+use crate::rust::consensus::casper::web::{events_info, status_info};
+use crate::rust::diagnostics::new_prometheus_reporter::NewPrometheusReporter;
+
+pub struct Routes;
+
+impl Routes {
+    pub fn create_main_routes(
+        reporting_enabled: bool,
+        http_max_body_bytes: usize,
+    ) -> Router<AppState> {
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+            .allow_credentials(false);
+
+        let mut router = Router::new()
+            // System routes
+            .route("/metrics", get(metrics_handler))
+            .route("/version", get(version_info::version_info_handler))
+            .route("/status", get(status_info::status_info_handler))
+            .route("/ws/events", get(events_info::events_info_handler));
+
+        // Web API routes
+        let web_api_routes = WebApiRoutes::create_router();
+        let reporting_routes = if reporting_enabled {
+            ReportingRoutes::create_router()
+        } else {
+            Router::<AppState>::new()
+        };
+
+        router = router
+            .nest("/api", web_api_routes.merge(reporting_routes))
+            .nest("/api/v1", WebApiRoutesV1::create_router())
+            .merge(
+                SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", PublicApi::openapi()),
+            );
+
+        // Legacy reporting routes (if enabled)
+        if reporting_enabled {
+            router = router.nest("/reporting", ReportingRoutes::create_router());
+        }
+
+        router
+            .layer(DefaultBodyLimit::max(http_max_body_bytes))
+            .fallback(not_found_handler)
+            .method_not_allowed_fallback(method_not_allowed_handler)
+            .layer(cors)
+    }
+
+    pub fn create_admin_routes(http_max_body_bytes: usize) -> Router<AppState> {
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+            .allow_credentials(false);
+
+        let admin_routes = AdminWebApiRoutes::create_router();
+        let reporting_routes = ReportingRoutes::create_router();
+
+        Router::new()
+            .nest("/api", admin_routes.merge(reporting_routes))
+            .nest("/api/v1", WebApiRoutesV1::create_admin_router())
+            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", AdminApi::openapi()))
+            .layer(DefaultBodyLimit::max(http_max_body_bytes))
+            .fallback(not_found_handler)
+            .method_not_allowed_fallback(method_not_allowed_handler)
+            .layer(cors)
+    }
+}
+
+/// 404 for unregistered paths. Keeps the JSON shape consistent with AppError.
+async fn not_found_handler() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "endpoint_not_found",
+            "message": "The requested endpoint does not exist",
+        })),
+    )
+        .into_response()
+}
+
+/// 405 for valid paths called with an unsupported method (e.g. GET on /deploy).
+async fn method_not_allowed_handler() -> Response {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(json!({
+            "error": "method_not_allowed",
+            "message": "The HTTP method is not allowed for this endpoint",
+        })),
+    )
+        .into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    responses(
+        (status = 200, description = "Prometheus metrics in text exposition format"),
+        (status = 503, description = "Metrics not enabled"),
+    ),
+    tag = "System"
+)]
+async fn metrics_handler() -> impl IntoResponse {
+    match NewPrometheusReporter::global() {
+        Some(reporter) => {
+            let metrics_text = reporter.scrape_data();
+            (
+                StatusCode::OK,
+                [(
+                    header::CONTENT_TYPE,
+                    "text/plain; version=0.0.4; charset=utf-8",
+                )],
+                metrics_text,
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "Metrics are not enabled",
+        )
+            .into_response(),
+    }
+}

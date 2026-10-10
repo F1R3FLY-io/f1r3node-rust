@@ -70,6 +70,7 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     blocks_in_processing: Arc<InFlightBlocks>,
     propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
     conf: CasperConf,
+    background_tasks: Option<crate::rust::background_tasks::BackgroundTaskSpawner>,
     trim_state: bool,
     disable_state_exporter: bool,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
@@ -86,6 +87,14 @@ use crate::rust::blocks::block_processor::{
 };
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
+    pub fn with_background_tasks(
+        mut self,
+        spawner: crate::rust::background_tasks::BackgroundTaskSpawner,
+    ) -> Self {
+        self.background_tasks = Some(spawner);
+        self
+    }
+
     /// Helper method to create MultiParentCasper instance
     /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
     async fn create_casper(
@@ -205,6 +214,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         };
 
         Self {
+            background_tasks: None,
             // Infrastructure dependencies (implicit parameters)
             transport_layer,
             rp_conf_ask,
@@ -752,56 +762,57 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         .await?;
 
         // Scala equivalent: Concurrent[F].start(GenesisCeremonyMaster.waitingForApprovedBlockLoop[F](...))
-        tokio::spawn({
-            let block_processing_queue_tx = self.block_processing_queue_tx.clone();
-            let blocks_in_processing = self.blocks_in_processing.clone();
-            let casper_shard_conf = self.casper_shard_conf.clone();
-            let validator_id = validator_id.clone();
-            let transport_layer = self.transport_layer.clone();
-            let rp_conf_ask = self.rp_conf_ask.clone();
-            let connections_cell = self.connections_cell.clone();
-            let last_approved_block = self.last_approved_block.clone();
-            let block_store = self.block_store.clone();
-            let block_dag_storage = self.block_dag_storage.clone();
-            let deploy_storage = self.deploy_storage.clone();
-            let rejected_deploy_buffer = self.rejected_deploy_buffer.clone();
-            let casper_buffer_storage = self.casper_buffer_storage.clone();
-            let event_publisher = self.event_publisher.clone();
-            let block_retriever = self.block_retriever.clone();
-            let engine_cell = self.engine_cell.clone();
-            let runtime_manager = self.runtime_manager.clone();
-            let estimator = self.estimator.clone();
-            let heartbeat_signal_ref = self.heartbeat_signal_ref.clone();
+        crate::rust::background_tasks::spawn(
+            &self.background_tasks,
+            "genesis approval",
+            Box::pin({
+                let block_processing_queue_tx = self.block_processing_queue_tx.clone();
+                let blocks_in_processing = self.blocks_in_processing.clone();
+                let casper_shard_conf = self.casper_shard_conf.clone();
+                let validator_id = validator_id.clone();
+                let transport_layer = self.transport_layer.clone();
+                let rp_conf_ask = self.rp_conf_ask.clone();
+                let connections_cell = self.connections_cell.clone();
+                let last_approved_block = self.last_approved_block.clone();
+                let block_store = self.block_store.clone();
+                let block_dag_storage = self.block_dag_storage.clone();
+                let deploy_storage = self.deploy_storage.clone();
+                let rejected_deploy_buffer = self.rejected_deploy_buffer.clone();
+                let casper_buffer_storage = self.casper_buffer_storage.clone();
+                let event_publisher = self.event_publisher.clone();
+                let block_retriever = self.block_retriever.clone();
+                let engine_cell = self.engine_cell.clone();
+                let runtime_manager = self.runtime_manager.clone();
+                let estimator = self.estimator.clone();
+                let heartbeat_signal_ref = self.heartbeat_signal_ref.clone();
 
-            async move {
-                if let Err(e) = GenesisCeremonyMaster::waiting_for_approved_block_loop(
-                    transport_layer,
-                    rp_conf_ask,
-                    connections_cell,
-                    last_approved_block,
-                    &event_publisher,
-                    block_retriever,
-                    engine_cell,
-                    block_store,
-                    block_dag_storage,
-                    deploy_storage,
-                    rejected_deploy_buffer,
-                    casper_buffer_storage,
-                    runtime_manager,
-                    estimator,
-                    block_processing_queue_tx,
-                    blocks_in_processing,
-                    casper_shard_conf,
-                    validator_id,
-                    disable_state_exporter,
-                    heartbeat_signal_ref,
-                )
-                .await
-                {
-                    tracing::error!(error = ?e, "waiting for approved block loop failed");
+                async move {
+                    GenesisCeremonyMaster::waiting_for_approved_block_loop(
+                        transport_layer,
+                        rp_conf_ask,
+                        connections_cell,
+                        last_approved_block,
+                        &event_publisher,
+                        block_retriever,
+                        engine_cell,
+                        block_store,
+                        block_dag_storage,
+                        deploy_storage,
+                        rejected_deploy_buffer,
+                        casper_buffer_storage,
+                        runtime_manager,
+                        estimator,
+                        block_processing_queue_tx,
+                        blocks_in_processing,
+                        casper_shard_conf,
+                        validator_id,
+                        disable_state_exporter,
+                        heartbeat_signal_ref,
+                    )
+                    .await
                 }
-            }
-        });
+            }),
+        )?;
 
         let genesis_ceremony_master = GenesisCeremonyMaster::new(Arc::new(abp));
         self.engine_cell

@@ -118,7 +118,7 @@ for filename in [
     "casper/src/rust/metrics_constants.rs",
     "rspace++/src/rspace/metrics_constants.rs",
     "block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs",
-    "node/src/rust/instances/release_queue.rs",
+    "node/src/rust/consensus/casper/instances/release_queue.rs",
 ]:
     for constant, name in re.findall(r'pub const (\w+): &str =\s*"([^"]+)";', (root / filename).read_text()):
         exported = re.sub(r"[.-]", "_", name)

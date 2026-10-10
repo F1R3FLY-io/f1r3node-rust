@@ -1,0 +1,1257 @@
+// See node/src/main/scala/coop/rchain/node/runtime/Setup.scala
+// Imports needed for function signature and return type
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use casper::rust::blocks::block_processor::{
+    BlockQueueItem, InFlightBlocks, IN_FLIGHT_MARKER_MAX_WARN_AGE,
+};
+use casper::rust::blocks::proposer::proposer::ProposerResult;
+use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::engine::block_retriever::BlockRetriever;
+use casper::rust::engine::casper_launch::CasperLaunch;
+use casper::rust::errors::CasperError;
+use casper::rust::metrics_constants::{
+    BLOCK_PROCESSING_IN_FLIGHT_METRIC, BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
+    BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
+    PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
+};
+use casper::rust::state::instances::ProposerState;
+use casper::rust::ProposeFunction;
+use comm::rust::discovery::node_discovery::NodeDiscovery;
+use comm::rust::p2p::packet_handler::PacketHandler;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::transport::transport_layer::TransportLayer;
+use consensus_api::{Capabilities, ProtocolDescriptor};
+use consensus_runtime::{RuntimeBuilder, RuntimeConfig};
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tracing::{debug, info, trace, warn};
+
+use super::api_compat::PreparedApplication;
+use super::{CasperConsensusAdapter, CasperLoop, NativeTask};
+use crate::rust::configuration::NodeConf;
+use crate::rust::consensus::casper::api::servers::APIServers;
+use crate::rust::consensus::casper::manifest::ManifestGuard;
+use crate::rust::consensus::casper::web::reporting_routes::ReportingRoutes;
+use crate::rust::runtime::setup::PreparedNode;
+
+const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
+const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
+
+const _: () = assert!(
+    casper::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING
+        <= BLOCK_PROCESSOR_QUEUE_MAX_PENDING
+);
+
+type ProposerQueueEntry = (
+    Arc<dyn Casper + Send + Sync>,
+    bool,
+    oneshot::Sender<ProposerResult>,
+    u8,
+);
+
+fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
+
+fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
+
+fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool {
+    is_node_read_only || dev_mode
+}
+
+pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
+    rp_connections: ConnectionsCell,
+    rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
+    transport_layer: Arc<T>,
+    conf: NodeConf,
+    event_publisher: F1r3flyEvents,
+    node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
+) -> Result<PreparedNode, CasperError> {
+    let manifest = ManifestGuard::inspect(
+        &conf.storage.data_dir,
+        &conf.protocol_server.network_id,
+        &conf.casper.shard_name,
+    )
+    .map_err(|e| CasperError::Other(e.to_string()))?;
+    let observer = crate::rust::soak_observer::Observer::bind(&conf)
+        .map_err(|error| CasperError::Other(error.to_string()))?;
+    let mut capabilities = Capabilities::FINALIZED_PROGRESS;
+    if conf.casper.validator_private_key.is_some() {
+        capabilities = capabilities
+            .union(Capabilities::PROPOSE)
+            .union(Capabilities::SUBMIT);
+    }
+    let builder = RuntimeBuilder::new(
+        ProtocolDescriptor {
+            id: "cbc-casper".into(),
+            version: 1,
+            capabilities,
+        },
+        RuntimeConfig {
+            max_payload_bytes: conf
+                .protocol_server
+                .grpc_max_recv_stream_message_size
+                .max(conf.api_server.grpc_max_recv_message_size)
+                as usize,
+            ..RuntimeConfig::default()
+        },
+    )
+    .map_err(|e| CasperError::Other(e.to_string()))?;
+    let handle = builder.handle();
+    let native_tasks = Arc::new(consensus_runtime::TaskScope::default());
+    let task_scope = native_tasks.clone();
+    let task_spawner: casper::rust::background_tasks::BackgroundTaskSpawner =
+        Arc::new(move |name, task| {
+            task_scope
+                .spawn(name, async move { task.await.map_err(super::native_error) })
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))
+        });
+    let mut background: Vec<(&'static str, NativeTask)> = Vec::new();
+    let block_retriever = BlockRetriever::new(
+        Arc::new(Mutex::new(std::collections::HashMap::new())),
+        transport_layer.clone(),
+        rp_connections.clone(),
+        rp_conf_cell
+            .read()
+            .map_err(|e| CasperError::Other(e.to_string()))?,
+    );
+    let last_approved_block = Arc::new(Mutex::new(None));
+    info!(data_dir = ?conf.storage.data_dir, "Initializing key-value store manager");
+
+    // RNode key-value store manager / manages LMDB databases
+    let mut rnode_store_manager = {
+        use casper::rust::storage::rnode_key_value_store_manager::new_key_value_store_manager;
+
+        new_key_value_store_manager(conf.storage.data_dir.clone(), None)
+    };
+
+    // Block storage
+    let block_store = {
+        use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+
+        KeyValueBlockStore::create_from_kvm(&mut rnode_store_manager).await?
+    };
+
+    // Last finalized Block storage
+    let last_finalized_storage = {
+        use block_storage::rust::finality::LastFinalizedKeyValueStorage;
+
+        LastFinalizedKeyValueStorage::create_from_kvm(&mut rnode_store_manager).await?
+    };
+
+    // Migrate LastFinalizedStorage to BlockDagStorage
+    let lfb_require_migration = last_finalized_storage.require_migration()?;
+    if lfb_require_migration {
+        use tracing::info;
+
+        info!("Migrating LastFinalizedStorage to BlockDagStorage.");
+        last_finalized_storage
+            .migrate_lfb(&mut rnode_store_manager, &block_store)
+            .await?;
+    }
+    info!(
+        lfb_migration = lfb_require_migration,
+        "LastFinalized storage checked"
+    );
+
+    // Block DAG storage
+    let block_dag_storage = {
+        use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+
+        BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
+    };
+
+    // Repeat-deploy carrier-index watermark (same pattern as the LFB
+    // migration above): the height since which every insert records carriers,
+    // which gates the fast path's absence proofs. An empty database gets none
+    // here — the history root is not known until genesis or restore completes.
+    if let Some(genesis) = block_dag_storage.genesis_hash()? {
+        manifest
+            .verify_genesis(&genesis)
+            .map_err(|e| CasperError::Other(e.to_string()))?;
+    }
+    let carrier_index_watermark = block_dag_storage.ensure_carrier_watermark()?;
+    info!(
+        carrier_index_watermark = ?carrier_index_watermark,
+        "repeat-deploy carrier index checked"
+    );
+
+    // Casper requesting blocks cache
+    let casper_buffer_storage = {
+        use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+
+        CasperBufferKeyValueStorage::new_from_kvm(&mut rnode_store_manager).await?
+    };
+
+    // Deploy storage
+    let (deploy_storage, deploy_storage_arc) = {
+        use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+
+        let deploy_storage = KeyValueDeployStorage::new(&mut rnode_store_manager).await?;
+        // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
+        let deploy_storage_arc = Arc::new(parking_lot::Mutex::new(deploy_storage.clone()));
+        (deploy_storage, deploy_storage_arc)
+    };
+
+    // Buffer of deploys rejected during multi-parent merge; re-proposed in
+    // subsequent blocks to avoid silent loss of otherwise-valid user deploys.
+    let rejected_deploy_buffer_arc = {
+        use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut rnode_store_manager).await?;
+        Arc::new(Mutex::new(buffer))
+    };
+
+    // Safety oracle (clique oracle implementation)
+    let oracle = {
+        use casper::rust::safety_oracle::CliqueOracleImpl;
+
+        CliqueOracleImpl
+    };
+
+    // Estimator (stateless; parent bounds come from the shard conf per call)
+    let estimator = casper::rust::estimator::Estimator::apply();
+
+    // Determine if this node is a validator
+    let is_validator = conf.casper.validator_private_key.is_some();
+    info!(
+        validator = is_validator,
+        autopropose = conf.autopropose,
+        "Node role determined"
+    );
+
+    // Create external services based on node type
+    // Load OpenAI config from HOCON with environment variable override
+    let external_services = {
+        use rholang::rust::interpreter::external_services::ExternalServices;
+        use rholang::rust::interpreter::ollama_service::OllamaConfig;
+        use rholang::rust::interpreter::openai_service::OpenAIConfig;
+
+        // Load config from HOCON values, with env vars taking priority
+        let config = OpenAIConfig::from_config_values(
+            conf.openai.enabled,
+            conf.openai.api_key.clone(),
+            conf.openai.validate_api_key,
+            conf.openai.validation_timeout_sec,
+        );
+        let ollama_config = OllamaConfig::from_env();
+        ExternalServices::for_node_type(is_validator, &config, &ollama_config)
+    };
+
+    // Runtime for `rnode eval`
+    let eval_runtime = {
+        use rholang::rust::interpreter::matcher::r#match::Matcher;
+        use rholang::rust::interpreter::rho_runtime;
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        let eval_stores = rnode_store_manager
+            .eval_stores()
+            .await
+            .map_err(|e| CasperError::Other(format!("Failed to get eval stores: {}", e)))?;
+
+        rho_runtime::create_runtime_from_kv_store(
+            eval_stores,
+            casper::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
+            false,
+            &mut Vec::new(),
+            Arc::new(Box::new(Matcher)),
+            external_services.clone(),
+        )
+        .await?
+    };
+
+    // Runtime manager (play and replay runtimes)
+    let (runtime_manager, history_repo) = {
+        use casper::rust::genesis::genesis::Genesis;
+        use casper::rust::util::rholang::runtime_manager::{
+            ExploratoryDeployConfig, RuntimeManager,
+        };
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        let rspace_stores = rnode_store_manager
+            .r_space_stores()
+            .await
+            .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
+
+        let mergeable_store = RuntimeManager::mergeable_store(&mut rnode_store_manager).await?;
+        tracing::debug!("[Setup] Creating RuntimeManager with history...");
+        let result = RuntimeManager::create_with_history_config(
+            rspace_stores,
+            mergeable_store,
+            Genesis::default_mergeable_tags_arc(),
+            external_services.clone(),
+            {
+                let exploratory = ExploratoryDeployConfig::resolve(
+                    conf.api_server.exploratory_deploy_max_concurrent,
+                    conf.api_server.exploratory_deploy_phlo_limit,
+                    conf.api_server.exploratory_deploy_execution_timeout,
+                )?;
+                tracing::info!(
+                    max_concurrent = exploratory.max_concurrent,
+                    derived = conf.api_server.exploratory_deploy_max_concurrent == 0,
+                    "exploratory-deploy concurrency resolved"
+                );
+                exploratory
+            },
+        );
+        tracing::debug!("[Setup] RuntimeManager created successfully");
+        result
+    };
+
+    // Reporting runtime
+    let reporting_runtime = {
+        use casper::rust::reporting_casper;
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        if conf.api_server.enable_reporting {
+            // In reporting replay channels map is not needed
+            let rspace_stores = rnode_store_manager
+                .r_space_stores()
+                .await
+                .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
+            reporting_casper::rho_reporter(
+                &rspace_stores,
+                &block_dag_storage,
+                runtime_manager.replay_lock(),
+                rholang::rust::interpreter::external_services::ExternalServices::noop(),
+            )
+        } else {
+            reporting_casper::noop()
+        }
+    };
+
+    // RSpace state manager (for CasperLaunch)
+    // Note: rnodeStateManager is created in Scala but never used, so we only create rspaceStateManager
+    let rspace_state_manager = {
+        use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+
+        let exporter = history_repo.exporter();
+        let importer = history_repo.importer();
+        RSpaceStateManager::new(exporter, importer)
+    };
+
+    // Engine dynamic reference
+    let engine_cell = {
+        use casper::rust::engine::engine_cell::EngineCell;
+
+        match observer
+            .as_ref()
+            .and_then(|observer| observer.authority_handle())
+        {
+            Some(controller) => EngineCell::observed(controller),
+            None => EngineCell::init(),
+        }
+    };
+
+    // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)
+    // to consumer (BlockProcessorInstance)
+    let block_processor_queue_max_pending = block_processor_queue_max_pending();
+    let (block_processor_queue_tx, block_processor_queue_rx) =
+        mpsc::channel::<BlockQueueItem>(block_processor_queue_max_pending);
+
+    // Queue depth is where memory pressure moves when parallel drain is
+    // bounded, so it must be observable alongside block-processing.active.
+    // Sampled from the channel's own permit accounting via a WeakSender so
+    // the sampler can never hold the queue open past the last real producer.
+    metrics::gauge!(
+        BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+    )
+    .set(0.0);
+    let block_processor_queue_watch = block_processor_queue_tx.downgrade();
+    let block_processor_state_ref = Arc::new(InFlightBlocks::new());
+    let block_processor_state_watch = Arc::downgrade(&block_processor_state_ref);
+    background.push((
+        "queue metrics",
+        Box::pin(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let Some(queue_tx) = block_processor_queue_watch.upgrade() else {
+                    break;
+                };
+                let pending = queue_tx.max_capacity().saturating_sub(queue_tx.capacity());
+                metrics::gauge!(
+                    BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+                    "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+                )
+                .set(pending as f64);
+                if let Some(in_flight) = block_processor_state_watch.upgrade() {
+                    metrics::gauge!(BLOCK_PROCESSING_IN_FLIGHT_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE).set(in_flight.len() as f64);
+                    let oldest = in_flight.oldest(std::time::Instant::now());
+                    metrics::gauge!(BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE).set(oldest.as_ref().map_or(0.0, |(_, age)| age.as_secs_f64()));
+                    if let Some((hash, age)) = oldest {
+                        if age > IN_FLIGHT_MARKER_MAX_WARN_AGE {
+                            warn!(block = %PrettyPrinter::build_string_bytes(&hash), age_secs = age.as_secs(), in_flight = in_flight.len(), "in-flight block marker is older than the warning age");
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }),
+    ));
+
+    // Read RPConf once for use in multiple places
+    let rp_conf = rp_conf_cell
+        .read()
+        .map_err(|e| CasperError::Other(format!("Failed to read RPConf: {}", e)))?;
+
+    // Runtime state requester: fetches rspace roots named as missing while the
+    // node runs — the state a settled-history admission arrives without, and
+    // the state a deferred replay is waiting on. The processor names roots on
+    // `fetch_tx`; Running routes incoming StoreItemsMessage chunks to
+    // `items_tx`.
+    let (state_requester_handles, state_requester_task) = {
+        let has_root_rm = runtime_manager.clone();
+        let has_root: casper::rust::engine::lfs_horizon_requester::HasRootFn =
+            Arc::new(move |root| has_root_rm.has_root(root));
+        casper::rust::engine::runtime_state_requester::prepare(
+            transport_layer.clone(),
+            rp_conf.clone(),
+            rspace_state_manager.importer.clone(),
+            has_root,
+        )
+    };
+
+    background.push((
+        "state requester",
+        Box::pin(async move {
+            state_requester_task.await;
+            Ok(())
+        }),
+    ));
+
+    // Block processor
+    let block_processor = casper::rust::blocks::block_processor::new_block_processor(
+        block_store.clone(),
+        casper_buffer_storage.clone(),
+        block_dag_storage.clone(),
+        block_retriever.clone(),
+        transport_layer.clone(),
+        rp_connections.clone(),
+        rp_conf.clone(),
+        Some(state_requester_handles.fetch_tx.clone()),
+    );
+
+    // Proposer instance
+    let validator_identity_opt = {
+        use casper::rust::validator_identity::ValidatorIdentity;
+
+        ValidatorIdentity::from_private_key_with_logging(
+            conf.casper.validator_private_key.as_deref(),
+        )
+    };
+
+    // Clone validator_identity for heartbeat (used by both proposer and heartbeat)
+    let validator_identity_for_heartbeat = validator_identity_opt.clone();
+
+    let proposer = validator_identity_opt.map(|validator_identity| {
+        use crypto::rust::private_key::PrivateKey;
+
+        // Parse dummy deployer key from config
+        let dummy_deploy_opt = conf
+            .dev
+            .deployer_private_key
+            .as_ref()
+            .and_then(|key_hex| hex::decode(key_hex).ok())
+            .map(|bytes| {
+                let private_key = PrivateKey::from_bytes(&bytes);
+                // TODO: Make term for dummy deploy configurable - OLD
+                (private_key, "Nil".to_string())
+            });
+
+        casper::rust::blocks::proposer::proposer::new_proposer(
+            validator_identity,
+            dummy_deploy_opt,
+            runtime_manager.clone(),
+            block_store.clone(),
+            deploy_storage_arc.clone(),
+            rejected_deploy_buffer_arc.clone(),
+            block_retriever.clone(),
+            transport_layer.clone(),
+            rp_connections.clone(),
+            rp_conf.clone(),
+            event_publisher.clone(),
+            conf.casper.heartbeat_conf.enabled,
+        )
+    });
+    match &proposer {
+        Some(_) => info!("Proposer initialized"),
+        None => info!("Running without proposer"),
+    }
+
+    // Propose request is a tuple - Casper, async flag and deferred proposer result that will be resolved by proposer
+    let proposer_queue_pending = Arc::new(AtomicUsize::new(0));
+    let proposer_queue_max_pending = proposer_queue_max_pending();
+    metrics::gauge!(
+        PROPOSER_QUEUE_PENDING_METRIC,
+        "source" => VALIDATOR_METRICS_SOURCE
+    )
+    .set(0.0);
+
+    let (proposer_queue_tx, proposer_queue_rx) =
+        mpsc::channel::<ProposerQueueEntry>(proposer_queue_max_pending);
+
+    // Trigger propose function - wraps proposerQueue to provide propose functionality
+    let trigger_propose_f_opt: Option<Arc<ProposeFunction>> = if proposer.is_some() {
+        let queue_tx = proposer_queue_tx.clone();
+        let queue_pending = proposer_queue_pending.clone();
+        let queue_max_pending = proposer_queue_max_pending;
+        Some(Arc::new(
+            move |casper: Arc<dyn MultiParentCasper + Send + Sync>, is_async: bool| {
+                let queue_tx = queue_tx.clone();
+                let queue_pending = queue_pending.clone();
+                // Downcast to Arc<dyn Casper + Send + Sync> for the queue (MultiParentCasper extends Casper)
+                let casper_for_queue: Arc<dyn Casper + Send + Sync> = casper;
+
+                Box::pin(async move {
+                    debug!(async_mode = is_async, "Propose request enqueued");
+
+                    // Guard against unbounded queue growth under high deploy/autopropose load.
+                    let enqueue_reserved = queue_pending
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+                            (curr < queue_max_pending).then_some(curr + 1)
+                        })
+                        .is_ok();
+                    if !enqueue_reserved {
+                        metrics::counter!(
+                            PROPOSER_QUEUE_REJECTED_TOTAL_METRIC,
+                            "source" => VALIDATOR_METRICS_SOURCE
+                        )
+                        .increment(1);
+                        return Ok(ProposerResult::empty());
+                    }
+                    metrics::gauge!(
+                        PROPOSER_QUEUE_PENDING_METRIC,
+                        "source" => VALIDATOR_METRICS_SOURCE
+                    )
+                    .set(queue_pending.load(Ordering::Relaxed) as f64);
+
+                    // Create oneshot channel
+                    let (result_tx, result_rx) = oneshot::channel::<ProposerResult>();
+
+                    // Send to proposer queue
+                    match queue_tx
+                        .send((casper_for_queue, is_async, result_tx, 0))
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(e) => {
+                            let _ = queue_pending.fetch_sub(1, Ordering::AcqRel);
+                            metrics::gauge!(
+                                PROPOSER_QUEUE_PENDING_METRIC,
+                                "source" => VALIDATOR_METRICS_SOURCE
+                            )
+                            .set(queue_pending.load(Ordering::Relaxed) as f64);
+                            return Err(CasperError::Other(format!(
+                                "Failed to send to proposer queue: {}",
+                                e
+                            )));
+                        }
+                    }
+
+                    // Wait for result
+                    result_rx.await.map_err(|e| {
+                        warn!(error = %e, "Failed to enqueue propose request");
+                        CasperError::Other(format!("Failed to receive proposer result: {}", e))
+                    })
+                })
+            },
+        ))
+    } else {
+        None
+    };
+
+    // Proposer state ref - created if trigger_propose_f_opt exists
+    // Wrapped in Arc for sharing across multiple API instances
+    let proposer_state_ref_opt: Option<Arc<RwLock<ProposerState>>> = trigger_propose_f_opt
+        .as_ref()
+        .map(|_| Arc::new(RwLock::new(ProposerState::default())));
+
+    // CasperLaunch - orchestrates the launch of the Casper consensus
+    // Create heartbeat signal reference - starts empty, will be set when heartbeat starts
+    // Created outside the block so it can be returned for use by HeartbeatProposer
+    let heartbeat_signal_ref = casper::rust::heartbeat_signal::new_heartbeat_signal_ref();
+
+    let casper_launch = {
+        // Determine which propose function to use based on autopropose config
+        let propose_f_for_launch = if conf.autopropose {
+            trigger_propose_f_opt.clone()
+        } else {
+            None
+        };
+
+        info!(
+            autopropose = conf.autopropose,
+            heartbeat = conf.casper.heartbeat_conf.enabled,
+            standalone = conf.standalone,
+            "Initializing CasperLaunch"
+        );
+        // Create CasperLaunch with all dependencies
+        Arc::new(
+            casper::rust::engine::casper_launch::CasperLaunchImpl::new(
+                // Infrastructure dependencies
+                transport_layer.clone(),
+                rp_conf.clone(),
+                rp_connections.clone(),
+                last_approved_block,
+                event_publisher.clone(),
+                block_retriever.clone(),
+                Arc::new(engine_cell.clone()),
+                block_store.clone(),
+                block_dag_storage.clone(),
+                deploy_storage,
+                rejected_deploy_buffer_arc.clone(),
+                casper_buffer_storage.clone(),
+                rspace_state_manager,
+                Arc::new(runtime_manager.clone()),
+                estimator.clone(),
+                // Explicit parameters
+                block_processor_queue_tx.clone(),
+                block_processor_state_ref.clone(),
+                propose_f_for_launch,
+                conf.casper.clone(),
+                !conf.protocol_client.disable_lfs,
+                conf.protocol_server.disable_state_exporter,
+                heartbeat_signal_ref.clone(),
+                conf.standalone,
+                Some(state_requester_handles.items_tx.clone()),
+            )
+            .with_background_tasks(task_spawner.clone()),
+        ) as Arc<dyn CasperLaunch + Send + Sync>
+    };
+    info!("CasperLaunch initialized");
+
+    // Packet handler - handles incoming Casper protocol messages
+    // Note: Scala has a commented-out fairDispatcher option (Setup.scala:268-277) that uses
+    // round-robin dispatching with queue management. Currently using simple handler.
+    let packet_handler = casper::rust::util::comm::casper_packet_handler::CasperPacketHandler::new(
+        engine_cell.clone(),
+    );
+    let packet_handler: Arc<dyn PacketHandler> = Arc::new(packet_handler);
+
+    // Reporting store - storage for block event reports with LZ4 compression
+    let reporting_store =
+        casper::rust::report_store::report_store(&mut rnode_store_manager).await?;
+
+    // Block Report API - API for block reporting
+    let block_report_api = casper::rust::api::block_report_api::BlockReportAPI::new(
+        reporting_runtime,
+        reporting_store,
+        engine_cell.clone(),
+        block_store.clone(),
+        oracle,
+        conf.dev_mode,
+    );
+
+    // API Servers - gRPC services for REPL, Deploy, Propose, and LSP
+    let is_node_read_only = conf.casper.validator_private_key.is_none();
+
+    // Conditional propose function for autopropose.
+    // In validator nodes this must remain enabled even without deployer private key
+    // so normal deploy flow can trigger propose on-chain in non-dev mode.
+    let propose_f_for_api = if conf.autopropose {
+        trigger_propose_f_opt.clone()
+    } else {
+        None
+    };
+
+    let block_report_api_for_return = block_report_api.clone();
+
+    // Transfer unforgeable channel — used for transfer extraction from block reports
+    let transfer_unforgeable = {
+        use crate::rust::consensus::casper::web::transaction::transfer_unforgeable;
+        transfer_unforgeable()
+    };
+
+    // Shared is_ready flag — set to true when engine enters Running state.
+    // Used by both HTTP and gRPC status endpoints.
+    let is_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Event-driven background tasks: transfer extraction + readiness tracking.
+    // Listens on the broadcast event stream and handles:
+    // - BlockFinalised: pre-warm ReportStore cache, extract transfers, emit TransfersAvailable
+    // - EnteredRunningState: flip is_ready flag for status endpoints
+    {
+        use futures::StreamExt;
+        use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+
+        let mut event_stream = event_publisher.consume();
+        const PREWARM_QUEUE_CAPACITY: usize = 64;
+        let (report_tx, mut report_rx) = tokio::sync::mpsc::channel::<
+            shared::rust::shared::f1r3fly_event::BlockFinalised,
+        >(PREWARM_QUEUE_CAPACITY);
+        let report_api = block_report_api.clone();
+        let transfer_unforgeable_for_reports = transfer_unforgeable.clone();
+        let event_pub_for_reports = event_publisher.clone();
+        let prewarm_enabled = block_report_prewarm_enabled(is_node_read_only, conf.dev_mode);
+
+        background.push((
+            "report prewarm",
+            Box::pin(async move {
+                while let Some(finalized) = report_rx.recv().await {
+                    metrics::gauge!("block_report.prewarm_queue_depth", "source" => "node")
+                        .set(report_rx.len() as f64);
+                    handle_block_finalized(
+                        report_api.clone(),
+                        transfer_unforgeable_for_reports.clone(),
+                        event_pub_for_reports.clone(),
+                        finalized.block_hash,
+                        finalized.block_number,
+                    )
+                    .await;
+                }
+                Ok(())
+            }),
+        ));
+
+        background.push((
+            "consensus events",
+            Box::pin(async move {
+                while let Some(event) = event_stream.next().await {
+                    match &event {
+                        F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
+                            if report_tx.send(finalized.clone()).await.is_err() {
+                                metrics::counter!(
+                                    "block_report.prewarm_skipped",
+                                    "source" => "node",
+                                    "reason" => "queue_closed"
+                                )
+                                .increment(1);
+                                tracing::warn!(
+                                    block_hash = %finalized.block_hash,
+                                    "Block report prewarm queue closed"
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }),
+        ));
+    }
+
+    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value
+    let trigger_propose_f_opt_for_web_api = trigger_propose_f_opt.clone();
+    let trigger_propose_f_opt_for_admin_web_api = trigger_propose_f_opt.clone();
+    let trigger_propose_f_opt_for_return = trigger_propose_f_opt.clone();
+
+    // Clone proposer_state_ref_opt before passing to api_servers since we'll use it later for admin_web_api and return value
+    let proposer_state_ref_opt_for_admin_web_api = proposer_state_ref_opt.clone();
+    let proposer_state_ref_opt_for_return = proposer_state_ref_opt.clone();
+
+    let api_servers = APIServers::build(
+        eval_runtime,
+        trigger_propose_f_opt,
+        proposer_state_ref_opt,
+        conf.api_server.max_blocks_limit as i32,
+        conf.dev_mode,
+        propose_f_for_api,
+        block_report_api,
+        transfer_unforgeable.clone(),
+        conf.protocol_server.network_id.clone(),
+        conf.casper.shard_name.clone(),
+        conf.casper.min_phlo_price,
+        conf.casper.genesis_block_data.native_token_name.clone(),
+        conf.casper.genesis_block_data.native_token_symbol.clone(),
+        conf.casper.genesis_block_data.native_token_decimals,
+        is_node_read_only,
+        engine_cell.clone(),
+        block_store.clone(),
+        rp_conf_cell.clone(),
+        rp_connections.clone(),
+        node_discovery.clone(),
+        conf.casper.genesis_block_data.epoch_length,
+        is_ready.clone(),
+    )
+    .with_consensus(handle.clone());
+
+    // Reporting HTTP Routes - REST API for block reporting and tracing
+    // Note: In Rust with Axum, BlockReportAPI is accessed via State extraction
+    // at runtime rather than being captured at route creation time
+    let reporting_routes = ReportingRoutes::create_router();
+
+    // Casper Loop - maintenance loop body for Casper consensus
+    // This closure is executed repeatedly to:
+    // 1. Fetch missing block dependencies from CasperBuffer
+    // 2. Maintain requested blocks with timeout management
+    // 3. Sleep for the configured interval
+    let casper_loop = {
+        trace!("Casper loop tick");
+        let engine_cell_clone = engine_cell.clone();
+        let block_retriever_clone = block_retriever.clone();
+        let requested_blocks_timeout = conf.casper.requested_blocks_timeout;
+        let casper_loop_interval = conf.casper.casper_loop_interval;
+
+        move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
+            let engine_cell = engine_cell_clone.clone();
+            let block_retriever = block_retriever_clone.clone();
+
+            Box::pin(async move {
+                // Read the engine from engine cell
+                let engine = engine_cell.get().await;
+
+                // Fetch dependencies from CasperBuffer
+                if let Some(casper) = engine.with_casper() {
+                    trace!("Fetching Casper dependencies");
+                    if let Err(err) = casper.fetch_dependencies().await {
+                        tracing::warn!("Casper dependency fetch failed: {}", err);
+                    }
+                } else {
+                    warn!("Casper engine present but Casper not initialized yet");
+                    if let Err(err) = engine.on_no_casper_tick().await {
+                        warn!("no-casper tick failed: {}", err);
+                    }
+                }
+
+                // Maintain RequestedBlocks for Casper
+                if let Err(err) = block_retriever.request_all(requested_blocks_timeout).await {
+                    tracing::warn!("RequestedBlocks maintenance failed: {}", err);
+                } else {
+                    trace!(timeout = ?requested_blocks_timeout, "RequestedBlocks maintenance executed");
+                }
+
+                // Sleep for the configured interval
+                tokio::time::sleep(casper_loop_interval).await;
+
+                Ok::<(), CasperError>(())
+            })
+        }
+    };
+
+    // Update Fork Choice Loop - requests fork choice tips if node is stuck
+    // Broadcast fork choice tips request if current fork choice is more than
+    // `forkChoiceStaleThreshold` old, which indicates the node might be stuck.
+    // For details, see Running::update_fork_choice_tips_if_stuck description.
+    let update_fork_choice_loop = {
+        let engine_cell_clone = engine_cell.clone();
+        let transport_layer_clone = transport_layer.clone();
+        let rp_connections_clone = rp_connections.clone();
+        let rp_conf_cell_clone = rp_conf_cell.clone();
+        let fork_choice_check_interval = conf.casper.fork_choice_check_if_stale_interval;
+        let fork_choice_stale_threshold = conf.casper.fork_choice_stale_threshold;
+
+        move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
+            let engine_cell = engine_cell_clone.clone();
+            let transport_layer = transport_layer_clone.clone();
+            let rp_connections = rp_connections_clone.clone();
+            let rp_conf_cell = rp_conf_cell_clone.clone();
+
+            Box::pin(async move {
+                // Sleep first
+                tokio::time::sleep(fork_choice_check_interval).await;
+
+                // Read current RPConf
+                let rp_conf = rp_conf_cell
+                    .read()
+                    .map_err(|e| CasperError::Other(e.to_string()))?;
+
+                debug!(stale_threshold = ?fork_choice_stale_threshold, "Checking fork choice staleness");
+                // Call the standalone function
+                casper::rust::engine::running::update_fork_choice_tips_if_stuck(
+                    &engine_cell,
+                    &transport_layer,
+                    &rp_connections,
+                    &rp_conf,
+                    fork_choice_stale_threshold,
+                )
+                .await?;
+
+                Ok::<(), CasperError>(())
+            })
+        }
+    };
+
+    // Engine Init - reads engine from engine cell and calls init
+    let engine_init = {
+        let engine_cell_clone = engine_cell.clone();
+
+        move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
+            let engine_cell = engine_cell_clone.clone();
+
+            Box::pin(async move {
+                let engine = engine_cell.get().await;
+                engine.init().await?;
+                Ok::<(), CasperError>(())
+            })
+        }
+    };
+
+    // Scala has: runtimeCleanup = NodeRuntime.cleanup(rnodeStoreManager)
+    // But it's commented out in NodeRuntime.scala line 321:
+    //   //_ <- addShutdownHook(servers, runtimeCleanup, blockStore)
+    //
+    // Rust implementation notes:
+    // - The store managers (LmdbDirStoreManager, LmdbStoreManager) have both:
+    //   1. async shutdown() methods for graceful cleanup
+    //   2. Drop implementations for fallback cleanup
+    // - shutdown() should be called explicitly for proper async cleanup
+    // - This should be implemented in the main runtime's signal handler
+    //   (SIGTERM, SIGINT, etc.) before program exit
+    // - For now, Drop implementations will handle cleanup on program exit
+    //
+    // When implementing, add shutdown call like:
+    //   rnode_store_manager.shutdown().await?;
+
+    // Web API - HTTP REST API implementation
+    let web_api = {
+        use crate::rust::consensus::casper::api::web_api::WebApiImpl;
+
+        let is_node_read_only = conf.casper.validator_private_key.is_none();
+
+        // Conditional propose function for autopropose.
+        // Expose deploy-triggered propose from REST API whenever autopropose is enabled.
+        let trigger_propose_f = if conf.autopropose {
+            trigger_propose_f_opt_for_web_api
+        } else {
+            None
+        };
+
+        WebApiImpl::new(
+            conf.api_server.max_blocks_limit as i32,
+            conf.dev_mode,
+            conf.protocol_server.network_id.clone(),
+            conf.casper.shard_name.clone(),
+            conf.casper.min_phlo_price,
+            conf.casper.genesis_block_data.native_token_name.clone(),
+            conf.casper.genesis_block_data.native_token_symbol.clone(),
+            conf.casper.genesis_block_data.native_token_decimals,
+            is_node_read_only,
+            block_report_api_for_return.clone(),
+            transfer_unforgeable,
+            Arc::new(engine_cell.clone()),
+            rp_conf_cell.clone(),
+            rp_connections.clone(),
+            node_discovery.clone(),
+            trigger_propose_f,
+            conf.casper.genesis_block_data.epoch_length,
+            conf.casper.genesis_block_data.quarantine_length,
+            is_ready.clone(),
+        )
+        .with_consensus(handle.clone())
+    };
+
+    // Admin Web API - Admin HTTP REST API implementation
+    let admin_web_api = {
+        use crate::rust::consensus::casper::api::admin_web_api::AdminWebApiImpl;
+
+        AdminWebApiImpl::new(
+            trigger_propose_f_opt_for_admin_web_api,
+            proposer_state_ref_opt_for_admin_web_api,
+            Arc::new(engine_cell.clone()),
+        )
+        .with_consensus(handle.clone())
+    };
+
+    // Mergeable Channels GC Loop - background garbage collection for mergeable channel data
+    // Only created when GC is enabled in config (required for multi-parent mode)
+    let mergeable_channels_gc_loop: Option<CasperLoop> = if conf.casper.enable_mergeable_channel_gc
+    {
+        let gc_block_dag_storage = block_dag_storage.clone();
+        let gc_block_store = block_store.clone();
+        let gc_runtime_manager = Arc::new(runtime_manager.clone());
+        // tokio::sync::Mutex, not parking_lot: the fallback (non-multi-thread)
+        // path below holds the guard across the `collect_garbage().await`, and
+        // only a Send guard can cross an await point in this boxed future.
+        let gc_state = Arc::new(tokio::sync::Mutex::new(
+            casper::rust::util::mergeable_channels_gc::GcSweep::new(),
+        ));
+        let gc_interval = conf.casper.mergeable_channels_gc_interval;
+        let gc_engine_cell = engine_cell.clone();
+
+        Some(Arc::new(
+            move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
+                use casper::rust::util::mergeable_channels_gc;
+
+                let gc_block_dag_storage = gc_block_dag_storage.clone();
+                let gc_block_store = gc_block_store.clone();
+                let gc_runtime_manager = gc_runtime_manager.clone();
+                let gc_engine_cell = gc_engine_cell.clone();
+                let gc_state = gc_state.clone();
+                let gc_interval = gc_interval;
+
+                Box::pin(async move {
+                    // Sleep for the configured interval
+                    tokio::time::sleep(gc_interval).await;
+
+                    // The GC anchors deletion on a finalized floor, so it must
+                    // run on the SAME shard conf as consensus — the running
+                    // casper's (chain-adopted at hash_set_casper), never a
+                    // second locally-derived copy. No casper yet = no floor to
+                    // anchor on; skip the pass.
+                    let engine = gc_engine_cell.get().await;
+                    let Some(gc_casper) = engine.with_casper() else {
+                        tracing::debug!(
+                            "Mergeable-channels GC: casper not initialized yet; skipping pass"
+                        );
+                        return Ok(());
+                    };
+                    let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
+
+                    // Run GC. `collect_garbage` awaits `floor_of_block`, so on the
+                    // common multi-thread runtime the whole pass (including the
+                    // blocking LMDB reads in `get_representation`/`block_store`)
+                    // runs inside `block_in_place`, driven via a nested `block_on`
+                    // — the standard pattern for calling async code from a
+                    // blocking context without starving other workers.
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(rt_handle)
+                            if rt_handle.runtime_flavor()
+                                == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(move || {
+                                let dag = gc_block_dag_storage
+                                    .get_representation()
+                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                                let mut gc_state = gc_state.blocking_lock();
+                                rt_handle
+                                    .block_on(mergeable_channels_gc::collect_garbage(
+                                        &mut gc_state,
+                                        &dag,
+                                        &gc_block_store,
+                                        &gc_runtime_manager,
+                                        &gc_casper_shard_conf,
+                                    ))
+                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                            })?;
+                        }
+                        _ => {
+                            let dag = gc_block_dag_storage
+                                .get_representation()
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                            let mut gc_state = gc_state.lock().await;
+                            mergeable_channels_gc::collect_garbage(
+                                &mut gc_state,
+                                &dag,
+                                &gc_block_store,
+                                &gc_runtime_manager,
+                                &gc_casper_shard_conf,
+                            )
+                            .await
+                            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                        }
+                    }
+
+                    Ok::<(), CasperError>(())
+                })
+            },
+        ))
+    } else {
+        None
+    };
+
+    let mut loops: Vec<(&'static str, CasperLoop)> = vec![
+        ("dependency recovery", Arc::new(casper_loop)),
+        ("fork choice maintenance", Arc::new(update_fork_choice_loop)),
+    ];
+    if let Some(gc) = mergeable_channels_gc_loop {
+        loops.push(("mergeable GC", gc));
+    }
+    let adapter = CasperConsensusAdapter {
+        observer,
+        launch: casper_launch,
+        native_tasks,
+        task_spawner,
+        engine: engine_cell,
+        initialize: Arc::new(engine_init),
+        loops,
+        background,
+        packet_handler,
+        proposer,
+        proposer_rx: proposer_queue_rx,
+        proposer_tx: proposer_queue_tx,
+        proposer_pending: proposer_queue_pending,
+        proposer_capacity: proposer_queue_max_pending,
+        proposer_state: proposer_state_ref_opt_for_return,
+        block_processor,
+        block_state: block_processor_state_ref,
+        block_tx: block_processor_queue_tx,
+        block_rx: block_processor_queue_rx,
+        propose: trigger_propose_f_opt_for_return,
+        validator: validator_identity_for_heartbeat,
+        heartbeat_conf: conf.casper.heartbeat_conf,
+        max_parents: conf.casper.max_number_of_parents,
+        heartbeat_signal: heartbeat_signal_ref,
+        standalone: conf.standalone,
+        autopropose: conf.autopropose,
+        shard: conf.casper.shard_name,
+        connections: rp_connections,
+        events: event_publisher,
+        ready: is_ready,
+        manifest,
+        block_store,
+        dag: block_dag_storage,
+        store_manager: Box::new(rnode_store_manager),
+    };
+    Ok(PreparedNode {
+        consensus: builder.build(Box::new(adapter)),
+        packet_handler: Arc::new(super::super::ingress::ConsensusPacketHandler(handle)),
+        application: Box::new(PreparedApplication {
+            api_servers,
+            reporting_routes,
+            web_api: Arc::new(web_api),
+            admin_web_api: Arc::new(admin_web_api),
+            block_report_api: Arc::new(block_report_api_for_return),
+        }),
+    })
+}
+
+/// Pre-warm the ReportStore cache for a finalized block, then extract transfers
+/// and publish a `TransfersAvailable` event so WebSocket clients can receive
+/// transfer data without polling the REST API.
+///
+/// Runs as a fire-and-forget task — errors (e.g. on validators where block
+/// reports are unavailable) are logged at debug level and silently ignored.
+async fn handle_block_finalized(
+    report_api: casper::rust::api::block_report_api::BlockReportAPI,
+    transfer_unforgeable: models::rhoapi::Par,
+    event_publisher: shared::rust::shared::f1r3fly_events::F1r3flyEvents,
+    block_hash: String,
+    block_number: i64,
+) {
+    use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+
+    use crate::rust::consensus::casper::web::block_info_enricher::extract_transfers_from_report;
+
+    let block_hash_bytes: prost::bytes::Bytes = match hex::decode(&block_hash) {
+        Ok(bytes) => bytes.into(),
+        Err(e) => {
+            tracing::warn!(
+                %block_hash,
+                error = %e,
+                "Invalid block hash hex in finalization event"
+            );
+            return;
+        }
+    };
+    match report_api.prewarm_block_report(block_hash_bytes).await {
+        Ok(report) => {
+            let transfers_by_deploy = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+            let deploy_transfers = build_deploy_transfers(transfers_by_deploy);
+
+            if !deploy_transfers.is_empty() {
+                if let Err(e) = event_publisher.publish(F1r3flyEvent::transfers_available(
+                    block_hash.clone(),
+                    block_number,
+                    deploy_transfers,
+                )) {
+                    tracing::warn!(
+                        %block_hash,
+                        error = %e,
+                        "Failed to publish TransfersAvailable event"
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            // Nothing retries a pre-cache: the event has been consumed and no
+            // path revisits finalized blocks, so this block's transfers stay
+            // unavailable until something traces it by hand.
+            tracing::warn!(
+                target: "f1r3fly.node.transaction",
+                %block_hash,
+                error = %e,
+                "Block report pre-cache failed; transfers for this block will be unavailable"
+            );
+        }
+    }
+}
+
+fn build_deploy_transfers(
+    transfers_by_deploy: std::collections::HashMap<String, Vec<models::casper::TransferInfo>>,
+) -> Vec<shared::rust::shared::f1r3fly_event::DeployTransfers> {
+    use shared::rust::shared::f1r3fly_event::{DeployTransfers, TransferEvent};
+
+    transfers_by_deploy
+        .into_iter()
+        .filter(|(_, transfers)| !transfers.is_empty())
+        .map(|(deploy_id, transfers)| DeployTransfers {
+            deploy_id,
+            transfers: transfers
+                .into_iter()
+                .map(|t| TransferEvent {
+                    from_addr: t.from_addr,
+                    to_addr: t.to_addr,
+                    amount: t.amount,
+                    success: t.success,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use models::casper::TransferInfo;
+
+    use super::{block_report_prewarm_enabled, build_deploy_transfers};
+
+    #[test]
+    fn block_report_prewarm_supports_read_only_and_dev_mode_nodes() {
+        assert!(block_report_prewarm_enabled(true, false));
+        assert!(block_report_prewarm_enabled(false, true));
+        assert!(block_report_prewarm_enabled(true, true));
+        assert!(!block_report_prewarm_enabled(false, false));
+    }
+
+    fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
+        TransferInfo {
+            from_addr: from.to_string(),
+            to_addr: to.to_string(),
+            amount,
+            success: true,
+            fail_reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn build_deploy_transfers_drops_deploys_with_no_transfers() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("deploy_with".to_string(), vec![transfer("a", "b", 10)]);
+        map.insert("deploy_without".to_string(), vec![]);
+
+        let out = build_deploy_transfers(map);
+
+        assert_eq!(out.len(), 1, "only deploys with transfers are kept");
+        let entry = &out[0];
+        assert_eq!(entry.deploy_id, "deploy_with");
+        assert_eq!(entry.transfers.len(), 1);
+        assert_eq!(entry.transfers[0].amount, 10);
+    }
+
+    #[test]
+    fn build_deploy_transfers_returns_empty_when_no_deploy_has_transfers() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("d1".to_string(), vec![]);
+        map.insert("d2".to_string(), vec![]);
+
+        let out = build_deploy_transfers(map);
+
+        assert!(
+            out.is_empty(),
+            "no event payload when no deploy in the block has transfers"
+        );
+    }
+
+    #[test]
+    fn build_deploy_transfers_preserves_multiple_transfers_per_deploy() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("d1".to_string(), vec![
+            transfer("a", "b", 1),
+            transfer("a", "c", 2),
+        ]);
+
+        let out = build_deploy_transfers(map);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].transfers.len(), 2);
+        assert_eq!(out[0].transfers[0].amount, 1);
+        assert_eq!(out[0].transfers[1].amount, 2);
+    }
+}

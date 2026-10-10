@@ -44,13 +44,13 @@ idle(v) and stale_lfb and recovery_interval_elapsed(v) => recovery_escape(v)
 
 ## Evidence
 
-- `node/src/rust/instances/heartbeat_proposer.rs::deploy_grace_does_not_bypass_self_propose_cooldown`
-- `node/src/rust/instances/heartbeat_proposer.rs::a_cooldown_hot_validator_defers_routine_lanes_but_never_recovery`
-- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_fires_for_non_leaders_too`
-- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_allows_leader`
-- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_stale_recovery_fires_for_every_validator`
-- `node/src/rust/instances/heartbeat_proposer.rs::a_stalled_idle_non_leader_must_get_its_recovery_proposal`
-- `node/src/rust/instances/heartbeat_proposer.rs::stale_recovery_breaks_the_empty_frontier_deadlock`
+- `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs::deploy_grace_does_not_bypass_self_propose_cooldown`
+- `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs::a_cooldown_hot_validator_defers_routine_lanes_but_never_recovery`
+- `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_fires_for_non_leaders_too`
+- `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_allows_leader`
+- `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs::high_lag_stale_recovery_fires_for_every_validator`
+- `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs::a_stalled_idle_non_leader_must_get_its_recovery_proposal`
+- `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs::stale_recovery_breaks_the_empty_frontier_deadlock`
 
 ## Counter-evidence to the leader-only formulation
 

@@ -12,7 +12,7 @@ message count (2048), not bytes.
 | Model | Code |
 |---|---|
 | `queued` (FIFO, `CountCap`) | `node/src/rust/runtime/setup.rs` — `block_processor_queue` mpsc (count cap in force in every mode) |
-| `processing` (≤ `MaxParallel`) | `node/src/rust/instances/block_processor_instance.rs` — semaphore drain |
+| `processing` (≤ `MaxParallel`) | `node/src/rust/consensus/casper/instances/block_processor_instance.rs` — semaphore drain |
 | `resident` (≤ `MaxDeliveries`) | decoded inbound `BlockMessage` held by a receiving task between arrival and the admission decision |
 | `pending` re-request pool | `casper/src/rust/engine/block_retriever.rs` — requested-blocks / dependency recovery; retains **no** payload bytes |
 | `Defer` transition | deferral **releases** the payload buffer (resident → pending); re-delivery is a later `Deliver`, not a held buffer |

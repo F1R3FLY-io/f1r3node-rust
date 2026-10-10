@@ -487,10 +487,30 @@ impl BlockAPI {
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
+        Self::deploy_supervised(
+            engine_cell,
+            d,
+            trigger_propose,
+            is_node_read_only,
+            shard_id,
+            &None,
+        )
+        .await
+    }
+
+    pub async fn deploy_supervised(
+        engine_cell: &EngineCell,
+        d: Signed<DeployData>,
+        trigger_propose: &Option<Arc<ProposeFunction>>,
+        is_node_read_only: bool,
+        shard_id: &str,
+        background_tasks: &Option<crate::rust::background_tasks::BackgroundTaskSpawner>,
+    ) -> ApiErr<String> {
         async fn casper_deploy(
             casper: Arc<dyn MultiParentCasper + Send + Sync>,
             deploy_data: Signed<DeployData>,
             trigger_propose: &Option<Arc<ProposeFunction>>,
+            background_tasks: &Option<crate::rust::background_tasks::BackgroundTaskSpawner>,
         ) -> ApiErr<String> {
             let deploy_id = match casper.deploy(deploy_data)? {
                 Either::Left(err) => return Err(err.into()),
@@ -505,16 +525,19 @@ impl BlockAPI {
                 let casper_for_propose = casper.clone();
                 let max_attempts = deploy_propose_max_attempts();
                 let retry_delay = deploy_propose_retry_delay();
-                tokio::spawn(async move {
-                    let mut attempt = 1u32;
-                    loop {
-                        match tp(casper_for_propose.clone(), true).await {
-                            Ok(proposer_result) => match proposer_result {
-                                ProposerResult::Failure(status, seq_number) => {
-                                    if should_retry_deploy_propose(&status)
-                                        && attempt < max_attempts
-                                    {
-                                        tracing::info!(
+                if let Err(error) = crate::rust::background_tasks::spawn(
+                    background_tasks,
+                    "deploy autopropose",
+                    Box::pin(async move {
+                        let mut attempt = 1u32;
+                        loop {
+                            match tp(casper_for_propose.clone(), true).await {
+                                Ok(proposer_result) => match proposer_result {
+                                    ProposerResult::Failure(status, seq_number) => {
+                                        if should_retry_deploy_propose(&status)
+                                            && attempt < max_attempts
+                                        {
+                                            tracing::info!(
                                             "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
                                             attempt,
                                             max_attempts,
@@ -522,56 +545,61 @@ impl BlockAPI {
                                             status,
                                             retry_delay
                                         );
-                                        attempt += 1;
-                                        tokio::time::sleep(retry_delay).await;
-                                        continue;
-                                    }
+                                            attempt += 1;
+                                            tokio::time::sleep(retry_delay).await;
+                                            continue;
+                                        }
 
-                                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                                    {
-                                        tracing::info!("{} (seqNum {})", msg, seq_number);
-                                    } else {
-                                        tracing::error!(
-                                            "Failure: {} (seqNum {})",
-                                            status,
-                                            seq_number
+                                        if let Some(msg) =
+                                            recoverable_propose_failure_message(&status)
+                                        {
+                                            tracing::info!("{} (seqNum {})", msg, seq_number);
+                                        } else {
+                                            tracing::error!(
+                                                "Failure: {} (seqNum {})",
+                                                status,
+                                                seq_number
+                                            );
+                                        }
+                                    }
+                                    ProposerResult::Empty => {
+                                        tracing::debug!("Propose already in progress");
+                                    }
+                                    ProposerResult::Started(seq_number) => {
+                                        tracing::debug!("Propose started (seqNum {})", seq_number);
+                                    }
+                                    ProposerResult::Success(_, block) => {
+                                        let block_hash_hex =
+                                            PrettyPrinter::build_string_no_limit(&block.block_hash);
+                                        tracing::info!(
+                                            "Success! Block {} created and added.",
+                                            block_hash_hex
                                         );
                                     }
-                                }
-                                ProposerResult::Empty => {
-                                    tracing::debug!("Propose already in progress");
-                                }
-                                ProposerResult::Started(seq_number) => {
-                                    tracing::debug!("Propose started (seqNum {})", seq_number);
-                                }
-                                ProposerResult::Success(_, block) => {
-                                    let block_hash_hex =
-                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                                    tracing::info!(
-                                        "Success! Block {} created and added.",
-                                        block_hash_hex
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                if attempt < max_attempts {
-                                    tracing::warn!(
+                                },
+                                Err(err) => {
+                                    if attempt < max_attempts {
+                                        tracing::warn!(
                                         "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
                                         attempt,
                                         max_attempts,
                                         err,
                                         retry_delay
                                     );
-                                    attempt += 1;
-                                    tokio::time::sleep(retry_delay).await;
-                                    continue;
+                                        attempt += 1;
+                                        tokio::time::sleep(retry_delay).await;
+                                        continue;
+                                    }
+                                    tracing::error!(error = %err, "deploy-triggered propose failed");
                                 }
-                                tracing::error!(error = %err, "deploy-triggered propose failed");
                             }
+                            break;
                         }
-                        break;
-                    }
-                });
+                        Ok(())
+                    }),
+                ) {
+                    tracing::warn!(%error, "Deploy accepted, but background auto-propose was rejected");
+                }
             }
 
             Ok(format!(
@@ -685,7 +713,7 @@ impl BlockAPI {
                     ),
                 }));
             }
-            casper_deploy(casper, d, trigger_propose).await
+            casper_deploy(casper, d, trigger_propose, background_tasks).await
         } else {
             log_warn(&log_error_message)
         }

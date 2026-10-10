@@ -21,6 +21,8 @@ use crate::rust::configuration::commandline::options::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConf {
     #[serde(default)]
+    pub consensus: ConsensusConf,
+    #[serde(default)]
     pub standalone: bool,
     #[serde(default)]
     pub autopropose: bool,
@@ -63,6 +65,20 @@ pub struct SoakObserverConfig {
     pub peer_start_ticks: u64,
     pub session_timeout_ms: u64,
     pub max_sessions: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsensusConf {
+    #[serde(default)]
+    pub protocol: ConsensusProtocol,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ConsensusProtocol {
+    #[default]
+    #[serde(rename = "cbc-casper")]
+    CbcCasper,
 }
 
 /// Protocol server configuration
