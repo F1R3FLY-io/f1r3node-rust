@@ -4291,6 +4291,138 @@ oracle.
       Nothing calls those two modules in production, so the Casper suite does
       not apply.
 
+**Implementation note 2: the funding resolver (G1-2, 2026-10-09).** Leaf
+`ofp-1-stack-safe-lexical`. The user approved metering, linear work and a
+stack-safe walk on 2026-10-09: "so long as they are necessary for
+cost-accounting completion". The walk follows the specialized machines of
+`feature/mettail`.
+
+- **Why each property is necessary.** The pre-execution funding check runs the
+  resolver on every incoming deploy before any payment.
+  - Without metering, an attacker gets analysis work for free.
+  - Without linear work, that free work grows with the square of the program
+    size. HEAD substituted the whole body of each `new` again, and it copied
+    each level only to count its terms.
+  - Without a stack-safe walk, one deep deploy can exhaust the stack of the
+    node.
+- **The machine.** `FundingResolver` in `lexical.rs` pops one task at a time
+  from a heap work stack.
+  - The tasks are `Visit`, `BindSignatures`, `Signature`, `Cells`, `Holes`,
+    `Enter`, `Pop` and `Build`.
+  - A binder stack holds the scope. An entry `Some(name)` is a name that the
+    reducer allocates. An entry `None` is a hole: a receive or match variable,
+    or a `new` in a position that the resolver does not resolve.
+  - Two value stacks hold the rebuilt children and the resolved signatures
+    until the `Build` task of their node takes them.
+- **What the machine rewrites.** It rewrites the cost signatures that the
+  analyzer reads: the signatures of signed terms, the cells of token stacks,
+  and the signatures of receive binds. It also resolves a dequotation `*x` of a
+  resolved name, as HEAD did. It copies every other field.
+  - HEAD substituted every bound name of a resolved `new` into the whole body.
+    The analyzer reads none of the other positions. So when HEAD succeeds, the
+    analyzer's results do not change.
+  - The whole-body substitution could also fail on a position that the
+    analyzer does not read. An example is the wildcard pattern of
+    `1 matches _` in send data
+    (`rholang/src/test/resources/tests/test-matches.rho`). HEAD then returned
+    `SubstituteError`. The machine does not substitute that position, so it
+    accepts the program. This deviation is deliberate.
+  - The parity tests compare the walked signatures, the analyzer's results and
+    the first error. They accept the deviation above only when HEAD fails with
+    `Illegal Substitution` and the machine succeeds.
+- **Linear work.**
+  - The machine visits each node once and resolves each signature once.
+  - A signature gets an environment that holds only the bindings that it can
+    reference. These are its bound levels and the free variables of its quoted
+    processes, which `locally_free` lists with one byte per de Bruijn index.
+  - `term_count` counts the terms of a node without a copy.
+  - `new_binding_values` builds the values of `util::allocate_new_bindings`,
+    with the same errors. That function copies its whole environment at each
+    binding, so a `new` with many names costs quadratic work there.
+- **Metering.** The resolver reserves each charge before it does the work.
+  - `StructuralItems`: one per task, plus one per scheduled task, per scanned
+    expression, per rebuilt part, per signature element and per scanned byte
+    of `locally_free`.
+  - `SubstitutionBindings`: one per binder that the resolver pushes.
+  - `VerificationOperations`, `VerificationBytes` and `SearchStateBytes`: the
+    block accounting of the reducer for every copy
+    (`reserve_blocks_copy_and_cleanup`), and the metered signature
+    substitution (`substitute_cost_signature_metered`).
+  - A refused reservation returns `HostWorkRejected`. The resolver then
+    dismantles its partial results without recursion.
+  - `resolve_lexical_names_for_funding_metered` is the metered entry. The
+    unmetered entry `resolve_lexical_names_for_funding` runs the same machine
+    without a budget. Only tests call it.
+- **The term schedule.** The machine counts the terms of the input node, as
+  the reducer does. HEAD counted them after its substitution had merged a
+  dequotation of a resolved name into the node. So HEAD could give a sibling
+  `new` another split of the randomness than the reducer. The test
+  `machine_follows_the_reducer_schedule_beside_a_resolved_dequotation` shows
+  the case.
+- **Receive bodies.** This note keeps HEAD's rule: a receive body gets the split
+  of the receive's own randomness. DR-121 changes the rule.
+- **Limits of stack safety.** The walk keeps its state on the heap. Three
+  recursions stay. Each is general interpreter work, and the normalizer and
+  `encoded_len` already recurse over the same depth before the resolver runs.
+  - The derived protobuf clone of the fields that the resolver does not walk:
+    channels, patterns, expressions and conditions.
+  - The substitution and sorting of a quoted signature. The metered path stops
+    at a depth of 256, through the guard of the metered sorter.
+  - The derived drop of the output, which the caller owns.
+  - The generated stack-safe traits of F1R3Lang remove these recursions.
+- **The oracle.** HEAD's `resolve_par` and `resolve_receive` stay in
+  `lexical.rs` under `#[cfg(test)]`, with the entry
+  `resolve_lexical_names_for_funding_recursive`.
+- **Verification.**
+  - Rocq `StackSafeLexicalResolver.v` uses the standard library only and no
+    axiom.
+    - `subst_compose` shows that two substitutions compose into one.
+    - `resolver_linearization` and `one_pass_equals_recursive_resolver` show
+      that one pass with an environment equals HEAD's recursion, which
+      substitutes the names of each `new` into its body.
+    - `machine_runs_its_denotation` shows that each step of the machine keeps
+      the denotation of its work stack. So the machine computes the one pass
+      (`machine_refines_one_pass_resolver`) and HEAD's recursion
+      (`machine_refines_recursive_resolver`). This is the
+      `compile_run_equivalence` pattern of `StackSafePDA.v`, with a scope stack
+      and allocation effects.
+    - `resolver_steps_are_linear` bounds the steps by six per syntax node.
+    - Two proved negative controls break the refinement. In
+      `skipped_scope_pop_breaks_the_refinement`, a machine that does not pop
+      the scope after a `new` leaks the binding to a later sibling. In
+      `reordered_visit_breaks_the_refinement`, a machine that visits the items
+      of a node in reverse order reports another first error.
+    - The proof gate passes in cost-accounting mode: 279 modules and 3172
+      closed assumption queries. Each of the 11 registered theorems of the
+      module is closed under the global context.
+  - Rust tests in `lexical/stack_safety_tests.rs`:
+    - a 256-case property test on generated programs. It compares the walked
+      signatures, the analyzer's results and the first error with the oracle,
+      and the metered result with the unmetered one.
+    - the same comparison on the repository corpus, once with the URNs of the
+      corpus bound and once with every URN binding failing. A parser panic
+      counts as a rejection. The deviation of HEAD's substitution appears only
+      at `test-matches.rho`, and the test checks this list.
+    - `machine_does_not_substitute_positions_that_the_analyzer_does_not_read`
+      shows the deviation on a small program.
+    - `new_binding_values` against `util::allocate_new_bindings`.
+    - a linear charge: every host-work dimension grows by the same amount for
+      each added level of nesting.
+    - an exhausted budget: one unit less than the measured work in any charged
+      dimension rejects the program, and exactly the measured work accepts it
+      with the same result.
+    - 100,000 nested `new` terms on a 256 KiB thread, with the name of each
+      level checked against the reducer's rule.
+    - a term nested 100,000 levels deep through every walked construct, on a
+      256 KiB thread.
+  - Suites:
+    - rholang and rspace++ pass 4149 of 4149, with the 9 new tests. This run
+      also covers the test-helper refactor of implementation note 1.
+    - The rholang doctests pass. `cargo fmt --check` and
+      `cargo clippy --workspace --all-targets -- -D warnings` pass.
+    - No production code calls the resolver yet, so the Casper suite does not
+      apply.
+
 **Cross-refs.** DR-64. Leaves `ofp-1-stack-safe-analyzer`,
 `ofp-1-stack-safe-lexical`, and `ofp-1-stack-safe-signatures`.
 
