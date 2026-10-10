@@ -333,7 +333,9 @@ impl DeployLifecycle {
             .map_err(CasperError::from)?
             .block_number;
 
+        let observe_start = std::time::Instant::now();
         let mut schedule = self.schedule.lock();
+        let lock_wait_ms = observe_start.elapsed().as_millis();
         if !schedule.rebuilt {
             drop(schedule);
             self.rebuild_schedule(dag)?;
@@ -379,6 +381,7 @@ impl DeployLifecycle {
             .range(..=floor_height)
             .map(|(k, _)| *k)
             .collect();
+        let crossed_floor_key_count = crossed_floor.len();
         for key in crossed_floor {
             if let Some(sigs) = schedule.floor_thresholds.remove(&key) {
                 due.extend(sigs);
@@ -387,6 +390,8 @@ impl DeployLifecycle {
 
         let mut due: Vec<Bytes> = due.into_iter().collect();
         due.sort();
+        let due_count = due.len();
+        let evaluate_start = std::time::Instant::now();
         let mut terminalized: Vec<Bytes> = Vec::new();
         for sig in due {
             evaluate(
@@ -398,6 +403,21 @@ impl DeployLifecycle {
                 citability_horizon,
                 &mut terminalized,
             )?;
+        }
+        let evaluate_ms = evaluate_start.elapsed().as_millis();
+        let total_ms = observe_start.elapsed().as_millis();
+        if total_ms >= 1_000 {
+            tracing::warn!(
+                target: "f1r3fly.casper.lifecycle.timing",
+                "Lifecycle observe slow: block_number={}, lock_wait_ms={}, due={}, crossed_floor_keys={}, evaluate_ms={}, terminalized={}, total_ms={}",
+                block.body.state.block_number,
+                lock_wait_ms,
+                due_count,
+                crossed_floor_key_count,
+                evaluate_ms,
+                terminalized.len(),
+                total_ms
+            );
         }
         Ok(terminalized)
     }
