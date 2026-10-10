@@ -40,6 +40,7 @@ impl CarrierIndex {
     /// Pruning walks the whole table, so it runs only when the cutoff has
     /// advanced by at least this many blocks since the last walk.
     const PRUNE_STRIDE: i64 = 64;
+    const PRUNE_WRITE_CHUNK: usize = 1024;
 
     pub fn new(carriers_kv: Arc<dyn KeyValueStore>, meta_kv: Arc<dyn KeyValueStore>) -> Self {
         Self {
@@ -126,11 +127,11 @@ impl CarrierIndex {
                 trimmed.push((sig, kept));
             }
         }
-        if !emptied.is_empty() {
-            self.carriers.delete(emptied)?;
+        for chunk in emptied.chunks(Self::PRUNE_WRITE_CHUNK) {
+            self.carriers.delete(chunk.to_vec())?;
         }
-        if !trimmed.is_empty() {
-            self.carriers.put(trimmed)?;
+        for chunk in trimmed.chunks(Self::PRUNE_WRITE_CHUNK) {
+            self.carriers.put(chunk.to_vec())?;
         }
         self.meta
             .put_one(Self::LAST_PRUNE_KEY.to_string(), cutoff)?;
@@ -172,6 +173,7 @@ mod tests {
     struct WriteCountingStore {
         inner: InMemoryKeyValueStore,
         writes: Arc<std::sync::atomic::AtomicUsize>,
+        largest_batch: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl KeyValueStore for WriteCountingStore {
@@ -190,6 +192,8 @@ mod tests {
         ) -> Result<(), KvStoreError> {
             self.writes
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.largest_batch
+                .fetch_max(kv_pairs.len(), std::sync::atomic::Ordering::SeqCst);
             self.inner.put(kv_pairs)
         }
 
@@ -206,6 +210,8 @@ mod tests {
         fn delete(&self, keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
             self.writes
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.largest_batch
+                .fetch_max(keys.len(), std::sync::atomic::Ordering::SeqCst);
             self.inner.delete(keys)
         }
 
@@ -250,6 +256,7 @@ mod tests {
         let carriers = WriteCountingStore {
             inner: InMemoryKeyValueStore::new(),
             writes: writes.clone(),
+            largest_batch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
         for i in 0u32..200 {
@@ -270,6 +277,37 @@ mod tests {
         );
         assert!(index.proves_absence(b"old-7").expect("probe"));
         assert!(!index.proves_absence(b"mixed-7").expect("probe"));
+    }
+
+    #[test]
+    fn a_prune_walk_writes_no_batch_larger_than_the_write_chunk() {
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let largest_batch = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let carriers = WriteCountingStore {
+            inner: InMemoryKeyValueStore::new(),
+            writes: writes.clone(),
+            largest_batch: largest_batch.clone(),
+        };
+        let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
+        let rows = 2 * CarrierIndex::PRUNE_WRITE_CHUNK + 1;
+        for i in 0..rows {
+            let sig = format!("old-{i}").into_bytes();
+            index.record_once(&sig, 10, vec![1; 32]).expect("record");
+        }
+        largest_batch.store(0, std::sync::atomic::Ordering::SeqCst);
+        writes.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        let removed = index.prune_below(400).expect("prune");
+
+        assert_eq!(removed, rows as u64);
+        assert!(
+            largest_batch.load(std::sync::atomic::Ordering::SeqCst)
+                <= CarrierIndex::PRUNE_WRITE_CHUNK
+        );
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(index
+            .proves_absence(format!("old-{}", rows - 1).as_bytes())
+            .expect("probe"));
     }
 
     #[test]

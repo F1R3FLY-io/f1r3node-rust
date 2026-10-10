@@ -77,6 +77,7 @@ struct DeployAdmissionPolicy {
     fallback: bool,
     backpressure: bool,
     ordinary_cap_source: OrdinaryCapSource,
+    in_scope_recovery_cap_source: OrdinaryCapSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -498,6 +499,7 @@ pub async fn prepare_user_deploys(
             fallback: false,
             backpressure: false,
             ordinary_cap_source: OrdinaryCapSource::Normal,
+            in_scope_recovery_cap_source: OrdinaryCapSource::Base,
         },
         floor_ctx.as_ref(),
     )
@@ -2565,7 +2567,13 @@ fn in_scope_recovery_fallback(
         allowed: cap > 0,
         cap,
         backpressure,
-        source: OrdinaryCapSource::Base,
+        source: if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+            OrdinaryCapSource::Hard
+        } else if backpressure && finality_lag_stats.stalled {
+            OrdinaryCapSource::SoftStalled
+        } else {
+            OrdinaryCapSource::Base
+        },
     }
 }
 
@@ -2598,6 +2606,7 @@ fn ordinary_admission_policy(
             fallback: fallback.allowed || in_scope_recovery.allowed,
             backpressure: fallback.backpressure || in_scope_recovery.backpressure,
             ordinary_cap_source: fallback.source,
+            in_scope_recovery_cap_source: in_scope_recovery.source,
         };
     }
 
@@ -2615,6 +2624,7 @@ fn ordinary_admission_policy(
             finality_lag_stats,
         )
         .1,
+        in_scope_recovery_cap_source: in_scope_recovery.source,
     }
 }
 
@@ -2647,6 +2657,7 @@ fn record_deploy_admission_metrics(
         BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_LOCAL_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_RECOVERY_CAP_SOURCE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_LAG_METRIC, BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_MISSING_PROGRESS_METADATA_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC,
@@ -2758,6 +2769,11 @@ fn record_deploy_admission_metrics(
     )
     .set(admission_policy.ordinary_cap_source.code());
     metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_RECOVERY_CAP_SOURCE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(admission_policy.in_scope_recovery_cap_source.code());
+    metrics::gauge!(
         BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC,
         "source" => CASPER_METRICS_SOURCE
     )
@@ -2799,6 +2815,9 @@ fn record_deploy_admission_metrics(
     .set(metric_bool(inclusion_staleness.missing_deploy_metadata));
 }
 
+/// Creates a block without cross-proposal finality progress: the stall
+/// signal is always false. Production proposes through
+/// `create_with_progress` with a persistent `FinalityProgress`.
 pub async fn create(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -3034,7 +3053,7 @@ pub async fn create_with_progress(
         if admission_policy.allow_in_scope_recovery {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
-                "In-scope deploy recovery enabled for block #{}: cap={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
+                "In-scope deploy recovery enabled for block #{}: cap={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}, cap_source={}",
                 next_block_num,
                 admission_policy.in_scope_recovery_cap,
                 in_scope_local_stats.count,
@@ -3043,7 +3062,8 @@ pub async fn create_with_progress(
                 inclusion_staleness.stale,
                 inclusion_staleness.signature_stale,
                 finality_lag_stats.lag,
-                admission_policy.backpressure
+                admission_policy.backpressure,
+                admission_policy.in_scope_recovery_cap_source.as_str()
             );
         }
         if user_work_in_flight && admission_policy.allow_ordinary && allow_deploy_inclusion {
@@ -4779,6 +4799,57 @@ mod tests {
     }
 
     #[test]
+    fn the_admission_policy_reports_the_in_scope_recovery_cap_source_separately() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let stranded = InScopeLocalDeployStats {
+            count: 20,
+            oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS,
+            stranded_count: 3,
+        };
+        let policy_at = |finality_lag| {
+            let recovery = in_scope_recovery_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                stranded,
+                finality_lag,
+            );
+            assert!(recovery.allowed);
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                true,
+                false,
+                FreshAdmissionFallback::default(),
+                recovery,
+                DeployInclusionStaleness::default(),
+                finality_lag,
+            )
+        };
+
+        let hard = policy_at(lag(40, 32));
+        assert_eq!(hard.in_scope_recovery_cap_source, OrdinaryCapSource::Hard);
+        assert_eq!(
+            hard.in_scope_recovery_cap,
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(
+            policy_at(stalled_lag(30, 26)).in_scope_recovery_cap_source,
+            OrdinaryCapSource::SoftStalled
+        );
+        assert_eq!(
+            policy_at(lag(25, 22)).in_scope_recovery_cap_source,
+            OrdinaryCapSource::Base
+        );
+    }
+
+    #[test]
     fn the_soft_backpressure_backlog_cap_is_never_above_the_shard_cap() {
         for shard_cap in [10_usize, 5] {
             let mut snapshot =
@@ -5729,6 +5800,7 @@ mod tests {
                 fallback: false,
                 backpressure: false,
                 ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5803,6 +5875,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
                 ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5904,6 +5977,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
                 ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5993,6 +6067,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
                 ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -6098,6 +6173,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
                 ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -6203,6 +6279,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
                 ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -6315,6 +6392,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
                 ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -6406,6 +6484,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
                 ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )

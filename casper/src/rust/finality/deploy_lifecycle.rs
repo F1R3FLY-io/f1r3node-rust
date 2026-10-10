@@ -336,12 +336,16 @@ impl DeployLifecycle {
         let observe_start = std::time::Instant::now();
         let mut schedule = self.schedule.lock();
         let lock_wait_ms = observe_start.elapsed().as_millis();
+        let mut rebuild_ms = 0;
         if !schedule.rebuilt {
             drop(schedule);
+            let rebuild_start = std::time::Instant::now();
             self.rebuild_schedule(dag)?;
+            rebuild_ms = rebuild_start.elapsed().as_millis();
             schedule = self.schedule.lock();
         }
 
+        let mut prune_ms = 0;
         // The floor clock (monotone; adoption itself is monotone per node).
         let floor_advanced = match &schedule.max_floor {
             Some(current) => adopted_number > current.block_number,
@@ -358,9 +362,11 @@ impl DeployLifecycle {
             // the floor). The prune is strided inside the index, so most
             // advances no-op. A failure must not affect the verdict path —
             // retention is an optimization, never consensus input.
+            let prune_start = std::time::Instant::now();
             if let Err(e) = dag.prune_carriers_below(adopted_number - deploy_lifespan) {
                 tracing::warn!("carrier-index prune failed (retention only): {}", e);
             }
+            prune_ms = prune_start.elapsed().as_millis();
         }
 
         // Due: crossed thresholds plus the block's own touched sigs.
@@ -409,9 +415,11 @@ impl DeployLifecycle {
         if total_ms >= 1_000 {
             tracing::warn!(
                 target: "f1r3fly.casper.lifecycle.timing",
-                "Lifecycle observe slow: block_number={}, lock_wait_ms={}, due={}, crossed_floor_keys={}, evaluate_ms={}, terminalized={}, total_ms={}",
+                "Lifecycle observe slow: block_number={}, lock_wait_ms={}, rebuild_ms={}, prune_ms={}, due={}, crossed_floor_keys={}, evaluate_ms={}, terminalized={}, total_ms={}",
                 block.body.state.block_number,
                 lock_wait_ms,
+                rebuild_ms,
+                prune_ms,
                 due_count,
                 crossed_floor_key_count,
                 evaluate_ms,
