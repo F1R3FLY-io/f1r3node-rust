@@ -64,17 +64,24 @@ MUTANTS = (
        "        let _ = root;\n"
        "        result\n"),),
      ((LIB, ("reified_sweep_runs_at_each_entry_point_of_the_reducer",)),)),
+    # Changed by P7 step 6 (gate finding 3): cargo fmt split the `match` line, so the anchor of
+    # step 6 went stale. It was:
+    #   "        match self.reified.sweep_volatile(&self.reduction_coordinator).await {"
     ("sweep-skipped-on-err",
      "VR-8: a root evaluation that fails does not sweep",
      ((HOOKS,
        "        if !root {\n"
        "            return (result, summary);\n"
        "        }\n"
-       "        match self.reified.sweep_volatile(&self.reduction_coordinator).await {",
+       "        match self\n"
+       "            .reified\n"
+       "            .sweep_volatile(&self.reduction_coordinator)\n",
        "        if !root || result.is_err() {\n"
        "            return (result, summary);\n"
        "        }\n"
-       "        match self.reified.sweep_volatile(&self.reduction_coordinator).await {"),),
+       "        match self\n"
+       "            .reified\n"
+       "            .sweep_volatile(&self.reduction_coordinator)\n"),),
      ((LIB, ("reified_sweep_runs_at_each_entry_point",)),
       (suite("reified_temp_seq"), ("space_temp_failed_deploy_reverts",)))),
     ("reset-not-guarded",
@@ -89,11 +96,16 @@ MUTANTS = (
        "            self.reified.begin_evaluation_scope();\n"
        "        }\n"),),
      ((LIB, ("reified_sweep_root_predicate_excludes_nested_calls",)),)),
+    # Changed by P7 step 6 (gate finding 3): cargo fmt split the arm of an ephemeral space, so
+    # the anchor of step 6 went stale. It was:
+    #   "            namespace::Durability::Ephemeral => Err(SpaceError::DanglingHandle { space: space.sid }),"
     ("dangling-check-removed",
      "DG-1: the registry check of an ephemeral id passes every id",
      ((RUNTIME,
-       "            namespace::Durability::Ephemeral => Err(SpaceError::DanglingHandle { space: space.sid }),",
-       "            namespace::Durability::Ephemeral => Ok(()),"),
+       "            namespace::Durability::Ephemeral => {\n"
+       "                Err(SpaceError::DanglingHandle { space: space.sid })\n"
+       "            }\n",
+       "            namespace::Durability::Ephemeral => Ok(()),\n"),
       (RUNTIME,
        "            Some(space) if !self.volatile.is_live(&space.sid) => {",
        "            Some(space) if false && !self.volatile.is_live(&space.sid) => {")),

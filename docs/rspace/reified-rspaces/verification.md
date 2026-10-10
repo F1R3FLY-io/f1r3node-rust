@@ -39,7 +39,8 @@ The [decision register](decision-register.md) is normative, and the [design](des
 29. [Phase P7, step 3: the HashSet store](#29-phase-p7-step-3-the-hashset-store)
 30. [Phase P7, step 4: the theory seam](#30-phase-p7-step-4-the-theory-seam)
 31. [Phase P7, step 5: rehydration and charging evidence](#31-phase-p7-step-5-rehydration-and-charging-evidence)
-32. [References](#references)
+32. [Phase P7, step 6: the N3 rows, the mutant controls and the full gate set](#32-phase-p7-step-6-the-n3-rows-the-mutant-controls-and-the-full-gate-set)
+33. [References](#references)
 
 ## 1. Purpose and scope
 
@@ -5859,6 +5860,159 @@ To run the checks of step 5, do these steps from the repository root:
 4. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P7`.
 5. Run `python3 scripts/verify-reified/check-footprint.py --policy p7` and `python3 scripts/verify-reified/check-complete.py --phase p7`.
 6. Run `docs/rspace/reified-rspaces/diagrams/render.sh --check`.
+
+## 32. Phase P7, step 6: the N3 rows, the mutant controls and the full gate set
+
+Step 6 implements the parts W7 and W8 of the P7 design v3. These parts are:
+
+- the rows of the matrix N3 for `temp`, `seq` and HashSet spaces,
+- the mutant controls of section 11 of the design,
+- the last documents of the phase,
+- the one full gate set of the phase ([decision 48](decision-register.md#decision-48)).
+
+Step 6 adds no production code.
+
+### 32.1 The native rows of N3
+
+A `temp` or a `seq` space lives for one deploy.
+So each new row of the matrix runs in one native deploy (design v3 amendment A7).
+A row reads its result from the event log and from the values of the deploy, and it certifies the deploy through its committed evidence.
+The rows of `seq` call the handle method `produce` before each receive, so each channel has one causal chain of uses (rule QF-15).
+
+*Table 172. The native rows of N3 in `rholang/tests/reified_pattern_enforcement.rs`.*
+
+| Test | Rows | What it checks |
+|---|---|---|
+| `pattern_enforcement_temp_rows` | The 26 wired families with `temp` | A pattern for 42 never receives 43, in both source orders. The log shows the record and the waiter on the channels of their name with no COMM. A pattern for 42 receives 42. |
+| `pattern_enforcement_seq_rows` | The 26 wired families with `seq` | The same with a handle `produce` before each receive. The names of a seq space are never sent, so the row reads the channels of its space from the journal. |
+| `pattern_enforcement_hashset_rows` | The six HashSet families | A unit is taken by an empty receive, a send of 43 fails with `PayloadNotEmpty`, and a receive for 42 fails with `PatternNotEmpty`. |
+| `pattern_enforcement_native_unsupported_pairs_reject` | 16 pairs | A HashSet family with `default` or `temp` fails with `BadConstructorArgument`. A VectorDB family with `temp` or `seq` and a mirror fails with `InvalidParam`. No space channel stays. |
+
+One fire on a PathMap space makes three COMMs (F4 of [decision 39](decision-register.md#decision-39)).
+They are the delivery through the marker and the retire COMMs of the record and of the root marker.
+So a `seq` row compares its COMMs with the same row without its negative part, and it does not fix their number.
+The negative part adds no COMM, and it adds the produce of 43 and the consume of the waiter for 42.
+
+### 32.2 Two test corrections
+
+The residue helper of the unit tests of the reducer hooks had the defect of section [31.3](#313-the-residue-check-reads-every-map-of-the-hot-store).
+It read `to_map`, so it could not see a volatile channel with waiting continuations alone or with join entries alone.
+It now reads every map of the hot-store snapshot of a soft checkpoint, and the three sweep tests of the reducer pass with it.
+
+The test `reified_sweep_root_predicate_excludes_nested_calls` checked only the result of the root predicate.
+So a nested call that reset the volatile registry passed it.
+The test now records a `temp` space in the registry and checks that the space stays live across a nested call (rule VR-3).
+
+### 32.3 The mutant controls
+
+The harness `scripts/verify-reified/p7-mutants.py` applies one mutant at a time, runs the tests that the mutant names, and restores the sources.
+A mutant may change several places, when its rule has several places in the code.
+
+*Table 173. The mutants of P7 (design v3 section 11).*
+
+| Mutant | Rule | What it changes | Tests that fail |
+|---|---|---|---|
+| `sweep-skipped-at-one-entry` | VR-4 | `inj_with_host_work` does not sweep. | `reified_sweep_runs_at_each_entry_point_of_the_reducer` |
+| `sweep-skipped-on-err` | VR-8 | A root evaluation that fails does not sweep. | `reified_sweep_runs_at_each_entry_point_of_the_reducer`, `reified_sweep_runs_at_each_entry_point_of_the_reporting_replay`, `space_temp_failed_deploy_reverts` |
+| `reset-not-guarded` | VR-3 | A nested call also resets the volatile registry. | `reified_sweep_root_predicate_excludes_nested_calls` |
+| `dangling-check-removed` | DG-1 | The registry check passes every ephemeral id, in two places. | `reified_ephemeral_dangling_next_deploy`, `reducer_dangling_handle` |
+| `forwarder-hop-scanned` | SQ-2 (A1) | The scan of seq names reads the forwarder hop to `HANDLE_OP`. | `reified_seq_scan_exempts_the_forwarder_hop_and_the_own_channel_argument`, `reducer_seq_payload` |
+| `reissue-counted-as-use` | SQ-3 (A3) | An internal job claims channels. | `seq_claims_apply_only_to_program_jobs_on_seq_spaces`, `reducer_seq_atomic_guard` |
+| `claim-before-success` | SQ-4 | A claim holds as soon as the job makes it. | `prop_seq_claim_chain` |
+| `check-match-in-bind` | TH-6 | The theory checks a datum in the spatial match, before the guard, and not after it, in two places. | `space_guard_match_refusal_is_a_guard_refusal` |
+| `admission-after-the-bump` | TH-5 | The refusal of a send surfaces after the counter bump, in two places. | `theory_admission_precedes_any_staging` |
+| `hashset-payload-check-off` | HS-2 | A HashSet collection takes a send with a payload. | `reified_hashset_payload_not_empty`, `pattern_enforcement_hashset_rows` |
+| `seq-allowed-in-legacy` | QT-5 | Legacy execution accepts the qualifier `seq`. | Four tests of the factory gates, and `reducer_qualifier_matrix` |
+
+The harness reports `PASS=11 FAIL=0 restored=True`: each mutant fails at least one of its tests, and every source file is restored.
+Step 4 ran the two theory mutants as dry runs and did not keep their texts.
+The harness rebuilds them from the code. Its version of `check-match-in-bind` fails one test, and the dry run of step 4 failed three.
+
+### 32.4 The documents
+
+The glossary defines the [volatile registry](glossary.md#volatile-registry), the book of one root evaluation.
+The syntax contract gives the meaning of the qualifiers at run time ([qualifiers at run time](syntax-contract.md#qualifiers-at-run-time)).
+The conformance table of the specification names the tests of Table 172, and the invariant map names them as witness tests of phase P7.
+
+### 32.5 The full gate set
+
+The gate set ran on the candidate `097faf179`.
+The formal legs started on `c12075761`.
+The later commits change no `.v` file, no `.tla` file and no model, so the formal results hold for the candidate.
+The commit `39d8ffed2` changes one test file, and `097faf179` changes only this dossier.
+
+*Table 174. The legs of the full gate set of P7.*
+
+| Leg | Check | Result |
+|---|---|---|
+| Format and lint | `cargo fmt --all -- --check`, and `cargo clippy` with `-D warnings` in the three configurations of Table 138 | pass |
+| G1 | `cargo check --workspace --all-targets`, and `cargo check -p node --all-targets --features rholang/chromadb` | 0 warnings |
+| G2 to G6 | The `rholang` library and the 49 suites `rholang/tests/reified_*.rs` | 3,334 passed, 0 failed, 3 ignored |
+| G2 to G6 | Every `rspace_plus_plus` test | 853 passed, 0 failed, 7 ignored |
+| G2 to G6 | The `models` suites `reified_encoding` and `space_factory_urn` | 17 passed, 0 failed |
+| G7 | I-14: the two empty-state-hash tests of `casper` | 2 passed |
+| G8 | `scripts/check-reified-rspaces-proofs.sh` | `PASS=121 FAIL=0 SKIP=0`, 287 closed headlines, 396 negative checks |
+| G9 | `scripts/check-reified-rspaces-tla-invariants.sh` with 4 TLC workers | `PASS=451 FAIL=0 SKIP=0`. The largest model check explores 44,207,717 distinct states. |
+| G10 to G15 | The 34 checkers of the phase | 34 of 34 pass before and after the mutant harnesses. |
+| G16 | The protected paths against the base `4d67b5ccc` | Only the accessor of decision 47 differs. No file is untracked under the protected paths, and Reified code holds no `0xF3`. |
+| G17 | The release tests of each crate | Table 175 |
+| Release builds | `cargo build --release -p node`, without and with `rholang/chromadb` | Both succeed, in 125 s and 264 s. |
+| Z3 | The three scripts of `formal/z3/reified_rspaces` | 12, 10 and 17 checks pass. |
+| Sage and receipt | `similarity_metrics.sage` and `numeric_reference_receipt.py` | 182 of 182 cases agree, 200 random cases satisfy the metric laws, and the reference vectors are unchanged. |
+| Mutants | The five harnesses of P6 and `p7-mutants.py` | Table 176 |
+| Live leg | `scripts/verify-reified/chroma-live.sh` with the pinned server | 3 passed |
+
+G17 and the release builds ran in an export of the tree under `target/`, with their own target directory.
+A sha256 manifest showed that each of the 5,025 tracked files of the export equals its file in the worktree.
+
+*Table 175. The release tests of each crate (G17).*
+
+| Crate | Passed | Failed | Ignored | Seconds |
+|---|---|---|---|---|
+| `rspace++` | 853 | 0 | 7 | 153 |
+| `rholang` | 4,217 | 0 | 6 | 1,268 |
+| `casper` | 1,505 | 3 | 14 | 1,293 |
+| `models` | 466 | 0 | 0 | 49 |
+| `crypto` | 121 | 0 | 0 | 18 |
+| `shared` | 142 | 0 | 0 | 17 |
+| `graphz` | 48 | 0 | 0 | 6 |
+| `block-storage` | 165 | 0 | 0 | 19 |
+| `comm` | 401 | 0 | 0 | 57 |
+| `node` | 260 | 0 | 0 | 259 |
+| Total | 8,178 | 3 | 27 | |
+
+The three failures of `casper` are the three failures of the base `4d67b5ccc` that section [26.2](#262-the-release-regression) lists, with the same panic sites and values.
+The `rholang` crate has 119 more release tests than in P6, and every one of them passes.
+
+*Table 176. The mutant harnesses in the gate set.*
+
+| Harness | Mutants | Fail tests | Stale | Seconds |
+|---|---|---|---|---|
+| `tensor-mutants.py` | 6 | 6 | 0 | 462 |
+| `vectordb-mutants.py` | 14 | 14 | 0 | 1,652 |
+| `vector-ops-mutants.py` | 8 | 8 | 0 | 593 |
+| `vectordb-services-mutants.py` | 12 | 12 | 0 | 1,639 |
+| `mirror-mutants.py` | 34 | 34 | 0 | 3,411 |
+| `p7-mutants.py`, in the gate | 11 | 9 | 2 | 725 |
+| `p7-mutants.py`, after the anchor fix | 11 | 11 | 0 | 777 |
+
+### 32.6 Three gate findings
+
+The gate found three defects of the step-6 commits. Each fix is a new commit, and each one keeps the replaced text in a comment where the code has one.
+
+1. Clippy with `-D warnings` rejected a loop over one element (`single_element_loop`) in `pattern_enforcement_qualifiers_fail_closed`. Step 1 left that loop when `temp` left the list of qualifiers. The commit `39d8ffed2` binds the qualifier in a block, and the first worktree run restarted on that commit.
+2. Six citations of `reified_pattern_enforcement.rs` in this dossier kept their line numbers from before step 6. The remap of `c12075761` started from `225acc8d4`, and the citation rule checks only the line ranges that exist in the file. The commit `097faf179` maps the citations directly from the base of each line. A check of every modified Rust file from `96445e07b` finds no other stale citation.
+3. Two mutants of `p7-mutants.py` were stale: `sweep-skipped-on-err` and `dangling-check-removed`. The formatting of `c12075761` split the lines that their anchors name. The harness refuses a stale mutant, so it reported `FAIL=2`. The anchors now name the formatted lines, each anchor occurs once in its file, and the re-run reports `PASS=11 FAIL=0 restored=True`.
+
+### 32.7 Running the step-6 checks
+
+To run the checks of step 6, do these steps from the repository root:
+
+1. Run `cargo test -p rholang --test reified_pattern_enforcement`.
+2. Run `cargo test -p rholang --lib reified_sweep`.
+3. Run `python3 scripts/verify-reified/p7-mutants.py`, which must report `FAIL=0` and `restored=True`.
+4. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P7`.
+5. Run the gate scripts of section 32.5.
 
 ## References
 

@@ -82,7 +82,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 32](#decision-32) | P4 plan-text changes | 2026-10-04 | In force |
 | [Decision 33](#decision-33) | assertEqual has arity 3 | 2026-10-04 | In force |
 | [Decision 34](#decision-34) | P4 detail items | 2026-10-04 | In force |
-| [Decision 35](#decision-35) | P1 close-out scope: lean, verify at P4 | 2026-10-04 | In force |
+| [Decision 35](#decision-35) | P1 close-out scope: lean, verify at P4 | 2026-10-04 | In force. Its shared freeze moved to P11 by decision 75 |
 | [Decision 36](#decision-36) | Space replay reproduces play when a deploy runs out of phlo | 2026-10-05 | In force |
 | [Decision 37](#decision-37) | Receive selection follows the F1r3lang rule from the F1r3lang merge on | 2026-10-05 | In force. Implemented in P12 |
 | [Decision 38](#decision-38) | Priority-queue waiters wait in one queue per level | 2026-10-05 | In force |
@@ -122,6 +122,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 72](#decision-72) | The P7 design process | 2026-10-09 | In force |
 | [Decision 73](#decision-73) | P7 design v2, Seq claims per channel, HashSet on units | 2026-10-09 | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store) |
 | [Decision 74](#decision-74) | The config persists the theory identity as compact bytes | 2026-10-09 | In force. Implemented in P7 step 4 |
+| [Decision 75](#decision-75) | One pgmcp freeze at P11 | 2026-10-09 | In force |
+| [Decision 76](#decision-76) | The P8 design process | 2026-10-09 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -1010,7 +1012,7 @@ They follow the recorded decisions, or they fill details that the plan left open
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. Its shared freeze moved to P11 by [decision 75](#decision-75) |
 | Supersedes | The A5 realignment ledgers of the P1 close-out design |
 | Related | [Decision 5](#decision-5), [decision 16](#decision-16), [verification.md](verification.md) |
 
@@ -2106,6 +2108,52 @@ Both checks run before any staging, in the driver and in the join engine.
 - A slot of one `Par` costs about 47,600 `VerificationBytes` more for each read, which is 5 %.
 
 **Evidence.** `theory_config_slot_is_one_compact_par` pins the slot form and bounds the cost of the read to a tenth more. `identity_bytes_roundtrip` (`TheoryAdmission.v`) proves the codec, and `prop_theory_identity_bytes_roundtrip` tests it.
+
+### <a id="decision-75"></a>Decision 75: One pgmcp freeze at P11
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-09 |
+| Status | In force |
+| Amends | [Decision 35](#decision-35) (the shared freeze of P1 and P4), and the per-leaf verification of the plan's execution protocol |
+| Related | [Decision 13](#decision-13), [decision 48](#decision-48), [verification.md](verification.md) |
+
+**Statement.**
+
+- No recipe registration, VPI-1 relay, AAI-1 amendment or verification run happens before phase P11.
+- The campaign continues with P8 at once.
+- At P11 one freeze registers the recipes and shows the user the exact recipe command list (VPI-1).
+- The same freeze amends the acceptance criteria (AAI-1) and runs the verifier for every active leaf, together with the final gates.
+- Until then, each phase records its evidence in pgmcp progress notes and in the dossier.
+
+**User's words.** "One freeze at P11 (Recommended)", after P7 step 6.
+
+**Reason.**
+
+- The recipes pin exact test names and pass counts.
+- P8 to P10 add tests and change those counts, so an earlier freeze needs new amendments after each phase.
+- Decision 35 moved the verification of P1 to a later freeze for the same reason.
+
+### <a id="decision-76"></a>Decision 76: The P8 design process
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-09 |
+| Status | In force |
+| Related | [Decision 47](#decision-47), [decision 65](#decision-65), [decision 72](#decision-72), [I-15](#i-15), [I-16](#i-16), [decision 32](#decision-32) |
+
+**Statement.**
+
+- The main session drafts the design of P8 against the current code.
+- P8 covers the spaces that user agents implement. Its parts are the translation of `new`, of a send and of a receive into calls of the agent, and agent-tagged names.
+- Its other parts are `OP_MATCHER`, the body capability, `OP_SINK`, the reference agent and the conformance kit.
+- The design also settles the open P8 item of decision 32: the URN binding of `MATCHER_OP` and `SINK_OP`.
+- One fresh read-only Plan agent arbitrates the draft.
+- The main session verifies its findings in code and presents the result to the user before any P8 code.
+
+**User's words.** "Me + review agent (Recommended)".
+
+**Reason.** The same process produced the approved designs of decision 47, P6 and P7.
 
 ## Minimal-footprint revision: M-1 to M-5
 
